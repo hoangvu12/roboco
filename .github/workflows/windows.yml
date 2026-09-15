@@ -11,23 +11,21 @@ on:
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
       - '.github/workflows/windows.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'apps/roboco/**'
-      - 'dist/windows/**'
-      - 'crates/**'
-      - 'scripts/test-windows-*.ps1'
-      - '.github/workflows/windows.yml'
   workflow_dispatch:
     inputs:
       native_gui:
         description: 'Run native GUI/pixel probes (requires a usable desktop and Direct3D)'
         type: boolean
         default: false
+
+# Test-build tuning, following the big Rust projects (rust-analyzer, Zed,
+# Bevy): no incremental compilation, and neutralize the distribution
+# profile's thin LTO for test binaries — LTO buys the shipped binary nothing
+# here and costs most of the release-compile time. release.yml still builds
+# real LTO binaries for distribution.
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_LTO: 'false'
 
 permissions:
   contents: read
@@ -55,22 +53,34 @@ jobs:
           if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The workspace crates are most of the compile time; caching them
+          # makes same-SHA reruns and follow-up PR pushes near-instant.
+          cache-workspace-crates: 'true'
+          cache-on-failure: 'true'
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.144
       - name: Build application
         run: cargo build --release --locked -p roboco
       - name: Shader layout tests
-        run: cargo test --release --locked -p gpui_windows --lib layout
+        run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
       - name: Application and updater tests
-        run: cargo test --release --locked -p roboco -p roboco-update
+        run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
       - name: Engine and harness unit tests
-        run: cargo test --release --locked -p roboco-engine -p roboco-harness --lib
+        run: cargo nextest run --release --locked -p roboco-engine -p roboco-harness --lib -P ci
       - name: Native harness integration tests
-        run: cargo test --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native
+        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native -P ci
       - name: Harness catalog tests
-        run: cargo test --release --locked -p roboco-engine --test codex_catalog
+        run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
-        run: cargo test --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles
+        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles -P ci
       - name: UI tests
-        run: cargo test --release --locked -p roboco-ui --lib -- --test-threads=1
+        # Serial on purpose: the gpui test scheduler is not safe under
+        # intra-process parallelism (same constraint as the old
+        # --test-threads=1). Retries come from the ci nextest profile.
+        run: cargo nextest run --release --locked -p roboco-ui --lib -j 1 -P ci
       - name: CLI startup without HOME
         run: |
           # Exercise real path resolution without touching the runner's account.
