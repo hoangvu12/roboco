@@ -8,8 +8,11 @@ Push-Location $root
 try {
     cargo build --release --locked -p roboco
     if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
-    $versionText = & ./target/release/roboco.exe --version
-    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '^roboco (\d+\.\d+\.\d+)$') { throw 'Cannot read executable version' }
+    # Normalize to one scalar string: a multi-record capture (console/GUI
+    # subsystem quirks) makes -notmatch filter instead of test, leaving
+    # $Matches null ("Cannot index into a null array").
+    $versionText = (& ./target/release/roboco.exe --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '^roboco (\d+\.\d+\.\d+)$') { throw "Cannot read executable version (captured '$versionText', exit $LASTEXITCODE)" }
     $version = $Matches[1]
     $out = Join-Path $root 'target/package'
     $stage = Join-Path $out "roboco-$version-windows-x86_64"

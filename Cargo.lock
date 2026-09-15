@@ -7429,7 +7429,7 @@ dependencies = [
 
 [[package]]
 name = "roboco"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "clap",
@@ -7451,7 +7451,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-doc"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "chrono",
  "loro",
@@ -7465,7 +7465,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-engine"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7508,7 +7508,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-harness"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7530,7 +7530,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-preview"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7558,7 +7558,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-proto"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "chrono",
  "serde",
@@ -7568,7 +7568,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-rpc"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "async-trait",
  "futures",
@@ -7583,7 +7583,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-sync"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "loro",
  "roboco-doc",
@@ -7596,7 +7596,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-syntax"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
@@ -7630,7 +7630,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-theme"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "clap",
@@ -7645,7 +7645,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-ui"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7711,7 +7711,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-update"
-version = "0.2.65"
+version = "0.2.66"
 dependencies = [
  "anyhow",
  "futures",
