@@ -1,0 +1,7 @@
+# cargo-nextest repository configuration.
+# CI runs with `-P ci` (windows.yml): transient failures (ConPTY teardown,
+# timing-sensitive engine tests) get two retries before they can fail a run —
+# a retry is minutes cheaper than rerunning a whole Windows job.
+[profile.ci]
+retries = 2
+failure-output = "immediate-final"
