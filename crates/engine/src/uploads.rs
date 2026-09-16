@@ -60,7 +60,7 @@ pub fn parse_pending_ref(path: &str) -> Option<(&str, &str)> {
 /// bytes are already committed to THIS device's uploads dir under
 /// `{id8}-{sanitize(file_name)}`; the transfer pushes them to the chat's
 /// host device by upload identity (never by arbitrary path).
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentTransfer {
     pub upload_id: String,
@@ -83,7 +83,7 @@ const MAX_BYTES: u64 = 32 * 1024 * 1024;
 const READ_CHUNK_BYTES: u64 = 45_000;
 
 /// `ReadAttachmentChunk` reply.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentChunk {
     pub name: String,

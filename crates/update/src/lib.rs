@@ -569,7 +569,7 @@ pub fn relaunch_app_after_exit(bundle: &Path) {
 
 /// What the engine reports over the `UpdateStatus` stream. Version facts only —
 /// download/apply progress is owned by whoever drives the update (UI or CLI).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,

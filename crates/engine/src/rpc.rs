@@ -149,9 +149,9 @@ struct RenewQueuedMessageEditParams {
     lease_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-enum FinishQueuedMessageEditAction {
+pub enum FinishQueuedMessageEditAction {
     Commit,
     Cancel,
     Discard,
@@ -357,9 +357,9 @@ struct FetchToolBlobParams {
 }
 
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "op", rename_all = "camelCase")]
-enum MutateParams {
+pub enum MutateParams {
     #[serde(rename_all = "camelCase")]
     CreateChat {
         chat_id: String,
@@ -367,18 +367,23 @@ enum MutateParams {
         /// `None` mints a project-less chat: `deviceId` picks the host and the
         /// cwd defaults to `~` (expanded on the host at run time).
         #[serde(default)]
+        #[ts(optional)]
         space_id: Option<String>,
         /// Host device for a project-less chat; ignored when `spaceId` is set.
         #[serde(default)]
+        #[ts(optional)]
         device_id: Option<String>,
         #[serde(default)]
+        #[ts(optional)]
         config: Option<ChatConfig>,
         /// The picked ref, named on the row from the first frame (the footer
         /// read "Select ref" until the diff reconciler stamped it).
         #[serde(default)]
+        #[ts(optional)]
         branch: Option<String>,
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
+        #[ts(optional)]
         cwd: Option<String>,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
@@ -390,6 +395,7 @@ enum MutateParams {
         device_id: String,
         path: String,
         #[serde(default)]
+        #[ts(optional)]
         name: Option<String>,
         #[serde(default)]
         git_detected: bool,
@@ -399,6 +405,7 @@ enum MutateParams {
     RenameSpace {
         space_id: String,
         #[serde(default)]
+        #[ts(optional)]
         name: Option<String>,
     },
     /// Hard delete: cascades to every chat (and session row) in the space.
@@ -423,8 +430,10 @@ enum MutateParams {
     SetChatActivity {
         chat_id: String,
         #[serde(default)]
+        #[ts(optional)]
         last_message_at: Option<i64>,
         #[serde(default)]
+        #[ts(optional)]
         created_at: Option<i64>,
     },
     /// Re-home a chat to another device (tooling/seeds; device migration later).
@@ -448,6 +457,7 @@ enum MutateParams {
     MarkChatSeen {
         chat_id: String,
         #[serde(default)]
+        #[ts(optional)]
         at: Option<i64>,
     },
 }
