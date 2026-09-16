@@ -2373,3 +2373,112 @@ button.files-row-active:hover {
   padding: 1px 5px;
 }
 
+}
+
+/* ── Preview panel (dev servers framed through the engine proxy) ────── */
+
+.preview-panel {
+  flex: none;
+  width: min(520px, 45%);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--rb-border);
+  background: var(--rb-shell);
+}
+
+.preview-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  height: var(--rb-header-height);
+  padding: 0 var(--rb-space-sm);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.preview-bar-title {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-bar-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: var(--rb-bg);
+}
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rb-space-md);
+}
+
+.preview-subtitle {
+  margin: 0 0 var(--rb-space-sm);
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-xs);
+}
+
+.preview-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 14px;
+  border: 1px solid var(--rb-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rb-text) 2%, transparent);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.preview-row:not(.preview-row-disabled) {
+  cursor: pointer;
+}
+
+.preview-row:not(.preview-row-disabled):hover {
+  background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+  border-color: var(--rb-border-strong);
+}
+
+.preview-row-disabled {
+  opacity: 0.65;
+}
+
+.preview-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preview-row-name {
+  font-size: 13px;
+  font-weight: 500;

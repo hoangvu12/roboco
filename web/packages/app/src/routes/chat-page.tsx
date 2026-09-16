@@ -1,18 +1,20 @@
+import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { chatPageRow, type ChatIndicator } from "../lib/view";
 import { StatusDot } from "../components/status-dot";
 import { TranscriptView } from "../components/transcript";
+import { PreviewPanel } from "../components/preview-panel";
 import { useTerminalStore } from "../terminal/store";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { chatRoute } from "../router";
 
 /**
- * One chat's main panel: title, live status, and the streaming transcript
- * (`../components/transcript.tsx`) rendered into the shell's layout region.
- * Archived chats stay open (archiving never closes a chat) and say so
- * in the header.
+ * One chat's main panel: title, live status, the streaming transcript
+ * (`../components/transcript.tsx`), the on-demand preview pane (right-dock
+ * on wide viewports, stacked on phones), and the terminal dock (Ctrl+J).
+ * Archived chats stay open and say so in the header.
  */
 export function ChatPage() {
   const { chatId } = useParams({ from: chatRoute.id });
@@ -20,11 +22,23 @@ export function ChatPage() {
   const snapshot = useWatchSnapshot(session);
   const now = useNow(10_000);
   const terminalStore = useTerminalStore();
+  const [previewOpen, setPreviewOpen] = useState(false);
+  useEffect(() => {
+    setPreviewOpen(false);
+  }, [chatId]);
 
   if (snapshot === null || !snapshot.chats.loaded) {
     return (
       <div className="chat-page">
-        <ChatHeader title="…" status="idle" branch={null} archived={false} />
+        <ChatHeader
+          title="…"
+          status="idle"
+          branch={null}
+          archived={false}
+          previewOpen={false}
+          onTogglePreview={null}
+          onToggleTerminal={null}
+        />
       </div>
     );
   }
@@ -46,15 +60,20 @@ export function ChatPage() {
         status={row.status}
         branch={row.branch}
         archived={row.chat.archived}
+        previewOpen={previewOpen}
+        onTogglePreview={() => setPreviewOpen((open) => !open)}
         onToggleTerminal={() => terminalStore.toggle(chatId)}
       />
-      {session === null ? (
-        <div className="chat-transcript">
-          <p className="chat-transcript-empty">No engine connected.</p>
-        </div>
-      ) : (
-        <TranscriptView client={session.client} docId={chatId} />
-      )}
+      <div className="chat-body">
+        {session === null ? (
+          <div className="chat-transcript">
+            <p className="chat-transcript-empty">No engine connected.</p>
+          </div>
+        ) : (
+          <TranscriptView client={session.client} docId={chatId} />
+        )}
+        {previewOpen && <PreviewPanel chatId={chatId} onClose={() => setPreviewOpen(false)} />}
+      </div>
       <TerminalDock store={terminalStore} chatId={chatId} />
     </div>
   );
@@ -65,13 +84,17 @@ function ChatHeader({
   status,
   branch,
   archived,
+  previewOpen,
+  onTogglePreview,
   onToggleTerminal,
 }: {
   title: string;
   status: ChatIndicator;
   branch: string | null;
   archived: boolean;
-  onToggleTerminal?: () => void;
+  previewOpen: boolean;
+  onTogglePreview: (() => void) | null;
+  onToggleTerminal: (() => void) | null;
 }) {
   return (
     <header className="chat-header">
@@ -82,7 +105,17 @@ function ChatHeader({
       </div>
       <div className="chat-header-side">
         {branch !== null && <div className="chat-header-branch">{branch}</div>}
-        {onToggleTerminal !== undefined && (
+        {onTogglePreview !== null && (
+          <button
+            type="button"
+            className={`btn btn-ghost ${previewOpen ? "btn-active" : ""}`}
+            aria-pressed={previewOpen}
+            onClick={onTogglePreview}
+          >
+            Preview
+          </button>
+        )}
+        {onToggleTerminal !== null && (
           <button
             type="button"
             className="btn btn-ghost"
