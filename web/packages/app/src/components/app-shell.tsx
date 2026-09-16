@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { useFleet } from "../state/fleet";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
+import { emitShortcut } from "../state/shortcuts";
 import { SidebarBody } from "./sidebar-body";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
@@ -14,6 +15,10 @@ import { TerminalProvider } from "../terminal/store";
  * at phone widths. Connection states are surfaced honestly — a banner
  * covers connecting, reconnecting, and parked-needs-repair, including the
  * re-pair affordance.
+ *
+ * Global keyboard shortcuts mirror the desktop's wherever the browser
+ * allows: Mod+N creates a new chat (skipped while typing), Mod+B toggles
+ * the sidebar drawer at phone widths, and Escape closes the engine drawer.
  */
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -23,6 +28,73 @@ export function AppShell() {
   const status = useEngineStatus(session);
   const state = useConnectionState(status);
   const navigate = useNavigate();
+
+  const onNewChat = useCallback(() => {
+    if (fleet.engines.length === 0) {
+      // No engine paired: keyboard shortcut is the equivalent of the welcome
+      // "Pair an engine" button.
+      void navigate({ to: "/pair" });
+      return;
+    }
+    emitShortcut("new-chat");
+  }, [fleet.engines.length, navigate]);
+
+  const onToggleSidebar = useCallback(() => {
+    setSidebarOpen((current) => !current);
+  }, []);
+
+  const onCloseDrawer = useCallback(() => {
+    setSidebarOpen(false);
+    setDrawerOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) {
+        return;
+      }
+      if (event.altKey || event.shiftKey) {
+        return;
+      }
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        onNewChat();
+        return;
+      }
+      if (event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        onToggleSidebar();
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onNewChat, onToggleSidebar]);
+
+  // Escape closes the engine drawer; the chat-menu dialogs and the
+  // picker popover already close themselves, and the terminal eats Esc
+  // for its own key bindings.
+  useEffect(() => {
+    if (!drawerOpen && !sidebarOpen) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      onCloseDrawer();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen, sidebarOpen, onCloseDrawer]);
 
   return (
     <div className={`shell ${sidebarOpen ? "shell-sidebar-open" : ""}`}>
@@ -87,6 +159,18 @@ export function AppShell() {
       <EngineDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
+}
+
+/** True when a keyboard event would land inside a typed-into element. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 function Welcome() {

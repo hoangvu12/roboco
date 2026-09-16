@@ -58,8 +58,12 @@ function EngineRow({ engine, active, hasSession }: EngineRowProps) {
   const state = connectionState(hasSession ? status : null);
   const urgent = hasSession && snapshot !== null && snapshot.chats.loaded ? mostUrgent(chatListRows(snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, Date.now()).map((row) => row.status)) : null;
 
+  function pairAgain(): void {
+    void navigate({ to: "/pair" });
+  }
+
   return (
-    <li className={`engine-row ${active ? "engine-row-active" : ""}`}>
+    <li className={`engine-row ${active ? "engine-row-active" : ""} ${state.parked ? "engine-row-parked" : ""}`}>
       <div className="engine-row-main">
         <div className="engine-row-title">
           {urgent !== null && <StatusDot status={urgent} />}
@@ -67,10 +71,21 @@ function EngineRow({ engine, active, hasSession }: EngineRowProps) {
           {active && <span className="engine-row-badge">Active</span>}
         </div>
         <div className="engine-row-sub">
-          {engine.deviceId !== null ? `Engine ${engine.deviceId.slice(0, 8)}` : "Identity unverified"} · {state.label}
+          <span className={`engine-row-status conn ${state.className}`}>
+            <span className={`dot ${state.dot}`} aria-hidden />
+            {state.label}
+          </span>
+          <span className="engine-row-identity">
+            {engine.deviceId !== null ? `Engine ${engine.deviceId.slice(0, 8)}` : "Identity unverified"}
+          </span>
         </div>
       </div>
       <div className="engine-row-actions">
+        {state.pairable && (
+          <button type="button" className="btn btn-ghost engine-row-pair" onClick={pairAgain}>
+            Pair again
+          </button>
+        )}
         {!active && (
           <button
             type="button"

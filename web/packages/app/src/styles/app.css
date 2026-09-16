@@ -36,6 +36,36 @@ button {
   color: inherit;
 }
 
+/* Global keyboard focus ring: every interactive element gets a visible
+   outline when reached via keyboard. Mouse focus stays outline-less so
+   the rings never bleed through hover/tap state. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--rb-accent);
+  outline-offset: 2px;
+  border-radius: var(--rb-radius-control);
+}
+
+/* Buttons, links, and chips: re-establish the radius on the focus ring. */
+.btn:focus-visible,
+a:focus-visible,
+.picker-chip:focus-visible,
+.chat-row:focus-visible,
+.arch-row:focus-visible,
+.term-tab:focus-visible {
+  outline-offset: 2px;
+}
+
+/* Inline-form buttons (composer send) keep their radius on focus. */
+.composer-send:focus-visible,
+.term-tab-add:focus-visible,
+.toggle:focus-visible {
+  outline-offset: 2px;
+}
+
 /* ── Primitives ─────────────────────────────────────────────────────── */
 
 .panel {
@@ -428,6 +458,30 @@ button {
   color: var(--rb-text-faint);
   text-align: center;
   margin-top: 15%;
+}
+
+/* Chat body holds the transcript and an on-demand preview pane. At
+   desktop widths they sit side-by-side; at phone widths the preview
+   stacks beneath the transcript (the preview-panel stays at its
+   min(520px, 45%) desktop size otherwise). */
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+@media (max-width: 768px) {
+  .chat-body {
+    flex-direction: column;
+  }
+
+  .preview-panel {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--rb-border);
+    max-height: 50vh;
+  }
 }
 
 .chat-header-side {
@@ -1461,6 +1515,43 @@ button {
   display: flex;
   gap: var(--rb-space-xs);
   flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.engine-row-pair {
+  color: var(--rb-warning);
+  border-color: color-mix(in srgb, var(--rb-warning) 50%, var(--rb-border));
+}
+
+.engine-row-pair:not(:disabled):hover {
+  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+  color: var(--rb-warning);
+  border-color: var(--rb-warning);
+}
+
+.engine-row-parked {
+  border-color: color-mix(in srgb, var(--rb-danger) 35%, var(--rb-border));
+  background: color-mix(in srgb, var(--rb-danger) 4%, transparent);
+}
+
+.engine-row-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  flex-wrap: wrap;
+}
+
+.engine-row-identity {
+  color: var(--rb-text-faint);
+  font-size: 12px;
+}
+
+.engine-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
 }
 
 /* ── Files page ─────────────────────────────────────────────────────── */
@@ -4367,6 +4458,130 @@ html[data-surface="frosted"] .modal-card {
   .changes-scope-chip,
   .changes-tool {
     transition: none;
+  }
+}
+
+/* ── Phone polish — queue rows, terminal dock, topbar, banner ───────── */
+
+@media (max-width: 768px) {
+  /* The queue row's grid (text / meta / actions) gets too cramped for
+     four buttons on phones; stack the actions beneath the row and shrink
+     labels to iconography. */
+  .queue-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "text meta"
+      "actions actions";
+    row-gap: 6px;
+  }
+
+  .queue-row-text {
+    grid-area: text;
+    min-width: 0;
+  }
+
+  .queue-row-meta {
+    grid-area: meta;
+  }
+
+  .queue-row-actions {
+    grid-area: actions;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .queue-row-action {
+    height: 28px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  /* Topbar: shrink paddings, drop the wordmark to keep buttons readable. */
+  .topbar {
+    padding: 0 var(--rb-space-xs);
+    gap: var(--rb-space-xs);
+  }
+
+  .topbar .wordmark {
+    font-size: 13px;
+  }
+
+  /* Banner: stack to one row at the tightest widths so the re-pair button
+     stays reachable. */
+  .banner {
+    padding: var(--rb-space-xs) var(--rb-space-sm);
+  }
+
+  /* Connection banner detail line: let it wrap instead of truncating. */
+  .banner-detail {
+    flex-basis: 100%;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  /* Engine drawer: full-width on phones so the row actions don't wrap
+     into the engine host label. */
+  .drawer {
+    width: 100%;
+    max-height: 100vh;
+    min-height: 100vh;
+    border-radius: 0;
+    padding: var(--rb-space-md);
+  }
+
+  .drawer-backdrop {
+    padding: 0;
+  }
+
+  /* Subagent dialog: full-screen on phones. */
+  .subagent-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    padding: var(--rb-space-sm);
+  }
+
+  /* Terminal dock: keep the drag handle easy to grab, raise the
+     default height so phones aren't squeezed. */
+  .term-dock-handle {
+    height: 8px;
+    top: -4px;
+  }
+
+  /* Settings rows: stack the action button below the text on phones. */
+  .settings-row {
+    align-items: flex-start;
+  }
+
+  /* Account rows: column the side column. */
+  .settings-account-row {
+    flex-wrap: wrap;
+  }
+
+  .account-side {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  /* Connection banner keeps readable line-height on the cramped layout. */
+  .banner {
+    line-height: 1.4;
+  }
+
+  /* Chat header: stack the title and the side controls. */
+  .chat-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--rb-space-xs);
+    padding: var(--rb-space-sm);
+  }
+
+  .chat-header-side {
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 
