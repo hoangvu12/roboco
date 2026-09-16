@@ -437,9 +437,282 @@ button {
   flex: none;
 }
 
-/* ── Terminal dock ──────────────────────────────────────────────────── */
+/* ── Composer + pickers ─────────────────────────────────────────────── */
 
-.term-dock {
+.composer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-xs);
+  padding: var(--rb-space-sm) var(--rb-space-md) var(--rb-space-md);
+  background: var(--rb-shell);
+  border-top: 1px solid var(--rb-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.composer-input-wrap {
+  position: relative;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  background: var(--rb-input);
+  transition: height var(--rb-motion-collapse) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+  animation: composer-flip var(--rb-motion-collapse) var(--rb-ease-ease-out);
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  min-height: 49px;
+  max-height: 308px;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+  outline: none;
+}
+
+.composer-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.composer-input::placeholder {
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.composer-working .composer-input-wrap {
+  border-color: color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rb-space-sm);
+  min-height: 36px;
+}
+
+.composer-pickers {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.composer-pickers-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.composer-pickers-row::-webkit-scrollbar {
+  display: none;
+}
+
+.picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
+  color: var(--rb-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.picker-chip:hover {
+  background: var(--rb-hover);
+}
+
+.picker-chip-open {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+  color: var(--rb-accent);
+}
+
+.picker-chip-locked {
+  opacity: 0.7;
+}
+
+.picker-chip-label {
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  font-size: 11px;
+}
+
+.picker-chip-value {
+  font-weight: 500;
+}
+
+.picker-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--rb-dialog);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  z-index: 40;
+  animation: picker-in var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+}
+
+.picker-popover-search {
+  flex: none;
+  padding: 2px;
+}
+
+.picker-popover-input {
+  height: 30px;
+  font-size: 13px;
+}
+
+.picker-popover-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.picker-popover-empty,
+.picker-popover-error {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--rb-text-faint);
+}
+
+.picker-popover-error {
+  color: var(--rb-danger);
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rb-space-sm);
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.picker-row-highlight {
+  background: var(--rb-hover);
+}
+
+.picker-row-selected {
+  color: var(--rb-accent);
+}
+
+.picker-row-label {
+  font-weight: 500;
+}
+
+.picker-row-secondary {
+  font-size: 11px;
+  color: var(--rb-text-faint);
+  margin-left: auto;
+  text-align: right;
+  flex: none;
+}
+
+.composer-pickers-retry {
+  position: absolute;
+  bottom: -28px;
+  left: 0;
+}
+
+.composer-send {
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.composer-send-stop {
+  background: var(--rb-danger);
+  color: var(--rb-on-solid);
+}
+
+.composer-send-stop:not(:disabled):hover {
+  background: color-mix(in srgb, var(--rb-danger) 88%, var(--rb-accent-strong));
+  color: var(--rb-on-accent);
+}
+
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes composer-flip {
+  from {
+    transform: translateY(2px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .composer {
+    padding: var(--rb-space-xs) var(--rb-space-sm) var(--rb-space-sm);
+  }
+
+  .composer-input {
+    font-size: 16px;
+  }
+
+  .composer-pickers-row {
+    flex-wrap: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-input-wrap,
+  .picker-popover {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ── Terminal dock ──────────────────────────────────────────────────── */
   position: relative;
   flex: none;
   display: flex;

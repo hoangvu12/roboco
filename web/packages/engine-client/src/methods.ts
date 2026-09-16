@@ -34,6 +34,12 @@ export const POLL_AGENT_LOGIN = "PollAgentLogin";
 export const CANCEL_AGENT_LOGIN = "CancelAgentLogin";
 /** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
 export const MUTATE = "Mutate";
+/** Harness catalog for the pickers (one row per harness). */
+export const LIST_HARNESSES = "ListHarnesses";
+/** Model catalog for the picked harness (filter input drives refetch on focus). */
+export const LIST_MODELS = "ListModels";
+/** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
+export const QUEUE_COMMAND = "QueueCommand";
 /** Workspace file surface (crates/engine/src/workspace_files.rs): the space's
  *  directory tree, text/image reads, writes, and the change stream. */
 export const LIST_WORKSPACE_DIRECTORY = "ListWorkspaceDirectory";
