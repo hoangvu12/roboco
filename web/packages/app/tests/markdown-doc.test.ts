@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markdownLinkTarget, parseMarkdown, resolveWorkspacePath } from "../src/lib/markdown";
+import { markdownLinkTarget, parseMarkdown, resolveWorkspacePath } from "../src/lib/markdown-doc";
 
 describe("parseMarkdown blocks", () => {
   it("parses ATX headings and paragraphs", () => {
