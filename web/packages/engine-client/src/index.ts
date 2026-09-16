@@ -17,6 +17,7 @@ export {
   type ParkedReason,
   type WatchHandle,
   type WatchHandlers,
+  type WatchOptions,
 } from "./client";
 export {
   ReconnectBackoff,

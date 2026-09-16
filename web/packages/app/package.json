@@ -16,6 +16,8 @@
     "@roboco/proto": "workspace:*",
     "@roboco/theme": "workspace:*",
     "@tanstack/react-router": "^1.132.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

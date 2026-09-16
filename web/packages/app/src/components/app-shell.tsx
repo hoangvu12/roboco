@@ -6,6 +6,7 @@ import { useEngineStatus } from "../state/hooks";
 import { ChatList } from "./chat-list";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
+import { TerminalProvider } from "../terminal/store";
 
 /**
  * The app shell: sidebar (chat list + engine switch) beside stacked main
@@ -71,7 +72,9 @@ export function AppShell() {
                 )}
               </div>
             ) : null}
-            <Outlet />
+            <TerminalProvider>
+              <Outlet />
+            </TerminalProvider>
           </>
         )}
       </main>

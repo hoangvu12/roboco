@@ -4,6 +4,8 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { chatListRows, type ChatIndicator } from "../lib/view";
 import { StatusDot } from "../components/status-dot";
 import { chatRoute } from "../router";
+import { useTerminalStore } from "../terminal/store";
+import { TerminalDock } from "../terminal/terminal-dock";
 
 /**
  * One chat's main panel: title, live status, and the transcript region.
@@ -16,6 +18,7 @@ export function ChatPage() {
   const session = useEngineSession();
   const snapshot = useWatchSnapshot(session);
   const now = useNow(10_000);
+  const terminalStore = useTerminalStore();
 
   if (snapshot === null || !snapshot.chats.loaded) {
     return (
@@ -39,22 +42,45 @@ export function ChatPage() {
   }
   return (
     <div className="chat-page">
-      <ChatHeader title={row.chat.title ?? "New session"} status={row.status} branch={row.branch} />
+      <ChatHeader
+        title={row.chat.title ?? "New session"}
+        status={row.status}
+        branch={row.branch}
+        onToggleTerminal={() => terminalStore.toggle(chatId)}
+      />
       <div className="chat-transcript">
         <p className="chat-transcript-empty">No messages yet.</p>
       </div>
+      <TerminalDock store={terminalStore} chatId={chatId} />
     </div>
   );
 }
 
-function ChatHeader({ title, status, branch }: { title: string; status: ChatIndicator; branch: string | null }) {
+function ChatHeader({
+  title,
+  status,
+  branch,
+  onToggleTerminal,
+}: {
+  title: string;
+  status: ChatIndicator;
+  branch: string | null;
+  onToggleTerminal?: () => void;
+}) {
   return (
     <header className="chat-header">
       <div className="chat-header-title">
         <StatusDot status={status} />
         <h1>{title}</h1>
       </div>
-      {branch !== null && <div className="chat-header-branch">{branch}</div>}
+      <div className="chat-header-side">
+        {branch !== null && <div className="chat-header-branch">{branch}</div>}
+        {onToggleTerminal !== undefined && (
+          <button type="button" className="btn btn-ghost" title="Toggle terminal (Ctrl+J)" onClick={onToggleTerminal}>
+            Terminal
+          </button>
+        )}
+      </div>
     </header>
   );
 }

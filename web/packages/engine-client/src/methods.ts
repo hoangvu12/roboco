@@ -18,3 +18,13 @@ export const REVOKE_PAIRING_SESSION = "RevokePairingSession";
 export const GET_REMOTE_ACCESS = "GetRemoteAccess";
 /** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
 export const MUTATE = "Mutate";
+
+// Terminals (crates/engine/src/rpc.rs §3.4): OpenTerminal → TerminalSession,
+// SubscribeTerminal streams TerminalEvent (replay then live tail, no
+// readiness ack — the first item IS the ack), Write/Resize take the
+// terminal id, Close kills the PTY.
+export const OPEN_TERMINAL = "OpenTerminal";
+export const SUBSCRIBE_TERMINAL = "SubscribeTerminal";
+export const WRITE_TERMINAL = "WriteTerminal";
+export const RESIZE_TERMINAL = "ResizeTerminal";
+export const CLOSE_TERMINAL = "CloseTerminal";

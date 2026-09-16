@@ -424,6 +424,177 @@ button {
   margin-top: 15%;
 }
 
+.chat-header-side {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  flex: none;
+}
+
+/* ── Terminal dock ──────────────────────────────────────────────────── */
+
+.term-dock {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--rb-term-bg);
+  border-top: 1px solid var(--rb-border);
+}
+
+/* The top-edge drag handle: resize the dock (160 px … 55 % viewport). */
+.term-dock-handle {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 5;
+}
+
+.term-tabbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  height: 40px;
+  padding: 0 6px 0 8px;
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.term-tabstrip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.term-tabstrip::-webkit-scrollbar {
+  display: none;
+}
+
+.term-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 118px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  cursor: pointer;
+  user-select: none;
+  transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.term-tab:hover {
+  background: var(--rb-hover);
+}
+
+.term-tab-active {
+  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  color: var(--rb-text);
+}
+
+.term-tab-dragging {
+  transition: none;
+  z-index: 2;
+  position: relative;
+}
+
+.term-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-tab-exited {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rb-text-faint);
+}
+
+.term-tab-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.term-tab-active .term-tab-close {
+  visibility: visible;
+}
+
+.term-tab-close:hover {
+  background: color-mix(in srgb, var(--rb-text) 9%, transparent);
+}
+
+.term-tab-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.term-tab-add:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.term-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.term-host {
+  position: absolute;
+  inset: 0;
+}
+
+.term-host-hidden {
+  display: none;
+}
+
+/* 12 px grid padding, like the desktop panel; the fit addon subtracts the
+   .xterm element's own padding when measuring, so it belongs here. */
+.term-host .xterm {
+  padding: 12px;
+  height: 100%;
+}
+
+.term-host .xterm-viewport {
+  background: var(--rb-term-bg) !important;
+}
+
 /* ── Empty states, pairing page ─────────────────────────────────────── */
 
 .empty-state {
