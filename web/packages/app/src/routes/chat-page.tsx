@@ -6,6 +6,7 @@ import { chatPageRow, type ChatIndicator } from "../lib/view";
 import { StatusDot } from "../components/status-dot";
 import { TranscriptView } from "../components/transcript";
 import { PreviewPanel } from "../components/preview-panel";
+import { Composer } from "../components/composer";
 import { useTerminalStore } from "../terminal/store";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { chatRoute } from "../router";
@@ -13,8 +14,9 @@ import { chatRoute } from "../router";
 /**
  * One chat's main panel: title, live status, the streaming transcript
  * (`../components/transcript.tsx`), the on-demand preview pane (right-dock
- * on wide viewports, stacked on phones), and the terminal dock (Ctrl+J).
- * Archived chats stay open and say so in the header.
+ * on wide viewports, stacked on phones), the composer (docks at phone
+ * widths), and the terminal dock (Ctrl+J). Archived chats stay open and
+ * say so in the header.
  */
 export function ChatPage() {
   const { chatId } = useParams({ from: chatRoute.id });
@@ -26,6 +28,15 @@ export function ChatPage() {
   useEffect(() => {
     setPreviewOpen(false);
   }, [chatId]);
+
+  // Lazily fetch the harness catalog once per chat page open so the
+  // composer chips aren't blank behind a stale "Loading…" pill.
+  useEffect(() => {
+    if (session === null) {
+      return;
+    }
+    void session.catalog.loadHarnesses();
+  }, [session, chatId]);
 
   if (snapshot === null || !snapshot.chats.loaded) {
     return (
@@ -74,6 +85,7 @@ export function ChatPage() {
         )}
         {previewOpen && <PreviewPanel chatId={chatId} onClose={() => setPreviewOpen(false)} />}
       </div>
+      {session !== null && <Composer session={session} chat={row.chat} catalog={session.catalog} />}
       <TerminalDock store={terminalStore} chatId={chatId} />
     </div>
   );

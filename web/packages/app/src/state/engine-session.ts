@@ -2,6 +2,7 @@ import type { EngineStatus } from "@roboco/engine-client";
 import { EngineClient, EngineWatchCache } from "@roboco/engine-client";
 import type { StoredEngine } from "../lib/engine-store";
 import { engineWsEndpoint } from "../lib/engine-store";
+import { PickerCatalog } from "./picker-catalog";
 
 /**
  * One supervised connection: the EngineClient and its watch cache for one
@@ -14,6 +15,8 @@ export interface EngineSession {
   readonly engine: StoredEngine;
   readonly client: EngineClient;
   readonly cache: EngineWatchCache;
+  /** Picker catalog (harnesses + models) for the composer. Disposed alongside the session. */
+  readonly catalog: PickerCatalog;
 }
 
 export function engineSessionKey(engine: StoredEngine): string {
@@ -27,11 +30,13 @@ export function createEngineSession(engine: StoredEngine): EngineSession {
     expectedDeviceId: engine.deviceId ?? undefined,
   });
   const cache = new EngineWatchCache(client);
+  const catalog = new PickerCatalog(client);
   client.connect();
-  return { engine, client, cache };
+  return { engine, client, cache, catalog };
 }
 
 export function disposeEngineSession(session: EngineSession): void {
   session.cache.dispose();
+  session.catalog.dispose();
   session.client.close();
 }
