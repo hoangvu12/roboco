@@ -188,6 +188,12 @@ button {
   border-bottom: 1px solid var(--rb-border);
 }
 
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+}
+
 .sidebar-footer {
   border-top: 1px solid var(--rb-border);
 }
@@ -590,6 +596,409 @@ button {
   flex: none;
 }
 
+/* ── Files page ─────────────────────────────────────────────────────── */
+
+.files-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  padding: var(--rb-space-xs) var(--rb-space-md);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.files-space-picker {
+  width: auto;
+  max-width: 40vw;
+}
+
+.files-toggle-on {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  color: var(--rb-text);
+}
+
+.files-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.files-tree-pane {
+  flex: none;
+  width: 286px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+}
+
+.files-tree-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-search {
+  flex: none;
+  padding: var(--rb-space-sm);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.files-watch-note {
+  flex: none;
+  margin: 0;
+  padding: var(--rb-space-xs) var(--rb-space-sm);
+  font-size: 12px;
+  color: var(--rb-warning);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.files-tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: var(--rb-space-xs) var(--rb-space-xs);
+}
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 27px;
+  padding: 0 var(--rb-space-sm) 0 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.files-row:hover {
+  background: var(--rb-hover);
+}
+
+.files-row-active,
+button.files-row-active:hover {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+}
+
+.files-chevron {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--rb-text-faint);
+  font-size: 11px;
+  transition: transform var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.files-chevron-open {
+  transform: rotate(90deg);
+}
+
+.files-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-row-ignored {
+  color: var(--rb-text-faint);
+}
+
+.files-row-size,
+.files-row-path {
+  flex: none;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.files-row-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  max-width: 55%;
+}
+
+.files-row-note {
+  color: var(--rb-text-faint);
+  cursor: default;
+}
+
+.files-row-action {
+  color: var(--rb-accent);
+}
+
+.files-row-error {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  color: var(--rb-danger);
+  cursor: default;
+}
+
+.files-viewer-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-viewer-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  height: var(--rb-header-height);
+  padding: 0 var(--rb-space-md);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.files-back {
+  display: none;
+}
+
+.files-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.files-crumb-sep {
+  margin: 0 4px;
+  color: var(--rb-text-faint);
+}
+
+.files-dirty {
+  color: var(--rb-warning);
+}
+
+.files-viewer-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.files-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  flex-wrap: wrap;
+  padding: var(--rb-space-xs) var(--rb-space-md);
+  font-size: 13px;
+  color: var(--rb-text-muted);
+  background: var(--rb-raised);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.files-banner-danger {
+  background: var(--rb-danger-muted);
+  color: var(--rb-text);
+}
+
+.files-banner-warning {
+  background: var(--rb-warning-muted);
+  color: var(--rb-text);
+}
+
+.files-banner-title {
+  font-weight: 600;
+}
+
+.files-banner-detail {
+  flex: 1;
+  min-width: 12ch;
+}
+
+.files-viewer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-note {
+  margin: auto;
+  padding: var(--rb-space-lg);
+  color: var(--rb-text-faint);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.files-editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: var(--rb-space-md) var(--rb-space-lg);
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 18px;
+  tab-size: 4;
+  white-space: pre;
+}
+
+.files-text-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--rb-space-md) var(--rb-space-lg);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: pre;
+}
+
+.files-markdown-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rb-space-md) var(--rb-space-lg);
+}
+
+.files-image-body {
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: var(--rb-space-md);
+}
+
+.files-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  margin: auto;
+}
+
+/* Markdown preview (the desktop's rendered markdown blocks) */
+.markdown {
+  max-width: 46rem;
+  line-height: 1.6;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: var(--rb-space-md) 0 var(--rb-space-sm);
+  line-height: 1.3;
+}
+
+.markdown h1:first-child,
+.markdown h2:first-child,
+.markdown p:first-child {
+  margin-top: 0;
+}
+
+.markdown p {
+  margin: var(--rb-space-sm) 0;
+}
+
+.markdown code {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  background: var(--rb-raised);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.markdown-code {
+  overflow-x: auto;
+  background: var(--rb-raised);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-control);
+  padding: var(--rb-space-sm) var(--rb-space-md);
+}
+
+.markdown-code code {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown blockquote {
+  margin: var(--rb-space-sm) 0;
+  padding-left: var(--rb-space-md);
+  border-left: 3px solid var(--rb-border-strong);
+  color: var(--rb-text-muted);
+}
+
+.markdown ul,
+.markdown ol {
+  margin: var(--rb-space-sm) 0;
+  padding-left: var(--rb-space-lg);
+}
+
+.markdown table {
+  border-collapse: collapse;
+  margin: var(--rb-space-sm) 0;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--rb-border);
+  padding: 4px var(--rb-space-sm);
+  text-align: left;
+}
+
+.markdown li > p {
+  margin: 0;
+}
+
+.markdown a {
+  color: var(--rb-accent);
+}
+
+.markdown-image {
+  max-width: 100%;
+}
+
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--rb-border);
+  margin: var(--rb-space-md) 0;
+}
+
 /* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
 
 @media (max-width: 768px) {
@@ -638,6 +1047,38 @@ button {
 
   .shell-sidebar-open .sidebar-backdrop {
     display: block;
+  }
+
+  /* Files: tree and viewer stack; opening a file swaps tree for viewer. */
+  .files-body {
+    position: relative;
+  }
+
+  .files-tree-pane {
+    width: 100%;
+    border-right: none;
+  }
+
+  .files-viewer-pane {
+    display: none;
+  }
+
+  .files-page-open .files-tree-pane {
+    display: none;
+  }
+
+  .files-page-open .files-viewer-pane {
+    display: flex;
+  }
+
+  .files-back {
+    display: inline-flex;
+  }
+
+  .files-space-picker {
+    max-width: none;
+    flex: 1;
+    min-width: 0;
   }
 }
 

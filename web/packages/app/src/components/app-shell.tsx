@@ -28,9 +28,14 @@ export function AppShell() {
       <aside className="sidebar panel">
         <header className="sidebar-header">
           <span className="wordmark">Roboco</span>
-          <button type="button" className="btn btn-ghost" onClick={() => setDrawerOpen(true)}>
-            Engines
-          </button>
+          <span className="sidebar-header-actions">
+            <Link to="/files" className="btn btn-ghost">
+              Files
+            </Link>
+            <button type="button" className="btn btn-ghost" onClick={() => setDrawerOpen(true)}>
+              Engines
+            </button>
+          </span>
         </header>
         <nav className="sidebar-list" aria-label="Chats">
           <ChatList />

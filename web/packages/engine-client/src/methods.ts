@@ -18,3 +18,12 @@ export const REVOKE_PAIRING_SESSION = "RevokePairingSession";
 export const GET_REMOTE_ACCESS = "GetRemoteAccess";
 /** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
 export const MUTATE = "Mutate";
+/** Workspace file surface (crates/engine/src/workspace_files.rs): the space's
+ *  directory tree, text/image reads, writes, and the change stream. */
+export const LIST_WORKSPACE_DIRECTORY = "ListWorkspaceDirectory";
+export const SEARCH_WORKSPACE_FILES = "SearchWorkspaceFiles";
+export const READ_WORKSPACE_FILE = "ReadWorkspaceFile";
+export const READ_WORKSPACE_IMAGE = "ReadWorkspaceImage";
+export const WRITE_WORKSPACE_FILE = "WriteWorkspaceFile";
+/** The one workspace stream; items are `WorkspaceFileChanges` frames. */
+export const WATCH_WORKSPACE_FILES = "WatchWorkspaceFiles";
