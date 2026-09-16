@@ -24,7 +24,7 @@ use roboco_proto::{
 use roboco_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
-use crate::motion::AnimationExt;
+use crate::motion::{AnimationExt, MotionSpecExt as _};
 use crate::popover::{self, Popup};
 use crate::settings::{
     self, GitHistoryAuthorDisplay, GitHistoryColumn, GitHistoryColumnOrder, GitHistoryColumnWidths,

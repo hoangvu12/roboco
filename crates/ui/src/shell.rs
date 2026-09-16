@@ -30,7 +30,9 @@ use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent
 use crate::files::{FilesCloseDisposition, FilesEvent, FilesSurface, WorkspacePathDrag};
 use crate::icons::{self, icon};
 use crate::loaders;
-use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
+use crate::motion::{
+    self, AnimationExt as _, MotionSpec, MotionSpecExt as _, RESIZE, SPLASH_OUT, TAB_SLIDE,
+};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::accounts::AccountsPage;

@@ -1,0 +1,4 @@
+# Generated web theme artifact: byte-stable across platforms so the
+# `roboco-theme-export --check` freshness gate compares identically on
+# Windows dev machines and Linux CI.
+web/packages/theme/src/generated/* text eol=lf

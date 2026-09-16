@@ -61,6 +61,9 @@ Still zeron-branded on purpose:
 - `windows.yml` — Windows tests (PR + push)
 - `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions, linux browser)
 - `preview-tests.yml` — ubuntu (preview/proto tests)
+- `web-codegen.yml` — ubuntu: `wiregen --check` wire-type freshness gate + `pnpm -r build` typecheck of `web/`
+- `theme-artifact.yml` — web theme artifact freshness gate (`roboco-theme-export --check`) + `@roboco/theme` typecheck
+- `web-engine-client.yml` — ubuntu: `@roboco/engine-client` vitest suites (codec, scripted fake server, conformance against the real `web_conformance` engine example)
 - `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
 - Keep CI focused on Roboco engine/app builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports.
 
@@ -70,7 +73,7 @@ Like zeron/Zeron: lowercase `roboco` for repo, crates, binary, package names, en
 
 ## Windows development
 
-See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`).
+See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`). Builds run through sccache automatically; when creating a worktree, add its root to `basedirs` in `%APPDATA%\Mozilla\sccache\config\config` and restart the server (`sccache --stop-server; sccache --start-server`) or dependency cache hits drop sharply.
 
 ## Agent skills
 

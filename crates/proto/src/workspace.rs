@@ -1,6 +1,7 @@
 //! Workspace lifecycle types shared by the engine and its clients.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Protocol features are advertised explicitly because personal/integration
 /// builds may share a semver with upstream while exposing a different RPC and
@@ -12,6 +13,10 @@ pub mod capabilities {
     pub const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1: &str =
         "message-queue-clean-attachment-text-v1";
     pub const MESSAGE_QUEUE_EDIT_LEASE_V1: &str = "message-queue-edit-lease-v1";
+    /// The engine serves the browser web client (ADR 0006): embedded pages at
+    /// the remote listener root, CORS-open pairing redeem, and first-frame
+    /// `Auth` WebSocket authentication.
+    pub const WEB_CLIENT: &str = "web-client";
 
     pub const CURRENT: &[&str] = &[
         MESSAGE_QUEUE_V1,
@@ -19,6 +24,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_ATTACHMENTS_V1,
         MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
         MESSAGE_QUEUE_EDIT_LEASE_V1,
+        WEB_CLIENT,
     ];
 
     pub fn current() -> Vec<String> {
@@ -30,7 +36,7 @@ pub mod capabilities {
 ///
 /// Authentication can change while a runtime is alive, but its workspace scope
 /// cannot. Switching scopes requires assembling a new runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceScope {
     Local,
@@ -39,7 +45,7 @@ pub enum WorkspaceScope {
 }
 
 /// Stable information about the engine runtime reached by a client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineInfo {
     pub device_id: String,
@@ -91,7 +97,8 @@ mod tests {
                     "message-queue-actions-v1",
                     "message-queue-attachments-v1",
                     "message-queue-clean-attachment-text-v1",
-                    "message-queue-edit-lease-v1"
+                    "message-queue-edit-lease-v1",
+                    "web-client"
                 ],
             })
         );

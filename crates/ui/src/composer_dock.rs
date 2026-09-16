@@ -9,10 +9,16 @@ use gpui::{
     AnyElement, App, Bounds, Element, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
     Pixels, Window, point, px,
 };
+use roboco_proto::motion::{
+    DOCK_GLIDE_DOCK_SECONDS, DOCK_GLIDE_SETTLE_POSITION, DOCK_GLIDE_SETTLE_VELOCITY,
+    DOCK_GLIDE_TIME_CONSTANTS, DOCK_GLIDE_UNDOCK_SECONDS,
+};
 
 /// Critically damped motion: no oscillation, and both position and velocity
 /// survive a new target. Twelve time constants settle within a fraction of a
-/// pixel over the intended 420/470ms handoff, even across a large window.
+/// pixel over the intended 420/470ms handoff, even across a large window. The
+/// parameters live in `roboco_proto::motion` (`DOCK_GLIDE_*`) so the web
+/// client glides identically.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Glide {
     pub value: f32,
@@ -31,7 +37,7 @@ impl Glide {
 
     pub fn advance(&mut self, target: f32, seconds: f32, duration: f32) {
         self.target = target;
-        let omega = 12.0 / duration;
+        let omega = DOCK_GLIDE_TIME_CONSTANTS / duration;
         let displacement = self.value - target;
         let c = self.velocity + omega * displacement;
         let decay = (-omega * seconds).exp();
@@ -43,7 +49,8 @@ impl Glide {
     }
 
     fn active(&self) -> bool {
-        (self.value - self.target).abs() > 0.0005 || self.velocity.abs() > 0.005
+        (self.value - self.target).abs() > DOCK_GLIDE_SETTLE_POSITION
+            || self.velocity.abs() > DOCK_GLIDE_SETTLE_VELOCITY
     }
 }
 
@@ -305,7 +312,11 @@ impl DockState {
 }
 
 fn duration(docked: bool) -> f32 {
-    (if docked { 0.420 } else { 0.470 }) * crate::motion::speed_scale()
+    (if docked {
+        DOCK_GLIDE_DOCK_SECONDS
+    } else {
+        DOCK_GLIDE_UNDOCK_SECONDS
+    }) * crate::motion::speed_scale()
 }
 
 pub(crate) type SharedDock = Rc<RefCell<DockState>>;

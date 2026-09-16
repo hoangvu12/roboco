@@ -1,0 +1,15 @@
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { RouterProvider } from "@tanstack/react-router";
+import "@roboco/theme/fonts.css";
+import "./styles/app.css";
+import { initAppearance } from "./state/appearance";
+import { router } from "./router";
+
+initAppearance();
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <RouterProvider router={router} />
+  </StrictMode>,
+);
