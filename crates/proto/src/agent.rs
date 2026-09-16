@@ -1,8 +1,9 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessId {
     ClaudeCode,
@@ -24,7 +25,7 @@ pub enum HarnessId {
     Mock,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningLevel {
     Minimal,
@@ -40,7 +41,7 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxLevel {
     ReadOnly,
@@ -48,7 +49,7 @@ pub enum SandboxLevel {
     DangerFullAccess,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum SteeringMode {
     /// Steer delivered at the next step boundary within the live turn.
@@ -57,7 +58,7 @@ pub enum SteeringMode {
     TurnBoundary,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
     pub id: String,
@@ -72,7 +73,7 @@ pub struct Model {
     pub options: Vec<ModelOption>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     pub id: String,
@@ -81,14 +82,14 @@ pub struct ModelOption {
     pub default_choice: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOptionChoice {
     pub id: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {
     pub prompt: String,
@@ -102,6 +103,7 @@ pub struct RunRequest {
     pub reasoning: Option<ReasoningLevel>,
     /// Harness-specific option selections (option id -> choice id), JSON round-tripped.
     #[serde(default)]
+    #[ts(type = "Record<string, unknown>")]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
     pub sandbox: SandboxLevel,
@@ -130,7 +132,7 @@ pub struct RunRequest {
 /// blocking CreateWorktree RPC — so the send path stays durable: a lost relay
 /// frame can't wedge the composer on "Sending…" while the session runs anyway
 /// (2026-08-18 user report).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeSpec {
     /// The repo whose worktree to create (the space's folder on the host).
@@ -148,7 +150,7 @@ pub struct WorktreeSpec {
 pub const LIVE_PLAN_TOOL_ID: &str = "acp-plan";
 
 /// A decoded tool invocation, reduced to the fields each kind renders.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolCall {
     Exec {
@@ -160,23 +162,23 @@ pub enum ToolCall {
     WriteFile {
         path: String,
         /// Full content; STRIPPED by the render-parts policy before entering the doc.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<String>,
     },
     EditFile {
         path: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         old_string: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         new_string: Option<String>,
     },
     ApplyPatch {
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
     Search {
         pattern: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
     Glob {
@@ -184,7 +186,7 @@ pub enum ToolCall {
     },
     WebFetch {
         url: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
     },
     WebSearch {
@@ -197,12 +199,14 @@ pub enum ToolCall {
     Mcp {
         server: String,
         tool: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(type = "unknown")]
         input: Option<serde_json::Value>,
     },
     Unknown {
         name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(type = "unknown")]
         input: Option<serde_json::Value>,
     },
 }
@@ -268,7 +272,7 @@ pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
     "subagent_type",
 ];
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
     pub text: String,
@@ -277,7 +281,7 @@ pub struct TodoItem {
 
 /// A slash command advertised by the agent (ACP `availableCommands`): typed as
 /// `/name` at the start of the composer, sent to the agent as prompt text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommand {
     pub name: String,
@@ -290,7 +294,7 @@ pub struct SlashCommand {
 
 /// A file modification carried inline on a tool result (ACP
 /// `ToolCallContent::Diff`). `old_text: None` means a new file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiff {
     pub path: String,
@@ -299,7 +303,7 @@ pub struct ToolDiff {
     pub new_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInputQuestion {
     pub id: String,
@@ -310,14 +314,14 @@ pub struct UserInputQuestion {
     pub multi_select: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInputAnswer {
     pub question_id: String,
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum DoneStatus {
     Completed,
@@ -328,7 +332,7 @@ pub enum DoneStatus {
 /// The normalized streaming event every harness emits.
 ///
 /// Mirrors roboco's `AgentEvent` tagged enum.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
@@ -561,10 +565,33 @@ mod tests {
             "\"claude-code\""
         );
     }
+
+    /// The enum-level `rename_all = "camelCase"` renames VARIANTS only;
+    /// struct-variant fields keep their snake_case spelling on the wire (there
+    /// is no `rename_all_fields` here). Pin the quirk: ts-rs mirrors it, and a
+    /// future `rename_all_fields` addition would be a wire break, not a fix.
+    #[test]
+    fn tool_call_variant_fields_keep_snake_case() {
+        let call = ToolCall::EditFile {
+            path: "a.rs".into(),
+            old_string: Some("x".into()),
+            new_string: None,
+        };
+        let value = serde_json::to_value(&call).unwrap();
+        assert_eq!(value["kind"], "editFile");
+        assert_eq!(value["old_string"], "x");
+        assert!(value.get("newString").is_none());
+        assert!(value.get("new_string").is_none()); // None is skipped entirely
+        assert_eq!(
+            serde_json::from_value::<ToolCall>(value).unwrap(),
+            call,
+            "absent optional fields deserialize as None"
+        );
+    }
 }
 
 /// Host-owned context snapshot, replicated with the chat document.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsage {
     pub tokens: Option<u64>,

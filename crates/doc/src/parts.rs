@@ -4,6 +4,7 @@
 //! `packages/session-doc/src/{render-parts,messages}.ts`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use roboco_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
 
@@ -69,7 +70,7 @@ pub fn summarize_tool_output(text: &str) -> Option<String> {
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
 /// only because the claude harness emits none. Full diff text lives in the
 /// sidecar behind `diff_ref`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiffStat {
     pub path: String,
@@ -102,7 +103,7 @@ pub fn diff_stat(diff: &ToolDiff) -> ToolDiffStat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageStatus {
     Streaming,
@@ -111,7 +112,7 @@ pub enum MessageStatus {
 }
 
 /// Lifecycle of a spawned subagent, carried on its spawn chip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum SubagentStatus {
     Running,
@@ -120,7 +121,7 @@ pub enum SubagentStatus {
 }
 
 /// One rendered part of an assistant message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePart {
     Text {

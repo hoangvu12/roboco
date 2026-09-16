@@ -1,6 +1,7 @@
 //! Workspace lifecycle types shared by the engine and its clients.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Protocol features are advertised explicitly because personal/integration
 /// builds may share a semver with upstream while exposing a different RPC and
@@ -35,7 +36,7 @@ pub mod capabilities {
 ///
 /// Authentication can change while a runtime is alive, but its workspace scope
 /// cannot. Switching scopes requires assembling a new runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceScope {
     Local,
@@ -44,7 +45,7 @@ pub enum WorkspaceScope {
 }
 
 /// Stable information about the engine runtime reached by a client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineInfo {
     pub device_id: String,
