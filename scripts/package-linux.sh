@@ -6,6 +6,8 @@
 #
 # Usage: scripts/package-linux.sh
 # Env:   PROFILE=debug for a fast unoptimized package (CI smoke); default release.
+#        SKIP_WEB_BUILD=1 to skip the pnpm build step (use a pre-existing
+#        web/packages/app/dist or set ROBOCO_WEB_DIST to point elsewhere).
 
 set -euo pipefail
 
@@ -19,6 +21,16 @@ STAGE="$OUT_DIR/roboco-$VERSION-linux-$ARCH"
 TARBALL="$STAGE.tar.gz"
 
 cd "$ROOT"
+# The engine embeds the built web client (rust-embed, staged by
+# crates/engine/build.rs). Build it before cargo so the embed has bytes
+# to bake. Skippable for CI caches that already have a fresh dist.
+if [[ "${SKIP_WEB_BUILD:-0}" != "1" ]]; then
+  command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required to build the embedded web client (or set SKIP_WEB_BUILD=1)" >&2; exit 1; }
+  ( cd "$ROOT/web" && corepack enable >/dev/null 2>&1 || true )
+  ( cd "$ROOT/web" && pnpm install --frozen-lockfile )
+  ( cd "$ROOT/web" && pnpm --filter "@roboco/app" run build )
+fi
+
 if [[ "$PROFILE" == "release" ]]; then
   cargo build --release -p roboco
   BIN="$ROOT/target/release/roboco"

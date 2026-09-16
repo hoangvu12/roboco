@@ -114,7 +114,9 @@ async fn remote_listener_serves_embedded_pages_without_a_session() {
     let (local_base, local_task) = local_listener(dir.path(), &core).await;
     let http = reqwest::Client::new();
     // The app shell must load before pairing, so no credential is required.
-    for (path, marker) in [("/", "roboco.credential"), ("/pair", "/pairing/redeem")] {
+    // Markers match the staged Vite build as well as the hand-written
+    // debug-only placeholders, so the test is green on a clean checkout.
+    for (path, marker) in [("/", "<title>Roboco</title>"), ("/pair", "Pair this browser")] {
         let response = http
             .get(format!("http://{}{path}", remote.address))
             .send()
