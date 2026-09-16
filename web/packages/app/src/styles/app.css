@@ -1,0 +1,648 @@
+/*
+ * The Roboco web client — every color, spacing, radius, and easing comes
+ * from the --rb-* custom properties @roboco/theme installs on <html>
+ * (generated from the same Rust sources the desktop compiles). No literal
+ * colors here except the faint ink washes derived from tokens.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+code,
+.mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── Primitives ─────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--rb-shell);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-panel);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  padding: 4px 10px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-solid {
+  background: var(--rb-solid);
+  color: var(--rb-on-solid);
+}
+
+.btn-solid:not(:disabled):hover {
+  background: var(--rb-accent-strong);
+  color: var(--rb-on-accent);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--rb-text-muted);
+  border-color: var(--rb-border);
+}
+
+.btn-ghost:not(:disabled):hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--rb-danger);
+  border-color: var(--rb-danger-muted);
+}
+
+.input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--rb-input);
+  color: var(--rb-text);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-control);
+  font: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--rb-accent);
+}
+
+.form-error {
+  margin: 0;
+  color: var(--rb-danger);
+  font-size: 13px;
+}
+
+/* ── Status dots ────────────────────────────────────────────────────── */
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-block;
+}
+
+.dot-working {
+  background: color-mix(in srgb, var(--rb-activity) 55%, transparent);
+}
+
+.dot-awaitingInput {
+  background: color-mix(in srgb, var(--rb-accent) 60%, transparent);
+}
+
+.dot-errored {
+  background: color-mix(in srgb, var(--rb-danger) 65%, transparent);
+}
+
+.dot-completed {
+  background: color-mix(in srgb, var(--rb-success) 90%, transparent);
+}
+
+.dot-idle {
+  background: color-mix(in srgb, var(--rb-text) 14%, transparent);
+}
+
+.dot-connected {
+  background: var(--rb-success);
+}
+
+.dot-connecting,
+.dot-reconnecting {
+  background: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+.dot-parked,
+.dot-closed {
+  background: var(--rb-danger);
+}
+
+/* ── Shell layout ───────────────────────────────────────────────────── */
+
+.shell {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 288px 1fr;
+  background: var(--rb-bg);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 0;
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+}
+
+.sidebar-header,
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rb-space-sm);
+  padding: var(--rb-space-sm) var(--rb-space-md);
+  flex: none;
+}
+
+.sidebar-header {
+  height: var(--rb-header-height);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--rb-border);
+}
+
+.wordmark {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rb-space-xs) var(--rb-space-sm);
+}
+
+.sidebar-note {
+  margin: var(--rb-space-md);
+  color: var(--rb-text-faint);
+  font-size: 13px;
+}
+
+.sidebar-note-error {
+  color: var(--rb-danger);
+}
+
+.main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.topbar {
+  display: none;
+}
+
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--rb-text-muted);
+  min-width: 0;
+}
+
+.conn-connected {
+  color: var(--rb-success);
+}
+
+.conn-parked,
+.conn-closed {
+  color: var(--rb-danger);
+}
+
+.conn-reconnecting,
+.conn-connecting {
+  color: var(--rb-text-muted);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  flex-wrap: wrap;
+  padding: var(--rb-space-xs) var(--rb-space-md);
+  background: var(--rb-raised);
+  border-bottom: 1px solid var(--rb-border);
+  font-size: 13px;
+}
+
+.banner-alert {
+  background: var(--rb-danger-muted);
+}
+
+.banner-detail {
+  color: var(--rb-text-faint);
+  flex: 1;
+  min-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Chat list ──────────────────────────────────────────────────────── */
+
+.chat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px var(--rb-space-sm);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--rb-text);
+  cursor: pointer;
+}
+
+.chat-row:hover {
+  background: var(--rb-hover);
+}
+
+.chat-row-active {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+}
+
+.chat-row-active:hover {
+  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+}
+
+.chat-row-line {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.chat-row-project {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text-faint);
+}
+
+.chat-row-corner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+}
+
+.corner-idle {
+  color: var(--rb-text-faint);
+}
+
+.corner-working {
+  color: color-mix(in srgb, var(--rb-activity) 70%, var(--rb-text));
+}
+
+.corner-awaitingInput {
+  color: color-mix(in srgb, var(--rb-accent) 75%, var(--rb-text));
+}
+
+.corner-errored {
+  color: color-mix(in srgb, var(--rb-danger) 80%, var(--rb-text));
+}
+
+.corner-completed {
+  color: color-mix(in srgb, var(--rb-success) 85%, var(--rb-text));
+}
+
+.chat-row-title {
+  font-size: 13px;
+  line-height: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-row-branch {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--rb-text-faint);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Chat page (main panel) ─────────────────────────────────────────── */
+
+.chat-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-header {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--rb-space-md);
+  padding: var(--rb-space-sm) var(--rb-space-lg);
+  border-bottom: 1px solid var(--rb-border);
+}
+
+.chat-header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-width: 0;
+}
+
+.chat-header-title h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-header-branch {
+  color: var(--rb-text-faint);
+  font-size: 12px;
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+.chat-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--rb-space-lg);
+}
+
+.chat-transcript-empty {
+  color: var(--rb-text-faint);
+  text-align: center;
+  margin-top: 15%;
+}
+
+/* ── Empty states, pairing page ─────────────────────────────────────── */
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rb-space-md);
+  color: var(--rb-text-faint);
+}
+
+.empty-state h1 {
+  margin: 0;
+  color: var(--rb-text);
+}
+
+.pair-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--rb-space-md);
+  max-width: 26rem;
+  margin: 0 auto;
+  padding: var(--rb-space-lg);
+}
+
+.pair-page h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.pair-status {
+  color: var(--rb-text-muted);
+  margin: 0;
+}
+
+.pair-form,
+.add-engine {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-sm);
+}
+
+.add-engine-label {
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.pair-hint {
+  color: var(--rb-text-faint);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* ── Engine drawer ──────────────────────────────────────────────────── */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--rb-overlay) 70%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh var(--rb-space-md) var(--rb-space-md);
+  z-index: 40;
+}
+
+.drawer {
+  width: min(28rem, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-md);
+  padding: var(--rb-space-md);
+  background: var(--rb-dialog);
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawer-header h2 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.drawer-note {
+  margin: 0;
+  color: var(--rb-text-faint);
+  font-size: 13px;
+}
+
+.engine-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-xs);
+}
+
+.engine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  padding: var(--rb-space-sm);
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+}
+
+.engine-row-active {
+  border-color: var(--rb-accent);
+  background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
+}
+
+.engine-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.engine-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.engine-row-host {
+  font-weight: 600;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engine-row-badge {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--rb-on-accent);
+  background: var(--rb-accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.engine-row-sub {
+  font-size: 12px;
+  color: var(--rb-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engine-row-actions {
+  display: flex;
+  gap: var(--rb-space-xs);
+  flex: none;
+}
+
+/* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
+
+@media (max-width: 768px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  .topbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--rb-space-sm);
+    height: var(--rb-header-height);
+    padding: 0 var(--rb-space-sm);
+    background: var(--rb-shell);
+    border-bottom: 1px solid var(--rb-border);
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(20rem, 85vw);
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+    border-right: 1px solid var(--rb-border);
+    background: var(--rb-shell);
+  }
+
+  .shell-sidebar-open .sidebar {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
+  }
+
+  .shell-sidebar-open .sidebar-backdrop {
+    display: block;
+  }
+}
+
+@media (min-width: 769px) {
+  .sidebar-backdrop {
+    display: none;
+  }
+}
