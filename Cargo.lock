@@ -7493,6 +7493,7 @@ dependencies = [
  "roboco-sync",
  "roboco-update",
  "rusqlite",
+ "rust-embed",
  "serde",
  "serde_json",
  "sha2",

@@ -35,6 +35,7 @@ pub mod spaces;
 pub mod terminals;
 pub mod titles;
 pub mod uploads;
+mod web;
 pub mod workspace_files;
 pub mod workspace_host;
 
