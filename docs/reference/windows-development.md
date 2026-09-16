@@ -17,6 +17,21 @@ Close the app before rebuilding. For release builds, use
 `cargo build --release --locked -p roboco`. If shader compiler discovery fails,
 set `GPUI_FXC_PATH` to the Windows SDK's `fxc.exe`.
 
+## Build caching
+
+Rust compilation goes through
+[sccache](https://github.com/mozilla/sccache), wired user-globally in
+`%USERPROFILE%\.cargo\config.toml` (`build.rustc-wrapper`) rather than in the
+repo. The shared cache lives at `%LOCALAPPDATA%\Mozilla\sccache`, capped at
+25 GB via `%APPDATA%\Mozilla\sccache\config\config`. sccache hashes absolute
+paths, so a worktree only hits the main checkout's entries after its root is
+added to that config file's `basedirs` list and the background server is
+restarted (`sccache --stop-server` then `--start-server`). With that in place
+a fresh worktree rebuilds the dependency tree from cache (~91% hits, about
+five minutes) instead of compiling cold; the final binary link and
+proc-macro crates are never cached, and incremental units bypass the cache.
+Check hit rates with `sccache --show-stats`.
+
 ## Configuration and agent support
 
 | Setting | Behavior |

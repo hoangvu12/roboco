@@ -70,7 +70,7 @@ Like zeron/Zeron: lowercase `roboco` for repo, crates, binary, package names, en
 
 ## Windows development
 
-See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`).
+See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`). Builds run through sccache automatically; when creating a worktree, add its root to `basedirs` in `%APPDATA%\Mozilla\sccache\config\config` and restart the server (`sccache --stop-server; sccache --start-server`) or dependency cache hits drop sharply.
 
 ## Agent skills
 
