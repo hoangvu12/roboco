@@ -131,6 +131,34 @@ describe("connection against a scripted fake engine", () => {
     expect(await client.call("Echo", {})).toEqual({});
   });
 
+  test("a watch with the ack timeout disabled waits silently until items arrive", async () => {
+    const fake = new FakeEngine();
+    fake.streams["SilentStream"] = () => {};
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    const { client } = newClient(fake, { watchAckTimeoutMs: 60 });
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+    const items: unknown[] = [];
+    const endings: Array<RpcError | undefined> = [];
+    // SubscribeTerminal parity: no readiness frame, possibly long silence
+    // before the first item — the per-watch override disables the ack
+    // barrier (the desktop subscribes without one).
+    client.watch(
+      "SilentStream",
+      {},
+      { onItem: (item) => items.push(item), onEnd: (error) => endings.push(error) },
+      { ackTimeoutMs: 0 },
+    );
+    // Well past the client-level 60ms ack window: nothing ended, nothing timed out.
+    await delay(300);
+    expect(endings).toEqual([]);
+    fake.connections[0]!.pushItem("SilentStream", { late: true });
+    await waitUntil(() => items.length === 1, 2_000, "late item still flows");
+    expect(items[0]).toEqual({ late: true });
+    expect(endings).toEqual([]);
+  });
+
   test("a drop mid-call fails the call, reconnects, re-verifies identity, and resubscribes", async () => {
     const fake = new FakeEngine();
     fake.streams["WatchChats"] = (reply) => {

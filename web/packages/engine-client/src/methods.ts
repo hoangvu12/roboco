@@ -31,3 +31,13 @@ export const READ_WORKSPACE_IMAGE = "ReadWorkspaceImage";
 export const WRITE_WORKSPACE_FILE = "WriteWorkspaceFile";
 /** The one workspace stream; items are `WorkspaceFileChanges` frames. */
 export const WATCH_WORKSPACE_FILES = "WatchWorkspaceFiles";
+
+// Terminals (crates/engine/src/rpc.rs §3.4): OpenTerminal → TerminalSession,
+// SubscribeTerminal streams TerminalEvent (replay then live tail, no
+// readiness ack — the first item IS the ack), Write/Resize take the
+// terminal id, Close kills the PTY.
+export const OPEN_TERMINAL = "OpenTerminal";
+export const SUBSCRIBE_TERMINAL = "SubscribeTerminal";
+export const WRITE_TERMINAL = "WriteTerminal";
+export const RESIZE_TERMINAL = "ResizeTerminal";
+export const CLOSE_TERMINAL = "CloseTerminal";

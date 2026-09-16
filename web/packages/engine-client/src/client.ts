@@ -95,11 +95,23 @@ export interface WatchHandle {
   cancel(): void;
 }
 
+export interface WatchOptions {
+  /**
+   * Override the subscribe-ack timeout for this watch; 0 disables it.
+   * Streams with no readiness frame and possibly-long silences before the
+   * first item (e.g. `SubscribeTerminal` resuming from `afterSeq` on an
+   * idle shell) must disable it — the desktop uses a plain subscribe with
+   * no ack barrier there for exactly that reason.
+   */
+  readonly ackTimeoutMs?: number;
+}
+
 interface WatchRegistration {
   readonly method: string;
   readonly params: unknown;
   readonly onItem: (item: unknown, context: { generation: number }) => void;
   readonly onEnd: (error: RpcError | undefined) => void;
+  readonly ackTimeoutMs: number;
   currentId: number | null;
 }
 
@@ -218,13 +230,14 @@ export class EngineClient {
    * watches are re-subscribed after every reconnect, once identity has been
    * re-verified.
    */
-  watch<T>(method: string, params: unknown, handlers: WatchHandlers<T>): WatchHandle {
+  watch<T>(method: string, params: unknown, handlers: WatchHandlers<T>, options: WatchOptions = {}): WatchHandle {
     const token = this.#nextWatchToken++;
     this.#watches.set(token, {
       method,
       params,
       onItem: handlers.onItem as (item: unknown, context: { generation: number }) => void,
       onEnd: handlers.onEnd ?? (() => {}),
+      ackTimeoutMs: options.ackTimeoutMs ?? this.#watchAckTimeoutMs,
       currentId: null,
     });
     if (this.#establishedDial !== null && this.#currentDial !== null) {
@@ -617,7 +630,7 @@ export class EngineClient {
     }
     const id = this.#nextId++;
     const timer =
-      this.#watchAckTimeoutMs > 0
+      entry.ackTimeoutMs > 0
         ? setTimeout(() => {
             const pending = this.#pending.get(id);
             if (pending === undefined || pending.kind !== "watch" || pending.token !== token) {
@@ -629,7 +642,7 @@ export class EngineClient {
               current.currentId = null;
             }
             this.#deliverWatchEnd(current, new RpcError("timeout", `Engine stream acknowledgement timed out: ${entry.method}`));
-          }, this.#watchAckTimeoutMs)
+          }, entry.ackTimeoutMs)
         : undefined;
     this.#pending.set(id, { kind: "watch", token, timer });
     entry.currentId = id;
