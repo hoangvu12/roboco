@@ -18,7 +18,7 @@ use roboco_rpc::methods;
 
 use crate::composer::{Composer, QUEUE_COMPOSER_OVERLAP};
 use crate::icons::{self, icon};
-use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
+use crate::motion::{self, AnimationExt as _, MotionSpecExt as _, TAB_SLIDE};
 use crate::settings::shortcuts::modifier_send_label;
 use crate::terminal::panel::{drop_index, slide_offset};
 use crate::theme::Theme;

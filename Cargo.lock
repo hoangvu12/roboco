@@ -7640,6 +7640,7 @@ dependencies = [
  "clap",
  "json5 0.4.1",
  "plist",
+ "roboco-proto",
  "serde",
  "serde_json",
  "sha2",

@@ -201,221 +201,52 @@ fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Cubic bezier
+// The catalog (curves, specs) — defined in `roboco_proto::motion`
 // ---------------------------------------------------------------------------
+//
+// `CubicBezier`, `MotionSpec`, the named curves, and the fifteen named specs
+// live in `roboco_proto::motion` (gpui-free) so the web client's theme
+// artifact is generated from the same source of truth. Re-exported here; this
+// module adds the gpui drive ([`MotionSpecExt`]) and the element helpers.
+pub use roboco_proto::motion::{
+    CHEVRON, COLLAPSE, CubicBezier, DIALOG_IN, EASE, EASE_IN_OUT, EASE_OUT, EASE_OUT_EXPO,
+    EASE_OUT_QUINT, EASE_RESORT, EASE_TAILWIND, FADE_IN, FADE_QUICK, GRADIENT_SPIN, HOVER_FADE,
+    MENU_IN, MENU_OUT, MotionSpec, NEW_THREAD_TRANSITION, RESIZE, RESIZE_EDGE_BOUNCE_MS,
+    RESIZE_EDGE_BOUNCE_OUT_FRACTION, RESIZE_EDGE_NUDGE, ROBOCO_PULSE, SCROLL_GLIDE, SPLASH_OUT,
+    TAB_SLIDE,
+};
 
-/// A CSS `cubic-bezier(x1, y1, x2, y2)` timing function (endpoints fixed at
-/// (0,0) and (1,1)). Evaluation solves x(t) = input by Newton iteration with a
-/// bisection fallback — the standard UnitBezier approach.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CubicBezier {
-    pub x1: f32,
-    pub y1: f32,
-    pub x2: f32,
-    pub y2: f32,
-}
-
-impl CubicBezier {
-    pub const fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        Self { x1, y1, x2, y2 }
-    }
-
-    fn coefficients(a: f32, b: f32) -> (f32, f32, f32) {
-        let c = 3.0 * a;
-        let bb = 3.0 * (b - a) - c;
-        let aa = 1.0 - c - bb;
-        (aa, bb, c)
-    }
-
-    fn sample_x(&self, t: f32) -> f32 {
-        let (a, b, c) = Self::coefficients(self.x1, self.x2);
-        ((a * t + b) * t + c) * t
-    }
-
-    fn sample_y(&self, t: f32) -> f32 {
-        let (a, b, c) = Self::coefficients(self.y1, self.y2);
-        ((a * t + b) * t + c) * t
-    }
-
-    fn sample_x_derivative(&self, t: f32) -> f32 {
-        let (a, b, c) = Self::coefficients(self.x1, self.x2);
-        (3.0 * a * t + 2.0 * b) * t + c
-    }
-
-    /// Curve parameter `t` for a given progress `x` (both 0..1).
-    fn solve_t_for_x(&self, x: f32) -> f32 {
-        // Newton–Raphson.
-        let mut t = x;
-        for _ in 0..8 {
-            let err = self.sample_x(t) - x;
-            if err.abs() < 1e-6 {
-                return t;
-            }
-            let d = self.sample_x_derivative(t);
-            if d.abs() < 1e-6 {
-                break;
-            }
-            t -= err / d;
-        }
-        // Bisection fallback (x(t) is monotonic for valid CSS beziers).
-        let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
-        for _ in 0..32 {
-            let mid = (lo + hi) / 2.0;
-            if self.sample_x(mid) < x {
-                lo = mid
-            } else {
-                hi = mid
-            }
-        }
-        (lo + hi) / 2.0
-    }
-
-    /// Eased output for input progress `x ∈ [0,1]` (clamped).
-    pub fn eval(&self, x: f32) -> f32 {
-        if x <= 0.0 {
-            return 0.0;
-        }
-        if x >= 1.0 {
-            return 1.0;
-        }
-        // f32 rounding can push sample_y a hair past 1.0 (observed 1.000000119
-        // near the end of menu animations); gpui's animation element asserts
-        // `delta ∈ [0,1]` and aborts, so clamp the output hard.
-        self.sample_y(self.solve_t_for_x(x)).clamp(0.0, 1.0)
-    }
-
-    /// This curve as a gpui easing closure.
-    pub fn easing(self) -> impl Fn(f32) -> f32 + 'static {
-        move |x| self.eval(x)
-    }
-}
-
-/// roboco's signature entrance curve — CSS `cubic-bezier(0.16, 1, 0.3, 1)`.
-pub const EASE_OUT_EXPO: CubicBezier = CubicBezier::new(0.16, 1.0, 0.3, 1.0);
-/// CSS `ease-out` — width/height transitions.
-pub const EASE_OUT: CubicBezier = CubicBezier::new(0.0, 0.0, 0.58, 1.0);
-/// CSS `ease` — quick fades, menu/dialog pops.
-pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.0);
-/// `easeOutQuint` — CSS `cubic-bezier(0.22, 1, 0.36, 1)`.
-pub const EASE_OUT_QUINT: CubicBezier = CubicBezier::new(0.22, 1.0, 0.36, 1.0);
-/// Sidebar resort glide (used from M3b).
-pub const EASE_RESORT: CubicBezier = EASE_OUT_QUINT;
-/// CSS `ease-in-out` — the transcript scroll glide (browser smooth-scroll
-/// shape: gentle start, cruise, gentle landing).
-pub const EASE_IN_OUT: CubicBezier = CubicBezier::new(0.42, 0.0, 0.58, 1.0);
-
-// ---------------------------------------------------------------------------
-// Motion specs (the catalog)
-// ---------------------------------------------------------------------------
-
-/// One catalog entry: duration + optional delay + curve. The delay is folded into
-/// the gpui animation timeline (gpui `Animation` has no native delay): the
-/// animation runs for `delay + duration` and [`progress`](Self::progress) holds 0
-/// until the delay has elapsed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MotionSpec {
-    pub duration_ms: u64,
-    pub delay_ms: u64,
-    pub curve: CubicBezier,
-}
-
-impl MotionSpec {
-    pub const fn new(duration_ms: u64, curve: CubicBezier) -> Self {
-        Self {
-            duration_ms,
-            delay_ms: 0,
-            curve,
-        }
-    }
-
-    pub const fn with_delay(mut self, delay_ms: u64) -> Self {
-        self.delay_ms = delay_ms;
-        self
-    }
-
-    /// Wall-clock span of the whole timeline (delay + duration).
-    pub fn total(&self) -> Duration {
-        Duration::from_millis(self.delay_ms + self.duration_ms)
-    }
-
-    /// Eased progress (0..1) for a raw timeline delta (0..1 across [`total`](Self::total)).
-    /// Pure — unit-testable without a window.
-    pub fn progress(&self, raw_delta: f32) -> f32 {
-        let total = (self.delay_ms + self.duration_ms) as f32;
-        if total <= 0.0 || self.duration_ms == 0 {
-            return 1.0;
-        }
-        let t =
-            (raw_delta.clamp(0.0, 1.0) * total - self.delay_ms as f32) / self.duration_ms as f32;
-        self.curve.eval(t.clamp(0.0, 1.0))
-    }
-
+/// gpui drive for a catalog [`MotionSpec`] (kept in this crate:
+/// `roboco-proto` is gpui-free).
+pub trait MotionSpecExt {
     /// A oneshot gpui [`Animation`] for this spec (delay folded in).
     /// Wall-clock span honors [`speed_scale`] (measurement knob).
-    pub fn animation(&self) -> Animation {
+    fn animation(&self) -> Animation;
+
+    /// A repeating gpui [`Animation`] with linear easing over the raw period —
+    /// for the pulse/wave loaders whose per-cell easing happens in the
+    /// animator.
+    fn repeating(&self) -> Animation;
+}
+
+impl MotionSpecExt for MotionSpec {
+    fn animation(&self) -> Animation {
         let spec = *self;
         Animation::new(spec.total().mul_f32(speed_scale())).with_easing(move |d| spec.progress(d))
     }
 
-    /// A repeating gpui [`Animation`] with linear easing over the raw period —
-    /// for the pulse/wave loaders whose per-cell easing happens in the animator.
-    pub fn repeating(&self) -> Animation {
+    fn repeating(&self) -> Animation {
         Animation::new(self.total()).repeat()
     }
 }
 
-/// Entrances: 0.5s expo-out fade + 4px rise.
-pub const FADE_IN: MotionSpec = MotionSpec::new(500, EASE_OUT_EXPO);
-/// Quick fade: 0.15s.
-pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
-/// Popover-in: 0.14s (scale 0.96 approximated, translateY −2).
-pub const MENU_IN: MotionSpec = MotionSpec::new(140, EASE);
-/// Popover-out: 0.1s — quicker than the entrance (exits should get out of the
-/// way; matches the Radix convention of a shorter close than open).
-pub const MENU_OUT: MotionSpec = MotionSpec::new(100, EASE);
-/// Dialog-in: 0.18s (scale 0.96→1 approximated).
-pub const DIALOG_IN: MotionSpec = MotionSpec::new(180, EASE);
-/// Boot splash exit: 0.5s fade + 6px lift after a 0.15s hold.
-pub const SPLASH_OUT: MotionSpec = MotionSpec::new(500, EASE).with_delay(150);
-/// Sidebar / pane width+height transitions: 200ms ease-out.
-pub const RESIZE: MotionSpec = MotionSpec::new(200, EASE_OUT);
-/// Terminal tab drag-reorder sliding transforms: 150ms (§1.10).
-pub const TAB_SLIDE: MotionSpec = MotionSpec::new(150, EASE_OUT);
-/// Diff-pane per-file collapse: 180ms height (§1.11).
-pub const COLLAPSE: MotionSpec = MotionSpec::new(180, EASE_OUT);
-/// Reversible new-thread ↔ session handoff. The shared composer moves and
-/// morphs on a fast-starting, soft-landing curve while the canvas/transcript
-/// crossfade is staged around it. Slightly longer than a utility transition,
-/// but still short enough to acknowledge a send immediately.
-pub const NEW_THREAD_TRANSITION: MotionSpec = MotionSpec::new(420, EASE_RESORT);
-/// Diff-pane chevron rotate: 200ms (§1.11; approximated as a crossfade — gpui
-/// divs have no rotation transform at the pinned rev, same caveat as scale).
-pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
-/// Rail-tick / scroll-to-row glide: 500ms ease-in-out over the whole distance
-/// (Electron parity — the original rail rode the browser's native smooth
-/// scroll, a fixed-duration gentle ease, never percent-of-remaining).
-pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
-/// Tailwind's default transition curve — CSS `cubic-bezier(0.4, 0, 0.2, 1)`
-/// (`transition-colors` et al. carry it unless overridden; roboco never does).
-pub const EASE_TAILWIND: CubicBezier = CubicBezier::new(0.4, 0.0, 0.2, 1.0);
-/// CSS `transition-colors` default: 150ms over [`EASE_TAILWIND`] — the temporal
-/// blend every interactive hover wash rides in the original.
-pub const HOVER_FADE: MotionSpec = MotionSpec::new(150, EASE_TAILWIND);
-/// Roboco loader pulse period: 2.4s.
-pub const ROBOCO_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
-/// Gradient matrix spinner wave period: 750ms.
-pub const GRADIENT_SPIN: MotionSpec = MotionSpec::new(750, EASE);
-
 // ---------------------------------------------------------------------------
 // Resize-edge feedback
 // ---------------------------------------------------------------------------
-
-/// Pane resize limits acknowledge a held pointer without persisting an
-/// out-of-range size. The small displacement is shared by the shell panes and
-/// nested surface splits so every seam has the same physical response.
-pub const RESIZE_EDGE_NUDGE: f32 = 5.0;
-pub const RESIZE_EDGE_BOUNCE_MS: u64 = 220;
-pub const RESIZE_EDGE_BOUNCE_OUT_FRACTION: f32 = 0.32;
+//
+// The bounce parameters (`RESIZE_EDGE_NUDGE`, `RESIZE_EDGE_BOUNCE_MS`,
+// `RESIZE_EDGE_BOUNCE_OUT_FRACTION`) live in `roboco_proto::motion` with the
+// catalog and are re-exported above.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeEdge {

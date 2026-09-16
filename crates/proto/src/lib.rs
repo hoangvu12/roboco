@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod entities;
+pub mod layout;
 pub mod motion;
 pub mod preview;
 pub mod remote;
