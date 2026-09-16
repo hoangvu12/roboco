@@ -3,13 +3,12 @@ import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { chatListRows, type ChatIndicator } from "../lib/view";
 import { StatusDot } from "../components/status-dot";
+import { TranscriptView } from "../components/transcript";
 import { chatRoute } from "../router";
 
 /**
- * One chat's main panel: title, live status, and the transcript region.
- * The streaming transcript itself is the next layer's work; the shell
- * here already carries the selection, the status derivation, and the
- * layout region it renders into.
+ * One chat's main panel: title, live status, and the streaming transcript
+ * (`../components/transcript.tsx`) rendered into the shell's layout region.
  */
 export function ChatPage() {
   const { chatId } = useParams({ from: chatRoute.id });
@@ -40,9 +39,13 @@ export function ChatPage() {
   return (
     <div className="chat-page">
       <ChatHeader title={row.chat.title ?? "New session"} status={row.status} branch={row.branch} />
-      <div className="chat-transcript">
-        <p className="chat-transcript-empty">No messages yet.</p>
-      </div>
+      {session === null ? (
+        <div className="chat-transcript">
+          <p className="chat-transcript-empty">No engine connected.</p>
+        </div>
+      ) : (
+        <TranscriptView client={session.client} docId={chatId} />
+      )}
     </div>
   );
 }

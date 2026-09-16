@@ -646,3 +646,794 @@ button {
     display: none;
   }
 }
+
+/* ── Transcript ─────────────────────────────────────────────────────── */
+/* Rows are virtualized by `../components/transcript.tsx`; the geometry
+   constants (736px column, 30/26/38px chip heights, 24px fade band) mirror
+   the desktop's transcript.rs, and every color/motion value is a --rb-*
+   token from the generated theme artifact. */
+
+.transcript-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.transcript-col {
+  margin: 0 auto;
+  padding: 8px var(--rb-space-lg) var(--rb-space-lg);
+  min-width: 0;
+}
+
+.trow {
+  min-width: 0;
+}
+
+.transcript-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--rb-transcript-fade-band);
+  background: linear-gradient(to bottom, transparent, var(--rb-bg));
+  pointer-events: none;
+}
+
+.jump-bottom {
+  position: absolute;
+  right: var(--rb-space-lg);
+  bottom: calc(var(--rb-transcript-fade-band) + 8px);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--rb-raised);
+  border: 1px solid var(--rb-border-strong);
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  line-height: 1;
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+}
+
+.jump-bottom:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+@keyframes rb-fade-quick {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.transcript-error {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--rb-transcript-fade-band) + 12px);
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  max-width: min(90%, 40rem);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--rb-danger-muted);
+  border: 1px solid var(--rb-danger);
+  color: var(--rb-text);
+  font-size: 12px;
+}
+
+/* ── User bubble ────────────────────────────────────────────────────── */
+
+.row-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.user-bubble {
+  /* user_bubble_bg(): white 8% dark / black 4% light (colorScheme is set on root) */
+  background: light-dark(rgb(0 0 0 / 0.04), rgb(255 255 255 / 0.08));
+  max-width: 80%;
+  border-radius: var(--rb-radius-bubble);
+  padding: 10px 16px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.user-bubble-pending {
+  opacity: 0.65;
+}
+
+.user-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.user-text-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+}
+
+.user-expand {
+  margin-top: 8px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--rb-text-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.user-expand:hover {
+  color: var(--rb-text);
+}
+
+/* ── Row meta (hover timestamp strip) ───────────────────────────────── */
+
+.row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  height: 16px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+  opacity: 0;
+  transition: opacity var(--rb-motion-fade-quick) var(--rb-ease-ease);
+}
+
+.row-meta-on {
+  opacity: 1;
+}
+
+.row-meta-copy {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--rb-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.row-meta-copy:hover {
+  color: var(--rb-text);
+}
+
+/* ── Markdown ───────────────────────────────────────────────────────── */
+
+.row-md {
+  font-size: 14px;
+  line-height: 22px;
+  min-width: 0;
+}
+
+.md-p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-h {
+  margin: 0;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.md-h1 {
+  font-size: 20px;
+}
+
+.md-h2 {
+  font-size: 17px;
+}
+
+.md-h3 {
+  font-size: 15px;
+}
+
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-size: 14px;
+}
+
+.md-quote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--rb-border-strong);
+  color: var(--rb-text-muted);
+}
+
+.md-list {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.md-task {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.md-checkbox {
+  margin-right: 6px;
+  color: var(--rb-text-faint);
+}
+
+.md-checkbox-done {
+  color: var(--rb-success);
+}
+
+.md-code {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  background: var(--rb-raised);
+  border: 1px solid var(--rb-border);
+  border-radius: 4.5px;
+  padding: 0 2px;
+}
+
+.md-codeblock {
+  position: relative;
+  background: var(--rb-raised);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-control);
+}
+
+.md-pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.md-codeline {
+  display: block;
+  min-height: 18px;
+  white-space: pre;
+}
+
+.md-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  background: var(--rb-card);
+  color: var(--rb-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.md-codeblock:hover .md-copy,
+.md-copy:focus-visible {
+  opacity: 1;
+}
+
+.md-copy:hover {
+  color: var(--rb-text);
+}
+
+.md-link {
+  color: var(--rb-accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.md-link:hover {
+  text-decoration: underline;
+}
+
+.md-link-pending {
+  opacity: 0.7;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid var(--rb-border);
+  padding: 4px 12px;
+}
+
+.md-table th {
+  background: var(--rb-raised);
+  font-weight: 600;
+}
+
+.md-rule {
+  border: none;
+  border-top: 1px solid var(--rb-border-strong);
+  margin: 4px 0;
+}
+
+/* Syntax tokens — roles colored from the variant's syntax map. */
+.tk-comment { color: var(--rb-syntax-comment); }
+.tk-keyword { color: var(--rb-syntax-keyword); }
+.tk-string { color: var(--rb-syntax-string); }
+.tk-stringSpecial { color: var(--rb-syntax-string-special); }
+.tk-escape { color: var(--rb-syntax-escape); }
+.tk-number { color: var(--rb-syntax-number); }
+.tk-boolean { color: var(--rb-syntax-boolean); }
+.tk-type { color: var(--rb-syntax-type); }
+.tk-function { color: var(--rb-syntax-function); }
+.tk-property { color: var(--rb-syntax-property); }
+.tk-constant { color: var(--rb-syntax-constant); }
+.tk-variableSpecial { color: var(--rb-syntax-variable-special); }
+.tk-operator { color: var(--rb-syntax-operator); }
+.tk-punctuation { color: var(--rb-syntax-punctuation); }
+.tk-tag { color: var(--rb-syntax-tag); }
+.tk-attribute { color: var(--rb-syntax-attribute); }
+.tk-macro { color: var(--rb-syntax-macro); }
+
+/* ── Streaming veil ─────────────────────────────────────────────────── */
+/* Per-chunk opacity dissolve: alpha = 1 − (1 − p)^1.6 (mugen FadePainter),
+   baked into stops; the per-chunk duration comes from the cadence EMA as an
+   inline animation-duration. Opacity only — never a positional offset. */
+
+@keyframes rb-veil {
+  0% { opacity: 0; }
+  12.5% { opacity: 0.196; }
+  25% { opacity: 0.369; }
+  37.5% { opacity: 0.529; }
+  50% { opacity: 0.67; }
+  62.5% { opacity: 0.789; }
+  75% { opacity: 0.892; }
+  87.5% { opacity: 0.964; }
+  100% { opacity: 1; }
+}
+
+.veil-fade {
+  animation-name: rb-veil;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+
+/* ── Tool groups and chips ──────────────────────────────────────────── */
+
+.tool-group {
+  min-width: 0;
+}
+
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  color: var(--rb-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-group-header:hover {
+  color: var(--rb-text);
+}
+
+.tool-group-chevron {
+  flex: none;
+  font-size: 9px;
+  transform: rotate(-90deg);
+  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
+}
+
+.tool-group-chevron-open {
+  transform: rotate(0deg);
+}
+
+.tool-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* BoardUI sweep over the active group's summary (3400ms, transcript.rs). */
+.tool-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--rb-text-muted) 42%,
+    var(--rb-text) 50%,
+    var(--rb-text-muted) 58%
+  );
+  background-size: 280% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: rb-tool-shimmer 3400ms linear infinite;
+}
+
+@keyframes rb-tool-shimmer {
+  from {
+    background-position: 140% 0;
+  }
+  to {
+    background-position: -140% 0;
+  }
+}
+
+/* Fold: TOOL_FOLD 140ms ease-out (transcript-local spec, catalog curve). */
+.tool-group-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 140ms var(--rb-ease-ease-out);
+}
+
+.tool-group-open .tool-group-fold {
+  grid-template-rows: 1fr;
+}
+
+.tool-group-body {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Row reveal: 360ms expo, 90ms first-row delay + 65ms stagger (inline). */
+@keyframes rb-chip-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chip-reveal {
+  animation: rb-chip-reveal 360ms var(--rb-ease-ease-out-expo) backwards;
+}
+
+.tool-chip {
+  min-width: 0;
+  border-radius: var(--rb-radius-control);
+}
+
+.tool-chip-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: var(--rb-radius-control);
+}
+
+.tool-chip-head-button {
+  cursor: pointer;
+}
+
+.tool-chip-head-button:hover {
+  background: var(--rb-hover);
+}
+
+.tool-glyph {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--rb-text-faint);
+  font-size: 11px;
+}
+
+.tool-chip-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--rb-text-muted);
+}
+
+.tool-chip-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text-faint);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.tool-chip-chevron {
+  flex: none;
+  font-size: 9px;
+  color: var(--rb-text-faint);
+  transform: rotate(-90deg);
+  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
+}
+
+.tool-chip-chevron-open {
+  transform: rotate(0deg);
+}
+
+.tool-chip-model {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--rb-text-faint);
+  border: 1px solid var(--rb-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.tool-chip-body {
+  margin-left: 12px;
+  padding: 2px 0 4px 12px;
+  border-left: 1px solid var(--rb-border);
+}
+
+.tool-invocation,
+.tool-output {
+  margin: 2px 8px 4px 0;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--rb-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-invocation {
+  color: var(--rb-text-faint);
+  border-bottom: 1px solid var(--rb-border);
+  padding-bottom: 4px;
+}
+
+.tool-thought {
+  color: var(--rb-text-muted);
+}
+
+.tool-output-line {
+  min-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-output-more,
+.tool-output-note {
+  color: var(--rb-text-faint);
+  font-size: 11px;
+}
+
+.tool-stat-row {
+  display: flex;
+  gap: var(--rb-space-sm);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tool-stat-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text-muted);
+}
+
+.tool-stat-add {
+  color: var(--rb-diff-add);
+}
+
+.tool-stat-del {
+  color: var(--rb-diff-delete);
+}
+
+.tool-full-button {
+  margin: 2px 0 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--rb-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tool-full-button:hover {
+  text-decoration: underline;
+}
+
+.chip-pending {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rb-activity);
+  animation: rb-chip-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease) infinite;
+}
+
+@keyframes rb-chip-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chip-error-mark {
+  flex: none;
+  color: var(--rb-danger);
+  font-size: 11px;
+}
+
+.tool-chip-error .tool-chip-label {
+  color: var(--rb-danger);
+}
+
+/* ── Subagent chips ─────────────────────────────────────────────────── */
+
+.tool-agent-link {
+  cursor: pointer;
+  border-radius: var(--rb-radius-control);
+}
+
+.tool-chip-agent .tool-chip-head {
+  border: 1px solid var(--rb-border);
+  background: var(--rb-card);
+}
+
+.tool-agent-link:hover .tool-chip-head,
+.tool-chip-agent .tool-chip-head:hover {
+  background: var(--rb-hover);
+}
+
+.subagent-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.subagent-dot-running {
+  background: var(--rb-activity);
+  animation: rb-chip-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease) infinite;
+}
+
+.subagent-dot-done {
+  background: var(--rb-success);
+}
+
+.subagent-dot-failed {
+  background: var(--rb-danger);
+}
+
+.subagent-dialog {
+  width: min(56rem, 100%);
+  height: min(44rem, 85vh);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-sm);
+  padding: var(--rb-space-md);
+  background: var(--rb-dialog);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-panel);
+  min-height: 0;
+}
+
+.subagent-dialog .transcript-wrap {
+  min-height: 0;
+}
+
+/* ── Input and error chips ──────────────────────────────────────────── */
+
+.input-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  color: var(--rb-text-muted);
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.input-chip-open {
+  border-color: var(--rb-accent);
+  color: var(--rb-text);
+}
+
+.input-chip-glyph {
+  color: var(--rb-accent);
+  font-weight: 600;
+}
+
+.input-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-danger-muted);
+  background: color-mix(in srgb, var(--rb-danger-muted) 35%, transparent);
+  color: var(--rb-danger);
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.error-chip-glyph {
+  font-weight: 700;
+}
+
+.error-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Transcript responsive + reduced motion ─────────────────────────── */
+
+@media (max-width: 768px) {
+  .transcript-col {
+    padding: 8px var(--rb-space-md) var(--rb-space-md);
+  }
+
+  .user-bubble {
+    max-width: 88%;
+  }
+
+  .jump-bottom {
+    right: var(--rb-space-md);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .veil-fade,
+  .chip-reveal,
+  .chip-pending,
+  .subagent-dot-running,
+  .jump-bottom {
+    animation: none;
+  }
+
+  .tool-shimmer {
+    animation: none;
+    background: none;
+    color: var(--rb-text-muted);
+  }
+
+  .tool-group-fold,
+  .tool-group-chevron,
+  .tool-chip-chevron {
+    transition: none;
+  }
+}
