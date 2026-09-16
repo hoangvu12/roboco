@@ -439,6 +439,147 @@ button {
 
 /* ── Composer + pickers ─────────────────────────────────────────────── */
 
+/* Queue panel: docked above the composer, rows show edit-gate chips. */
+.queue-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: var(--rb-space-xs) var(--rb-space-md) 0;
+  background: var(--rb-shell);
+  border-top: 1px solid var(--rb-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.queue-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: var(--rb-space-xs);
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-height: 36px;
+  padding: 4px 10px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
+  font-size: 12.5px;
+  line-height: 1.4;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.queue-row:hover {
+  background: var(--rb-hover);
+}
+
+.queue-row-hold {
+  border-left: 2px solid var(--rb-accent);
+}
+
+.queue-row-locked {
+  border-color: color-mix(in srgb, var(--rb-danger) 50%, var(--rb-border));
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+}
+
+.queue-row-review {
+  border-color: color-mix(in srgb, var(--rb-danger) 70%, var(--rb-border));
+  background: color-mix(in srgb, var(--rb-danger) 18%, transparent);
+}
+
+.queue-row-editing {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+}
+
+.queue-row-drop-top {
+  border-top-color: var(--rb-accent);
+  box-shadow: 0 -1px 0 var(--rb-accent);
+}
+
+.queue-row-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text);
+}
+
+.queue-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.queue-row-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--rb-radius-control);
+  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
+  color: var(--rb-accent);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.queue-row-chip-locked {
+  background: color-mix(in srgb, var(--rb-danger) 22%, transparent);
+  color: var(--rb-danger);
+}
+
+.queue-row-chip-review {
+  background: var(--rb-danger);
+  color: var(--rb-on-solid);
+}
+
+.queue-row-chip-editing {
+  background: var(--rb-accent);
+  color: var(--rb-on-accent);
+}
+
+.queue-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.queue-row-action {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+.queue-row-remove {
+  width: 24px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--rb-text-muted);
+}
+
+.queue-row-remove:not(:disabled):hover {
+  color: var(--rb-danger);
+}
+
+.chat-edit-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--rb-space-xs) var(--rb-space-md);
+  background: var(--rb-shell);
+  border-top: 1px solid var(--rb-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
 .composer {
   flex: none;
   display: flex;
@@ -488,6 +629,11 @@ button {
 
 .composer-working .composer-input-wrap {
   border-color: color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
+}
+
+.composer-editing .composer-input-wrap {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
 }
 
 .composer-footer {
