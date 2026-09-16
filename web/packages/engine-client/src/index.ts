@@ -46,4 +46,12 @@ export {
   type WebSocketFactory,
   type WsSocket,
 } from "./socket";
+export {
+  EngineWatchCache,
+  type ChatStatus,
+  type RowSet,
+  type WatchCacheOptions,
+  type WatchCacheSnapshot,
+  type WatchCollection,
+} from "./watch-cache";
 export * as methods from "./methods";

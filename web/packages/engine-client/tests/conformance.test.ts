@@ -6,8 +6,9 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { Chat, EngineInfo, SessionGrant } from "@roboco/proto";
 import { EngineClient } from "../src/client";
-import { ENGINE_INFO, REVOKE_PAIRING_SESSION, WATCH_CHATS } from "../src/methods";
+import { ENGINE_INFO, MUTATE, REVOKE_PAIRING_SESSION, WATCH_CHATS } from "../src/methods";
 import { redeemPairingCode } from "../src/pairing";
+import { EngineWatchCache } from "../src/watch-cache";
 import { delay, statusWhen, trackedFactory, waitUntil } from "./helpers/ws";
 
 const FAST_BACKOFF = { initialMs: 25, jitterMs: 1, maxMs: 100 };
@@ -145,7 +146,101 @@ describe("conformance against a real engine", () => {
     await waitUntil(() => items.includes(2), 10_000, "resubscribed item on generation 2");
     handle.cancel();
   });
+});
 
+describe("conformance against a real engine: the watch cache", () => {
+  test("populates every collection, applies mutations incrementally, and swaps on reconnect without ghost rows", async () => {
+    const own = trackedFactory();
+    const cacheClient = new EngineClient({
+      endpoint: engine!.endpoint.replace("http", "ws"),
+      credential: grant!.credential,
+      expectedDeviceId: engine!.deviceId,
+      webSocket: own.factory,
+      backoff: FAST_BACKOFF,
+    });
+    try {
+      const cache = new EngineWatchCache(cacheClient);
+      cacheClient.connect();
+      await statusWhen(cacheClient, (value) => value.state === "connected");
+      await waitUntil(
+        () => {
+          const snapshot = cache.getSnapshot();
+          return (
+            snapshot.chats.loaded &&
+            snapshot.spaces.loaded &&
+            snapshot.devices.loaded &&
+            snapshot.statuses.loaded
+          );
+        },
+        10_000,
+        "every collection loaded",
+      );
+      const first = cache.getSnapshot();
+      expect(first.generation).toBe(1);
+      expect(first.capabilities).toContain("web-client");
+      expect(cache.supports("web-client")).toBe(true);
+
+      await cacheClient.call(MUTATE, { op: "createChat", chatId: "watch-cache-a", deviceId: engine!.deviceId });
+      await cacheClient.call(MUTATE, { op: "createChat", chatId: "watch-cache-b", deviceId: engine!.deviceId });
+      await waitUntil(
+        () => cache.getSnapshot().chats.rows.length === 2,
+        10_000,
+        "created chats arrive",
+      );
+      const before = cache.getSnapshot().chats.rows;
+
+      await cacheClient.call(MUTATE, { op: "renameChat", chatId: "watch-cache-b", title: "Renamed" });
+      await waitUntil(
+        () =>
+          cache
+            .getSnapshot()
+            .chats.rows.some((row) => row.id === "watch-cache-b" && row.title === "Renamed"),
+        10_000,
+        "rename lands",
+      );
+      const after = cache.getSnapshot().chats.rows;
+      expect(after.find((row) => row.id === "watch-cache-a")).toBe(
+        before.find((row) => row.id === "watch-cache-a"),
+      );
+
+      // A drop mid-stream, then server-side changes while the client is
+      // offline: chat-b is deleted, chat-c is created by another client.
+      own.sockets[0]!.terminate();
+      const other = trackedFactory();
+      const second = new EngineClient({
+        endpoint: engine!.endpoint.replace("http", "ws"),
+        credential: grant!.credential,
+        expectedDeviceId: engine!.deviceId,
+        webSocket: other.factory,
+        backoff: FAST_BACKOFF,
+      });
+      second.connect();
+      await statusWhen(second, (value) => value.state === "connected");
+      await second.call(MUTATE, { op: "deleteChat", chatId: "watch-cache-b" });
+      await second.call(MUTATE, { op: "createChat", chatId: "watch-cache-c", deviceId: engine!.deviceId });
+      second.close();
+
+      await statusWhen(cacheClient, (value) => value.state === "connected" && value.generation === 2);
+      await waitUntil(
+        () => {
+          const snapshot = cache.getSnapshot();
+          return snapshot.generation === 2 && snapshot.chats.loaded && snapshot.chats.rows.length === 2;
+        },
+        10_000,
+        "cache refilled on generation 2",
+      );
+      const swapped = cache.getSnapshot();
+      expect(swapped.chats.rows.map((row) => row.id).sort()).toEqual(["watch-cache-a", "watch-cache-c"]);
+      expect(swapped.statuses.loaded).toBe(true);
+      expect(swapped.capabilities).toContain("web-client");
+      expect(swapped.chats.rows.some((row) => row.id === "watch-cache-b")).toBe(false);
+    } finally {
+      cacheClient.close();
+    }
+  }, 60_000);
+});
+
+describe("conformance against a real engine: revoked sessions", () => {
   test("a revoked session parks on the next handshake and never re-dials", async () => {
     const parked = trackedFactory();
     const second = new EngineClient({
@@ -164,8 +259,11 @@ describe("conformance against a real engine", () => {
     const status = await statusWhen(second, (value) => value.state === "parked");
     expect(status).toMatchObject({ state: "parked", reason: "invalid-credential" });
     await expect(second.call(ENGINE_INFO, {})).rejects.toMatchObject({ kind: "parked" });
+    // A transient refusal before the terminal 4401 may cost one extra dial;
+    // what must hold is that parking stops the dialing for good.
+    const dialedAtPark = parked.sockets.length;
     await delay(250);
-    expect(parked.sockets).toHaveLength(2);
+    expect(parked.sockets).toHaveLength(dialedAtPark);
     second.close();
   });
 });

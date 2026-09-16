@@ -16,3 +16,5 @@ export const WATCH_QUEUE = "WatchQueue";
 export const WATCH_CHECKOUT_CHANGE_REQUEST = "WatchCheckoutChangeRequest";
 export const REVOKE_PAIRING_SESSION = "RevokePairingSession";
 export const GET_REMOTE_ACCESS = "GetRemoteAccess";
+/** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
+export const MUTATE = "Mutate";
