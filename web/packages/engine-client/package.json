@@ -11,7 +11,9 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --project unit"
+    "test:unit": "vitest run --project unit",
+    "test:conformance": "vitest run --project conformance",
+    "test:smoke": "vitest run --project smoke"
   },
   "dependencies": {
     "@roboco/proto": "workspace:*"

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useWatchSnapshot } from "../state/hooks";
 import { useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
+import { onShortcut } from "../state/shortcuts";
 import { createChat, describeMutateError, waitForChatRow } from "../lib/chat-actions";
 import { healedSpaceFilter, spacesSorted } from "../lib/view";
 
@@ -13,6 +14,10 @@ import { healedSpaceFilter, spacesSorted } from "../lib/view";
  * selected space, else the first space); with no spaces at all it is
  * project-less on the connected engine's own device — the desktop's
  * canvas-target resolution (state.rs effective_device_id).
+ *
+ * The button also subscribes to the `new-chat` shortcut event so the
+ * app-shell keyboard layer (Cmd/Ctrl+N) can drive the same flow without
+ * DOM querying.
  */
 export function NewChatButton() {
   const session = useEngineSession();
@@ -58,12 +63,24 @@ export function NewChatButton() {
     }
   }
 
+  useEffect(() => {
+    if (!connected) {
+      return;
+    }
+    return onShortcut("new-chat", () => {
+      void create();
+    });
+    // Re-subscribe when connection state changes; the closure captures
+    // the latest session/snapshot/sidebar.
+  }, [connected, session, snapshot, sidebar.spaceFilter, sidebar.lastSpaceId]);
+
   return (
     <button
       type="button"
       className="btn btn-ghost new-chat"
       disabled={busy || !connected}
       onClick={() => void create()}
+      title="New chat (Ctrl/⌘+N)"
     >
       {busy ? "Creating…" : "New chat"}
     </button>

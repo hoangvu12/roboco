@@ -20,6 +20,19 @@ export default defineConfig({
           testTimeout: 120_000,
         },
       },
+      {
+        test: {
+          name: "smoke",
+          environment: "node",
+          include: ["tests/web-smoke.test.ts"],
+          // The browser end-to-end smoke (ticket 18): exercises pair +
+          // watch + send against the seeded web_smoke engine. Builds the
+          // example on first run, same build budget as the conformance
+          // suite.
+          hookTimeout: 600_000,
+          testTimeout: 120_000,
+        },
+      },
     ],
   },
 });
