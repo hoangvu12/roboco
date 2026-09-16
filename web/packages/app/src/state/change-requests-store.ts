@@ -15,6 +15,13 @@ import { methods, RpcError } from "@roboco/engine-client";
  * `unknown method` path) is recorded as unsupported and never re-subscribed
  * until its version changes — matching the desktop's behavior so a parked
  * `older engine` does not generate a stream error every cycle.
+ *
+ * The store also remembers the most recent `provider` string the engine
+ * reported for each (device, cwd) checkout. The provider is a property of
+ * the repo (its remote URL), not the branch — once the engine resolves it
+ * for any branch on that checkout, we keep using it for sibling branches
+ * whose `changeRequest` came back null so the create-PR affordance always
+ * links to the right host. Keyed by `${deviceId}\u0000${cwd}`.
  */
 
 export interface ChangeRequestTarget {
@@ -30,6 +37,14 @@ export interface ChangeRequestSnapshot {
   readonly snapshots: ReadonlyMap<string, CheckoutChangeRequestStatus>;
   /** The most recent unsupported rejection per device, if any. */
   readonly unsupported: ReadonlyMap<string, string>;
+  /**
+   * The most recent provider string the engine reported for each checkout,
+   * keyed by `${deviceId}\u0000${cwd}`. `null` when the engine has never
+   * resolved a provider for that checkout (e.g. only ever reported
+   * `changeRequest: null`); surfaces pass this to the create-URL helper
+   * instead of hardcoding github.
+   */
+  readonly providers: ReadonlyMap<string, string>;
   /** Generation of the most recent item applied (for React binding). */
   readonly generation: number;
 }
@@ -49,6 +64,24 @@ export function changeRequestForChat(
 /** Identity for a (device, cwd, branch) tuple. */
 export function keyOf(target: ChangeRequestTarget): string {
   return `${target.deviceId}\u0000${target.cwd}\u0000${target.branch}`;
+}
+
+/** Identity for a (device, cwd) checkout — the unit the provider is stable over. */
+export function checkoutKey(deviceId: string, cwd: string): string {
+  return `${deviceId}\u0000${cwd}`;
+}
+
+/**
+ * The provider the engine has most recently reported for a checkout, or
+ * `null` when none has been observed. Use this to thread the engine-detected
+ * provider into the create-URL helper instead of hardcoding "github".
+ */
+export function providerForCheckout(
+  providers: ReadonlyMap<string, string>,
+  deviceId: string,
+  cwd: string,
+): string | null {
+  return providers.get(checkoutKey(deviceId, cwd)) ?? null;
 }
 
 export interface ChangeRequestsClient {
@@ -71,6 +104,7 @@ export class ChangeRequestStore {
   readonly #log: (message: string, detail?: unknown) => void;
   #snapshots: Map<string, CheckoutChangeRequestStatus> = new Map();
   #unsupported: Map<string, string> = new Map();
+  #providers: Map<string, string> = new Map();
   #targets: Map<string, ChangeRequestTarget> = new Map();
   #watches: Map<string, WatchRecord> = new Map();
   #snapshot: ChangeRequestSnapshot;
@@ -160,6 +194,7 @@ export class ChangeRequestStore {
     this.#targets.clear();
     this.#snapshots.clear();
     this.#unsupported.clear();
+    this.#providers.clear();
     this.#commit();
   }
 
@@ -217,6 +252,13 @@ export class ChangeRequestStore {
     }
     this.#generation = generation;
     this.#snapshots.set(key, status);
+    // Remember the engine-detected provider for this checkout so sibling
+    // branches whose lookup came back null can still open the right
+    // create-URL. Only overwrite when we got a non-empty value.
+    const provider = status.changeRequest?.provider;
+    if (typeof provider === "string" && provider.trim().length > 0) {
+      this.#providers.set(checkoutKey(target.deviceId, target.cwd), provider);
+    }
     const record = this.#watches.get(key);
     if (record !== undefined) {
       record.inflight = false;
@@ -254,13 +296,18 @@ export class ChangeRequestStore {
       supported: this.#unsupported.size === 0,
       snapshots: this.#snapshots,
       unsupported: this.#unsupported,
+      providers: this.#providers,
       generation: this.#generation,
     };
   }
 
   #commit(): void {
     const next = this.#takeSnapshot();
-    if (next.snapshots === this.#snapshot.snapshots && next.unsupported === this.#snapshot.unsupported) {
+    if (
+      next.snapshots === this.#snapshot.snapshots
+      && next.unsupported === this.#snapshot.unsupported
+      && next.providers === this.#snapshot.providers
+    ) {
       return;
     }
     this.#snapshot = next;

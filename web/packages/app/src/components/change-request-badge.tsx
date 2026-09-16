@@ -70,7 +70,8 @@ export function ChangeRequestBadge({ summary, size = "sidebar" }: ChangeRequestB
 }
 
 export interface CreateChangeRequestButtonProps {
-  readonly provider: string;
+  /** Provider key the create-URL builder understands. `null` disables the button. */
+  readonly provider: string | null;
   readonly baseRef: string;
   readonly headRef: string;
   readonly cwd: string;
@@ -80,10 +81,11 @@ export interface CreateChangeRequestButtonProps {
 /**
  * A "Create PR/MR" affordance when the engine has no Create RPC — falls
  * back to opening the provider's compare/merge-request page with the
- * head branch pre-filled. Disabled when no base ref is available.
+ * head branch pre-filled. Disabled when no base ref is available or when
+ * no provider has been detected yet for this checkout.
  */
 export function CreateChangeRequestButton({ provider, baseRef, headRef, cwd, size = "sidebar" }: CreateChangeRequestButtonProps) {
-  const url = changeRequestCreateUrl(provider, baseRef, headRef, cwd);
+  const url = provider === null ? null : changeRequestCreateUrl(provider, baseRef, headRef, cwd);
   const disabled = url === null;
   if (disabled) {
     return (

@@ -79,7 +79,8 @@ function toolChipContentRaw(call: ToolCall): [string, string] {
 }
 
 /** The ToolGroup summary line — "Ran 3 commands · edited 2 files". */
-export function toolGroupSummary(tools: readonly { call: ToolCall; isError: boolean }[]): string {  let commands = 0;
+export function toolGroupSummary(tools: readonly { call: ToolCall; isError: boolean }[]): string {
+  let commands = 0;
   const edited: string[] = [];
   let reads = 0;
   let searches = 0;

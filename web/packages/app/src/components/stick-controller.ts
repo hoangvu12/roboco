@@ -140,7 +140,8 @@ export class StickController {
   }
 
   /** Current distance from the end in px. */
-  #distance(): number {    const el = this.#el;
+  #distance(): number {
+    const el = this.#el;
     return el === null ? 0 : Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
   }
 

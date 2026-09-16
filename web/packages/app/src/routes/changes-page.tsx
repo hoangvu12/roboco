@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useWatchSnapshot } from "../state/hooks";
 import { ChangesStore } from "../state/changes-store";
-import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat, keyOf as keyOfTarget } from "../state/change-requests-store";
+import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat, providerForCheckout } from "../state/change-requests-store";
 import { chatPageRow } from "../lib/view";
 import { DIFF_SCOPE_LABELS, cleanMessage, defaultBaseRef, scopeLabel, type DiffScope } from "../lib/diff";
 import { DiffView, type DiffLayout } from "../components/diff-view";
@@ -131,6 +131,17 @@ export function ChangesPage() {
     // so the page surfaces that state cleanly without an empty card.
     return null;
   }, [crSnap, deviceId, cwd, branch, checkoutId]);
+
+  // The provider the engine has most recently reported for this checkout.
+  // `null` until the engine has resolved a CR whose summary carried a
+  // provider string; the create-PR button is hidden until then so we never
+  // link a non-GitHub checkout to a github.com compare URL.
+  const createProvider: string | null = useMemo(() => {
+    if (crSnap === null || deviceId === null || cwd === null) {
+      return null;
+    }
+    return providerForCheckout(crSnap.providers, deviceId, cwd);
+  }, [crSnap, deviceId, cwd]);
 
   const [layout, setLayout] = useState<DiffLayout>("unified");
   const [wrap, setWrap] = useState(false);
@@ -286,11 +297,11 @@ export function ChangesPage() {
             {crSummary.baseRef} ← {crSummary.headRef}
           </span>
         </div>
-      ) : cwd !== null && branch !== null && branch.trim().length > 0 ? (
+      ) : cwd !== null && branch !== null && branch.trim().length > 0 && createProvider !== null ? (
         <div className="changes-cr-card changes-cr-card-empty" role="status">
           <span className="changes-cr-card-label">No change request open</span>
           <CreateChangeRequestButton
-            provider="github"
+            provider={createProvider}
             baseRef={baseForLabel ?? "main"}
             headRef={branch}
             cwd={cwd}
