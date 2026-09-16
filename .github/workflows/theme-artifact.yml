@@ -3,8 +3,8 @@ name: Theme artifact
 # The web client's design tokens are generated from the Rust sources of truth
 # (crates/theme's builtin registry + roboco-proto's layout/motion constants) by
 # `roboco-theme-export`. The gate fails when a source changes without
-# regenerating web/packages/theme, and typechecks the standalone
-# @roboco/theme package.
+# regenerating web/packages/theme, and typechecks the @roboco/theme package
+# from the shared web workspace lockfile.
 
 on:
   pull_request:
@@ -65,15 +65,15 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: web/packages/theme
+        working-directory: web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Enable pnpm
         run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Typecheck @roboco/theme
-        run: pnpm run typecheck
+        run: pnpm --filter "@roboco/theme" run typecheck
