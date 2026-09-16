@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
 import {
+  PROVIDERS,
   badgeModel,
   changeRequestCreateUrl,
+  normalizeProvider,
   toneFor,
 } from "../src/lib/change-requests";
 
@@ -67,5 +69,38 @@ describe("changeRequestCreateUrl", () => {
 
   it("returns null for unknown providers", () => {
     expect(changeRequestCreateUrl("bogus", "main", "feature/pr", "acme/roboco")).toBeNull();
+  });
+
+  it("builds the right URL for every supported provider", () => {
+    // Single source of truth: PROVIDERS must match the cases the URL builder
+    // recognizes, so the create-button never falls back to github for an
+    // unknown but still-supported provider.
+    expect(PROVIDERS).toEqual(["github", "gitlab", "bitbucket", "azuredevops", "codeberg"]);
+    expect(changeRequestCreateUrl("azuredevops", "main", "feature/pr", "acme/roboco"))
+      .toBe("https://dev.azure.com/acme/roboco/pullrequestcreate?sourceRef=feature%2Fpr&targetRef=main");
+    expect(changeRequestCreateUrl("codeberg", "main", "feature/pr", "acme/roboco"))
+      .toBe("https://codeberg.org/acme/roboco/compare/main...feature%2Fpr");
+  });
+});
+
+describe("normalizeProvider", () => {
+  it("lowercases known provider names", () => {
+    expect(normalizeProvider("GitHub")).toBe("github");
+    expect(normalizeProvider("GITLAB")).toBe("gitlab");
+    expect(normalizeProvider("bitbucket")).toBe("bitbucket");
+  });
+
+  it("returns null for missing or whitespace-only input", () => {
+    expect(normalizeProvider(null)).toBeNull();
+    expect(normalizeProvider(undefined)).toBeNull();
+    expect(normalizeProvider("")).toBeNull();
+    expect(normalizeProvider("   ")).toBeNull();
+  });
+
+  it("passes through unknown hosts lower-cased so the URL builder returns null instead of falling back", () => {
+    expect(normalizeProvider("gitlab.example.com")).toBe("gitlab.example.com");
+    expect(
+      changeRequestCreateUrl(normalizeProvider("gitlab.example.com")!, "main", "feature/pr", "acme/roboco"),
+    ).toBeNull();
   });
 });

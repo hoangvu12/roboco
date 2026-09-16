@@ -50,8 +50,30 @@ const PROVIDER_KEYS: Readonly<Record<string, string>> = {
   codeberg: "codeberg",
 };
 
+/** The provider keys the create-URL builder understands. */
+export const PROVIDERS: readonly string[] = Object.keys(PROVIDER_KEYS);
+
 function providerKey(provider: string): string {
   return PROVIDER_KEYS[provider.toLowerCase()] ?? provider.toLowerCase();
+}
+
+/**
+ * Normalize a provider string the engine may have produced (e.g.
+ * `"GitHub"`, `"github"`, or an unknown host like `"gitlab.example.com"`).
+ * Returns the lower-cased key the URL builder switches on, or `null`
+ * when the string is empty or otherwise unusable. Use this when threading
+ * the provider from a `ChangeRequestSummary.provider` (engine-detected
+ * from the checkout's remote URL) into the create-URL helper.
+ */
+export function normalizeProvider(provider: string | null | undefined): string | null {
+  if (provider === null || provider === undefined) {
+    return null;
+  }
+  const trimmed = provider.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return providerKey(trimmed);
 }
 
 function repoPath(cwd: string): string {
