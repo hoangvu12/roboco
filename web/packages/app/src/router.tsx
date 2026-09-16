@@ -4,6 +4,7 @@ import { AppShell } from "./components/app-shell";
 import { IndexPage } from "./routes/index-page";
 import { ChatPage } from "./routes/chat-page";
 import { FilesPage } from "./routes/files-page";
+import { ChangesPage } from "./routes/changes-page";
 import { PairPage } from "./routes/pair-page";
 import { SettingsLayout } from "./components/settings-layout";
 import { RemoteAccessSettingsPage } from "./routes/settings-remote-access";
@@ -21,6 +22,15 @@ const filesRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): { space?: string; path?: string } => ({
     ...(typeof search.space === "string" && search.space.length > 0 ? { space: search.space } : {}),
     ...(typeof search.path === "string" && search.path.length > 0 ? { path: search.path } : {}),
+  }),
+});
+const changesRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/chat/$chatId/changes",
+  component: ChangesPage,
+  validateSearch: (search: Record<string, unknown>): { scope?: string; base?: string } => ({
+    ...(typeof search.scope === "string" && search.scope.length > 0 ? { scope: search.scope } : {}),
+    ...(typeof search.base === "string" && search.base.length > 0 ? { base: search.base } : {}),
   }),
 });
 const pairRoute = createRoute({ getParentRoute: () => rootRoute, path: "/pair", component: PairPage });
@@ -54,6 +64,7 @@ const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([
     indexRoute,
     chatRoute,
+    changesRoute,
     filesRoute,
     settingsRoute.addChildren([settingsIndexRoute, remoteAccessRoute, accountsRoute, appearanceRoute]),
   ]),
@@ -62,6 +73,7 @@ const routeTree = rootRoute.addChildren([
 export {
   accountsRoute,
   appearanceRoute,
+  changesRoute,
   chatRoute,
   filesRoute,
   indexRoute,

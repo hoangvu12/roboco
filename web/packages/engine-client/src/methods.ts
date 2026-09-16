@@ -53,3 +53,12 @@ export const SUBSCRIBE_TERMINAL = "SubscribeTerminal";
 export const WRITE_TERMINAL = "WriteTerminal";
 export const RESIZE_TERMINAL = "ResizeTerminal";
 export const CLOSE_TERMINAL = "CloseTerminal";
+
+/** Per-checkout working-tree diffs (DataRpc, relay-forwardable). */
+export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
+/** One-shot scoped capture (`mode` = workingTree | branch | turn). */
+export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
+/** Full text of one side of a file in a diff (used for non-truncated text view). */
+export const GET_CHECKOUT_FILE_DIFF_TEXT = "GetCheckoutFileDiffText";
+/** Branches for a checkout (one-shot). Default branch first. */
+export const LIST_BRANCHES = "ListBranches";
