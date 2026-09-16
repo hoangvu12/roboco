@@ -8,7 +8,7 @@ export const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1 = "message-queue-clean-attac
 export const MESSAGE_QUEUE_EDIT_LEASE_V1 = "message-queue-edit-lease-v1";
 
 /** Every capability this build of the engine advertises. */
-export const CAPABILITIES_CURRENT: readonly string[] = ["message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1"];
+export const CAPABILITIES_CURRENT: readonly string[] = ["message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "web-client"];
 
 export const PREVIEW_PROXY_PORT = 7331;
 export const MAX_WORKSPACE_IMAGE_BYTES = 8388608;
