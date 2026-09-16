@@ -1,11 +1,28 @@
 param(
-    [Parameter(Mandatory)][string]$ReleasesUrl
+    [Parameter(Mandatory)][string]$ReleasesUrl,
+    [switch]$SkipWebBuild
 )
 $ErrorActionPreference = 'Stop'
 if (-not $ReleasesUrl.StartsWith('https://')) { throw 'Release feed must use HTTPS' }
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
+    # The engine embeds the built web client (rust-embed, staged by
+    # crates/engine/build.rs). Build it before cargo so the embed has
+    # bytes to bake. Skippable for CI caches that already have a fresh
+    # dist, or when ROBOCO_WEB_DIST points at a vendored bundle.
+    if (-not $SkipWebBuild) {
+        $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+        if (-not $pnpm) { throw 'pnpm is required to build the embedded web client (or pass -SkipWebBuild and set ROBOCO_WEB_DIST)' }
+        corepack enable | Out-Null
+        Push-Location (Join-Path $root 'web')
+        try {
+            & pnpm install --frozen-lockfile
+            if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed' }
+            & pnpm --filter '@roboco/app' run build
+            if ($LASTEXITCODE -ne 0) { throw 'web build failed' }
+        } finally { Pop-Location }
+    }
     cargo build --release --locked -p roboco
     if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
     # Normalize to one scalar string: a multi-record capture (console/GUI
