@@ -40,6 +40,9 @@ export function AppShell() {
             <span className={`dot ${state.dot}`} />
             {state.label}
           </span>
+          <Link to="/settings" className="btn btn-ghost">
+            Settings
+          </Link>
         </footer>
       </aside>
       <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />

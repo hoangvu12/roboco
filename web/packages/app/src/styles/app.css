@@ -646,3 +646,604 @@ button {
     display: none;
   }
 }
+
+/* ── Settings (ticket 16) ───────────────────────────────────────────── */
+
+/* Page column: the desktop's 768px-centered page_column. */
+.settings-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.settings-nav {
+  flex: none;
+  width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--rb-space-lg) var(--rb-space-sm);
+  border-right: 1px solid var(--rb-border);
+}
+
+.settings-nav-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+  padding: 0 var(--rb-space-sm) var(--rb-space-xs);
+}
+
+.settings-nav-link {
+  padding: 6px var(--rb-space-sm);
+  border-radius: var(--rb-radius-control);
+  color: var(--rb-text-muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.settings-nav-link:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.settings-nav-active,
+.settings-nav-active:hover {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  color: var(--rb-text);
+}
+
+.settings-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.settings-page {
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.settings-title-count {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--rb-text-muted);
+}
+
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rb-space-sm);
+}
+
+.settings-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--rb-text-muted);
+  max-width: 34rem;
+}
+
+.settings-section-header {
+  margin: 28px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.settings-section-header h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+/* The section card; rows own no corners or outer dividers. */
+.settings-card {
+  border: 1px solid var(--rb-border);
+  border-radius: 12px;
+  background: var(--rb-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--rb-border);
+}
+
+.settings-row:hover {
+  background: color-mix(in srgb, var(--rb-text) 1.5%, transparent);
+}
+
+.settings-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row-title {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row-meta {
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.settings-row-revoked .settings-row-title {
+  color: var(--rb-text-faint);
+}
+
+.settings-meta-danger {
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+}
+
+.settings-empty {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.settings-empty-center {
+  padding: 32px 20px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.settings-url {
+  word-break: break-all;
+  white-space: normal;
+  font-size: 12px;
+}
+
+.settings-select {
+  width: auto;
+  min-width: 12rem;
+  flex: none;
+}
+
+.settings-provider {
+  margin-top: 24px;
+}
+
+.settings-footnote {
+  margin: 24px 0 0;
+  font-size: 12px;
+  line-height: 19px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* Toggle switch — the desktop's 32×18 toggle_switch. */
+.toggle {
+  flex: none;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rb-text) 15%, transparent);
+  position: relative;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--rb-bg);
+  transition: left var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.toggle-on {
+  background: var(--rb-text);
+}
+
+.toggle-on .toggle-thumb {
+  left: 16px;
+}
+
+/* Badges — 10.5px pills (badge / badge_active). */
+.badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--rb-border);
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+}
+
+.badge-active {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--rb-success) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-success-muted) 90%, transparent);
+}
+
+/* Account rows. */
+.settings-account-row {
+  align-items: stretch;
+  padding: 14px 20px;
+}
+
+.account-avatar {
+  flex: none;
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rb-text-muted);
+}
+
+.account-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.account-badges,
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Usage meters: label · bar · "NN% used" · reset. */
+.usage-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.usage-label {
+  width: 48px;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-track {
+  flex: 1;
+  min-width: 56px;
+  max-width: 230px;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+}
+
+.usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.usage-percent {
+  width: 64px;
+  flex: none;
+  text-align: right;
+}
+
+.usage-reset {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+}
+
+/* Error and warning strips. */
+.error-strip,
+.warning-strip {
+  margin: 16px 0 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.error-strip {
+  border: 1px solid color-mix(in srgb, var(--rb-danger) 20%, transparent);
+  background: color-mix(in srgb, var(--rb-danger) 6%, transparent);
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+}
+
+.error-strip-hint {
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.warning-strip {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--rb-warning) 20%, transparent);
+  background: color-mix(in srgb, var(--rb-warning) 6%, transparent);
+  color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
+  font-size: 12px;
+}
+
+/* Loading skeletons — same geometry as a real account row. */
+.skeleton-row {
+  pointer-events: none;
+}
+
+.skeleton-block {
+  display: block;
+  background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+  border-radius: 6px;
+  animation: skeleton-pulse 1.6s var(--rb-ease-ease-in-out) infinite;
+}
+
+.skeleton-line {
+  height: 12px;
+  width: 40%;
+}
+
+.skeleton-line-short {
+  width: 60%;
+  height: 8px;
+}
+
+.skeleton-dim {
+  opacity: 0.5;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Option cards (appearance mode) and choice pills (surface). */
+.settings-option-row {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+}
+
+.option-card {
+  flex: 1;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
+  color: var(--rb-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.option-card:hover {
+  background: var(--rb-hover);
+}
+
+.option-card-selected,
+.option-card-selected:hover {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+  color: var(--rb-accent);
+  font-weight: 500;
+}
+
+.choice-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.choice {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
+  color: var(--rb-text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.choice:hover {
+  background: var(--rb-hover);
+}
+
+.choice-selected,
+.choice-selected:hover {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+  color: var(--rb-accent);
+  font-weight: 500;
+}
+
+/* Accent swatches. */
+.swatch-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--rb-border-strong);
+  cursor: pointer;
+  padding: 0;
+}
+
+.swatch-selected {
+  outline: 2px solid var(--rb-accent);
+  outline-offset: 2px;
+}
+
+/* The login dialog (modal). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 15vh var(--rb-space-md) var(--rb-space-md);
+}
+
+.modal-card {
+  width: min(26rem, 100%);
+  padding: var(--rb-space-md) var(--rb-space-lg) var(--rb-space-lg);
+  display: flex;
+  flex-direction: column;
+  background: var(--rb-dialog);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-body {
+  margin-top: 8px;
+  line-height: 18px;
+}
+
+.modal-link {
+  margin-top: 6px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-link:hover {
+  color: var(--rb-text);
+  text-decoration: underline;
+}
+
+.modal-form {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-poll {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Frosted surface treatment: floating cards thin to glass over a blur. */
+html[data-surface="frosted"] .settings-card {
+  background: color-mix(in srgb, var(--rb-card) calc(var(--rb-glass-card-alpha) * 100%), transparent);
+}
+
+html[data-surface="frosted"] .drawer,
+html[data-surface="frosted"] .modal-card {
+  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+@media (max-width: 768px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    border-right: none;
+    border-bottom: 1px solid var(--rb-border);
+    padding: var(--rb-space-sm) var(--rb-space-md);
+  }
+
+  .settings-nav-title {
+    padding-bottom: 0;
+  }
+
+  .settings-page {
+    padding: 20px 16px 48px;
+  }
+
+  .settings-option-row {
+    flex-direction: column;
+  }
+
+  .settings-row {
+    flex-wrap: wrap;
+  }
+}

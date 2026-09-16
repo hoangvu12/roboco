@@ -3,10 +3,10 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import "@roboco/theme/fonts.css";
 import "./styles/app.css";
-import { installThemeVariant } from "./theme";
+import { initAppearance } from "./state/appearance";
 import { router } from "./router";
 
-installThemeVariant();
+initAppearance();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
