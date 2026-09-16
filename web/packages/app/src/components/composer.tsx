@@ -6,7 +6,10 @@ import { PickerCatalog } from "../state/picker-catalog";
 import { sidebarNotice } from "../state/notice";
 import { draftFromChat, isHarnessLocked } from "../lib/composer-draft";
 import { describeSendError, sendInterrupt, sendRun, sendSteer, type DraftConfig, type DraftConfigUpdate } from "../lib/composer-actions";
+import { formatToMime, type StagedAttachment } from "../lib/attachments";
+import { seedAttachment } from "../state/attachment-cache";
 import { ComposerPickers } from "./composer-pickers";
+import { AttachmentStrip } from "./attachments/attachment-strip";
 
 /**
  * The composer — the desktop's `crates/ui/src/composer.rs` ported to React:
@@ -66,6 +69,13 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
   );
   const [flipExpanded, setFlipExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Staged attachments per chat id — survives a chat switch (the strip
+  // moves with the chat). Empty for a chat the user has never staged on.
+  const [stagedByChat, setStagedByChat] = useState<Record<string, readonly StagedAttachment[]>>({});
+  // Whole-send upload progress (0..1) for the strip's progress bar. Null
+  // when nothing is uploading.
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const staged = stagedByChat[chat.id] ?? [];
 
   // When the chat id changes (and on first mount), reset the composer:
   // a fresh chat's textarea is empty; existing chats replay whatever the
@@ -77,6 +87,7 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
     lastChatIdRef.current = chat.id;
     setText("");
     setFlipExpanded(false);
+    setUploadProgress(null);
     onSwitchChat?.(chat.id);
   }, [chat.id, onSwitchChat]);
 
@@ -193,7 +204,8 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       return;
     }
     const trimmed = text.trim();
-    if (isWorking && trimmed.length === 0) {
+    const hasContent = trimmed.length > 0 || staged.length > 0;
+    if (isWorking && !hasContent) {
       // Empty + working → Stop (interrupt).
       setBusy(true);
       try {
@@ -205,8 +217,9 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       }
       return;
     }
-    if (isWorking && trimmed.length > 0 && supportsSteering) {
+    if (isWorking && hasContent && supportsSteering && trimmed.length > 0) {
       // Live run + text + steering-capable harness → Steer.
+      // (Steer doesn't carry attachments in v1 — they go on the next Run.)
       setBusy(true);
       try {
         await sendSteer(session.client, chat.id, trimmed);
@@ -218,7 +231,7 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       }
       return;
     }
-    if (trimmed.length === 0) {
+    if (!hasContent) {
       return;
     }
     if (chat.cwd === null || chat.cwd === undefined || chat.cwd.trim().length === 0) {
@@ -226,15 +239,72 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       return;
     }
     setBusy(true);
+    setUploadProgress(staged.length > 0 ? 0 : null);
     try {
-      await sendRun(session.client, chat.id, draft, trimmed, chat.cwd, { currentConfig: chat.config });
+      const sendResult = await sendRun(
+        session.client,
+        chat.id,
+        draft,
+        trimmed,
+        chat.cwd,
+        { currentConfig: chat.config },
+        staged.length > 0
+          ? {
+              stagedAttachments: staged,
+              uploadProgress: (uploaded, total) => {
+                if (total <= 0) {
+                  setUploadProgress(1);
+                  return;
+                }
+                setUploadProgress(uploaded / total);
+              },
+            }
+          : {},
+      );
+      // Seed the attachment cache so the just-sent bubble renders from
+      // local bytes without a ReadAttachmentChunk round-trip.
+      const deviceId = session.client.engineInfo?.deviceId ?? null;
+      if (deviceId !== null) {
+        staged.forEach((att, ix) => {
+          const path = sendResult.attachmentPaths[ix];
+          if (path === undefined) {
+            return;
+          }
+          seedAttachment(deviceId, path, {
+            name: att.name,
+            mime: formatToMime(att.format),
+            bytes: att.bytes,
+          });
+        });
+      }
       setText("");
+      setStagedByChat((current) => {
+        if (staged.length === 0) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[chat.id];
+        return next;
+      });
+      setUploadProgress(null);
     } catch (error) {
       sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
+      setUploadProgress(null);
     } finally {
       setBusy(false);
     }
-  }, [busy, text, isWorking, supportsSteering, session.client, chat.id, chat.cwd, chat.config, draft]);
+  }, [
+    busy,
+    text,
+    isWorking,
+    supportsSteering,
+    session.client,
+    chat.id,
+    chat.cwd,
+    chat.config,
+    draft,
+    staged,
+  ]);
 
   // The composer is disabled until the catalog has at least the harness list.
   const composerReady = harnesses.loaded;
@@ -266,7 +336,39 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       : "Stop"
     : "Send";
   const sendVariant: "default" | "stop" = isWorking && text.length === 0 ? "stop" : "default";
-  const sendDisabled = busy || !composerReady || (text.trim().length === 0 && !isWorking);
+  const sendDisabled =
+    busy ||
+    !composerReady ||
+    (text.trim().length === 0 && staged.length === 0 && !isWorking);
+
+  const onStage = useCallback(
+    (next: readonly StagedAttachment[]) => {
+      setStagedByChat((current) => ({
+        ...current,
+        [chat.id]: [...(current[chat.id] ?? []), ...next],
+      }));
+    },
+    [chat.id],
+  );
+  const onRemove = useCallback(
+    (id: string) => {
+      setStagedByChat((current) => {
+        const list = current[chat.id] ?? [];
+        const next = list.filter((att) => att.id !== id);
+        const merged = { ...current };
+        if (next.length === 0) {
+          delete merged[chat.id];
+        } else {
+          merged[chat.id] = next;
+        }
+        return merged;
+      });
+    },
+    [chat.id],
+  );
+  const onStageError = useCallback((message: string) => {
+    sidebarNotice.set(message);
+  }, []);
 
   const heightPx = flipExpanded ? Math.max(EXPANDED_MIN_PX, textareaRef.current?.scrollHeight ?? EXPANDED_MIN_PX) : COMPACT_HEIGHT_PX;
 
@@ -275,6 +377,15 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       className={`composer ${flipExpanded ? "composer-expanded" : "composer-compact"} ${isWorking ? "composer-working" : ""}`}
       data-steering-mode={steeringMode}
     >
+      <AttachmentStrip
+        chatId={chat.id}
+        staged={staged}
+        uploadProgress={uploadProgress}
+        disabled={busy || !composerReady}
+        onStage={onStage}
+        onRemove={onRemove}
+        onError={onStageError}
+      />
       <div className="composer-input-wrap" style={{ animationDuration: `${FLIP_DURATION_MS}ms` }}>
         <textarea
           ref={textareaRef}
@@ -309,9 +420,9 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
           onClick={() => void submit()}
           disabled={sendDisabled}
           title={
-            isWorking && text.length === 0
+            isWorking && text.length === 0 && staged.length === 0
               ? "Interrupt the live run"
-              : isWorking && supportsSteering
+              : isWorking && supportsSteering && text.length > 0
                 ? "Steer the live run (Mod+Enter)"
                 : "Send (Mod+Enter)"
           }

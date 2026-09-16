@@ -17,6 +17,7 @@ import type {
   TranscriptFrame,
 } from "@roboco/proto";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
+import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
 
 // ---------------------------------------------------------------------------
 // Shared view helpers (crates/proto/src/view.rs)
@@ -676,6 +677,10 @@ export type TranscriptRowKind =
       readonly text: string;
       /** Optimistic echo not yet confirmed by a doc frame. */
       readonly pending: boolean;
+      /** Attachment refs parsed out of the message's refs trailer
+       *  (composer/use-attachments.ts `withAttachments`). The transcript
+       *  renders a thumbnail strip above the bubble when non-empty. */
+      readonly attachments: readonly UserImageAttachment[];
     }
   /** One top-level markdown block of a completed message. */
   | { readonly kind: "markdown"; readonly tree: BlockTree; readonly blockIx: number }
@@ -731,14 +736,15 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       .filter((part): part is Extract<MessagePart, { kind: "text" }> => part.kind === "text")
       .map((part) => part.text)
       .join("\n\n");
-    const copyText = raw.trim().length > 0 ? raw : null;
+    const parsed = parseUserMessageImages(raw);
+    const copyText = parsed.text.trim().length > 0 ? parsed.text : null;
     // `raw.length << 1 | pending` on the desktop; BigInt-free equivalent.
     return [
       {
         id: entry.id,
         version: raw.length * 2 + (pending ? 1 : 0),
         turnStart: true,
-        rowKind: { kind: "user", text: raw, pending },
+        rowKind: { kind: "user", text: parsed.text, pending, attachments: parsed.attachments },
         entryId: entry.id,
         // User rows always carry the strip (the optimistic echo included).
         timestamp: entry.createdAt,

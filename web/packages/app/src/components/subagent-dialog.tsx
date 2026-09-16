@@ -8,7 +8,17 @@ import { TranscriptView } from "./transcript";
  * comes off the spawn chip's `subagentRef` (`WatchDocMessages` serves any doc
  * id), so the same transcript machinery renders the child run.
  */
-export function SubagentDialog({ client, docId, onClose }: { client: EngineClient; docId: string; onClose: () => void }) {
+export function SubagentDialog({
+  client,
+  docId,
+  deviceId,
+  onClose,
+}: {
+  client: EngineClient;
+  docId: string;
+  deviceId: string | null;
+  onClose: () => void;
+}) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
@@ -33,7 +43,7 @@ export function SubagentDialog({ client, docId, onClose }: { client: EngineClien
             Close
           </button>
         </header>
-        <TranscriptView client={client} docId={docId} />
+        <TranscriptView client={client} docId={docId} deviceId={deviceId} />
       </div>
     </div>
   );

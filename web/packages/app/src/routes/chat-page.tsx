@@ -127,7 +127,7 @@ export function ChatPage() {
             <p className="chat-transcript-empty">No engine connected.</p>
           </div>
         ) : (
-          <TranscriptView client={session.client} docId={chatId} />
+          <TranscriptView client={session.client} docId={chatId} deviceId={deviceId} />
         )}
         {previewOpen && <PreviewPanel chatId={chatId} onClose={() => setPreviewOpen(false)} />}
       </div>
