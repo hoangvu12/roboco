@@ -3,7 +3,7 @@ import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { useFleet } from "../state/fleet";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
-import { ChatList } from "./chat-list";
+import { SidebarBody } from "./sidebar-body";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
 
@@ -32,9 +32,7 @@ export function AppShell() {
             Engines
           </button>
         </header>
-        <nav className="sidebar-list" aria-label="Chats">
-          <ChatList />
-        </nav>
+        <SidebarBody key={fleet.active ?? "none"} />
         <footer className="sidebar-footer">
           <span className={`conn ${state.className}`}>
             <span className={`dot ${state.dot}`} />
