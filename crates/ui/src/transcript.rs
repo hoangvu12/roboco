@@ -47,7 +47,7 @@ use crate::markdown::parser::{
 };
 use crate::markdown::render::{self, RenderCache, RenderOptions};
 use crate::markdown::veil::RowVeil;
-use crate::motion::{self, AnimationExt as _};
+use crate::motion::{self, AnimationExt as _, MotionSpecExt as _};
 use crate::state::AppState;
 use crate::syntax_cache::{DocumentHighlightKey, SyntaxHighlightCache};
 use crate::theme::Theme;
@@ -56,9 +56,16 @@ use roboco_syntax::LanguageId as Lang;
 // ---------------------------------------------------------------------------
 // Constants (mugen ports)
 // ---------------------------------------------------------------------------
+//
+// The stick-to-bottom spring parameters (`STICK_THRESHOLD_PX`,
+// `SPRING_DAMPING`, …) live in `roboco_proto::motion` (gpui-free) so the web
+// client reimplements the same spring from the same values; re-exported here.
+pub use roboco_proto::motion::{
+    AT_BOTTOM_PX, GLIDE_MAX_VIEWPORTS, SPRING_CHASE_MAX_LEAD, SPRING_DAMPING, SPRING_FRAME_MS,
+    SPRING_GROWTH_EMA, SPRING_MASS, SPRING_MAX_CATCHUP_FRAMES, SPRING_SETTLE_GRACE_MS,
+    SPRING_STIFFNESS, STICK_THRESHOLD_PX,
+};
 
-/// Re-engage the bottom pin when the user returns within this many px of the end.
-pub const STICK_THRESHOLD_PX: f32 = 70.0;
 /// List overdraw beyond the viewport.
 pub const OVERDRAW_PX: f32 = 320.0;
 /// Show the scroll-to-bottom button beyond this distance from the end.
@@ -182,26 +189,9 @@ pub const ATT_THUMB_H: f32 = 80.0;
 
 // ---------------------------------------------------------------------------
 // Stick-to-bottom spring (mugen §1e — same constants as its DEFAULT_SPRING,
-// which follows the shape of stackblitz/use-stick-to-bottom)
+// which follows the shape of stackblitz/use-stick-to-bottom; the parameters
+// themselves are re-exported from `roboco_proto::motion` above)
 // ---------------------------------------------------------------------------
-
-/// Retains velocity frame-to-frame (higher = more glide).
-pub const SPRING_DAMPING: f32 = 0.7;
-/// Pull toward the target (higher = snappier).
-pub const SPRING_STIFFNESS: f32 = 0.05;
-/// Inertia (higher = slower to start/stop).
-pub const SPRING_MASS: f32 = 1.25;
-/// Reference frame for the fixed-timestep integration (60fps).
-pub const SPRING_FRAME_MS: f32 = 1000.0 / 60.0;
-/// Cap on simulated frames per tick — a hitch catches up instead of teleporting.
-pub const SPRING_MAX_CATCHUP_FRAMES: f32 = 8.0;
-/// EMA rate for the feed-forward target-growth estimate.
-pub const SPRING_GROWTH_EMA: f32 = 0.12;
-/// While streaming, chase up to this many px above the true bottom (keeps the
-/// growing tail visible instead of hugging a moving edge).
-pub const SPRING_CHASE_MAX_LEAD: f32 = 32.0;
-/// Treat as exactly pinned within this distance of the bottom.
-pub const AT_BOTTOM_PX: f32 = 2.0;
 
 /// A live stream already resting at the end should keep that end anchored as
 /// its measured height grows. This is deliberately narrower than `pinned`:
@@ -209,12 +199,6 @@ pub const AT_BOTTOM_PX: f32 = 2.0;
 fn should_anchor_live_stream(pinned: bool, distance_from_bottom: f32, streaming: bool) -> bool {
     pinned && streaming && distance_from_bottom <= AT_BOTTOM_PX
 }
-
-/// Retain the spring's state this long after landing, so a streaming pause
-/// resumes at cruise. Retaining state does not require drawing idle frames.
-pub const SPRING_SETTLE_GRACE_MS: u64 = 500;
-/// Teleport when farther than this many viewports from the end; glide the rest.
-pub const GLIDE_MAX_VIEWPORTS: f32 = 2.5;
 /// A freshly-sent prompt rests this far below the transcript viewport's top.
 /// The titlebar overlays the full-height list, so its height is part of the
 /// inset; the extra 10px matches the first row's breathing room.

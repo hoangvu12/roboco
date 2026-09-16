@@ -1,0 +1,79 @@
+name: Theme artifact
+
+# The web client's design tokens are generated from the Rust sources of truth
+# (crates/theme's builtin registry + roboco-proto's layout/motion constants) by
+# `roboco-theme-export`. The gate fails when a source changes without
+# regenerating web/packages/theme, and typechecks the standalone
+# @roboco/theme package.
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/theme/**'
+      - 'crates/proto/**'
+      - 'crates/ui/src/theme.rs'
+      - 'crates/ui/src/motion.rs'
+      - 'crates/ui/src/transcript.rs'
+      - 'crates/ui/src/composer_dock.rs'
+      - 'web/packages/theme/**'
+      - '.github/workflows/theme-artifact.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/theme/**'
+      - 'crates/proto/**'
+      - 'crates/ui/src/theme.rs'
+      - 'crates/ui/src/motion.rs'
+      - 'crates/ui/src/transcript.rs'
+      - 'crates/ui/src/composer_dock.rs'
+      - 'web/packages/theme/**'
+      - '.github/workflows/theme-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: theme-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  export-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Artifact freshness gate
+        run: cargo run --locked -p roboco-theme --bin roboco-theme-export -- --check
+      - name: Round-trip tests (registry ↔ artifact)
+        run: cargo test --locked -p roboco-theme
+
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web/packages/theme
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck @roboco/theme
+        run: pnpm run typecheck
