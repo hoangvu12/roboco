@@ -40,6 +40,19 @@ export const LIST_HARNESSES = "ListHarnesses";
 export const LIST_MODELS = "ListModels";
 /** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
 export const QUEUE_COMMAND = "QueueCommand";
+/** Message-queue surface (crates/engine/rpc.rs §3.5). The queue lives on the chat doc;
+ *  `WatchQueue` streams `{items}` snapshots, the rest are mutations that require
+ *  an explicit ack so a racing device's row never silently moves. Edit leases
+ *  gate host-authoritative delivery while a client is editing. */
+export const QUEUE_MESSAGE = "QueueMessage";
+export const UPDATE_QUEUED_MESSAGE = "UpdateQueuedMessage";
+export const MOVE_QUEUED_MESSAGE = "MoveQueuedMessage";
+export const REMOVE_QUEUED_MESSAGE = "RemoveQueuedMessage";
+export const SEND_QUEUED_MESSAGE_NOW = "SendQueuedMessageNow";
+export const STEER_QUEUED_MESSAGE_NOW = "SteerQueuedMessageNow";
+export const BEGIN_QUEUED_MESSAGE_EDIT = "BeginQueuedMessageEdit";
+export const RENEW_QUEUED_MESSAGE_EDIT = "RenewQueuedMessageEdit";
+export const FINISH_QUEUED_MESSAGE_EDIT = "FinishQueuedMessageEdit";
 /** Workspace file surface (crates/engine/src/workspace_files.rs): the space's
  *  directory tree, text/image reads, writes, and the change stream. */
 export const LIST_WORKSPACE_DIRECTORY = "ListWorkspaceDirectory";

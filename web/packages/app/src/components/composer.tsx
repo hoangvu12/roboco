@@ -36,9 +36,19 @@ interface ComposerProps {
   readonly catalog: PickerCatalog;
   /** Called when the chat id changes so the host can flush the textarea on switch. */
   readonly onSwitchChat?: (chatId: string) => void;
+  /**
+   * The queued row currently being edited in this composer — `null` when
+   * the composer is free (a normal send). When this changes to a non-null
+   * value, the composer seeds its textarea with `editingMessage.text` and
+   * routes send/clear through `onEditFinish` so the host can release the
+   * edit lease (commit on send with changes, releaseUnchanged on empty
+   * send, cancel on chat switch / explicit release).
+   */
+  readonly editingMessage?: { id: string; text: string } | null;
+  readonly onEditFinish?: (outcome: { action: "commit" | "cancel" | "releaseUnchanged"; text: string }) => void;
 }
 
-export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps) {
+export function Composer({ session, chat, catalog, onSwitchChat, editingMessage, onEditFinish }: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastChatIdRef = useRef(chat.id);
@@ -79,6 +89,22 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
     setFlipExpanded(false);
     onSwitchChat?.(chat.id);
   }, [chat.id, onSwitchChat]);
+
+  // When the edit row changes (the chat page started/cancelled editing a
+  // queued row), seed the textarea with the row's text so the user can
+  // type a replacement. The host owns the lease; we just mirror its text.
+  const lastEditingIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const id = editingMessage?.id ?? null;
+    if (id === lastEditingIdRef.current) {
+      return;
+    }
+    lastEditingIdRef.current = id;
+    if (editingMessage !== null && editingMessage !== undefined) {
+      setText(editingMessage.text);
+      setFlipExpanded(editingMessage.text.length > 0);
+    }
+  }, [editingMessage]);
 
   // Reconcile the draft with chat.config + the loaded catalog: if a chat
   // already has a persisted ChatConfig, use it (locked); if not, default
@@ -193,6 +219,41 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
       return;
     }
     const trimmed = text.trim();
+    const editing = editingMessage ?? null;
+    if (editing !== null) {
+      // Editing a queued row: send replaces the row text in place (commit)
+      // and then runs/steers as usual. Empty submit closes the lease without
+      // changing the row text (releaseUnchanged).
+      if (trimmed.length === 0) {
+        setBusy(true);
+        try {
+          onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+      setBusy(true);
+      try {
+        const textChanged = trimmed !== (editing.text ?? "").trim();
+        if (textChanged) {
+          onEditFinish?.({ action: "commit", text: trimmed });
+        } else {
+          onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
+        }
+        if (isWorking && supportsSteering) {
+          await sendSteer(session.client, chat.id, trimmed);
+        } else if (chat.cwd !== null && chat.cwd !== undefined && chat.cwd.trim().length > 0) {
+          await sendRun(session.client, chat.id, draft, trimmed, chat.cwd, { currentConfig: chat.config });
+        }
+        setText("");
+      } catch (error) {
+        sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (isWorking && trimmed.length === 0) {
       // Empty + working → Stop (interrupt).
       setBusy(true);
@@ -234,7 +295,7 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
     } finally {
       setBusy(false);
     }
-  }, [busy, text, isWorking, supportsSteering, session.client, chat.id, chat.cwd, chat.config, draft]);
+  }, [busy, text, isWorking, supportsSteering, session.client, chat.id, chat.cwd, chat.config, draft, editingMessage, onEditFinish]);
 
   // The composer is disabled until the catalog has at least the harness list.
   const composerReady = harnesses.loaded;
@@ -258,21 +319,25 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
   };
 
   // Compose the send button label & variant.
-  const sendLabel = isWorking
-    ? text.length > 0
-      ? supportsSteering
-        ? "Steer"
-        : "Send"
+  const sendLabel = editingMessage !== null && editingMessage !== undefined
+    ? text.trim().length === 0
+      ? "Release"
+      : "Commit & send"
+    : isWorking
+      ? text.length > 0
+        ? supportsSteering
+          ? "Steer"
+          : "Send"
       : "Stop"
     : "Send";
-  const sendVariant: "default" | "stop" = isWorking && text.length === 0 ? "stop" : "default";
-  const sendDisabled = busy || !composerReady || (text.trim().length === 0 && !isWorking);
+  const sendVariant: "default" | "stop" = !editingMessage && isWorking && text.length === 0 ? "stop" : "default";
+  const sendDisabled = busy || !composerReady || (text.trim().length === 0 && !isWorking && !editingMessage);
 
   const heightPx = flipExpanded ? Math.max(EXPANDED_MIN_PX, textareaRef.current?.scrollHeight ?? EXPANDED_MIN_PX) : COMPACT_HEIGHT_PX;
 
   return (
     <div
-      className={`composer ${flipExpanded ? "composer-expanded" : "composer-compact"} ${isWorking ? "composer-working" : ""}`}
+      className={`composer ${flipExpanded ? "composer-expanded" : "composer-compact"} ${isWorking ? "composer-working" : ""} ${editingMessage !== null && editingMessage !== undefined ? "composer-editing" : ""}`}
       data-steering-mode={steeringMode}
     >
       <div className="composer-input-wrap" style={{ animationDuration: `${FLIP_DURATION_MS}ms` }}>
@@ -287,7 +352,7 @@ export function Composer({ session, chat, catalog, onSwitchChat }: ComposerProps
           spellCheck={false}
           autoComplete="off"
           disabled={!composerReady}
-          aria-label="Compose message"
+          aria-label={editingMessage !== null && editingMessage !== undefined ? "Edit queued message" : "Compose message"}
           style={{ height: `${heightPx}px` }}
         />
       </div>
