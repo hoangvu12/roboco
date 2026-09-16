@@ -31,6 +31,7 @@ import { VeilTracker } from "../lib/veil";
 import { MarkdownBlockView } from "./markdown";
 import { StickController } from "./stick-controller";
 import { SubagentDialog } from "./subagent-dialog";
+import { UserAttachments } from "./attachments/user-attachments";
 
 /**
  * The chat transcript — virtualization at block granularity over the row model
@@ -45,7 +46,15 @@ const MAX_CONTENT_WIDTH = 736;
 /** Line cap for a FETCHED full output (defensive; desktop FULL_OUTPUT_MAX_LINES). */
 const FULL_OUTPUT_MAX_LINES = 400;
 
-export function TranscriptView({ client, docId }: { client: EngineClient; docId: string }) {
+export function TranscriptView({
+  client,
+  docId,
+  deviceId,
+}: {
+  client: EngineClient;
+  docId: string;
+  deviceId: string | null;
+}) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
     const created = new TranscriptStore(client, docId);
@@ -62,10 +71,25 @@ export function TranscriptView({ client, docId }: { client: EngineClient; docId:
       </div>
     );
   }
-  return <TranscriptSurface key={store.docId} store={store} client={client} />;
+  return (
+    <TranscriptSurface
+      key={store.docId}
+      store={store}
+      client={client}
+      deviceId={deviceId}
+    />
+  );
 }
 
-function TranscriptSurface({ store, client }: { store: TranscriptStore; client: EngineClient }) {
+function TranscriptSurface({
+  store,
+  client,
+  deviceId,
+}: {
+  store: TranscriptStore;
+  client: EngineClient;
+  deviceId: string | null;
+}) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
@@ -108,6 +132,7 @@ function TranscriptSurface({ store, client }: { store: TranscriptStore; client: 
       error={snapshot.error}
       onRetry={() => store.resubscribe()}
       client={client}
+      deviceId={deviceId}
     />
   );
 }
@@ -123,6 +148,7 @@ interface ScrollerProps {
   readonly error: string | null;
   readonly onRetry: () => void;
   readonly client: EngineClient;
+  readonly deviceId: string | null;
 }
 
 /** Capture the first visible row + its pixel offset — the escape anchor. */
@@ -167,7 +193,7 @@ function estimateRowHeight(row: TranscriptRow): number {
   }
 }
 
-function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client }: ScrollerProps) {
+function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, deviceId }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const anchorRef = useRef<{ id: string; offset: number } | null>(null);
@@ -374,6 +400,7 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client }:
                   hovered={hoveredEntry === row.entryId}
                   onOpenSubagent={openSubagent}
                   client={client}
+                  deviceId={deviceId}
                 />
               </RowShell>
             );
@@ -402,7 +429,7 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client }:
         </div>
       )}
       {subagentDoc !== null && (
-        <SubagentDialog client={client} docId={subagentDoc} onClose={() => setSubagentDoc(null)} />
+        <SubagentDialog client={client} docId={subagentDoc} deviceId={deviceId} onClose={() => setSubagentDoc(null)} />
       )}
     </div>
   );
@@ -446,17 +473,27 @@ function RowContent({
   hovered,
   onOpenSubagent,
   client,
+  deviceId,
 }: {
   row: TranscriptRow;
   streaming: boolean;
   hovered: boolean;
   onOpenSubagent: (doc: string) => void;
   client: EngineClient;
+  deviceId: string | null;
 }) {
   const kind = row.rowKind;
   return (
     <>
-      {kind.kind === "user" && <UserRow text={kind.text} pending={kind.pending} />}
+      {kind.kind === "user" && (
+        <UserRow
+          text={kind.text}
+          pending={kind.pending}
+          attachments={kind.attachments}
+          client={client}
+          deviceId={deviceId}
+        />
+      )}
       {kind.kind === "markdown" && <MarkdownRow row={row} />}
       {kind.kind === "liveMarkdown" && <LiveMarkdownRow row={row} />}
       {kind.kind === "toolGroup" && (
@@ -503,22 +540,40 @@ function RowMeta({ row, visible }: { row: TranscriptRow; visible: boolean }) {
 
 // ── User bubble ─────────────────────────────────────────────────────────────
 
-function UserRow({ text, pending }: { text: string; pending: boolean }) {
+function UserRow({
+  text,
+  pending,
+  attachments,
+  client,
+  deviceId,
+}: {
+  text: string;
+  pending: boolean;
+  attachments: readonly import("../lib/attachments").UserImageAttachment[];
+  client: EngineClient;
+  deviceId: string | null;
+}) {
   const [expanded, setExpanded] = useState(false);
-  if (text.trim().length === 0) {
-    // Image-only sends show no bubble (desktop parity).
+  // Image-only sends show no bubble (desktop parity); the thumbnail strip
+  // above is the whole bubble.
+  if (text.trim().length === 0 && attachments.length === 0) {
     return null;
   }
-  const collapsible = userMessageNeedsCollapse(text);
+  const collapsible = text.length > 0 && userMessageNeedsCollapse(text);
   const clamped = collapsible && !expanded;
   return (
     <div className="row-user">
-      <div className={`user-bubble ${pending ? "user-bubble-pending" : ""}`}>
-        <div className={`user-text ${clamped ? "user-text-clamped" : ""}`}>{text}</div>
-        {collapsible && (
-          <button type="button" className="user-expand" onClick={() => setExpanded((value) => !value)}>
-            {expanded ? "▴ Show less" : "▾ Show more"}
-          </button>
+      <div className={`user-content ${pending ? "user-bubble-pending" : ""}`}>
+        <UserAttachments client={client} deviceId={deviceId} attachments={attachments} />
+        {text.trim().length > 0 && (
+          <div className={`user-bubble ${pending ? "user-bubble-pending" : ""}`}>
+            <div className={`user-text ${clamped ? "user-text-clamped" : ""}`}>{text}</div>
+            {collapsible === true && (
+              <button type="button" className="user-expand" onClick={() => setExpanded((value) => !value)}>
+                {expanded ? "▴ Show less" : "▾ Show more"}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

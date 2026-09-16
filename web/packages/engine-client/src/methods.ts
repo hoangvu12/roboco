@@ -63,6 +63,15 @@ export const WRITE_WORKSPACE_FILE = "WriteWorkspaceFile";
 /** The one workspace stream; items are `WorkspaceFileChanges` frames. */
 export const WATCH_WORKSPACE_FILES = "WatchWorkspaceFiles";
 
+/** Uploads / attachments (crates/rpc/src/lib.rs methods module). Chunked
+ *  binary → durable host path. `UploadChunk` and `UploadCommit` may take
+ *  `targetDeviceId` to forward to the chat's host device (the web composer
+ *  always does — uploads do not write to the browser side). */
+export const UPLOAD_CHUNK = "UploadChunk";
+export const UPLOAD_COMMIT = "UploadCommit";
+/** Transcript image read-back: 64KB base64 chunks until `done`. */
+export const READ_ATTACHMENT_CHUNK = "ReadAttachmentChunk";
+
 // Terminals (crates/engine/src/rpc.rs §3.4): OpenTerminal → TerminalSession,
 // SubscribeTerminal streams TerminalEvent (replay then live tail, no
 // readiness ack — the first item IS the ack), Write/Resize take the

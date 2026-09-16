@@ -2,6 +2,8 @@ import type { ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel } 
 import { methods } from "@roboco/engine-client";
 import type { EngineClient } from "@roboco/engine-client";
 import { describeMutateError } from "./chat-actions";
+import type { StagedAttachment, UploadedAttachment } from "./attachments";
+import { uploadAttachments, withAttachments } from "./attachments";
 
 /**
  * The composer's working draft — what the user has picked for the next send.
@@ -70,6 +72,20 @@ export interface CommandCaller {
 export interface SendResult {
   readonly messageId: string;
   readonly commandId: string;
+  /** The host-resolved paths the engine reports for each uploaded attachment
+   *  (in send order). The web mirror of the desktop's `attachment_paths` —
+   *  exposed so the strip can hand them to `seedAttachment` for instant
+   *  bubble rendering. */
+  readonly attachmentPaths: readonly string[];
+}
+
+/** Optional inputs for send. `stagedAttachments` is the bytes the user
+ *  dropped/picked into the composer — the sender uploads them, embeds the
+ *  refs in the prompt, and populates `transfers` so the chat's host device
+ *  knows about them. `uploadProgress` is called per-chunk. */
+export interface SendAttachmentsOptions {
+  readonly stagedAttachments?: readonly StagedAttachment[];
+  readonly uploadProgress?: (uploadedBytes: number, totalBytes: number) => void;
 }
 
 /** Mint a client-side message id (the optimistic-echo dedupe key). */
@@ -85,6 +101,12 @@ function defaultMint(): string {
  * Send a message to the harness: `Mutate setChatConfig` (if the draft drifted
  * from the persisted config) followed by `QueueCommand` with a Run payload.
  * Returns the message id the engine will claim for the user bubble.
+ *
+ * When `stagedAttachments` is non-empty, the caller uploads the bytes to
+ * the chat's host device first, folds the returned paths into the prompt
+ * (via [`withAttachments`]), and ships the upload identity as
+ * `transfers` on the `QueueCommand` call. The engine rewrites the
+ * `pending://` refs to durable paths on dispatch.
  */
 export async function sendRun(
   caller: CommandCaller,
@@ -93,9 +115,12 @@ export async function sendRun(
   prompt: string,
   chatCwd: string | null,
   options: { mintMessageId?: () => string; currentConfig?: ChatConfig | null } = {},
+  attachments: SendAttachmentsOptions = {},
 ): Promise<SendResult> {
   const trimmed = prompt.trim();
-  if (trimmed.length === 0) {
+  const staged = attachments.stagedAttachments ?? [];
+  const hasContent = trimmed.length > 0 || staged.length > 0;
+  if (!hasContent) {
     throw new Error("Cannot send an empty message");
   }
   if (chatCwd === null || chatCwd.trim().length === 0) {
@@ -103,17 +128,40 @@ export async function sendRun(
   }
   const messageId = options.mintMessageId ?? defaultMint;
   await maybePersistConfig(caller, chatId, draft, options.currentConfig ?? null);
+  const uploaded: readonly UploadedAttachment[] = await uploadStage(
+    caller,
+    staged,
+    attachments.uploadProgress,
+  );
+  const finalPrompt = withAttachments(trimmed, uploaded.map((entry) => entry.path));
   const command = {
     kind: "run" as const,
-    request: buildRunRequest(draft, trimmed, chatCwd, messageId()),
+    request: buildRunRequest(draft, finalPrompt, chatCwd, messageId()),
     messageId: messageId(),
   };
   const reply = (await caller.call(methods.QUEUE_COMMAND, {
     chatId,
     command,
-    transfers: [],
+    transfers: uploaded.map((entry) => ({ uploadId: entry.uploadId, fileName: entry.fileName })),
   })) as { commandId: string };
-  return { messageId: messageId(), commandId: reply.commandId };
+  return {
+    messageId: messageId(),
+    commandId: reply.commandId,
+    attachmentPaths: uploaded.map((entry) => entry.path),
+  };
+}
+
+/** Upload staged attachments to the chat's host device. Returns `[]`
+ *  for an empty stage (the common case). */
+async function uploadStage(
+  caller: CommandCaller,
+  staged: readonly StagedAttachment[],
+  progress: ((uploaded: number, total: number) => void) | undefined,
+): Promise<readonly UploadedAttachment[]> {
+  if (staged.length === 0) {
+    return [];
+  }
+  return uploadAttachments(caller, staged, progress ?? null);
 }
 
 /** Steer the live run with a new prompt (only when the harness supports it). */

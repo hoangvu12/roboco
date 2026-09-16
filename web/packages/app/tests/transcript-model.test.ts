@@ -249,7 +249,7 @@ describe("topGapFor / diffRows", () => {
         : kind === "toolGroup"
           ? { kind, tools: [], autoOpen: false }
           : kind === "user"
-            ? { kind, text: "", pending: false }
+            ? { kind, text: "", pending: false, attachments: [] }
             : kind === "inputChip"
               ? { kind, header: "", resolved: false }
               : { kind, message: "" };
