@@ -1,2 +1,9 @@
 packages:
   - "packages/*"
+
+allowBuilds:
+  esbuild: set this to true or false
+
+# vitest pulls esbuild, whose postinstall links the platform binary.
+onlyBuiltDependencies:
+  - "esbuild"
