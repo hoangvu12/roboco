@@ -12,6 +12,10 @@ export const WATCH_SPACES = "WatchSpaces";
 export const WATCH_DEVICES = "WatchDevices";
 export const WATCH_SESSIONS = "WatchSessions";
 export const WATCH_QUEUE = "WatchQueue";
+/** The chat doc's transcript stream: full `reset` first, then delta frames. */
+export const WATCH_DOC_MESSAGES = "WatchDocMessages";
+/** Fetch a tool sidecar blob (`{blobRef}` → `{text}`) — full output/diff text. */
+export const FETCH_TOOL_BLOB = "FetchToolBlob";
 /** The one stream that answers a `{stream: true}` readiness ack before items. */
 export const WATCH_CHECKOUT_CHANGE_REQUEST = "WatchCheckoutChangeRequest";
 export const REVOKE_PAIRING_SESSION = "RevokePairingSession";
