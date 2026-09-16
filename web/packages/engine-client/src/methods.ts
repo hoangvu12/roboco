@@ -12,6 +12,8 @@ export const WATCH_SPACES = "WatchSpaces";
 export const WATCH_DEVICES = "WatchDevices";
 export const WATCH_SESSIONS = "WatchSessions";
 export const WATCH_QUEUE = "WatchQueue";
+/** Dev-server discovery for one chat: streams `PreviewSnapshot` (crates/proto/src/preview.rs). */
+export const WATCH_PREVIEWS = "WatchPreviews";
 /** The one stream that answers a `{stream: true}` readiness ack before items. */
 export const WATCH_CHECKOUT_CHANGE_REQUEST = "WatchCheckoutChangeRequest";
 export const REVOKE_PAIRING_SESSION = "RevokePairingSession";
