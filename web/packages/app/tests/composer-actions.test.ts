@@ -5,9 +5,9 @@ import {
   buildChatConfig,
   buildRunRequest,
   describeSendError,
+  queueMessage,
   sendInterrupt,
   sendRun,
-  sendSteer,
   persistChatConfig,
   type DraftConfig,
 } from "../src/lib/composer-actions";
@@ -84,6 +84,17 @@ describe("buildRunRequest", () => {
     const request = buildRunRequest({ ...DRAFT, harness: "codex" }, "hi", "/tmp");
     expect(request.harness).toBe("codex");
   });
+
+  it("carries the staged attachment paths and defaults worktree to null", () => {
+    const request = buildRunRequest(DRAFT, "hi", "/tmp", ["/host/a.png"]);
+    expect(request.attachments).toEqual(["/host/a.png"]);
+    expect(request.worktree).toBeNull();
+  });
+
+  it("carries a worktree directive for the host to materialize", () => {
+    const request = buildRunRequest(DRAFT, "hi", "/repo", [], { repoPath: "/repo", base: "HEAD" });
+    expect(request.worktree).toEqual({ repoPath: "/repo", base: "HEAD" });
+  });
 });
 
 describe("sendRun", () => {
@@ -94,7 +105,6 @@ describe("sendRun", () => {
     const caller = new FakeCaller();
     caller.replies.set("QueueCommand", { commandId: "cmd-1" });
     await sendRun(caller, "chat-1", DRAFT, "  ship it  ", "/Users/me/proj", {
-      currentConfig: null,
       mintMessageId: () => "msg-1",
     });
     expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
@@ -126,39 +136,45 @@ describe("sendRun", () => {
   it("propagates engine failures so the caller can show a notice", async () => {
     const caller = new FakeCaller();
     caller.nextError = new RpcError("transport", "Engine is offline; reconnecting");
-    await expect(sendRun(caller, "chat-1", DRAFT, "hi", "/Users/me/proj", { currentConfig: PERSISTED })).rejects.toThrow(
+    await expect(sendRun(caller, "chat-1", DRAFT, "hi", "/Users/me/proj")).rejects.toThrow(
       "Engine is offline",
     );
   });
 });
 
-describe("sendSteer", () => {
-  it("sends a Steer command with the picked prompt and a null messageId by default", async () => {
+describe("queueMessage", () => {
+  // The composer's busy-chat path (composer.rs:6547-6577): QueueMessage with
+  // holdForTurnEnd — never a Steer command (spec decision 3).
+  it("queues with holdForTurnEnd and returns the row id", async () => {
     const caller = new FakeCaller();
-    await sendSteer(caller, "chat-1", "  pivot  ");
+    caller.replies.set("QueueMessage", { id: "q-9" });
+    const id = await queueMessage(caller, "chat-1", "  ship it  ", ["/host/a.png"]);
+    expect(id).toBe("q-9");
     expect(caller.calls).toEqual([
       {
-        method: "QueueCommand",
+        method: "QueueMessage",
         params: {
           chatId: "chat-1",
-          command: { kind: "steer", prompt: "pivot", messageId: null },
-          transfers: [],
+          text: "ship it",
+          attachments: ["/host/a.png"],
+          holdForTurnEnd: true,
         },
       },
     ]);
   });
 
-  it("honors an explicit messageId when the caller supplies one", async () => {
+  it("raises the verbatim failure when the queue returns no id", async () => {
     const caller = new FakeCaller();
-    await sendSteer(caller, "chat-1", "pivot", "msg-9");
-    const params = caller.calls[0]!.params as { command: { messageId: string } };
-    expect(params.command.messageId).toBe("msg-9");
+    caller.replies.set("QueueMessage", {});
+    await expect(queueMessage(caller, "chat-1", "ship")).rejects.toThrow(
+      "Send failed: queue did not return an id",
+    );
   });
 
-  it("rejects an empty prompt", async () => {
+  it("wraps RPC failures as Send failed", async () => {
     const caller = new FakeCaller();
-    await expect(sendSteer(caller, "chat-1", "   ")).rejects.toThrow(/empty/);
-    expect(caller.calls).toHaveLength(0);
+    caller.nextError = new RpcError("transport", "engine offline");
+    await expect(queueMessage(caller, "chat-1", "ship")).rejects.toThrow(/^Send failed:/);
   });
 });
 
@@ -236,7 +252,7 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "see this",
       "/Users/me/proj",
-      { currentConfig: null, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: staged },
     );
 
@@ -278,7 +294,7 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "",
       "/Users/me/proj",
-      { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: [stagePng("one.png")] },
     );
     const queue = caller.calls[2]!.params as {
@@ -290,7 +306,7 @@ describe("sendRun with attachments", () => {
   it("rejects an empty send (no text, no attachments) before touching the wire", async () => {
     const caller = new FakeCaller();
     await expect(
-      sendRun(caller, "chat-1", DRAFT, "   ", "/Users/me/proj", { currentConfig: PERSISTED }),
+      sendRun(caller, "chat-1", DRAFT, "   ", "/Users/me/proj", { }),
     ).rejects.toThrow(/empty/);
     expect(caller.calls).toHaveLength(0);
   });
@@ -305,7 +321,7 @@ describe("sendRun with attachments", () => {
         DRAFT,
         "see this",
         "/Users/me/proj",
-        { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+        { mintMessageId: () => "msg-1" },
         { stagedAttachments: [stagePng("a.png")] },
       ),
     ).rejects.toThrow(/a\.png/);
@@ -322,7 +338,7 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "see",
       "/Users/me/proj",
-      { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: [stagePng("x.png")] },
     );
     const uploadChunk = caller.calls[0]!.params as { uploadId: string; seq: number };

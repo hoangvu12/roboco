@@ -187,8 +187,11 @@ export function ChatPage() {
   // `bottom_stack` measured live (the desktop's paint-time canvas): the
   // height feeds the transcript's bottom fade band through a custom property
   // on the column, so the fade tracks the composer's compact↔expanded flip.
+  // The same observer feeds the composer the conversation-column WIDTH
+  // (clamped to 768 inside it) — `set_available_width`'s stable reflow feed.
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
   const bottomStackRef = useRef<HTMLDivElement | null>(null);
+  const [columnWidth, setColumnWidth] = useState<number | null>(null);
   useEffect(() => {
     const stack = bottomStackRef.current;
     const column = chatColumnRef.current;
@@ -197,8 +200,10 @@ export function ChatPage() {
     }
     const observer = new ResizeObserver(() => {
       column.style.setProperty("--rb-bottom-stack", `${stack.getBoundingClientRect().height}px`);
+      setColumnWidth(column.getBoundingClientRect().width);
     });
     observer.observe(stack);
+    observer.observe(column);
     return () => observer.disconnect();
     // `row` gates the main return: the first render(s) take the loading
     // early-return, where the refs are null and the effect above bailed — so
@@ -234,6 +239,31 @@ export function ChatPage() {
     markChatSeen(session.client, chatId);
   }, [session, chatId]);
 
+  // Mod+Enter on an empty composer activates the most recently queued row
+  // (`activate_latest_queued`, queue.rs:1218-1244): Send now, interrupting
+  // the current response. A gated row makes it a no-op. The queue panel's
+  // own body is ticket 16; this is the composer's call site.
+  const activateLatestQueued = useCallback(() => {
+    if (queueStore === null || editingRow !== null) {
+      return;
+    }
+    const rows = queueStore.getSnapshot().rows;
+    const latest = rows[rows.length - 1] ?? null;
+    if (latest === null || latest.deliveryGate != null) {
+      return;
+    }
+    void queueStore
+      .sendNow(latest.id)
+      .then((sent) => {
+        if (!sent) {
+          sidebarNotice.set("That message was already drained by another device.");
+        }
+      })
+      .catch((error: unknown) => {
+        sidebarNotice.set(`Could not send now: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }, [queueStore, editingRow]);
+
   /**
    * Retry an undelivered echo. A retry is a NEW send of the same text, not a
    * resend of the old wire message: the store mints a fresh id and restarts
@@ -264,7 +294,6 @@ export function ChatPage() {
       void (async () => {
         try {
           await sendRun(session.client, chat.id, draft, send.text, cwd, {
-            currentConfig: chat.config,
             mintMessageId: () => next.messageId,
           });
         } catch (error) {
@@ -338,38 +367,44 @@ export function ChatPage() {
           `--rb-bottom-stack` on the column, which the transcript's bottom
           fade band reads — the web peer of the desktop's paint-time canvas
           that measures `bottom_stack` for the EdgeFade inset.
+
+          The composer owns its centred 768px COLUMN (composer.rs:7347-7355):
+          the queue tray and the session footer are its children (tucked
+          behind / slotted under the pill), not siblings of it. The queue
+          panel's element is handed in as a slot so the QueueStore context
+          stays the chat page's.
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
           <StatusStrip status={row.status} sending={sending} />
-          {queueStore !== null && deviceId !== null ? (
-            <QueueStoreProvider value={queueStore}>
-              <QueuePanel
-                editorDeviceId={deviceId}
-                onEditRow={onEditRow}
-                editingRowId={editingRow?.id ?? null}
+          {session !== null && (
+            <div className="persistent-composer">
+              <Composer
+                session={session}
+                chat={row.chat}
+                catalog={session.catalog}
+                availableWidth={columnWidth}
+                editingMessage={editingRow}
+                onEditFinish={onEditFinish}
+                onEditCancel={onEditCancel}
+                activateLatestQueued={activateLatestQueued}
+                queueSlot={
+                  queueStore !== null && deviceId !== null ? (
+                    <QueueStoreProvider value={queueStore}>
+                      <QueuePanel
+                        editorDeviceId={deviceId}
+                        onEditRow={onEditRow}
+                        editingRowId={editingRow?.id ?? null}
+                      />
+                    </QueueStoreProvider>
+                  ) : null
+                }
+                footerSlot={
+                  <ComposerFooter chat={row.chat} crSummary={crSummary} contextUsage={contextUsage} />
+                }
               />
-              {session !== null && (
-                <div className="persistent-composer">
-                  <Composer
-                    session={session}
-                    chat={row.chat}
-                    catalog={session.catalog}
-                    editingMessage={editingRow}
-                    onEditFinish={onEditFinish}
-                  />
-                  <JumpPillAnchor state={jumpState} />
-                </div>
-              )}
-            </QueueStoreProvider>
-          ) : (
-            session !== null && (
-              <div className="persistent-composer">
-                <Composer session={session} chat={row.chat} catalog={session.catalog} />
-                <JumpPillAnchor state={jumpState} />
-              </div>
-            )
+              <JumpPillAnchor state={jumpState} />
+            </div>
           )}
-          <ComposerFooter chat={row.chat} crSummary={crSummary} contextUsage={contextUsage} />
           {editingRow !== null && (
             <div className="chat-edit-toolbar">
               <button type="button" className="btn btn-ghost" onClick={onEditCancel}>

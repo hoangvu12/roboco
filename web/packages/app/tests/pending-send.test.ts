@@ -197,7 +197,6 @@ describe("sendRun mints exactly one message id", () => {
     };
 
     const result = await sendRun(caller, CHAT, DRAFT, "hi", "/tmp/proj", {
-      currentConfig: null,
       mintMessageId: mint,
     });
 

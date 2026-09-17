@@ -17,7 +17,7 @@ row instead of a steer, and see why a send failed instead of losing their text.
 **Blocked by:** 02 (Foundation tokens), 03 (Client settings store), 05 (State
 fixes: nav history, send ids, optimistic echo), 10 (Pickers and menus).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/04-composer.md` §3.0, §3.1–§3.4, §3.6–§3.8,
 §3.12, §3.14, §3.15, §3.20, §3.21, §4, §5.1, §5.2, §5.3, §5.4, §5.5.
@@ -1395,3 +1395,185 @@ store subscription inside the open tooltip, not a re-mount.
 Build on components/ui/ + components/base/ (see components/README.md)
 — do not hand-roll card shells, cursor lists, menu rows, chips, or
 tooltips.
+
+### Implementation (2026-09-18)
+
+**What landed.** The whole §2 surface, web files per the ticket's table:
+
+- `lib/composer-flip.ts` — every §2.0 constant this ticket uses plus the
+  full §3 pure set (`composerFlip`/`composerWidthChanged`/`caretVisible`/
+  `inputContentHeight`/`composerTotalHeight`/`inputMaxScroll`/
+  `inputOverflowEdges`/`inputRevealHeight`/`inputScrollOffset`/
+  `inputScrollOffsetForCursor`/`inputDragScrollDelta`/`pressIntent`+
+  `pressArmsDrag`/`attachmentStripHeight`/`commentStripHeight`/`FlipMorph`
+  + `flipMorphStep`/`morphClusterInset`/`morphTextPad`/`collapseTextGlide`/
+  `morphClusterDy`), the COLLAPSE spec read from the `@roboco/theme` motion
+  catalog, and two web seams for the desktop's Linux-only gpui-harness
+  tests (`measuredSinceFlip`/`layoutFrameKey`/`layoutReshaped`/
+  `availableWidthReflow`).
+- `lib/composer-send.ts` — `sendButtonMode`/`sendBlocked`/
+  `composerHasContent`/`modifiedSubmitTarget`/
+  `shouldPublishOptimisticEcho`/`beginInterrupt`/`retainLiveInterrupts`/
+  `interruptParams`/`messageEnterBindings`/`platformModifierCombo`.
+- `lib/composer-actions.ts` — `buildRunRequest` now carries `attachments`
+  and `worktree`; new `queueMessage` (wraps `queue-actions.ts`'s tested RPC
+  with the verbatim "Send failed: queue did not return an id"); `sendSteer`
+  and `maybePersistConfig` (plus their helpers) deleted;
+  `SendResult.finalPrompt` added so the caller can refresh the echo in
+  place after upload.
+- `lib/composer-draft.ts` — `ChatDraftStore` (`chatDrafts`), the per-chat
+  draft map with `""` reserved for the canvas (ticket 15).
+- `components/composer.tsx` — near-rewrite: the 768px column (gap 8, pb 16)
+  owning the failure notice, the queue-degraded caption, the queue tray
+  (mx 16 / mb −26, 150ms fade) and the footer slot; the pill as ONE DOM
+  shape re-laid-out by `[data-mode]` so the textarea never remounts (caret
+  survives the flip); width-driven flip with capacity learning (epoch/
+  flip-epoch guard, expanded anchor, resize settle), the 180ms height
+  morph + flip morph with rAF drive, morphing text pad / cluster insets /
+  cluster dy / collapse glide; Send/Queue/Stop button (28px circle, stop
+  square 11px r3, blocked 0.35 with no handler, Stop never blocked, static
+  aria-label only, no title); the §2.12 send path (run vs
+  `QueueMessage {holdForTurnEnd: true}` with the capability gate, one
+  message id, echo gated by `shouldPublishOptimisticEcho` and refreshed
+  after upload, failure restores typed text + staged merged by id);
+  tracked interrupts; Enter policy from `composerSendBehavior` (Mod+Enter
+  = ModifiedSubmit → `activateLatestQueued` on empty, IME-safe); Escape
+  cancels a queue-row edit through the shell escape ladder
+  (`ESCAPE_PRIORITY.composerQueueEdit`, state/escape.ts); paste of image
+  data stages attachments with non-images skipped silently; attach focus
+  return on window focus; `composerReady` gating deleted (§2.16 fix 2 —
+  the textarea, paperclip and send are always usable).
+- `components/composer-footer.tsx` — checkout-kind label
+  ("Worktree"/"Local checkout") + "No ref" fallback, and the label row
+  gated on the space's `gitDetected` (usage/CR/spring always render).
+- `components/context-usage.tsx` — the 260px `Context window` card on a
+  500ms hover (`PickerCard` gained `openOnHover`/`hoverDelayMs`, routed per
+  base/tooltip.tsx's own "content cards are popovers, not tooltips" rule),
+  live-updating through the footer's props; the native `title=` deleted;
+  `contextUsageDetails` ports the four verbatim bodies.
+- `components/composer-pickers.tsx` — `onOpenChange` reporting (the pill's
+  mouse-down focus defers to open menus); geometry via CSS (2px utility
+  gap).
+- `routes/chat-page.tsx` — QueuePanel + ComposerFooter handed to the
+  Composer as slots; the chat column measured into `availableWidth`;
+  `activateLatestQueued` wired (Send now on the latest row, gated rows
+  no-op).
+- `styles/app.css` — §2.1–§2.10, §2.14 geometry; pill radius 26, 1px
+  hairline, blur 16, opaque-branch background (see Deviations);
+  `.composer-failure` (amber/red), `.composer-queue-notice`,
+  `.composer-queue-tray`, context-usage card; deleted the mobile font bump
+  and the old compact `padding-right: 200px` reserve; phone gutters move
+  to `.composer` only.
+- `tests/composer-flip.test.ts` + `tests/composer-send.test.ts` — every
+  §6-named desktop test, plus `composer-actions.test.ts` /
+  `pending-send.test.ts` updated for the new signatures.
+
+**Deviations / judgment calls for a human.**
+
+1. **Pill surface is the opaque branch.** The web defrosted by product
+   decision (commit 3b14d2a1), so `frost::frosted`'s tinted variant never
+   applies: the pill takes `flatten(input, bg)` — spelled
+   `color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg))` — over the
+   16px blur, with `theme.border` as the hairline. The frost/opaque
+   "split" is therefore present-but-always-opaque; the frosted literal HSL
+   border and `composer_sidebar_tint` are unreachable on the web and were
+   NOT added as tokens (ticket 02 never added them either).
+2. **Queue capability gate checks the engine only.** The desktop checks
+   both the local engine and the chat's HOST device
+   (`chat_host_supports`). The web has no host registry (fleet = ticket
+   31), so the engine's `EngineInfo.capabilities` stands in; a
+   remotely-hosted chat currently queues on the engine's word.
+3. **Queue-degraded caption keys off the engine connection state**
+   (`reconnecting` → "recovers", anything else not connected →
+   "Offline — messages…"). The web has no `WatchConnectivity` stream and
+   no `chat_delivery_degraded` yet (research 14 §5) — the standing seam
+   is deliberate.
+4. **`queueMessage` lives in composer-actions as a thin wrapper** over
+   `lib/queue-actions.ts`'s already-tested RPC (holdForTurnEnd, id
+   semantics) rather than a duplicate — the wire call has one home.
+5. **Queue-send attachments take the legacy blocking path** (upload, then
+   queue with absolute paths). The desktop's `pending://` fast path
+   (`QUEUED_ATTACHMENTS_MIN` + local staging) was not ported: its
+   `MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1` handshake has no engine-side
+   web need yet; row text stays trailer-free either way.
+6. **`send_blocked` mapping**: condition 1 = the submit busy flag, 2 =
+   `client.state !== "connected"`, 3 = always false (review comments are
+   ticket 23), 4 = always false (the chat page always has a chat
+   selected; the canvas is ticket 15 — the `newChatNoAgents` seam exists
+   and is unit-tested).
+7. **Undo/redo stays native** (accepted divergence per §2.9): no
+   hand-rolled stack; programmatic draft swaps use full value assignment
+   so the browser's undo stack resets, as instructed. The desktop's
+   700ms/200-step coalescing is NOT ported.
+8. **The two gpui-harness tests** (`resolved_layout_does_not_keep_notifying_on_repaint`,
+   `layout_cache_reuses_resize_frames_and_invalidates_text_inputs`) are
+   ported against pure seams (`measuredSinceFlip`/`layoutFrameKey`/
+   `layoutReshaped`/`availableWidthReflow`) — the DOM has no layout-cache
+   counter to observe; the seams model exactly the notified-ness those
+   tests pin.
+9. **The web's compact capacity is `textarea.offsetWidth` directly** —
+   the desktop subtracts 8 from its input's layout width
+   (composer.rs:7231) because its input element carries the row's right
+   padding; on the web the padding lives on the box/holder, so the
+   content width already excludes it.
+10. **The working/editing accent pill borders were removed** (web-only
+    invention; the desktop pill chrome is state-independent). The
+    queue-edit state is conveyed by the queue row's chips + the toolbar.
+11. **A submit during a queue-row edit only commits the row** (the
+    desktop's `commit_queue_edit` returns "handled"); the old web also
+    fired a message after committing. The empty-edit case still maps to
+    the existing `releaseUnchanged` lease outcome (the desktop discards
+    the row — ticket 16 owns the lease protocol, so the web protocol is
+    unchanged).
+12. **rAF-driven morphs throttle in a hidden tab** — a background tab
+    freezes mid-morph and settles at the target the moment it becomes
+    visible (the pending rAF fires late). Verified live: a visible tab
+    animates 49→124 and 124→49 exactly over the 180ms ease-out.
+13. **The queue tray's body styling is untouched** (ticket 16): the tray
+    wrapper (mx 16, mb −26, fade) is this ticket's; the panel keeps its
+    docked-bar look inside it.
+
+**Verification.**
+
+- `pnpm -r build` (from `web/`) green; `web/packages/app` vitest 47
+  files / 719 tests green (61 of them in this ticket's two files + the
+  updated composer-actions suite).
+- Boot check via `web_smoke` + use-browser: sidebar + composer render,
+  no error boundary; the full send path exercised live — five sends
+  landed with echoes acked and mock replies rendered.
+- Live DOM checks: compact 49px; four-line draft → expanded 159px with
+  box 111 + pad 16 (exactly `composerTotalHeight(4 lines)`); width-driven
+  flip on a long single line (no newline) expands; deleting back
+  collapses; morphs animate 49→124→49 over the ease-out (visible tab);
+  pasted image stages (pill 117 = 49 + `attachmentStripHeight(1)` = 68);
+  per-chat drafts survive a two-chat navigation round-trip; phone layer
+  at 375px keeps the drawer sidebar + composer gutters (359/327).
+- Screenshots (web halves, 1440x900, in
+  `.scratch/web-parity/shots/13/`):
+  - `web-a-compact-empty.png` — (a) established chat, empty, compact.
+  - `web-b-expanded-four-lines.png` — (b) four-line draft, expanded.
+  - `web-e-failure-notice.png` — (e) red failure notice (an oversized
+    paste, staged through the strip's failure path); click-dismiss
+    verified.
+  - `web-bonus-queue-degraded.png` — the §2.3 caption + blocked (dimmed,
+    click-less) send while the engine was down.
+  - `web-bonus-pasted-attachment.png` — a pasted image staged in the strip
+    with the wrap-height formula applied.
+- **Skipped captures:** (c) Queue and (d) Stop button states during a
+  live run — the mock harness's Working window never reaches the client
+  (verified: the UNTOUCHED sidebar status dot behaves identically, so
+  it is a smoke-fixture/stream limitation, not a composer regression;
+  the mode logic is unit-tested by `send_button_morph` and
+  `a_comment_only_stage_queues_during_a_live_run`). (f)'s
+  "Worktree + branch + warning-fraction ring" — the fixture's chat has
+  no git space and the mock script reports no `contextUsage`, so the
+  ring stays "—"; the footer slot, usage ring, and the draft-chip variant
+  appear in every shot, and the committed-label gating is code-verified.
+  Desktop halves of every pair — not taken, consistent with tickets
+  08/10/12 (the desktop app must be hand-driven through the same mock
+  states; left to the merger).
+- **Smoke port note:** port 27699 was contended all session by sibling
+  worktrees' smoke instances (22-changes, 18-transcript); each capture
+  round waited for the port. One stale smoke from the MAIN checkout
+  (idle 59 minutes, pairing code expired) was killed by verified PID to
+  unblock the machine — flagged here for the record.

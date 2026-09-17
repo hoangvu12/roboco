@@ -1,110 +1,204 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ClipboardEvent as ReactClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { Icon } from "@roboco/icons";
 import type { Chat, HarnessDescriptor, Model } from "@roboco/proto";
+import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
 import type { EngineSession } from "../state/engine-session";
-import { useWatchSnapshot } from "../state/hooks";
+import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
 import { PickerCatalog } from "../state/picker-catalog";
-import { sidebarNotice } from "../state/notice";
-import { draftFromChat, rememberedModelFor, composerDefaults } from "../lib/composer-draft";
+import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
+import { effectiveIndicator } from "../lib/view";
+import { chatDrafts, composerDefaults, draftFromChat, rememberedModelFor } from "../lib/composer-draft";
 import { offeredHarnesses } from "../lib/model-rows";
 import { clampReasoning } from "../lib/traits-summary";
-import { describeSendError, mintMessageId, persistChatConfig, sendInterrupt, sendRun, sendSteer, type DraftConfig } from "../lib/composer-actions";
+import {
+  ATTACHMENT_ONLY_TEXT,
+  formatByName,
+  formatToMime,
+  stageFile,
+  uploadAttachments,
+  type StagedAttachment,
+} from "../lib/attachments";
+import {
+  describeSendError,
+  mintMessageId,
+  persistChatConfig,
+  queueMessage,
+  sendInterrupt,
+  sendRun,
+  type DraftConfig,
+} from "../lib/composer-actions";
+import {
+  ACTIONS_ROW_HEIGHT,
+  attachmentStripHeight,
+  COMPOSER_MAX_WIDTH,
+  COMPOSER_WIDTH_EPSILON,
+  COMPACT_TOTAL_HEIGHT,
+  composerFlip,
+  composerTotalHeight,
+  composerWidthChanged,
+  flipMorphDone,
+  flipMorphHeight,
+  flipMorphProgress,
+  flipMorphStep,
+  inputDragScrollDelta,
+  inputOverflowEdges,
+  INPUT_LINE_HEIGHT,
+  morphClusterDy,
+  morphClusterInset,
+  morphTextPad,
+  collapseTextGlide,
+  PILL_BORDER_V,
+  RESIZE_SETTLE_MS,
+  ROUTE_SNAP_MS,
+  TEXTAREA_PAD_V,
+  type FlipMorph,
+} from "../lib/composer-flip";
+import {
+  beginInterrupt,
+  composerHasContent,
+  messageEnterBindings,
+  modifiedSubmitTarget,
+  platformModifierCombo,
+  retainLiveInterrupts,
+  sendBlocked,
+  sendButtonMode,
+  shouldPublishOptimisticEcho,
+} from "../lib/composer-send";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
-import { formatToMime, type StagedAttachment } from "../lib/attachments";
+import { isMacPlatform } from "../state/shortcuts";
 import { seedAttachment } from "../state/attachment-cache";
-import { composerFlip, resizeSettling } from "../lib/composer-flip";
 import { ComposerPickers } from "./composer-pickers";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 
 /**
  * The composer — the desktop's `crates/ui/src/composer.rs` ported to React:
- * multiline input with a compact (49px) ↔ expanded (124-308px) flip morph,
- * four pickers above, and a send-button that morphs Send → Steer → Stop
- * based on the chat's live status. Steer is offered only when the picked
- * harness advertises `supportsSteering` and the chat is currently working;
- * Stop replaces Send when the textarea is empty during a live run.
- *
- * Wired into the chat page above the terminal dock so the composer never
- * shifts when the terminal opens (the desktop's reserved `statusStripHeight`
- * is mirrored by the chat-page's `min-height: 0` on the transcript column).
+ * the centred 768px column (failure notice, queue-degraded caption, the
+ * queue tray tucked behind the pill, the 26px-radius pill itself, and the
+ * 24px session-footer slot), the width-driven compact↔expanded flip with
+ * hysteresis and a 180ms height morph (text glides, controls stay pinned to
+ * the stationary bottom edge), auto-grow that clamps the textarea BOX to
+ * 76–260 and the PILL to 124–308, and the Send / Queue / Stop send path
+ * (never "Steer" — spec decision 3: a busy chat gets `QueueMessage` with
+ * `holdForTurnEnd: true`).
  */
 
-/**
- * The flip-morph boundaries (composer.rs). The textarea BOX clamps are the
- * CSS clamps (`min-height: 47px; max-height: 260px`): TEXTAREA_MIN/MAX
- * (composer.rs:56-61). The 124-308 pill totals come from the box plus the
- * 46px actions row and the 2px hairline naturally — never clamp the box by
- * them.
- */
-const TEXTAREA_MIN_PX = 76;
-const TEXTAREA_MAX_PX = 260;
-/** The compact one-line box: 22.75px text inside `py-3` (24), rounded. */
-const COMPACT_INPUT_HEIGHT_PX = 47;
-/**
- * The compact wrap reservation: `pl 16` + the 200px `padding-right` the
- * compact mode reserves for the absolutely-positioned actions row. The
- * capacity — the compact-mode wrap width the flip measures against — is
- * `textarea.offsetWidth - COMPACT_PAD_H`, a number the flip cannot change
- * (the pill's outer width is mode-independent; only the paddings differ).
- */
-const COMPACT_PAD_H = 216;
+/** The failure notice; `key` scopes it to one chat (null = global). */
+interface FailureNotice {
+  readonly message: string;
+  readonly key: string | null;
+}
 
-const NAVIGATION_MS_THRESHOLD = 250;
+/** The animated geometry one layout pass resolves (see the evaluate pass). */
+interface PillLayout {
+  readonly pillHeight: number;
+  readonly boxHeight: number;
+  readonly textPad: number;
+  readonly clusterInset: number;
+  readonly clusterDy: number;
+  readonly textGlide: number;
+  readonly morphing: boolean;
+}
+
+const REST_LAYOUT: PillLayout = {
+  pillHeight: COMPACT_TOTAL_HEIGHT,
+  boxHeight: COMPACT_TOTAL_HEIGHT - PILL_BORDER_V,
+  textPad: 12,
+  clusterInset: 8,
+  clusterDy: 0,
+  textGlide: 0,
+  morphing: false,
+};
 
 interface ComposerProps {
   readonly session: EngineSession;
   readonly chat: Chat;
   readonly catalog: PickerCatalog;
-  /** Called when the chat id changes so the host can flush the textarea on switch. */
-  readonly onSwitchChat?: (chatId: string) => void;
+  /**
+   * The measured conversation-column width, clamped to 768 — the desktop's
+   * `set_available_width` feed. Null before the first measurement.
+   */
+  readonly availableWidth: number | null;
+  /**
+   * The queue panel (ticket 16 owns the body), rendered in the column's
+   * tray slot — tucked 18px behind the pill per `QUEUE_COMPOSER_OVERLAP`.
+   */
+  readonly queueSlot?: ReactNode;
+  /** The session footer row (the 24px slot under the pill). */
+  readonly footerSlot?: ReactNode;
   /**
    * The queued row currently being edited in this composer — `null` when
-   * the composer is free (a normal send). When this changes to a non-null
-   * value, the composer seeds its textarea with `editingMessage.text` and
-   * routes send/clear through `onEditFinish` so the host can release the
-   * edit lease (commit on send with changes, releaseUnchanged on empty
-   * send, cancel on chat switch / explicit release).
+   * the composer is free. When set, the textarea seeds with the row's text
+   * and a submit commits the row through `onEditFinish` (the lease
+   * protocol itself is ticket 16's).
    */
   readonly editingMessage?: { id: string; text: string } | null;
   readonly onEditFinish?: (outcome: { action: "commit" | "cancel" | "releaseUnchanged"; text: string }) => void;
+  /** Escape while editing a queued row (the container binding, composer.rs:7473). */
+  readonly onEditCancel?: () => void;
+  /**
+   * Mod+Enter with a truly empty composer activates the most recently
+   * queued row (composer.rs:6023). The action itself lives with the queue
+   * store (ticket 16); this ticket wires the call site only.
+   */
+  readonly activateLatestQueued?: () => void;
 }
 
-export function Composer({ session, chat, catalog, onSwitchChat, editingMessage, onEditFinish }: ComposerProps) {
+export function Composer({
+  session,
+  chat,
+  catalog,
+  availableWidth,
+  queueSlot,
+  footerSlot,
+  editingMessage,
+  onEditFinish,
+  onEditCancel,
+  activateLatestQueued,
+}: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
+  const engineStatus = useEngineStatus(session);
+  const now = useNow(10_000);
   // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
-  // Enter sends, Mod+Enter also sends (ticket 13 owns the send path itself;
-  // this only maps keys to intents).
+  // Enter sends, Mod+Enter is `ModifiedSubmit`.
   const sendBehavior = useUiSettings().composerSendBehavior;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The text-width mirror: a hidden `white-space: pre` twin whose offsetWidth
   // is the unwrapped width of the widest line — the desktop's
   // `measured_text_width` (composer.rs:1996). Measuring the TEXT WIDTH (never
-  // the textarea's post-flip scrollHeight, which differs per mode and would
-  // feed back into the decision) is what makes the flip layout-stable.
+  // the post-flip scrollHeight, which differs per mode and would feed back
+  // into the decision) is what makes the flip layout-stable.
   const measureRef = useRef<HTMLDivElement | null>(null);
-  // The resize-settle bookkeeping (`width_changed_at` / `last_seen_width`,
-  // composer.rs:7240-7246): a capacity move past the epsilon arms a 150ms
-  // settle window during which an expanded composer will not collapse.
-  const resizeRef = useRef({ capacity: 0, changedAtMs: null as number | null });
   // The paperclip lives in the actions cluster (composer.rs), so the strip
   // hands its picker up here rather than drawing its own attach button.
   const attachRef = useRef<(() => void) | null>(null);
   const lastChatIdRef = useRef(chat.id);
+  // Focus returns to the draft after the native file dialog closes (both
+  // Attach and Cancel — the web's cancelled input fires no event, so the
+  // window regaining focus is the signal, composer.rs::open_file_picker).
+  const focusPendingRef = useRef(false);
+  // Interrupts in flight, idempotent per chat (composer.rs:6707-6741).
+  const interruptingRef = useRef<Set<string>>(new Set());
+  // The pickers' open state — the pill's mouse-down focus defers to open
+  // menus (composer.rs:7701-7709).
+  const [pickersOpen, setPickersOpen] = useState(false);
 
-  // Live status: a working session = a live run in progress.
-  const status = snapshot?.statuses.rows.find((row) => row.chatId === chat.id) ?? null;
-  const isWorking = status !== null && status.status === "working";
-  const supportsSteering = useMemo(() => {
-    const harnesses = catalog.getHarnesses().rows;
-    const picked = harnesses.find((row: HarnessDescriptor) => row.id === chat.config?.harness);
-    return picked?.supportsSteering === true && isWorking;
-  }, [catalog, chat.config?.harness, isWorking]);
-  const steeringMode = useMemo(() => {
-    const harnesses = catalog.getHarnesses().rows;
-    const picked = harnesses.find((row: HarnessDescriptor) => row.id === chat.config?.harness);
-    return picked?.steeringMode ?? "turn-boundary";
-  }, [catalog, chat.config?.harness]);
+  // Live status: the desktop's `run_live` is Working OR AwaitingInput.
+  const statusRow = snapshot?.statuses.rows.find((row) => row.chatId === chat.id);
+  const indicator = effectiveIndicator(statusRow, now);
+  const runLive = indicator === "working" || indicator === "awaitingInput";
 
   // The catalog re-renders this component too (the draft-seeding effects
   // read live lists; the pickers child subscribes on its own).
@@ -114,9 +208,9 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     useCallback(() => catalog.getHarnesses(), [catalog]),
   );
 
-  const [text, setText] = useState("");
-  // The flip decision reads the live text through a ref (its callback is
-  // identity-stable so the ResizeObserver below never re-binds).
+  const [text, setText] = useState(() => chatDrafts.get(chat.id));
+  // The flip decision reads the live text through a ref (the evaluate pass
+  // stays identity-stable so the ResizeObserver never re-binds).
   const textRef = useRef(text);
   textRef.current = text;
   const [draft, setDraft] = useState<DraftConfig>(() =>
@@ -127,7 +221,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     useCallback(() => catalog.getModels(draft.harness), [catalog, draft.harness]),
     useCallback(() => catalog.getModels(draft.harness), [catalog, draft.harness]),
   );
-  const [flipExpanded, setFlipExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   // Staged attachments per chat id — survives a chat switch (the strip
   // moves with the chat). Empty for a chat the user has never staged on.
@@ -135,26 +229,38 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
   // Whole-send upload progress (0..1) for the strip's progress bar. Null
   // when nothing is uploading.
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  // The failure notice (composer.rs:7309-7411). Chat-scoped failures
+  // survive navigation and only render under their own chat.
+  const [failure, setFailure] = useState<FailureNotice | null>(null);
   const staged = stagedByChat[chat.id] ?? [];
 
-  // When the chat id changes (and on first mount), reset the composer:
-  // a fresh chat's textarea is empty; existing chats replay whatever the
-  // user typed last (in v1: empty too, since we don't persist drafts yet).
+  // ── Per-chat drafts (composer.rs `drafts: HashMap<chat_key, String>`) ──
+  // Swap on navigation: save the outgoing chat's text, load the incoming
+  // one's. The route snap armed here keeps the first flip after a switch
+  // un-animated (composer.rs:7290, ROUTE_SNAP_MS).
+  const routeSnapUntilRef = useRef<number | null>(null);
   useEffect(() => {
     if (lastChatIdRef.current === chat.id) {
       return;
     }
+    chatDrafts.set(lastChatIdRef.current, textRef.current);
     lastChatIdRef.current = chat.id;
-    setText("");
-    setFlipExpanded(false);
+    // A programmatic draft swap is a new document: the full value assignment
+    // resets the browser's own undo stack (the desktop's `set_text` clears
+    // its stacks — the accepted undo-coalescing divergence).
+    setText(chatDrafts.get(chat.id));
+    setExpanded(false);
     setUploadProgress(null);
-    onSwitchChat?.(chat.id);
-  }, [chat.id, onSwitchChat]);
+    setFailure(null);
+    routeSnapUntilRef.current = performance.now() + ROUTE_SNAP_MS;
+  }, [chat.id]);
 
   // When the edit row changes (the chat page started/cancelled editing a
-  // queued row), seed the textarea with the row's text so the user can
-  // type a replacement. The host owns the lease; we just mirror its text.
+  // queued row), seed the textarea with the row's text so the user can type
+  // a replacement; the pre-edit draft is restored when the lease closes
+  // (composer.rs `clear_queue_edit_local`'s `queue_edit_draft` hand-back).
   const lastEditingIdRef = useRef<string | null>(null);
+  const preEditTextRef = useRef<string | null>(null);
   useEffect(() => {
     const id = editingMessage?.id ?? null;
     if (id === lastEditingIdRef.current) {
@@ -162,16 +268,16 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     }
     lastEditingIdRef.current = id;
     if (editingMessage !== null && editingMessage !== undefined) {
+      preEditTextRef.current = textRef.current;
       setText(editingMessage.text);
+    } else if (preEditTextRef.current !== null) {
+      setText(preEditTextRef.current);
+      preEditTextRef.current = null;
     }
   }, [editingMessage]);
 
-  // Reconcile the draft with chat.config + the loaded catalog: if a chat
-  // already has a persisted ChatConfig, use it (locked); if not, resolve the
-  // sticky defaults against the catalog — the remembered harness when the
-  // loaded catalog still offers it (trusted while unloaded), else the first
-  // OFFERED harness (never the registry's first, which is mock) — then let
-  // the model effect below seed the remembered model (pickers.rs:713-748).
+  // Reconcile the draft with chat.config + the loaded catalog (locked once
+  // persisted; sticky defaults otherwise — pickers.rs:713-796).
   useEffect(() => {
     const persisted = chat.config;
     if (persisted !== null) {
@@ -217,10 +323,8 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     });
   }, [chat.config, harnesses.rows]);
 
-  // Once a harness is picked, ensure the model catalog is loaded; seed the
-  // draft with the remembered model for the harness when the list still
-  // offers it, else the first row, and clamp the reasoning to the ladder
-  // (`effective_model_id`/`selected_model`, pickers.rs:748-796).
+  // Once a harness is picked, ensure the model catalog is loaded and seed
+  // the draft with the remembered model (pickers.rs:748-796).
   useEffect(() => {
     if (!harnesses.loaded) {
       return;
@@ -259,295 +363,556 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     });
   }, [models.rows]);
 
-  // The compact↔expanded flip decision — `composer_flip` (composer.rs:107-144)
-  // ported whole: the widest line's unwrapped width vs the compact wrap
-  // capacity, hysteresis, the newline guard, and the resize-settle window.
-  // Both inputs are mode-independent (the mirror's box and the pill's outer
-  // width do not change with the flip), so the decision cannot feed back on
-  // itself — the desktop's "at most one flip per layout pass" epoch guard is
-  // satisfied by construction. React bails out when the value is unchanged,
-  // so re-running this on every width change costs nothing when nothing
-  // flips.
-  const evaluateFlip = useCallback(() => {
+  // ── The width-driven flip + height morph ───────────────────────────────
+  //
+  // One layout pass per effect run / textarea resize: measure the unwrapped
+  // text width against the compact-mode wrap capacity (learned while
+  // compact, shifted by the container delta while expanded — never the
+  // post-flip measured width), decide the flip, then advance the pill's
+  // height toward the live target through the morph state machine. The
+  // rAF loop re-runs the pass while a morph is in flight.
+  const [layout, setLayout] = useState<PillLayout>(REST_LAYOUT);
+  const [tick, setTick] = useState(0);
+  const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => setReducedMotion(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  const epochRef = useRef(0);
+  const flipEpochRef = useRef(0);
+  const compactCapacityRef = useRef(0);
+  const expandedAnchorRef = useRef(0);
+  const lastSeenWidthRef = useRef(0);
+  const widthChangedAtRef = useRef<number | null>(null);
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heightMorphRef = useRef<FlipMorph | null>(null);
+  const flipMorphRef = useRef<FlipMorph | null>(null);
+  const lastTargetRef = useRef(0);
+  const lastRenderedRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const availableWidthRef = useRef<number | null>(null);
+  const evaluateRef = useRef<() => void>(NOOP);
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const stagedCountRef = useRef(staged.length);
+  stagedCountRef.current = staged.length;
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
+  const availableWidthRef2 = useRef(availableWidth);
+  availableWidthRef2.current = availableWidth;
+
+  evaluateRef.current = () => {
     const el = textareaRef.current;
     const mirror = measureRef.current;
     if (el === null || mirror === null) {
       return;
     }
-    const capacity = el.offsetWidth - COMPACT_PAD_H;
+    const nowMs = performance.now();
+    epochRef.current += 1;
+    const epoch = epochRef.current;
+    // Content measurement: the textarea carries no vertical padding of its
+    // own (the box does), so an `auto` height reads the wrapped content.
+    el.style.height = "auto";
+    const wrappedLines = Math.max(1, Math.round(el.scrollHeight / INPUT_LINE_HEIGHT));
+    const contentHeight = wrappedLines * INPUT_LINE_HEIGHT;
     const textWidth = mirror.offsetWidth;
-    const { resizing, changedAtMs } = resizeSettling(
-      resizeRef.current.changedAtMs,
-      performance.now(),
-      resizeRef.current.capacity,
-      capacity,
+    const hasNewline = textRef.current.includes("\n");
+    const lastWidth = el.offsetWidth;
+    // Only measurements taken *after* the last flip may drive the next one
+    // (at most one flip per layout pass — a flip invalidates the widths).
+    const measured = epoch > flipEpochRef.current && lastWidth > 0;
+    if (measured) {
+      // A same-mode width change is an interactive window/pane resize:
+      // defer collapse until sizes settle. The last-seen reset on a
+      // committed flip means the mode change's width jump is NOT read as
+      // one.
+      if (
+        lastSeenWidthRef.current > 0 &&
+        Math.abs(lastWidth - lastSeenWidthRef.current) > COMPOSER_WIDTH_EPSILON
+      ) {
+        widthChangedAtRef.current = nowMs;
+      }
+      lastSeenWidthRef.current = lastWidth;
+      if (expandedRef.current) {
+        if (expandedAnchorRef.current <= 0) {
+          expandedAnchorRef.current = lastWidth;
+        }
+      } else {
+        // The compact pill's content box is the layout-stable capacity
+        // both thresholds measure against (composer.rs:7229-7232; the
+        // web's textarea content width already excludes its paddings, so
+        // no extra inset is subtracted).
+        compactCapacityRef.current = lastWidth;
+      }
+    }
+    const resizing =
+      widthChangedAtRef.current !== null && nowMs - widthChangedAtRef.current < RESIZE_SETTLE_MS;
+    if (resizing && settleTimerRef.current === null) {
+      // Re-evaluate once the settle window has passed (composer.rs:7237).
+      settleTimerRef.current = setTimeout(() => {
+        settleTimerRef.current = null;
+        evaluateRef.current();
+      }, RESIZE_SETTLE_MS + 20);
+    }
+    // Layout-stable compact capacity: measured directly while compact;
+    // while expanded, the learned value shifted by the container resize.
+    const capacity = !expandedRef.current
+      ? lastWidth > 0
+        ? lastWidth
+        : Number.POSITIVE_INFINITY
+      : compactCapacityRef.current > 0
+        ? expandedAnchorRef.current > 0 && lastWidth > 0
+          ? compactCapacityRef.current + (lastWidth - expandedAnchorRef.current)
+          : compactCapacityRef.current
+        : Number.POSITIVE_INFINITY;
+    const nextMode = composerFlip(expandedRef.current, textWidth, capacity, hasNewline, resizing);
+    const committed = nextMode !== expandedRef.current && measured;
+    const mode = committed ? nextMode : expandedRef.current;
+    if (committed) {
+      flipEpochRef.current = epoch;
+      expandedAnchorRef.current = 0;
+      lastSeenWidthRef.current = 0;
+      setExpanded(nextMode);
+    }
+    // `strip_width_hint` (composer.rs:7511): the pill's content width, in
+    // both modes.
+    const stripWidthHint = (availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
+    const stripH = attachmentStripHeight(stagedCountRef.current, stripWidthHint);
+    const baseHeight = mode ? composerTotalHeight(contentHeight) : COMPACT_TOTAL_HEIGHT;
+    const target = baseHeight + stripH;
+    const routeSnap = routeSnapUntilRef.current !== null && nowMs < routeSnapUntilRef.current;
+    // Two morphs, as on the desktop: the HEIGHT morph animates the pill
+    // toward the live target (auto-grow retargets mid-flight), the FLIP
+    // morph drives the inner geometry handoff (paddings, insets, glide).
+    heightMorphRef.current = flipMorphStep(
+      heightMorphRef.current,
+      Math.abs(target - lastTargetRef.current) > 0.5,
+      lastRenderedRef.current,
+      nowMs,
+      reducedMotionRef.current,
+      routeSnap,
     );
-    resizeRef.current = { capacity, changedAtMs };
-    setFlipExpanded((current) =>
-      composerFlip(current, textWidth, capacity, textRef.current.includes("\n"), resizing),
+    flipMorphRef.current = flipMorphStep(
+      flipMorphRef.current,
+      committed,
+      lastRenderedRef.current,
+      nowMs,
+      reducedMotionRef.current,
+      routeSnap,
     );
-  }, []);
+    lastTargetRef.current = target;
+    const heightMorph = heightMorphRef.current;
+    const pillHeight = heightMorph !== null ? flipMorphHeight(heightMorph, target, nowMs) : target;
+    const flipMorph = flipMorphRef.current;
+    const morphT =
+      flipMorph !== null && !flipMorphDone(flipMorph, nowMs) ? flipMorphProgress(flipMorph, nowMs) : 1;
+    lastRenderedRef.current = pillHeight;
+    // The expanded textarea box follows the animated pill height; the
+    // textarea itself fills the box less its paddings (composer.rs:7606).
+    const boxHeight = Math.max(pillHeight - stripH - PILL_BORDER_V - ACTIONS_ROW_HEIGHT, 0);
+    const textPad = morphTextPad(morphT);
+    const inputHeight = mode ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
+    el.style.height = `${inputHeight}px`;
+    el.style.overflowY = mode && contentHeight > inputHeight ? "auto" : "hidden";
+    // The scroll fade mask: only SETTLED overflow at an edge gets the ramp —
+    // the settled viewport is the committed target's, not the animating
+    // box's (`input_overflow_edges`, composer.rs:181-192).
+    const settledViewport = Math.max(baseHeight - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V, 0);
+    const [fadeTop, fadeBottom] = inputOverflowEdges(contentHeight, settledViewport, inputHeight, el.scrollTop);
+    el.dataset["fadeTop"] = mode && fadeTop ? "true" : "false";
+    el.dataset["fadeBottom"] = mode && fadeBottom ? "true" : "false";
+    const morphing =
+      (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) ||
+      (flipMorph !== null && !flipMorphDone(flipMorph, nowMs));
+    setLayout({
+      pillHeight,
+      boxHeight,
+      textPad,
+      clusterInset: morphClusterInset(mode, morphT),
+      clusterDy: morphClusterDy(morphT),
+      // Collapse-morph text glide: the decaying offset walks the compact
+      // text down from its expanded resting place (composer.rs:7793-7800).
+      textGlide:
+        !mode && flipMorph !== null && !flipMorphDone(flipMorph, nowMs)
+          ? collapseTextGlide(flipMorph.from, morphT)
+          : 0,
+      morphing,
+    });
+  };
 
-  // The single height writer (composer.rs's auto-grow, box clamps 76-260):
-  // compact pins the one-line box, expanded clamps the measured content.
-  // No other inline height exists — a competing render-time writer made the
-  // render phase disagree with the post-commit measurement.
   useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (el === null) {
+    evaluateRef.current();
+  }, [text, expanded, availableWidth, staged.length, tick]);
+
+  // The rAF loop: keep frames coming while a morph is in flight (the
+  // desktop's `window.request_animation_frame`, shell.rs `motion_active`).
+  useEffect(() => {
+    if (!layout.morphing) {
       return;
     }
-    el.style.height = "auto";
-    const target = flipExpanded
-      ? Math.min(Math.max(el.scrollHeight, TEXTAREA_MIN_PX), TEXTAREA_MAX_PX)
-      : COMPACT_INPUT_HEIGHT_PX;
-    el.style.height = `${target}px`;
-    el.style.overflowY = flipExpanded && el.scrollHeight > TEXTAREA_MAX_PX ? "auto" : "hidden";
-  }, [text, flipExpanded]);
+    rafRef.current = requestAnimationFrame(() => setTick((value) => value + 1));
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [layout.morphing, tick]);
 
-  // The decision runs on every text change (the same commit as the height
-  // write) and — the desktop re-evaluates per layout pass — whenever the
-  // textarea's width moves, which on the web only a conversation-column
-  // resize does. A drag never changes the textarea's width mid-keystroke.
-  useLayoutEffect(() => {
-    evaluateFlip();
-  }, [text, evaluateFlip]);
-
+  // The desktop re-evaluates per layout pass — on the web only a
+  // conversation-column resize moves the textarea's width mid-keystroke.
   useEffect(() => {
     const el = textareaRef.current;
     if (el === null) {
       return;
     }
-    const observer = new ResizeObserver(() => evaluateFlip());
+    const observer = new ResizeObserver(() => evaluateRef.current());
     observer.observe(el);
     return () => observer.disconnect();
-  }, [evaluateFlip]);
+  }, []);
+
+  // The shell's available-width feed (composer.rs::set_available_width):
+  // only an epsilon-exceeding move of the CLAMPED width re-evaluates.
+  useEffect(() => {
+    const width = Math.min(Math.max(availableWidth ?? 0, 0), COMPOSER_MAX_WIDTH);
+    if (!composerWidthChanged(availableWidthRef.current, width)) {
+      return;
+    }
+    availableWidthRef.current = width;
+    evaluateRef.current();
+  }, [availableWidth]);
+
+  useEffect(
+    () => () => {
+      if (settleTimerRef.current !== null) {
+        clearTimeout(settleTimerRef.current);
+      }
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    },
+    [],
+  );
+
+  // ── Drag-selection autoscroll (composer.rs:270-284) ────────────────────
+  // A native textarea does not autoscroll on drag past its edge: drive
+  // `el.scrollTop` from a pointermove listener while the primary button is
+  // down, at the 16ms cadence, by the edge-proportional capped delta.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el === null) {
+      return;
+    }
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const onPointerMove = (event: PointerEvent): void => {
+      if (event.buttons !== 1) {
+        if (timer !== null) {
+          clearInterval(timer);
+          timer = null;
+        }
+        return;
+      }
+      const bounds = el.getBoundingClientRect();
+      if (event.clientY >= bounds.top && event.clientY <= bounds.bottom) {
+        if (timer !== null) {
+          clearInterval(timer);
+          timer = null;
+        }
+        return;
+      }
+      const delta = inputDragScrollDelta(event.clientY, bounds.top, bounds.bottom, INPUT_LINE_HEIGHT);
+      if (timer !== null || delta === 0) {
+        return;
+      }
+      timer = setInterval(() => {
+        el.scrollTop = Math.min(Math.max(el.scrollTop - delta, 0), el.scrollHeight);
+      }, 16);
+    };
+    const stop = (): void => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    el.addEventListener("pointermove", onPointerMove);
+    el.addEventListener("pointerup", stop);
+    el.addEventListener("pointercancel", stop);
+    return () => {
+      stop();
+      el.removeEventListener("pointermove", onPointerMove);
+      el.removeEventListener("pointerup", stop);
+      el.removeEventListener("pointercancel", stop);
+    };
+  }, []);
+
+  // ── Interrupt release (composer.rs:5771-5781) ──────────────────────────
+  // The pending set releases only when the chat settles.
+  useEffect(() => {
+    retainLiveInterrupts(interruptingRef.current, (chatId) => {
+      const row = snapshot?.statuses.rows.find((entry) => entry.chatId === chatId);
+      const live = effectiveIndicator(row, now);
+      return live === "working" || live === "awaitingInput";
+    });
+  }, [snapshot, now]);
 
   const applyDraft = useCallback((next: DraftConfig) => {
     setDraft(next);
   }, []);
 
   // The composer's mid-session model / reasoning / options changes persist
-  // through `Mutate setChatConfig` (`update_chat_config`, pickers.rs:1474) —
-  // optimistic locally (the pickers already applied the draft) and fired to
-  // the engine right after.
+  // through `Mutate setChatConfig` (pickers.rs:1474) — a picker change, never
+  // a send.
   const persistDraft = useCallback(
     (next: DraftConfig) => {
       void persistChatConfig(session.client, chat.id, next).catch((error: unknown) => {
-        sidebarNotice.set(describeSendError(error));
+        setFailure({ message: describeSendError(error), key: chat.id });
       });
     },
     [session.client, chat.id],
   );
 
-  // The submit dispatch: routes to Send / Steer / Interrupt based on the
-  // live state. Each branch is independent so a misstep is one branch's
-  // fault, not the whole composer's.
-  const submit = useCallback(async () => {
-    if (busy) {
+  // ── The queue capability gate (composer.rs:6096-6110) ──────────────────
+  // MESSAGE_QUEUE_V1 (and MESSAGE_QUEUE_ATTACHMENTS_V1 when the send
+  // carries attachments) checked on the engine before taking the draft. On
+  // failure, do not send: raise the verbatim notice and leave the draft.
+  // (The desktop also checks the chat's HOST device; the web's engine-local
+  // pairing has no host registry yet — the engine check stands in until
+  // ticket 31's fleet.)
+  const engineSupports = useCallback(
+    (capability: string): boolean => {
+      const capabilities = session.client.engineInfo?.capabilities ?? [];
+      return capabilities.includes(capability);
+    },
+    [session.client],
+  );
+
+  // ── Interrupt (`interrupt_selected`, composer.rs:6707-6737) ────────────
+  const interrupt = useCallback(async (): Promise<void> => {
+    if (!beginInterrupt(interruptingRef.current, chat.id)) {
       return;
     }
-    const trimmed = text.trim();
+    try {
+      await sendInterrupt(session.client, chat.id);
+    } catch (error) {
+      interruptingRef.current.delete(chat.id);
+      setFailure({ message: `Stop failed: ${describeSendError(error)}`, key: chat.id });
+    }
+  }, [chat.id, session.client]);
 
-    // Editing a queued row: send replaces the row text in place (commit)
-    // and then runs/steers as usual. Empty submit closes the lease without
-    // changing the row text (releaseUnchanged).
-    const editing = editingMessage ?? null;
-    if (editing !== null) {
-      if (trimmed.length === 0) {
-        setBusy(true);
-        try {
-          onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
-        } finally {
-          setBusy(false);
+  // ── The send path (`Composer::send`, composer.rs:6032-6705) ────────────
+  const send = useCallback(
+    async (typed: string, queue: boolean): Promise<void> => {
+      // Existing busy chats always queue; compatibility was checked before
+      // taking the draft (the capability gate below).
+      if (queue) {
+        const capability = staged.length > 0 ? MESSAGE_QUEUE_ATTACHMENTS_V1 : MESSAGE_QUEUE_V1;
+        if (!engineSupports(capability)) {
+          setFailure({
+            message: "Update the chat's engine to queue messages during a response.",
+            key: chat.id,
+          });
+          return;
         }
+      }
+      const trimmed = typed.trim();
+      if (chat.cwd === null || chat.cwd === undefined || chat.cwd.trim().length === 0) {
+        setFailure({ message: "This chat has no working directory yet — pick a space first.", key: chat.id });
         return;
       }
-      setBusy(true);
-      try {
-        const textChanged = trimmed !== (editing.text ?? "").trim();
-        if (textChanged) {
-          onEditFinish?.({ action: "commit", text: trimmed });
-        } else {
-          onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
-        }
-        if (isWorking && supportsSteering) {
-          await sendSteer(session.client, chat.id, trimmed);
-        } else if (chat.cwd !== null && chat.cwd !== undefined && chat.cwd.trim().length > 0) {
-          await sendRun(session.client, chat.id, draft, trimmed, chat.cwd, { currentConfig: chat.config });
-        }
-        setText("");
-      } catch (error) {
-        sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-
-    const hasContent = trimmed.length > 0 || staged.length > 0;
-    if (isWorking && !hasContent) {
-      // Empty + working → Stop (interrupt).
-      setBusy(true);
-      try {
-        await sendInterrupt(session.client, chat.id);
-      } catch (error) {
-        sidebarNotice.set(`Could not interrupt: ${describeSendError(error)}`);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    if (isWorking && hasContent && supportsSteering && trimmed.length > 0) {
-      // Live run + text + steering-capable harness → Steer.
-      // (Steer doesn't carry attachments in v1 — they go on the next Run.)
-      setBusy(true);
-      try {
-        await sendSteer(session.client, chat.id, trimmed);
-        setText("");
-      } catch (error) {
-        sidebarNotice.set(`Could not steer: ${describeSendError(error)}`);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    if (!hasContent) {
-      return;
-    }
-    if (chat.cwd === null || chat.cwd === undefined || chat.cwd.trim().length === 0) {
-      sidebarNotice.set("This chat has no working directory yet — pick a space first.");
-      return;
-    }
-    setBusy(true);
-    setUploadProgress(staged.length > 0 ? 0 : null);
-    // The echo goes up BEFORE the wire call, not after it: the point is that
-    // the user sees their own message the instant they send it, with the
-    // config persist, the attachment upload and the QueueCommand round-trip
-    // all still ahead of it (`push_echo` + `begin_pending_send`,
-    // composer.rs:6237-6264). The id is minted here so the same one keys the
-    // echo, the command, the host's entry and the failure cleanup below.
-    const messageId = mintMessageId();
-    echoStore.pushEcho({
-      messageId,
-      chatId: chat.id,
-      startedAtMs: Date.now(),
-      text: trimmed,
-      attachmentPaths: [],
-    });
-    try {
-      const sendResult = await sendRun(
-        session.client,
-        chat.id,
-        draft,
-        trimmed,
-        chat.cwd,
-        { currentConfig: chat.config, mintMessageId: () => messageId },
-        staged.length > 0
-          ? {
-              stagedAttachments: staged,
-              uploadProgress: (uploaded, total) => {
-                if (total <= 0) {
-                  setUploadProgress(1);
-                  return;
-                }
-                setUploadProgress(uploaded / total);
-              },
-            }
-          : {},
-      );
-      // Seed the attachment cache so the just-sent bubble renders from
-      // local bytes without a ReadAttachmentChunk round-trip.
-      const deviceId = session.client.engineInfo?.deviceId ?? null;
-      if (deviceId !== null) {
-        staged.forEach((att, ix) => {
-          const path = sendResult.attachmentPaths[ix];
-          if (path === undefined) {
-            return;
-          }
-          seedAttachment(deviceId, path, {
-            name: att.name,
-            mime: formatToMime(att.format),
-            bytes: att.bytes,
-          });
-        });
-      }
-      setText("");
+      // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
+      // instant you hit send; a failure hands the files back by id.
+      const taken = staged;
       setStagedByChat((current) => {
-        if (staged.length === 0) {
-          return current;
-        }
         const next = { ...current };
         delete next[chat.id];
         return next;
       });
-      setUploadProgress(null);
-    } catch (error) {
-      // Cleanup ends THIS send's overlay and no other: a sibling send still in
-      // flight in the same chat keeps its own echo
-      // (`send_failure_cleanup_only_ends_its_own_overlay`).
-      echoStore.removeEcho(messageId);
-      sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
-      setUploadProgress(null);
-    } finally {
-      setBusy(false);
+      // `typed` keeps the user's own words for the failure hand-back below
+      // (restoring a folded prompt would paste the trailer as literal text).
+      const messageId = mintMessageId();
+      // The optimistic echo goes up BEFORE the wire call — gated off for a
+      // queued send, whose queue row IS its representation until dispatch
+      // (`should_publish_optimistic_echo`).
+      if (shouldPublishOptimisticEcho(queue)) {
+        echoStore.pushEcho({
+          messageId,
+          chatId: chat.id,
+          startedAtMs: Date.now(),
+          text: trimmed,
+          attachmentPaths: [],
+        });
+      }
+      setText("");
+      chatDrafts.clear(chat.id);
+      setFailure(null);
+      setBusy(true);
+      setUploadProgress(taken.length > 0 ? 0 : null);
+      const onProgress = (uploaded: number, total: number): void => {
+        setUploadProgress(total <= 0 ? 1 : uploaded / total);
+      };
+      try {
+        if (queue) {
+          // Queue rows keep a clean body (the host rebuilds the attachment
+          // transport when it promotes the row); the bytes upload first on
+          // the web's legacy blocking path.
+          const uploaded = taken.length > 0 ? await uploadAttachments(session.client, taken, onProgress) : [];
+          const body = trimmed.length > 0 ? trimmed : ATTACHMENT_ONLY_TEXT;
+          await queueMessage(
+            session.client,
+            chat.id,
+            body,
+            uploaded.map((entry) => entry.path),
+          );
+        } else {
+          const sendResult = await sendRun(
+            session.client,
+            chat.id,
+            draft,
+            trimmed,
+            chat.cwd,
+            { mintMessageId: () => messageId },
+            taken.length > 0 ? { stagedAttachments: taken, uploadProgress: onProgress } : {},
+          );
+          // Refresh the echo in place with the attachment-folded prompt so
+          // its state never flickers (composer.rs:6401-6423).
+          if (echoStore.get(messageId) !== null) {
+            echoStore.removeEcho(messageId);
+            echoStore.pushEcho({
+              messageId,
+              chatId: chat.id,
+              startedAtMs: Date.now(),
+              text: sendResult.finalPrompt,
+              attachmentPaths: [...sendResult.attachmentPaths],
+            });
+          }
+          // Seed the attachment cache so the just-sent bubble renders from
+          // local bytes without a ReadAttachmentChunk round-trip.
+          const deviceId = session.client.engineInfo?.deviceId ?? null;
+          if (deviceId !== null) {
+            taken.forEach((att, ix) => {
+              const path = sendResult.attachmentPaths[ix];
+              if (path === undefined) {
+                return;
+              }
+              seedAttachment(deviceId, path, {
+                name: att.name,
+                mime: formatToMime(att.format),
+                bytes: att.bytes,
+              });
+            });
+          }
+        }
+        setUploadProgress(null);
+      } catch (error) {
+        // Failure: red notice, echo removed, prompt back in the draft,
+        // staged files back in the stash (merged by id so anything staged
+        // during the send survives).
+        echoStore.removeEcho(messageId);
+        setText(typed);
+        chatDrafts.set(chat.id, typed);
+        setStagedByChat((current) => {
+          const fresh = current[chat.id] ?? [];
+          const merged = [...taken.filter((att) => !fresh.some((f) => f.id === att.id)), ...fresh];
+          const next = { ...current };
+          if (merged.length === 0) {
+            delete next[chat.id];
+          } else {
+            next[chat.id] = merged;
+          }
+          return next;
+        });
+        setFailure({ message: `Send failed: ${describeSendError(error)}`, key: chat.id });
+        setUploadProgress(null);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [chat.id, chat.cwd, draft, session.client, staged, engineSupports],
+  );
+
+  // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
+  const submit = useCallback(async () => {
+    if (busy) {
+      return;
     }
-  }, [
-    busy,
-    text,
-    isWorking,
-    supportsSteering,
-    session.client,
-    chat.id,
-    chat.cwd,
-    chat.config,
-    draft,
-    staged,
-    editingMessage,
-    onEditFinish,
-  ]);
+    // A queued-row edit: the submit commits the row through the lease and
+    // is DONE — it never also fires a new message (`commit_queue_edit`
+    // returns "handled").
+    const editing = editingMessage ?? null;
+    if (editing !== null) {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
+        return;
+      }
+      const textChanged = trimmed !== (editing.text ?? "").trim();
+      onEditFinish?.(
+        textChanged ? { action: "commit", text: trimmed } : { action: "releaseUnchanged", text: trimmed },
+      );
+      return;
+    }
 
-  // The composer is disabled until the catalog has at least the harness list.
-  const composerReady = harnesses.loaded;
+    const content = composerHasContent(text, staged.length, 0);
+    const mode = sendButtonMode(runLive, content);
+    if (mode === "stop") {
+      void interrupt();
+      return;
+    }
+    if (!content) {
+      return;
+    }
+    if (
+      sendBlocked({
+        queueEditFinishing: busy,
+        requestTargetDisconnected: session.client.state !== "connected",
+        reviewCommentFlushPending: false,
+        newChatNoAgents: false,
+      })
+    ) {
+      // A blocked send is a no-op — no failure, no wire call
+      // (composer.rs:6002, `_ if self.send_blocked(cx) => {}`).
+      return;
+    }
+    await send(text, mode === "queue");
+  }, [busy, text, staged, runLive, editingMessage, onEditFinish, session.client, interrupt, send]);
 
-  /*
-   * The textarea's two key contexts (composer.rs:1347-1349, §2.8):
-   *
-   * - MESSAGE — the resting context. Mod+Enter always submits
-   *   (`ModifiedSubmit`); the bare-Enter policy comes from the
-   *   `ComposerSendBehavior` setting ("enter" submits, "modEnter" inserts a
-   *   newline — or accepts a completion, ticket 14). Every other editing key
-   *   is native; preventDefault fires only on a key this policy consumes.
-   * - WIZARD — the SAME textarea while the input-request wizard is mounted
-   *   (`GENERIC_COMPOSER_CONTEXT`): bare Enter submits the page, and there
-   *   is NO `ModifiedSubmit` — Mod+Enter falls through untouched. Ticket 14
-   *   owns the wizard panel itself (`on_wizard_key`'s digit/Enter/Escape
-   *   rules live there); this flag is its socket.
-   *
-   * Escape never submits: the interrupt is step 4 of the shell's Escape
-   * ladder (opt-in via `escapeStopsActiveAgent`), and dismissing an open
-   * mention/slash completion popup (step 1) is ticket 14's.
-   */
-  const wizardActive = false;
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+  // ── Enter policy (`message_enter_bindings`, composer.rs:1347-1390) ─────
+  // Exactly two bindings; Shift+Enter is always a native newline. While an
+  // IME composition is active, Enter is never a submit.
+  const modifierCombo = platformModifierCombo(isMacPlatform());
+  const bindings = useMemo(
+    () => messageEnterBindings(sendBehavior, modifierCombo),
+    [sendBehavior, modifierCombo],
+  );
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
     if (event.key !== "Enter") {
       return;
     }
     const mod = event.metaKey || event.ctrlKey;
-    if (wizardActive) {
-      if (!mod && !event.altKey && !event.shiftKey) {
-        event.preventDefault();
+    const bareEnter = !mod && !event.altKey && !event.shiftKey;
+    if (mod && !event.altKey) {
+      // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
+      // recently queued row on a truly empty composer, never Stop.
+      event.preventDefault();
+      const content = composerHasContent(text, staged.length, 0);
+      if (modifiedSubmitTarget(content) === "submitContent") {
         void submit();
+      } else {
+        activateLatestQueued?.();
       }
       return;
     }
-    if (mod && !event.altKey) {
-      // Mod+Enter submits on every send mode.
-      event.preventDefault();
-      void submit();
-      return;
-    }
-    if (!mod && !event.altKey && !event.shiftKey && sendBehavior === "enter") {
+    if (
+      bareEnter &&
+      bindings.some((binding) => binding.keystroke === "enter" && binding.action === "submit")
+    ) {
       event.preventDefault();
       void submit();
     }
@@ -555,29 +920,99 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     // "modEnter" — is a newline, native.
   };
 
-  // Compose the send button label & variant.
-  const sendLabel = editingMessage !== null && editingMessage !== undefined
-    ? text.trim().length === 0
-      ? "Release"
-      : "Commit & send"
-    : isWorking
-      ? text.length > 0
-        ? supportsSteering
-          ? "Steer"
-          : "Send"
-      : "Stop"
-    : "Send";
-  const sendVariant: "default" | "stop" =
-    editingMessage === null || editingMessage === undefined
-      ? isWorking && text.length === 0
-        ? "stop"
-        : "default"
-      : "default";
-  const sendDisabled =
-    busy ||
-    !composerReady ||
-    (text.trim().length === 0 && staged.length === 0 && !isWorking) ||
-    (editingMessage !== null && editingMessage !== undefined && false);
+  // Escape while editing a queued row cancels the edit (the container
+  // binding, composer.rs:7473-7483): registered on the shell's escape
+  // ladder, above the desktop's shell surfaces and the bubble-phase
+  // interrupt, so the key is consumed once.
+  useEffect(() => {
+    if (editingMessage === null || editingMessage === undefined) {
+      return;
+    }
+    return registerEscapeSurface(ESCAPE_PRIORITY.composerQueueEdit, () => {
+      onEditCancel?.();
+      return true;
+    });
+  }, [editingMessage, onEditCancel]);
+
+  // ── Paste of image data (composer.rs's clipboard) ──────────────────────
+  // Clipboard images beat text and stage as attachments; non-image files
+  // are skipped silently; only a clipboard with no files falls through to
+  // the native text paste.
+  const onPaste = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
+      const items = event.clipboardData?.items;
+      if (items === undefined) {
+        return;
+      }
+      const files: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind !== "file") {
+          continue;
+        }
+        const file = item.getAsFile();
+        if (file !== null) {
+          files.push(file);
+        }
+      }
+      if (files.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      void (async () => {
+        const stagedNext: StagedAttachment[] = [];
+        for (const file of files) {
+          if (formatByName(file.name) === null && !file.type.startsWith("image/")) {
+            // Non-image files are skipped silently.
+            continue;
+          }
+          try {
+            stagedNext.push(await stageFile(file));
+          } catch {
+            // Undecodable bytes are skipped just as silently.
+          }
+        }
+        if (stagedNext.length > 0) {
+          setStagedByChat((current) => ({
+            ...current,
+            [chat.id]: [...(current[chat.id] ?? []), ...stagedNext],
+          }));
+        }
+      })();
+    },
+    [chat.id],
+  );
+
+  // ── The send button (§2.11) ─────────────────────────────────────────────
+  const hasContent = composerHasContent(text, staged.length, 0);
+  const editingActive = editingMessage !== null && editingMessage !== undefined;
+  const mode: "send" | "queue" | "stop" = editingActive
+    ? "send"
+    : sendButtonMode(runLive, hasContent);
+  const blocked =
+    mode !== "stop" &&
+    sendBlocked({
+      queueEditFinishing: busy,
+      requestTargetDisconnected: session.client.state !== "connected",
+      reviewCommentFlushPending: false,
+      newChatNoAgents: false,
+    });
+
+  // ── The queue-degraded caption (§2.3) ───────────────────────────────────
+  // The web has no WatchConnectivity stream yet (research 14 §5); the
+  // engine's connection state stands in. It clears itself the moment the
+  // path heals.
+  const engineState = engineStatus?.state ?? "connecting";
+  const queueDegraded = engineState !== "connected";
+  const queueOffline = engineState !== "reconnecting";
+  const queueNotice = queueDegraded
+    ? queueOffline
+      ? "Offline — messages will send when you're back online."
+      : "Messages will send once the connection recovers."
+    : null;
+
+  // The chat-scoped failure filter (composer.rs:7311-7315).
+  const failureVisible =
+    failure !== null && (failure.key === null || failure.key === chat.id) ? failure.message : null;
 
   const onStage = useCallback(
     (next: readonly StagedAttachment[]) => {
@@ -605,100 +1040,186 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     [chat.id],
   );
   const onStageError = useCallback((message: string) => {
-    sidebarNotice.set(message);
+    setFailure({ message, key: null });
   }, []);
+
+  // The attach button drives the strip's hidden input; focus returns to the
+  // draft when the dialog closes (both pick and cancel).
+  const onAttachClick = useCallback(() => {
+    focusPendingRef.current = true;
+    attachRef.current?.();
+  }, []);
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      if (focusPendingRef.current) {
+        focusPendingRef.current = false;
+        textareaRef.current?.focus();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, []);
+
+  // The pill's mouse-down focus (composer.rs:7701-7709): padding and action
+  // controls are part of the text composer — unless an open menu keeps its
+  // own keyboard/search focus.
+  const onPillMouseDown = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>): void => {
+      if (pickersOpen) {
+        return;
+      }
+      if (event.button === 0 && document.activeElement !== textareaRef.current) {
+        textareaRef.current?.focus();
+      }
+    },
+    [pickersOpen],
+  );
+
+  const sendAriaLabel = mode === "stop" ? "Stop" : mode === "queue" ? "Queue" : "Send";
 
   return (
     <div
-      className={`composer ${flipExpanded ? "composer-expanded" : "composer-compact"} ${isWorking ? "composer-working" : ""} ${editingMessage !== null && editingMessage !== undefined ? "composer-editing" : ""}`}
-      data-steering-mode={steeringMode}
+      className={`composer ${expanded ? "composer-expanded" : "composer-compact"}`}
+      data-working={runLive ? "true" : undefined}
+      data-editing={editingActive ? "true" : undefined}
     >
-      <AttachmentStrip
-        chatId={chat.id}
-        staged={staged}
-        uploadProgress={uploadProgress}
-        disabled={busy || !composerReady}
-        onStage={onStage}
-        onRemove={onRemove}
-        onError={onStageError}
-        pickerRef={attachRef}
-      />
-      <div className="composer-input-wrap">
-        <textarea
-          ref={textareaRef}
-          className="composer-input"
-          rows={1}
-          value={text}
-          placeholder="Do anything…"
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={onKeyDown}
-          spellCheck={false}
-          autoComplete="off"
-          disabled={!composerReady}
-          aria-label={editingMessage !== null && editingMessage !== undefined ? "Edit queued message" : "Compose message"}
-        />
-        <div ref={measureRef} className="composer-input-measure" aria-hidden="true">
-          {text}
-        </div>
-      </div>
-      {/*
-        The actions row — composer.rs `render`'s cluster: the pickers and the
-        paperclip form one utility group (ACTION_UTILITY_GAP), with the larger
-        structural ACTION_PRIMARY_GAP before Send. The whole cluster is
-        end-anchored so the model chip's right edge lines up with the attach
-        button above it.
-      */}
-      <div className="composer-actions">
-        <div className="composer-utility">
-          <ComposerPickers
-            catalog={catalog}
-            draft={draft}
-            chatConfig={chat.config}
-            onDraft={applyDraft}
-            onPersist={persistDraft}
-            escapeFocusTarget={() => textareaRef.current}
-          />
-          <button
-            type="button"
-            className="composer-attach"
-            aria-label="Attach files"
-            title="Attach files"
-            disabled={!composerReady}
-            onClick={() => attachRef.current?.()}
-          >
-            <Icon name="paperclip" size={16} />
-          </button>
-        </div>
-        {/*
-          A 28px filled circle — up-arrow to send or queue, a dark rounded
-          square on the same light circle to stop (composer.rs
-          `render_send_button`, after roboco's composer-actions.tsx).
-        */}
-        <button
-          type="button"
-          className={`composer-send ${sendVariant === "stop" ? "composer-send-stop" : ""}`}
-          onClick={() => void submit()}
-          disabled={sendDisabled}
-          aria-label={sendLabel}
-          title={
-            isWorking && text.length === 0 && staged.length === 0
-              ? "Interrupt the live run"
-              : isWorking && supportsSteering && text.length > 0
-                ? "Steer the live run (Mod+Enter)"
-                : "Send (Mod+Enter)"
-          }
+      {failureVisible !== null && (
+        <div
+          className={`composer-failure ${failure?.message === "Engine not connected" ? "composer-failure-amber" : ""}`}
+          id="composer-failure"
+          role="status"
+          onClick={() => setFailure(null)}
         >
-          {sendVariant === "stop" ? <span className="composer-stop-square" /> : <Icon name="arrowUp" size={14} />}
-        </button>
+          <Icon name="dangerTriangle" size={14} className="composer-failure-icon" />
+          <div className="composer-failure-text">{failureVisible}</div>
+        </div>
+      )}
+      {queueNotice !== null && (
+        <div
+          className="composer-queue-notice"
+          id="composer-queue-notice"
+          data-offline={queueOffline ? "true" : "false"}
+        >
+          <span className="composer-queue-dot" />
+          <div className="composer-queue-text">{queueNotice}</div>
+        </div>
+      )}
+      {queueSlot !== undefined && queueSlot !== null && (
+        <div className="composer-queue-tray">{queueSlot}</div>
+      )}
+      <div className="composer-surface" id="composer-surface">
+        {/*
+          The pill. ONE DOM shape for both modes (the textarea never
+          remounts — the caret survives the flip); the compact row and the
+          expanded column are the same tree re-laid-out by `[data-mode]`
+          CSS, with the animated numbers inline.
+        */}
+        <div
+          className="composer-pill"
+          data-mode={expanded ? "expanded" : "compact"}
+          style={{ height: `${layout.pillHeight}px` }}
+          onMouseDown={onPillMouseDown}
+        >
+          <AttachmentStrip
+            chatId={chat.id}
+            staged={staged}
+            uploadProgress={uploadProgress}
+            onStage={onStage}
+            onRemove={onRemove}
+            onError={onStageError}
+            pickerRef={attachRef}
+          />
+          <div className="composer-body">
+            <div
+              className="composer-input-box"
+              style={
+                expanded
+                  ? { height: `${layout.boxHeight}px`, paddingTop: `${layout.textPad}px` }
+                  : { top: `${-layout.textGlide}px` }
+              }
+            >
+              <textarea
+                ref={textareaRef}
+                className="composer-input"
+                rows={1}
+                value={text}
+                placeholder="Do anything…"
+                onChange={(event) => setText(event.target.value)}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Do anything…"
+              />
+            </div>
+            <div
+              className="composer-actions"
+              style={
+                expanded
+                  ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+                  : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+              }
+            >
+              <div className="composer-utility">
+                <ComposerPickers
+                  catalog={catalog}
+                  draft={draft}
+                  chatConfig={chat.config}
+                  onDraft={applyDraft}
+                  onPersist={persistDraft}
+                  escapeFocusTarget={() => textareaRef.current}
+                  onOpenChange={setPickersOpen}
+                />
+                <button type="button" className="composer-attach" aria-label="Attach" onClick={onAttachClick}>
+                  <Icon name="paperclip" size={16} />
+                </button>
+              </div>
+              {/*
+                A 28px filled circle — up-arrow to send or queue, a dark
+                rounded square on the same light circle to stop
+                (`render_send_button`, composer.rs:7106). No label, no
+                tooltip; blocked sends dim to 0.35 with no click handler;
+                Stop is never blocked.
+              */}
+              <button
+                type="button"
+                className={`composer-send ${mode === "stop" ? "composer-send-stop" : ""}`}
+                onClick={() => (mode === "stop" ? void interrupt() : void submit())}
+                disabled={blocked}
+                aria-label={sendAriaLabel}
+              >
+                {mode === "stop" ? (
+                  <span className="composer-stop-square" />
+                ) : (
+                  <Icon name="arrowUp" size={14} />
+                )}
+              </button>
+            </div>
+          </div>
+          {/*
+            The text-width mirror: `white-space: pre` + `width: max-content`
+            make its offsetWidth the unwrapped widest-line width. The font
+            stack MUST match `.composer-input` so the number matches what
+            the textarea wraps at.
+          */}
+          <div ref={measureRef} className="composer-input-measure" aria-hidden="true">
+            {text}
+          </div>
+        </div>
       </div>
+      {footerSlot}
     </div>
   );
 }
 
-/** The navigation threshold the desktop uses to flip-morph the new-thread ↔ session handoff. */
-export const COMPOSER_NAVIGATION_MS_THRESHOLD = NAVIGATION_MS_THRESHOLD;
+function NOOP(): void {}
 
 /** The seeded model's ladder for the draft-seeding effect (`trait_ladder`). */
 function ladderFor(models: readonly Model[], modelId: string): readonly Model["reasoningLevels"][number][] {
   return models.find((model) => model.id === modelId)?.reasoningLevels ?? [];
+}
+
+/** `prefers-reduced-motion` at first paint (snap every morph). */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }

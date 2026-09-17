@@ -86,18 +86,32 @@ export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooter
   const [refs, setRefs] = useState<readonly RepoRef[]>([]);
 
   const spacePath = space?.path ?? null;
+  const gitDetected = space?.gitDetected ?? false;
   const canSwitch = !committed && spacePath !== null && session !== null;
   const picked = draftBranch ?? chat.branch;
   const pickedRefHasWorktree =
     picked !== null && refs.some((row) => row.name === picked && row.worktreePath !== null && row.worktreePath !== undefined);
 
+  // `render_footer`'s established-chat branch (pickers.rs:2571-2660): the
+  // checkout-kind label reads the space row — "Worktree" when the chat's
+  // cwd differs from the space path, else "Local checkout" — and the whole
+  // label row renders only when the chat's space has git detected. The
+  // trailing cluster (spring, CR badge, usage) belongs to both variants.
+  const chatCwd = typeof chat.cwd === "string" ? chat.cwd : null;
+  const isWorktree = chatCwd !== null && spacePath !== null && chatCwd !== spacePath;
+
   return (
     <div className={`composer-footer ${committed ? "" : "composer-footer-draft"}`}>
       {committed ? (
-        <>
-          <FooterLabel icon="folderWithFiles" label="Local checkout" />
-          <FooterLabel icon="gitBranch" label={chat.branch ?? "No ref"} />
-        </>
+        gitDetected ? (
+          <>
+            <FooterLabel
+              icon={isWorktree ? "folderWithFiles" : "folder"}
+              label={isWorktree ? "Worktree" : "Local checkout"}
+            />
+            <FooterLabel icon="gitBranch" label={chat.branch ?? "No ref"} />
+          </>
+        ) : null
       ) : (
         <>
           <DeviceChip devices={devices} effectiveDevice={effectiveDevice} ownDeviceId={ownDeviceId} now={now} />

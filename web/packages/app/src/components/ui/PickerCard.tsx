@@ -45,6 +45,14 @@ export interface PickerCardProps {
    * trigger's toggling and ARIA props merge onto it.
    */
   readonly trigger: ReactElement;
+  /**
+   * Also open on hover (Base UI `openOnHover`): the content-card shape
+   * `base/tooltip.tsx` routes here instead of the label tooltip — the
+   * context-meter card (500ms) is the current design.
+   */
+  readonly openOnHover?: boolean;
+  /** The hover-open delay in ms; requires `openOnHover`. */
+  readonly hoverDelayMs?: number;
   /** The placement, or an old `popover-anchor.ts` helper name. Defaults to `anchorBelow`. */
   readonly placement?: AnchorPlacement | AnchorHelperId;
   /** The caller's gap for `anchorBelowGap`. */
@@ -83,7 +91,12 @@ export function PickerCard(props: PickerCardProps) {
     props.width === undefined ? props.style : { ...props.style, width: props.width };
   return (
     <>
-      <RbPopoverTrigger handle={handle} render={props.trigger} />
+      <RbPopoverTrigger
+        handle={handle}
+        render={props.trigger}
+        openOnHover={props.openOnHover}
+        delay={props.hoverDelayMs}
+      />
       <RbPopover
         handle={handle}
         open={props.open}

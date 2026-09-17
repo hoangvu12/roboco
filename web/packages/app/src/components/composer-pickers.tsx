@@ -70,11 +70,24 @@ export interface ComposerPickersProps {
    * `RbPopover`'s finalFocus.
    */
   readonly escapeFocusTarget: () => HTMLElement | null;
+  /**
+   * Reports the card's open state to the host — the composer's pill
+   * mouse-down focus defers to open menus (`pickers.is_open()`,
+   * composer.rs:7701-7709).
+   */
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget } = props;
+  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange } = props;
   const [open, setOpen] = useState(false);
+  const setOpenAndNotify = useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      onOpenChange?.(next);
+    },
+    [onOpenChange],
+  );
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -215,7 +228,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
     <div className="composer-pickers">
       <PickerCard
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={setOpenAndNotify}
         placement="anchorAboveEnd"
         cardClassName="popover-card popover-card-flush identity-card"
         role="dialog"
