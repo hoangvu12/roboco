@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { Chat } from "@roboco/proto";
@@ -9,13 +9,16 @@ import { singleLine } from "../lib/view";
 
 /**
  * The chat row's management affordance — the web peer of the desktop's
- * chat context menu (shell.rs ChatMenuState): a hover-revealed kebab opens
- * a small menu with Rename… / Archive / Delete…; rename and delete open
- * modal dialogs. Mutation failures surface in the sidebar notice strip.
- * Menus and dialogs portal to <body> so the sidebar's overflow and the
- * phone drawer's transform never clip them.
+ * chat context menu (shell.rs ChatMenuState). The desktop opens it on
+ * RIGHT mouse-down at the pointer; the web keeps that plus a hover/focus
+ * kebab (its touch-only analogue — phones have no right-click, and the
+ * phone layer must keep working) and the archived shelf's rows reuse the
+ * same surface. Rename and delete open modal dialogs; mutation failures
+ * surface in the sidebar notice strip. Menus and dialogs portal to <body>
+ * so the sidebar's overflow and the phone drawer's transform never clip
+ * them.
  */
-export function ChatRowMenu({ chat }: { chat: Chat }) {
+export function useChatMenu(chat: Chat) {
   const session = useEngineSession();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
@@ -30,20 +33,13 @@ export function ChatRowMenu({ chat }: { chat: Chat }) {
     });
   }
 
-  return (
+  /** Open the context menu at the pointer (`ChatMenuState::position`). */
+  const openAt = useCallback((x: number, y: number): void => {
+    setMenu({ x, y });
+  }, []);
+
+  const element = (
     <>
-      <button
-        type="button"
-        className="chat-row-kebab"
-        aria-label={`Manage ${chat.title ?? "New session"}`}
-        data-open={menu !== null ? "" : undefined}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          setMenu((current) => (current === null ? { x: rect.right, y: rect.bottom } : null));
-        }}
-      >
-        ⋯
-      </button>
       {menu !== null && (
         <ChatMenu
           anchor={menu}
@@ -71,6 +67,31 @@ export function ChatRowMenu({ chat }: { chat: Chat }) {
       )}
       {dialog === "delete" && <DeleteChatDialog chat={chat} onDelete={() => run((caller) => deleteChat(caller, chat.id))} onClose={() => setDialog(null)} />}
     </>
+  );
+
+  return { openAt, element };
+}
+
+/** The touch/hover analogue of the desktop's right-click affordance. */
+export function ChatRowKebab({
+  chat,
+  openAt,
+}: {
+  chat: Chat;
+  openAt: (x: number, y: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="chat-row-kebab"
+      aria-label={`Manage ${chat.title ?? "New session"}`}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        openAt(rect.right, rect.bottom);
+      }}
+    >
+      ⋯
+    </button>
   );
 }
 

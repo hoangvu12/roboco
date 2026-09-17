@@ -1,6 +1,7 @@
-import type { ChangeRequestSummary, CheckoutChangeRequestStatus } from "@roboco/proto";
+import type { ChangeRequestSummary, Chat, CheckoutChangeRequestStatus } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 /**
  * Per-checkout change-request state for the web client — the web peer of
@@ -327,6 +328,104 @@ function watchParams(target: ChangeRequestTarget): Record<string, unknown> {
     branch: target.branch,
     targetDeviceId: target.deviceId,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat subscription entry point
+// ---------------------------------------------------------------------------
+
+const EMPTY_SNAPSHOT: ChangeRequestSnapshot = {
+  supported: true,
+  snapshots: new Map(),
+  unsupported: new Map(),
+  providers: new Map(),
+  generation: 0,
+};
+
+/**
+ * A chat's watch target, or null when the chat has no conversation-owned
+ * source context worth a PR lookup (`change_requests.rs::desired_watch_targets`):
+ * archived chats and empty-branch rows never subscribe. The watch's `cwd` is
+ * `sourceContext.repoRoot` — the repo root, not the chat's working directory
+ * — matching the engine's checkout identity (`desired_watch_targets`,
+ * research 07 §427).
+ */
+export function chatChangeRequestTarget(chat: Chat): ChangeRequestTarget | null {
+  const source = chat.sourceContext ?? null;
+  if (source === null) {
+    return null;
+  }
+  const branch = source.branch.trim();
+  if (branch.length === 0) {
+    return null;
+  }
+  return {
+    deviceId: chat.deviceId,
+    cwd: source.repoRoot,
+    branch,
+    checkoutId: source.checkoutId,
+  };
+}
+
+/**
+ * Live PR summaries for a set of chats, keyed by chat id — the per-chat
+ * subscribe entry point arbitrary callers need (the sidebar's rows; the
+ * Changes pane and chat header keep their own single-target stores). Owns
+ * one `ChangeRequestStore` over the client, brings its watch targets in
+ * line with the visible chats, and re-resolves `changeRequestForChat` per
+ * chat on every snapshot so a stale snapshot never leaks through.
+ */
+export function useChatChangeRequests(
+  client: EngineClient | null,
+  chats: readonly Chat[],
+): ReadonlyMap<string, ChangeRequestSummary> {
+  const store = useMemo(() => (client === null ? null : new ChangeRequestStore(client)), [client]);
+  useEffect(() => () => {
+    store?.dispose();
+  }, [store]);
+
+  // The target set as a stable signature — `chats` is a fresh array each
+  // render, but identical targets must not re-run the (cheap, but real)
+  // watch reconciliation.
+  const targets = useMemo(
+    () =>
+      chats
+        .filter((chat) => !chat.archived)
+        .map((chat) => chatChangeRequestTarget(chat))
+        .filter((target): target is ChangeRequestTarget => target !== null),
+    [chats],
+  );
+  const signature = useMemo(() => targets.map(keyOf).join("\u0000"), [targets]);
+
+  useEffect(() => {
+    store?.setTargets(targets);
+    // `targets` is captured per-signature; the linter would keep it in deps
+    // and re-fire on every render's new array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, signature]);
+
+  const snapshot = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => (store === null ? () => {} : store.subscribe(listener)),
+      [store],
+    ),
+    useCallback(() => store?.getSnapshot() ?? EMPTY_SNAPSHOT, [store]),
+  );
+
+  return useMemo(() => {
+    const summaries = new Map<string, ChangeRequestSummary>();
+    for (const chat of chats) {
+      const target = chatChangeRequestTarget(chat);
+      if (target === null) {
+        continue;
+      }
+      const summary = changeRequestForChat(snapshot.snapshots, target);
+      if (summary !== null) {
+        summaries.set(chat.id, summary);
+      }
+    }
+    return summaries;
+  }, [snapshot, chats]);
 }
 
 /**

@@ -226,14 +226,25 @@ describe("chatListRows", () => {
     expect(rows[1]!.project).toBe("Engine work");
   });
 
-  it("labels project-less rows from the cwd or ~ and stamps branches", () => {
+  it("labels project-less rows ~ and stamps branches from the source context", () => {
     const rows = chatListRows(
-      [chat({ id: "a", cwd: "/home/me/roboco", branch: "feat/web" }), chat({ id: "b", cwd: "~", branch: null })],
+      [
+        chat({
+          id: "a",
+          cwd: "/home/me/roboco",
+          branch: "legacy-scalar",
+          sourceContext: { checkoutId: "c1", repoRoot: "/home/me/roboco", cwd: "/home/me/roboco", branch: "feat/web", observedAt: "2026-09-16T10:00:00Z" },
+        }),
+        chat({ id: "b", cwd: "~", branch: null }),
+      ],
       [],
       [],
       NOW,
     );
-    expect(rows[0]!.project).toBe("roboco");
+    // Project-less sessions read as "~" (spaces.rs:1387), and only the
+    // conversation-owned source context's branch counts — the legacy scalar
+    // cannot prove a worktree has not switched since it was written.
+    expect(rows[0]!.project).toBe("~");
     expect(rows[0]!.branch).toBe("feat/web");
     expect(rows[1]!.project).toBe("~");
     expect(rows[1]!.branch).toBe(null);

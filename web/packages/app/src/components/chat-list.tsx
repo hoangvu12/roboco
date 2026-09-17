@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
@@ -6,39 +6,328 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
-import { chatListRows, healedSpaceFilter, statusWord, type ChatRow } from "../lib/view";
-import { ChatRowMenu } from "./chat-menu";
+import {
+  chatListRows,
+  chatRowHeight,
+  healedSpaceFilter,
+  resortOffsets,
+  sidebarGroups,
+  sidebarKeyOrderChanged,
+  statusWord,
+  type ChatRow,
+  type SidebarKeyed,
+} from "../lib/view";
+import { useChatChangeRequests } from "../state/change-requests-store";
+import { useChatMenu, ChatRowKebab } from "./chat-menu";
 import { GlyphSpinner } from "./glyph-spinner";
+import {
+  SidebarDisclosureBody,
+  SidebarDisclosureHeader,
+  useSidebarDisclosure,
+} from "./sidebar-disclosure";
+import { ChangeRequestBadge } from "./change-request-badge";
+
+/** `shell.rs::SIDEBAR_LIST_GAP` — the flex gap between sidebar rows. */
+export const SIDEBAR_LIST_GAP = 2;
+/**
+ * `shell.rs::SIDEBAR_ACTIVE_HARNESS_*` — the active card keeps its harness
+ * identity close on the standard 8px rhythm (SPACE_SM).
+ */
+export const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP = 8;
+export const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE = 13;
+/** `spaces.rs::SIDEBAR_SECTION_GAP` — every disclosure section's top band. */
+const SIDEBAR_SECTION_GAP = 12;
+/** `spaces.rs::SIDEBAR_DISCLOSURE_BODY_INSET` — the body's handoff padding. */
+const SIDEBAR_DISCLOSURE_BODY_INSET = 4;
+/**
+ * `spaces.rs::SIDEBAR_DISCLOSURE_SECTION_HEIGHT` = SECTION_GAP + HEADER (28):
+ * a collapsed section's keyed height for the FLIP diff.
+ */
+const SIDEBAR_DISCLOSURE_SECTION_HEIGHT = SIDEBAR_SECTION_GAP + 28;
+
+/**
+ * `shell.rs::RESORT` — 260ms `cubic-bezier(0.22, 1, 0.36, 1)`. A UI-level
+ * spec the proto motion catalog does not carry (it lives beside the FLIP
+ * code in shell.rs, not in motion.rs), so the web declares it here and as
+ * `--rb-motion-resort` in app.css rather than through @roboco/theme.
+ */
+export const SIDEBAR_RESORT_MS = 260;
+export const SIDEBAR_RESORT_CURVE: readonly [number, number, number, number] = [0.22, 1, 0.36, 1];
+export const SIDEBAR_RESORT_EASING = `cubic-bezier(${SIDEBAR_RESORT_CURVE.join(", ")})`;
+
+function prefersReducedMotion(): boolean {
+  const query = (globalThis as { matchMedia?: (query: string) => { matches: boolean } }).matchMedia;
+  if (query === undefined) {
+    return false;
+  }
+  return query("(prefers-reduced-motion: reduce)").matches;
+}
+
+interface ResortState {
+  readonly epoch: number;
+  readonly offsets: ReadonlyMap<string, number>;
+  readonly newKeys: ReadonlySet<string>;
+}
+
+const RESORT_NONE: ResortState = { epoch: 0, offsets: new Map(), newKeys: new Set() };
+
+/**
+ * The §2.7 FLIP diff, in render order: `useLayoutEffect` compares this
+ * render's keyed list against the previous one AFTER the DOM is laid out at
+ * its new positions but BEFORE paint — a reorder computes each surviving
+ * key's paint-only start offset and bumps the epoch, so the moved elements
+ * animate from the offset down to zero over `RESORT`. First fill never
+ * animates; a height-only change (a disclosure opening) is not a reorder;
+ * removals just go (their survivors glide up to close the gap).
+ */
+function useSidebarResort(keyed: readonly SidebarKeyed[]): ResortState {
+  const prev = useRef<readonly SidebarKeyed[]>([]);
+  const [state, setState] = useState<ResortState>(RESORT_NONE);
+  useLayoutEffect(() => {
+    const old = prev.current;
+    prev.current = keyed;
+    if (old.length === 0 || !sidebarKeyOrderChanged(old, keyed)) {
+      return;
+    }
+    const offsets = resortOffsets(old, keyed, SIDEBAR_LIST_GAP);
+    const oldKeys = new Set(old.map((entry) => entry.key));
+    const newKeys = new Set(
+      keyed.filter((entry) => !oldKeys.has(entry.key)).map((entry) => entry.key),
+    );
+    if (offsets.size === 0 && newKeys.size === 0) {
+      return;
+    }
+    setState((current) => ({ epoch: current.epoch + 1, offsets, newKeys }));
+  }, [keyed]);
+  return state;
+}
+
+/**
+ * One keyed element's paint-only glide: Web Animations API from
+ * `translateY(dy)` to none, so layout stays at the final position and only
+ * the paint offset tweens — the desktop's `with_animation` relative-inset
+ * equivalent. New keys fade in via the `chat-row-in` CSS class instead
+ * (fresh mount, the animation runs once). Reduced motion skips both.
+ */
+function useResortGlide(ref: React.RefObject<HTMLElement | null>, dy: number | undefined, epoch: number): void {
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null || dy === undefined || dy === 0 || prefersReducedMotion()) {
+      return;
+    }
+    const animation = el.animate(
+      [{ transform: `translateY(${dy}px)` }, { transform: "translateY(0)" }],
+      {
+        duration: SIDEBAR_RESORT_MS,
+        easing: SIDEBAR_RESORT_EASING,
+        fill: "none",
+      },
+    );
+    return () => {
+      animation.cancel();
+    };
+    // The epoch pins the effect to one resort: a later resort with the same
+    // dy re-runs, a re-render with the same state does not.
+  }, [ref, dy, epoch]);
+}
 
 export function ChatList() {
   const session = useEngineSession();
   const snapshot = useWatchSnapshot(session);
   const sidebar = useSidebar();
   const now = useNow(10_000);
+  // The paired engine's own device is the web's "local device" — the group
+  // its chats land in under ByDevice, promoted to the top.
+  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+
+  const chats = snapshot?.chats;
+  const filter = snapshot === null ? null : healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
+  const visible =
+    chats === undefined || chats.error !== null
+      ? []
+      : filter === null
+        ? chats.rows
+        : chats.rows.filter((chat) => chat.spaceId !== undefined && chat.spaceId === filter);
+  const changeRequests = useChatChangeRequests(session?.client ?? null, visible);
+
+  // The device-group collapse keys — in-memory only, exactly like the
+  // desktop's `sidebar_collapsed_groups` (a reload re-expands every group).
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+
+  const rows =
+    snapshot !== null && chats !== undefined && chats.error === null && chats.loaded
+      ? chatListRows(visible, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows, {
+          sort: sidebar.sort,
+          showHarness: sidebar.showHarness,
+          showBranch: sidebar.showBranch,
+          showPullRequest: sidebar.showPullRequest,
+          changeRequests,
+        })
+      : [];
+
+  const groups = sidebarGroups(rows, sidebar.organization, localDeviceId);
+  const keyed: SidebarKeyed[] = [];
+  const sections: React.ReactNode[] = [];
+  for (const bucket of groups) {
+    if (bucket.group === null) {
+      for (const row of bucket.rows) {
+        keyed.push({
+          key: `c:${row.chat.id}`,
+          height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
+        });
+        sections.push(<ChatListRow key={row.chat.id} row={row} />);
+      }
+      continue;
+    }
+    const collapseKey = `device:${bucket.group.deviceId}`;
+    const collapsed = collapsedGroups.has(collapseKey);
+    keyed.push({
+      key: `g:${collapseKey}`,
+      height:
+        SIDEBAR_DISCLOSURE_SECTION_HEIGHT + (collapsed ? 0 : sidebarGroupBodyHeight(bucket.rows)),
+    });
+    sections.push(
+      <DeviceGroupSection
+        key={collapseKey}
+        collapseKey={collapseKey}
+        label={bucket.group.deviceName}
+        rows={bucket.rows}
+        collapsed={collapsed}
+        onToggle={() => {
+          setCollapsedGroups((current) => {
+            const next = new Set(current);
+            if (next.has(collapseKey)) {
+              next.delete(collapseKey);
+            } else {
+              next.add(collapseKey);
+            }
+            return next;
+          });
+        }}
+      />,
+    );
+  }
+
+  // Hooks stay unconditional across the early returns below: an unconnected
+  // first render must not register fewer hooks than the connected ones.
+  const resort = useSidebarResort(keyed);
 
   if (snapshot === null) {
     return <p className="sidebar-note">Pair an engine to see its chats.</p>;
   }
-  const chats = snapshot.chats;
-  if (chats.error !== null) {
-    return <p className="sidebar-note sidebar-note-error">{chats.error.message}</p>;
+  if (chats!.error !== null) {
+    return <p className="sidebar-note sidebar-note-error">{chats!.error.message}</p>;
   }
-  if (!chats.loaded) {
+  if (!chats!.loaded) {
     return <p className="sidebar-note">Loading chats…</p>;
   }
-  const filter = healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
-  const visible =
-    filter === null ? chats.rows : chats.rows.filter((chat) => chat.spaceId !== undefined && chat.spaceId === filter);
-  const rows = chatListRows(visible, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows);
   if (rows.length === 0) {
-    return <p className="sidebar-note">{filter === null ? "No chats yet." : "No chats in this space."}</p>;
+    return (
+      <p className="sidebar-empty">
+        {filter === null ? "No chats yet." : "No chats in this space."}
+      </p>
+    );
   }
+
+  // The offsets/newKeys arrive one commit after the new order — re-wrap the
+  // already-keyed children with their glide/fade state before paint.
+  const decorated = sections.map((child, index) => {
+    const key = keyed[index]!.key;
+    if (resort.newKeys.has(key)) {
+      return (
+        <div className="chat-row-in" key={key}>
+          {child}
+        </div>
+      );
+    }
+    const dy = resort.offsets.get(key);
+    if (dy !== undefined) {
+      return (
+        <ResortGlideBox key={key} dy={dy} epoch={resort.epoch}>
+          {child}
+        </ResortGlideBox>
+      );
+    }
+    return child;
+  });
+  return <div className="chat-list">{decorated}</div>;
+}
+
+/** A keyed wrapper that glides a displaced child (row or whole section). */
+function ResortGlideBox({
+  dy,
+  epoch,
+  children,
+}: {
+  dy: number;
+  epoch: number;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useResortGlide(ref, dy, epoch);
   return (
-    <ul className="chat-list">
-      {rows.map((row) => (
-        <ChatListRow key={row.chat.id} row={row} />
-      ))}
-    </ul>
+    <div ref={ref} className="chat-row-resort">
+      {children}
+    </div>
+  );
+}
+
+/** `spaces.rs::render_active_rows`' body height: inset + rows + gaps. */
+function sidebarGroupBodyHeight(rows: readonly ChatRow[]): number {
+  let total = SIDEBAR_DISCLOSURE_BODY_INSET;
+  for (const row of rows) {
+    total += chatRowHeight(row.branch !== null, row.changeRequest !== null);
+  }
+  total += SIDEBAR_LIST_GAP * Math.max(rows.length - 1, 0);
+  return total;
+}
+
+/**
+ * One ByDevice disclosure section (`spaces.rs` group arm): the shared header
+ * (label + hairline + chevron), the tweened body, and the 12px section band
+ * above it. Its keyed height for the FLIP diff is the collapsed/open pair
+ * the parent computed.
+ */
+function DeviceGroupSection({
+  collapseKey,
+  label,
+  rows,
+  collapsed,
+  onToggle,
+}: {
+  collapseKey: string;
+  label: string;
+  rows: readonly ChatRow[];
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const bodyHeight = sidebarGroupBodyHeight(rows);
+  const { bodyRef, chevronRef, toggle } = useSidebarDisclosure(
+    `group:${collapseKey}`,
+    !collapsed,
+    bodyHeight,
+  );
+  return (
+    <section className="sidebar-group" id={`sidebar-group-${collapseKey}`}>
+      <SidebarDisclosureHeader
+        label={collapsed ? `${label} (${rows.length})` : label}
+        open={!collapsed}
+        chevronRef={chevronRef}
+        onToggle={() => {
+          // The motion begins on the CURRENT height before the flip — a
+          // rapid double-click reverses from mid-flight, not from rest.
+          toggle();
+          onToggle();
+        }}
+      />
+      <SidebarDisclosureBody bodyRef={bodyRef}>
+        <div className="sidebar-group-rows">
+          {rows.map((row) => (
+            <ChatListRow key={row.chat.id} row={row} />
+          ))}
+        </div>
+      </SidebarDisclosureBody>
+    </section>
   );
 }
 
@@ -50,22 +339,26 @@ export function ChatList() {
  *    status corner right-aligned. The corner is activity, not position: a
  *    small colored word beside a glyph — Working animates the pixel spinner,
  *    Done wears a check, the rest use a 6px dot — and Idle rows show the
- *    relative time instead.
+ *    relative time instead. A jump hint (ticket 12 supplies the label)
+ *    takes the corner outright above both.
  * 2. The harness brand mark (13px) beside the title at 13px/17px.
  * 3. Structural, not reserved: branch and change-request badge, omitted
- *    entirely when the chat has neither.
+ *    entirely when the chat has neither — the invisible spring keeps the
+ *    badge pinned right without moving anything when absent.
  *
  * Hovering the ROW (not the corner — corner-only tested as undiscoverable)
  * swaps the corner for the Archive pill, whose padding bleeds into the row's
  * so its text right-aligns exactly where the status word sat: the swap moves
- * pixels around the label, not the label itself.
+ * pixels around the label, not the label itself. Right mouse-down opens the
+ * chat context menu at the pointer, exactly as the desktop does.
  */
-function ChatListRow({ row }: { row: ChatRow }) {
+function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: string | null }) {
   const session = useEngineSession();
   const [hovered, setHovered] = useState(false);
   const word = statusWord(row.status);
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
+  const { openAt, element } = useChatMenu(row.chat);
 
   function toggleArchive(event: React.MouseEvent): void {
     // The row's own click is the selector; only the corner archives.
@@ -81,10 +374,15 @@ function ChatListRow({ row }: { row: ChatRow }) {
   }
 
   return (
-    <li
+    <div
       className="chat-row-item"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={(event) => {
+        // The desktop opens ChatMenuState on RIGHT mouse-down at the pointer.
+        event.preventDefault();
+        openAt(event.clientX, event.clientY);
+      }}
     >
       <Link
         to="/chat/$chatId"
@@ -96,11 +394,18 @@ function ChatListRow({ row }: { row: ChatRow }) {
         <div className="chat-row-line">
           <span className="chat-row-folder">{row.folder}</span>
           <span className="chat-row-corner">
-            {hovered ? (
-              <span className="chat-row-archive" onClick={toggleArchive} role="presentation">
+            {jumpLabel !== null ? (
+              <span className="chat-row-jump mono">{jumpLabel}</span>
+            ) : hovered ? (
+              <button
+                type="button"
+                className="chat-row-archive"
+                aria-label={archived ? "Unarchive chat" : "Archive chat"}
+                onClick={toggleArchive}
+              >
                 <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
                 {archived ? "Unarchive" : "Archive"}
-              </span>
+              </button>
             ) : word === null ? (
               <span className="chat-row-time">{row.timeAgo}</span>
             ) : (
@@ -115,22 +420,40 @@ function ChatListRow({ row }: { row: ChatRow }) {
           {brand !== null && (
             <Icon
               name={brand.name}
-              size={13}
+              size={SIDEBAR_ACTIVE_HARNESS_ICON_SIZE}
               className="chat-row-brand"
               style={brand.tint === null ? undefined : { color: brand.tint }}
             />
           )}
           <span className="chat-row-title">{row.chat.title ?? "New session"}</span>
         </div>
-        {row.branch !== null && (
+        {(row.branch !== null || row.changeRequest !== null) && (
           <div className="chat-row-meta">
-            <Icon name="gitBranch" size={11} />
-            <span className="chat-row-branch">{row.branch}</span>
+            {row.branch !== null && (
+              <>
+                <Icon name="gitBranch" size={11} />
+                <span className="chat-row-branch">{row.branch}</span>
+              </>
+            )}
+            <span className="chat-row-meta-spring" />
+            {row.changeRequest !== null && (
+              <span
+                className="chat-row-pr"
+                onClick={(event) => {
+                  // The badge's own anchor owns the click; the row's Link
+                  // must not also navigate.
+                  event.stopPropagation();
+                }}
+              >
+                <ChangeRequestBadge summary={row.changeRequest} size="sidebar" />
+              </span>
+            )}
           </div>
         )}
       </Link>
-      <ChatRowMenu chat={row.chat} />
-    </li>
+      <ChatRowKebab chat={row.chat} openAt={openAt} />
+      {element}
+    </div>
   );
 }
 

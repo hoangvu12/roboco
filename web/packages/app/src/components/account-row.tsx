@@ -12,11 +12,15 @@ import { emitShortcut } from "../state/shortcuts";
  * Trigger geometry is the desktop's: a 28px white avatar circle carrying the
  * name's initial in near-black, then the engine's name over an optional
  * status line, on an 8px radius with 8px padding and a 10px gap. The wash is
- * quiet until hovered and settles one step stronger while the menu is open
- * (user-menu.tsx `bg-white/[0.04]` → `[0.06]`).
+ * quiet until hovered and settles one step stronger while the menu is open.
  *
- * The menu itself carries what the desktop's does minus the desktop-only
- * entries: Settings, and the appearance shortcut.
+ * The menu opens UPWARD with a 6px gap, exactly as wide as the trigger row,
+ * and carries: the muted "Stored on this device" identity line, the
+ * web-only Engines row (the pairing entry point — the desktop has no
+ * per-device identity concept here, and the user menu is where its one
+ * settings entry lives), then the single "Settings" row, which lands on the
+ * Devices section (`SettingsSection::Devices`) — the web's remote-access
+ * page until ticket 28 builds the real Devices section.
  */
 export function AccountRow() {
   const session = useEngineSession();
@@ -59,19 +63,20 @@ export function AccountRow() {
     };
   }, [open]);
 
-  function go(to: "/settings" | "/settings/appearance"): void {
+  function goSettings(): void {
     setOpen(false);
-    void navigate({ to });
+    void navigate({ to: "/settings/remote-access" });
   }
 
   return (
     <div className="user-menu" ref={rootRef}>
       {open && (
         <div className="user-menu-card" role="menu">
+          <div className="user-menu-identity">Stored on this device</div>
           {/*
             Devices/engines are reached from the user menu, as on the desktop —
             never from the titlebar, whose only trailing control is the right
-            pane's toggle.
+            pane's toggle. The web keeps this row as its pairing entry point.
           */}
           <button
             type="button"
@@ -82,16 +87,11 @@ export function AccountRow() {
               emitShortcut("open-engines");
             }}
           >
-            <Icon name="monitor" size={15} />
+            <Icon name="monitor" size={16} />
             Engines
           </button>
-          <button type="button" className="menu-item" role="menuitem" onClick={() => go("/settings/appearance")}>
-            <Icon name="tuning" size={15} />
-            Appearance
-          </button>
-          <div className="menu-sep" />
-          <button type="button" className="menu-item" role="menuitem" onClick={() => go("/settings")}>
-            <Icon name="settingsMinimalistic" size={15} />
+          <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
+            <Icon name="settingsMinimalistic" size={16} />
             Settings
           </button>
         </div>
