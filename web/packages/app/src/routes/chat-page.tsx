@@ -54,7 +54,7 @@ export function ChatPage() {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "j") {
         event.preventDefault();
         event.stopPropagation();
-        rightPaneStore.show(chatId, "terminal");
+        rightPaneStore.revealSurface(chatId, "terminal");
       }
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });

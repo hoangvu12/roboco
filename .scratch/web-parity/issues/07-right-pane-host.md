@@ -13,7 +13,7 @@ tickets 22 / 24 / 26 / 27 plug into.
 
 **Blocked by:** 02 (Foundation tokens), 03 (Client settings store).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/01-shell-chrome.md` §3.20, §3.21, §3.22,
 §3.23, §3.27, §3.29, §4.3, §4.4, §4.11, §4.12, §5.1 rows B1–B3, §5.4 rows
@@ -1275,4 +1275,133 @@ Copied verbatim from research §5, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed** (branch `wp1/07-right-pane`, worktree `roboco-wt/07-right-pane`):
+
+- `SURFACES_DISABLED` deleted; the pane hosts real bodies through
+  `components/surface-registry.tsx` (`RightSurfaceEntry` /
+  `registerRightSurface` / `renderRightSurface`). Registered: the real
+  `SurfacePicker`, real `FilesSurface` / `ChangesSurface` / `TerminalDock`
+  (mounted unchanged), stub bodies for `file` / `subagent`. `Browser(u64)`
+  is absent per spec §6; `preview-panel.tsx` and the `"preview"` kind
+  confirmed gone (ticket 04).
+- `state/right-pane.ts` rewritten: tagged-union `RightSurface` (§2.1, no
+  Browser), `surfaceKey`/`surfaceEqual`/`pushUniqueRightSurface`,
+  `workspaceFileTitle`, `panelKey` (`space-canvas:{space}`), per-chat
+  `ChatPaneState` all-defaults-closed, `resolvedActive` (stored pick → first
+  remaining tab → picker), backing-entity maps (`#files`/`#fileKeys`,
+  `#diffMeta`, `#subagentMeta`) with monotonic never-reused ids,
+  `add{Files,File,Diff,Terminal,Subagent}Surface`, `closeSurface` (per-kind
+  teardown, resets the pick only if it was that surface), `renameFileSurface`
+  (id + position stable), `moveTab`. `toggle()` clears `expanded` on close
+  (P19). Width persists globally through ticket 03's store (`rightPaneWidth`,
+  debounced on drag — B3); open/expanded/active/tabs stay in memory.
+  `revealSurface` added as the `Mod+J` path (find-or-mint through the add
+  paths, then `show`'s toggle semantics).
+- `state/layout.ts`: `stablePanelContentWidth`, `rightPanelContentWidth`,
+  `resizeDragSample`, `resizeBounceOffset`, `ResizeEdge`, nudge/bounce
+  constants, `PANE_RESIZE_HITBOX_HALF_WIDTH`, `TITLEBAR_HEIGHT` (§3.3/§3.4).
+- `right-tab-strip.tsx`: pointer-drag reorder with a custom portaled ghost
+  (112×24, raised, border-strong, 0.85), invisible spacer for the dragged
+  slot, ±116 sibling slides on the 150ms `tab-slide` curve retargeting from
+  the current transform (the epoch-restart equivalent), `dropIndex` in
+  content coords, 4px drag arm, click suppression after a drag;
+  `TabChip` with contextual title/detail/dirty aria, 11.5px title, 12px icons
+  (14 for `file`), 350ms `SurfaceTabTooltip` portal; middle-click and ✕ both
+  close THAT tab (R9); `AddSurfaceButton` (24×24, 13px plus, `wash(0.11)`
+  hover, press-was-open toggle) + `AddSurfaceMenu` (168px card, portaled
+  below the button with the 10px gap, same rows as the picker minus Browser).
+- `pane-seam.tsx`: `bounds` + `bounceVar` props; drags run through
+  `resizeDragSample` with the edge latch (one bounce per held pointer,
+  rearmed by leaving the edge), the 220ms two-phase pulse driven by a rAF
+  loop writing `--rb-pane-edge-offset` / `--rb-sidebar-edge-offset` (0 under
+  reduced motion, never started), and the constrained state (`.pane-seam-constrained`
+  hides the line at a clamped edge — P8/P9). Narrow-window branch: when
+  `max < RIGHT_PANE_MIN` the seam pins to max, no edge, no bounce.
+- `app-shell.tsx`: per-space canvas panel key, seam guards
+  (`!pane.expanded && !glide.gliding` — P14; the desktop's `panel_handoff`
+  has no web equivalent, commented), bounds/bounceVar wiring for both seams.
+- `app.css`: chip values fixed to the ticket's (11.5px title, 12px icons,
+  0.7/0.78 inactive icon opacity, dirty dot, ghost, tooltip), quadratic
+  mask fades gated on the 1px dead zone (R15), `+` button/menu, surface
+  picker, `.surface-toolbar` (38px border-box) + `.surface-input` stubs,
+  `.right-pane-inner` background branches on `html[data-surface]` (P16),
+  sidebar/pane widths add the bounce var, reduced-motion kills the new
+  transitions/animations.
+- Tests: `tests/right-pane.test.ts` (new — the six §3.1 desktop tests by
+  name, surface keys/equality, `workspace_fileTitle`, drop index + slide
+  offsets) and `tests/layout.test.ts` (§3.3 asserted values, §3.4 latch /
+  exact-in-range / reduced-motion / shared-clamp / bounce-phase tests).
+
+**Bugs found and fixed during browser verification** (all reproducible in
+the smoke run): picking a `+`-menu row left the menu open; the drag
+drop-index had the scroll sign inverted (web `scrollLeft` is positive where
+GPUI's offset is negative — `− scroll.offset().x` ports as `+ scrollLeft`);
+the ✕ button sat under the inactive icon's `opacity: 0.7` stacking context
+(fixed with `z-index: 1` on `.right-tab-close`). Unit tests also caught
+`addTerminalSurface`/`revealSurface` minting surfaces without entering them
+into the tab list (`resolvedActive` could not see them).
+
+**Deviations:**
+
+- Terminal pane tab is **single-instance** on web for now: the web dock owns
+  its own tab bar, so one `Terminal(id)` addresses the shared panel; ticket
+  26's `select_tab_by_key` restores per-tab surfaces (commented in the store).
+- The `+` menu uses the stylesheet's shared anchored-menu pattern
+  (`.right-plus-menu`, `rb-menu-in`, outside-click + menu-local Escape) as
+  the placeholder host; ticket 09's popover lifecycle replaces it, and
+  ticket 06 registers `close_right_plus` as ladder step 7. No second
+  lifecycle was invented.
+- `loaders::mini_glyph_spinner` substitution for running subagents: not
+  reachable yet (no subagent tabs render before ticket 19); when it is, use
+  the existing `components/glyph-spinner.tsx` (ticket 20 owns the geometry).
+- The smoke engine **embeds** the web bundle at compile time in this repo
+  state, so each frontend change needed `cargo build -p roboco-engine
+  --example web_smoke` again (the runbook's "serves from disk" note did not
+  hold; a 401 for the new asset hash vs 200 for the old proved it).
+
+**Verification:** `pnpm -r build` green; `pnpm --filter @roboco/app test`
+486/486 (34 files). Browser (web_smoke, 945px and 794px viewports), all via
+DOM/computed-style checks alongside shots: picker rows exactly 44px/10px
+radius/`ink(0.02)`/13px-500/15px icon/list max 280px; chips exactly 112×24,
+radius 6, 4/8 padding, 3 gap, 11.5px, 12px icon and close, active
+`wash(0.10)`; `+` menu 168px wide, 12px radius, 10px below the band,
+press-was-open toggle, closes on row pick; strip scrolls and both fade
+attributes + the quadratic mask engage past the 1px dead zone; drag shows
+the ghost at the pointer, hides the dragged chip, slides the sibling
+−116px, and commits the reorder with no spurious re-pick; ✕ and
+middle-click close that tab with the pane staying open and `resolvedActive`
+falling to the next tab, then to the picker on empty; Mod+J reveals the
+terminal surface (and toggles closed — verified with a synthetic key event;
+CDP's synthesized keys don't propagate through the focused xterm textarea,
+a harness artifact, not an app bug); takeover: `.right-pane-expanded`, no
+left border, no seam, width = viewport − sidebar, identity hidden; seam held
+at the min edge: `pane-seam-constrained`, line opacity 0, pane at
+RIGHT_PANE_MIN 360, bounce settled (offset var back to 0), and the dragged
+width persisted to `localStorage` `rightPaneWidth: 360`.
+
+**Screenshots** (web half, `.scratch/web-parity/shots/07/`):
+`web-a-picker.png`, `web-b-strip-scrolled-fades.png`,
+`web-c-chip-hovered.png`, `web-e-drag-ghost.png`, `web-f-plus-menu.png`,
+`web-g-takeover.png`, `web-h-seam-min-edge.png`.
+
+**Documented skips:**
+
+- **Desktop halves of all pairs**: no desktop client is running and driving
+  it to these states unattended (pairing, chat creation, pane interactions)
+  is not possible; `shot.ps1` also requires stealing foreground focus
+  repeatedly. Per the runbook, documented rather than captured.
+- **(b) 5+ tabs**: the smoke fixture cannot mint them — its chat has no git
+  checkout (no branch → `useGitDetected` false → no Diffs/History rows, the
+  only repeatable tab sources) and file tabs only come from transcript
+  links the mock transcript lacks. Captured with the two reachable tabs
+  (Files + Terminal) at 794px where they genuinely overflow and scroll;
+  slot geometry (112/116, `dropIndex`, `slideOffset`) is unit-tested.
+- **(c) tooltip half**: only file tabs carry a `detail` to show; the ✕
+  hover swap is captured, the 350ms tooltip itself is not reachable in the
+  fixture.
+- **(d) dirty dot**: the dirty-flag source is ticket 24/25's file editors
+  (per this ticket's Do-not list); the dot + `", unsaved changes"` aria
+  suffix are wired and unit-level but not live-capturable.
+- **Diff toolbar row (38px `surface_chrome::toolbar`)**: the CSS is
+  deterministic (`--rb-titlebar-height`, border-box, 8px inset) but a live
+  diff surface needs git detection the fixture cannot provide.

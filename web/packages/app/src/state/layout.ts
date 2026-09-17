@@ -59,6 +59,114 @@ export function rightPaneTakeoverWidth(viewport: number, sidebar: number): numbe
   return Math.max(0, viewport - sidebar);
 }
 
+/**
+ * `stable_panel_content_width` (`shell.rs:177-184`): across an open/close the
+ * content column is laid out at the LARGER endpoint, so the surface is
+ * revealed or clipped away rather than reflowing through every intermediate
+ * width. `null` transition = steady state.
+ */
+export function stablePanelContentWidth(
+  target: number,
+  transition: readonly [from: number, to: number] | null,
+): number {
+  return transition === null ? target : Math.max(transition[0], transition[1]);
+}
+
+/**
+ * `right_panel_content_width` (`shell.rs:186-191`): the pane's inner width.
+ * A takeover transition (`right_takeover_content_tween`) overrides — in
+ * takeover the contents TRACK the animating frame instead of holding one end.
+ */
+export function rightPanelContentWidth(
+  target: number,
+  transition: readonly [from: number, to: number] | null,
+  takeover: number | null,
+): number {
+  return takeover ?? stablePanelContentWidth(target, transition);
+}
+
+// ---------------------------------------------------------------------------
+// Resize drag sampling + edge bounce — `motion.rs:266-323`, `shell.rs:3769`
+// ---------------------------------------------------------------------------
+
+/**
+ * `motion.rs::ResizeEdge`: which clamp bound (if any) a drag sample sits on.
+ * `null` is mid-range.
+ */
+export type ResizeEdge = "min" | "max" | null;
+
+export interface ResizeSample {
+  readonly width: number;
+  readonly edge: ResizeEdge;
+  /**
+   * A NEW edge was hit under a pointer that had not latched it — the one
+   * event per held pointer that arms the 5px bounce.
+   */
+  readonly startsBounce: boolean;
+}
+
+/**
+ * `motion.rs::resize_drag_sample`: clamp the requested width and report the
+ * edge plus whether this sample ARMS a bounce. The `latched` edge is the one
+ * the pointer already bounced at; a held pointer at the same edge produces
+ * exactly one nudge because the latch is only rearmed by leaving the edge.
+ */
+export function resizeDragSample(
+  requested: number,
+  min: number,
+  max: number,
+  latched: ResizeEdge,
+  reducedMotion: boolean,
+): ResizeSample {
+  const edge = requested <= min ? "min" : requested >= max ? "max" : null;
+  return {
+    width: Math.min(max, Math.max(min, requested)),
+    edge,
+    startsBounce: !reducedMotion && edge !== null && edge !== latched,
+  };
+}
+
+/** `motion.rs::RESIZE_EDGE_NUDGE` — how far past the limit the bounce goes. */
+export const RESIZE_EDGE_NUDGE = 5;
+/** `motion.rs::RESIZE_EDGE_BOUNCE_MS` — the whole out-and-back pulse. */
+export const RESIZE_EDGE_BOUNCE_MS = 220;
+/** `motion.rs::RESIZE_EDGE_BOUNCE_OUT_FRACTION` — the outbound share of it. */
+export const RESIZE_EDGE_BOUNCE_OUT_FRACTION = 0.32;
+
+/** `t²(3 − 2t)` — zero velocity at both joins of the pulse. */
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * `motion.rs::resize_bounce_offset`: a rounded two-phase pulse over 220 ms —
+ * out for the first 32 %, back over the rest, ±5 px depending on the edge.
+ * `null` edge or an elapsed outside the window yields 0; reduced motion is
+ * enforced by the caller (`eval_resize_edge_bounce` returns 0 there).
+ */
+export function resizeBounceOffset(edge: ResizeEdge, elapsedMs: number): number {
+  if (edge === null) {
+    return 0;
+  }
+  const raw = Math.min(Math.max(elapsedMs / RESIZE_EDGE_BOUNCE_MS, 0), 1);
+  const outbound = raw < RESIZE_EDGE_BOUNCE_OUT_FRACTION;
+  const phase = outbound
+    ? smoothstep(raw / RESIZE_EDGE_BOUNCE_OUT_FRACTION)
+    : 1 - smoothstep((raw - RESIZE_EDGE_BOUNCE_OUT_FRACTION) / (1 - RESIZE_EDGE_BOUNCE_OUT_FRACTION));
+  const magnitude = phase * RESIZE_EDGE_NUDGE;
+  return edge === "min" ? -magnitude : magnitude;
+}
+
+/**
+ * `shell.rs:173-175` — the vertical seams' hit geometry. The 20 px target is
+ * centred on the seam and starts `TITLEBAR_HEIGHT` down, so the titlebar
+ * chrome above it stays clickable across an animated pane boundary
+ * (`pane_resize_hitboxes_yield_the_titlebar_chrome`).
+ */
+export const PANE_RESIZE_HITBOX_HALF_WIDTH = 10;
+/** `Theme::TITLEBAR_HEIGHT` (`proto/layout.rs:44`), same value as `--rb-titlebar-height`. */
+export const TITLEBAR_HEIGHT = 38;
+
 // ---------------------------------------------------------------------------
 // Titlebar row inset — `tabs.rs::render_session_title_bar`
 // ---------------------------------------------------------------------------

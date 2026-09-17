@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
-import { ChangesSurface } from "../routes/changes-page";
-import { FilesSurface } from "../routes/files-page";
-import { TerminalDock } from "../terminal/terminal-dock";
-import { useTerminalStore } from "../terminal/store";
-import type { ChatPaneState } from "../state/right-pane";
+import { resolvedActive, type ChatPaneState } from "../state/right-pane";
+import { renderRightSurface, surfaceEntry } from "./surface-registry";
 
 /**
- * The right pane — the desktop's changes/files/terminal panel.
+ * The right pane — the desktop's surface host (`render_right_pane`).
  *
  * It is a flush, left-bordered glass panel beside the conversation column, not
  * an inset card, and it is a sibling of that column at the SHELL level (the
@@ -25,17 +23,14 @@ import type { ChatPaneState } from "../state/right-pane";
  * intermediate one — the same clip-don't-squeeze trick the sidebar uses,
  * mirrored. The column stays mounted at width 0 while closed, because a CSS
  * width transition has nothing to animate from if the element is absent.
+ *
+ * The pane's edge bounce (`eval_resize_edge_bounce`) adds its offset through
+ * the `--rb-pane-edge-offset` var the shell composes in — the desktop's
+ * `+ edge_offset` on the container width, driven by the seam.
  */
 
 /** `motion::RESIZE` — the same 200ms the stylesheet transitions on. */
 const RESIZE_MS = motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
-
-/**
- * TEMPORARY — bisecting the sidebar-toggle flash. The pane renders as an empty
- * box so nothing inside it can repaint while the sidebar animates. Flip back
- * to `false` (or delete this and its one use below) once the cause is found.
- */
-const SURFACES_DISABLED = true;
 
 export function RightPane({
   chatId,
@@ -50,20 +45,32 @@ export function RightPane({
   /** Owned by the shell, which needs the same glide for the conversation. */
   glide: PaneGlide;
 }) {
-  const terminalStore = useTerminalStore();
+  const active = resolvedActive(pane);
+  const closing = !pane.open;
+  // The Files family stays unmounted throughout the closing animation after
+  // its resources are suspended (`shell.rs:6455-6459`); everything else
+  // renders until the glide finishes.
+  const filesWhileClosing = closing && (active.kind === "files" || active.kind === "file");
+  const entry = surfaceEntry(active.kind);
+  const ctx = { chatId };
 
-  // A terminal surface needs a live PTY the moment its tab is shown; the
-  // dock's own toggle is what mints one.
-  useEffect(() => {
-    if (pane.open && pane.active === "terminal") {
-      terminalStore.open(chatId);
-    }
-  }, [pane.open, pane.active, chatId, terminalStore]);
+  let content: ReactNode = null;
+  if (!filesWhileClosing) {
+    const body = renderRightSurface(active, ctx);
+    const toolbar = entry?.toolbar?.(active, ctx);
+    content =
+      toolbar === undefined ? body : (
+        <>
+          {toolbar}
+          <div className="right-pane-surface">{body}</div>
+        </>
+      );
+  }
 
   return (
     <aside
       className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}`}
-      style={{ width: pane.open ? openWidth : 0 }}
+      style={{ width: `calc(${pane.open ? openWidth : 0}px + var(--rb-pane-edge-offset, 0px))` }}
       aria-label="Panel"
       aria-hidden={!pane.open}
     >
@@ -76,19 +83,7 @@ export function RightPane({
           Surfaces stay mounted through the closing glide and leave with it —
           unmounting on the first frame would empty the panel before it moves.
         */}
-        {glide.mounted && (
-          <div className="right-pane-body">
-            {SURFACES_DISABLED ? null : (
-              <>
-                {pane.active === "changes" && <ChangesSurface chatId={chatId} />}
-                {pane.active === "files" && <FilesSurface />}
-                {pane.active === "terminal" && (
-                  <TerminalDock store={terminalStore} chatId={chatId} docked />
-                )}
-              </>
-            )}
-          </div>
-        )}
+        {glide.mounted && <div className="right-pane-body">{content}</div>}
       </div>
     </aside>
   );
@@ -112,12 +107,17 @@ export function RightPane({
  *
  * Drags are excluded by construction: they change neither flag, and must track
  * the pointer exactly rather than lag behind a held width.
+ *
+ * `gliding` is the tween-in-flight flag the shell needs for the seam guard:
+ * the right resize handle is unmounted while a glide runs (`shell.rs:7943`),
+ * because takeover derives its width from the viewport and a manual drag
+ * would fight the target.
  */
 export function usePaneGlide(
   open: boolean,
   expanded: boolean,
   openWidth: number,
-): { mounted: boolean; content: number | null } {
+): { mounted: boolean; content: number | null; gliding: boolean } {
   const [glide, setGlide] = useState<{ held: number | null } | null>(null);
   const previous = useRef({ open, expanded, openWidth });
 
@@ -139,12 +139,13 @@ export function usePaneGlide(
   }, [open, expanded, openWidth]);
 
   if (glide === null) {
-    return { mounted: open, content: openWidth };
+    return { mounted: open, content: openWidth, gliding: false };
   }
   // Mid-glide the surface is mounted whichever way the column is moving.
   return {
     mounted: true,
     content: glide.held === null ? null : Math.max(glide.held, openWidth),
+    gliding: true,
   };
 }
 
