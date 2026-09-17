@@ -3180,10 +3180,15 @@ a:focus-visible,
  * (popover.rs:406): a dying menu's rows must not take clicks, and stray
  * clicks must not reach the page underneath. The wrapper may rescale
  * `--rb-motion-menu-out` (the desktop's motion speed setting); the unmount
- * follows whatever duration results. No consumer rides these selectors
- * until the Phase 2 popover migration; the `[data-rb-popup]` rules above
- * keep serving the hand-rolled layer until then.
+ * follows whatever duration results.
  */
+.rb-popover-positioner {
+  /* One menu generation: the popover family IS the menu tier (55) — same
+     z-index the old `.popover-layer` carried. Base UI sets no z-index; the
+     positioner (position: fixed) participates in the root stacking context. */
+  z-index: var(--rb-z-menu);
+}
+
 .rb-popover-popup[data-open] {
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }

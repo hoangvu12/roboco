@@ -65,6 +65,29 @@ import { useOverlayKeyboardSource } from "./overlay";
 export { anchorHelperPlacement, noFlipPositionerProps, virtualAnchorAt };
 export type { AnchorHelperId, AnchorPlacement, VirtualAnchor };
 
+/**
+ * `RbPopoverTrigger` — Base UI's `Popover.Trigger` re-exported under the
+ * wrapper's namespace (blueprint §6.2): the trigger's click toggles with the
+ * `trigger-press` reason, which replaces the old layer's
+ * `noteTriggerPress`/`takePressWasOpen` dance — a press on the trigger that
+ * found the popup open leaves it closed (no close-then-reopen flicker), and
+ * a press on a DIFFERENT chip's trigger dismisses the first popup and opens
+ * that chip's own (menus switch). While open the element carries
+ * `data-popup-open`; style the open-snap off it or off the controlled
+ * `open` state, whichever the consumer already keys its CSS classes on.
+ */
+export const RbPopoverTrigger = Popover.Trigger;
+
+/**
+ * `createRbPopoverHandle` — Base UI's `Popover.createHandle` re-exported
+ * for wave-2 surfaces that want one popover shared by multiple triggers
+ * with per-trigger payloads (the blueprint's §6.2 multi-chip shape).
+ */
+export const createRbPopoverHandle = Popover.createHandle;
+
+/** The one dismissal reason the wrapper vetoes (see RbPopoverProps). */
+const FOCUS_OUT_REASON = "focus-out";
+
 export interface RbPopoverProps {
   /** Controlled open — every parity consumer is controlled. */
   readonly open: boolean;
@@ -105,6 +128,13 @@ export interface RbPopoverProps {
   readonly overlaySource?: string;
   /** The desktop's `motion::speed_scale`; rescales the exit duration. */
   readonly motionSpeed?: number;
+  /**
+   * The card frame's key handler — keys bubbling from the focused search
+   * input land here (the consumer's cursor keyboard model, §6.5). Escape is
+   * NOT the consumer's job: Base UI's dismiss pipeline owns it, which is
+   * what feeds the `escape-key` reason the finalFocus decision reads.
+   */
+  readonly onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   readonly children: ReactNode;
 }
 
@@ -128,6 +158,16 @@ export function RbPopover(props: RbPopoverProps) {
     <Popover.Root
       open={props.open}
       onOpenChange={(open, details) => {
+        if (!open && details.reason === FOCUS_OUT_REASON) {
+          // Parity veto (ticket 09 gap rows 29/87, `popover.rs` has no Tab
+          // handling and no focus trap): Base UI's non-modal popovers close
+          // when focus moves out — the desktop's stay open, and the old
+          // hand-rolled layer matched the desktop. Cancel the dismissal
+          // before the store ever sees it; outside presses and Escape still
+          // dismiss normally.
+          details.cancel();
+          return;
+        }
         lastReasonRef.current = details.reason;
         props.onOpenChange(open, details);
       }}
@@ -136,13 +176,18 @@ export function RbPopover(props: RbPopoverProps) {
       modal={false}
     >
       <Popover.Portal>
-        <Popover.Positioner {...positionerProps} anchor={props.anchor}>
+        <Popover.Positioner
+          className="rb-popover-positioner"
+          {...positionerProps}
+          anchor={props.anchor}
+        >
           <Popover.Popup
             className={`rb-popover-popup ${props.cardClassName ?? "popover-card"}`}
             style={{ ...props.style, ...motionStyle }}
             role={props.role}
             aria-label={props.ariaLabel}
             initialFocus={props.initialFocus}
+            onKeyDown={props.onKeyDown}
             finalFocus={(closeType) => {
               const target = escapeFinalFocusTarget(lastReasonRef.current, props.escapeFocusTarget);
               if (target === false) {
