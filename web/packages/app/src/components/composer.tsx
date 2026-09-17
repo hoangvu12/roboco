@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
 import type { Chat, HarnessDescriptor, Model } from "@roboco/proto";
 import type { EngineSession } from "../state/engine-session";
 import { useWatchSnapshot } from "../state/hooks";
 import { PickerCatalog } from "../state/picker-catalog";
 import { sidebarNotice } from "../state/notice";
-import { draftFromChat, isHarnessLocked } from "../lib/composer-draft";
-import { describeSendError, mintMessageId, sendInterrupt, sendRun, sendSteer, type DraftConfig, type DraftConfigUpdate } from "../lib/composer-actions";
+import { draftFromChat, rememberedModelFor, composerDefaults } from "../lib/composer-draft";
+import { offeredHarnesses } from "../lib/model-rows";
+import { clampReasoning } from "../lib/traits-summary";
+import { describeSendError, mintMessageId, persistChatConfig, sendInterrupt, sendRun, sendSteer, type DraftConfig } from "../lib/composer-actions";
 import { echoStore } from "../state/transcript-store";
 import { formatToMime, type StagedAttachment } from "../lib/attachments";
 import { seedAttachment } from "../state/attachment-cache";
@@ -73,12 +75,22 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     return picked?.steeringMode ?? "turn-boundary";
   }, [catalog, chat.config?.harness]);
 
-  const harnesses = catalog.getHarnesses();
-  const models = catalog.getModels(chat.config?.harness ?? "claude-code");
+  // The catalog re-renders this component too (the draft-seeding effects
+  // read live lists; the pickers child subscribes on its own).
+  const harnesses = useSyncExternalStore(
+    useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
+    useCallback(() => catalog.getHarnesses(), [catalog]),
+    useCallback(() => catalog.getHarnesses(), [catalog]),
+  );
 
   const [text, setText] = useState("");
   const [draft, setDraft] = useState<DraftConfig>(() =>
-    draftFromChat(chat, harnesses.rows, models.rows),
+    draftFromChat(chat, harnesses.rows, catalog.getModels(chat.config?.harness ?? "claude-code").rows),
+  );
+  const models = useSyncExternalStore(
+    useCallback((listener: () => void) => catalog.subscribeModels(draft.harness, listener), [catalog, draft.harness]),
+    useCallback(() => catalog.getModels(draft.harness), [catalog, draft.harness]),
+    useCallback(() => catalog.getModels(draft.harness), [catalog, draft.harness]),
   );
   const [flipExpanded, setFlipExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -121,8 +133,11 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
   }, [editingMessage]);
 
   // Reconcile the draft with chat.config + the loaded catalog: if a chat
-  // already has a persisted ChatConfig, use it (locked); if not, default
-  // to the first harness/model/reasoning once the catalog lands.
+  // already has a persisted ChatConfig, use it (locked); if not, resolve the
+  // sticky defaults against the catalog — the remembered harness when the
+  // loaded catalog still offers it (trusted while unloaded), else the first
+  // OFFERED harness (never the registry's first, which is mock) — then let
+  // the model effect below seed the remembered model (pickers.rs:713-748).
   useEffect(() => {
     const persisted = chat.config;
     if (persisted !== null) {
@@ -146,25 +161,32 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
       return;
     }
     setDraft((current) => {
-      if (harnesses.rows.some((h) => h.id === current.harness)) {
+      if (harnesses.rows.some((h: HarnessDescriptor) => h.id === current.harness)) {
         return current;
       }
-      const firstHarness = harnesses.rows[0];
-      if (firstHarness === undefined) {
+      const remembered = composerDefaults.getSnapshot().harness;
+      const offered = offeredHarnesses(harnesses.rows);
+      const next =
+        remembered !== null && harnesses.rows.some((h: HarnessDescriptor) => h.id === remembered)
+          ? remembered
+          : offered[0]?.id ?? harnesses.rows[0]?.id;
+      if (next === undefined) {
         return current;
       }
       return {
-        harness: firstHarness.id,
+        harness: next,
         model: null,
-        reasoning: "medium",
+        reasoning: null,
         sandbox: "workspace-write",
         modelOptions: {},
       };
     });
   }, [chat.config, harnesses.rows]);
 
-  // Once a harness is picked, ensure the model catalog is loaded; default
-  // to the first model + its first reasoning level if the draft is empty.
+  // Once a harness is picked, ensure the model catalog is loaded; seed the
+  // draft with the remembered model for the harness when the list still
+  // offers it, else the first row, and clamp the reasoning to the ladder
+  // (`effective_model_id`/`selected_model`, pickers.rs:748-796).
   useEffect(() => {
     if (!harnesses.loaded) {
       return;
@@ -181,16 +203,24 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     }
     setDraft((current) => {
       if (current.model !== null && models.rows.some((m: Model) => m.id === current.model)) {
+        const clamped = clampReasoning(current.reasoning, current.model === null ? [] : ladderFor(models.rows, current.model));
+        return clamped === current.reasoning
+          ? current
+          : { ...current, reasoning: clamped };
+      }
+      const remembered = rememberedModelFor(current.harness);
+      const seeded =
+        remembered !== null && models.rows.some((m: Model) => m.id === remembered.id)
+          ? remembered.id
+          : models.rows[0]?.id;
+      if (seeded === undefined) {
         return current;
       }
-      const first = models.rows[0];
-      if (first === undefined) {
-        return current;
-      }
+      const model = models.rows.find((m: Model) => m.id === seeded);
       return {
         ...current,
-        model: first.id,
-        reasoning: first.reasoningLevels[0] ?? current.reasoning,
+        model: seeded,
+        reasoning: clampReasoning(current.reasoning, model?.reasoningLevels ?? []),
       };
     });
   }, [models.rows]);
@@ -212,19 +242,22 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     el.style.overflowY = el.scrollHeight > EXPANDED_MAX_PX ? "auto" : "hidden";
   }, [text, flipExpanded]);
 
-  const updateDraft = useCallback((update: DraftConfigUpdate) => {
-    setDraft((current) => {
-      const next: DraftConfig = {
-        harness: update.harness ?? current.harness,
-        model: update.model !== undefined ? update.model : current.model,
-        reasoning: update.reasoning !== undefined ? update.reasoning : current.reasoning,
-        // Never user-picked: written on create, preserved from then on.
-        sandbox: current.sandbox,
-        modelOptions: update.modelOptions !== undefined ? { ...update.modelOptions } : current.modelOptions,
-      };
-      return next;
-    });
+  const applyDraft = useCallback((next: DraftConfig) => {
+    setDraft(next);
   }, []);
+
+  // The composer's mid-session model / reasoning / options changes persist
+  // through `Mutate setChatConfig` (`update_chat_config`, pickers.rs:1474) —
+  // optimistic locally (the pickers already applied the draft) and fired to
+  // the engine right after.
+  const persistDraft = useCallback(
+    (next: DraftConfig) => {
+      void persistChatConfig(session.client, chat.id, next).catch((error: unknown) => {
+        sidebarNotice.set(describeSendError(error));
+      });
+    },
+    [session.client, chat.id],
+  );
 
   // The submit dispatch: routes to Send / Steer / Interrupt based on the
   // live state. Each branch is independent so a misstep is one branch's
@@ -510,15 +543,12 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
       <div className="composer-actions">
         <div className="composer-utility">
           <ComposerPickers
+            catalog={catalog}
             draft={draft}
-            harnesses={harnesses.rows}
-            models={models.rows}
-            harnessError={harnesses.loaded ? harnesses.error : null}
-            modelsError={models.loaded ? models.error : null}
-            harnessLocked={isHarnessLocked(chat)}
-            onChange={updateDraft}
-            onRetryHarnesses={() => void catalog.loadHarnesses()}
-            onRetryModels={() => void catalog.loadModels(draft.harness)}
+            chatConfig={chat.config}
+            onDraft={applyDraft}
+            onPersist={persistDraft}
+            onReturnFocus={() => textareaRef.current?.focus()}
           />
           <button
             type="button"
@@ -559,3 +589,8 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
 
 /** The navigation threshold the desktop uses to flip-morph the new-thread ↔ session handoff. */
 export const COMPOSER_NAVIGATION_MS_THRESHOLD = NAVIGATION_MS_THRESHOLD;
+
+/** The seeded model's ladder for the draft-seeding effect (`trait_ladder`). */
+function ladderFor(models: readonly Model[], modelId: string): readonly Model["reasoningLevels"][number][] {
+  return models.find((model) => model.id === modelId)?.reasoningLevels ?? [];
+}

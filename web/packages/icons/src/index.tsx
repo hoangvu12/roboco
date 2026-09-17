@@ -79,7 +79,10 @@ export type HarnessId =
  */
 export function harnessBrandIcon(harness: string): { name: IconName; tint: string | null } {
   switch (harness) {
+    // Both spellings: the wire's kebab-case "claude-code" (proto HarnessId
+    // serializes kebab-case) and the desktop's enum spelling.
     case "claudeCode":
+    case "claude-code":
     case "mock":
       return { name: "claudeMark", tint: CLAUDE_BRAND };
     case "codex":

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ChatList } from "./chat-list";
-import { SpaceFilter } from "./space-filter";
+import { SidebarViewMenu, SpaceFilter } from "./space-filter";
 import { NewChatListener } from "./new-chat-button";
 import { ArchivedSection } from "./archived-section";
 import { SidebarNotice } from "./sidebar-notice";
@@ -10,9 +10,9 @@ import { UpdateStrip } from "./update-strip";
 
 /**
  * The sidebar's column — the desktop's `render_chat_sidebar`: the space
- * filter header, the global active-chat list, the archived shelf, the
- * notice strip, the connection line, the update strip, and the user menu
- * pinned to the bottom.
+ * filter header (the trigger plus the view-options button in one row), the
+ * global active-chat list, the archived shelf, the notice strip, the
+ * connection line, the update strip, and the user menu pinned to the bottom.
  *
  * The filter row sits ABOVE the scroll region (the desktop pins it there so
  * its dropdown floats unclipped by the list's overflow — and so the edge
@@ -29,7 +29,12 @@ export function SidebarBody() {
   return (
     <>
       <NewChatListener />
-      <SpaceFilter />
+      {/* `render_spaces_filter`'s container row: the trigger and the
+          view-options button over a 4px gap, 8px inline padding. */}
+      <div className="space-filter">
+        <SpaceFilter />
+        <SidebarViewMenu />
+      </div>
       <SidebarScroll>
         <ChatList />
         <ArchivedSection />

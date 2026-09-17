@@ -1,23 +1,33 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
+import { Icon } from "@roboco/icons";
 import type { Chat } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { sidebarNotice } from "../state/notice";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
+import { classifyKey } from "../lib/picker-search";
+import { menuAt } from "../lib/popover-anchor";
+import { Modal, PopoverCard, MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
+import { MenuRow } from "./popover/menu-row";
+import { Popup, usePopup } from "./popover/popup";
 
 /**
- * The chat row's management affordance — the web peer of the desktop's
- * chat context menu (shell.rs ChatMenuState). The desktop opens it on
- * RIGHT mouse-down at the pointer; the web keeps that plus a hover/focus
- * kebab (its touch-only analogue — phones have no right-click, and the
- * phone layer must keep working) and the archived shelf's rows reuse the
- * same surface. Rename and delete open modal dialogs; mutation failures
- * surface in the sidebar notice strip. Menus and dialogs portal to <body>
- * so the sidebar's overflow and the phone drawer's transform never clip
- * them.
+ * The chat row's management surface — the desktop's `ChatMenuState`
+ * (shell.rs:5433-5608). Opened by RIGHT mouse-down at the pointer (both the
+ * active list and the archived shelf reuse it), positioned clamp-only at
+ * the pointer (`menu_at` — no flip), 216px wide. The Copy row swaps the
+ * card's content to a Copy page IN PLACE — no second floating layer. Rename
+ * and delete open modal dialogs; mutation failures surface in the sidebar
+ * notice strip.
+ *
+ * There is no kebab: the right-click is the only affordance (the ticket
+ * settles the research's open question — right-click only, kebab removed).
  */
+
+/** The card width (`shell.rs`'s ChatMenu card). */
+const CHAT_MENU_WIDTH = 216;
+
 export function useChatMenu(chat: Chat) {
   const session = useEngineSession();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -42,6 +52,7 @@ export function useChatMenu(chat: Chat) {
     <>
       {menu !== null && (
         <ChatMenu
+          chat={chat}
           anchor={menu}
           onRename={() => {
             setMenu(null);
@@ -65,131 +76,193 @@ export function useChatMenu(chat: Chat) {
           onClose={() => setDialog(null)}
         />
       )}
-      {dialog === "delete" && <DeleteChatDialog chat={chat} onDelete={() => run((caller) => deleteChat(caller, chat.id))} onClose={() => setDialog(null)} />}
+      {dialog === "delete" && (
+        <DeleteChatDialog chat={chat} onDelete={() => run((caller) => deleteChat(caller, chat.id))} onClose={() => setDialog(null)} />
+      )}
     </>
   );
 
   return { openAt, element };
 }
 
-/** The touch/hover analogue of the desktop's right-click affordance. */
-export function ChatRowKebab({
-  chat,
-  openAt,
-}: {
-  chat: Chat;
-  openAt: (x: number, y: number) => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="chat-row-kebab"
-      aria-label={`Manage ${chat.title ?? "New session"}`}
-      onClick={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        openAt(rect.right, rect.bottom);
-      }}
-    >
-      ⋯
-    </button>
-  );
-}
-
-const MENU_WIDTH = 160;
-
 function ChatMenu({
+  chat,
   anchor,
   onRename,
   onArchive,
   onDelete,
   onClose,
 }: {
-  anchor: { x: number; y: number };
-  onRename: () => void;
-  onArchive: () => void;
-  onDelete: () => void;
-  onClose: () => void;
+  readonly chat: Chat;
+  readonly anchor: { x: number; y: number };
+  readonly onRename: () => void;
+  readonly onArchive: () => void;
+  readonly onDelete: () => void;
+  readonly onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; top: number }>({ left: anchor.x - MENU_WIDTH, top: anchor.y + 4 });
+  const popup = usePopup<"chat">();
+  const [page, setPage] = useState<"root" | "copy">("root");
 
-  useLayoutEffect(() => {
-    const menu = ref.current;
-    if (menu === null) {
+  // Open on mount at the pointer — clamp-only, never flipping above.
+  useEffect(() => {
+    popup.open("chat");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (popup.asOpen() === null) {
       return;
     }
-    const rect = menu.getBoundingClientRect();
-    const left = Math.max(8, Math.min(anchor.x - MENU_WIDTH, window.innerWidth - rect.width - 8));
-    const below = anchor.y + 4;
-    const top = below + rect.height > window.innerHeight - 8 ? Math.max(8, anchor.y - rect.height - 4) : below;
-    setPosition((current) => (current.left === left && current.top === top ? current : { left, top }));
-  }, [anchor]);
+    if (classifyKey(event.key, event.metaKey, event.ctrlKey) === "escape") {
+      event.preventDefault();
+      onClose();
+      popup.closeByEscape();
+    }
+  };
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const codexLink = codexConversationLink(chat);
+  const harnessSessionId =
+    typeof chat.harnessSessionId === "string" && chat.harnessSessionId.trim().length > 0
+      ? chat.harnessSessionId
+      : null;
 
-  return createPortal(
-    <div
-      className="menu-backdrop"
-      onClick={onClose}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onClose();
-      }}
-    >
-      <div
-        ref={ref}
-        className="chat-menu panel"
-        role="menu"
-        style={{ left: position.left, top: position.top }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button type="button" role="menuitem" onClick={onRename}>
-          Rename…
-        </button>
-        <button type="button" role="menuitem" onClick={onArchive}>
-          Archive
-        </button>
-        <div className="chat-menu-sep" />
-        <button type="button" role="menuitem" className="chat-menu-danger" onClick={onDelete}>
-          Delete…
-        </button>
-      </div>
-    </div>,
-    document.body,
+  async function copyToClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // A refused clipboard permission is not worth a crash.
+    }
+  }
+
+  async function copyConversationLink(): Promise<void> {
+    // The web's conversation link is its page URL — the desktop's
+    // `roboco://open/chat/…` deep link has no browser handler.
+    const link = typeof window === "undefined" ? null : new URL(`/chat/${chat.id}`, window.location.origin).toString();
+    onClose();
+    if (link === null) {
+      sidebarNotice.set("Conversation link is not ready yet");
+      return;
+    }
+    await copyToClipboard(link);
+    sidebarNotice.set("Roboco conversation link copied");
+  }
+
+  async function copyText(text: string, notice: string): Promise<void> {
+    onClose();
+    await copyToClipboard(text);
+    sidebarNotice.set(notice);
+  }
+
+  return (
+    <Popup popup={popup} placement={(size) => menuAt(anchor, size)}>
+      {() => (
+        <PopoverCard role="menu" aria-label="Chat actions" style={{ width: CHAT_MENU_WIDTH }} onKeyDown={onKeyDown}>
+          {page === "root" ? (
+              <>
+                <MenuRow fadeKey="rename" onClick={onRename}>
+                  <Icon name="pen" size={16} className="chat-menu-row-icon" />
+                  <span className="menu-row-label">Rename…</span>
+                </MenuRow>
+                <MenuRow fadeKey="archive" onClick={onArchive}>
+                  <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
+                  <span className="menu-row-label">Archive</span>
+                </MenuRow>
+                <MenuRow
+                  fadeKey="copy"
+                  onClick={() => {
+                    // The Copy page replaces the card's content IN PLACE —
+                    // no second floating layer, no portal remount.
+                    setPage("copy");
+                  }}
+                >
+                  <Icon name="copy" size={16} className="chat-menu-row-icon" />
+                  <span className="menu-row-label">Copy</span>
+                  <span className="chat-menu-row-spring" />
+                  <Icon name="altArrowRight" size={14} className="chat-menu-row-arrow" />
+                </MenuRow>
+                <MenuSeparator />
+                <MenuRow fadeKey="delete" className="chat-menu-row-danger" onClick={onDelete}>
+                  <Icon name="trashBinMinimalistic" size={16} className="chat-menu-row-icon-danger" />
+                  <span className="menu-row-label">Delete…</span>
+                </MenuRow>
+              </>
+            ) : (
+              <>
+                <MenuRow
+                  fadeKey="back"
+                  onClick={() => {
+                    setPage("root");
+                  }}
+                >
+                  <Icon name="altArrowLeft" size={16} className="chat-menu-row-icon" />
+                  <span className="menu-row-label">Back</span>
+                </MenuRow>
+                <MenuSeparator />
+                <MenuRow fadeKey="roboco-link" onClick={() => void copyConversationLink()}>
+                  <Icon name="copy" size={16} className="chat-menu-row-icon" />
+                  <span className="menu-row-label">Roboco conversation link</span>
+                </MenuRow>
+                {codexLink !== null && (
+                  <MenuRow
+                    fadeKey="codex-link"
+                    onClick={() => void copyText(codexLink.url, `${codexLink.label} copied`)}
+                  >
+                    <Icon name="copy" size={16} className="chat-menu-row-icon" />
+                    <span className="menu-row-label">{codexLink.label}</span>
+                  </MenuRow>
+                )}
+                {harnessSessionId !== null && (
+                  <MenuRow
+                    fadeKey="harness-session"
+                    onClick={() => void copyText(harnessSessionId, "Harness session ID copied")}
+                  >
+                    <Icon name="copy" size={16} className="chat-menu-row-icon" />
+                    <span className="menu-row-label">Harness session ID</span>
+                  </MenuRow>
+                )}
+              </>
+            )}
+          </PopoverCard>
+        )}
+      </Popup>
   );
 }
 
-/** Esc closes a dialog; rendered only while open. */
-function useEscape(onClose: () => void): void {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+/**
+ * `links.rs::harness_conversation_link` — only schemes verified against the
+ * harness app: a codex chat's session id becomes `codex://threads/{id}`
+ * ("Codex conversation link"). Hermes exposes a candidate scheme, but its
+ * contract is not stable enough for users' clipboards yet.
+ */
+function codexConversationLink(chat: Chat): { label: string; url: string } | null {
+  const id = chat.harnessSessionId;
+  if (typeof id !== "string" || id.trim().length === 0) {
+    return null;
+  }
+  if (chat.config === null || chat.config.harness !== "codex") {
+    return null;
+  }
+  return { label: "Codex conversation link", url: `codex://threads/${encodeComponent(id)}` };
 }
 
-function DialogCard({ label, onClose, children }: { label: string; onClose: () => void; children: React.ReactNode }) {
-  useEscape(onClose);
-  return createPortal(
-    <div className="dialog-backdrop" onClick={onClose}>
-      <section className="dialog panel" role="dialog" aria-label={label} onClick={(event) => event.stopPropagation()}>
-        {children}
-      </section>
-    </div>,
-    document.body,
-  );
+function encodeComponent(value: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(value)) {
+    if (
+      (byte >= 0x30 && byte <= 0x39) ||
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a) ||
+      byte === 0x2d ||
+      byte === 0x5f ||
+      byte === 0x2e ||
+      byte === 0x7e
+    ) {
+      out += String.fromCharCode(byte);
+    } else {
+      out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return out;
 }
 
 /**
@@ -199,42 +272,51 @@ function DialogCard({ label, onClose, children }: { label: string; onClose: () =
 function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (title: string) => void; onClose: () => void }) {
   const [title, setTitle] = useState(chat.title ?? "");
 
-  function submit(event: React.FormEvent): void {
-    event.preventDefault();
-    onSubmit(title);
-    onClose();
-  }
-
   return (
-    <DialogCard label="Rename session" onClose={onClose}>
-      <h2 className="dialog-title">Rename session</h2>
-      <form className="dialog-form" onSubmit={submit}>
-        <input
-          className="input"
-          type="text"
-          aria-label="Session title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          autoFocus
-          spellCheck={false}
-        />
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-solid">
-            Rename
-          </button>
-        </div>
-      </form>
-    </DialogCard>
+    <Modal ariaLabel="Rename session">
+      <DialogCard>
+        <DialogTitle>Rename session</DialogTitle>
+        <form
+          className="dialog-form-rows"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit(title);
+            onClose();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              onClose();
+            }
+          }}
+        >
+          <DialogField>
+            <input
+              type="text"
+              aria-label="Session title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              autoFocus
+              spellCheck={false}
+            />
+          </DialogField>
+          <div className="dialog-actions-row">
+            <BtnGhost type="button" onClick={onClose}>
+              Cancel
+            </BtnGhost>
+            <BtnPrimary type="submit">Rename</BtnPrimary>
+          </div>
+        </form>
+      </DialogCard>
+    </Modal>
   );
 }
 
 /**
- * The delete dialog (shell.rs delete_confirm): names the chat and requires
- * an explicit confirm. Deleting the open chat navigates back to the list,
- * the desktop's deselect-on-delete.
+ * The delete dialog (shell.rs:5660-5701): "Delete session?" with the
+ * curly-quote body — kept verbatim, it already matches the desktop.
+ * Deleting the open chat navigates back to the list.
  */
 function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: () => void; onClose: () => void }) {
   const navigate = useNavigate();
@@ -251,17 +333,15 @@ function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: (
   }
 
   return (
-    <DialogCard label="Delete session?" onClose={onClose}>
-      <h2 className="dialog-title">Delete session?</h2>
-      <p className="dialog-body">“{title}” will be permanently deleted. This can’t be undone.</p>
-      <div className="dialog-actions">
-        <button type="button" className="btn btn-ghost" onClick={onClose}>
-          Cancel
-        </button>
-        <button type="button" className="btn btn-danger-ghost" onClick={confirm}>
-          Delete
-        </button>
-      </div>
-    </DialogCard>
+    <Modal ariaLabel="Delete session?">
+      <DialogCard>
+        <DialogTitle>Delete session?</DialogTitle>
+        <DialogBody>{`\u201C${title}\u201D will be permanently deleted. This can\u2019t be undone.`}</DialogBody>
+        <div className="dialog-actions-row">
+          <BtnGhost onClick={onClose}>Cancel</BtnGhost>
+          <BtnDanger onClick={confirm}>Delete</BtnDanger>
+        </div>
+      </DialogCard>
+    </Modal>
   );
 }

@@ -90,3 +90,7 @@ export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
 export const GET_CHECKOUT_FILE_DIFF_TEXT = "GetCheckoutFileDiffText";
 /** Branches for a checkout (one-shot). Default branch first. */
 export const LIST_BRANCHES = "ListBranches";
+/** Refs for a repo folder (one-shot): branches plus their current/worktree state (`crates/rpc/src/lib.rs:117`, `pickers.rs:1255`). */
+export const LIST_REFS = "ListRefs";
+/** Check a repo folder out onto another ref (`crates/rpc/src/lib.rs:125`, `pickers.rs:1340`). */
+export const SWITCH_REF = "SwitchRef";

@@ -18,7 +18,7 @@ import {
   type SidebarKeyed,
 } from "../lib/view";
 import { useChatChangeRequests } from "../state/change-requests-store";
-import { useChatMenu, ChatRowKebab } from "./chat-menu";
+import { useChatMenu } from "./chat-menu";
 import { GlyphSpinner } from "./glyph-spinner";
 import {
   SidebarDisclosureBody,
@@ -451,7 +451,6 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
           </div>
         )}
       </Link>
-      <ChatRowKebab chat={row.chat} openAt={openAt} />
       {element}
     </div>
   );

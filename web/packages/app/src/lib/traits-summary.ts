@@ -18,6 +18,36 @@ export function reasoningLabel(level: ReasoningLevel): string {
 }
 
 /**
+ * `pickers.rs::default_reasoning` — the recommended default is High
+ * (user-corrected), falling to Medium, then the ladder's first entry; `null`
+ * only for ladder-less models (e.g. Haiku's thinking toggle instead).
+ */
+export function defaultReasoning(ladder: readonly ReasoningLevel[]): ReasoningLevel | null {
+  if (ladder.includes("high")) {
+    return "high";
+  }
+  if (ladder.includes("medium")) {
+    return "medium";
+  }
+  return ladder[0] ?? null;
+}
+
+/**
+ * `pickers.rs::clamp_reasoning` — keep a picked/remembered level when the
+ * ladder offers it, else heal to the model's default (never a stale or
+ * foreign level).
+ */
+export function clampReasoning(
+  level: ReasoningLevel | null,
+  ladder: readonly ReasoningLevel[],
+): ReasoningLevel | null {
+  if (level !== null && ladder.includes(level)) {
+    return level;
+  }
+  return defaultReasoning(ladder);
+}
+
+/**
  * The identity chip's muted second tone — a port of
  * `pickers.rs::traits_summary`.
  *
@@ -52,17 +82,40 @@ export function traitsSummary(
 }
 
 /**
- * True when any part of the summary departs from its default — the desktop
- * brightens the suffix in that case (`traits_active`) so a non-default run
- * reads louder than a default one.
+ * `pickers.rs::offered_options` — keep only the picks `model` still offers.
+ * Remembered picks outlive the model they were made on, and harnesses apply
+ * some options blindly (Claude appends `[1m]` to any model id when
+ * `contextWindow` is "1m").
  */
-export function traitsActive(
+export function offeredOptions(
+  model: Model,
+  selections: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, choice] of Object.entries(selections)) {
+    const option = model.options.find((entry) => entry.id === id);
+    if (option === undefined || typeof choice !== "string") {
+      continue;
+    }
+    if (option.choices.some((entry) => entry.id === choice)) {
+      out[id] = choice;
+    }
+  }
+  return out;
+}
+
+/**
+ * `pickers.rs::traits_customized` — whether any trait departs from its
+ * default; the chip's suffix brightens only then, so a customized run still
+ * stands out now that the summary always names the effective choices.
+ */
+export function traitsCustomized(
   model: Model | undefined,
   reasoning: ReasoningLevel | null,
+  ladder: readonly ReasoningLevel[],
   selections: Readonly<Record<string, unknown>>,
 ): boolean {
-  const defaultLevel = model?.reasoningLevels[0] ?? null;
-  if (reasoning !== null && defaultLevel !== null && reasoning !== defaultLevel) {
+  if (reasoning !== defaultReasoning(ladder)) {
     return true;
   }
   return (model?.options ?? []).some((option) => {
@@ -73,4 +126,17 @@ export function traitsActive(
       option.choices.some((choice) => choice.id === saved)
     );
   });
+}
+
+/**
+ * `traitsActive` kept for the pre-parity call sites, now comparing against
+ * `defaultReasoning(ladder)` (gap row 9) instead of the ladder's first entry
+ * — wrong for any ladder that doesn't start with High.
+ */
+export function traitsActive(
+  model: Model | undefined,
+  reasoning: ReasoningLevel | null,
+  selections: Readonly<Record<string, unknown>>,
+): boolean {
+  return traitsCustomized(model, reasoning, model?.reasoningLevels ?? [], selections);
 }

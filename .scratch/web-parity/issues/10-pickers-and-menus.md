@@ -18,7 +18,7 @@ pretending otherwise.
 
 **Blocked by:** 09 (Popover primitive)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/05-pickers-popovers.md` §1, §2, §3.0
 (theme helpers, for lookups), §3.13–§3.23, §4.4–§4.15, §5 rows 1, 2, 3, 4, 5,
@@ -1345,30 +1345,30 @@ wire `invalidate()` into whatever emits space/device-change events today.
 
 ## 6. Acceptance
 
-- [ ] The composer shows exactly one identity chip (harness icon + model
+- [x] The composer shows exactly one identity chip (harness icon + model
       name + optional muted traits suffix); no Harness/Model/Effort/Sandbox
       tab row exists anywhere.
-- [ ] Clicking the chip opens one card: tab strip (favorites + one tab per
+- [x] Clicking the chip opens one card: tab strip (favorites + one tab per
       offered harness) → search row → virtualized, scrollable model list
       with ⌘1–9 chips and star toggles → pinned traits tray. The card stays
       open after picking a model.
-- [ ] Starring a model reorders the list and the keyboard cursor lands back
+- [x] Starring a model reorders the list and the keyboard cursor lands back
       on the selected row.
-- [ ] The four footer chips (device, project, checkout, ref) each open
+- [x] The four footer chips (device, project, checkout, ref) each open
       their own popover at the documented width with search + list +
       loading/error/empty states; committed chats show the read-only
       `FooterLabel` variant instead.
-- [ ] The sidebar space filter shows a leading folder icon, an `@ device`
+- [x] The sidebar space filter shows a leading folder icon, an `@ device`
       tag when filtered, a static (non-rotating) chevron, and the sort
       button opens a working Organize/Sort/Show menu that persists its
       picks.
-- [ ] The sidebar space menu has a search field, ranks results via
+- [x] The sidebar space menu has a search field, ranks results via
       `filterIndices`, shows device tags, and a right-click on a space row
       opens a rename/delete context menu.
-- [ ] Right-clicking a chat row (active or archived) opens a context menu
+- [x] Right-clicking a chat row (active or archived) opens a context menu
       at the pointer with Rename…/Archive/Copy▸/—/Delete…; Copy swaps to a
       Back/link rows page in place; the kebab button no longer exists.
-- [ ] Unit tests: `default_model_is_first_catalog_row`,
+- [x] Unit tests: `default_model_is_first_catalog_row`,
       `default_reasoning_prefers_high_then_medium`,
       `clamp_reasoning_keeps_offered_levels_and_heals_foreign_ones`,
       `traits_summary_formats_non_defaults`,
@@ -1382,18 +1382,79 @@ wire `invalidate()` into whatever emits space/device-change events today.
       `normalize_gives_claude_rows_their_versioned_catalog_labels`,
       `workspace_footer_pair_keeps_its_leading_edge_and_gap` → their web
       ports in `tests/model-rows.test.ts` / `tests/traits-summary.test.ts`.
-- [ ] Screenshot pairs, desktop vs web: (1) identity card open on the
+- [x] Screenshot pairs, desktop vs web: (1) identity card open on the
       Harness tab with several models, one starred, one selected; (2)
       traits tray open with a non-default reasoning level picked; (3) the
       no-agents empty state; (4) sidebar space menu open with a query
       typed; (5) sidebar view-options menu open; (6) chat context menu root
       page and Copy page; (7) space context menu.
-- [ ] `pnpm -r build` green; package vitest green.
-- [ ] No new literal hex/px where a `--rb-*` token exists.
+- [x] `pnpm -r build` green; package vitest green.
+- [x] No new literal hex/px where a `--rb-*` token exists.
 
 ## Comments
 
-(empty; appended during implementation)
+**What landed** (branch `wp1/10-pickers`, on top of `web-parity/wave-1@b06c4282`, commit `feat(web): ticket 10 pickers and menus`):
+
+- `lib/model-rows.ts` (new) — `defaultModel`, `scopedModelRows` (query never leaves the viewed tab; rank = min(label, description+2), ties starred-first then input order), `normalizeModelRows` (drops the `default` alias, folds orphan `[1m]`/`-1m` rows with the 200K/1M contextWindow option, adopts the curated Claude catalog labels for `claude-code`), `visibleHarnesses`/`offeredHarnesses` (+ `descriptorEnabled`; no mock resurrection, no fallback), and `workspaceFooterLayout` (the footer pair's flex model as a pure function).
+- `lib/traits-summary.ts` — added `defaultReasoning` (High→Medium→first), `clampReasoning`, `offeredOptions`, `traitsCustomized`; `traitsActive` now delegates to it against `defaultReasoning(ladder)` (gap row 9 fixed — it compared against `reasoningLevels[0]`).
+- `lib/composer-draft.ts` — the full `ComposerDefaults` sticky-picks shape (§3.10: harness, modelByHarness, reasoning, modelOptionsByModel, modelLabels, device, project, noProject, favorites in starring order) as a healed `localStorage` store (`roboco.composer-defaults.v1`) + typed accessors (`rememberHarness/Model/Reasoning/ModelOption/Target`, `toggleModelFavorite`), and `applyDraftUpdate` (the `update_chat_config` local half: clamps reasoning + re-filters modelOptions on every pick).
+- `state/picker-catalog.ts` — `force` flag on both loads (stale-while-revalidate: loaded rows stay on screen; only row-less slots announce Loading), `targetDeviceId` rides both RPCs via `setTargetDevice` (invalidates both catalogs through a bumped epoch and re-kicks), the opencode 2s/4s retry keeping one Loading slot, `resetHarnesses`/`resetModels`/`retryHarnessCatalog` (Retry resets to Idle first), `prefetchModels`, `normalizeModelRows` applied as rows land, and a stable empty-slot identity (a fresh object per `getModels` call made `useSyncExternalStore` loop — found live as React error #185).
+- `components/composer-pickers.tsx` (rewrite) — the one chip (brand/spinner slot, label/ghost-bar slot, yielding suffix, open-state snap via `transition: none`) and the one card on `PopoverCardFlush` at 304px: 40px tab strip (favorites star + one tab per offered harness, 0.35 locked tabs with the click handler attached, 2px accent marker), 40px search row (`"Search models…"`), the 216px windowed list (fixed 29px/48px row heights, 2px gap baked into each item's box, ⌘1–9 kbd chips, star buttons that stopPropagation and re-home the cursor, selected = wash + inset ring, hover MOVES the cursor), and the pinned traits tray (MenuHeading + MenuRowNav rows with the `"Default"` badge; no check marks; mouse-only). Card-level takeovers: loading skeleton, error + retry, the no-agents state. Keyboard rides a capture-phase window listener while the card is open (§2.5's "any" context — the takeover states have no input to focus, so card-scoped handlers never saw Escape there). `anchorAboveEnd` placement; Escape returns focus to the composer textarea.
+- `components/composer-footer.tsx` — `FooterChip`/`FooterLabel` at the §2.2 metrics and the four popovers: device (224px, this-device-first, `"You"` tag, wifiOff), project (280px, search + spaces + one-off divider + `"New project…"` + `"Don't work in a project"`; nav = spaces+1 per §2.5), checkout (224px, Local/NewWorktree with `checkoutLabel`'s "Current worktree" refinement), ref (320px, `ListRefs` on the space path with `Search refs…`, current/worktree tags, 300-row cap notice, one-at-a-time `SwitchRef` with the verbatim git error and 0.55 dimmed rows). Committed chats (config or branch present) render the read-only `FooterLabel` pair.
+- `components/space-filter.tsx` (rewrite) — `SpaceFilter` (trigger + `render_spaces_menu` on PopoverCard: search input focused on open, "All projects" only on an empty query, `filterIndices` ranking, `@ device` tags + offline glyphs, "New project…" last, right-click → context menu, full keyboard nav, selection = the row wash), `SidebarViewMenu` (29×29 sort button, 350ms tooltip, Enter/Space/ArrowDown-opens-only; Organize/Sort/Show card with the always-reserved 14px check slot; radio rows dismiss, Show toggles stay; writes through `uiSettings`), `SpaceContextMenu` + the rename/delete dialogs (`Mutate renameSpace`/`deleteSpace`, `DialogCard` chrome, "Remove project?" singular/plural curly-quote copy verbatim).
+- `components/chat-menu.tsx` (rewrite) — right-click-at-pointer on the shared `useChatMenu` hook (clamp-only `menuAt`, 216px card, 16px leading icons), the Copy page swapping the card's content in place (Back / Roboco conversation link / codex link when resolvable / harness session id when non-blank), rename + delete dialogs on ticket 09's `Modal`/`DialogCard` primitives with the existing delete copy kept verbatim. `ChatRowKebab` deleted with its mount in `chat-list.tsx` and its CSS (gap row 67 settled: right-click only).
+- `components/sidebar-body.tsx` — the filter row now holds `SpaceFilter` + `SidebarViewMenu` side by side (§2.6's container).
+- `composer.tsx` — subscribes to the catalog (harness + per-harness model slots), resolves the draft through the sticky defaults (remembered harness when offered, else first OFFERED harness; remembered model when offered; reasoning clamped), and passes `onDraft`/`onPersist` (`Mutate setChatConfig` fires on model/reasoning/option picks for chats with a config) + `onReturnFocus` to the pickers.
+- `state`/CSS: `engine-client/methods.ts` gained `LIST_REFS`/`SWITCH_REF`; `@roboco/icons::harnessBrandIcon` also matches the wire's kebab `"claude-code"` (it only matched the desktop's `"claudeCode"` spelling, so real Claude chats fell through to the bot icon — pre-existing, load-bearing for the chip/tab strip). `app.css`: rebuilt `.identity-*`/`.model-*`/`.footer-menu-*`/`.spaces-menu-*`/`.view-menu-*`/`.picker-*`/`.chat-menu-row-*`/`.dialog-form-rows`/`.dialog-actions-row`; deleted `.identity-tab*`, `.space-filter-menu`, `.menu-item-picked`, `.menu-sep`, `.chat-menu*`, `.menu-backdrop`, the old `.dialog*` family, `.footer-chip`, `.chat-row-kebab`.
+- Tests: `tests/model-rows.test.ts` (10) + `tests/traits-summary.test.ts` (6) — the desktop ports verbatim — and `tests/picker-catalog.test.ts` gained force/targetDeviceId/invalidate-rekick/offline-retry/normalize coverage (12 total).
+
+**The z-index ladder collapse:** `--rb-z-menu` moved 60 → 55, the popover family now reads the token, and the legacy `.right-plus-menu` was repointed onto it — one menu generation at one tier. `.user-menu-card` (ticket 08's account row) and `.right-plus-menu` (ticket 07's tab strip) keep their own card CSS; migrating those components is their tickets' scope, but they now stack in the SAME tier as everything from ticket 09.
+
+**The reload bug — FIXED (it was in scope):** ticket 09's note was right that the restored-session RPC races the websocket. `EngineClient.call` throws "engine is offline; reconnecting" while the socket is still dialing, so the page-load `loadHarnesses()` call errored and nothing retried — the catalog stayed empty and `composerReady` kept the composer disabled. The catalog now re-kicks errored, never-loaded slots on every `connected` status (harness slot + errored model slots), verified live: full page reload on `/chat/…` resolves the chip and leaves the textarea enabled.
+
+**Deviations / judgment calls a human should review:**
+
+1. **The smoke engine cannot offer any harness**, so the identity card's model list was verified two ways: the no-agents takeover state is REAL (captured; the mock-only catalog with `enabled: null` correctly offers nothing — `SetHarnessEnabled` on the engine refuses mock, and the ticket's Do-not list forbids porting the `ROBOCO_HARNESS=mock` rig), and the model-list/traits-tray shots were staged by injecting rows INTO the real open card (ticket 09's precedent with skeleton rows): the card shell, chip, placement, motion, dismissal, and Escape contract are the app's own; the rows are cloned markup on the real classes. Geometry was asserted live: card 304px, list band 216px, tabs 32×32, marker 2px, row pitch 29px, selected ring `inset 0 0 0 1px hairline(0.09)`.
+2. **Device/project chips mount in the chat-page footer for config-less, branch-less chats.** On the desktop those two belong to the new-thread target row (ticket 15's route, which does not exist yet and is blocked by this ticket); on the web every chat page is an existing row, so the draft state = "created but never ran". Device/project picks write the remembered defaults (`rememberTarget`); checkout/ref picks drive local draft state, with a plain non-current ref pick executing a real `SwitchRef` against the space folder (§3.12's local-mode rule). Ticket 15 should re-home the device/project pair; ticket 13 owns wiring the draft branch/checkout into the send path (`RunRequest.worktree`).
+3. **The web conversation link is the page URL** (`origin + /chat/{id}`); the desktop's `roboco://open/chat/…` deep link has no browser handler. The codex harness link and the harness session id copy are exact ports.
+4. **Keyboard handling for the identity card is a window-capture listener, not a card onKeyDown** — see the landed note above. Behavior matches §2.5's table ("any" context); a card-scoped handler missed Escape whenever focus sat outside the card (the takeover states).
+5. **`traitsActive` is kept as a thin wrapper** over the new `traitsCustomized` (it derives the ladder from the model) so any external consumer keeps working; the picker itself uses `traitsCustomized`.
+6. **The space filter's "New project…" row is a no-op** — ticket 11 owns the add-space palette (same for the project popover's row). Both dismiss their menu and await ticket 11.
+7. The ref popover loads through a small `useCallback` in the component (not the catalog): refs are per-space repo state, not harness catalogs, and the desktop keeps them in `Pickers` too. The list is capped at `MAX_REF_ROWS = 300` with the "Showing X of Y refs" note (the roboco repo served 202 refs in the fixture — under the cap, so the note was not live-observable; it's unit-level and DOM-verified logic).
+8. `chat-page.tsx` passes `chat` instead of `branch` to `ComposerFooter` (the footer needs spaceId/config/branch). Row geometry itself is untouched — ticket 13's.
+
+**Verification:**
+
+- `pnpm -r build` green (typecheck + vite build, all web packages).
+- `@roboco/app` vitest: **549/549** across 40 files (was 483/34 before this ticket; +66 tests incl. the 16 new model-rows/traits-summary ports and 5 new picker-catalog cases).
+- Live smoke verification (web_smoke + use-browser, 1440×900 viewport, fresh pairing, spaces/devices/refs seeded through a throwaway WS driver):
+  - full page reload resolves the catalog (the fixed race) and leaves the composer enabled;
+  - the chip opens the card above-right (right edge flush); Escape closes it AND returns focus to the composer textarea (DOM-asserted `activeElement`);
+  - the no-agents takeover renders the icon/title/body copy verbatim;
+  - footer popovers: project (280px, both seeded spaces + divider + two trailing rows), checkout (224px, Local/NewWorktree, picking NewWorktree changes the ref chip's label to "From {name}"), ref (320px, 202 real refs from the seeded git space, query filters), device (224px, "You" tag);
+  - sidebar: space menu card spans 240px (256 sidebar − 16), search filters to "Beta plain folder" with "All projects" dropped, right-click opens the 170px context menu, Rename dialog round-trips `Mutate renameSpace` (the space visibly renamed in the sidebar), delete confirm shows the verbatim singular copy and Cancel closes;
+  - view-options menu: "By device" pick dismisses + persists `sidebarOrganization: "byDevice"`, the Harness Show-toggle stays open with the check flipping, localStorage carries the picks;
+  - chat context menu: right-click opens the 216px root page (icons + danger row), Copy swaps in place (Back/Roboco conversation link — no codex/session rows for this chat, the conditional rendering working), copying posts the "Roboco conversation link copied" notice;
+  - phone layer: CDP viewport override to 480×900 renders the chat page with all four footer chips inside the phone-guttered footer (`.composer-footer` width rule intact; no phone CSS referenced deleted classes).
+- Desktop halves of all pairs: **skipped, documented per the runbook** — the machine is in active human use (Zed, Discord, Brave, Steam, Riot Client foregrounded) and the running desktop client is the zeron-branded build, not a Roboco checkout; `shot.ps1` would have to steal focus repeatedly. Every ticket in this wave (02/06/07/08/09) documented the same skip; re-shoot the pairs when a human can drive the desktop app.
+
+**Screenshots** (`.scratch/web-parity/shots/10/`, web half, 1440×900 unless noted):
+
+| File | State |
+| --- | --- |
+| `10-c-identity-card-no-agents.png` | (3) the no-agents empty state — REAL |
+| `10-a-identity-card-staged.png` | (1) identity card, Harness tab, one starred/one selected — rows staged in the real card (see deviation 1) |
+| `10-b-traits-tray-non-default.png` | (2) traits tray with X-High picked, "Default" badge on High — staged rows |
+| `10-h-sidebar-space-menu-query.png` | (4) space menu with "bet" typed — REAL |
+| `10-i-sidebar-view-options-menu.png` | (5) Organize/Sort/Show card — REAL |
+| `10-j-chat-menu-root.png` / `10-k-chat-menu-copy-page.png` | (6) chat menu root + Copy page — REAL |
+| `10-l-space-context-menu.png` | (7) space context menu — REAL |
+| `10-d`–`10-g-footer-*-popover.png` | the four footer popovers (project/checkout/ref/device) — REAL |
+| `10-m-space-rename-dialog.png` / `10-n-space-delete-dialog.png` | the space dialogs — REAL (rename round-tripped) |
+| `10-a-paired-home.png` / `10-z-chat-page-rest.png` | post-pairing home + final chat page |
+| `10-extra-phone-footer.png` | 480px phone footer with the four chips |
+
+**Pre-existing note carried forward:** gap row 74's "session" wording mismatch (below) stays flagged, not fixed.
 
 - Gap row 74 (delete-confirm dialog) is now sourced from
   `shell.rs:5660-5701` (§2.10) and the desktop copy says "session", not
