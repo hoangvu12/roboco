@@ -7,6 +7,7 @@ import {
   chatListRows,
   displayStatus,
   effectiveIndicator,
+  mergePendingSpaces,
   mostUrgent,
   projectLabel,
   sortRows,
@@ -186,6 +187,39 @@ describe("projectLabel and spaceDisplayName", () => {
   it("prefers the rename, then the folder basename", () => {
     expect(spaceDisplayName({ id: "s", deviceId: "d", path: "/srv/app", name: "App", gitDetected: false, createdAt: "2026-01-01T00:00:00Z" })).toBe("App");
     expect(spaceDisplayName({ id: "s", deviceId: "d", path: "/srv/app", name: null, gitDetected: false, createdAt: "2026-01-01T00:00:00Z" })).toBe("app");
+  });
+});
+
+describe("mergePendingSpaces", () => {
+  const space = (id: string, path: string, name: string | null): Space => ({
+    id,
+    deviceId: "device-1",
+    path,
+    name,
+    gitDetected: false,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+
+  it("passes the confirmed rows through untouched with nothing pending", () => {
+    const rows = [space("a", "/srv/a", "Alpha"), space("b", "/srv/b", null)];
+    expect(mergePendingSpaces(rows, [])).toBe(rows);
+  });
+
+  it("appends optimistic rows the watch frame has not confirmed yet", () => {
+    const rows = [space("a", "/srv/a", "Alpha")];
+    const pending = [space("p1", "/srv/new", null)];
+    const merged = mergePendingSpaces(rows, pending);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((row) => row.id)).toEqual(["a", "p1"]);
+  });
+
+  it("drops an optimistic row once its id is confirmed — never a duplicate", () => {
+    const confirmed = [space("p1", "/srv/new", "Renamed")];
+    const pending = [space("p1", "/srv/new", null), space("p2", "/srv/other", null)];
+    const merged = mergePendingSpaces(confirmed, pending);
+    // The confirmed row wins; only the still-unconfirmed sibling survives.
+    expect(merged.map((row) => row.id)).toEqual(["p1", "p2"]);
+    expect(merged[0]!.name).toBe("Renamed");
   });
 });
 

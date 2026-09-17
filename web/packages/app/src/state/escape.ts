@@ -48,7 +48,9 @@ export interface ShellEscapeInput {
  * mirrors the Rust signature (and its `Blocked` test case).
  */
 export function resolveShellEscape(input: ShellEscapeInput): EscapeOutcome {
-  if (input.key !== "escape") {
+  // Case-insensitive: the desktop's gpui events spell the key `"escape"`,
+  // DOM `KeyboardEvent`s `"Escape"` — neither spelling may dodge the match.
+  if (input.key.toLowerCase() !== "escape") {
     return { kind: "otherKey" };
   }
   if (input.blockingOverlay) {

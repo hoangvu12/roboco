@@ -6,9 +6,9 @@ import { describeQueueError, mintEditorInstanceId } from "../lib/queue-actions";
 
 /**
  * The message-queue panel — web peer of `crates/ui/src/queue.rs`. Docked
- * directly above the composer; each row exposes Send now / Steer now /
- * Edit / Remove actions and shows delivery-gate state (Editing on another
- * device; Review required after an expired lease). Editing moves the
+ * directly above the composer; each row exposes Send now / Edit / Remove
+ * actions and shows delivery-gate state (Editing on another device;
+ * Review required after an expired lease). Editing moves the
  * row's text into the composer (the chat page handles the lease lifecycle
  * and feeds the committed text back into the row).
  *

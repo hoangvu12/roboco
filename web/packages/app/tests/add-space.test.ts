@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DriveEntry, FolderEntry } from "@roboco/proto";
+import { addSpaceStore, toggleAddSpace } from "../src/state/add-space";
 import {
   activeLocation,
   addSpaceCompletion,
@@ -221,5 +222,43 @@ describe("crumbFold (spaces.rs:2755-2763)", () => {
 
   it("a drive mount folds into the drive crumb, overriding home", () => {
     expect(crumbFold("/Volumes/t7/projects", "/home/w", "/Volumes/t7")).toBe(3);
+  });
+});
+
+describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
+  /**
+   * The fixed `mod-k` binding's toggle, against the headless store (no
+   * session attached: `open()` lands on no device and fires no loads).
+   * Real-clock waits ride out the popup's 100ms exit + 20ms reap grace.
+   */
+  const reaped = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 150));
+
+  it("a closed palette opens; a mounted one closes", async () => {
+    expect(addSpaceStore.getSnapshot().status).toBe("closed");
+    expect(addSpaceStore.getSnapshot().flow).toBe(null);
+
+    toggleAddSpace();
+    expect(addSpaceStore.getSnapshot().status).toBe("open");
+    expect(addSpaceStore.getSnapshot().flow).not.toBe(null);
+
+    // Mounted → the same chord closes it (the flow lives through the exit
+    // window so the card can paint its way out).
+    toggleAddSpace();
+    expect(addSpaceStore.getSnapshot().status).toBe("closing");
+    await reaped();
+    expect(addSpaceStore.getSnapshot().status).toBe("closed");
+    expect(addSpaceStore.getSnapshot().flow).toBe(null);
+  });
+
+  it("the chord re-opens once the close has fully reaped", async () => {
+    addSpaceStore.open();
+    addSpaceStore.close();
+    await reaped();
+    toggleAddSpace();
+    expect(addSpaceStore.getSnapshot().status).toBe("open");
+    // Leave the singleton closed for whichever test runs next.
+    addSpaceStore.close();
+    await reaped();
+    expect(addSpaceStore.getSnapshot().status).toBe("closed");
   });
 });

@@ -16,6 +16,7 @@ import {
   filteredFolders,
 } from "../lib/add-space";
 import { addSpaceStore, useAddSpaceSnapshot, type AddSpaceFlow } from "../state/add-space";
+import { overlayKeyboard } from "../state/keymap";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { KeyHint, KeyHintPair, KeyHintText } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
@@ -104,6 +105,19 @@ export function AddSpacePalette() {
       // exit window must not fall through to the chat interrupt.
       return true;
     });
+  }, [state.status]);
+
+  // The open palette owns the keyboard (`overlay_owns_keyboard`,
+  // shell.rs:3681-3683): session-nav shortcuts (cycle/jump/archive) go
+  // quiet underneath it and the sidebar's jump chips drop — the same
+  // registration the composer pickers make while open. Registered through
+  // the exit window too: the scrim is still up while the card fades, and a
+  // jump firing under a visible modal would strand it over a chat the user
+  // never picked.
+  useEffect(() => {
+    const mounted = state.status !== "closed";
+    overlayKeyboard.set("add-space", mounted);
+    return () => overlayKeyboard.set("add-space", false);
   }, [state.status]);
 
   // `focus_pending`: the search input takes focus on open.

@@ -555,7 +555,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
           className="composer-input"
           rows={1}
           value={text}
-          placeholder={isWorking ? "Steer the live run…" : "Do anything…"}
+          placeholder="Do anything…"
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           spellCheck={false}

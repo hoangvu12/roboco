@@ -478,6 +478,24 @@ export function spacesSorted(spaces: readonly Space[]): Space[] {
 }
 
 /**
+ * The spaces list with the add-space palette's optimistic rows folded in
+ * (the desktop pushes them straight into `AppState.spaces`; the web keeps
+ * them on `addSpaceStore` because the watch cache has no row-injection
+ * API). Merged by id so a watch-frame-confirmed row REPLACES its
+ * optimistic twin — never a duplicate. Pure.
+ */
+export function mergePendingSpaces(
+  spaces: readonly Space[],
+  pending: readonly Space[],
+): readonly Space[] {
+  if (pending.length === 0) {
+    return spaces;
+  }
+  const confirmed = new Set(spaces.map((space) => space.id));
+  return [...spaces, ...pending.filter((space) => !confirmed.has(space.id))];
+}
+
+/**
  * Dangling-filter healing (shell.rs): a filter naming a space that no
  * longer exists — deleted, or from another engine after a switch — reads
  * as "All projects" rather than filtering everything out.

@@ -6,7 +6,8 @@
  * glyph the desktop does not have, and a changed asset changes both clients.
  *
  *   node scripts/generate.mjs            # write
- *   node scripts/generate.mjs --check    # fail when stale (CI gate)
+ *   node scripts/generate.mjs --check    # fail when stale (no CI gate runs
+ *                                         # this — regeneration is manual)
  */
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

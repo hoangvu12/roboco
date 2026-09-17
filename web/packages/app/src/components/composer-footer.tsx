@@ -7,6 +7,7 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
 import { anchorAbove, anchorAboveEnd } from "../lib/popover-anchor";
+import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberTarget } from "../lib/composer-draft";
 import { ContextUsageIndicator } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
@@ -498,9 +499,11 @@ function ProjectCard({
       <MenuRowNav
         fadeKey="new-project"
         onClick={() => {
-          // Ticket 11 owns the add-space palette; opening it is a no-op
-          // until that surface lands.
+          // Close this popover, THEN open the add-space palette
+          // (pickers.rs:2115-2121 / §2.4.3 — ticket 11's `addSpaceStore`
+          // owns the surface).
           popup.dismiss();
+          addSpaceStore.open();
         }}
       >
         <Icon name="plus" size={12} className="picker-row-icon" />

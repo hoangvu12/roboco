@@ -16,7 +16,8 @@ import { resolveShellEscape, type ShellEscapeInput } from "../src/state/escape";
 
 function input(over: Partial<ShellEscapeInput> = {}): ShellEscapeInput {
   return {
-    key: "escape",
+    // The DOM's spelling — real `KeyboardEvent.key` is `"Escape"`.
+    key: "Escape",
     blockingOverlay: false,
     escapeStopsActiveAgent: true,
     route: "chat",
@@ -28,6 +29,24 @@ function input(over: Partial<ShellEscapeInput> = {}): ShellEscapeInput {
 }
 
 describe("resolveShellEscape", () => {
+  it("matches the key case-insensitively (DOM \"Escape\", gpui \"escape\")", () => {
+    // The DOM spelling interrupts…
+    expect(resolveShellEscape(input({ key: "Escape" }))).toEqual({
+      kind: "interruptChat",
+      chatId: "chat-1",
+    });
+    // …and so does the desktop's lowercase spelling — the comparison is
+    // case-insensitive, never an exact match on one variant.
+    expect(resolveShellEscape(input({ key: "escape" }))).toEqual({
+      kind: "interruptChat",
+      chatId: "chat-1",
+    });
+    expect(resolveShellEscape(input({ key: "ESCAPE" }))).toEqual({
+      kind: "interruptChat",
+      chatId: "chat-1",
+    });
+  });
+
   it("escape_interrupts_only_the_active_live_chat", () => {
     // Working and AwaitingInput are the live states an Escape can stop.
     expect(resolveShellEscape(input({ indicator: "working" }))).toEqual({

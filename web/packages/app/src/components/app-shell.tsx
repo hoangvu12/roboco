@@ -14,6 +14,7 @@ import {
   onShortcut,
 } from "../state/shortcuts";
 import { overlayOwnsKeyboard, useKeymap } from "../state/keymap";
+import { toggleAddSpace } from "../state/add-space";
 import { installJumpHintModifierListeners } from "../state/jump-hints";
 import { useChrome } from "../state/chrome";
 import {
@@ -317,6 +318,10 @@ export function AppShell() {
       }),
     [navigate],
   );
+  // Mod+K toggles the add-space palette (the fixed `AddSpacePalette`
+  // binding, shell.rs:7832-7839 — ticket 11's store owns the surface; the
+  // binding was a quiet no-op until it landed).
+  useEffect(() => onShortcut("add-space-palette", toggleAddSpace), []);
 
   // The modifier-hold lifecycle for the sidebar's jump chips (§2.4) — one
   // install, capture-phase observers that never preventDefault.
@@ -344,7 +349,9 @@ export function AppShell() {
   const interruptingRef = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "escape") {
+      // Case-insensitive: the DOM spells the key `"Escape"`; a strict
+      // lowercase compare let real keystrokes slip past the interrupt.
+      if (event.key.toLowerCase() !== "escape") {
         return;
       }
       const route = pathname.startsWith("/settings") ? "settings" : "chat";

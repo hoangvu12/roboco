@@ -788,6 +788,15 @@ a:focus-visible,
 }
 
 /*
+ * The legacy menu cards' shared drop shadow (`.right-plus-menu`,
+ * `.user-menu-card`) — a local convenience spelled once, not a theme
+ * catalog token (the catalog carries no shadow entries).
+ */
+:root {
+  --rb-shadow-menu: 0 12px 32px rgb(0 0 0 / 0.36);
+}
+
+/*
  * The `+` menu (`shell.rs:7054-7144`): `popover_card` at a 168px width, 10px
  * below the button, rows at a 2px rhythm. Radius 12 is `popover::CARD_RADIUS`
  * (`popover.rs:306`) — no `--rb-*` token carries it. Portaled to the body at
@@ -811,7 +820,7 @@ a:focus-visible,
   background: var(--rb-overlay);
   color: var(--rb-text);
   font-size: 13px;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  box-shadow: var(--rb-shadow-menu);
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
@@ -1647,7 +1656,7 @@ html[data-surface="frosted"] .right-pane-inner {
   border-radius: var(--rb-radius-panel);
   border: 1px solid var(--rb-border);
   background: var(--rb-dialog);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  box-shadow: var(--rb-shadow-menu);
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
@@ -3059,6 +3068,11 @@ html[data-surface="frosted"] .right-pane-inner {
   /* CARD_RADIUS (popover.rs:306): floating cards round at 12, not the
      PANEL_RADIUS (10) panels use — gap row 86. */
   --rb-radius-card: 12px;
+  /* The popover family's shared drop shadow (`.popover-card`,
+     `.palette-card`, `.dialog-card`, `.jump-pill`, `.cr-tooltip`,
+     `.add-space-card`) — the documented shadow_lg() placeholder, spelled
+     once as a local convenience, not a theme catalog token. */
+  --rb-shadow-popover: 0 8px 30px rgb(0 0 0 / 0.35);
 }
 
 /*
@@ -3128,7 +3142,7 @@ html[data-surface="frosted"] .right-pane-inner {
   background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
   -webkit-backdrop-filter: blur(44px);
   backdrop-filter: blur(44px);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   font-size: 0.8125rem;
   color: var(--rb-text);
 }
@@ -3151,7 +3165,7 @@ html[data-surface="frosted"] .right-pane-inner {
   background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
   -webkit-backdrop-filter: blur(44px);
   backdrop-filter: blur(44px);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   font-size: 0.8125rem;
   color: var(--rb-text);
 }
@@ -3541,7 +3555,7 @@ html[data-surface="frosted"] .right-pane-inner {
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
   border-radius: 16px;
   background: var(--rb-dialog);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   color: var(--rb-text);
 }
 
@@ -5173,7 +5187,7 @@ button.files-row-active:hover {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   isolation: isolate;
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   cursor: pointer;
   padding: 0;
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
@@ -7341,7 +7355,7 @@ html[data-surface="frosted"] .modal-card {
   font-size: 11px;
   color: var(--rb-text);
   pointer-events: none;
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   z-index: 10;
 }
 
@@ -7568,7 +7582,7 @@ html[data-surface="frosted"] .modal-card {
  * radius (deliberately not the generic 12px CARD_RADIUS), centered on the
  * lighter 0.35 modal_glass scrim (ticket 09's `.modal-glass-backdrop`
  * recipe). The `.modal-card` frost wrapper supplies the 44px blur and the
- * `dialog_in` entrance, so the card itself carries only the glass tint �
+ * `dialog_in` entrance, so the card itself carries only the glass tint —
  * stacking two blurs would double-frost it. Exit: the whole layer fades
  * over MENU_OUT (100ms, EASE) while dead to hit-testing, then unmounts
  * (the PopupLifecycle reap).
@@ -7599,7 +7613,7 @@ html[data-surface="frosted"] .modal-card {
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
   border-radius: 14px;
   background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  box-shadow: var(--rb-shadow-popover);
   color: var(--rb-text);
 }
 
@@ -7696,7 +7710,7 @@ html[data-surface="frosted"] .modal-card {
 }
 
 /* The ?Enter add chip: btn_primary's text-colored fill at the key-caps'
-   geometry (h 22, px 8, radius 5 � btn_primary's own 8px radius would read
+   geometry (h 22, px 8, radius 5 — btn_primary's own 8px radius would read
    as a different component next to them). */
 .add-space-submit {
   flex: none;
@@ -7804,7 +7818,7 @@ html[data-surface="frosted"] .modal-card {
   color: var(--rb-text-faint);
 }
 
-/* The 6px gutters live on a WRAPPER outside the scroll viewport � the
+/* The 6px gutters live on a WRAPPER outside the scroll viewport — the
    wheel's max offset eats in-content padding and keyboard scroll-pinning
    ignores it. */
 .add-space-list-wrap {
@@ -7841,7 +7855,7 @@ html[data-surface="frosted"] .modal-card {
   white-space: nowrap;
 }
 
-/* Repos announce themselves � the row you're usually hunting for. */
+/* Repos announce themselves — the row you're usually hunting for. */
 .add-space-repo-icon {
   flex: none;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);

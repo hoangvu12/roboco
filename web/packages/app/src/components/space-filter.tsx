@@ -6,9 +6,10 @@ import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
-import { deviceOnline, healedSpaceFilter, spaceDisplayName, spacesSorted } from "../lib/view";
+import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, spacesSorted } from "../lib/view";
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
 import { anchorBelow, anchorBelowEnd, menuAt } from "../lib/popover-anchor";
+import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
 import {
   Modal,
@@ -60,10 +61,14 @@ export function SpaceFilter() {
   // its rows open — the dialog state must outlive the menu's unmount.
   const [spaceOverlay, setSpaceOverlay] = useState<SpaceOverlay | null>(null);
 
-  const spaces = useMemo(
-    () => (snapshot === null ? [] : spacesSorted(snapshot.spaces.rows)),
-    [snapshot?.spaces.rows],
-  );
+  // The menu's rows: the watch cache's spaces with the add-space palette's
+  // optimistic rows folded in, merged by id (a confirmed row replaces its
+  // optimistic twin), in display order.
+  const pending = usePendingSpaces();
+  const spaces = useMemo(() => {
+    const rows = snapshot === null ? [] : snapshot.spaces.rows;
+    return spacesSorted(mergePendingSpaces(rows, pending));
+  }, [snapshot?.spaces.rows, pending]);
   const devices = snapshot?.devices.rows ?? [];
   const filter = snapshot === null ? null : healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
   const picked = filter === null ? null : spaces.find((space) => space.id === filter) ?? null;
@@ -117,9 +122,11 @@ export function SpaceFilter() {
       return;
     }
     if (row === "new") {
-      // Ticket 11 owns the add-space palette; opening it is a no-op until
-      // that surface lands.
+      // "New project…" closes the menu, THEN opens the add-space palette
+      // (spaces.rs:1204-1207 / §2.7 — `close_space_menu` always runs before
+      // the overlay opens; ticket 11's `addSpaceStore` owns the surface).
       popup.dismiss();
+      addSpaceStore.open();
       return;
     }
     sidebarStore.setSpaceFilter(row.id);

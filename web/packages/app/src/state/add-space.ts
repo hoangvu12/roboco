@@ -820,6 +820,19 @@ export class AddSpaceStore {
  */
 export const addSpaceStore = new AddSpaceStore();
 
+/**
+ * The fixed `mod-k` binding's toggle (`shell.rs:7832-7839`): the palette
+ * mounted → close it; otherwise open it. Ticket 12's shell subscribes the
+ * shortcut bus's `add-space-palette` event to this.
+ */
+export function toggleAddSpace(): void {
+  if (addSpaceStore.getSnapshot().flow !== null) {
+    addSpaceStore.close();
+  } else {
+    addSpaceStore.open();
+  }
+}
+
 const subscribe = (listener: () => void) => addSpaceStore.subscribe(listener);
 const getSnapshot = () => addSpaceStore.getSnapshot();
 
@@ -831,4 +844,16 @@ export function useAddSpaceSnapshot(): AddSpaceSnapshot {
 /** The flow while the palette is mounted (open or closing); null when closed. */
 export function useAddSpace(): AddSpaceFlow | null {
   return useAddSpaceSnapshot().flow;
+}
+
+/**
+ * The optimistic space rows, for the spaces menu to merge by id (ticket 10):
+ * a row appears here when its create is still on the wire and is replaced
+ * by the watch frame's confirmed row — same id — once it lands. The array
+ * reference only changes when the pending set itself changes, so this hook
+ * does not re-render on every palette keystroke.
+ */
+export function usePendingSpaces(): readonly Space[] {
+  const pending = (): readonly Space[] => addSpaceStore.getSnapshot().pendingSpaces;
+  return useSyncExternalStore(subscribe, pending, pending);
 }
