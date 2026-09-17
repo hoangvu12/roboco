@@ -94,7 +94,7 @@ export function RbMenu(props: RbMenuProps) {
       highlightItemOnHover
     >
       <Menu.Portal>
-        <Menu.Positioner {...noFlipPositionerProps(placement)} anchor={props.anchor}>
+        <Menu.Positioner className="rb-popover-positioner" {...noFlipPositionerProps(placement)} anchor={props.anchor}>
           <Menu.Popup
             className={`rb-popover-popup ${props.cardClassName ?? "popover-card"}`}
             style={motionStyle}
@@ -163,7 +163,9 @@ export function RbContextMenu(props: RbContextMenuProps) {
 /**
  * `RbContextMenuPositioner` — the clamp-only preset for pointer menus: keep
  * the fixed placement, shift inside the 8px window margin, never flip
- * (`menu_at` has no gap, hence the 0 offset default).
+ * (`menu_at` has no gap, hence the 0 offset default). Wears
+ * `.rb-popover-positioner` so the menu sits in the shared menu tier
+ * (`--rb-z-menu`, the old `.popover-layer`'s z-index).
  */
 export function RbContextMenuPositioner(
   props: Omit<
@@ -171,9 +173,10 @@ export function RbContextMenuPositioner(
     "side" | "align" | "collisionAvoidance" | "collisionPadding" | "positionMethod" | "sideOffset"
   > & { readonly sideOffset?: number },
 ) {
-  const { sideOffset, ...rest } = props;
+  const { sideOffset, className, ...rest } = props;
   return (
     <ContextMenu.Positioner
+      className={`rb-popover-positioner ${className ?? ""}`}
       {...noFlipPositionerProps({ side: "bottom", align: "start", sideOffset: sideOffset ?? 0 })}
       {...rest}
     />

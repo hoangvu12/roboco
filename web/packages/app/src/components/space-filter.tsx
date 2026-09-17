@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Device, Space } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
@@ -8,9 +9,10 @@ import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
 import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, spacesSorted } from "../lib/view";
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
-import { anchorBelow, anchorBelowEnd, menuAt } from "../lib/popover-anchor";
+import { anchorBelow, anchorBelowEnd } from "../lib/popover-anchor";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
+import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
 import { RbDialog } from "./base/dialog";
 import {
   PopoverCard,
@@ -261,26 +263,25 @@ export function SpaceFilter() {
                 }
                 const tag = spaceDeviceTag(row, devices, now);
                 return (
-                  <MenuRowNav
+                  <SpaceRowContext
                     key={row.id}
-                    fadeKey={row.id}
-                    data-space-index={ix}
+                    row={row}
+                    ix={ix}
                     highlighted={ix === cursor && row.id !== filter}
                     selected={row.id === filter}
-                    onClick={() => pick(row)}
-                    onContextMenu={(event) => {
-                      // Right-click on a space row opens the space context
-                      // menu at the pointer (spaces.rs:3336-3389).
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setSpaceOverlay({ kind: "menu", space: row, x: event.clientX, y: event.clientY });
+                    tag={tag}
+                    onPick={() => pick(row)}
+                    menuOpen={spaceOverlay !== null && spaceOverlay.kind === "menu" && spaceOverlay.space.id === row.id}
+                    onMenuOpen={() => setSpaceOverlay({ kind: "menu", space: row })}
+                    onMenuClose={() => setSpaceOverlay(null)}
+                    onOpenDialog={(kind) => {
+                      // The context menu always closes before its follow-up
+                      // dialog opens, and the spaces menu dismisses with it
+                      // (`close_space_menu`, spaces.rs:3278-3283).
+                      setSpaceOverlay(kind === "rename" ? { kind: "rename", space: row } : { kind: "delete", space: row });
+                      popup.dismiss();
                     }}
-                  >
-                    <Icon name="folder" size={15} className="spaces-menu-row-icon" />
-                    <span className="menu-row-label">{spaceDisplayName(row)}</span>
-                    <span className="picker-row-tag">{tag.tag}</span>
-                    {!tag.online && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
-                  </MenuRowNav>
+                  />
                 );
               })}
             </div>
@@ -289,20 +290,6 @@ export function SpaceFilter() {
       </Popup>
       {spaceOverlay !== null && session !== null && (
         <>
-          {spaceOverlay.kind === "menu" && (
-            <SpaceContextMenu
-              space={spaceOverlay.space}
-              point={spaceOverlay}
-              onClose={() => setSpaceOverlay(null)}
-              onOpenDialog={(kind) =>
-                setSpaceOverlay(
-                  kind === "rename"
-                    ? { kind: "rename", space: spaceOverlay.space }
-                    : { kind: "delete", space: spaceOverlay.space },
-                )
-              }
-            />
-          )}
           {spaceOverlay.kind === "rename" && (
             <RenameSpaceDialog
               space={spaceOverlay.space}
@@ -335,7 +322,7 @@ export function SpaceFilter() {
 
 /** The right-click overlay states: the context menu, then its dialogs. */
 type SpaceOverlay =
-  | { readonly kind: "menu"; readonly space: Space; readonly x: number; readonly y: number }
+  | { readonly kind: "menu"; readonly space: Space }
   | { readonly kind: "rename"; readonly space: Space }
   | { readonly kind: "delete"; readonly space: Space };
 
@@ -632,72 +619,85 @@ function ViewMenuRows({
 // SpaceContextMenu (spaces.rs:3336-3389) — rename/delete at the pointer
 // ---------------------------------------------------------------------------
 
-function SpaceContextMenu({
-  space,
-  point,
-  onClose,
-  onOpenDialog,
-}: {
-  readonly space: Space;
-  readonly point: { x: number; y: number };
-  readonly onClose: () => void;
-  /** Opens the named dialog — the dialog state lives ABOVE this unmount. */
+/**
+ * One space row of the spaces menu, wrapped so a right-click opens the
+ * space context menu at the pointer (`RbContextMenu` — clamp-only
+ * `menu_at` geometry, 170px card). The `ContextMenu.Trigger` adopts the
+ * `MenuRowNav` itself via `render`, so the row's DOM is unchanged.
+ */
+function SpaceRowContext(props: {
+  readonly row: Space;
+  readonly ix: number;
+  readonly highlighted: boolean;
+  readonly selected: boolean;
+  readonly tag: { tag: string; online: boolean };
+  readonly onPick: () => void;
+  readonly menuOpen: boolean;
+  readonly onMenuOpen: () => void;
+  readonly onMenuClose: () => void;
   readonly onOpenDialog: (kind: "rename" | "delete") => void;
 }) {
-  const popup = usePopup<"space-context">();
-
-  // Open on mount; Escape and outside-press dismiss (the card is clamp-only
-  // at the pointer — `menu_at`, no flip).
-  useEffect(() => {
-    popup.open("space-context");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
-    <Popup popup={popup} placement={(size) => menuAt(point, size)}>
-      {() => (
-        <PopoverCard role="menu" aria-label="Project actions" style={{ width: 170 }} onKeyDown={onKeyDownMenu(popup, onClose)}>
+    <RbContextMenu
+      open={props.menuOpen}
+      onOpenChange={(next) => {
+        if (next) {
+          props.onMenuOpen();
+        } else if (props.menuOpen) {
+          props.onMenuClose();
+        }
+      }}
+    >
+      <ContextMenu.Trigger
+        render={
           <MenuRowNav
-            fadeKey="space-menu-rename"
-            onClick={() => {
-              onClose();
-              onOpenDialog("rename");
-            }}
+            fadeKey={props.row.id}
+            data-space-index={props.ix}
+            highlighted={props.highlighted}
+            selected={props.selected}
+            onClick={props.onPick}
           >
-            <Icon name="pen" size={16} className="spaces-menu-row-icon" />
-            <span className="menu-row-label">Rename…</span>
+            <Icon name="folder" size={15} className="spaces-menu-row-icon" />
+            <span className="menu-row-label">{spaceDisplayName(props.row)}</span>
+            <span className="picker-row-tag">{props.tag.tag}</span>
+            {!props.tag.online && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
           </MenuRowNav>
-          <MenuRowNav
-            fadeKey="space-menu-delete"
-            className="chat-menu-row-danger"
-            onClick={() => {
-              onClose();
-              onOpenDialog("delete");
-            }}
+        }
+      />
+      <ContextMenu.Portal>
+        <RbContextMenuPositioner>
+          <ContextMenu.Popup
+            className="rb-popover-popup popover-card"
+            role="menu"
+            aria-label="Project actions"
+            style={{ width: 170 }}
           >
-            <Icon name="trashBinMinimalistic" size={16} className="spaces-menu-row-icon-danger" />
-            <span className="menu-row-label">Remove…</span>
-          </MenuRowNav>
-        </PopoverCard>
-      )}
-    </Popup>
+            <MenuRowNav
+              fadeKey="space-menu-rename"
+              onClick={() => {
+                props.onMenuClose();
+                props.onOpenDialog("rename");
+              }}
+            >
+              <Icon name="pen" size={16} className="spaces-menu-row-icon" />
+              <span className="menu-row-label">Rename…</span>
+            </MenuRowNav>
+            <MenuRowNav
+              fadeKey="space-menu-delete"
+              className="chat-menu-row-danger"
+              onClick={() => {
+                props.onMenuClose();
+                props.onOpenDialog("delete");
+              }}
+            >
+              <Icon name="trashBinMinimalistic" size={16} className="spaces-menu-row-icon-danger" />
+              <span className="menu-row-label">Remove…</span>
+            </MenuRowNav>
+          </ContextMenu.Popup>
+        </RbContextMenuPositioner>
+      </ContextMenu.Portal>
+    </RbContextMenu>
   );
-}
-
-function onKeyDownMenu(
-  popup: ReturnType<typeof usePopup<string>>,
-  onClose: () => void,
-): (event: React.KeyboardEvent<HTMLDivElement>) => void {
-  return (event) => {
-    if (popup.asOpen() === null) {
-      return;
-    }
-    if (classifyKey(event.key, event.metaKey, event.ctrlKey) === "escape") {
-      event.preventDefault();
-      onClose();
-      popup.closeByEscape();
-    }
-  };
 }
 
 /** The rename dialog (`open_rename_space` / `submit_rename_space`). */

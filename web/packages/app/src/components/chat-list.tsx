@@ -438,7 +438,7 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
   const word = statusWord(row.status);
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
-  const { openAt, element } = useChatMenu(row.chat);
+  const { menu, element } = useChatMenu(row.chat);
 
   function toggleArchive(event: React.MouseEvent): void {
     // The row's own click is the selector; only the corner archives.
@@ -453,17 +453,12 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
     });
   }
 
-  return (
-    <div
-      className="chat-row-item"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onContextMenu={(event) => {
-        // The desktop opens ChatMenuState on RIGHT mouse-down at the pointer.
-        event.preventDefault();
-        openAt(event.clientX, event.clientY);
-      }}
-    >
+  // `menu` wraps the row so a right-click opens the chat context menu at
+  // the pointer (`useChatMenu`'s ContextMenu.Trigger adopts this div). The
+  // dialogs live outside it — they portal anyway, and their state must
+  // outlive the menu's unmount.
+  const rowElement = menu(
+    <div className="chat-row-item" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
       <Link
         to="/chat/$chatId"
         params={{ chatId: row.chat.id }}
@@ -531,8 +526,13 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
           </div>
         )}
       </Link>
+    </div>,
+  );
+  return (
+    <>
+      {rowElement}
       {element}
-    </div>
+    </>
   );
 }
 
