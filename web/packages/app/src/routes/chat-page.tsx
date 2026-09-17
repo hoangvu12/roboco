@@ -385,7 +385,7 @@ export function ChatPage() {
               </div>
             )
           )}
-          <ComposerFooter branch={row.branch} crSummary={crSummary} contextUsage={contextUsage} />
+          <ComposerFooter chat={row.chat} crSummary={crSummary} contextUsage={contextUsage} />
           {editingRow !== null && (
             <div className="chat-edit-toolbar">
               <button type="button" className="btn btn-ghost" onClick={onEditCancel}>

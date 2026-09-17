@@ -225,7 +225,11 @@ a:focus-visible,
    *   5  pane seams (in-flow chrome that floats over column edges)
    *   40 titlebar (overlays every column)
    *   50 drawers / sheets (the engine drawer, the phone sidebar's backdrop)
-   *   60 menus + popovers (deferred priority 1)
+   *   55 menus + popovers, ONE generation: ticket 09's popover family and
+   *      the legacy cards still on their own styling (the right-pane plus
+   *      menu, the sidebar user menu) share the tier; ticket 10 collapsed
+   *      the old 60 into it as it migrated the space filter, chat menu and
+   *      pickers onto the shared primitive.
    *   70 modals + dialogs (deferred priority 2)
    *   80 the engine gate card (the app is not usable below it)
    * The phone sidebar itself stays at 30, deliberately under the titlebar —
@@ -234,7 +238,7 @@ a:focus-visible,
   --rb-z-seam: 5;
   --rb-z-titlebar: 40;
   --rb-z-drawer: 50;
-  --rb-z-menu: 60;
+  --rb-z-menu: 55;
   --rb-z-modal: 70;
   --rb-z-gate: 80;
 }
@@ -793,7 +797,9 @@ a:focus-visible,
  */
 .right-plus-menu {
   position: fixed;
-  z-index: 60;
+  /* The shared menu tier — the ladder collapse moved this legacy card onto
+     the one generation (see the ladder comment above). */
+  z-index: var(--rb-z-menu);
   width: 168px;
   padding: var(--rb-space-xs);
   display: flex;
@@ -1355,23 +1361,102 @@ html[data-surface="frosted"] .right-pane-inner {
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
-.space-filter-menu {
+/*
+ * The view-options button (§2.6, spaces.rs:1087-1102): a 29×29 square on
+ * the trigger row's rhythm, plain hover (no fade blend), the sort glyph at
+ * muted; open holds the glass hover fill. Enter/Space/ArrowDown toggle;
+ * the 350ms tooltip is its own class below.
+ */
+.space-filter-sort {
+  flex: none;
+  width: 29px;
+  height: 29px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  position: relative;
+}
+
+.space-filter-sort:hover,
+.space-filter-sort-open {
+  background: var(--rb-hover);
+}
+
+.space-filter-sort:focus-visible {
+  border-color: color-mix(in srgb, var(--rb-border) 70%, transparent);
+}
+
+/* The lone tooltip in the popover family: 350ms show delay, surface-raised
+   card at 11px (spaces.rs:960-966). */
+.space-filter-sort-tooltip {
   position: absolute;
-  top: calc(100% - 2px);
-  left: var(--rb-space-sm);
-  right: var(--rb-space-sm);
+  top: calc(100% + 4px);
+  right: 0;
   z-index: var(--rb-z-menu);
-  max-height: 320px;
-  overflow-y: auto;
-  padding: var(--rb-space-xs);
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
+  border-radius: var(--rb-radius-control);
+  background: var(--rb-dialog);
+  color: var(--rb-text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/*
+ * `render_spaces_menu`'s card (§2.7, spaces.rs:1187-1323): the shared
+ * PopoverCard at the trigger row's width; the list scrolls at a 336px cap
+ * over a 2px row rhythm. Selection is the row wash — no check glyph.
+ */
+.spaces-menu-card {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+.spaces-menu-list {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 336px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.spaces-menu-list::-webkit-scrollbar {
+  display: none;
+}
+
+.spaces-menu-row-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+}
+
+.spaces-menu-row-icon-danger {
+  flex: none;
+  color: var(--rb-danger);
+}
+
+/* The view menu's row groups and the always-reserved 14px check slot so
+   labels never shift when a pick lands (§2.8). */
+.view-menu-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.view-menu-check {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
 }
 
 /* ── Menus (shared popover rows) ────────────────────────────────────── */
@@ -1412,17 +1497,6 @@ html[data-surface="frosted"] .right-pane-inner {
 .menu-item:hover {
   background: var(--rb-hover);
   color: var(--rb-text);
-}
-
-.menu-item-picked {
-  color: var(--rb-text);
-  font-weight: 500;
-}
-
-.menu-sep {
-  height: 1px;
-  margin: var(--rb-space-xs) 0;
-  background: var(--rb-border);
 }
 
 /* ── Sidebar footer: connection line + user menu ────────────────────── */
@@ -2583,62 +2657,400 @@ html[data-surface="frosted"] .right-pane-inner {
 }
 
 /*
- * The facet tabs, now the top strip INSIDE the popover card (the card is one
- * unit: tabs + list dismiss and animate together). Recessed band tone so the
- * strip reads as part of the glass card, not a floating panel.
+ * The OPEN chip snaps (no fade) — the closed hover fades over 150ms; the
+ * open state's instant fill is the desktop's non-animated open wash
+ * (gap row 51, pickers.rs:2282-2286).
  */
-.identity-tabs {
+.identity-chip-open {
+  transition: none;
+}
+
+/* The no-agents brand mark (terminal glyph, muted). */
+.identity-chip-brand-muted {
+  color: var(--rb-text-muted);
+}
+
+/* ── The harness/model identity card (pickers.rs:3143-3464, ticket 10) ── */
+
+/*
+ * `render_harness_model_popover` — `popover_card_flush` at a fixed 304px,
+ * max-height 640 on the frame. Flex column, no gap: tab strip → search row
+ * → list host → traits tray, each pane owning its own insets and hairlines.
+ */
+.identity-card {
+  width: 304px;
+}
+
+/* The tab strip (§2.3.1, pickers.rs:3232-3312): 40px row, 6px inline inset,
+   full-bleed bottom hairline, 32×32 tabs at a 2px rhythm. */
+.model-tab-strip {
   flex: none;
   display: flex;
+  align-items: center;
   gap: 2px;
-  margin-bottom: 4px;
-  padding: 3px;
-  border-radius: 8px;
-  border: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  background: rgb(var(--rb-ink) / 0.04);
+  height: 40px;
+  padding-inline: 6px;
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
 }
 
-.identity-tab {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 4px 8px;
+.model-tab {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
-  border-radius: var(--rb-radius-control);
+  border-radius: 8px;
   background: transparent;
-  color: var(--rb-text-muted);
   cursor: pointer;
-  text-align: left;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.identity-tab:hover {
-  background: var(--rb-hover);
+.model-tab:hover {
+  /* Only when not the viewed tab and not disabled (§2.3.1). */
+  background: rgb(var(--rb-ink) / 0.06);
 }
 
-.identity-tab-selected {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+.model-tab-viewed:hover,
+.model-tab-locked:hover {
+  background: transparent;
+}
+
+.model-tab-locked {
+  /* Locked tabs stay visible at 0.35 with the click handler attached
+     (gap row 46) — no pointer cursor. */
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The viewed marker: 2px accent bar landing exactly on the row's bottom
+   hairline (a 32px tab inside a 40px row → bottom -4px). */
+.model-tab-marker {
+  position: absolute;
+  bottom: -4px;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--rb-accent);
+}
+
+.model-tab-star {
+  color: color-mix(in srgb, var(--rb-text-muted) 75%, transparent);
+}
+
+.model-tab-star-viewed {
   color: var(--rb-text);
 }
 
-.identity-tab-locked {
-  opacity: 0.6;
+.model-tab-brand {
+  color: var(--rb-text-muted);
 }
 
-.identity-tab-label {
-  font-size: 10px;
-  font-weight: 500;
+.model-tab-brand-viewed {
+  color: var(--rb-text);
+}
+
+/* The search row (§2.3.2, pickers.rs:3317-3339): magnifier + borderless
+   input over a full-bleed hairline. */
+.model-search-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding-inline: 10px;
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+}
+
+.model-search-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.model-search-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.model-search-row input::placeholder {
+  color: var(--rb-text-faint);
+}
+
+/* The list host (§2.3.3, pickers.rs:3405-3430): the fixed 216px band over
+   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows. */
+.model-list-scroll-host {
+  position: relative;
+  flex: none;
+  height: 216px;
+  background: rgb(var(--rb-ink) / 0.02);
+}
+
+.model-list-scroll {
+  height: 216px;
+  padding: 6px 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.model-list-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* The virtualized sizer: absolute rows at the fixed per-mode height. */
+.model-list-sizer {
+  position: relative;
+}
+
+/* The card-level takeover states (§2.3): loading/error skeletons and the
+   no-agents empty state. */
+.model-list-loading {
+  flex: none;
+  height: 216px;
+  padding: var(--rb-space-sm);
+}
+
+.model-no-agents {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rb-space-sm);
+  padding: 16px;
+  text-align: center;
+}
+
+.model-no-agents-icon {
+  color: var(--rb-text-muted);
+}
+
+.model-no-agents-title {
+  font-size: 0.8125rem;
+  color: var(--rb-text);
+}
+
+.model-no-agents-body {
+  font-size: 0.75rem;
+  color: var(--rb-text-muted);
+}
+
+/* `empty_list_note` (pickers.rs:3898): centered muted 12px. */
+.model-list-note {
+  padding: 8px;
+  padding-block: 24px;
+  font-size: 0.75rem;
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  text-align: center;
 }
 
-.identity-tab-value {
-  font-size: 11px;
-  font-weight: 500;
-  max-width: 96px;
+/* The non-virtualized fallback column (§2.3.3). */
+.menu-scroll-fallback {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* ── Model rows (§2.3.4, pickers.rs:3470-3659) ── */
+
+/*
+ * The virtualized item's own box: position absolute at its global index,
+ * the 2px inter-row gap baked into the box so every item measures the same
+ * height for the virtualizer.
+ */
+.model-row-item {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding-bottom: 2px;
+  box-sizing: border-box;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 5px 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text);
+  cursor: pointer;
+}
+
+/*
+ * `card_selected_bg()` + the inset ring (`card_selected_shadows`) — the
+ * selection treatment gap row 14 asks for, not a color-only change.
+ */
+.model-row-selected {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
+}
+
+/*
+ * The keyboard cursor: ink(0.05); HOVERING MOVES the cursor rather than
+ * painting its own wash, so hover and cursor never wear two washes at once
+ * (gap row 15). The rest state keeps the menu-row hover fade.
+ */
+.model-row-highlighted {
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.model-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-row-body-column {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.model-row-label {
+  flex: none;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.model-row-body-column .model-row-label {
+  width: 100%;
+}
+
+/* Compact attribution: 11px, muted at 70%. */
+.model-row-attribution {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+/* The two-line (favorites) subline: brand mark 11px, harness name, "·",
+   attribution. */
+.model-row-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-row-subline-brand {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.model-row-subline-harness {
+  flex: none;
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  white-space: nowrap;
+}
+
+.model-row-subline-dot {
+  flex: none;
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+}
+
+.model-row-subline-attribution {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+/* The star button: 22×22, radius 6, star-bold (starred, warning tint) /
+   star outline at muted 45%; hover washes ink(0.08). */
+.model-row-star {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+  cursor: pointer;
+}
+
+.model-row-star:hover {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+.model-row-star-on {
+  color: var(--rb-warning);
+}
+
+/* ── The traits tray (§2.3.5, pickers.rs:3432-3454 + 3666-3774) ── */
+
+/*
+ * Pinned below the list: a top hairline, 6px inline/bottom padding, capped
+ * at 236px of scroll. Keyboard nav never enters it — the tray's rows are
+ * mouse-only.
+ */
+.model-traits {
+  flex: none;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.model-traits::-webkit-scrollbar {
+  display: none;
+}
+
+.model-traits-body {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 2px;
+}
+
+.model-traits-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The tray's row overrides: 5px block padding, radius 6, 12.5px. */
+.model-trait-row {
+  padding-block: 5px;
+  border-radius: 6px;
+  font-size: 0.78125rem;
+}
+
+.model-trait-spring {
+  flex: 1;
+}
+
+/* `default_badge` (pickers.rs:3780): bare 10px semibold muted text. */
+.model-default-badge {
+  flex: none;
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
 /* ── Popover primitive (crates/ui/src/popover.rs, ticket 09) ────────── */
@@ -2660,7 +3072,8 @@ html[data-surface="frosted"] .right-pane-inner {
  */
 .popover-layer {
   position: fixed;
-  z-index: 55;
+  /* One menu generation: the popover family IS the menu tier (55). */
+  z-index: var(--rb-z-menu);
 }
 
 .popover-layer[data-rb-popup="open"] .popover-card,
@@ -4516,25 +4929,178 @@ button.files-row-active:hover {
   min-width: 0;
 }
 
-/* `footer_label` has no radius and no background — it is plain text in a slot. */
-.footer-chip {
+/*
+ * `footer_chip` (pickers.rs:2341-2422): the small ghost dropdown — 20px tall,
+ * 6px radius (FOOTER_CHIP_RADIUS), 8px inline padding on a 6px gap, 12px
+ * medium. The wash is quiet until hovered, open holding the hover fill
+ * (snapped, no fade). The offline device chip overrides its text to
+ * warning@0.8.
+ */
+.footer-menu-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
+  max-width: 280px;
   height: 20px;
-  padding-inline: 6px;
-  color: var(--rb-text-faint);
-  font-size: 11px;
+  padding-inline: var(--rb-space-sm);
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.footer-chip-label {
+.footer-menu-chip:hover {
+  background: var(--rb-hover);
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
+}
+
+.footer-menu-chip-open {
+  background: var(--rb-hover);
+  transition: none;
+}
+
+.footer-menu-chip-offline {
+  color: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+.footer-menu-chip-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.footer-menu-chip-label {
   min-width: 0;
-  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+.footer-menu-chip-caret {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/*
+ * `footer_label` — the read-only committed variant: 20px, 160px max, no
+ * chevron, no background, no hover; plain text in a slot at muted 60%.
+ */
+.footer-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 160px;
+  height: 20px;
+  padding-inline: var(--rb-space-sm);
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.footer-menu-label-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.footer-menu-label-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The four picker popovers' shared pieces (§2.4, ticket 10) ─────── */
+
+/* The scroll region for ref/project/device rows: 224px cap, native
+   scrollbar hidden (the short lists cap under a screenful). */
+.picker-list {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 224px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.picker-list::-webkit-scrollbar {
+  display: none;
+}
+
+.picker-list-plain {
+  max-height: none;
+  overflow: visible;
+}
+
+/* `picker-empty-note`: 12px faint, 8px inset. */
+.picker-empty-note {
+  padding: var(--rb-space-sm);
+  font-size: 12px;
+  color: var(--rb-text-faint);
+}
+
+/* The one-off local divider (pickers.rs:2113-2120) — theme.border at 60%,
+   full-bleed of the card's 4px inset, 2px block margins. */
+.picker-divider {
+  flex: none;
+  height: 1px;
+  margin: 2px -4px;
+  background: color-mix(in srgb, var(--rb-border) 60%, transparent);
+}
+
+/* The right-aligned 10px row tags ("You", "current", "worktree"). */
+.picker-row-tag {
+  flex: none;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+}
+
+.picker-row-offline {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+.picker-row-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.picker-row-icon-muted {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.picker-row-switching {
+  flex: none;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* Every row dims while any switch is in flight (§2.4.1). */
+.picker-list[data-switching] .menu-row {
+  opacity: 0.55;
+}
+
+/* The ref popover's trailing sections: switch error (danger@0.9) and the
+   "Showing X of Y refs" cap note (pickers.rs:2999-3052). */
+.picker-trailing-error {
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-danger) 90%, transparent);
+}
+
+.picker-trailing-note {
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--rb-text-faint);
 }
 
 /* `context_usage.rs`: a 16px ring, 5px from its label, in an h-24 px-6 slot. */
@@ -5402,130 +5968,60 @@ button.files-row-active:hover {
   position: relative;
 }
 
-.chat-row-kebab {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 22px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
+
+/*
+ * ── Chat context menu (shell.rs:5433-5608, ticket 10) ────────────────
+ *
+ * Rebuilt on the popover primitive: a 216px PopoverCard at the pointer
+ * (clamp-only, no flip), one row per action with a 16px leading icon, the
+ * Copy row swapping the card's content to a Copy page IN PLACE. The old
+ * hover-revealed kebab and its wheel/backdrop-dismissal habits are gone
+ * (gap rows 67-73).
+ */
+.chat-menu-row-icon {
+  flex: none;
   color: var(--rb-text-muted);
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-  visibility: hidden;
 }
 
-.chat-row-item:hover .chat-row-kebab,
-.chat-row-item:focus-within .chat-row-kebab {
-  visibility: visible;
-}
-
-.chat-row-kebab:hover {
-  background: var(--rb-hover);
-  color: var(--rb-text);
-}
-
-@media (hover: none) {
-  .chat-row-kebab {
-    visibility: visible;
-  }
-}
-
-/* Popover menu (portaled, fixed). */
-.menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-menu);
-}
-
-.chat-menu {
-  position: fixed;
-  min-width: 10rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 4px;
-  background: var(--rb-dialog);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
-}
-
-.chat-menu button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 6px var(--rb-space-sm);
-  border: none;
-  border-radius: var(--rb-radius-control);
-  background: transparent;
-  color: var(--rb-text);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.chat-menu button:hover {
-  background: var(--rb-hover);
-}
-
-.chat-menu-sep {
-  height: 1px;
-  margin: 3px var(--rb-space-xs);
-  background: var(--rb-border);
-}
-
-.chat-menu .chat-menu-danger {
+.chat-menu-row-icon-danger {
+  flex: none;
   color: var(--rb-danger);
 }
 
-/* Modal dialogs (rename, delete). */
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-modal);
-  /* scrim(): the same backdrop as .modal-backdrop under another class name. */
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--rb-space-md);
+.chat-menu-row-danger {
+  color: var(--rb-danger);
 }
 
-.dialog {
-  width: min(24rem, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-md);
-  padding: var(--rb-space-md);
-  background: var(--rb-dialog);
+.chat-menu-row-spring {
+  flex: 1;
+  min-width: 0;
 }
 
-.dialog-title {
-  margin: 0;
-  font-size: 15px;
+.chat-menu-row-arrow {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
 }
 
-.dialog-body {
-  margin: 0;
-  color: var(--rb-text-muted);
-  font-size: 13px;
-}
-
-.dialog-form {
+/*
+ * ── Dialog form rows (ticket 09's dialog primitives' glue) ───────────
+ *
+ * The stacked form inside a DialogCard: the field 12px under the title, the
+ * actions row 16px under it, right-aligned on an 8px gap (popover.rs
+ * btn_* consumers).
+ */
+.dialog-form-rows {
   display: flex;
   flex-direction: column;
-  gap: var(--rb-space-md);
+  gap: 12px;
+  margin-top: 12px;
 }
 
-.dialog-actions {
+.dialog-actions-row {
   display: flex;
   justify-content: flex-end;
   gap: var(--rb-space-sm);
 }
+
 
 /*
  * ── Sidebar disclosures (ByDevice groups + the archived shelf) ────────

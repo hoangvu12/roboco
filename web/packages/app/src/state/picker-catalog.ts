@@ -1,6 +1,7 @@
 import type { HarnessDescriptor, HarnessId, Model } from "@roboco/proto";
 import { methods, RpcError } from "@roboco/engine-client";
 import type { EngineClient } from "@roboco/engine-client";
+import { normalizeModelRows, offeredHarnesses } from "../lib/model-rows";
 
 /**
  * The pickers' data catalog — one per `EngineSession`. Lists harnesses once
@@ -8,6 +9,34 @@ import type { EngineClient } from "@roboco/engine-client";
  * model catalog per picked harness, cached until invalidated. The engine
  * answers both with unary calls; missing methods degrade the catalog to
  * empty so older engines fail closed instead of crash the pickers.
+ *
+ * Loading discipline (`pickers.rs:1028-1276`):
+ *
+ * 1. **Non-forced loads only fire from `Idle`.** An `Error` must not
+ *    re-trigger a load from the render loop (it would flip back to `Loading`
+ *    before the retry row ever painted, and spam the engine); retry resets
+ *    the slot to `Idle` first.
+ * 2. **Forced loads** (a picker open, a Settings→Agents toggle) reload
+ *    through `Ready`/`Error` too, because the enabled set can move under the
+ *    cache.
+ * 3. **Stale-while-revalidate:** a forced refresh of an already-`Ready` slot
+ *    does NOT flip to `Loading` — the currently-shown rows stay on screen
+ *    while the fresh catalog lands.
+ *
+ * `loadModels` retries a failed `ListModels` twice for the `opencode`
+ * harness only, backing off `attempt * 2` seconds (2s, then 4s), keeping one
+ * `Loading` slot alive so recovery needs no close/reopen and can't launch
+ * duplicate probes (`pickers.rs:1136-1162`).
+ *
+ * `setTargetDevice` names the device that RUNS the agents when it differs
+ * from the connected engine's own — `targetDeviceId` then rides both RPC
+ * calls — and invalidates both catalogs (they are per-device), dropping
+ * in-flight responses through a bumped epoch.
+ *
+ * A unary call fired while the socket is still dialing fails immediately
+ * (`EngineClient.call` throws "engine offline"); the catalog re-kicks such
+ * errored slots on every `connected` status so a full page reload heals
+ * without user action.
  *
  * React binding contract (mirrors the watch cache): `getSnapshot` /
  * `subscribe` are identity-stable until an actual change.
@@ -17,7 +46,7 @@ export interface LoadableList<T> {
   readonly rows: readonly T[];
   readonly loaded: boolean;
   readonly error: string | null;
-  /** A fetch is in flight on the current generation. */
+  /** A fetch is in flight for a slot with no rows (the skeleton signal). */
   readonly loading: boolean;
   /** Bumped per fetch attempt; React keys off it for refresh-on-focus. */
   readonly generation: number;
@@ -25,6 +54,15 @@ export interface LoadableList<T> {
 
 const EMPTY_HARNESSES: readonly HarnessDescriptor[] = [];
 const EMPTY_MODELS: readonly Model[] = [];
+/**
+ * Identity-stable empty slots: `getModels` hands this same object to every
+ * harness with no slot, so React's `useSyncExternalStore` sees one snapshot
+ * identity (a fresh object per call reads as an infinite change loop).
+ */
+const EMPTY_MODEL_LIST: LoadableList<Model> = { rows: EMPTY_MODELS, loaded: false, error: null, loading: false, generation: 0 };
+
+/** The opencode cold-start retry ladder: two extra attempts at 2s then 4s. */
+const OPENCODE_MAX_ATTEMPTS = 3;
 
 function emptyList<T>(): LoadableList<T> {
   return { rows: [], loaded: false, error: null, loading: false, generation: 0 };
@@ -39,7 +77,7 @@ function listWithError<T>(prev: LoadableList<T>, message: string): LoadableList<
 }
 
 function listWithLoading<T>(prev: LoadableList<T>): LoadableList<T> {
-  return { rows: prev.rows, loaded: prev.loaded, error: null, loading: true, generation: prev.generation + 1 };
+  return { rows: prev.rows, loaded: prev.loaded, error: prev.error, loading: true, generation: prev.generation + 1 };
 }
 
 function isUnknownMethod(error: RpcError): boolean {
@@ -50,19 +88,51 @@ export interface PickerCatalogOptions {
   readonly log?: (message: string, detail?: unknown) => void;
 }
 
+/** The subset of `EngineClient` the catalog needs (tests drive a fake). */
+export interface PickerCatalogClient {
+  call<T>(method: string, params?: unknown): Promise<T>;
+  onStatus?(listener: (status: { state: string }) => void): () => void;
+}
+
+export interface LoadOptions {
+  /**
+   * A forced load skips the `loaded` guard and reloads through `Ready`/
+   * `Error` too (a picker open, a settings toggle) without clearing the
+   * currently-shown rows — stale-while-revalidate.
+   */
+  readonly force?: boolean;
+}
+
 export class PickerCatalog {
-  readonly #client: EngineClient;
+  readonly #client: PickerCatalogClient;
   readonly #log: (message: string, detail?: unknown) => void;
+  readonly #offStatus: (() => void) | null;
 
   #harnesses: LoadableList<HarnessDescriptor> = emptyList<HarnessDescriptor>();
+  #harnessesInFlight = false;
   readonly #models = new Map<HarnessId, LoadableList<Model>>();
+  readonly #modelsInFlight = new Set<HarnessId>();
   readonly #listeners = new Set<() => void>();
   readonly #modelListeners = new Map<HarnessId, Set<() => void>>();
+  /** The device that runs the agents, when it differs from the engine's own. */
+  #targetDeviceId: string | null = null;
+  /** Bumped on every invalidate so in-flight responses land dropped. */
+  #epoch = 0;
   #disposed = false;
 
-  constructor(client: EngineClient, options: PickerCatalogOptions = {}) {
+  constructor(client: PickerCatalogClient, options: PickerCatalogOptions = {}) {
     this.#client = client;
     this.#log = options.log ?? (() => {});
+    // A page-load call races the websocket dial and fails immediately with a
+    // transport error; re-kick the errored slots once the engine connects.
+    this.#offStatus =
+      typeof client.onStatus === "function"
+        ? client.onStatus((status) => {
+            if (status.state === "connected") {
+              this.#retryOfflineSlots();
+            }
+          })
+        : null;
   }
 
   /** Identity-stable harness list. Call `loadHarnesses` to refresh. */
@@ -72,7 +142,29 @@ export class PickerCatalog {
 
   /** Identity-stable model list for the picked harness. */
   getModels(harness: HarnessId): LoadableList<Model> {
-    return this.#models.get(harness) ?? emptyList<Model>();
+    return this.#models.get(harness) ?? EMPTY_MODEL_LIST;
+  }
+
+  /**
+   * The device that runs the agents when it differs from the connected
+   * engine's own (`pickers.rs::space_target`): harness/model catalogs come
+   * from the CLIs, which live on THAT device. Changing it invalidates both
+   * catalogs (they are per-device) and re-kicks the harness list.
+   */
+  setTargetDevice(deviceId: string | null): void {
+    if (this.#disposed || deviceId === this.#targetDeviceId) {
+      return;
+    }
+    this.#targetDeviceId = deviceId;
+    const hadHarnesses = this.#harnesses.loaded || this.#harnesses.loading || this.#harnesses.error !== null;
+    const requestedModels = [...this.#modelsInFlight, ...this.#models.keys()];
+    this.invalidate();
+    if (hadHarnesses) {
+      void this.loadHarnesses();
+    }
+    for (const harness of requestedModels) {
+      void this.loadModels(harness);
+    }
   }
 
   subscribe(listener: () => void): () => void {
@@ -97,27 +189,39 @@ export class PickerCatalog {
     };
   }
 
-  /** Fire one harness fetch (no-op while one is in flight or already loaded). */
-  async loadHarnesses(): Promise<void> {
-    if (this.#disposed) {
+  /**
+   * Fire one harness fetch. Non-forced (the render loop's eager kick) only
+   * loads an `Idle` slot; forced refreshes reload through `Ready`/`Error`
+   * too, keeping loaded rows on screen while the fresh catalog lands. An
+   * in-flight load is always reused.
+   */
+  async loadHarnesses(options: LoadOptions = {}): Promise<void> {
+    if (this.#disposed || this.#harnessesInFlight) {
       return;
     }
-    if (this.#harnesses.loading || this.#harnesses.loaded) {
+    const current = this.#harnesses;
+    const shouldLoad = !current.loaded || current.error !== null || options.force === true;
+    if (!shouldLoad) {
       return;
     }
-    const generation = this.#harnesses.generation + 1;
-    this.#harnesses = listWithLoading(this.#harnesses);
-    this.#commitHarnesses();
+    this.#harnessesInFlight = true;
+    const epoch = this.#epoch;
+    const generation = current.generation + 1;
+    // Stale-while-revalidate: only a row-less slot announces Loading.
+    if (!current.loaded) {
+      this.#harnesses = listWithLoading(current);
+      this.#commitHarnesses();
+    }
     try {
-      const rows = await this.#client.call<HarnessDescriptor[]>(methods.LIST_HARNESSES, {});
-      if (this.#disposed || this.#harnesses.generation !== generation) {
+      const rows = await this.#client.call<HarnessDescriptor[]>(methods.LIST_HARNESSES, this.#targetParams());
+      if (this.#disposed || this.#epoch !== epoch) {
         return;
       }
       const arr = Array.isArray(rows) ? rows : [];
       this.#harnesses = listWithRows(this.#harnesses, arr, generation);
       this.#commitHarnesses();
     } catch (error) {
-      if (this.#disposed || this.#harnesses.generation !== generation) {
+      if (this.#disposed || this.#epoch !== epoch) {
         return;
       }
       const rpcError = error instanceof RpcError ? error : new RpcError("transport", String(error));
@@ -129,56 +233,144 @@ export class PickerCatalog {
       }
       this.#harnesses = listWithError(this.#harnesses, rpcError.message);
       this.#commitHarnesses();
+    } finally {
+      this.#harnessesInFlight = false;
     }
   }
 
-  /** Fire one model fetch for `harness`; cached per harness until invalidated. */
-  async loadModels(harness: HarnessId): Promise<void> {
-    if (this.#disposed) {
+  /**
+   * Fire one model fetch for `harness`; cached per harness until invalidated.
+   * An `opencode` failure retries twice on a 2s/4s backoff, keeping the one
+   * `Loading` slot alive (`pickers.rs:1136-1162`).
+   */
+  async loadModels(harness: HarnessId, options: LoadOptions = {}): Promise<void> {
+    if (this.#disposed || this.#modelsInFlight.has(harness)) {
       return;
     }
     const current = this.getModels(harness);
-    if (current.loading || current.loaded) {
+    const shouldLoad = !current.loaded || current.error !== null || options.force === true;
+    if (!shouldLoad) {
       return;
     }
+    this.#modelsInFlight.add(harness);
+    const epoch = this.#epoch;
     const generation = current.generation + 1;
-    this.#models.set(harness, listWithLoading(current));
-    this.#commitModels(harness);
-    try {
-      const rows = await this.#client.call<Model[]>(methods.LIST_MODELS, { harness });
-      if (this.#disposed) {
-        return;
-      }
-      const live = this.getModels(harness);
-      if (live.generation !== generation) {
-        return;
-      }
-      const arr = Array.isArray(rows) ? rows : [];
-      this.#models.set(harness, listWithRows(live, arr, generation));
+    if (!current.loaded) {
+      this.#models.set(harness, listWithLoading(current));
       this.#commitModels(harness);
-    } catch (error) {
-      if (this.#disposed) {
-        return;
+    }
+    try {
+      let attempt = 1;
+      for (;;) {
+        try {
+          const rows = await this.#client.call<Model[]>(methods.LIST_MODELS, {
+            harness,
+            ...this.#targetParams(),
+          });
+          if (this.#disposed || this.#epoch !== epoch) {
+            return;
+          }
+          const arr = Array.isArray(rows) ? rows : [];
+          this.#models.set(
+            harness,
+            listWithRows(this.getModels(harness), normalizeModelRows(harness, arr), generation),
+          );
+          this.#commitModels(harness);
+          return;
+        } catch (error) {
+          const rpcError = error instanceof RpcError ? error : new RpcError("transport", String(error));
+          if (isUnknownMethod(rpcError)) {
+            if (this.#disposed || this.#epoch !== epoch) {
+              return;
+            }
+            this.#models.set(harness, listWithRows(this.getModels(harness), EMPTY_MODELS, generation));
+            this.#commitModels(harness);
+            return;
+          }
+          if (harness !== "opencode" || attempt >= OPENCODE_MAX_ATTEMPTS) {
+            throw error;
+          }
+          // A plugin-heavy OpenCode cold start can fail once while caches,
+          // MCP servers, or plugin runtimes are still warming. Keep this
+          // single Loading slot alive so recovery requires no picker
+          // close/reopen and cannot launch duplicate probes.
+          this.#log("opencode model discovery failed; retrying automatically", { attempt });
+          await delay(attempt * 2_000);
+          attempt += 1;
+          if (this.#disposed || this.#epoch !== epoch) {
+            return;
+          }
+        }
       }
-      const live = this.getModels(harness);
-      if (live.generation !== generation) {
+    } catch (error) {
+      if (this.#disposed || this.#epoch !== epoch) {
         return;
       }
       const rpcError = error instanceof RpcError ? error : new RpcError("transport", String(error));
-      if (isUnknownMethod(rpcError)) {
-        this.#models.set(harness, listWithRows(live, EMPTY_MODELS, generation));
-        this.#commitModels(harness);
-        return;
-      }
-      this.#models.set(harness, listWithError(live, rpcError.message));
+      this.#models.set(harness, listWithError(this.getModels(harness), rpcError.message));
       this.#commitModels(harness);
+    } finally {
+      this.#modelsInFlight.delete(harness);
     }
+  }
+
+  /**
+   * Kick a model load for the effective harness AND every offered one, in
+   * parallel — by the time the user opens the picker (or switches rail
+   * tabs) the lists are already there (`prefetch_models`, pickers.rs:1090).
+   * Each `loadModels` call is guarded by its slot state, so re-running this
+   * is free.
+   */
+  prefetchModels(force: boolean): void {
+    if (this.#disposed) {
+      return;
+    }
+    const targets = new Set<HarnessId>(offeredHarnesses(this.#harnesses.rows).map((d) => d.id));
+    if (this.#harnesses.error === null) {
+      // The committed chat's harness may be outside the offered set — its
+      // models still matter. Best effort: every loaded or in-flight slot.
+      for (const harness of this.#models.keys()) {
+        targets.add(harness);
+      }
+    }
+    for (const harness of targets) {
+      void this.loadModels(harness, { force });
+    }
+  }
+
+  /** Reset the harness slot to `Idle` (a Retry click; `pickers.rs` `ensure_*`). */
+  resetHarnesses(): void {
+    this.#harnesses = emptyList<HarnessDescriptor>();
+    this.#commitHarnesses();
+  }
+
+  /** Reset one model slot to `Idle` (a Retry click). */
+  resetModels(harness: HarnessId): void {
+    this.#models.set(harness, emptyList<Model>());
+    this.#commitModels(harness);
+  }
+
+  /**
+   * Retry click for the harness/model popover (`pickers.rs:2804` click
+   * behavior): reset the harness catalog to `Idle`, clear every model slot,
+   * force-reload both.
+   */
+  retryHarnessCatalog(): void {
+    this.resetHarnesses();
+    for (const harness of [...this.#models.keys()]) {
+      this.resetModels(harness);
+    }
+    void this.loadHarnesses({ force: true });
+    this.prefetchModels(true);
   }
 
   /** Forget the harness + every model catalog (a fresh chat deserves fresh defaults). */
   invalidate(): void {
+    this.#epoch += 1;
     this.#harnesses = emptyList<HarnessDescriptor>();
+    this.#harnessesInFlight = false;
     this.#models.clear();
+    this.#modelsInFlight.clear();
     this.#commitHarnesses();
     for (const harness of [...this.#modelListeners.keys()]) {
       this.#commitModels(harness);
@@ -190,9 +382,30 @@ export class PickerCatalog {
       return;
     }
     this.#disposed = true;
+    this.#offStatus?.();
     this.#listeners.clear();
     this.#modelListeners.clear();
     this.#models.clear();
+  }
+
+  #targetParams(): Record<string, string> {
+    return this.#targetDeviceId === null ? {} : { targetDeviceId: this.#targetDeviceId };
+  }
+
+  #retryOfflineSlots(): void {
+    if (this.#disposed) {
+      return;
+    }
+    if (this.#harnesses.error !== null && !this.#harnesses.loaded && !this.#harnessesInFlight) {
+      this.resetHarnesses();
+      void this.loadHarnesses();
+    }
+    for (const [harness, slot] of this.#models) {
+      if (slot.error !== null && !slot.loaded && !this.#modelsInFlight.has(harness)) {
+        this.resetModels(harness);
+        void this.loadModels(harness);
+      }
+    }
   }
 
   #commitHarnesses(): void {
@@ -218,6 +431,10 @@ export class PickerCatalog {
       }
     }
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function describeError(error: unknown): string {
