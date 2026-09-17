@@ -11,8 +11,8 @@ import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
 import { anchorBelow, anchorBelowEnd, menuAt } from "../lib/popover-anchor";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
+import { RbDialog } from "./base/dialog";
 import {
-  Modal,
   PopoverCard,
   SearchInputFrame,
   DialogCard,
@@ -711,9 +711,19 @@ function RenameSpaceDialog({
   readonly onSubmit: (name: string) => void;
 }) {
   const [value, setValue] = useState(space.name ?? "");
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <Modal ariaLabel="Rename project">
+    <RbDialog
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onCancel();
+        }
+      }}
+      ariaLabel="Rename project"
+      initialFocus={inputRef}
+    >
       <DialogCard>
         <DialogTitle>Rename project</DialogTitle>
         <form
@@ -725,21 +735,14 @@ function RenameSpaceDialog({
             }
             onCancel();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              onCancel();
-            }
-          }}
         >
           <DialogField>
             <input
+              ref={inputRef}
               type="text"
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder="Project name"
-              autoFocus
               spellCheck={false}
               aria-label="Project name"
             />
@@ -752,7 +755,7 @@ function RenameSpaceDialog({
           </div>
         </form>
       </DialogCard>
-    </Modal>
+    </RbDialog>
   );
 }
 
@@ -779,7 +782,15 @@ function DeleteSpaceDialog({
       ? `Removing \u201C${name}\u201D permanently deletes its 1 session on ${deviceName}. This can\u2019t be undone.`
       : `Removing \u201C${name}\u201D permanently deletes its ${chatCount} sessions on ${deviceName}. This can\u2019t be undone.`;
   return (
-    <Modal ariaLabel="Remove project?">
+    <RbDialog
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onCancel();
+        }
+      }}
+      ariaLabel="Remove project?"
+    >
       <DialogCard>
         <DialogTitle>Remove project?</DialogTitle>
         <DialogBody>{copy}</DialogBody>
@@ -788,6 +799,6 @@ function DeleteSpaceDialog({
           <BtnDanger onClick={onConfirm}>Remove</BtnDanger>
         </div>
       </DialogCard>
-    </Modal>
+    </RbDialog>
   );
 }

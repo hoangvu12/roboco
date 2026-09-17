@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
 import type { Chat } from "@roboco/proto";
@@ -8,7 +8,8 @@ import { deleteChat, describeMutateError, renameChat, setChatArchived, type Muta
 import { singleLine } from "../lib/view";
 import { classifyKey } from "../lib/picker-search";
 import { menuAt } from "../lib/popover-anchor";
-import { Modal, PopoverCard, MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
+import { RbDialog } from "./base/dialog";
+import { PopoverCard, MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
 import { MenuRow } from "./popover/menu-row";
 import { Popup, usePopup } from "./popover/popup";
 
@@ -268,12 +269,23 @@ function encodeComponent(value: string): string {
 /**
  * The rename dialog (shell.rs open_rename_chat / submit_rename_chat):
  * prefilled single-line input, Enter submits, an empty title is a no-op.
+ * Escape closes through RbDialog's escape path (`onOpenChange(false)`).
  */
 function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (title: string) => void; onClose: () => void }) {
   const [title, setTitle] = useState(chat.title ?? "");
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <Modal ariaLabel="Rename session">
+    <RbDialog
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onClose();
+        }
+      }}
+      ariaLabel="Rename session"
+      initialFocus={inputRef}
+    >
       <DialogCard>
         <DialogTitle>Rename session</DialogTitle>
         <form
@@ -283,21 +295,14 @@ function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (
             onSubmit(title);
             onClose();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              onClose();
-            }
-          }}
         >
           <DialogField>
             <input
+              ref={inputRef}
               type="text"
               aria-label="Session title"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              autoFocus
               spellCheck={false}
             />
           </DialogField>
@@ -309,7 +314,7 @@ function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (
           </div>
         </form>
       </DialogCard>
-    </Modal>
+    </RbDialog>
   );
 }
 
@@ -333,7 +338,15 @@ function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: (
   }
 
   return (
-    <Modal ariaLabel="Delete session?">
+    <RbDialog
+      open
+      onOpenChange={(next) => {
+        if (!next) {
+          onClose();
+        }
+      }}
+      ariaLabel="Delete session?"
+    >
       <DialogCard>
         <DialogTitle>Delete session?</DialogTitle>
         <DialogBody>{`\u201C${title}\u201D will be permanently deleted. This can\u2019t be undone.`}</DialogBody>
@@ -342,6 +355,6 @@ function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: (
           <BtnDanger onClick={confirm}>Delete</BtnDanger>
         </div>
       </DialogCard>
-    </Modal>
+    </RbDialog>
   );
 }
