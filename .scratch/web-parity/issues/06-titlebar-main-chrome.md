@@ -14,7 +14,7 @@ widths glide on the desktop's 200 ms resize curve in both directions.
 **Blocked by:** 02 (Foundation tokens), 03 (Client settings store), 05 (State
 fixes: nav history, send ids, optimistic echo).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/01-shell-chrome.md` §3.1, §3.3, §3.3.1,
 §3.4, §3.5, §3.6, §3.6.1, §3.6.2, §3.7, §3.12, §3.16, §3.17, §3.18, §3.25,
@@ -1169,4 +1169,178 @@ Copied verbatim from research §5, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+### 2026-09-17 — implemented (branch `wp1/06-titlebar`)
+
+**Landed** (work from two interrupted sessions, verified and finished in a
+third pass — the component/state layer and most of `state/*` were in the
+worktree uncommitted; this pass added the stylesheet, the tests, two bug
+fixes found in verification, and all captures)
+
+- **Titlebar cluster** (`titlebar.tsx`, `app.css`): 24×24 `window-control`s
+  with 16px icons at the desktop's rhythm (measured in-browser: toggle x=10,
+  Back x=42, Forward x=68, `+` x=100 — cluster pad 10, group gap 8, control
+  gap 2); `header-icon-button` is a separate 28×28 class with the
+  `rgb(var(--rb-wash)/0.11)` hover wash; `.window-control-active` and the
+  `active={paneOpen}` prop are gone (ticket 04 had already deleted the CSS;
+  this ticket removed the prop wiring). A disabled nav button renders with
+  **no background** and only the icon at `text_muted @ 35%`
+  (`color-mix`, `pointer-events: none`), verified computed.
+- **`+` gating + fade**: `titlebarNewSessionAlpha` in `state/layout.ts`
+  (§3.1, tested). The `+` stays MOUNTED, cross-fades opacity+visibility on
+  `RESIZE` 200ms `EASE_OUT` while `--rb-titlebar-row-left` transitions on the
+  same curve; at alpha 0 it is `visibility: hidden` and `tabIndex -1`
+  (verified: blank canvas and Settings show alpha 0 / opacity 0 /
+  hidden / tabindex −1). `onNewSession` has NO fallback handler — only the
+  chat route with a selected chat publishes one (T2).
+- **Row left**: `titlebarRowLeft` kept verbatim with the − 14 comment; the
+  settings route uses flat `TITLEBAR_CONTENT_START` (104) — AppShell now
+  branches on `isChatRoute` (measured: 104px on `/settings/appearance`,
+  272px/136px on the chat route with sidebar 256/collapsed). Identity: gap 6,
+  14px harness mark (icon `size={16}`→14 at the call site), 12px/500 title at
+  `text @ 85%`, 12px folder at `text_muted @ 50%` (all measured computed);
+  `.identity-badge`/`ChangeRequestBadge` gone; the `flex_1` `.titlebar-fill`
+  keeps the trailing group right-anchored.
+- **Trailing band**: stays mounted at width 0 while shut but renders NO
+  children (0 focusable controls verified while closed); band width still
+  derives from `--rb-pane-now` (T18 fixed the tabbable-button half; the
+  band element itself is kept for the width transition, per the ticket's
+  guidance).
+- **Status strip** (`transcript.tsx` `StatusStrip` + CSS): 24px, always
+  reserved, `max-width 768px; margin-inline auto; padding-inline 24px;
+  font-size 11px; gap 8px` (all measured). Shows `"Run failed"` on errored
+  and `MatrixSpinner` + `"Sending…"` while a send is pending — captured live
+  by suspending the engine process mid-send (see Screenshots). The spinner is
+  the standing `MatrixSpinner` port at size 16; `gradient_spinner`'s exact
+  geometry stays ticket 20's (substitution noted in the code).
+- **Jump pill** (`JumpPill` + `.jump-pill*` CSS): 30px, radius 15, 1px
+  border, `shadow-md` (the file's existing elevation idiom), frost
+  `blur(16px)` over the dialog tint with an `@supports` fallback, inner hover
+  layer at `--rb-hover`, `DIALOG_IN` entrance (`rb-dialog-in` 180ms EASE,
+  2px rise), paddings 11/13 on a 6px gap, `↓`/`"Scroll to bottom"` at 13px.
+  Anchored `top: −36` over `.persistent-composer` with `right: 10` (measured:
+  anchor right inset 210 = 200 column margin + 10). The old circular
+  `.jump-bottom` is deleted wholesale. Reusable for ticket 07/19's subagent
+  instance.
+- **Transcript fade**: the scroller's own `mask-image` — quadratic stops
+  0.0625/0.25/0.5625 at 25/50/75% of the 24px top band (measured in the
+  computed mask), bottom band `max(--rb-bottom-stack − 24px, 1px)` (term_h is
+  0 until ticket 26). `--rb-bottom-stack` is written by a ResizeObserver on
+  `.bottom-stack` — **bug fixed in verification**: the observer effect
+  originally keyed only on `[chatId]`, ran during the loading early-return
+  while the refs were still null, and never re-armed, so the bottom band
+  collapsed to 1px. Now keyed `[chatId, row?.chat.id]` (measured: 109px →
+  band 85px). The desktop's 38px top inset is realized structurally: the
+  column's titlebar padding puts the scroller's top edge at the bar's bottom
+  edge, so the 24px band covers exactly the desktop's 38→62px fade region.
+- **Drop overlay**: `#attachment-drop-overlay` over `.main`, scrim at
+  `--rb-scrim-alpha`, `"Drop to attach"` at 13px, `pointer-events: none`,
+  revealed only when `dataTransfer.types` includes `"Files"` (verified via a
+  CDP-dispatched file drag; hidden again on dragleave). Ticket 17 owns the
+  dropped files.
+- **Update strip** (`update-strip.tsx` + CSS): advisory branch only —
+  ``Update available — v{x} · run `roboco update` `` on `--rb-accent-wash`,
+  11px/500, 8px outer inset, 6/8px padding, 6px radius, click dismisses into
+  `ui-settings.dismissedUpdateVersion` (healed + defaulted null). The
+  `UpdateFlow` union keeps the desktop's download/stage/relaunch arms in the
+  type. Mounted between `ConnectionPill` and `AccountRow`. **Not capturable**:
+  the smoke engine never reports `updateAvailable`, so the strip cannot
+  appear against the fixture; verified by code + the §2.11 literals.
+- **Gate + page entrance** (`root-layout.tsx`, `gate-card.tsx`, CSS):
+  `GatePhase` mapping — parked (fatal) → `GateCard` with the 44px
+  `hairline(0.035)` grid via two `repeating-linear-gradient`s under the REAL
+  radial mask (the desktop's four edge gradients are a gpui workaround and
+  are not ported), 14px muted error copy, bordered `"Retry"` (6/12 pad,
+  radius 8, glass hover), plus a web-only `Pair again` link (see Judgment
+  calls). `GatePhase::Loading` is a bare empty root — no splash, per §5.
+  Ready wraps in `.page-fade` keyed by phase: 500ms `EASE_OUT_EXPO` with a
+  4px rise (`rb-rise-in`), verified computed. `useEngineRetry` in
+  `session-provider` recreates the session (retry nonce).
+- **Escape ladder** (`state/escape.ts`): `resolveShellEscape` (§3.3, tested)
+  + `escapeStack`/`registerEscapeSurface`/`installEscapeLadder` — ONE
+  capture-phase `document` keydown listener walking the 9-step priority
+  ladder; consumed keys `stopPropagation()` (which also silences every
+  bubble listener). The engine drawer + phone sidebar drawer register at a
+  web-only `webDrawer` priority (12) just under the blocking overlays —
+  judgment call, see below. The shell's bubble-phase listener resolves the
+  interrupt (gated on `escapeStopsActiveAgent`, default `false`; in-flight
+  interrupts tracked in a ref so a second Escape cannot stack a Stop).
+  Tab is untouched at the shell level (N10).
+- **z-index ladder**: the six `--rb-z-*` tiers with the gpui-priority comment
+  in `:root`; `.titlebar` 40 / `.drawer-backdrop` 50 no longer collide, and
+  the existing menu/dialog/modal/picker/lightbox/sidebar-menu surfaces were
+  mapped onto the tokens (menus 60, modals 70, gate 80, seams 5). The phone
+  sidebar stays at 30, deliberately under the titlebar (documented in the
+  ladder comment).
+- **Column-width motion**: unchanged mechanics, verified live — sidebar,
+  right pane, pane band, titlebar `padding-left` and both seam offsets
+  transition on `RESIZE` 200ms `EASE_OUT`; `:root[data-rb-resizing]` now also
+  freezes `.titlebar` (row inset tracks a drag exactly); the whole set snaps
+  under `prefers-reduced-motion: reduce` (one new block covers this ticket's
+  tweens and entrances).
+
+**Tests** — `tests/titlebar.test.ts` (new,
+`new_session_action_lives_in_the_titlebar_only_when_useful`),
+`tests/escape.test.ts` (new, the three §3.3 desktop tests),
+`tests/layout.test.ts` (+ `titlebar_cluster_matches_roboco_window_controls`,
+`titlebar_spacer_selects_per_platform_and_fullscreen`,
+`cluster_clearance_clears_the_overlay_buttons`, and the `shell.rs:8283-8297`
+asserted values for `right_pane_max_width`/`takeover`/`conversation_width`).
+`pnpm -r build` green; `pnpm --filter @roboco/app test` green (35 files,
+474 tests).
+
+**Screenshots** (web half; `.scratch/web-parity/shots/06/` in the main
+checkout, 1424×905 viewport, final build):
+`web-a-chat-sidebar-expanded-pane-closed.png`,
+`web-b-sidebar-collapsed-mid-glide.png` + `web-b-sidebar-collapsed-settled.png`,
+`web-c-blank-canvas.png`, `web-d-settings-route.png`,
+`web-e-nav-history-buttons.png` (Back/Forward both disabled; the
+Forward-disabled-with-Back-enabled mixed state was DOM-verified with the
+computed 35%-alpha icon and no background),
+`web-f-status-strip-sending.png` (engine suspended mid-send so the ~60ms
+pending window persists — a real pending state, not a mock),
+`web-g-jump-pill.png`, `web-h-drop-attach.png` (CDP-dispatched file drag),
+`web-i-gate-card.png` (a real parked session: the engine's credential was
+refused after a suspend/resume cycle; captured on the pre-fix bundle, but
+`GateCard`/`root-layout` are byte-identical in the final build — only the
+chat-page observer deps changed after it).
+
+**Skipped / deviated, all deliberate:**
+
+- **Desktop half of every screenshot pair.** `shot.ps1` needs the desktop
+  client foregrounded; the machine was continuously busy with sibling
+  ticket agents capturing against the shared `web_smoke` port (three
+  different sibling servers cycled through it during this session), and the
+  desktop client was not running. Per the runbook and ticket 02's precedent
+  this is a documented skip rather than repeatedly stealing focus. Parity
+  evidence for the web half is the DOM-geometry verification above (every
+  acceptance number measured computed, not eyeballed).
+- §3.4's `bottom_stack_measurement_matches` / `lerp` were **not ported as
+  functions**: they have no web call site (the ResizeObserver writes px
+  directly and CSS transitions do the interpolation), and porting dead code
+  would just re-hide that.
+- §2.5 `titlebar_drag_region`: layout only, as instructed — no drag, no
+  double-click zoom, no `-webkit-app-region`.
+- The per-component Escape listeners in `composer.tsx`/`chat-page.tsx` stay:
+  popovers/dialogs migrate onto the ladder in tickets 09–11, and the Mod+J
+  listener is ticket 12's named removal.
+
+**Judgment calls a human should review:**
+
+1. **`webDrawer` escape priority (12)** — the desktop ladder has no drawer
+   rung (drawers are a web-only surface). Placed just under the blocking
+   overlays (10) so a drawer closes before any dialog, matching the web's
+   previous behavior. If a later ticket disagrees, move the constant.
+2. **Gate card's `Pair again` link** — a parked credential cannot be fixed by
+   Retry, and the gate covers every route that could re-pair. Without the
+   link a dead session strands the browser; it is flagged web-only in both
+   the component and the CSS.
+3. **Jump pill shadow** — gpui's `shadow-md` has no token; used the file's
+   existing elevation idiom (`0 8px 30px rgb(0 0 0 / 0.35)`).
+4. **Status-strip spinner size 16** — ticket 20 owns the exact geometry; 16
+   reads correctly inside the 24px strip.
+5. **Bottom fade band scope** — the web scroller does not underlap the
+   composer (no absolute underlay), so the band fades the last
+   `bottom_stack − 24` px of VISIBLE transcript. The number follows the
+   ticket exactly; the geometry difference (what sits behind the band) is
+   inherent to the web's in-flow column and should be sanity-checked
+   against a real desktop capture when one is available.

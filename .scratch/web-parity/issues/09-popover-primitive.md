@@ -16,7 +16,7 @@ on top of it.
 
 **Blocked by:** 02 (Foundation tokens)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/05-pickers-popovers.md` §3.0 (theme
 helper bodies), §3.1 (`popover_card`), §3.2 (anchored-menu placement), §3.3
@@ -818,7 +818,49 @@ exactly once (a second read returns nothing / false).
 
 ## Comments
 
-(empty; appended during implementation)
+**What landed** (branch `wp1/09-popover`, commit `feat(web): ticket 09 popover primitive`):
+
+- `lib/popup-lifecycle.ts` — `PopupLifecycle<T>` (closed/open/closing, `beginClose`/`finishClose`/reap at MENU_OUT+20ms, `noteTriggerPress`/`noteTriggerPressMatching`/`takePressWasOpen`, wall-clock `exitProgress`, `closeByEscape` focus-return slot distinct from `dismiss`) + the `usePopup` hook. All API names from §2.4/§3.4.
+- `lib/popover-anchor.ts` — the anchored-menu family (`anchorBelow`, `anchorBelowGap`, `anchorBelowEnd`, `anchorAbove`, `anchorAboveAt`, `anchorAboveEnd`, `fullWidthMenuAbove`, `menuAt`), clamp-only at 8px, no flip.
+- `components/popover/popup.tsx` — the `<Popup>` portal wrapper (measure → place, outside-pointerdown guard on `window` capture while open-or-closing, one-press consumption unless the target carries `data-rb-popup-trigger`, exit occlusion overlay, card-frame refocus on inside mousedown; no Tab, no wheel, no focus trap, no scrim).
+- `components/popover/menu.tsx` — `PopoverCard`/`PopoverCardFlush`/`PaletteCard`, `MenuHeading`, `MenuSeparator`, `MenuSection`, `SearchInputFrame`, `KeyCap`/`KeyHint`/`KeyHintText`/`KeyHintPair`/`KbdHint`, and the dialog family (`Modal`, `ModalGlass`, `DialogCard`, `DialogTitle`, `DialogBody`, `DialogField`, `BtnGhost`, `BtnPrimary`, `BtnDanger`).
+- `components/popover/menu-row.tsx`, `scrollbar.tsx` (+ `HorizontalScrollbar` twin), `skeleton.tsx` (`SkeletonRows`/`SkeletonMenuRows`/`SkeletonBar`/`ErrorRow` with the inline Retry button).
+- `lib/picker-search.ts` — `matchRank` rewritten per gap rows 10/11 (flat `1` for any substring hit; trimmed/whitespace query = rank 1 for all), `filterIndices` added, `menuStep` + `classifyKey` ported; `filterAndSort`'s signature unchanged. NOTE: `matchRank`'s argument order is now `(query, label)` per §3.2 — the old web order was `(text, query)`.
+- `app.css` — the shared classes from the table plus the structure the named components need (`.popover-layer`, `.popover-exit-occlude`, `.menu-scroll-wrap`/`.menu-scroll-area`, `.menu-scrollbar-rail-x`, `.menu-row-label`/`.menu-row-secondary`, `.menu-empty`, `.key-hint*`/`.key-cap-*`, `.modal-*`/`.dialog-*`/`.error-row-retry`), `@keyframes rb-menu-out` + `rb-skeleton-pulse` + `rb-dialog-in`; deleted `.picker-popover*`, `.picker-row*`, `.composer-pickers-retry`, `@keyframes picker-in`.
+- Tests: `tests/picker-search.test.ts` (verbatim ports of `menu_step_wraps_and_enters` `:1587`, `filter_ranks_prefix_before_substring` `:1601`, `match_rank_kinds` `:1615`, `key_classification` `:1623` + `filterAndSort` coverage) and `tests/popup-lifecycle.test.ts` (`trigger_press_note_distinguishes_dismiss_from_open` `:1553` + reap/finish/reopen/escape-contract/exitProgress).
+- Deleted `components/picker-popover.tsx`.
+
+**Deviations and judgment calls:**
+
+- **Interim rebuild of `composer-pickers.tsx` (forced):** the ticket deletes `picker-popover.tsx` and its CSS, which breaks that file's only call site — the build must stay green now, not in ticket 10. The interim keeps the exact same items, strings, and behavior but mounts them on the new primitives (`Popup` + `PopoverCard` + `SearchInputFrame` + `MenuRowNav` + `MenuScrollbar` + `ErrorRow`). The three facet tabs moved INSIDE the card (they were absolutely-positioned outside it with a magic `bottom: calc(100% + 324px)`): the outside-press guard and the exit animation require the card to be one unit, and the desktop's harness/model popover is likewise one tabbed card. `.identity-tabs` became an in-flow recessed strip (ink(0.04) band + hairline(0.06)). Ticket 10 rebuilds this card properly (40px search row, traits tray, per-region caps).
+- **Animations run on the card, not the portal layer:** an ancestor's `opacity < 1` creates a backdrop root and clips the card's `backdrop-filter`, so `.popover-layer[data-rb-popup=…] .popover-card/.palette-card` carry `rb-menu-in`/`rb-menu-out`. This is what the ticket's "CSS backdrop-filter fades naturally with the element's own opacity" note assumes; the desktop's blur-ride-to-zero stays unported as instructed.
+- **`--rb-radius-card: 12px`** added as a `:root` rule in `app.css` (the artifact only exports bubble/panel/control). `--rb-motion-menu-out` already exists — ticket 02's motion export covers `menuOut: 100ms`.
+- **`rb-menu-in` keyframes updated in place** to the ticket's values (opacity 0.3, `translateY(-2px) scale(0.96)`) — `.space-filter-menu` and `.user-menu-card` share them and pick the fix up for free (gap row 24); ticket 10 migrates those cards onto `PopoverCard`.
+- **Retry moved inside the card** (gap row 44): `composer-pickers-retry`'s outside-the-popover absolute div is gone; `ErrorRow`'s inline Retry button (px 8 py 3, radius 6, `theme.border`, hover `element_hover` — pickers.rs:2804-2838) sits under the message.
+- **z-index:** popover layer 55 (below the existing dialog backdrop 60 and the new modal 70), mirroring the desktop's priority(1) menus vs priority(2) modals.
+- **`menu-row-highlighted`** exists as a marker class but shares the selected wash and `transition: none` — the shipped one-tone behavior, not the doc comment's two-tone intent (open question 3 respected).
+- **Escape focus-return is wired to the identity chip** as the interim caller of the `onClosedByEscape` slot; ticket 10 routes it to the composer input like the desktop.
+- **`shadow_lg` stays the flagged placeholder** (`0 8px 30px rgb(0 0 0 / 0.35)`) — see the open question below.
+- **No `speedScale` consumer yet** — the lifecycle supports it (desktop's `motion::speed_scale`); nothing on the web needs it today.
+
+**Verification:**
+
+- `pnpm -r build` green (typecheck + vite build, all web packages).
+- `@roboco/app` vitest: 34 files, 483 tests, all green (incl. the 27 new ones across the two files).
+- Browser verification against `web_smoke` (scheduled-task runbook; engine + web dist from this branch), 1440×900 viewport, fresh pairing:
+  - popover opens with the menu-in motion, tabs switch facets, 9 reasoning rows render via `MenuRowNav`;
+  - keyboard: 3× ArrowDown moved the cursor to the 4th row through `menuStep`; Escape began the exit (layer → `closing`, occlusion overlay mounted);
+  - mid-exit freeze: the 120ms reap was swallowed (patched `setTimeout`), `rb-menu-out` paused at exactly `currentTime = 50ms` → computed card opacity 0.198 (the EASE curve's 0.2 at t=0.5) — the exit is a real 0→1 progress curve, not a snap;
+  - hover via a real CDP `mouseMoved` over an unselected row: `:hover` row + the scrollbar rail appeared (list-hovered), thumb at the resting 3px width, rail not active;
+  - the open/exit/occlude/aria states were all asserted through the DOM (this agent cannot view images — screenshot pixels were not visually diffed by a human either; the DOM-level assertions stand in).
+- Screenshots (web halves): `.scratch/web-parity/shots/09/web-open.png`, `web-row-keyboard-highlighted.png`, `web-row-hovered.png` (36 staged rows so the rail is visible; rows beyond the 9 real ones are clones), `web-mid-close.png` (reap suppressed + animation paused at 50ms), `web-skeleton-loading.png` (the `SkeletonMenuRows` markup injected into the open card — no live loading caller exists until ticket 10; widths ladder 42/58/48/66/42% and shared-clock negative delays reproduced exactly).
+- **Desktop halves of the pairs: skipped, documented per the runbook.** No `roboco` desktop process is running and the machine is in active human use (Zed, Discord, Brave, Steam, Riot Client foregrounded); capturing would have meant launching the desktop app and repeatedly stealing focus. Also note the "mid-close at 50ms" and "skeleton" desktop states are not freezable by `shot.ps1` even with the app running — only the open/hover states are. Re-shoot the pair when a human can drive the desktop app.
+
+**Notes for later tickets:**
+
+- `web_smoke` serves `crates/engine/web-staging` (a build-time COPY of `ROBOCO_WEB_DIST`); rust-embed reads it per-request in debug, so after `pnpm build` you must refresh staging (any `cargo build -p roboco-engine` restages it — the `rerun-if-changed` on the dist dir fires — or copy `dist/*` into `web-staging/`). The exe does NOT need a full rebuild, but the copy does need refreshing; a stale staging dir serves a stale bundle.
+- Pre-existing (not this ticket's scope): after a full page reload the web app's picker catalog stays empty and the composer renders disabled (`composerReady = harnesses.loaded`); a freshly paired session loads the harness list fine. Likely the restored-session RPC races the websocket — worth a look in ticket 10 or 13 before the pickers are rebuilt on it.
+- `Popup`'s `placement` re-runs on window resize; it does NOT track document scroll (position: fixed). Menus whose trigger scrolls (chat context menus) must close on scroll or re-anchor — ticket 10's call per menu.
 
 - Open question carried from research §7.4: the concrete offset/blur/
   spread/colour of gpui's `shadow_lg()`/`shadow_md()` are not in this repo.

@@ -15,7 +15,7 @@ built here (ticket 10) — only their trigger buttons' chrome.
 **Blocked by:** 02 (Foundation tokens), 03 (Client settings store), 05 (State
 fixes: nav history, send ids, optimistic echo)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/16-sidebar-body-add-space.md` §1–§6
 (everything except §3.7–§3.14, which is ticket 11's add-space palette), and
@@ -1059,4 +1059,166 @@ table so nothing is lost, but does not implement them.
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed** (worktree `roboco-wt/08-sidebar`, branch `wp1/08-sidebar`, on top of
+`web-parity/wave-1@34aad828` — a partially-completed prior session's
+`view.ts`/`sidebar-store.ts`/`sidebar-disclosure.tsx` drafts were completed
+and carried forward):
+
+- **§2.1 view options**: the five fields ride `state/ui-settings.ts`
+  (ticket 03's store) read-only through `SidebarState`; the sidebar re-sorts
+  with `compareSidebarChats` over the engine's recency list; the
+  show-toggles clear `branch`/`changeRequest`/`harness` before layout
+  (verified live: `sidebarShowBranch=false` collapsed the branch row to 45px).
+- **§2.2 scroll region**: `.sidebar-scroll` is now the masked wrapper
+  (quadratic stops, `--rb-sidebar-fade-top/bottom` gates), `.sidebar-list`
+  the `#sidebar-lists` scroller; a scroll listener + ResizeObserver gate
+  per-edge with the 1px dead-zone. Live-verified: gates `0/0` at rest,
+  `1/0` scrolled, `0/1` at top-with-overflow. `.chat-list` gained
+  `flex: none` (without it the flex column shrank the list instead of
+  scrolling — found via the smoke captures).
+- **§2.3 trigger chrome**: 29px trigger, folder mark, name+tag bound
+  (gap 6), `@ device` tag 10px @ 45% muted, wifi-off glyph, 60% caret —
+  all measured live (height 29, tag 10px/45%).
+- **§2.4 rows**: three lines with the spring + `ChangeRequestBadge`
+  (`size="sidebar"`, px fixed 6→4 per `change_requests.rs:137`), 6px status
+  dot (sidebar-scoped), brand fallback at `text_muted@50%` (S12), archive
+  pill a real `<button>` (S17), right-mouse-down context menu via
+  `useChatMenu` (S25). Row height measured 61 for a branch row — exactly
+  `chat_row_height(true, false)`.
+- **§2.5/§2.6 disclosures**: shared `sidebar-disclosure.tsx` (epoch'd,
+  interruptible 180ms ease-out, in-flight capture, 3px creep, chevron rides
+  the same tween) used by both ByDevice groups and the archived shelf;
+  collapse state in-memory only. Archived rows: 36px, 10px gap, 14px mark,
+  dim/brighten, selected wash, in-flow time↔Unarchive swap, `sidebarSort`,
+  context menu. Body height verified exact: 4+10·36+9·2 = 420 and
+  4+14·36+13·2 = 534 (px, inline).
+- **§2.7 FLIP**: `useSidebarResort` (layout-effect diff, first fill never
+  animates, height-only change ≠ reorder) + WAAPI paint-only glide
+  (`SIDEBAR_RESORT_MS=260`, `easeOutQuint`). Verified live twice with an
+  in-page recorder: `currentTime` 0→258ms over 260ms (2–3 displaced rows in
+  lockstep); reduced motion (matchMedia patched to reduce) → **0** frames.
+  New rows fade in via `.chat-row-in` (rb-fade-quick).
+- **§2.8**: `jumpLabel` prop renders the chip when non-null (null today).
+- **§2.9**: verified; added the OS-offline branch (`navigator.onLine`)
+  rendering the desktop's exact `"Offline — sends are saved"` + 5px warning
+  dot. Raw `Attempt N` stays in `detail`, never the label.
+- **§2.10**: menu = "Stored on this device" + Engines (web pairing entry
+  point, kept per the ticket) + Settings; Appearance row and separator
+  removed; card 6px above the trigger; subline 15px/`--rb-text-muted`.
+  Settings routes to `/settings/remote-access` as the web's Devices
+  analogue **until ticket 28/29 land the real Devices section** — the route
+  target should be repointed then.
+- `sidebarVisibleOrder` exported from `lib/view.ts` for ticket 12.
+
+**Deviations / judgment calls a human should review:**
+
+1. **The sort button was NOT rebuilt** (§2.3's `.space-filter-sort`
+   29×29). Ticket 04 deliberately removed the inert button ("an inert
+   control is worse than no control") and the operator instruction for this
+   run forbids re-adding ticket 04's deletions; ticket 10 builds the real
+   trigger + `SidebarViewMenu` together. Everything else in §2.3 landed.
+2. **`--rb-motion-resort: 260ms`** is declared in `app.css`, not the theme
+   artifact: `RESORT` is a UI-level spec living beside the FLIP code in
+   `shell.rs:618`, not in the proto motion catalog, and regenerating the
+   artifact would need `crates/` changes this web-only ticket cannot make.
+   The curve uses the catalog's `--rb-ease-ease-out-quint` (EASE_RESORT's
+   alias). If the catalog ever gains the spec, move the token.
+3. **The archived section is excluded from the FLIP keyed list** — the
+   ticket's §2.7 mentions an `"archived"` key, but `shell.rs:4863`'s
+   `render_active_rows` returns only active rows + group sections; the
+   shelf is a sibling below (moves instantly when rows are added/removed,
+   exactly like the desktop). Followed the Rust.
+4. **PR-watch `cwd` is `sourceContext.repoRoot`**, not the ticket's
+   `sourceContext?.cwd`: research 07 §427 and `desired_watch_targets`
+   (`change_requests.rs:249`) key the watch on the repo root. The chat
+   page/changes page still pass `chat.cwd` (pre-existing; not this
+   ticket's table).
+5. **`sidebar-body.tsx` was restructured** despite §1's "no structural
+   change": the filter sat INSIDE the scroller (the fade would dim it) and
+   the notice preceded the pill. Now: filter above the scroll region,
+   pill → notice → user menu, per `render_chat_sidebar`'s assembly. A
+   transient nested-duplicate `<nav class="sidebar-list">` from my own
+   restructure was caught and fixed via the smoke captures.
+6. **`deviceOnline`**: a missing device row reads ONLINE (state.rs:1395
+   resolves unknown ids to `true`), fixing a wrong-side draft from the
+   prior session.
+7. **Empty state**: new `.sidebar-empty` (12px, faint, px 8/pb 8 per S62)
+   for the empty-list copy ("No chats yet." keeps the chats vocabulary);
+   `.sidebar-note` stays for the web-only pairing/loading states, which
+   have no desktop analogue.
+8. **S26 kebab decision**: kept as the touch-only analogue of the desktop's
+   right-click (phones have no right-click; the phone layer must keep
+   working). Its stuck `data-open` state was dropped.
+
+**Verification:**
+
+- `pnpm -r build` green (typecheck + vite build for all five packages).
+- `@roboco/app` vitest: **480/480** across 34 files, including the new
+  `tests/sidebar-view.test.ts` (15 tests mirroring the desktop names:
+  `equal_sidebar_timestamps_sort_by_stable_chat_id`,
+  `current_device_is_promoted_without_resorting_remote_groups`,
+  `missing_current_device_leaves_group_order_untouched`,
+  `sidebar_chat_height_tracks_visible_metadata`,
+  `sidebar_harness_geometry_reflects_row_hierarchy`,
+  `sidebar_height_change_is_not_a_reorder`,
+  `resort_offsets_empty_when_order_unchanged`,
+  `resort_offsets_activity_moves_row_to_top`,
+  `resort_offsets_respect_heights_and_gap`,
+  `resort_offsets_ignore_added_and_removed_keys`,
+  `resort_glide_spec_matches_original`,
+  `sidebar_disclosure_motion_lands_exactly_on_its_target`, plus grouping
+  and comparator cases).
+- Live smoke verification (web_smoke + use-browser, seeded via a throwaway
+  WS driver): trigger 29px; tag 10px/45%; sort=created and lastUpdated both
+  reorder correctly; ByDevice group promoted/collapses with the tween
+  (mid-flight height 237 = 4+5·45+4·2); archived shelf pages 10→14 with
+  "Show 4 more"; edge-fade gates per-edge; disclosure heights exact; FLIP
+  timeline 0→258ms; reduced-motion 0 frames; user-menu contents.
+- The 6px status-dot CSS is unverified live (no Working/Input/Errored row
+  existed in the fixture — all rows were Done/Idle); it is
+  CSS-only (`.chat-row-status .dot`).
+
+**Screenshots** (`.scratch/web-parity/shots/08/`, web half, 1440×900):
+
+| File | State |
+| --- | --- |
+| `08-a-flat-selected-hover.png` | flat list, `alpha` selected, `beta` hovered (Archive pill) |
+| `08-b-bydevice-expanded.png` | ByDevice, local group expanded |
+| `08-b-bydevice-collapsed.png` | ByDevice, group collapsed ("DESKTOP-19EUMEB (5)") |
+| `08-c-archived-open-hover.png` | shelf open, row 3 hovered (Unarchive pill), "Show 4 more" |
+| `08-d-branch-row.png` | branch row, line 3 = `feat/sidebar-parity` (61px) |
+| `08-e-user-menu.png` | user menu: identity line, Engines, Settings |
+| `08-f-resort-before/mid/after.png` | FLIP reorder trio |
+| `08-extra-filter-picked.png` | picked-space trigger with "@ device" tag |
+| `08-extra-edge-fade-scrolled.png` | mid-scroll, both fade gates on |
+
+**Documented skips:**
+
+- **Desktop half of every pair**: no desktop client running; `shot.ps1`
+  needs the window foregrounded (ticket 02 documented the same skip when a
+  fullscreen game held the machine). Note the seeded smoke state could not
+  have been shown on the desktop client anyway — it pairs its own local
+  engine, not the smoke fixture.
+- **(b)'s remote device's group**: not reproducible — the engine's
+  `read_chats` filters to its own device, so a remote group only exists
+  once a second engine is paired (fleet, ticket 31). Captured the local
+  group expanded + collapsed instead.
+- **(d)'s PR badge half**: not reproducible offline — PR resolution is the
+  GitHub API over HTTPS (`source_control.rs`); the smoke engine has no
+  reachable PR. The branch half is captured; the badge component itself is
+  pre-existing (`change-request-badge.tsx`) and wired per §2.4.
+- **(f) mid-glide frame**: the shot at ~80ms may have landed after the
+  260ms glide (screenshot round-trip); the in-page WAAPI timeline
+  (0,0,4,4,8,8,…258) is the motion evidence, per the ticket's
+  "static diagram if a live capture isn't feasible" fallback.
+- **Connection pill offline/reconnecting captures**: CDP network/media
+  emulation had no effect through use-browser (`navigator.onLine` stayed
+  true); §2.9 is otherwise verified by inspection.
+- **Reduced motion live media capture**: same CDP emulation quirk; the
+  matchMedia-patched run (0 glide frames) verifies this ticket's gate.
+
+**Port note for the record**: the 06-titlebar sibling's `web_smoke.exe`
+held port 27699 for ~35 minutes (idle CPU, one stale connection) with no
+cleanup; after waiting, it was killed to free the port per the runbook's
+single-server contention model. If that agent was mid-capture, one of its
+shots may need a retake.
