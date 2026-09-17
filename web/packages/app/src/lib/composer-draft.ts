@@ -359,6 +359,47 @@ export function rememberTarget(device: string | null, project: string | null, no
 }
 
 // ---------------------------------------------------------------------------
+// Per-chat text drafts (composer.rs `drafts: HashMap<chat_key, String>`)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-chat draft text map, swapped on navigation (`composer.rs`'s
+ * `self.drafts`, key `""` = the new-chat canvas — the canvas route itself is
+ * ticket 15). Module-scoped so drafts survive a composer unmount, exactly as
+ * the desktop's `Composer` entity outlives any one route.
+ *
+ * A cleared draft leaves the map (no empty-string tombstones): `get` returns
+ * "" either way, and the map stays the size of the user's actual drafts.
+ */
+export class ChatDraftStore {
+  readonly #drafts = new Map<string, string>();
+
+  get(key: string): string {
+    return this.#drafts.get(key) ?? "";
+  }
+
+  set(key: string, text: string): void {
+    if (text.length === 0) {
+      this.#drafts.delete(key);
+      return;
+    }
+    this.#drafts.set(key, text);
+  }
+
+  clear(key: string): void {
+    this.#drafts.delete(key);
+  }
+
+  /** Test seam — drop every draft. */
+  reset(): void {
+    this.#drafts.clear();
+  }
+}
+
+/** The one draft map for this page load. */
+export const chatDrafts = new ChatDraftStore();
+
+// ---------------------------------------------------------------------------
 // Draft application
 // ---------------------------------------------------------------------------
 

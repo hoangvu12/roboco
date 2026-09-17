@@ -101,6 +101,13 @@ export const ESCAPE_PRIORITY = {
   rightPlusClosing: 61,
   /** The active Changes surface's own `handle_escape`. (Ticket 22.) */
   changesSurface: 70,
+  /**
+   * The composer's queued-row edit cancel (composer.rs:7473-7483): the
+   * desktop binds Escape on the composer CONTAINER and stops propagation,
+   * which sits after the shell surfaces but before the bubble-phase
+   * interrupt. (Ticket 13.)
+   */
+  composerQueueEdit: 75,
 } as const;
 
 export type EscapeSurfaceHandler = () => boolean;

@@ -2467,75 +2467,215 @@ a:focus-visible,
 }
 
 /*
- * The composer pill — `composer.rs`.
- *
- * One 26px-radius surface (COMPOSER_RADIUS) with a 1px hairline, centred in a
- * 768px column (`max-w-3xl`, COMPOSER_MAX_WIDTH) and floating over the
- * transcript rather than sitting on a bar of its own. Its bottom edge is
- * stationary: growth moves the TOP edge, so the controls pin to the bottom
- * and only the text glides with the reveal.
+ * The composer column — `Composer::render`'s `container` div
+ * (composer.rs:7347-7355): `w_full max-w-3xl mx-auto`, flex column, 8px
+ * gap, `px-4 pb-4`. Its children, in order: the failure notice, the
+ * queue-degraded caption, the queue tray (tucked behind the pill), the pill
+ * surface, the session-footer slot.
  */
 .composer {
   flex: none;
   width: 100%;
   max-width: 768px;
   margin: 0 auto;
-  padding: 0;
+  padding: 0 var(--rb-space-lg) var(--rb-space-lg);
   display: flex;
   flex-direction: column;
-  border-radius: 26px;
-}
-
-.composer-input-wrap,
-.composer-actions,
-.composer-attachments {
-  /* Children share the pill; the pill itself is drawn on `.composer > *`. */
-  position: relative;
-}
-
-.composer > .composer-input-wrap {
-  border-top-left-radius: 26px;
-  border-top-right-radius: 26px;
-}
-
-.composer {
-  position: relative;
-}
-
-/* The pill body, drawn behind every child. */
-.composer::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 26px;
-  border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-input) 82%, transparent);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  pointer-events: none;
-  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
-}
-
-.composer-working::before {
-  border-color: color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
-}
-
-.composer-editing::before {
-  border-color: var(--rb-accent);
-  background: var(--rb-accent-wash);
+  gap: var(--rb-space-sm);
 }
 
 /*
- * Expanded: `pt-4 pb-1` (TEXTAREA_PAD_V = 20) on a box clamped between 76
- * and 260 by the auto-grow effect. Compact collapses to one 22.75px line
- * (INPUT_LINE_HEIGHT) inside `py-3`.
+ * The failure notice (composer.rs:7381-7411, the transcript ErrorChip
+ * palette): `mx-1 mt-1.5 flex items-start gap-2 rounded-xl border px-3 py-2
+ * text-[12px] leading-4` with a 14px DangerTriangle — a subtle tinted wash,
+ * not a bare red stroke. Amber for the offline-ish case ("Engine not
+ * connected"), red for send/run failures. Click dismisses.
+ */
+.composer-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rb-space-sm);
+  margin: 6px 4px 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+  cursor: pointer;
+}
+
+.composer-failure-amber {
+  border-color: color-mix(in srgb, var(--rb-warning) 16%, transparent);
+  background: color-mix(in srgb, var(--rb-warning) 5%, transparent);
+  color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
+}
+
+.composer-failure-icon {
+  flex: none;
+  margin-top: 2px;
+  color: inherit;
+}
+
+.composer-failure-text {
+  min-width: 0;
+}
+
+/*
+ * The queue-degraded caption (composer.rs:7413-7437): not a warning box —
+ * one quiet `mx-2 mt-1.5` caption line, 11px/14 `text_faint`, an amber dot
+ * only for hard offline, clearing itself the moment the path heals.
+ */
+.composer-queue-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 0;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--rb-text-faint);
+  animation: rb-fade-in 500ms var(--rb-ease-ease-out-expo);
+}
+
+.composer-queue-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--rb-text-faint);
+}
+
+.composer-queue-notice[data-offline="true"] .composer-queue-dot {
+  background: var(--rb-warning);
+}
+
+.composer-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The queue tray slot (composer.rs:7456-7468): `mx-4`, and a −26px bottom
+ * margin that cancels the column's 8px gap and tucks the tray 18px behind
+ * the pill painted after it (QUEUE_COMPOSER_OVERLAP). The fade is
+ * `motion::fade_quick` (150ms EASE, opacity only).
+ */
+.composer-queue-tray {
+  margin: 0 var(--rb-space-md);
+  margin-bottom: calc(-1 * (var(--rb-space-sm) + 18px));
+  animation: rb-fade-quick 150ms var(--rb-ease-ease);
+}
+
+@keyframes rb-fade-quick {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rb-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/*
+ * The pill surface (`#composer-surface`, composer.rs:7876-7894): the
+ * relative wrapper for the pill (and, later, the completion popups that
+ * span the pill width above it — ticket 14).
+ */
+.composer-surface {
+  position: relative;
+}
+
+/*
+ * The pill (composer.rs:7700-7717, 7734-7851). One 26px-radius surface
+ * (COMPOSER_RADIUS) with a 1px hairline, floating over the transcript.
+ * Its bottom edge is stationary: growth moves the TOP edge, so the controls
+ * pin to the bottom and only the text glides with the reveal. The web is
+ * forced opaque (the 2026-09-17 defrost decision), so the pill takes the
+ * desktop's opaque branch — `flatten(input, bg)` — with the 16px frost blur
+ * retained on the translucent input tint (`frost::frosted`'s 16).
+ *
+ * ONE DOM shape for both modes: the compact row and the expanded column
+ * are the same tree re-laid-out by `[data-mode]`; the height (and the
+ * morphing paddings/insets) ride inline styles from the layout pass.
+ */
+.composer-pill {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 26px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--rb-shadow-popover);
+}
+
+/*
+ * The body: expanded, a column with the textarea box in flow and the
+ * actions row ABSOLUTE at the stationary bottom; compact, one 47px row
+ * (`COMPACT_TOTAL_HEIGHT − PILL_BORDER_V`), bottom-justified so the pill
+ * top can sweep down over it during a collapse.
+ */
+.composer-pill[data-mode="compact"] .composer-body {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 47px;
+  flex: none;
+}
+
+.composer-pill[data-mode="expanded"] .composer-body {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.composer-body {
+  min-width: 0;
+}
+
+/*
+ * The textarea box — expanded: `px-4 pt-[morph 12→16] pb-1`, height inline
+ * (the auto-grow BOX, 76–260); compact: `flex-1 min-w-0 pl-4 pr-2 relative`,
+ * the single 22.75px line centered to the same 12px inset as `py-3` (no
+ * explicit vertical padding), glided by the collapse morph's decaying offset.
+ */
+.composer-input-box {
+  min-width: 0;
+}
+
+.composer-pill[data-mode="expanded"] .composer-input-box {
+  flex: none;
+  position: relative;
+  overflow: hidden;
+  padding: 12px 16px 4px;
+}
+
+.composer-pill[data-mode="compact"] .composer-input-box {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  padding: 0 8px 0 16px;
+}
+
+/*
+ * The text input: `text-[14px] leading-relaxed` (22.75), no vertical
+ * padding of its own (the box owns it), masked with the 12px fade ramps
+ * only on the SETTLED overflow edges (INPUT_FADE_BAND).
+ * `overscroll-behavior: contain` is the web's wheel-swallow at the scroll
+ * boundary (composer.rs:2918-2925).
  */
 .composer-input {
   display: block;
   width: 100%;
-  min-height: 47px;
-  max-height: 260px;
-  padding: 12px 16px;
+  height: 22.75px;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--rb-text);
@@ -2544,10 +2684,27 @@ a:focus-visible,
   line-height: 22.75px;
   resize: none;
   outline: none;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
-.composer-expanded .composer-input {
-  padding: 16px 16px 4px;
+.composer-input[data-fade-top="true"][data-fade-bottom="true"] {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+}
+
+.composer-input[data-fade-top="true"][data-fade-bottom="false"] {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, black 12px);
+  mask-image: linear-gradient(180deg, transparent 0, black 12px);
+}
+
+.composer-input[data-fade-top="false"][data-fade-bottom="true"] {
+  -webkit-mask-image: linear-gradient(180deg, black calc(100% - 12px), transparent 100%);
+  mask-image: linear-gradient(180deg, black calc(100% - 12px), transparent 100%);
+}
+
+.composer-input::placeholder {
+  color: var(--rb-text-faint);
 }
 
 /*
@@ -2568,52 +2725,50 @@ a:focus-visible,
   pointer-events: none;
 }
 
-.composer-input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.composer-input::placeholder {
-  color: var(--rb-text-faint);
-}
-
 /*
- * The actions row: pickers and the paperclip form one utility group
- * (ACTION_UTILITY_GAP = 4), with the larger structural ACTION_PRIMARY_GAP
- * before Send. `pl-3 pr-3 pt-1 pb-2.5` — ACTIONS_ROW_HEIGHT = 46.
+ * The actions row: expanded, ABSOLUTE at the pill's stationary bottom —
+ * `pt-1 pb-2.5` around 32px chips (ACTIONS_ROW_HEIGHT = 46), `pl-3`, the
+ * right inset gliding 8↔12 with the morph; compact, a `flex-none` cluster
+ * (`pl-1 pr-2` gliding 12↔8) on the 47px row. Pickers and the paperclip
+ * form one utility group (ACTION_UTILITY_GAP = 2, justify-end), with the
+ * larger structural ACTION_PRIMARY_GAP (8) before Send.
  */
 .composer-actions {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: var(--rb-space-sm);
-  padding: 4px 12px 10px;
+  gap: 8px;
+}
+
+.composer-pill[data-mode="expanded"] .composer-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 46px;
+  padding: 4px 8px 10px 12px;
+}
+
+.composer-pill[data-mode="compact"] .composer-actions {
+  flex: none;
+  position: relative;
+  padding: 0 8px 0 4px;
 }
 
 .composer-utility {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: row;
   align-items: center;
+  gap: 2px;
+}
+
+.composer-pill[data-mode="expanded"] .composer-utility {
+  flex: 1;
+  min-width: 0;
   justify-content: flex-end;
-  gap: var(--rb-space-xs);
 }
 
-.composer-compact .composer-actions {
-  padding: 0 8px 0 4px;
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  height: 47px;
-}
-
-.composer-compact .composer-utility {
+.composer-pill[data-mode="compact"] .composer-utility {
   flex: none;
-}
-
-.composer-compact .composer-input {
-  padding-right: 200px;
 }
 
 .composer-attach {
@@ -2632,13 +2787,8 @@ a:focus-visible,
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.composer-attach:not(:disabled):hover {
+.composer-attach:hover {
   background: rgb(var(--rb-ink) / 0.1);
-}
-
-.composer-attach:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 /* The paperclip's painted bounds sit left of centre in its 24px viewbox. */
@@ -3796,17 +3946,12 @@ a:focus-visible,
   background: var(--rb-bg);
 }
 
-@media (max-width: 768px) {
-  /* iOS zooms any field under 16px on focus. */
-  .composer-input {
-    font-size: 16px;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .composer-input-wrap {
+  /* The composer's morphs are JS-driven and already snap under reduced
+     motion (flip_morph_step returns None); the CSS entrances follow. */
+  .composer-queue-tray,
+  .composer-queue-notice {
     animation: none;
-    transition: none;
   }
 
   /* The Base UI popups (components/base/*) snap the same way: entrances
@@ -3830,12 +3975,17 @@ a:focus-visible,
 
 /* ── Attachments (composer strip + drop zone + transcript thumbs) ──── */
 
+/*
+ * The staged strip above the input, in the pill in BOTH modes. Its wrap
+ * height math is `attachmentStripHeight` (ticket 13); the strip's own
+ * rendering is ticket 17's.
+ */
 .composer-attachments {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--rb-space-xs);
-  padding: var(--rb-space-xs) 0 0;
+  padding: 12px 0 0;
 }
 
 .composer-attachments-input {
@@ -4853,9 +5003,10 @@ button.files-row-active:hover {
     display: none;
   }
 
-  /* The pill is edge-to-edge on desktop only; a phone needs its gutters. */
-  .composer,
-  .composer-footer {
+  /* The pill is edge-to-edge on desktop only; a phone needs its gutters.
+     The footer is the composer column's child now, so the column alone
+     takes the gutter — narrowing both would double-subtract. */
+  .composer {
     width: calc(100% - 2 * var(--rb-space-sm));
   }
 
@@ -5051,21 +5202,22 @@ button.files-row-active:hover {
 }
 
 /*
- * `render_footer` — the session footer under the composer. Its 24px height
- * (SESSION_FOOTER_HEIGHT) is what the usage indicator and the change-request
- * badge need inside equal 8px gutters; workspace identity leads, occupancy
- * trails.
+ * `render_footer`'s slot (composer.rs:7941-7982): the composer column's
+ * last child — `w_full`, `h 24` (SESSION_FOOTER_HEIGHT), `px(10)`
+ * (workspace_footer_row), and a −8px bottom margin that cancels the
+ * column's gap so the slot adds no spacing of its own. Its 24px height is
+ * what the usage indicator and the change-request badge need inside equal
+ * 8px gutters; workspace identity leads, occupancy trails.
  */
 .composer-footer {
   flex: none;
   width: 100%;
-  max-width: 768px;
-  margin: 0 auto;
-  min-height: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   gap: var(--rb-space-xs);
-  padding: 0 10px var(--rb-space-sm);
+  padding: 0 10px;
+  margin-bottom: calc(-1 * var(--rb-space-sm));
 }
 
 .footer-spring {
@@ -5293,6 +5445,31 @@ button.files-row-active:hover {
 
 .context-usage-arc {
   stroke: currentColor;
+}
+
+/*
+ * The 260px `Context window` card (context_usage.rs:110-137): a
+ * `popover_card` (w 260, p 12, flex column, gap 8) with the 12px MEDIUM
+ * title in `text` and the 12px/19 body in `text_muted`. It opens on a
+ * 500ms hover through `PickerCard`'s hover-open shape and live-updates
+ * while open (the usage flows through the footer's props).
+ */
+.context-usage-card {
+  padding: 12px;
+  gap: 8px;
+}
+
+.context-usage-card-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.context-usage-card-body {
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--rb-text-muted);
+  white-space: pre-line;
 }
 
 /*
