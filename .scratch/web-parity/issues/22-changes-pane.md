@@ -20,7 +20,7 @@ commit-pinned tab, ship the `DiffScope::Commit` header/scope-menu variant
 inert (selectable value, not yet reachable from a real "open commit"
 action) and note it in Comments.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/07-changes.md` §1, §2, §3.1–§3.17,
 §4, §5 (all rows), §6, §7. Cross-reference `../../web-client/research/00-index.md`
@@ -839,4 +839,229 @@ ticket doesn't touch.)
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed** (branch `wp2/22-changes-pane`, worktree `roboco-wt/22-changes`):
+
+- `lib/diff.ts`: `FileDiff.notices` now carries parser-collected notices only,
+  with `fileNotices()` the derived display list (status → binary → parser,
+  changes.rs:562) — the only place file status is expressed. `DiffScope` gains
+  the `"commit"` value (`DIFF_SCOPE_LABELS.Commit`, `scopeMode` → `"commit"`,
+  scope label "N Changed files in this commit", clean "No changes in this
+  commit"); `DIFF_SCOPE_CHIPS = [workingTree, branch, turn]` is what the
+  toolbar exposes (commit is minted only by a commit-diff tab, ticket 27).
+  New pure ports: `visualColumns` (tab stops, wide CJK = 2, combining = 0),
+  `horizontalGeometry`, `unifiedContentWidth`/`splitContentWidth` (the
+  gutter-compensation extents), `truncateFileLines`, `bodyRows`/
+  `bodyRowCount`/`bodyHeight(With)` (analytic, no measurement),
+  `upsertDiffFrame` (apply_diff_frame's single-frame arm), and the desktop
+  row model — `flattenFiles` emits `fileHeader`/`notice`/`hunkHeader`/
+  `line`|`splitLine`/`bodyPad`/`foldingBody` per file, a collapsed file
+  contributing only its header. The row/height constants (38/28/24/21/8,
+  MARKER 28, SPLIT_MARKER 18, ACCENT 3, FOLD_TWEEN_MAX_PX 2400,
+  FOLD_TWEEN_WINDOW 400ms) are exported from here.
+- `state/changes-surface.ts` (new): the per-(chat, diff tab) state — scope,
+  base, layout, wrap, the fold map, a `scrollEpoch`. Ticket 07's host renders
+  a surface's toolbar and body as separate element trees and every diff tab
+  keeps its own scope for its life, so this state cannot live in either
+  component's React tree; it lives here, read through
+  `useSyncExternalStore`. Fold toggles arm the desktop's tween (analytic
+  from/to, 400ms settle sweep, chevron-anim window); wrap-on and
+  reduced-motion write steady state directly. `layout`/`wrap` persist
+  immediately through ticket 03's store (`diffSplit`/`diffWrap`); scope/base
+  switch and layout/wrap toggles bump `scrollEpoch`. The body mirrors the
+  chat's branch + branch list into the store so the toolbar's base picker
+  needs no fetch of its own. `closeSurface` drops a closed tab's state.
+- `components/diff-view.tsx`: rows rewritten to the desktop contract.
+  FileHeaderRow: 14×14 chevron box with 13px ALT_ARROW glyphs and the 200ms
+  CHEVRON opacity crossfade (armed only while the fold animates), a
+  placeholder `document` file glyph (ticket 24's `FileIcon` swaps the one
+  seam), mono-12 text_dim truncating path, `BIN` at 10 faint, `+N`/`−N` as
+  two spans in diff_add/diff_del (condition `adds > 0 || !binary`), ink(0.025)
+  rest / ink(0.05) hover. HunkHeaderRow 28px on `--rb-diff-hunk`, mono 11
+  faint, 16px pad. NoticeRow 24px/11px/16px pad. Unified rows: 3px accent bar
+  at 0.55, both number columns at the analytic `gutterWidth` (36px floor) —
+  the inline-width fix — own-side number tinted 0.9, other/context
+  text_faint @0.8, 28px marker column with per-kind colors and the `"·"`
+  context glyph, 5.5% row tints, meta rows italic 10.5 indented past the
+  columns. Split rows: per-half accent/gutter/18px-marker/6px-code-pad
+  structure, 1px hairline(0.06) divider, flat ink(0.03) filler, meta
+  spanning both halves. The code plane is the only horizontally scrollable
+  part of a row: `FilePlaneScroll` holds one offset per file, syncs every
+  mounted viewport of that file, and resets on `scrollEpoch`; the content's
+  intrinsic width is `columns×1ch + paddings + gutter compensation`. The fold
+  tween renders `FoldingBodyRow` — one clipped, height-animated stand-in
+  (180ms COLLAPSE/easeOut) whose content is `FileBodyUpto`, bounded to 2400px
+  — and a ResizeObserver keeps the virtualizer's positions tracking the
+  animation. `useParsedDiff` is the shared parse memo. The comment-adder hook:
+  `onLineHover(path, side, lineNo)` + a `renderAdder` slot positioned at the
+  anchor, plus the `.diff-line-can-add` bare hover state (ink 0.02) on
+  anchorable rows — no button (ticket 23's).
+- `routes/changes-page.tsx`: `ChangesSurface` takes the surface id (the
+  registry mounts it per diff tab); `ChangesToolbar` is the registry's
+  toolbar row — scope chips, the `{branch} →` base picker (native select,
+  mono 11.5 label, 12px arrow), the spring, then 24×24 icon toggles
+  (splitColumns/wrapText/foldVertical) on the CONTROL contract (latched
+  wash(0.14) flat with no hover blend, unlatched 0→0.14 over HOVER_FADE,
+  14px icons, wrap carrying the 350ms "Wrap long lines" tooltip via
+  `ui/Tooltip`). `ChangesBody`: the watch-error banner (11px warning,
+  py4/px12, auto-retries — no button), the scoped-error content replacement
+  with the two friendly remaps (faint) vs raw warning @0.85, the header strip
+  (38px, gap 10, 16px pad, hairline 0.06: scope label, mono +N/−N,
+  "Partial snapshot" chip), the CR card (documented web-only, kept), and the
+  preparing state (MatrixSpinner + "Preparing diff…", gap 8). Phase follows
+  `diffPhase(activeDiff)` where active = watch-resolved or scoped capture.
+- `state/changes-store.ts`: `scopedError` is a separate channel (scoped
+  failures no longer clobber the watch banner); `setScope` wires the dead
+  `commitSha` param into the fetch key + `commitSha` wire param (a
+  commit-pinned pane without its pin never fetches); a context change
+  (scope/base/commit) clears the stale capture so the pane shows the
+  spinner while a checksum-only refresh keeps the old diff visible — and the
+  watch checksum now rides the scoped key, so a working-tree change (or a
+  commit) re-captures (ensure_scoped, changes.rs:1983-1984). The watch
+  retries itself: a failed/ended stream sets "Diff watch unavailable: …" /
+  "Diff stream interrupted — retrying" and re-subscribes after a flat 2s,
+  last content staying visible; `resubscribe()` remains for session swaps.
+- `state/change-requests-store.ts`: `watchParams(target, localDeviceId)`
+  omits `targetDeviceId` when the target is the local device (exported
+  pure; the store learns the local id via options/`setLocalDevice` and
+  re-arms its watches when it changes — snapshotting the map first: deleting
+  and re-adding the same key mid-iteration is an infinite loop). The
+  Changes pane and the sidebar's `useChatChangeRequests` both pass the
+  paired engine's device id.
+- `components/change-request-badge.tsx`: now 1:1 with `pull_request_badge`
+  (change_requests.rs:117-169) — the badge shows only the PR glyph (composer,
+  11px) and the mono `#N`; the state word never appears in the badge, only
+  in the tooltip ("PR #N · State", 11px medium, tone-colored; title 11px
+  muted, truncated). Sizes: composer h20/gap5/px7/radius6/11px; sidebar
+  h16/0/4/4/10. Tones: open success, merged `code_text` → `--rb-accent`,
+  closed danger; bg 8% → 16% on hover, text 0.85 → full. Tooltip: 320 max,
+  9/7 pad, gap 3, radius 6, border-strong, raised under the forced-opaque
+  resolution (frosted branch gated on `data-surface`), popover shadow, 350ms
+  show delay. The two real call sites (chat-list sidebar row,
+  composer-footer) were already wired and render the new shape unchanged.
+- `components/surface-registry.tsx` + `state/right-pane.ts`: the diff entry's
+  toolbar is `ChangesToolbar` (the host's 38px row, controls from the shared
+  store) and `render` passes the surface id; `closeSurface` disposes the
+  closed tab's surface state (one line).
+- `state/hooks.ts`: `useEngineStatus`/`useWatchSnapshot` pass a server
+  snapshot to `useSyncExternalStore` (additive, client behavior unchanged) —
+  required to server-render the surface trees in the render smoke.
+- `styles/app.css`: the `.changes-*`, `.diff-*`, `.cr-*` blocks reworked to
+  the ticket's numbers (all values token-driven: 5.5% tints via color-mix on
+  `--rb-diff-add`/`--rb-diff-delete`, accent 0.55, gutter/marker widths,
+  28px unified / 18px split markers, 0.92 base code text, sticky header flat
+  composite under opaque + blur 16 gated on `html[data-surface="frosted"]`,
+  banner/toolbar geometry, badge/tooltip values, 350ms tooltip delay); the
+  fold tween (180ms collapse/easeOut), chevron keyframes (200ms), hidden
+  code-plane scrollbars, phone rules (gutters/markers collapse, code wraps,
+  toolbar/banner wrap), and reduced-motion snapping for every new tween.
+
+**Deviations / judgment calls:**
+
+- Scope chips and the native `<select>` base picker stay (the ticket's
+  documented decisions, §2.2/§2.4); the `{branch} →` prefix makes the
+  relationship visible.
+- `CreateChangeRequestButton`/`changeRequestCreateUrl`: ticket 04 already
+  deleted both as INVENTED (the ticket's "do not remove" predates that
+  deletion); not re-added, `.changes-cr-card` kept as the documented
+  page-level addition.
+- Sticky header: CSS `position: sticky` (the ticket's sanctioned
+  substitute). Because the header is permanently sticky in the web model,
+  the sticky presentation's bottom border renders at all times and the
+  row-form's top hairline (0.04, non-first file) is not drawn — the
+  virtualizer's slice remounts make `:nth-file` selectors unreliable.
+  Opaque-mode rest/hover are the flat composites (ink 0.025 / ink 0.05 over
+  `--rb-bg`), the row-form values.
+- Frosted branches exist behind `html[data-surface="frosted"]`; the web
+  resolves opaque (product decision), so the flat composite is the live
+  path — the day the policy flips, blur 16 (header) / glass overlay
+  (tooltip) engage.
+- The file-type glyph is a generic `document` placeholder in one seam
+  (`FileGlyph`) until ticket 24's `FileIcon` lands its per-extension
+  manifest, per §1.
+- `ChangesStore`'s branch-scope auto-pick takes the engine's first branch
+  (the repo default `ListBranches` puts first) rather than running
+  `defaultBaseRef`'s full fallback chain — the pure function is ported and
+  tested; wiring the fallback needs the chat's branch inside the store's
+  target, left for ticket 23/27's store touches. Only matters for repos
+  with no origin/HEAD, where the engine's first entry IS the current
+  branch.
+- `estimateRowHeight` stays analytic-exact per kind (the ticket blessed the
+  existing estimate); it errs high only for wrapped rows.
+- The routed Changes page has been gone since ticket 04 — the pane is the
+  only host, so the "identical via routed page or pane" acceptance holds by
+  construction; `ChangesSurface` is the single body.
+- Files touched beyond the ticket's table (each a one-line additive, with
+  reason): `surface-registry.tsx` (the toolbar seam the ticket's §2.2
+  deferred to "ticket 22's controls"), `state/right-pane.ts` (dispose the
+  closed tab's surface state), `state/hooks.ts` (SSR snapshot arg),
+  `chat-list.tsx` (pass the local device id to the CR watches).
+
+**Verification:** `pnpm -r build` green; `pnpm --filter @roboco/app test`
+686/686 across 47 files — `tests/diff.test.ts` rewritten to the ported
+desktop names (parsesFilesHunksAndLines, detectsNewDeletedBinaryAndRenamed,
+emptyAndGarbagePatchesParseToNothing, quotedAndSpacedPaths,
+hunkHeadersParseWithAndWithoutCounts, rowsFlattenToLineGranularity,
+splitPairsAlignEditsAndStrandTheRest, noNewlineMarkersKeepTheirEditPaired,
+splitFlatteningPairsRowsAndKeepsHeightsAnalytic,
+cappedPairingAgreesWithTheFullPairingAndStaysBounded,
+truncateCapsLinesAndAppendsNotice, guttersFitTheLargestLineNumber,
+horizontalGeometryCountsTabsAndUnicodeColumns,
+horizontalContentWidthCompensatesForLocalGutters,
+horizontalScrollAndWidthAreIndependentPerFile,
+horizontalScrollResetReturnsToOrigin, bodyHeightIsAnalytic,
+diffResolutionPrefersCheckoutIdThenCwd, phases, headerLabelPluralizes,
+scopeLabelsAndCleanMessages, baseRefDefaultsToRepoDefaultThenMain,
+scopeModesAreWireStable, diffFramesReplaceListsAndUpsertSingles) plus a
+`tests/changes-surface.test.ts` render smoke (the fixture cannot mint a
+Diffs tab, so the two trees are server-rendered to exercise the mount path)
+and `watchParams` tests in the change-requests suite.
+
+Browser (web_smoke, per the runbook): the fixture's tempdir has no git
+checkout — the git-gated Diffs row is unreachable as shipped (ticket 07's
+documented limitation). Worked around for verification only, with no
+fixture/code changes: the tempdir was turned into a real git repo (added +
+deleted + rename-detected working changes) and the chat's branch stamped
+through the engine's own `Mutate` RPC (`setChatBranch`) from the page, which
+makes the picker's git gate pass. With a live Changes tab: boot check clean
+(no error boundary); computed-style audit — add-row bg exactly
+diff_add @0.055, accent 3px @0.55, gutter columns 36px (the fixed inline
+width), marker 28px in full add color, code text @0.92, code plane
+`overflow-x: auto` with the row chrome fixed, file header 38px/sticky/flat
+composite with `backdrop-filter: none` under `data-surface="opaque"`, hunk
+28px on the diff-hunk wash, notice 24px, bodyPad 8px, toolbar 38px/gap 4,
+tool buttons 24×24/radius 6/text_muted @0.7, banner 38px/gap 10/px 16,
+chevron 14×14 @0.7, file glyph present. Behavior: fold toggle arms the
+folding stand-in (`.diff-folding` + `.diff-chevron-anim`, 0.18s transition)
+and settles to steady rows; fold-all collapses all then expands all;
+per-file horizontal scroll — a long line scrolls its file's plane
+(scrollWidth 1391 vs client 129), the same file's other rows follow, other
+files stay 0, and a wrap toggle resets every offset to 0; `diffSplit`/
+`diffWrap` persist to `localStorage`; split layout pairs rows with fillers
+and the right-half hover registers the bare state (ink 0.02 wash); phone
+width (390px) stacks the shell, collapses the gutters, wraps the code, and
+wraps the toolbar to 66px.
+
+**Screenshots** (web halves, `.scratch/web-parity/shots/22/`):
+`web-a-changes-unified-one-collapsed.png` (working tree; added new_module.rs,
+deleted notes.md, renamed src_main.rs → src/bin/main.rs; unified; notes.md
+collapsed), `web-b-changes-split-line-hovered.png` (split; a right-half line
+hovered — the bare adder-hook state), `web-c-branch-scope-base-picker.png`
+(branch scope; the `{branch} → base` picker row), `web-boot-check.png`.
+
+**Documented skips:**
+
+- **Desktop halves of all pairs**: no desktop client is running and driving
+  it unattended is not possible (ticket 07's precedent — `shot.ps1` steals
+  foreground focus).
+- **(d) open-PR badge in sidebar + composer footer**: the fixture repo has
+  no remote, so the engine resolves no change request and neither call site
+  renders a badge to capture. The badge's values, tones, and both call sites
+  are code-verified (`chat-list.tsx` renders `size="sidebar"`,
+  `composer-footer.tsx` the composer preset); unit tests cover the tone
+  table and `watchParams`.
+- **(c) "base picker open"**: a native `<select>`'s dropdown is OS-rendered
+  and not capturable via CDP; captured closed with the branch → base
+  relationship and both options present.
+- The live-row workaround above is a verification harness only — nothing in
+  the fixture or the app changed to make it possible beyond what any
+  engine-authorized client can do over the wire.

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
+import { changesSurfaceStore } from "./changes-surface";
 import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
 /**
@@ -362,11 +363,14 @@ export class RightPaneStore {
       return { ...current, tabs, active: nextActive };
     });
     // Per-kind teardown: drop the backing entity so a stale id never
-    // resolves again (`diffs.remove`, `subagent_tabs.remove`, …).
+    // resolves again (`diffs.remove`, `subagent_tabs.remove`, …). A diff
+    // tab also drops its per-surface Changes state (scope/folds), which
+    // outlives the tab's component tree by design.
     if (surface.kind === "file") {
       this.#dropFileEntity(surface.id);
     } else if (surface.kind === "diff") {
       this.#diffMeta.delete(surface.id);
+      changesSurfaceStore.dispose(chatId, surface.id);
     } else if (surface.kind === "subagent") {
       this.#subagentMeta.delete(surface.id);
     }

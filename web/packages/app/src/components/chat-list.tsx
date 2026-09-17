@@ -152,7 +152,7 @@ export function ChatList() {
       : filter === null
         ? chats.rows
         : chats.rows.filter((chat) => chat.spaceId !== undefined && chat.spaceId === filter);
-  const changeRequests = useChatChangeRequests(session?.client ?? null, visible);
+  const changeRequests = useChatChangeRequests(session?.client ?? null, visible, localDeviceId);
 
   // The device-group collapse keys — in-memory only, exactly like the
   // desktop's `sidebar_collapsed_groups` (a reload re-expands every group).
