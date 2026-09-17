@@ -3,56 +3,113 @@ import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
 import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
 /**
- * The right pane's open/active state — the desktop's per-chat right-pane
- * flags (`shell.rs`: `right_pane_open`, `right_pane_expanded`,
- * `resolved_right_active`).
+ * The right pane's surface model and per-chat panel flags — the desktop's
+ * `RightSurface` / `SessionPanels` (`shell.rs:457-532`, `:1901-1922`).
  *
- * The pane is chat-scoped chrome: each chat remembers whether its pane was
- * open, which surface was active, and whether it had taken over the window,
- * so returning to a chat restores what you left. Settings never renders it.
+ * Tabs are **created on demand** from the surface picker or the `+` menu; the
+ * list starts empty and `resolvedActive` falls back to the picker when it
+ * empties. N file tabs, N diff tabs, subagent tabs, one Files, one Terminal
+ * — surfaces compare by value, so each tab carries a stable minted id.
  *
- * Width is the one exception, and it follows the desktop: `rightPaneWidth` is
- * a single GLOBAL preference in `ui-settings.ts`, not a per-chat value. A chat
- * opening its pane for the first time inherits the width last dragged
- * anywhere, and a drag writes that width back for every chat that has not
- * diverged within the session. Open/expanded/active/tabs stay in memory —
- * the desktop's persisted `right_pane_open` is legacy and unread.
+ * Open/expanded/active/tabs are **per chat, in memory, all-defaults-closed**
+ * (`ChatPanels` is never persisted on the desktop either). The *width* is the
+ * one piece that persists — globally, through ticket 03's settings store
+ * (`settings.right_pane_width`), not per chat.
+ *
+ * `Browser(u64)` is deliberately absent: a web client cannot host arbitrary
+ * cross-origin pages in a pane (research §6), and the desktop's preview list
+ * is the empty-tab body of that surface — there is no Preview surface.
  */
 
-/** The surfaces the web client can host. The desktop's `RightSurface` also
- *  carries File, Subagent, and Browser tabs, which have no web peer yet.
- *
- *  There is no Preview surface: on the desktop the discovered dev-server list
- *  is the EMPTY-TAB BODY of an embedded native Browser tab
- *  (`browser/view.rs::preview_body`), framed by that tab's own chrome. The web
- *  has no embedded browser tab, so there is nothing to host it in. */
-export type RightSurface = "changes" | "files" | "terminal";
+/** `shell.rs::RightSurface` minus the desktop-only `Browser(u64)` variant. */
+export type RightSurface =
+  | { kind: "picker" }
+  | { kind: "files" }
+  | { kind: "file"; id: string }
+  | { kind: "diff"; id: string }
+  | { kind: "terminal"; id: string }
+  | { kind: "subagent"; id: string };
 
-export const RIGHT_SURFACES: readonly RightSurface[] = ["changes", "files", "terminal"];
+/** Surfaces compare by value (kind + id); the key makes that one string. */
+export function surfaceKey(surface: RightSurface): string {
+  return "id" in surface ? `${surface.kind}:${surface.id}` : surface.kind;
+}
 
-/** Tab labels, matching the desktop's surface titles. */
-export const SURFACE_TITLES: Record<RightSurface, string> = {
-  changes: "Changes",
-  files: "Files",
-  terminal: "Terminal",
-};
+/** Value equality — the tab list's `retain`/`contains` predicate. */
+export function surfaceEqual(a: RightSurface, b: RightSurface): boolean {
+  return surfaceKey(a) === surfaceKey(b);
+}
 
 /**
- * Tab glyphs — `shell.rs`'s `icon_path` table: a diff is the list glyph,
- * Files the folder-with-files, Terminal its own mark.
+ * `shell.rs::push_unique_right_surface`: append unless already present.
+ * Returns false (and pushes nothing) when the surface already has a tab.
+ * Mutating, like the Rust — callers pass their own working list.
  */
-export const SURFACE_ICONS: Record<RightSurface, "list" | "folderWithFiles" | "terminal"> = {
-  changes: "list",
-  files: "folderWithFiles",
-  terminal: "terminal",
-};
+export function pushUniqueRightSurface(
+  tabs: RightSurface[],
+  surface: RightSurface,
+): boolean {
+  if (tabs.some((tab) => surfaceEqual(tab, surface))) {
+    return false;
+  }
+  tabs.push(surface);
+  return true;
+}
+
+/**
+ * `shell.rs::workspace_file_title`: the tab title is the path's basename.
+ * Both separators, because workspace paths may arrive POSIX- or Win32-shaped.
+ */
+export function workspaceFileTitle(path: string): string {
+  const base = path.split(/[/\\]/).pop() ?? path;
+  return base.length > 0 ? base : path;
+}
+
+/**
+ * `shell.rs::panel_key`: per-chat flags key. The new-chat canvas keys per
+ * space (`space-canvas:{space}`) so a canvas toggle can never read as global
+ * state across unrelated spaces.
+ */
+export function panelKey(chatId: string | null, space: string): string {
+  return chatId === null ? `space-canvas:${space}` : chatId;
+}
+
+/** What the tab strip and pane need to know about a live surface. */
+export interface SurfaceFacts {
+  readonly title: string;
+  /** The tooltip / accessible detail — a file's full workspace path. */
+  readonly detail: string | null;
+  /** `Changes::is_history()` — switches the diff chip's icon to git-branch. */
+  readonly isHistory: boolean;
+  readonly isDirty: boolean;
+}
+
+/**
+ * `shell.rs::right_surface_rows`: walk the stored order, describing each tab
+ * from its backing entity; entries whose entity is gone are skipped. `null`
+ * from `describe` is the "gone" signal.
+ */
+export function rightSurfaceRows(
+  tabs: readonly RightSurface[],
+  describe: (surface: RightSurface) => SurfaceFacts | null,
+): { surface: RightSurface; facts: SurfaceFacts }[] {
+  const rows: { surface: RightSurface; facts: SurfaceFacts }[] = [];
+  for (const surface of tabs) {
+    const facts = describe(surface);
+    if (facts !== null) {
+      rows.push({ surface, facts });
+    }
+  }
+  return rows;
+}
 
 export interface ChatPaneState {
   readonly open: boolean;
   /** Takeover: the pane's width derives from the viewport, not the drag. */
   readonly expanded: boolean;
+  /** The stored pick — may be stale; read through `resolvedActive`. */
   readonly active: RightSurface;
-  /** Tab order, reorderable by drag like the desktop's strip. */
+  /** Tab order, drag-reorderable. Starts EMPTY (`shell.rs::493-532`). */
   readonly tabs: readonly RightSurface[];
   readonly width: number;
 }
@@ -67,17 +124,48 @@ function initial(): ChatPaneState {
   return {
     open: false,
     expanded: false,
-    active: "changes",
-    tabs: RIGHT_SURFACES,
+    active: { kind: "picker" },
+    tabs: [],
     // The persisted global width — what was last dragged, healed to its floor.
     width: uiSettings.getSnapshot().rightPaneWidth,
   };
 }
 
-class RightPaneStore {
+/**
+ * `shell.rs::resolved_right_active`: the stored pick if it still exists in
+ * the live tab list, else the first remaining tab, else `Picker`. Terminal
+ * keys go stale when their tab closes — never render a dead surface.
+ */
+export function resolvedActive(pane: ChatPaneState): RightSurface {
+  if (pane.tabs.some((tab) => surfaceEqual(tab, pane.active))) {
+    return pane.active;
+  }
+  return pane.tabs[0] ?? { kind: "picker" };
+}
+
+/** A diff's flavour — plain / History / a pinned commit (`changes.rs`). */
+export type DiffFlavor = "diff" | "history" | "commit";
+
+export class RightPaneStore {
   #byChat = new Map<string, ChatPaneState>();
   #version = 0;
   readonly #listeners = new Set<() => void>();
+
+  // Backing entities, keyed by surface id — the desktop's `file_surfaces`,
+  // `diffs` and `subagent_tabs` maps. Ids are monotonic and never reused, so
+  // a tab's title is stable for its whole life.
+  #fileSeq = 0;
+  #diffSeq = 0;
+  #terminalSeq = 0;
+  #subagentSeq = 0;
+  /** `file_surfaces` — id → workspace path plus the panel that opened it. */
+  readonly #files = new Map<string, { path: string; panel: string }>();
+  /** `file_surface_keys` — `${panel}\u{0}${path}` → id (one tab per path). */
+  readonly #fileKeys = new Map<string, string>();
+  /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
+  readonly #diffMeta = new Map<string, { flavor: DiffFlavor; label: string | null }>();
+  /** `subagent_tabs` — id → { docId, title }. One tab per doc. */
+  readonly #subagentMeta = new Map<string, { docId: string; title: string }>();
 
   getVersion = (): number => this.#version;
 
@@ -100,34 +188,273 @@ class RightPaneStore {
     }
   }
 
-  /** The titlebar's one trailing control (`toggle-changes`). */
+  /**
+   * The titlebar's one trailing control (`toggle-changes`). Closing always
+   * leaves takeover mode (`toggle_right_pane`, `shell.rs:1970-1975`) —
+   * reopening after a takeover close lands in normal mode.
+   */
   toggle(chatId: string): void {
-    this.#update(chatId, (current) => ({ ...current, open: !current.open }));
+    this.#update(chatId, (current) =>
+      current.open
+        ? { ...current, open: false, expanded: false }
+        : { ...current, open: true },
+    );
   }
 
   /**
-   * Open the pane on a given surface — what a shortcut or a link into a
-   * surface does. Re-picking the active surface while open closes the pane,
-   * matching the desktop's toggle semantics for its panel shortcuts.
+   * Open on a given surface — what a shortcut or a link into a surface does.
+   * Re-picking the active surface while open closes the pane, matching the
+   * desktop's toggle semantics for its panel shortcuts.
    */
   show(chatId: string, surface: RightSurface): void {
     this.#update(chatId, (current) =>
-      current.open && current.active === surface
-        ? { ...current, open: false }
+      current.open && surfaceEqual(current.active, surface)
+        ? { ...current, open: false, expanded: false }
         : { ...current, open: true, active: surface },
     );
   }
 
+  /**
+   * A shortcut's way in (`Mod+J`): the first tab of this kind, minting one
+   * if none exists, then `show` — so the chord toggles the surface it opened.
+   * The minting runs through the add paths so the tab list and the stored
+   * pick move together (a bare `#mint` would open the pane onto a surface
+   * `resolvedActive` cannot see).
+   */
+  revealSurface(chatId: string, kind: "files" | "terminal" | "diff"): void {
+    const existing = this.stateFor(chatId).tabs.find((tab) => tab.kind === kind);
+    if (existing !== undefined) {
+      this.show(chatId, existing);
+      return;
+    }
+    if (kind === "files") {
+      this.addFilesSurface(chatId);
+    } else if (kind === "terminal") {
+      this.addTerminalSurface(chatId);
+    } else {
+      this.addDiffSurface(chatId, "diff");
+    }
+  }
+
+  /** `set_right_active` — sets the stored pick and opens the pane. */
   setActive(chatId: string, surface: RightSurface): void {
     this.#update(chatId, (current) => ({ ...current, open: true, active: surface }));
   }
 
+  /** `toggle_right_pane_expand` — session-local view state, never persisted. */
   toggleExpanded(chatId: string): void {
     this.#update(chatId, (current) => ({ ...current, expanded: !current.expanded }));
   }
 
   close(chatId: string): void {
     this.#update(chatId, (current) => ({ ...current, open: false, expanded: false }));
+  }
+
+  #mint(kind: "files" | "terminal" | "diff", flavor: DiffFlavor | null): RightSurface {
+    if (kind === "files") {
+      return { kind: "files" };
+    }
+    if (kind === "terminal") {
+      this.#terminalSeq += 1;
+      return { kind: "terminal", id: `t${this.#terminalSeq}` };
+    }
+    this.#diffSeq += 1;
+    this.#diffMeta.set(`d${this.#diffSeq}`, { flavor: flavor ?? "diff", label: null });
+    return { kind: "diff", id: `d${this.#diffSeq}` };
+  }
+
+  /** `add_files_surface` — single instance: both picker and `+` focus it. */
+  addFilesSurface(chatId: string): void {
+    const current = this.stateFor(chatId);
+    if (!current.tabs.some((tab) => tab.kind === "files")) {
+      this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "files" }] }));
+    }
+    this.setActive(chatId, { kind: "files" });
+  }
+
+  /**
+   * `add_file_surface`: one tab per `(panel, path)`. An already-open path
+   * activates the existing tab; a fresh open mints a monotonic id so the
+   * basename title is stable for the tab's whole life.
+   */
+  addFileSurface(chatId: string, path: string, panelFor: string = chatId): void {
+    const key = `${panelFor}\u{0}${path}`;
+    const existingId = this.#fileKeys.get(key);
+    if (existingId !== undefined) {
+      this.setActive(chatId, { kind: "file", id: existingId });
+      return;
+    }
+    this.#fileSeq += 1;
+    const id = `f${this.#fileSeq}`;
+    this.#files.set(id, { path, panel: panelFor });
+    this.#fileKeys.set(key, id);
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "file", id }] }));
+    this.setActive(chatId, { kind: "file", id });
+  }
+
+  /**
+   * `add_diff_surface` / `add_history_surface` / `add_commit_diff_surface`:
+   * every click opens a FRESH diff tab with its own scope selection (no
+   * dedupe — N clicks make N tabs).
+   */
+  addDiffSurface(chatId: string, flavor: DiffFlavor, label: string | null = null): void {
+    const surface = this.#mint("diff", flavor);
+    if (surface.kind === "diff" && label !== null) {
+      const meta = this.#diffMeta.get(surface.id);
+      if (meta !== undefined) {
+        this.#diffMeta.set(surface.id, { ...meta, label });
+      }
+    }
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
+    this.setActive(chatId, surface);
+  }
+
+  /**
+   * The picker's Terminal card / `+` row. The desktop mints a fresh embedded
+   * terminal tab per click; the web's dock carries its own tab bar, so the
+   * pane keeps ONE Terminal tab addressing the shared panel (ticket 26 gives
+   * the dock `select_tab_by_key` and restores per-tab surfaces).
+   */
+  addTerminalSurface(chatId: string): void {
+    const existing = this.stateFor(chatId).tabs.find((tab) => tab.kind === "terminal");
+    if (existing !== undefined) {
+      this.setActive(chatId, existing);
+      return;
+    }
+    const surface = this.#mint("terminal", null);
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
+    this.setActive(chatId, surface);
+  }
+
+  /**
+   * `add_subagent_surface`: one tab per doc. Added programmatically from a
+   * transcript spawn chip, never from the picker.
+   */
+  addSubagentSurface(chatId: string, docId: string, title: string): void {
+    for (const [id, meta] of this.#subagentMeta) {
+      if (meta.docId === docId) {
+        this.setActive(chatId, { kind: "subagent", id });
+        return;
+      }
+    }
+    this.#subagentSeq += 1;
+    const id = `s${this.#subagentSeq}`;
+    this.#subagentMeta.set(id, { docId, title });
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "subagent", id }] }));
+    this.setActive(chatId, { kind: "subagent", id });
+  }
+
+  /**
+   * `close_right_surface`: the ✕ — removes THAT tab, not the pane. After a
+   * close, `resolvedActive` falls to the first remaining tab, or stays on
+   * the picker when the list empties. Files/File take the unsaved-changes
+   * path on the desktop; that guard is ticket 24/25's to build.
+   */
+  closeSurface(chatId: string, surface: RightSurface): void {
+    if (surface.kind === "picker") {
+      return;
+    }
+    this.#update(chatId, (current) => {
+      const tabs = current.tabs.filter((tab) => !surfaceEqual(tab, surface));
+      const nextActive: RightSurface = surfaceEqual(current.active, surface)
+        ? { kind: "picker" }
+        : current.active;
+      return { ...current, tabs, active: nextActive };
+    });
+    // Per-kind teardown: drop the backing entity so a stale id never
+    // resolves again (`diffs.remove`, `subagent_tabs.remove`, …).
+    if (surface.kind === "file") {
+      this.#dropFileEntity(surface.id);
+    } else if (surface.kind === "diff") {
+      this.#diffMeta.delete(surface.id);
+    } else if (surface.kind === "subagent") {
+      this.#subagentMeta.delete(surface.id);
+    }
+    // Terminal keeps its entity — the dock owns the PTY lifecycle.
+  }
+
+  #dropFileEntity(id: string): void {
+    const entry = this.#files.get(id);
+    this.#files.delete(id);
+    if (entry !== undefined) {
+      this.#fileKeys.delete(`${entry.panel}\u{0}${entry.path}`);
+    }
+  }
+
+  /**
+   * `rename_file_surface`: the tab keeps its id and its position; only its
+   * title changes. An existing entry for the new path wins (`or_insert`).
+   */
+  renameFileSurface(id: string, oldPath: string, newPath: string): void {
+    const entry = this.#files.get(id);
+    if (entry === undefined || entry.path !== oldPath) {
+      return;
+    }
+    this.#files.set(id, { ...entry, path: newPath });
+    this.#fileKeys.delete(`${entry.panel}\u{0}${oldPath}`);
+    const key = `${entry.panel}\u{0}${newPath}`;
+    if (!this.#fileKeys.has(key)) {
+      this.#fileKeys.set(key, id);
+    }
+    this.#version += 1;
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+
+  /**
+   * The live backing row for a surface, or `null` when the entity is gone —
+   * `right_surface_rows`' skip signal. Titles are contextual (gap R18):
+   * a file's basename, a diff's scope label or pinned commit subject, a
+   * subagent's name.
+   */
+  describe(surface: RightSurface): SurfaceFacts | null {
+    switch (surface.kind) {
+      case "picker":
+        return { title: "Picker", detail: null, isHistory: false, isDirty: false };
+      case "files":
+        return { title: "Files", detail: null, isHistory: false, isDirty: false };
+      case "file": {
+        const entry = this.#files.get(surface.id);
+        if (entry === undefined) {
+          return null;
+        }
+        return {
+          title: workspaceFileTitle(entry.path),
+          detail: entry.path,
+          isHistory: false,
+          // The dirty-flag source is ticket 24/25's file editors.
+          isDirty: false,
+        };
+      }
+      case "diff": {
+        const meta = this.#diffMeta.get(surface.id);
+        if (meta === undefined) {
+          return null;
+        }
+        return {
+          title: meta.label ?? (meta.flavor === "history" ? "History" : "Diffs"),
+          detail: null,
+          isHistory: meta.flavor === "history",
+          isDirty: false,
+        };
+      }
+      case "terminal":
+        // The terminal tab's own title is ticket 26's dock concern.
+        return { title: "Terminal", detail: null, isHistory: false, isDirty: false };
+      case "subagent": {
+        const meta = this.#subagentMeta.get(surface.id);
+        if (meta === undefined) {
+          return null;
+        }
+        return { title: meta.title, detail: null, isHistory: false, isDirty: false };
+      }
+    }
+  }
+
+  /** `right_surface_rows` over a chat's stored order. */
+  surfaceRows(chatId: string): { surface: RightSurface; facts: SurfaceFacts }[] {
+    return rightSurfaceRows(this.stateFor(chatId).tabs, (surface) => this.describe(surface));
   }
 
   /**

@@ -24,6 +24,8 @@ import {
 } from "../state/nav-history";
 import {
   PHONE_MAX_WIDTH,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
   TITLEBAR_CONTENT_START,
   conversationWidth,
   rightPaneMaxWidth,
@@ -39,7 +41,14 @@ import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
 import { uiSettings } from "../state/ui-settings";
-import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
+import {
+  RIGHT_PANE_MIN,
+  panelKey,
+  resolvePaneWidth,
+  rightPaneStore,
+  useRightPane,
+} from "../state/right-pane";
+import { useSidebar } from "../state/sidebar";
 import { SidebarBody } from "./sidebar-body";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
@@ -140,8 +149,14 @@ export function AppShell() {
     },
     [router],
   );
-  // The pane's own per-chat state. `""` is inert — no chat, no pane.
-  const pane = useRightPane(paneChatId ?? "");
+  // The pane's own per-chat state, keyed the desktop's way (`panel_key`):
+  // the chat id on a chat route, `space-canvas:{space}` on the blank canvas
+  // so a canvas toggle can never read as global state across unrelated
+  // spaces. The pane never mounts without a chat, so the canvas key only
+  // isolates the stored flags.
+  const sidebarState = useSidebar();
+  const canvasSpace = sidebarState.spaceFilter ?? sidebarState.lastSpaceId ?? "";
+  const pane = useRightPane(panelKey(paneChatId, canvasSpace));
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
   // Keeping the two apart is what lets the column animate between them: the
   // content keeps the open width while the column itself glides to zero.
@@ -427,6 +442,10 @@ export function AppShell() {
           onWidth={(width) => sidebarLayout.setWidth(width)}
           onReset={() => sidebarLayout.reset()}
           className="pane-seam-sidebar"
+          // `on_sidebar_drag`: clamp into [SIDEBAR_MIN, SIDEBAR_MAX] and
+          // bounce once per held pointer at either bound.
+          bounds={{ min: SIDEBAR_MIN, max: SIDEBAR_MAX }}
+          bounceVar="--rb-sidebar-edge-offset"
         />
       )}
       <div
@@ -510,9 +529,12 @@ export function AppShell() {
       {/*
         The pane's seam, parked on its left edge. Like the sidebar's it lives
         out here: the pane clips, and the target has to straddle both columns.
-        Takeover derives its width from the viewport, so it carries no handle.
+        Takeover derives its width from the viewport, so it carries no handle,
+        and neither does a glide in flight (`shell.rs:7943-7947` — no
+        `tween_active`; the desktop's `panel_handoff` guard has no web
+        equivalent, there is no handoff to another panel owner).
       */}
-      {hasPane && pane.open && !pane.expanded && (
+      {hasPane && pane.open && !pane.expanded && !glide.gliding && (
         <PaneSeam
           label="Resize panel"
           // Right-anchored: the pointer's x IS the seam, so the width is the
@@ -527,6 +549,11 @@ export function AppShell() {
           }
           onReset={() => rightPaneStore.resetWidth(paneChatId)}
           className="pane-seam-right"
+          // The shared clamp: [RIGHT_PANE_MIN, rightPaneMaxWidth]. When the
+          // max falls below the min the seam pins to max — the chat floor
+          // wins and the pane yields.
+          bounds={{ min: RIGHT_PANE_MIN, max: rightPaneMaxWidth(viewport, sidebarWidth) }}
+          bounceVar="--rb-pane-edge-offset"
         />
       )}
       <EngineDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />

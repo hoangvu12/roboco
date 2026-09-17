@@ -559,7 +559,8 @@ a:focus-visible,
   padding-right: var(--rb-space-sm);
   border-radius: var(--rb-radius-control);
   color: var(--rb-text-muted);
-  font-size: 12px;
+  /* `ui_rems(11.5)` — a raw 11.5, not a 12 (`shell.rs:6965-6976`). */
+  font-size: 11.5px;
   cursor: pointer;
   user-select: none;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
@@ -574,6 +575,12 @@ a:focus-visible,
 .right-tab-active {
   background: rgb(var(--rb-wash) / 0.1);
   color: var(--rb-text);
+}
+
+/* The dragged chip's slot: an invisible spacer — the ghost carries it. */
+.right-tab-dragged {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /*
@@ -609,6 +616,21 @@ a:focus-visible,
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
+  /* The close layer sits above the icon layer, always: the icon's inactive
+     opacity (0.7) makes it a stacking context, which paints above this
+     in-flow button without this. */
+  z-index: 1;
+}
+
+/* Inactive icon colour: text_muted@70% (file-type icons 0.78 instead,
+   `shell.rs:6887-6963`). Kept ABOVE the hover swap so the icon still
+   vanishes when the chip is hovered. */
+.right-tab:not(.right-tab-active) .right-tab-icon {
+  opacity: 0.7;
+}
+
+.right-tab:not(.right-tab-active) .right-tab-icon-file {
+  opacity: 0.78;
 }
 
 .right-tab:hover .right-tab-icon {
@@ -631,10 +653,308 @@ a:focus-visible,
   white-space: nowrap;
 }
 
+/* The dirty dot (`shell.rs:6977-6985`): 6px, text_muted, flex-none. */
+.right-tab-dirty {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rb-text-muted);
+}
+
+/*
+ * The drag ghost (`SurfaceTabGhost`, `shell.rs:749-771`): 112×24, the raised
+ * surface, a strong border, 0.85 opacity, following the pointer (viewport
+ * coords, hence fixed). Portaled to the body so the strip's scroll clip and
+ * fade mask cannot reach it.
+ */
+.right-tab-ghost {
+  position: fixed;
+  z-index: 90;
+  width: 112px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--rb-space-sm);
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border-strong);
+  background: var(--rb-raised);
+  color: var(--rb-text);
+  font-size: 11.5px;
+  opacity: 0.85;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.28);
+}
+
+.right-tab-ghost-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * `SurfaceTabTooltip` (`shell.rs:773-792`): max-width 380, padding 6/9,
+ * radius 6, a hairline border on the overlay surface, 10.5px raw, muted
+ * text. Portaled to the body at the chip's viewport coords.
+ */
+.right-tab-tooltip {
+  position: fixed;
+  z-index: 90;
+  max-width: 380px;
+  padding: 6px 9px;
+  border-radius: var(--rb-radius-control);
+  border: 1px solid var(--rb-border);
+  background: var(--rb-overlay);
+  color: var(--rb-text-muted);
+  font-size: 10.5px;
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Edge fades (gap R15): 36px at whichever side hides chips, on the 1px
+ * dead-zone. A `mask-image` (glass-safe, unlike a painted overlay) with the
+ * QUADRATIC ramp the gpui shader uses — alpha = (d / band)², so the stops
+ * are 1/16, 1/4, 9/16 at 9/18/27px (`edge_fade.rs`, §3.29).
+ */
+.right-tab-strip[data-fade-left][data-fade-right] {
+  mask-image: linear-gradient(to right,
+    rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.0625) 9px, rgba(0, 0, 0, 0.25) 18px,
+    rgba(0, 0, 0, 0.5625) 27px, rgba(0, 0, 0, 1) 36px,
+    rgba(0, 0, 0, 1) calc(100% - 36px), rgba(0, 0, 0, 0.5625) calc(100% - 27px),
+    rgba(0, 0, 0, 0.25) calc(100% - 18px), rgba(0, 0, 0, 0.0625) calc(100% - 9px),
+    rgba(0, 0, 0, 0) 100%);
+}
+
+.right-tab-strip[data-fade-left]:not([data-fade-right]) {
+  mask-image: linear-gradient(to right,
+    rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.0625) 9px, rgba(0, 0, 0, 0.25) 18px,
+    rgba(0, 0, 0, 0.5625) 27px, rgba(0, 0, 0, 1) 36px);
+}
+
+.right-tab-strip:not([data-fade-left])[data-fade-right] {
+  mask-image: linear-gradient(to left,
+    rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.0625) 9px, rgba(0, 0, 0, 0.25) 18px,
+    rgba(0, 0, 0, 0.5625) 27px, rgba(0, 0, 0, 1) 36px);
+}
+
+/* ── The `+` button and its menu (gaps R12, §3.21) ──────────────────── */
+
+/*
+ * Anchors the menu below the button; the host rides the strip's scroll
+ * content, beside the chips.
+ */
+.right-surface-add-host {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.right-surface-add {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  /* `hover_blend(wash(0.0) → wash(0.11))`. */
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.right-surface-add:hover {
+  background: rgb(var(--rb-wash) / 0.11);
+}
+
+/*
+ * The `+` menu (`shell.rs:7054-7144`): `popover_card` at a 168px width, 10px
+ * below the button, rows at a 2px rhythm. Radius 12 is `popover::CARD_RADIUS`
+ * (`popover.rs:306`) — no `--rb-*` token carries it. Portaled to the body at
+ * the button's viewport coords (the band clips); ticket 09 owns the popover
+ * lifecycle — this uses the shared anchored-menu pattern (see
+ * `.space-filter-menu`) as the placeholder host.
+ */
+.right-plus-menu {
+  position: fixed;
+  z-index: 60;
+  width: 168px;
+  padding: var(--rb-space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* `popover::CARD_RADIUS` — 12, a popover-only constant. */
+  border-radius: 12px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.10 * var(--rb-hairline-scale)));
+  background: var(--rb-overlay);
+  color: var(--rb-text);
+  font-size: 13px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+html[data-surface="frosted"] .right-plus-menu {
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  backdrop-filter: blur(44px);
+  -webkit-backdrop-filter: blur(44px);
+}
+
+/* `popover::menu_row`: gap 10, padding 8/6, radius 8. */
+.right-plus-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px var(--rb-space-sm);
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.right-plus-menu-row > svg {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.right-plus-menu-row:hover {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+}
+
+.right-plus-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The surface picker (gap R11, §3.22) ────────────────────────────── */
+
+/*
+ * The pane's empty state: a centred column, 280px max, of 44px rows.
+ */
+.surface-picker {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--rb-space-lg);
+}
+
+.surface-picker-list {
+  width: 100%;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-sm);
+}
+
+.surface-picker-row {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-panel);
+  background: rgb(var(--rb-ink) / 0.02);
+  color: var(--rb-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.surface-picker-row > svg {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.surface-picker-row:hover {
+  background: rgb(var(--rb-ink) / 0.05);
+  border-color: var(--rb-border-strong);
+}
+
+/* ── `surface_chrome` (§3.27) — the Diff toolbar row and the field ──── */
+
+/*
+ * `surface_chrome::toolbar`: a 38px border-box row (the two 1px borders are
+ * inside it), 8px edge inset, 4px control gap. The controls — scope dropdown,
+ * ref selector, fold-all — are ticket 22's; the row is the host's.
+ */
+.surface-toolbar {
+  flex: none;
+  height: var(--rb-titlebar-height);
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  padding: 0 var(--rb-space-sm);
+  border-top: 1px solid var(--rb-border);
+  border-bottom: 1px solid var(--rb-border);
+  background: var(--rb-card);
+}
+
+html[data-surface="frosted"] .surface-toolbar {
+  background: color-mix(in srgb, var(--rb-card) 26%, transparent);
+}
+
+/* `surface_chrome::input`: the shared field treatment tickets 22/24/26 fill. */
+.surface-input {
+  height: 24px;
+  min-width: 0;
+  flex: 1 1 0%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--rb-space-sm);
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.035);
+  color: var(--rb-text);
+  font-size: 11.5px;
+}
+
+/* A Diff surface's body sits below its toolbar and fills the rest. */
+.right-pane-surface {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* A stub body: centred, muted, saying nothing until its ticket lands. */
+.right-surface-stub {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  color: var(--rb-text-faint);
+  user-select: none;
+}
+
 /* ── Right pane ─────────────────────────────────────────────────────── */
 
 /* Surfaces fill the pane instead of laying themselves out as routed pages. */
 .right-pane-body > .changes-page,
+.right-pane-surface > .changes-page,
 .right-pane-body > .files-page,
 .right-pane-body > .term-dock {
   flex: 1;
@@ -705,6 +1025,12 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--rb-border);
+  /* Opaque by default; frosted thins to 40% bg (`theme.is_glass()` branch,
+     gap P16). */
+  background: var(--rb-bg);
+}
+
+html[data-surface="frosted"] .right-pane-inner {
   background: color-mix(in srgb, var(--rb-bg) 40%, transparent);
 }
 
@@ -782,6 +1108,14 @@ a:focus-visible,
 }
 
 /*
+ * Gap P8: while dragging at a clamped edge the line is forced to opacity 0 —
+ * the seam goes dark to say "you've hit the limit" (`shell.rs:5726-5735`).
+ */
+.pane-seam-constrained .pane-seam-line {
+  opacity: 0;
+}
+
+/*
  * Toggles glide; drags do not. While a seam is held the columns track the
  * pointer exactly, which is what the desktop's `right_tween = None` buys.
  * The titlebar's row inset rides the same clock, so it joins the freeze.
@@ -810,7 +1144,8 @@ a:focus-visible,
 .sidebar {
   position: relative;
   flex: none;
-  width: var(--rb-sidebar-now);
+  /* The edge bounce's 5px pulse rides this var during a drag (`motion.rs`). */
+  width: calc(var(--rb-sidebar-now) + var(--rb-sidebar-edge-offset, 0px));
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -5860,6 +6195,22 @@ html[data-surface="frosted"] .modal-card {
   .changes-scope-chip,
   .changes-tool {
     transition: none;
+  }
+
+  /* Every tween below returns the target instantly (`motion::reduced_motion`).
+     The edge bounce's JS half already yields 0 under reduce. */
+  .right-pane,
+  .pane-seam-sidebar,
+  .pane-seam-right,
+  .titlebar-pane-band,
+  .right-tab,
+  .right-surface-add,
+  .surface-picker-row {
+    transition: none;
+  }
+
+  .right-plus-menu {
+    animation: none;
   }
 }
 
