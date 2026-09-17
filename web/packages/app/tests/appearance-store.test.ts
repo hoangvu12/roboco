@@ -8,10 +8,47 @@ import {
   resolveAppearance,
   resolveSurfaceTreatment,
   resolveVariantId,
+  SURFACE_PREFERENCES,
+  supportsBackdropFilter,
   surfaceHelper,
   variantChoices,
 } from "../src/lib/appearance-store";
 import type { StorageLike } from "../src/lib/engine-store";
+
+type CssGlobal = { supports(property: string, value: string): boolean };
+
+/**
+ * Run `body` with a stubbed `CSS.supports`. The test environment is `node`,
+ * which has no CSS API at all, so every case that depends on the browser's
+ * `backdrop-filter` capability states it explicitly. `supports` of `null`
+ * removes the global entirely (the SSR/worker case).
+ */
+function withCssSupports(
+  supports: ((property: string, value: string) => boolean) | null,
+  body: () => void,
+): void {
+  const host = globalThis as { CSS?: CssGlobal };
+  const previous = host.CSS;
+  if (supports === null) {
+    delete host.CSS;
+  } else {
+    host.CSS = { supports };
+  }
+  try {
+    body();
+  } finally {
+    if (previous === undefined) {
+      delete host.CSS;
+    } else {
+      host.CSS = previous;
+    }
+  }
+}
+
+/** `withCssSupports` for the common "everything is / nothing is" cases. */
+function withBackdropFilter(supported: boolean, body: () => void): void {
+  withCssSupports(() => supported, body);
+}
 
 function memoryStorage(): StorageLike & { dump(): Map<string, string> } {
   const map = new Map<string, string>();
@@ -141,10 +178,46 @@ describe("appearance resolution", () => {
     const opaque = findVariant("nord"); // recommended: opaque
     expect(frosted).toBeDefined();
     expect(opaque).toBeDefined();
-    expect(resolveSurfaceTreatment("themeDefault", frosted!)).toBe("frosted");
-    expect(resolveSurfaceTreatment("themeDefault", opaque!)).toBe("opaque");
-    expect(resolveSurfaceTreatment("frosted", opaque!)).toBe("frosted");
-    expect(resolveSurfaceTreatment("opaque", frosted!)).toBe("opaque");
+    withBackdropFilter(true, () => {
+      expect(resolveSurfaceTreatment("themeDefault", frosted!)).toBe("frosted");
+      expect(resolveSurfaceTreatment("themeDefault", opaque!)).toBe("opaque");
+      expect(resolveSurfaceTreatment("frosted", opaque!)).toBe("frosted");
+      expect(resolveSurfaceTreatment("opaque", frosted!)).toBe("opaque");
+    });
+  });
+
+  /*
+   * The browser analog of the desktop's platform branch (Linux gets opaque
+   * chrome because compositor blur is not guaranteed): without
+   * `backdrop-filter` there is no frost to be had, only a see-through shell.
+   */
+  it("forces opaque surfaces when the browser cannot composite backdrop-filter", () => {
+    const frosted = findVariant("roboco-dark")!;
+    const opaque = findVariant("nord")!;
+    withBackdropFilter(false, () => {
+      expect(supportsBackdropFilter()).toBe(false);
+      for (const surface of SURFACE_PREFERENCES) {
+        expect(resolveSurfaceTreatment(surface, frosted)).toBe("opaque");
+        expect(resolveSurfaceTreatment(surface, opaque)).toBe("opaque");
+      }
+    });
+  });
+
+  it("honors the -webkit- prefixed capability alone", () => {
+    const frosted = findVariant("roboco-dark")!;
+    withCssSupports(
+      (property) => property === "-webkit-backdrop-filter",
+      () => {
+        expect(supportsBackdropFilter()).toBe(true);
+        expect(resolveSurfaceTreatment("themeDefault", frosted)).toBe("frosted");
+      },
+    );
+  });
+
+  it("treats a CSS-less environment as unsupported", () => {
+    withCssSupports(null, () => {
+      expect(supportsBackdropFilter()).toBe(false);
+    });
   });
 });
 

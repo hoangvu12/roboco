@@ -17,6 +17,8 @@ export interface ThemeColors {
   background: HexColor;
   shell: HexColor;
   raised: HexColor;
+  /** Hover tone for an OPAQUE raised pill — never the translucent `hover`. */
+  raisedHover: HexColor;
   card: HexColor;
   dialog: HexColor;
   overlay: HexColor;
@@ -27,9 +29,13 @@ export interface ThemeColors {
   text: HexColor;
   textMuted: HexColor;
   textFaint: HexColor;
+  /** One notch below `textMuted`: the diff/file-path tone. */
+  textDim: HexColor;
   solid: HexColor;
   onSolid: HexColor;
   danger: HexColor;
+  /** The destructive-action button plate; carries `onAccent`, not `danger`. */
+  dangerStrong: HexColor;
   dangerMuted: HexColor;
   warning: HexColor;
   warningMuted: HexColor;
@@ -144,6 +150,18 @@ export interface GlassTokens {
   overlayAlphaLight: number;
   inputAlphaLight: number;
   cardAlpha: number;
+  /**
+   * Selected row/chip/tab wash over `--rb-wash` (`glass_selected_bg()`).
+   * Light runs at half — 11% black read too dark over the bright frost.
+   */
+  selectedWashAlphaDark: number;
+  selectedWashAlphaLight: number;
+  /** Recessed picker header/footer strip over literal black (`band()`). */
+  bandAlphaDark: number;
+  bandAlphaLight: number;
+  /** Modal/drawer backdrop over literal black (`scrim()`). */
+  scrimAlphaDark: number;
+  scrimAlphaLight: number;
 }
 
 export interface LayoutTokens {

@@ -39,9 +39,25 @@ export function applyAppearanceToDocument(
     root.style.setProperty(name, value);
   }
   root.style.setProperty("--rb-glass-card-alpha", String(layout.glass.cardAlpha));
+  const dark = variant.appearance === "dark";
   root.style.setProperty(
     "--rb-glass-overlay-alpha",
-    String(variant.appearance === "dark" ? layout.glass.overlayAlphaDark : layout.glass.overlayAlphaLight),
+    String(dark ? layout.glass.overlayAlphaDark : layout.glass.overlayAlphaLight),
+  );
+  // The three derived alphas that scale a neutral rather than naming a color
+  // (crates/ui/src/theme.rs: glass_selected_bg/card_selected_bg, band, scrim).
+  // Selection scales `--rb-wash`; band and scrim always sit on literal black.
+  root.style.setProperty(
+    "--rb-selected-wash-alpha",
+    String(dark ? layout.glass.selectedWashAlphaDark : layout.glass.selectedWashAlphaLight),
+  );
+  root.style.setProperty(
+    "--rb-band-alpha",
+    String(dark ? layout.glass.bandAlphaDark : layout.glass.bandAlphaLight),
+  );
+  root.style.setProperty(
+    "--rb-scrim-alpha",
+    String(dark ? layout.glass.scrimAlphaDark : layout.glass.scrimAlphaLight),
   );
   for (const [name, value] of Object.entries(inkCssVars(variant.appearance))) {
     root.style.setProperty(name, value);

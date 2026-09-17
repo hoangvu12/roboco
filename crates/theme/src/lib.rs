@@ -105,6 +105,29 @@ impl Color {
         Self { r, g, b, a }
     }
 
+    /// A flat 8-bit grey — the desktop's `grey()` (`crates/ui/src/theme.rs`),
+    /// used for tones sampled by hand rather than solved in oklch.
+    pub const fn grey(value: u8) -> Self {
+        Self::rgb(value, value, value)
+    }
+
+    /// An achromatic neutral at an oklch lightness — the desktop's `neutral()`
+    /// (`crates/ui/src/theme.rs`). Tailwind's neutral ladder is authored this
+    /// way, so `neutral(0.145)` is `#0a0a0a` in both clients.
+    pub fn neutral(lightness: f32) -> Self {
+        Self::oklch(lightness, 0.0, 0.0)
+    }
+
+    /// An oklch color in CSS notation (L 0..1, C, H in degrees), resolved to
+    /// sRGB through the CSS Color 4 matrices — the same pipeline as the
+    /// desktop's `oklch()`/`oklch_to_srgb()` (`crates/ui/src/theme.rs`), so a
+    /// role authored in oklch lands on identical bytes in both clients.
+    pub fn oklch(l: f32, c: f32, h_deg: f32) -> Self {
+        let [r, g, b] = oklch_to_srgb(l, c, h_deg);
+        let channel = |value: f32| (value * 255.0).round() as u8;
+        Self::rgb(channel(r), channel(g), channel(b))
+    }
+
     pub fn with_alpha(self, alpha: f32) -> Self {
         Self {
             a: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -182,6 +205,39 @@ impl Color {
             }
         };
         0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
+    }
+}
+
+/// oklch → sRGB (each 0..1, clamped/gamut-clipped per channel). A byte-for-byte
+/// port of `crates/ui/src/theme.rs::oklch_to_srgb` (Björn Ottosson's OKLab
+/// definition, the matrices CSS Color 4 uses); duplicated rather than shared
+/// because `crates/theme` is the leaf crate the desktop's UI depends on, not
+/// the other way round.
+fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
+    let h = h_deg.to_radians();
+    let a = c * h.cos();
+    let b = c * h.sin();
+
+    // OKLab → LMS (cube roots undone)
+    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
+    let (l3, m3, s3) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
+
+    // LMS → linear sRGB
+    let r = 4.076_741_7 * l3 - 3.307_711_6 * m3 + 0.230_969_93 * s3;
+    let g = -1.268_438 * l3 + 2.609_757_4 * m3 - 0.341_319_4 * s3;
+    let b = -0.004_196_086_3 * l3 - 0.703_418_6 * m3 + 1.707_614_7 * s3;
+
+    [gamma_encode(r), gamma_encode(g), gamma_encode(b)]
+}
+
+fn gamma_encode(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -441,6 +497,10 @@ pub struct ThemeColors {
     pub background: Color,
     pub shell: Color,
     pub raised: Color,
+    /// Hover tone for an OPAQUE raised pill (`theme.surface_raised_hover`).
+    /// It brightens in dark and darkens in light — it must never swap to the
+    /// translucent wash `hover` carries, which would punch a hole in the pill.
+    pub raised_hover: Color,
     pub card: Color,
     pub dialog: Color,
     pub overlay: Color,
@@ -451,9 +511,17 @@ pub struct ThemeColors {
     pub text: Color,
     pub text_muted: Color,
     pub text_faint: Color,
+    /// One notch below `text_muted` (`theme.text_dim`): the diff/file-path
+    /// tone. Kept distinct because the dark value is hand-sampled — folding it
+    /// into `text_muted` shifts every file label.
+    pub text_dim: Color,
     pub solid: Color,
     pub on_solid: Color,
     pub danger: Color,
+    /// The destructive-action button plate (`theme.danger_strong`) — a
+    /// saturated red that carries `on_accent` text, not the `danger` label
+    /// color. Themes that do not author one fall back to their own `danger`.
+    pub danger_strong: Color,
     pub danger_muted: Color,
     pub warning: Color,
     pub warning_muted: Color,
@@ -763,6 +831,18 @@ mod tests {
             let json = serde_json::to_string(&color).unwrap();
             assert_eq!(serde_json::from_str::<Color>(&json).unwrap(), color);
         }
+    }
+
+    #[test]
+    fn oklch_matches_the_desktop_conversion() {
+        // Same reference values as `crates/ui/src/theme.rs`'s
+        // `oklch_accents_match_reference` / `neutral_950_is_0a0a0a`, computed
+        // independently from the CSS Color 4 matrices.
+        assert_eq!(Color::oklch(0.673, 0.182, 276.935), Color::rgb(124, 134, 255));
+        assert_eq!(Color::oklch(0.704, 0.191, 22.216), Color::rgb(255, 100, 103));
+        assert_eq!(Color::oklch(0.828, 0.189, 84.429), Color::rgb(255, 185, 0));
+        assert_eq!(Color::neutral(0.145), Color::rgb(10, 10, 10));
+        assert_eq!(Color::grey(0x98), Color::rgb(152, 152, 152));
     }
 
     #[test]

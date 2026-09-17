@@ -809,6 +809,14 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
         &mut output.colors.diff_hunk
     );
 
+    // An imported palette authors none of the three hand-tuned Roboco roles, so
+    // they track the roles it *did* supply rather than keeping Roboco's tones —
+    // the same fallback the desktop's variant loader applies to a non-curated
+    // theme (`crates/ui/src/theme.rs:1282,1305,1311`).
+    output.colors.text_dim = output.colors.text_muted;
+    output.colors.raised_hover = output.colors.raised;
+    output.colors.danger_strong = output.colors.danger;
+
     let accent_keys = [
         "focusBorder",
         "textLink.foreground",

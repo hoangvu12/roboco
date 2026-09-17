@@ -13,7 +13,7 @@ of reading "too dark" (selection) or "barely-there white" (scrims).
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/15-foundations.md` §3 (all
 subsections, especially §3.1, §3.6, §3.20) and §5 (the full gap table).
@@ -341,4 +341,107 @@ Copied from `15-foundations.md` §5, filtered to what this ticket fixes:
 
 ## Comments
 
-(empty; appended during implementation)
+### 2026-09-17 — implemented (branch `wp1/02-tokens`)
+
+**Landed**
+
+- Rust (`crates/theme` only): `ThemeColors` gained `text_dim`, `raised_hover`,
+  `danger_strong`; `GlassTokens` gained the six alpha fields;
+  `ARTIFACT_SCHEMA_VERSION` 1 → 2. `crates/theme` had no oklch pipeline
+  (§2.1 says it did — builtins.rs authors every color from hex seed strings),
+  so `Color::oklch`/`Color::neutral`/`Color::grey` are a byte-for-byte port of
+  `crates/ui/src/theme.rs`'s `oklch_to_srgb`/`gamma_encode`, unit-tested
+  against the same reference values as the desktop's own test. No
+  hand-computed hex anywhere.
+- The three new alphas live as `pub const`s in `crates/theme/src/artifact.rs`
+  (not `crates/proto/src/layout.rs`, which this ticket's scope does not open),
+  each citing its `theme.rs` line. `SCRIM_ALPHA_LIGHT` is written as the
+  formula `0.32 * (SCRIM_ALPHA_DARK / 0.60)`, not the collapsed `0.32`.
+- Artifact regenerated and committed; `roboco-theme-export --check` reports
+  fresh and `cargo test -p roboco-theme` is green (25 unit + 6 integration),
+  so `theme-artifact.yml` passes. Adding fields changed every builtin
+  variant's `source.assetHash` — that is the intended provenance behavior
+  (the hash covers the resolved definition), which is why the artifact diff is
+  larger than the three new roles alone.
+- Web: `types.ts`/`COLOR_VARS` emit `--rb-text-dim`, `--rb-raised-hover`,
+  `--rb-danger-strong` on every variant; `theme.ts` sets
+  `--rb-selected-wash-alpha`, `--rb-band-alpha`, `--rb-scrim-alpha` per
+  appearance next to the existing overlay alpha.
+- `app.css`: all six `rgb(var(--rb-wash) / 0.11)` sites now read the variable
+  (no literal remains); `.user-bubble` uses `26 26 26`/`235 235 235`;
+  `.modal-backdrop`, `.drawer-backdrop` **and `.dialog-backdrop`** render
+  `rgb(0 0 0 / var(--rb-scrim-alpha))`.
+- `resolveSurfaceTreatment` forces `"opaque"` when
+  `supportsBackdropFilter()` is false, ahead of the preference switch. New
+  tests cover the forcing, the `-webkit-`-only case, and the CSS-less case;
+  the existing surface test now states the capability explicitly (the vitest
+  env is `node`, which has no `CSS` global). New
+  `web/packages/app/tests/theme-vars.test.ts` pins the six variable names and
+  their per-appearance values so the six dependent tickets cannot drift.
+
+**Judgment calls / deviations**
+
+1. **Who authors the three new roles.** `crates/theme`'s `variant()` builds all
+   30 builtins from one seed struct, so "both builtin dark/light variants"
+   (§6) was read as the Roboco pair — the desktop's hand-authored tones at
+   `theme.rs:1052/1067/1073` and `1144/1161/1169` *are* the Roboco theme. Only
+   the `roboco` family carries them; every other family (and the VS Code
+   importer) takes the fallback the desktop's own variant loader takes for a
+   theme that did not author them (`theme.rs:1282/1305/1311`): `text_dim =
+   text_muted`, `raised_hover = raised`, `danger_strong = danger`. Giving
+   Catppuccin a flat grey `text_dim` and a Roboco red `danger_strong` would
+   have been off-palette for 28 variants. Asserted both ways in
+   `crates/theme/tests/artifact.rs`.
+2. **`--rb-raised-hover` is darker than `--rb-raised` in dark mode — needs a
+   human.** §2.1 says the role must brighten in dark, but the authored
+   `neutral(0.29)` → `#2b2b2b` sits *below* the artifact's `roboco-dark`
+   `raised` seed `#343438`, so a consumer would see an opaque pill darken on
+   hover. Root cause is upstream of this ticket: the registry's roboco-dark
+   `raised` (`#343438`) diverges from `crates/ui`'s `surface_raised =
+   neutral(0.235)`, against which `neutral(0.29)` *is* brighter. On the live
+   desktop the role is inert anyway (`theme.rs:1305` overwrites it with
+   `colors.raised` for every variant). I shipped the ticket's literal number.
+   Whoever consumes `--rb-raised-hover` should decide: re-seed roboco-dark's
+   `raised` to `neutral(0.235)`, or derive the hover from the variant's own
+   `raised`. Light mode is correct (`#dedede` under `#ededf0`).
+3. **`.dialog-backdrop` included.** It is `.modal-backdrop` under another class
+   name (the rename/delete dialogs, `components/chat-menu.tsx`) and carried the
+   identical `color-mix(--rb-overlay 70%)` bug. Same rule as §2.3's "a seventh
+   site counts too".
+4. **Left alone on purpose:** `.sidebar-backdrop` (inside the ≤768px phone
+   block — spec decision 5) and `.user-attachments-lightbox` (a lightbox, not a
+   modal scrim; no desktop source verified — ticket 17 owns it). Both still
+   use `color-mix(... --rb-overlay ...)`.
+
+**Skipped**
+
+- Everything in §5 "Do not" (card/overlay glass alphas, contrast-raise math,
+  `input_glass_bg`/`composer_sidebar_tint`, no invented `--rb-band-alpha`
+  consumer).
+- **Desktop half of the screenshot pair.** `shot.ps1` uses
+  `CopyFromScreen`, so it needs the desktop window in the foreground; the
+  machine was running a fullscreen game at capture time and the first attempt
+  captured that instead. I closed the client I had launched, deleted the bad
+  frame, and did not retry rather than keep stealing focus. The existing dark
+  reference `.scratch/web-client/parity/desktop-01.png` shows the selected
+  sidebar row at the dark `wash(0.11)` weight; the light-mode desktop
+  reference still needs capturing by a human at the keyboard.
+
+**Screenshots** (`.scratch/web-parity/shots/02/`, web side, 1440×900):
+
+| File | State | Measured |
+| --- | --- | --- |
+| `web-01-light-selected-after.png` | light, selected chat row, after | row plate `#e7e7e7` |
+| `web-02-light-selected-before.png` | same, with the old `0.11` forced back | row plate `#dfdfdf` (visibly darker) |
+| `web-03-light-scrim-after.png` | light, rename dialog open, after | page behind `#adadad` |
+| `web-04-light-scrim-before.png` | same, with the old `color-mix(--rb-overlay 70%)` | page behind `#ffffff` (scrim invisible) |
+| `web-05-dark-selected.png` | dark, selected chat row | unchanged `wash(0.11)` |
+| `web-06-dark-scrim.png` | dark, rename dialog open | backdrop `rgb(0 0 0 / 0.6)` |
+
+**Verification:** `pnpm -r build` green; `pnpm test` in `@roboco/app` green
+(30 files, 423 tests); `cargo test -p roboco-theme` green; `roboco-theme-export
+--check` reports the artifact fresh. Live check in `web_smoke`: light resolves
+`selected 0.06 / band 0.045 / scrim 0.32 / text-dim #636363 / raised-hover
+#dedede / danger-strong #be1022`, dark resolves `0.11 / 0.16 / 0.6 / #989898 /
+#2b2b2b / #c74b47`, and `data-surface` came back `frosted` in Chrome, so the
+capability check does not regress a supporting browser.

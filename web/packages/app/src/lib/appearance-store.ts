@@ -78,10 +78,34 @@ export function resolveVariantId(preferences: AppearancePreferences, appearance:
 }
 
 /**
+ * Does this browser composite `backdrop-filter`?
+ *
+ * The browser analog of the desktop's platform check (`GLASS_ALPHA`,
+ * crates/proto/src/layout.rs:71): macOS and Windows guarantee compositor blur
+ * and get frosted chrome, Linux does not and stays opaque, because a merely
+ * translucent window would expose whatever is behind it unblurred. A browser
+ * without `backdrop-filter` is in exactly Linux's position.
+ */
+export function supportsBackdropFilter(): boolean {
+  return (
+    typeof CSS !== "undefined" &&
+    (CSS.supports("backdrop-filter", "blur(1px)") ||
+      CSS.supports("-webkit-backdrop-filter", "blur(1px)"))
+  );
+}
+
+/**
  * The surface treatment in effect: the explicit choice, or the theme
  * author's recommendation when "themeDefault" (SurfacePreference::resolve).
+ *
+ * Capability wins over both. Where the blur cannot be composited there is no
+ * frost to be had, only a see-through shell, so the treatment is forced opaque
+ * ahead of the preference — the desktop's Linux branch, one layer up.
  */
 export function resolveSurfaceTreatment(surface: SurfacePreference, variant: ThemeVariant): SurfaceTreatment {
+  if (!supportsBackdropFilter()) {
+    return "opaque";
+  }
   switch (surface) {
     case "frosted":
       return "frosted";

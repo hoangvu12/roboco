@@ -114,7 +114,7 @@ a:focus-visible,
 }
 
 .btn-active {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
   color: var(--rb-text);
 }
@@ -322,7 +322,7 @@ a:focus-visible,
 }
 
 .window-control-active {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   color: var(--rb-text);
 }
 
@@ -1282,7 +1282,7 @@ a:focus-visible,
  */
 .chat-row-active,
 .chat-row-active:hover {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   color: var(--rb-text);
 }
 
@@ -1877,7 +1877,7 @@ a:focus-visible,
 }
 
 .identity-tab-selected {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   color: var(--rb-text);
 }
 
@@ -2568,7 +2568,9 @@ a:focus-visible,
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--rb-overlay) 70%, transparent);
+  /* scrim(): literal black in both appearances — a scrim darkens what is
+     behind it; tinting toward the panel color washes light mode white. */
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -3442,8 +3444,11 @@ button.files-row-active:hover {
 }
 
 .user-bubble {
-  /* user_bubble_bg(): white 8% dark / black 4% light (colorScheme is set on root) */
-  background: light-dark(rgb(0 0 0 / 0.04), rgb(255 255 255 / 0.08));
+  /* user_bubble_bg(): the wash tone at 8% dark / 4% light — softened, never
+     pure white or black (colorScheme is set on root, so light-dark resolves).
+     The channels are --rb-wash's two values, kept literal because light-dark()
+     picks the branch, not the appearance-scoped custom property. */
+  background: light-dark(rgb(26 26 26 / 0.04), rgb(235 235 235 / 0.08));
   max-width: 80%;
   border-radius: var(--rb-radius-bubble);
   padding: 10px 16px;
@@ -4254,7 +4259,8 @@ button.files-row-active:hover {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: color-mix(in srgb, var(--rb-overlay) 70%, transparent);
+  /* scrim(): the same backdrop as .modal-backdrop under another class name. */
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5066,7 +5072,9 @@ button.files-row-active:hover {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
+  /* scrim(): the same literal-black backdrop as .drawer-backdrop — the desktop
+     has one scrim strength, appearance-branched by alpha only. */
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -5241,7 +5249,7 @@ html[data-surface="frosted"] .modal-card {
 }
 
 .changes-scope-chip-active {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   color: var(--rb-text);
   border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
 }
@@ -5318,7 +5326,7 @@ html[data-surface="frosted"] .modal-card {
 }
 
 .changes-tool-active {
-  background: rgb(var(--rb-wash) / 0.11);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
   color: var(--rb-text);
 }
