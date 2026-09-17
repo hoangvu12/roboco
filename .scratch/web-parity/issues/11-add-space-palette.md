@@ -14,7 +14,7 @@ surface at all. This ticket builds it from scratch.
 **Blocked by:** 09 (Popover primitive — this ticket reuses its
 open/closing/closed lifecycle, motion, and outside-press guard)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/16-sidebar-body-add-space.md`
 §3.7–§3.14, §4 (the `AddSpaceFlow::is_stale` rule and the `pickers.rs`
@@ -673,4 +673,125 @@ touching.
 
 ## Comments
 
-(empty; appended during implementation)
+**What landed** (web-only; no changes under `crates/` or `apps/`):
+
+- `web/packages/app/src/lib/add-space.ts` — the pure helpers, ported
+  verbatim: `parentPath`, `childPath`, `completionPrefixLen` (code-point
+  boundaries, per the ticket's INTENT note), `segmentTarget`,
+  `typedPathTarget`, `breadcrumbs`, `browserRows`, `pathUnder`,
+  `manualPathQuery` (Windows drive branch kept unconditional),
+  `filteredFolders`/`addSpaceCompletion` (reuse ticket 09's
+  `filterIndices`/`menuStep`, not reimplementations), `isStaleResponse`,
+  `activeLocation`, `crumbFold`.
+- `web/packages/app/src/state/add-space.ts` — `AddSpaceFlow` + the
+  `addSpaceStore` singleton (`open(startDeviceId?)`/`close()`/
+  `useAddSpace()`). The mount lifecycle rides ticket 09's
+  `PopupLifecycle` (open → closing → closed, 100ms exit, then unmount);
+  the flow object is immutable and swapped per mutation so the
+  external-store snapshot stays referentially honest. All ports:
+  open_add_space, the Edited decision tree (slash-descend → manual fork →
+  dotfile reload), pick_device, goto_location (incl. the
+  standing-on-root no-op), open_active, go_up, accept_completion,
+  add_space_key, submit_add_space, submit_browsed_space (optimistic
+  echo + rollback), prepare_manual_space, load_space_folders (all THREE
+  extra guards), load_space_drives (silent failure), land_in_space.
+- `web/packages/app/src/components/add-space-palette.tsx` — the card:
+  ModalGlass scrim (ticket 09's `modal-glass-backdrop` + `modal-card`
+  frost; the palette card itself carries no blur so the two layers don't
+  double-frost), 680px/14px palette card, 46px band input row with the
+  ⌘K/esc key chips + ghost-suffix completion preview, fixed 330px body
+  (crumbs + folder list + 196px rail), kbd-hint footer. Escape registers
+  on the shell's capture ladder at the reserved `addSpace` priority (40).
+- `sidebar-body.tsx` mounts `<AddSpacePalette />` as a sibling — renders
+  null while closed.
+- `engine-client/src/methods.ts` — `LIST_FOLDERS`/`LIST_DRIVES`/
+  `PREPARE_SPACE_PATH` added.
+- `proto/src/shims.ts` — `PrepareSpacePathReply` fixed from a bare
+  `string` to `{ path, exists, gitDetected }` (zero existing call sites).
+- `app.css` — the `.add-space-*` family + phone-width cap +
+  reduced-motion snap. Colors all through `--rb-*`/ink/wash/hairline
+  tokens; the band tone rides the existing `--rb-band-alpha` token.
+
+**Deviations / judgment calls:**
+
+- **Shared bug fix in `state/escape.ts`:** the capture ladder compared
+  `event.key !== "escape"` — the desktop's gpui spelling — so it never
+  consumed a real DOM `Escape` (which spells it `"Escape"`). The palette
+  acceptance ("Escape closes; does not fire twice") depends on the
+  ladder, so the comparison is now case-insensitive. Side effect worth a
+  human's eye: surfaces already registered on the ladder (the engine
+  drawer / phone sidebar at priority 12) now actually win Escape over
+  window-bubble listeners that belong to surfaces not yet migrated onto
+  the ladder (account menu, chat menu, subagent dialog, space-filter
+  dropdown) — the ladder's documented intent, but a live behavior change.
+  The app-shell's BUBBLE-phase interrupt listener has the same
+  case-sensitivity bug (`event.key !== "escape"` at app-shell.tsx:246);
+  left alone — ticket 12 (keyboard) owns that listener.
+- **`AddSpaceFlow` shape extensions:** the ticket's interface sketch
+  dropped `listing.path` and `browserRepo`; both are load-bearing in the
+  Rust (breadcrumbs + submit's git seed), so the ported store carries
+  `listing: … | { path, entries, truncated }` and `browserRepo: boolean`.
+- **Optimistic space rows** live on `addSpaceStore`'s snapshot
+  (`pendingSpaces`) since the watch cache has no public row-injection
+  API — the desktop pushes into `AppState.spaces`. Ticket 10's spaces
+  menu merges them by id; a failed createSpace rolls the row back here.
+  Rows survive a successful submit until the watch frame replaces them
+  (desktop semantics), and `open()` clears the set.
+- **`landInSpace`:** navigates to `/` (the blank canvas), follows an
+  explicit space filter, else writes `lastSpaceId` via `uiSettings` —
+  the desktop's `Route::Chat` + `select_chat(None)` + filter-follow
+  semantics. Route navigation is injected by the mounted component
+  (`attach({ session, goToCanvas })`), avoiding a store → router import
+  cycle.
+- **Windows path quirk (parity, warts included):** the ported helpers
+  split on `/` exactly like the Rust, so on a Windows engine the crumbs
+  fold the `C:\Users\…` prefix into the device crumb as one segment and
+  `parentPath` stops at the drive root (Backspace/← at home is a no-op).
+  The desktop has the same behavior with the same helpers; verified live
+  against the Windows smoke engine.
+- **Space id minting** uses `crypto.randomUUID()` (the web's
+  client-minted-id convention from `createChat`), not the desktop's
+  `ScopedId::encode` — the engine dedupes by `(deviceId, path)` either
+  way.
+- **Smoke entry point:** no UI reaches `addSpaceStore.open()` yet
+  (ticket 10's row, ticket 12's Mod+K — both deliberately not built
+  here). For the capture round only, a throwaway Mod+K harness was
+  patched into the bundle, used, and REVERTED before commit; the
+  committed code contains no binding.
+
+**Verification:**
+
+- `pnpm -r build` from `web/` — green (typecheck + vite builds).
+- `web/packages/app` vitest — 552/552 (includes the new
+  `tests/add-space.test.ts`: `folder_paths_and_breadcrumbs`,
+  `completion_prefix_lengths`, `segment_target_resolution`,
+  `typed_path_target_expands_absolute_and_home_paths`, plus
+  manual-path/pathUnder/filter+completion/is-stale/activeLocation/
+  crumbFold coverage). `@roboco/engine-client` vitest — 41/41.
+- Live web_smoke round (real engine, Windows): card geometry verified
+  via computed styles (680px/14px card, 0.35 scrim, 46px input row,
+  330px body, 196px rail, z-70); typing filters + prefix ranking; Tab
+  completes the ghost (`Docu` → `Documents`); Enter/→/row-click descend;
+  ← ascends; `.` reveals dotfiles (30 hidden rows after reload); Escape
+  closes from input focus, button focus, and the esc chip (no double
+  fire); scrim pointerdown dismisses; ⌘Enter creates the space, closes
+  the palette, lands on `/` with the row in the spaces list; resubmitting
+  the same `(device, path)` lands without a second row; Retry re-issues
+  a failed listing.
+
+**Screenshots** (web halves; desktop halves skipped — machine busy with
+sibling agents, precedent tickets 02/06–09): under
+`.scratch/web-parity/shots/11/`:
+
+- `web-a-palette-home.png` — (a) open on home, empty query
+- `web-b-manual-path.png` — (b) typed missing path, chip reads
+  "Create and add"
+- `web-c-repo-row.png` — (c) repo row highlighted, git-branch indicator
+- (d) NOT stageable in the smoke: the fixture engine registers exactly
+  one device, so a two-device rail with one offline cannot be produced
+  without engine-side seeding (out of scope for a web-only ticket). The
+  rail renders the single device + Home + `C:` with the correct
+  platform icon and an online presence dot.
+- `web-e-folder-error.png` — (e) folder-level error + Retry (browsed a
+  directory deleted out from under the listing; the engine's
+  "could not read that folder: …" shows as-is per the rule)

@@ -7560,3 +7560,438 @@ html[data-surface="frosted"] .modal-card {
   }
 }
 
+
+/* -- Add-space palette (ticket 11, spaces.rs:2526-3274) ---------------- */
+
+/*
+ * The ?K-style "New project" card: a 680px palette_card with its OWN 14px
+ * radius (deliberately not the generic 12px CARD_RADIUS), centered on the
+ * lighter 0.35 modal_glass scrim (ticket 09's `.modal-glass-backdrop`
+ * recipe). The `.modal-card` frost wrapper supplies the 44px blur and the
+ * `dialog_in` entrance, so the card itself carries only the glass tint —
+ * stacking two blurs would double-frost it. Exit: the whole layer fades
+ * over MENU_OUT (100ms, EASE) while dead to hit-testing, then unmounts
+ * (the PopupLifecycle reap).
+ */
+.add-space-backdrop[data-rb-popup="closing"] {
+  pointer-events: none;
+  animation: rb-add-space-exit var(--rb-motion-menu-out) var(--rb-ease-ease);
+}
+
+@keyframes rb-add-space-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* `palette_card` (popover.rs:820-836) at the add-space geometry: explicit
+   width, caller's radius, border 1px hairline(0.10), no padding. */
+.add-space-card {
+  box-sizing: border-box;
+  width: 680px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  color: var(--rb-text);
+}
+
+/* -- Input row (spaces.rs:2694-2734) ----------------------------------- */
+
+/*
+ * The recessed band header (and footer): translucent black over the glass,
+ * framed from the body by a 1px hairline.
+ */
+.add-space-input-row {
+  flex: none;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  border-radius: 14px 14px 0 0;
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  background: rgb(0 0 0 / var(--rb-band-alpha));
+}
+
+/* The local `key_chip` recipe (spaces.rs:2625-2639): h 22, px 6, radius 5,
+   gap 2, ink(0.05), 11px mono, text_muted@0.7. */
+.add-space-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.add-space-chip-text {
+  font-size: 0.6875rem;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.add-space-chip-icon {
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.add-space-chip-click {
+  cursor: pointer;
+}
+
+.add-space-chip-click:hover {
+  background: rgb(var(--rb-ink) / 0.09);
+}
+
+/* The search field: transparent input over a ghost layer that paints the
+   ? completion suffix (the faint remainder ahead of the caret). */
+.add-space-search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.add-space-search input {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.add-space-search input::placeholder {
+  color: var(--rb-text-faint);
+}
+
+.add-space-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 0.875rem;
+}
+
+.add-space-ghost-query {
+  color: transparent;
+}
+
+.add-space-ghost-suffix {
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* The ?Enter add chip: btn_primary's text-colored fill at the key-caps'
+   geometry (h 22, px 8, radius 5 — btn_primary's own 8px radius would read
+   as a different component next to them). */
+.add-space-submit {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 5px;
+  background: var(--rb-text);
+  color: var(--rb-on-solid);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.add-space-submit[data-rb-dim] {
+  opacity: 0.6;
+}
+
+.add-space-submit-icon {
+  color: color-mix(in srgb, var(--rb-on-solid) 80%, transparent);
+}
+
+/* -- Body (spaces.rs:3196-3210) ----------------------------------------- */
+
+/* FIXED height so sparse folders, skeletons, and device switches never
+   resize the card. */
+.add-space-body {
+  flex: none;
+  height: 330px;
+  display: flex;
+  align-items: stretch;
+}
+
+.add-space-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* -- Breadcrumbs (spaces.rs:2736-2882) ---------------------------------- */
+
+.add-space-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 10px 13px 2px;
+  font-size: 0.6875rem;
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+.add-space-crumbs-empty {
+  padding-top: 6px;
+}
+
+.add-space-crumb {
+  padding: 0 3px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  font: inherit;
+}
+
+.add-space-crumb-sep {
+  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
+}
+
+.add-space-crumb-pair {
+  display: inline-flex;
+  align-items: center;
+}
+
+.add-space-crumb-click {
+  cursor: pointer;
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
+  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.add-space-crumb-click:hover {
+  color: var(--rb-text);
+}
+
+/* The current folder is never clickable. */
+.add-space-crumb-current {
+  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
+}
+
+/* -- Folder list (spaces.rs:2884-3003) ---------------------------------- */
+
+.add-space-list-state {
+  padding: 6px 8px;
+}
+
+.add-space-list-error {
+  padding: 10px 14px;
+}
+
+.add-space-list-empty {
+  padding: 16px 14px;
+  font-size: 0.78125rem;
+  color: var(--rb-text-faint);
+}
+
+/* The 6px gutters live on a WRAPPER outside the scroll viewport — the
+   wheel's max offset eats in-content padding and keyboard scroll-pinning
+   ignores it. */
+.add-space-list-wrap {
+  flex: 1;
+  min-height: 0;
+  padding-block: 6px;
+}
+
+/* The app-wide list rhythm (sidebar rows, menu rows): px 8, gap 2. */
+.add-space-list {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The keyboard cursor's ring-only inset outline over the row wash. */
+.add-space-list .menu-row-highlighted {
+  box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
+}
+
+.add-space-folder-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+}
+
+.add-space-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Repos announce themselves — the row you're usually hunting for. */
+.add-space-repo-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/* -- The devices + locations rail (spaces.rs:3005-3191) ----------------- */
+
+.add-space-rail {
+  flex: none;
+  width: 196px;
+  border-left: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Locations can outgrow the fixed body on mount-happy machines. */
+  overflow-y: auto;
+}
+
+.add-space-rail-label {
+  padding: 0 8px 4px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.add-space-rail-label-first {
+  padding-top: 2px;
+}
+
+/* The tab recipe: h-28 rounded-8 washes, vertical. */
+.add-space-rail-row {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 0.78125rem;
+  text-align: left;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.add-space-rail-row:not(.add-space-rail-row-active):hover {
+  background: var(--rb-hover);
+}
+
+/* The floating-card selection language: wash + ring-only inset outline. */
+.add-space-rail-row-active {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
+  color: var(--rb-text);
+}
+
+.add-space-rail-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+}
+
+.add-space-rail-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Presence: the same signal the sidebar space rows use. */
+.add-space-presence {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(var(--rb-ink) / 0.22);
+}
+
+.add-space-presence-online {
+  background: color-mix(in srgb, var(--rb-success) 90%, transparent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--rb-success) 55%, transparent);
+}
+
+.add-space-rail-divider {
+  flex: none;
+  height: 1px;
+  margin: 6px 2px;
+  background: rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+}
+
+.add-space-rail-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 0.6875rem;
+  line-height: 15px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+.add-space-rail-info-icon {
+  flex: none;
+  margin-top: 1px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+.add-space-rail-info-text {
+  min-width: 0;
+}
+
+/* -- Footer (spaces.rs:3212-3243) --------------------------------------- */
+
+.add-space-footer {
+  flex: none;
+  border-radius: 0 0 14px 14px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  background: rgb(0 0 0 / var(--rb-band-alpha));
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.add-space-footer-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: var(--rb-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Entrance/exit snap to their endpoints (motion.rs:118). */
+  .add-space-frost {
+    animation: none;
+  }
+
+  .add-space-backdrop[data-rb-popup="closing"] {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Phones: the card fits the viewport instead of overflowing it. */
+  .add-space-card {
+    width: 100%;
+    max-width: 680px;
+  }
+}

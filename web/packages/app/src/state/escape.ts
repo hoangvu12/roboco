@@ -153,7 +153,9 @@ let installed = false;
  * The ONE capture-phase `document` keydown listener. Idempotent; the shell
  * calls it on mount. A consumed key stops propagating, which on the web also
  * silences every bubble-phase listener (window included) — the observable
- * contract of the desktop's `stop_propagation`.
+ * contract of the desktop's `stop_propagation`. The key name compares
+ * case-insensitively: the desktop's gpui events spell it `"escape"`, DOM
+ * `KeyboardEvent`s `"Escape"`.
  */
 export function installEscapeLadder(): void {
   if (installed || typeof document === "undefined") {
@@ -163,7 +165,7 @@ export function installEscapeLadder(): void {
   document.addEventListener(
     "keydown",
     (event) => {
-      if (event.key !== "escape" || !escapeStack.capture()) {
+      if (event.key.toLowerCase() !== "escape" || !escapeStack.capture()) {
         return;
       }
       event.stopPropagation();

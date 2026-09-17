@@ -34,6 +34,16 @@ export const POLL_AGENT_LOGIN = "PollAgentLogin";
 export const CANCEL_AGENT_LOGIN = "CancelAgentLogin";
 /** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
 export const MUTATE = "Mutate";
+/** The add-space palette's folder browse (`{query, path?, targetDeviceId?}`;
+ *  `path` omitted means "browse home"). Replies `FolderListing`. */
+export const LIST_FOLDERS = "ListFolders";
+/** The add-space palette's Locations rail: mounted drives/volumes of the
+ *  browsed device (`{targetDeviceId?}`). Replies `DriveListing`. */
+export const LIST_DRIVES = "ListDrives";
+/** Resolve/optionally create a typed project path ON THE OWNING DEVICE
+ *  (`{path, createIfMissing, targetDeviceId}` — targetDeviceId required).
+ *  Replies `PrepareSpacePathReply` (path, exists, gitDetected). */
+export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 /** Harness catalog for the pickers (one row per harness). */
 export const LIST_HARNESSES = "ListHarnesses";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
