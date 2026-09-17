@@ -9,6 +9,7 @@ import {
   conversationWidth,
   rightPaneMaxWidth,
   rightPaneTakeoverWidth,
+  sidebarLayout,
   sidebarTarget,
   titlebarPaneBandWidth,
   titlebarRowLeft,
@@ -19,6 +20,7 @@ import {
   resolvePaneWidth,
   type ChatPaneState,
 } from "../src/state/right-pane";
+import { uiSettings } from "../src/state/ui-settings";
 
 /**
  * The shell's column arithmetic, against the desktop's (`shell.rs:189`,
@@ -199,5 +201,34 @@ describe("resolvePaneWidth", () => {
 
   it("takes the window over when expanded", () => {
     expect(resolvePaneWidth(pane({ expanded: true }), 1440, 256)).toBe(1184);
+  });
+});
+
+describe("sidebarLayout", () => {
+  it("projects the persisted geometry out of the settings store", () => {
+    // The geometry lives in ui-settings.ts now; this store is the shell's view
+    // onto it, so a write through either side is visible from both.
+    uiSettings.update({ sidebarWidth: 300, sidebarCollapsed: false }, "immediate");
+    expect(sidebarLayout.getSnapshot()).toEqual({ width: 300, collapsed: false });
+
+    sidebarLayout.toggleCollapsed();
+    expect(uiSettings.getSnapshot().sidebarCollapsed).toBe(true);
+    // A collapse keeps the dragged width so reopening restores it.
+    expect(sidebarTarget(sidebarLayout.getSnapshot())).toBe(0);
+    expect(sidebarLayout.getSnapshot().width).toBe(300);
+
+    // A drag sample is clamped before it ever reaches memory, and it reopens
+    // the sidebar (`shell.rs`'s drag handler).
+    sidebarLayout.setWidth(9999);
+    expect(sidebarLayout.getSnapshot()).toEqual({ width: SIDEBAR_MAX, collapsed: false });
+
+    sidebarLayout.reset();
+    expect(sidebarLayout.getSnapshot()).toEqual({ width: SIDEBAR_DEFAULT, collapsed: false });
+  });
+
+  it("hands useSyncExternalStore a stable snapshot across unrelated changes", () => {
+    const before = sidebarLayout.getSnapshot();
+    uiSettings.update({ terminalHeight: 400 }, "immediate");
+    expect(sidebarLayout.getSnapshot()).toBe(before);
   });
 });

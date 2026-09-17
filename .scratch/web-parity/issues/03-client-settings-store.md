@@ -1,5 +1,7 @@
 # 03 — Client settings store
 
+Status: done
+
 **What to build:** The desktop persists every device-local preference — sidebar
 geometry, sidebar organization/sort/visibility toggles, sound/notification
 toggles, right-pane and terminal geometry, the keymap, appearance, font,
@@ -15,7 +17,7 @@ pairing/session data, not a `UiSettings` analog).
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/12-settings-shell-appearance.md`
 §3.0 (all subsections: 3.0.1 fields, 3.0.2 nested structs, 3.0.3 constants,
@@ -384,4 +386,72 @@ tickets still own building the *UI* that reads/writes many of these):
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation note (branch `wp1/03-settings`)
+
+**Landed.** `web/packages/app/src/state/ui-settings.ts` is the single
+`localStorage`-backed store: all 41 portable `UiSettings` fields (the §2 table
+minus its 10 `N/A` rows), each with the desktop's default, clamp/heal rule and
+camelCase JSON key, under `roboco.ui-settings.v1`; every §2.3 constant; the
+§2.1 keymap (platform-aware `nextSession`/`prevSession`/`captureAppshot`
+defaults, 9-slot `jumpSession` healing, `mod-enter` reserved-combo healing) and
+both §2.2 nested structs (`clamped()`/`normalized()` ported); `update(patch,
+policy)` plus `updateImmediate`/`updateDebounced`/`flush` over one 400ms
+debounce; per-field healing on load, documented in the module comment as the
+deliberate divergence from desktop's whole-file rejection; the §3 one-time fold
+of the three legacy keys, which are left untouched in storage; and
+`useUiSettings()`.
+
+Wired through (public APIs unchanged; no call sites outside these four files
+needed edits): `state/layout.ts` (`SidebarWidthStore` is now a cached
+projection of `sidebarWidth`/`sidebarCollapsed`; `clampSidebarWidth` stays but
+now calls the store's `clampOr` with the store's constants, and
+`SIDEBAR_*`/`CHAT_PANEL_MIN` are re-exported from there so a clamp and a load
+heal cannot drift), `lib/sidebar-store.ts` (`spaceFilter`/`lastSpaceId` from
+the store, `archivedOpen` still in-memory), `lib/appearance-store.ts`
+(`appearance`/`themeSelection`/`accent`/`surface` from the store; per-appearance
+variant-id validation stays here, since the store deliberately does not clamp
+variant ids), `state/right-pane.ts` (the global `rightPaneWidth` persists —
+debounced on drag, immediate on seam double-click — while per-chat
+`open`/`expanded`/`active`/`tabs`/live width stay in memory).
+`lib/engine-store.ts` verified untouched: `roboco.fleet.v1` stays its own key
+and the migration never reads it (there is a test for that).
+
+**Skipped / deviated, all deliberate:**
+
+- Every `N/A` row in §2 and the whole §6 "Do not" list: no settings UI, no
+  legacy-key deletion, no fleet fold-in, no real image storage for
+  `newThreadComposerBackground` (shape only), no consumer wiring for the `S`
+  fields.
+- `state/chrome.ts` was checked and left alone — it holds no persisted
+  geometry, only the route's live titlebar contribution.
+- Two pre-existing tests changed shape because the behaviour they asserted was
+  the thing this ticket removes: `sidebar-store.test.ts` "drops corrupted
+  persisted state" and `appearance-store.test.ts` "drops corrupted or
+  wrong-version persisted state" both asserted the store *deleted* its legacy
+  key. §3 forbids that now, so they assert the corrupt key survives untouched
+  instead, and the appearance file gained a migration test. Their
+  "wrong-version" halves went away with them: a legacy key's `version` field is
+  ignored by the fold (§3 says so explicitly for `roboco.sidebar.v1`, and the
+  appearance fold matches it for symmetry) — per-field type validation is what
+  guards a junk payload now.
+- One judgement call not spelled out in §3: an *unparseable* consolidated key
+  is treated as absent, so the legacy fold runs rather than silently dropping
+  the user to defaults. Covered by a test.
+- One addition beyond the ticket: a `pagehide` listener flushes a pending
+  debounced write, so the last 400ms of a drag survives the tab closing. The
+  desktop gets this for free by flushing at quit.
+
+**Verification.** `pnpm -r build` (typecheck + vite build) green across all
+five workspace packages. `web/packages/app` vitest: 442 tests in 30 files, all
+green, including the new `tests/ui-settings.test.ts` (22 tests — defaults,
+clamp × 7 fields, heal × 4 rules, migration × 4 cases, per-field healing × 2,
+save policies × 4) and two new `sidebarLayout` projection tests in
+`tests/layout.test.ts`. No screenshots: this ticket names no visual state and
+changes no CSS.
+
+**For a human.** Nothing blocking. Two things worth knowing: (1) the global
+`rightPaneWidth` means a drag in one chat now moves the width every *other*
+chat inherits on first open — that is the desktop's model (one global
+`rightPaneWidth`), but it is a visible behaviour change from the old web
+per-chat-only width; (2) the legacy keys are intentionally left behind, so
+storage carries both shapes until someone schedules their removal.

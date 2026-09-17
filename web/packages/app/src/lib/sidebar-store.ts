@@ -1,4 +1,5 @@
 import type { StorageLike } from "./engine-store";
+import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
 
 /**
  * Browser-side sidebar UI state — the web peer of the desktop's
@@ -9,7 +10,9 @@ import type { StorageLike } from "./engine-store";
  * less when the engine has no spaces. `archivedOpen` mirrors the desktop's
  * in-memory disclosure flag and is deliberately not persisted.
  *
- * Persistence is origin-scoped localStorage, like the fleet registry.
+ * Persistence is the consolidated `state/ui-settings.ts` store — this class
+ * owns the sidebar's *view* of it plus the one flag that never reaches
+ * storage, not a `localStorage` key of its own.
  */
 
 export interface SidebarState {
@@ -22,41 +25,27 @@ export interface SidebarState {
 }
 
 export interface SidebarStoreOptions {
+  /** The settings store to read through; defaults to the app's singleton. */
+  readonly settings?: UiSettingsStore;
+  /** Convenience for tests: a settings store over this storage. */
   readonly storage?: StorageLike;
 }
 
-interface PersistedSidebar {
-  readonly version: 1;
-  readonly spaceFilter: string | null;
-  readonly lastSpaceId: string | null;
-}
-
-const STORAGE_KEY = "roboco.sidebar.v1";
-
-function memoryStorage(): StorageLike {
-  const map = new Map<string, string>();
-  return {
-    getItem: (key) => (map.has(key) ? map.get(key)! : null),
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
-  };
-}
-
-function defaultStorage(): StorageLike {
-  const candidate = (globalThis as { localStorage?: StorageLike }).localStorage;
-  return candidate ?? memoryStorage();
-}
-
-const EMPTY: SidebarState = { spaceFilter: null, lastSpaceId: null, archivedOpen: false };
-
 export class SidebarStore {
-  readonly #storage: StorageLike;
-  #state: SidebarState = EMPTY;
+  readonly #settings: UiSettingsStore;
+  #archivedOpen = false;
+  #state: SidebarState;
   readonly #listeners = new Set<() => void>();
 
   constructor(options: SidebarStoreOptions = {}) {
-    this.#storage = options.storage ?? defaultStorage();
-    this.#load();
+    this.#settings =
+      options.settings ?? (options.storage === undefined ? uiSettings : new UiSettingsStore({ storage: options.storage }));
+    this.#state = this.#project(this.#settings.getSnapshot());
+    // Settings can move from elsewhere (a settings page, another view onto the
+    // same fields) — re-project, and stay quiet when this slice did not move.
+    this.#settings.subscribe(() => {
+      this.#emit(this.#project(this.#settings.getSnapshot()));
+    });
   }
 
   getSnapshot(): SidebarState {
@@ -78,51 +67,29 @@ export class SidebarStore {
     if (spaceId === this.#state.spaceFilter) {
       return;
     }
-    this.#setState({
-      ...this.#state,
-      spaceFilter: spaceId,
-      lastSpaceId: spaceId ?? this.#state.lastSpaceId,
-    });
+    this.#settings.update(
+      { spaceFilter: spaceId, lastSpaceId: spaceId ?? this.#state.lastSpaceId },
+      "immediate",
+    );
   }
 
   setArchivedOpen(open: boolean): void {
-    if (open === this.#state.archivedOpen) {
+    if (open === this.#archivedOpen) {
       return;
     }
-    this.#setState({ ...this.#state, archivedOpen: open });
+    this.#archivedOpen = open;
+    this.#emit(this.#project(this.#settings.getSnapshot()));
   }
 
-  #load(): void {
-    const raw = this.#storage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw) as PersistedSidebar;
-      if (parsed.version === 1) {
-        this.#state = {
-          spaceFilter: typeof parsed.spaceFilter === "string" ? parsed.spaceFilter : null,
-          lastSpaceId: typeof parsed.lastSpaceId === "string" ? parsed.lastSpaceId : null,
-          archivedOpen: false,
-        };
-        return;
-      }
-    } catch {
-      // fall through to the reset
-    }
-    this.#storage.removeItem(STORAGE_KEY);
-  }
-
-  #persist(): void {
-    const persisted: PersistedSidebar = {
-      version: 1,
-      spaceFilter: this.#state.spaceFilter,
-      lastSpaceId: this.#state.lastSpaceId,
+  #project(settings: UiSettings): SidebarState {
+    return {
+      spaceFilter: settings.spaceFilter,
+      lastSpaceId: settings.lastSpaceId,
+      archivedOpen: this.#archivedOpen,
     };
-    this.#storage.setItem(STORAGE_KEY, JSON.stringify(persisted));
   }
 
-  #setState(state: SidebarState): void {
+  #emit(state: SidebarState): void {
     if (
       state.spaceFilter === this.#state.spaceFilter &&
       state.lastSpaceId === this.#state.lastSpaceId &&
@@ -131,7 +98,6 @@ export class SidebarStore {
       return;
     }
     this.#state = state;
-    this.#persist();
     for (const listener of this.#listeners) {
       listener();
     }

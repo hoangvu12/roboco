@@ -38,13 +38,14 @@ describe("SidebarStore", () => {
     expect(new SidebarStore({ storage }).getSnapshot().archivedOpen).toBe(false);
   });
 
-  it("drops corrupted persisted state", () => {
+  it("ignores corrupted legacy state without destroying it", () => {
+    // Storage moved to the consolidated ui-settings key; the legacy key is a
+    // one-time migration source now, so a corrupt one heals to the default and
+    // is left exactly where it is for a rollback to find.
     const storage = memoryStorage();
     storage.setItem("roboco.sidebar.v1", "{not json");
     expect(new SidebarStore({ storage }).getSnapshot().spaceFilter).toBe(null);
-    expect(storage.getItem("roboco.sidebar.v1")).toBe(null);
-    storage.setItem("roboco.sidebar.v1", JSON.stringify({ version: 99, spaceFilter: "s" }));
-    expect(new SidebarStore({ storage }).getSnapshot().spaceFilter).toBe(null);
+    expect(storage.getItem("roboco.sidebar.v1")).toBe("{not json");
   });
 
   it("notifies subscribers on actual changes only", () => {

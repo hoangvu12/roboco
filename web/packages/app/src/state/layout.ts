@@ -1,4 +1,12 @@
 import { useSyncExternalStore } from "react";
+import {
+  CHAT_PANEL_MIN,
+  SIDEBAR_DEFAULT,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  clampOr,
+  uiSettings,
+} from "./ui-settings";
 
 /**
  * The shell's column geometry — the desktop's `shell.rs` layout state.
@@ -17,19 +25,18 @@ import { useSyncExternalStore } from "react";
  * it completely. On a window too narrow to give both their minimums the *pane*
  * yields — it goes below its own floor so the chat keeps its 300px.
  *
- * The sidebar width lives here too (the desktop persists it in
- * `ui-settings.json`; the browser's equivalent is `localStorage`). The right
- * pane's width is per-chat and lives in `./right-pane.ts`, matching the
- * desktop's split between global widths and per-session open flags.
+ * The sidebar width lives here too, but its storage does not: the desktop
+ * persists it in `ui-settings.json` and the browser's peer of that file is
+ * `./ui-settings.ts`, so this module owns the geometry and delegates the
+ * bytes. The right pane's width is per-chat and lives in `./right-pane.ts`,
+ * matching the desktop's split between global widths and per-session flags.
  */
 
-/** `settings.rs` SIDEBAR_MIN / _MAX / _DEFAULT. */
-export const SIDEBAR_MIN = 224;
-export const SIDEBAR_MAX = 400;
-export const SIDEBAR_DEFAULT = 256;
-
-/** `settings.rs` CHAT_PANEL_MIN — the conversation's floor beside an open pane. */
-export const CHAT_PANEL_MIN = 300;
+/**
+ * `settings.rs`'s column bounds, re-exported from the settings store that owns
+ * them so a clamp here and a heal on load can never drift apart.
+ */
+export { CHAT_PANEL_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN };
 
 /** Below this the sidebar stops being a column and becomes a drawer. */
 export const PHONE_MAX_WIDTH = 768;
@@ -148,80 +155,55 @@ export function sidebarTarget(state: SidebarLayout): number {
 }
 
 export function clampSidebarWidth(width: number): number {
-  if (!Number.isFinite(width)) {
-    return SIDEBAR_DEFAULT;
-  }
-  return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width));
+  return clampOr(width, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT);
 }
 
-const STORAGE_KEY = "roboco.layout.sidebar";
-
-function restore(): SidebarLayout {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      return { width: SIDEBAR_DEFAULT, collapsed: false };
-    }
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) {
-      return { width: SIDEBAR_DEFAULT, collapsed: false };
-    }
-    const record = parsed as { width?: unknown; collapsed?: unknown };
-    return {
-      width: clampSidebarWidth(typeof record.width === "number" ? record.width : SIDEBAR_DEFAULT),
-      collapsed: record.collapsed === true,
-    };
-  } catch {
-    // Private mode, a quota error, or hand-edited junk — heal to the default.
-    return { width: SIDEBAR_DEFAULT, collapsed: false };
-  }
-}
-
+/**
+ * The sidebar's persisted geometry, projected out of the settings store.
+ *
+ * There is no state of its own here: `sidebarWidth`/`sidebarCollapsed` live in
+ * `ui-settings.ts` like every other device-local preference, and this class is
+ * the narrow view onto them the shell has always used. The projection is
+ * cached on the two values it reads, not on the settings snapshot's identity,
+ * so `useSyncExternalStore` keeps the same object — and the shell skips the
+ * re-render — when some unrelated preference moves.
+ */
 class SidebarWidthStore {
-  #state: SidebarLayout = { width: SIDEBAR_DEFAULT, collapsed: false };
-  #restored = false;
-  readonly #listeners = new Set<() => void>();
+  #cache: SidebarLayout | null = null;
 
   getSnapshot = (): SidebarLayout => {
-    if (!this.#restored && typeof window !== "undefined") {
-      this.#restored = true;
-      this.#state = restore();
+    const settings = uiSettings.getSnapshot();
+    const cached = this.#cache;
+    if (
+      cached !== null &&
+      cached.width === settings.sidebarWidth &&
+      cached.collapsed === settings.sidebarCollapsed
+    ) {
+      return cached;
     }
-    return this.#state;
-  };
-
-  subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
+    const next: SidebarLayout = {
+      width: settings.sidebarWidth,
+      collapsed: settings.sidebarCollapsed,
     };
+    this.#cache = next;
+    return next;
   };
 
-  #set(next: SidebarLayout): void {
-    this.#state = next;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // A width is not worth failing a render over.
-    }
-    for (const listener of this.#listeners) {
-      listener();
-    }
-  }
+  subscribe = (listener: () => void): (() => void) => uiSettings.subscribe(listener);
 
   /** A drag sample: the pointer's x IS the width, clamped to the bounds. */
   setWidth(width: number): void {
-    this.#set({ width: clampSidebarWidth(width), collapsed: false });
+    // A drag is a stream of samples — coalesce them into one write.
+    uiSettings.update({ sidebarWidth: width, sidebarCollapsed: false }, "debounced");
   }
 
   toggleCollapsed(): void {
-    const current = this.getSnapshot();
-    this.#set({ ...current, collapsed: !current.collapsed });
+    uiSettings.update({ sidebarCollapsed: !this.getSnapshot().collapsed }, "immediate");
   }
 
   /** Double-clicking the seam restores the default (`shell.rs:7930`). */
   reset(): void {
-    this.#set({ width: SIDEBAR_DEFAULT, collapsed: false });
+    uiSettings.update({ sidebarWidth: SIDEBAR_DEFAULT, sidebarCollapsed: false }, "immediate");
   }
 }
 

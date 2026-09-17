@@ -72,14 +72,37 @@ describe("AppearanceStore", () => {
     expect(store.getSnapshot().darkVariant).toBe("nord");
   });
 
-  it("drops corrupted or wrong-version persisted state", () => {
+  it("ignores corrupted legacy state without destroying it", () => {
+    // Storage moved to the consolidated ui-settings key; the legacy key is a
+    // one-time migration source now, so a corrupt one heals to the defaults
+    // and is left exactly where it is for a rollback to find.
     const storage = memoryStorage();
     storage.setItem("roboco.appearance.v1", "{not json");
     expect(new AppearanceStore({ storage }).getSnapshot()).toEqual(DEFAULT_APPEARANCE);
-    expect(storage.getItem("roboco.appearance.v1")).toBe(null);
-    storage.setItem("roboco.appearance.v1", JSON.stringify({ version: 99, mode: "dark" }));
-    expect(new AppearanceStore({ storage }).getSnapshot()).toEqual(DEFAULT_APPEARANCE);
-    expect(storage.getItem("roboco.appearance.v1")).toBe(null);
+    expect(storage.getItem("roboco.appearance.v1")).toBe("{not json");
+  });
+
+  it("migrates the legacy appearance key on first load", () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      "roboco.appearance.v1",
+      JSON.stringify({
+        version: 1,
+        mode: "dark",
+        lightVariant: "github-light",
+        darkVariant: "nord",
+        accent: "pink",
+        surface: "frosted",
+      }),
+    );
+    expect(new AppearanceStore({ storage }).getSnapshot()).toEqual({
+      mode: "dark",
+      lightVariant: "github-light",
+      darkVariant: "nord",
+      accent: "pink",
+      surface: "frosted",
+    });
+    expect(storage.getItem("roboco.ui-settings.v1")).not.toBe(null);
   });
 
   it("falls back per-field when persisted values are unknown", () => {

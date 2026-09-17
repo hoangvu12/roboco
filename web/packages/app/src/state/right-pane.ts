@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
+import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
 /**
  * The right pane's open/active state — the desktop's per-chat right-pane
@@ -9,6 +10,13 @@ import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
  * The pane is chat-scoped chrome: each chat remembers whether its pane was
  * open, which surface was active, and whether it had taken over the window,
  * so returning to a chat restores what you left. Settings never renders it.
+ *
+ * Width is the one exception, and it follows the desktop: `rightPaneWidth` is
+ * a single GLOBAL preference in `ui-settings.ts`, not a per-chat value. A chat
+ * opening its pane for the first time inherits the width last dragged
+ * anywhere, and a drag writes that width back for every chat that has not
+ * diverged within the session. Open/expanded/active/tabs stay in memory —
+ * the desktop's persisted `right_pane_open` is legacy and unread.
  */
 
 /** The surfaces the web client can host. The desktop's `RightSurface` also
@@ -46,9 +54,11 @@ export interface ChatPaneState {
   readonly width: number;
 }
 
-/** `settings.rs` RIGHT_PANE_DEFAULT / _MIN. */
-export const RIGHT_PANE_DEFAULT = 520;
-export const RIGHT_PANE_MIN = 360;
+/**
+ * `settings.rs` RIGHT_PANE_DEFAULT / _MIN, re-exported from the settings store
+ * that owns them.
+ */
+export { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN };
 
 function initial(): ChatPaneState {
   return {
@@ -56,7 +66,8 @@ function initial(): ChatPaneState {
     expanded: false,
     active: "changes",
     tabs: RIGHT_SURFACES,
-    width: RIGHT_PANE_DEFAULT,
+    // The persisted global width — what was last dragged, healed to its floor.
+    width: uiSettings.getSnapshot().rightPaneWidth,
   };
 }
 
@@ -127,11 +138,14 @@ class RightPaneStore {
     const clamped =
       max >= RIGHT_PANE_MIN ? Math.min(max, Math.max(RIGHT_PANE_MIN, width)) : max;
     this.#update(chatId, (current) => ({ ...current, width: clamped }));
+    // The drag also moves the global default, coalesced into one write.
+    uiSettings.update({ rightPaneWidth: clamped }, "debounced");
   }
 
   /** Double-clicking the seam restores the default (`shell.rs:7953`). */
   resetWidth(chatId: string): void {
     this.#update(chatId, (current) => ({ ...current, width: RIGHT_PANE_DEFAULT }));
+    uiSettings.update({ rightPaneWidth: RIGHT_PANE_DEFAULT }, "immediate");
   }
 
   /** Drag-reorder in the tab strip. */

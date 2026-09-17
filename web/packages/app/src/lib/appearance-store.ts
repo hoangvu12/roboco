@@ -8,14 +8,21 @@ import {
   type ThemeVariant,
 } from "@roboco/theme";
 import type { StorageLike } from "./engine-store";
+import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
 
 /**
  * Appearance preferences — the web peer of the desktop's device-local
  * appearance settings (crates/ui/src/appearance.rs + settings/appearance.rs):
  * an appearance mode, an independent light/dark theme variant pair, an accent
- * selection, and a surface preference. They live in browser storage scoped to
- * the serving origin ("These settings stay in this browser") and apply live —
- * every mutation re-installs the theme on the document root.
+ * selection, and a surface preference. They live in the consolidated
+ * `state/ui-settings.ts` store (`appearance`, `themeSelection.light`/`.dark`,
+ * `accent`, `surface`), browser-scoped to the serving origin ("These settings
+ * stay in this browser") and applied live — every mutation re-installs the
+ * theme on the document root.
+ *
+ * What stays here is the part settings storage cannot know: a variant id is
+ * only valid for the appearance it was authored for, so the pair is validated
+ * against the theme registry on the way out of the store, not on the way in.
  *
  * Web scope cuts vs desktop (spec §Theme scope): builtin variants only, no
  * custom theme library, no interface font/size pickers, no new-thread
@@ -52,12 +59,6 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
 
 export const APPEARANCE_MODES: readonly AppearanceMode[] = ["system", "light", "dark"];
 export const SURFACE_PREFERENCES: readonly SurfacePreference[] = ["themeDefault", "frosted", "opaque"];
-
-interface PersistedPreferences extends AppearancePreferences {
-  readonly version: 1;
-}
-
-const STORAGE_KEY = "roboco.appearance.v1";
 
 /** The user's choice combined with the OS state (appearance.rs `resolve`). */
 export function resolveAppearance(mode: AppearanceMode, system: Appearance): Appearance {
@@ -157,20 +158,6 @@ export function accentSwatchColor(accent: AccentSelection, variant: ThemeVariant
   return variant.appearance === "dark" ? preset.dark : preset.light;
 }
 
-const ACCENT_IDS: readonly string[] = accentPresets.map((preset) => preset.id);
-
-function isAppearanceMode(value: unknown): value is AppearanceMode {
-  return value === "system" || value === "light" || value === "dark";
-}
-
-function isAccentSelection(value: unknown): value is AccentSelection {
-  return value === "themeDefault" || (typeof value === "string" && ACCENT_IDS.includes(value));
-}
-
-function isSurfacePreference(value: unknown): value is SurfacePreference {
-  return value === "themeDefault" || value === "frosted" || value === "opaque";
-}
-
 /** A variant id is only valid for the appearance it was authored for. */
 function variantForAppearance(id: unknown, appearance: Appearance): string | null {
   if (typeof id !== "string") {
@@ -180,15 +167,26 @@ function variantForAppearance(id: unknown, appearance: Appearance): string | nul
   return variant !== undefined && variant.appearance === appearance ? variant.id : null;
 }
 
+export interface AppearanceStoreOptions {
+  /** The settings store to read through; defaults to the app's singleton. */
+  readonly settings?: UiSettingsStore;
+  /** Convenience for tests: a settings store over this storage. */
+  readonly storage?: StorageLike;
+}
+
 export class AppearanceStore {
-  readonly #storage: StorageLike;
-  #preferences: AppearancePreferences = DEFAULT_APPEARANCE;
+  readonly #settings: UiSettingsStore;
+  #preferences: AppearancePreferences;
   readonly #listeners = new Set<() => void>();
 
-  constructor(options: { storage?: StorageLike } = {}) {
-    this.#storage =
-      options.storage ?? (globalThis as { localStorage?: StorageLike }).localStorage ?? memoryStorage();
-    this.#load();
+  constructor(options: AppearanceStoreOptions = {}) {
+    this.#settings =
+      options.settings ??
+      (options.storage === undefined ? uiSettings : new UiSettingsStore({ storage: options.storage }));
+    this.#preferences = project(this.#settings.getSnapshot());
+    this.#settings.subscribe(() => {
+      this.#apply(project(this.#settings.getSnapshot()));
+    });
   }
 
   getSnapshot(): AppearancePreferences {
@@ -224,6 +222,21 @@ export class AppearanceStore {
 
   #update(patch: Partial<AppearancePreferences>): void {
     const next: AppearancePreferences = { ...this.#preferences, ...patch };
+    // Appearance is a discrete choice, never a drag — write it straight
+    // through. Re-projecting afterwards keeps the validated view authoritative.
+    this.#settings.update(
+      {
+        appearance: next.mode,
+        themeSelection: { light: next.lightVariant, dark: next.darkVariant },
+        accent: next.accent,
+        surface: next.surface,
+      },
+      "immediate",
+    );
+    this.#apply(project(this.#settings.getSnapshot()));
+  }
+
+  #apply(next: AppearancePreferences): void {
     if (
       next.mode === this.#preferences.mode &&
       next.lightVariant === this.#preferences.lightVariant &&
@@ -234,47 +247,26 @@ export class AppearanceStore {
       return;
     }
     this.#preferences = next;
-    this.#persist();
     for (const listener of this.#listeners) {
       listener();
     }
   }
-
-  #load(): void {
-    const raw = this.#storage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw) as Partial<PersistedPreferences>;
-      if (parsed.version !== 1) {
-        throw new Error("unknown version");
-      }
-      const lightVariant = variantForAppearance(parsed.lightVariant, "light") ?? DEFAULT_APPEARANCE.lightVariant;
-      const darkVariant = variantForAppearance(parsed.darkVariant, "dark") ?? DEFAULT_APPEARANCE.darkVariant;
-      this.#preferences = {
-        mode: isAppearanceMode(parsed.mode) ? parsed.mode : DEFAULT_APPEARANCE.mode,
-        lightVariant,
-        darkVariant,
-        accent: isAccentSelection(parsed.accent) ? parsed.accent : DEFAULT_APPEARANCE.accent,
-        surface: isSurfacePreference(parsed.surface) ? parsed.surface : DEFAULT_APPEARANCE.surface,
-      };
-    } catch {
-      this.#storage.removeItem(STORAGE_KEY);
-    }
-  }
-
-  #persist(): void {
-    const persisted: PersistedPreferences = { version: 1, ...this.#preferences };
-    this.#storage.setItem(STORAGE_KEY, JSON.stringify(persisted));
-  }
 }
 
-function memoryStorage(): StorageLike {
-  const map = new Map<string, string>();
+/**
+ * The settings snapshot's appearance slice, with each variant id checked
+ * against the registry it has to come from — a hand-edited or stale id (a
+ * removed theme, a dark variant stored as the light one) falls back to that
+ * side's default without disturbing the other.
+ */
+function project(settings: UiSettings): AppearancePreferences {
   return {
-    getItem: (key) => (map.has(key) ? map.get(key)! : null),
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
+    mode: settings.appearance,
+    lightVariant:
+      variantForAppearance(settings.themeSelection.light, "light") ?? DEFAULT_APPEARANCE.lightVariant,
+    darkVariant:
+      variantForAppearance(settings.themeSelection.dark, "dark") ?? DEFAULT_APPEARANCE.darkVariant,
+    accent: settings.accent,
+    surface: settings.surface,
   };
 }
