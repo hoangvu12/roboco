@@ -43,7 +43,7 @@ export function SubagentDialog({
             Close
           </button>
         </header>
-        <TranscriptView client={client} docId={docId} deviceId={deviceId} />
+        <TranscriptView client={client} docId={docId} deviceId={deviceId} alignTop />
       </div>
     </div>
   );

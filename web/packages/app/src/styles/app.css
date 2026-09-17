@@ -2279,13 +2279,40 @@ a:focus-visible,
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
-
 
 /*
  * No empty/loading paragraph: the transcript renders nothing in those states,
  * as on the desktop — the shell owns the empty case.
  */
+
+/*
+ * The underlay (shell.rs:6025-6072): at DESKTOP widths the transcript spans
+ * the WHOLE column — pulled up under the overlay titlebar (`.main` pads the
+ * column down by the bar's height; the negative margin cancels it, exactly
+ * the desktop's "titlebar overlays the full-height list") — and the bottom
+ * chrome stack overlays its lower edge as a flex sibling that paints later.
+ * The transcript's fade mask then reads correctly: content is opaque at the
+ * chrome's inner edge and fades to zero at the window edge, visible
+ * mid-fade through the glass it slides under. At phone widths the column
+ * stays an ordinary sibling stack (the phone layer is out of scope and must
+ * keep working unchanged).
+ */
+@media (min-width: 769px) {
+  .chat-page {
+    margin-top: calc(-1 * var(--rb-titlebar-height));
+  }
+
+  .chat-body {
+    position: absolute;
+    inset: 0;
+  }
+
+  .bottom-stack {
+    margin-top: auto;
+  }
+}
 
 /* Chat body holds the transcript column. */
 .chat-body {
@@ -2299,7 +2326,8 @@ a:focus-visible,
  * `render_main`'s bottom chrome stack (shell.rs:6073-6125): flex-none,
  * relative, column. The chat page measures it live into
  * `--rb-bottom-stack`, which the transcript's bottom fade band reads — the
- * web peer of the desktop's paint-time canvas that sizes the EdgeFade inset.
+ * web peer of the desktop's paint-time canvas that sizes the EdgeFade inset
+ * and the transcript's bottom clearance.
  */
 .bottom-stack {
   flex: none;
@@ -4016,9 +4044,7 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
-  max-width: 80%;
-  margin-left: auto;
+  width: 100%;
 }
 
 .row-user .user-attachments {
@@ -4935,9 +4961,9 @@ button.files-row-active:hover {
 
 /* ── Transcript ─────────────────────────────────────────────────────── */
 /* Rows are virtualized by `../components/transcript.tsx`; the geometry
-   constants (736px column, 30/26/38px chip heights, 24px fade band) mirror
-   the desktop's transcript.rs, and every color/motion value is a --rb-*
-   token from the generated theme artifact. */
+   constants (736px column, 48px gutters, 64px first-row gap, 32px meta lane,
+   24px fade band) mirror the desktop's transcript.rs, and every color/motion
+   value is a --rb-* token from the generated theme artifact. */
 
 .transcript-wrap {
   position: relative;
@@ -4945,6 +4971,24 @@ button.files-row-active:hover {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/*
+ * The engine-offline strip (transcript.rs:7662-7694): a 24px bar ABOVE the
+ * list — not an overlay — read-only history with the exact desktop strings.
+ * At desktop widths the wrap pads below the overlay titlebar and the
+ * scroller's top fade stands down (nothing scrolls under the bar).
+ */
+.engine-offline-strip {
+  flex: none;
+  height: var(--rb-status-strip-height);
+  padding-inline: var(--rb-space-md);
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  background: var(--rb-surface);
+  color: var(--rb-text-muted);
+  border-bottom: 1px solid var(--rb-border);
 }
 
 .transcript {
@@ -4965,26 +5009,32 @@ button.files-row-active:hover {
   overflow-anchor: none;
   /*
    * The scroller's edge fade — the desktop's `edge_faded` underlay, as a mask
-   * (§2.7): a 24px quadratic band at the top, zero at the scroller's top edge
-   * — which the column's 38px titlebar pad places exactly at the bar's bottom
-   * edge — and a bottom band that is a 1px NO-OP veil. The desktop's band
-   * assumes the transcript scrolls UNDER the bottom chrome on a glass
-   * underlay (shell.rs:6025-6072); the web layout has no underlay —
-   * `.chat-body` and `.bottom-stack` are flex siblings, nothing ever covers
-   * transcript pixels — so an unclamped band faded the newest ~79px of
-   * content (the just-sent bubble, the streaming tail) to alpha 0 over bare
-   * background. Clamped to 1px until the underlay layout is ported
-   * (ticket 18/06); `--rb-bottom-stack` is still measured live by the chat
-   * page's ResizeObserver so that port has its plumbing.
+   * (§2.1/§2.7). Bands are custom properties so the instances differ:
+   *
+   * - top inset/band: the desktop pulls the fade's origin 38px down
+   *   (`inset_top(TITLEBAR_HEIGHT)`) so content under the overlay titlebar
+   *   paints fully transparent and the 24px quadratic ramp starts at the
+   *   bar's bottom edge. The web scroller spans the full column at desktop
+   *   widths, so the same inset applies; at phone widths the scroller starts
+   *   below the bar, so the inset is 0.
+   * - bottom band: the desktop sizes it to the overlaid chrome
+   *   (`stack_h - STATUS_STRIP_HEIGHT`, opaque at the composer's top, zero at
+   *   the window edge). The bottom stack overlays the transcript at desktop
+   *   widths (the underlay above), so the measured `--rb-bottom-stack` drives
+   *   it; at phone widths the stack is a sibling — the band clamps to a 1px
+   *   no-op veil so nothing ghosts over uncovered pixels.
    */
+  --rb-top-inset: 0px;
+  --rb-top-band: var(--rb-transcript-fade-band);
   --rb-bottom-band: 1px;
   mask-image: linear-gradient(
     to bottom,
     rgba(0, 0, 0, 0) 0px,
-    rgba(0, 0, 0, 0.0625) calc(var(--rb-transcript-fade-band) * 0.25),
-    rgba(0, 0, 0, 0.25) calc(var(--rb-transcript-fade-band) * 0.5),
-    rgba(0, 0, 0, 0.5625) calc(var(--rb-transcript-fade-band) * 0.75),
-    rgba(0, 0, 0, 1) var(--rb-transcript-fade-band),
+    rgba(0, 0, 0, 0) var(--rb-top-inset),
+    rgba(0, 0, 0, 0.0625) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.25),
+    rgba(0, 0, 0, 0.25) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.5),
+    rgba(0, 0, 0, 0.5625) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.75),
+    rgba(0, 0, 0, 1) calc(var(--rb-top-inset) + var(--rb-top-band)),
     rgba(0, 0, 0, 1) calc(100% - var(--rb-bottom-band)),
     rgba(0, 0, 0, 0.5625) calc(100% - var(--rb-bottom-band) * 0.75),
     rgba(0, 0, 0, 0.25) calc(100% - var(--rb-bottom-band) * 0.5),
@@ -4994,10 +5044,11 @@ button.files-row-active:hover {
   -webkit-mask-image: linear-gradient(
     to bottom,
     rgba(0, 0, 0, 0) 0px,
-    rgba(0, 0, 0, 0.0625) calc(var(--rb-transcript-fade-band) * 0.25),
-    rgba(0, 0, 0, 0.25) calc(var(--rb-transcript-fade-band) * 0.5),
-    rgba(0, 0, 0, 0.5625) calc(var(--rb-transcript-fade-band) * 0.75),
-    rgba(0, 0, 0, 1) var(--rb-transcript-fade-band),
+    rgba(0, 0, 0, 0) var(--rb-top-inset),
+    rgba(0, 0, 0, 0.0625) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.25),
+    rgba(0, 0, 0, 0.25) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.5),
+    rgba(0, 0, 0, 0.5625) calc(var(--rb-top-inset) + var(--rb-top-band) * 0.75),
+    rgba(0, 0, 0, 1) calc(var(--rb-top-inset) + var(--rb-top-band)),
     rgba(0, 0, 0, 1) calc(100% - var(--rb-bottom-band)),
     rgba(0, 0, 0, 0.5625) calc(100% - var(--rb-bottom-band) * 0.75),
     rgba(0, 0, 0, 0.25) calc(100% - var(--rb-bottom-band) * 0.5),
@@ -5006,14 +5057,60 @@ button.files-row-active:hover {
   );
 }
 
-.transcript-col {
-  margin: 0 auto;
-  padding: 8px var(--rb-space-lg) var(--rb-space-lg);
+@media (min-width: 769px) {
+  .transcript {
+    --rb-top-inset: var(--rb-titlebar-height);
+    --rb-bottom-band: max(calc(var(--rb-bottom-stack, 24px) - 24px), 1px);
+  }
+
+  .transcript-wrap[data-offline="1"] {
+    padding-top: var(--rb-titlebar-height);
+  }
+
+  .transcript-wrap[data-offline="1"] .transcript {
+    --rb-top-inset: 0px;
+    --rb-top-band: 0px;
+  }
+}
+
+/*
+ * The subagent override instance (transcript.rs:7640-7657): aligns to the
+ * top, owns its fade (top edge only, gated on real overflow via
+ * `data-topfade`), and never spans the titlebar/composer chrome.
+ */
+.transcript-subagent .transcript {
+  --rb-top-inset: 0px;
+  --rb-top-band: 0px;
+  --rb-bottom-band: 0px;
+}
+
+.transcript-subagent .transcript[data-topfade="1"] {
+  --rb-top-band: var(--rb-transcript-fade-band);
+}
+
+/*
+ * A row (transcript.rs:5637-5680): wide gutters (roboco `px-4 @3xl:px-12`)
+ * around the 736px content column; the row's own top gap and — on the last
+ * row — its chrome-clearance bottom pad. `trow-col` is the column the
+ * desktop wraps every row's content in (`w_full max_w(MAX_CONTENT_WIDTH)`).
+ */
+.trow {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  padding-inline: var(--rb-space-lg);
+}
+
+.trow-col {
+  width: 100%;
+  max-width: 736px;
   min-width: 0;
 }
 
-.trow {
-  min-width: 0;
+@media (min-width: 769px) {
+  .trow {
+    padding-inline: 48px;
+  }
 }
 
 /*
@@ -5035,6 +5132,13 @@ button.files-row-active:hover {
   gap: var(--rb-space-sm);
   padding-inline: 24px;
   font-size: 11px;
+  /*
+   * The strip is empty air over the underlay: pointer and wheel input falls
+   * through to the transcript scrolling beneath it (the desktop's flex_1
+   * spacer "has no id/listeners, so pointer + wheel events over it fall
+   * through to the list below", shell.rs:6070-6072).
+   */
+  pointer-events: none;
 }
 
 .status-strip-error {
@@ -5392,14 +5496,35 @@ button.files-row-active:hover {
 }
 
 /*
- * No floating error card: a stream error is a 24px SHELL strip above the list
- * on the desktop ("Engine off. Cached history is read-only."), which is
- * ticket 18/01's to build.
+ * No floating error card: the engine-offline strip above the list
+ * (".engine-offline-strip") IS the desktop's surface for a dead stream.
  */
 
-/* ── User bubble ────────────────────────────────────────────────────── */
+/* ── User bubble (§2.4-§2.7) ────────────────────────────────────────── */
 
 .row-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/*
+ * The badge strip's slot (transcript.rs:5405-5423): right-aligned wrap above
+ * the bubble. Ticket 20 renders the pills; the container is this ticket's.
+ */
+.user-badges {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+/* The bubble wrapper (`w_full flex justify_end`, transcript.rs:5432). */
+.user-bubble-row {
+  width: 100%;
   display: flex;
   justify-content: flex-end;
 }
@@ -5410,11 +5535,15 @@ button.files-row-active:hover {
      The channels are --rb-wash's two values, kept literal because light-dark()
      picks the branch, not the appearance-scoped custom property. */
   background: light-dark(rgb(26 26 26 / 0.04), rgb(235 235 235 / 0.08));
+  /* `min_w_0` is load-bearing: without it the flex item's automatic min-size
+     is the full unwrapped width and long prompts clip off the left. */
+  min-width: 0;
   max-width: 80%;
   border-radius: var(--rb-radius-bubble);
   padding: 10px 16px;
   font-size: 14px;
   line-height: 22px;
+  color: var(--rb-text);
 }
 
 .user-bubble-pending {
@@ -5422,34 +5551,17 @@ button.files-row-active:hover {
 }
 
 /*
-  `send_undelivered`: past the 120s grace window the echo stops being quiet and
-  names the failure, with the retry that restarts the clock beside it. Tokens
-  only — the same danger/muted roles the rest of the shell uses.
-*/
-.user-undelivered {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
-  font-size: 12px;
-  color: var(--rb-text-muted);
+ * The fold's clip stack (render_user_body, §2.5): the full text stays laid
+ * out behind the clip — only the viewport over it changes, so glyph wrapping
+ * never shifts. The ellipsis row rides OUTSIDE the clip, inside the tween's
+ * endpoints, so removing it does not jump.
+ */
+.user-body {
+  min-width: 0;
 }
 
-.user-undelivered-label {
-  color: var(--rb-danger);
-}
-
-.user-undelivered-retry {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: var(--rb-text-muted);
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.user-undelivered-retry:hover {
-  color: var(--rb-text);
+.user-text-clip {
+  overflow: hidden;
 }
 
 .user-text {
@@ -5457,20 +5569,45 @@ button.files-row-active:hover {
   overflow-wrap: anywhere;
 }
 
-.user-text-clamped {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
-  overflow: hidden;
+.user-ellipsis {
+  height: 22px;
 }
 
+/*
+ * A sent file-mention chip (§2.7): the composer's display projection, in the
+ * transcript — mono runs at `code_text` over a rounded `code_wash` underlay.
+ * `padding: 0` and no line-height change keep the 22px line box un-grown; the
+ * wash paints the inline box's content area only (the ~2px vertical inset of
+ * the desktop's `range_rects(_, 0.0, 2.0)` underlay), and `clone` keeps the
+ * radius when a chip wraps.
+ */
+.user-mention {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+  border-radius: 5px;
+  padding: 0;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/*
+ * The expander (render_user_expander, §2.6): a plain text link, not a
+ * pill/button wash — 14px/22px, `text_muted` → `text` on hover, the 12px
+ * alt-arrow glyph following the label's color.
+ */
 .user-expand {
+  /* USER_TOGGLE_GAP (transcript.rs:183) — no token; 8px literal. */
   margin-top: 8px;
   padding: 0;
   background: none;
   border: none;
-  color: var(--rb-text-faint);
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--rb-text-muted);
   cursor: pointer;
 }
 
@@ -5478,35 +5615,110 @@ button.files-row-active:hover {
   color: var(--rb-text);
 }
 
-/* ── Row meta (hover timestamp strip) ───────────────────────────────── */
+/* ── Row meta (hover timestamp strip, §2.3) ─────────────────────────── */
 
+/*
+ * A RESERVED lane: 32px tall (SPACE_SM + 2*SPACE_MD), 8px top padding,
+ * always occupying its height so the virtualizer never shifts — only the
+ * contents' visibility flips (FADE_QUICK 150ms EASE).
+ */
 .row-meta {
+  width: 100%;
+  height: 32px;
+  padding-top: var(--rb-space-sm);
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
-  height: 16px;
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--rb-text-faint);
   opacity: 0;
   transition: opacity var(--rb-motion-fade-quick) var(--rb-ease-ease);
+}
+
+/* User entries align end (under the bubble); assistant entries start. */
+.row-meta-user {
+  justify-content: flex-end;
 }
 
 .row-meta-on {
   opacity: 1;
 }
 
+.row-meta-inner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.row-meta-time {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
+}
+
 .row-meta-copy {
+  width: 24px;
+  height: 24px;
   padding: 0;
-  background: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
   border: none;
-  color: var(--rb-text-faint);
-  font-size: 11px;
+  color: var(--rb-text-muted);
   cursor: pointer;
+  /* `hover_blend(key, transparent, ink(0.08))` over HOVER_FADE. */
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
 }
 
 .row-meta-copy:hover {
-  color: var(--rb-text);
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+.row-meta-copy:focus-visible {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+/* ── Working trailer (§2.11) ────────────────────────────────────────── */
+
+/*
+ * In-flow under the last row's content, above its clearance pad, so it reads
+ * as part of the streaming reply and scrolls away with it.
+ */
+.working-trailer {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  padding-top: var(--rb-space-lg);
+  font-size: 11px;
+}
+
+.working-trailer-spinner {
+  flex: none;
+}
+
+.working-word {
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.working-word-queued {
+  color: var(--rb-warning);
+}
+
+.working-elapsed {
+  color: var(--rb-text-faint);
+}
+
+/* The failed-send branch: the trailer IS the retry affordance. */
+.undelivered-retry {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  padding-top: var(--rb-space-lg);
+  font-size: 12px;
+  color: var(--rb-danger);
+  cursor: pointer;
 }
 
 /* ── Markdown ───────────────────────────────────────────────────────── */
@@ -6117,66 +6329,105 @@ button.files-row-active:hover {
   min-height: 0;
 }
 
-/* ── Input and error chips ──────────────────────────────────────────── */
+/* ── Input and error chips (§2.9 / §2.10) ───────────────────────────── */
+
+.input-chip-row {
+  padding-block: 4px;
+  width: 100%;
+}
 
 .input-chip {
-  display: inline-flex;
+  height: 34px;
+  width: 100%;
+  display: flex;
   align-items: center;
   gap: var(--rb-space-sm);
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  color: var(--rb-text-muted);
+  overflow: hidden;
+  border-radius: var(--rb-radius-panel);
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.045);
+  padding-inline: var(--rb-space-sm);
   font-size: 12px;
-  max-width: 100%;
+  /* Neutral tones throughout — resolution never recolors the chip. */
+  color: var(--rb-text-muted);
 }
 
-.input-chip-open {
-  border-color: var(--rb-accent);
-  color: var(--rb-text);
+.input-chip-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.09);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
 }
 
-.input-chip-glyph {
-  color: var(--rb-accent);
-  font-weight: 600;
+.input-chip-label {
+  flex: none;
+  font-weight: 500;
+  color: var(--rb-text-muted);
 }
 
 .input-chip-text {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.error-chip-row {
+  padding-block: 4px;
+  width: 100%;
 }
 
 .error-chip {
-  display: inline-flex;
+  /* min-height, not fixed — the message WRAPS (transcript.rs:6531-6534). */
+  min-height: 34px;
+  width: 100%;
+  display: flex;
   align-items: center;
   gap: var(--rb-space-sm);
-  min-height: 30px;
-  padding: 0 10px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-danger-muted);
-  background: color-mix(in srgb, var(--rb-danger-muted) 35%, transparent);
-  color: var(--rb-danger);
+  overflow: hidden;
+  border-radius: var(--rb-radius-panel);
+  border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
+  background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
+  padding: 7px var(--rb-space-sm);
   font-size: 12px;
-  max-width: 100%;
 }
 
-.error-chip-glyph {
-  font-weight: 700;
+.error-chip-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--rb-radius-control);
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+}
+
+.error-chip-label {
+  flex: none;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
 }
 
 .error-chip-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
 }
 
 /* ── Transcript responsive + reduced motion ─────────────────────────── */
 
 @media (max-width: 768px) {
-  .transcript-col {
-    padding: 8px var(--rb-space-md) var(--rb-space-md);
+  .trow {
+    padding-inline: var(--rb-space-md);
   }
 
   .user-bubble {
@@ -6221,7 +6472,10 @@ button.files-row-active:hover {
   .attachment-drop-overlay,
   .jump-pill-inner,
   .update-strip,
-  .gate-retry {
+  .gate-retry,
+  /* The user-fold height tween snaps; the JS compensation already branched
+     to a direct scroll-by for the same media query (transcript.rs:4424). */
+  .user-text-clip {
     transition: none;
   }
 }

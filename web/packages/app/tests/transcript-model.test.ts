@@ -18,6 +18,11 @@ import {
   visibleRowWindow,
   type TranscriptRow,
 } from "../src/lib/transcript";
+import {
+  jumpVisibility,
+  shouldAnchorLiveStream,
+  shouldRestick,
+} from "../src/lib/stick-spring";
 
 const parse = (_key: string, text: string, live: boolean) => parseMarkdown(text, live);
 
@@ -250,7 +255,7 @@ describe("topGapFor / diffRows", () => {
         : kind === "toolGroup"
           ? { kind, tools: [], autoOpen: false }
           : kind === "user"
-            ? { kind, text: "", pending: false, attachments: [] }
+            ? { kind, text: "", mentions: [], badges: [], pending: false, attachments: [] }
             : kind === "inputChip"
               ? { kind, header: "", resolved: false }
               : { kind, message: "" };
@@ -267,10 +272,15 @@ describe("topGapFor / diffRows", () => {
 
   it("turn starts get the large gap; same-part blocks the block gap", () => {
     expect(topGapFor(null, row("a", "errorChip", true))).toBe(16);
-    const mdA = row("e#p.0", "errorChip");
-    const mdB = row("e#p.1", "errorChip");
+    // split_sibling_gaps_match_live_internal_spacing: the markdown clause
+    // requires BOTH rows to be markdown kinds — a chip after a block keeps
+    // the small step even with a shared part prefix.
+    const mdA = row("e#p.0", "markdown");
+    const mdB = row("e#p.1", "markdown");
     expect(topGapFor(mdA, mdB)).toBe(12);
-    expect(topGapFor(row("x", "toolGroup"), row("y", "errorChip"))).toBe(8);
+    expect(topGapFor(row("e#p.0", "errorChip"), row("e#p.1", "errorChip"))).toBe(8);
+    expect(topGapFor(mdA, row("e#p.1", "errorChip"))).toBe(8);
+    expect(topGapFor(row("x", "toolGroup"), row("y", "errorChip"))).toBe(12);
     expect(topGapFor(row("x", "errorChip"), row("y", "toolGroup"))).toBe(12);
   });
 
@@ -449,5 +459,408 @@ describe("visibleRowWindow", () => {
     expect(visibleRowWindow(uneven, unevenHeights, 650, 200, OVERDRAW)).toEqual({ first: 1, last: 4 });
     const uniform = [0, 100, 200, 300, 400];
     expect(visibleRowWindow(uniform, [100, 100, 100, 100, 100], 650, 200, OVERDRAW)).toEqual({ first: 3, last: 4 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 18 � transcript rows (ports of the desktop test names in �6)
+// ---------------------------------------------------------------------------
+
+import {
+  FLAVOUR_WORDS,
+  PendingQueuedTurns,
+  SavedViewportCache,
+  captureSavedViewport,
+  captureViewportAnchor,
+  flavourSeed,
+  flavourWord,
+  formatElapsed,
+  ownTurnObservesPrompt,
+  ownTurnReleasedForRestore,
+  parseForRow,
+  resolveViewportAnchor,
+  selectionScrollStep,
+  sendingBridge,
+  sentMentionDisplay,
+  userResizeCurve,
+  userResizeDurationMs,
+  type OwnTurnAnchor,
+  type SavedViewport,
+  type TranscriptRow as Row18,
+} from "../src/lib/transcript";
+
+describe("working trailer helpers (transcript.rs:1886-1952)", () => {
+  it("flavour_words_rotate_every_seven_seconds", () => {
+    const seed = flavourSeed("chat-1");
+    // The index advances one step per FLAVOUR_ROTATE_SECS of elapsed time.
+    expect(flavourWord(seed, 0)).toBe(flavourWord(seed, 6));
+    expect(flavourWord(seed, 7)).not.toBe(flavourWord(seed, 0));
+    expect(flavourWord(seed, 7)).toBe(FLAVOUR_WORDS[(((seed + 1) % 21) + 21) % 21]);
+    // The full 21-word cycle repeats after 147s.
+    expect(flavourWord(seed, 147)).toBe(flavourWord(seed, 0));
+    // Negative elapsed clamps to zero, never wraps backwards.
+    expect(flavourWord(seed, -30)).toBe(flavourWord(seed, 0));
+  });
+
+  it("format_elapsed matches the desktop shape", () => {
+    expect(formatElapsed(0)).toBe("0s");
+    expect(formatElapsed(42)).toBe("42s");
+    expect(formatElapsed(92)).toBe("1m 32s");
+    expect(formatElapsed(-5)).toBe("0s");
+  });
+
+  it("sending_bridge_holds_until_the_turn_outdates_the_send", () => {
+    // No send in flight: never sending.
+    expect(sendingBridge(null, null)).toBe(false);
+    expect(sendingBridge(null, 1000)).toBe(false);
+    // A send with no turn row: the round-trip window � sending.
+    expect(sendingBridge(1000, null)).toBe(true);
+    // The turn predates the send (the row still carries the PREVIOUS turn):
+    // sending until the new turn actually begins.
+    expect(sendingBridge(1000, 999)).toBe(true);
+    expect(sendingBridge(1000, 1000)).toBe(true);
+    expect(sendingBridge(1000, 1001)).toBe(false);
+  });
+});
+
+describe("selectionScrollStep (transcript.rs:142)", () => {
+  const bounds = { top: 0, bottom: 600 };
+
+  it("selection_scroll_ramps_at_viewport_edges", () => {
+    // Dead centre: no scroll.
+    expect(selectionScrollStep(bounds, { x: 10, y: 300 })).toBe(0);
+    // Top edge: negative (toward the document top), ramping as t�.
+    expect(selectionScrollStep(bounds, { x: 10, y: 0 })).toBe(-24);
+    expect(selectionScrollStep(bounds, { x: 10, y: 18 })).toBe(-24 * 0.25);
+    expect(selectionScrollStep(bounds, { x: 10, y: 36 })).toBe(0);
+    // Bottom edge: positive.
+    expect(selectionScrollStep(bounds, { x: 10, y: 600 })).toBe(24);
+    expect(selectionScrollStep(bounds, { x: 10, y: 582 })).toBe(24 * 0.25);
+    // The edge band is capped at a third of the viewport.
+    expect(selectionScrollStep({ top: 0, bottom: 60 }, { x: 0, y: 0 })).toBe(-24);
+    expect(selectionScrollStep({ top: 0, bottom: 0 }, { x: 0, y: 0 })).toBe(0);
+  });
+});
+
+describe("user fold resize spec (transcript.rs:1178-1192)", () => {
+  it("user_resize_duration_scales_with_distance_and_stays_bounded", () => {
+    expect(userResizeDurationMs(0)).toBe(220);
+    expect(userResizeDurationMs(100)).toBe(252);
+    expect(userResizeDurationMs(-50)).toBe(220);
+    expect(userResizeDurationMs(2000)).toBe(850);
+    // Short folds ease-out; large folds ease-in-out.
+    expect(userResizeCurve(400)).toBe("easeOut");
+    expect(userResizeCurve(501)).toBe("easeInOut");
+  });
+
+  it("long_prompts_collapse_and_short_ones_do_not", () => {
+    expect(userMessageNeedsCollapse("short")).toBe(false);
+    expect(userMessageNeedsCollapse("five\nlines\nexactly\nhere\nnow")).toBe(false);
+    expect(userMessageNeedsCollapse("six\nlines\nright\nhere\nnow\nok")).toBe(true);
+    expect(userMessageNeedsCollapse("x".repeat(401))).toBe(true);
+  });
+});
+
+describe("jump / restick / live-anchor gates (transcript.rs:74, :199, :3113)", () => {
+  it("jump_button_stays_available_when_scrolling_down_until_near_bottom", () => {
+    // Hidden: not yet past the 320px offering threshold.
+    expect(jumpVisibility(false, 320)).toBe(false);
+    expect(jumpVisibility(false, 500)).toBe(true);
+    // Hysteresis: once shown, it stays until AT_BOTTOM_PX (2).
+    expect(jumpVisibility(true, 320)).toBe(true);
+    expect(jumpVisibility(true, 3)).toBe(true);
+    expect(jumpVisibility(true, 2)).toBe(false);
+    expect(jumpVisibility(true, 1)).toBe(false);
+  });
+
+  it("restick_is_direction_aware", () => {
+    // Returning toward the bottom inside the 70px band re-sticks.
+    expect(shouldRestick(60, 100)).toBe(true);
+    expect(shouldRestick(0, 5)).toBe(true);
+    // A small wheel-up notch NEAR the bottom stays inside the band but moves
+    // AWAY from it: re-sticking would make the pin unbreakable.
+    expect(shouldRestick(20, 10)).toBe(false);
+    expect(shouldRestick(2, 0)).toBe(false);
+    // Past the band, direction is irrelevant.
+    expect(shouldRestick(71, 100)).toBe(false);
+  });
+
+  it("only_a_stream_at_the_bottom_gets_a_hard_end_anchor", () => {
+    expect(shouldAnchorLiveStream(true, 2, true)).toBe(true);
+    // Unpinned, or gliding back toward the bottom: the normal spring.
+    expect(shouldAnchorLiveStream(false, 2, true)).toBe(false);
+    expect(shouldAnchorLiveStream(true, 3, true)).toBe(false);
+    // Not streaming: no hard anchor.
+    expect(shouldAnchorLiveStream(true, 2, false)).toBe(false);
+  });
+});
+
+describe("diffRows (transcript.rs:1651)", () => {
+  const mk = (id: string, version = 0): Row18 => ({
+    id,
+    version,
+    turnStart: false,
+    rowKind: { kind: "errorChip", message: id },
+    entryId: "e",
+    timestamp: null,
+    copyText: null,
+  });
+
+  it("diff_rows_appends_and_middle_edits", () => {
+    expect(diffRows([mk("a")], [mk("a")])).toBeNull();
+    expect(diffRows([mk("a")], [mk("a"), mk("b")])).toEqual([1, 0, 1]);
+    expect(diffRows([mk("a"), mk("b"), mk("c")], [mk("a"), mk("c")])).toEqual([1, 1, 0]);
+    // An in-place content change: same ids, new version ? splice of one.
+    expect(diffRows([mk("a"), mk("b"), mk("c")], [mk("a"), mk("b", 7), mk("c")])).toEqual([1, 1, 1]);
+    // Same id/version but different timestamp content (the settle bit):
+    const settled = { ...mk("b"), version: mk("b").version ^ 0x40000000 };
+    expect(diffRows([mk("a"), mk("b"), mk("c")], [mk("a"), settled, mk("c")])).toEqual([1, 1, 1]);
+  });
+
+  it("diff_handles_live_to_split_growth", () => {
+    // A streaming tail splits into block rows while the prefix stays put:
+    // live rows e#p.0 / e#p.0.0, then one more block appears.
+    const live = [mk("e#p.0"), mk("e#p.0.0")];
+    const grown = [mk("e#p.0"), mk("e#p.0.0"), mk("e#p.0.1")];
+    expect(diffRows(live, grown)).toEqual([2, 0, 1]);
+    // The live?complete flip changes every version but no id: an in-place
+    // remeasure, not a splice.
+    const flipped = grown.map((row) => ({ ...row, version: row.version + 1 }));
+    expect(diffRows(grown, flipped)).toEqual([0, 3, 3]);
+  });
+
+  it("timestamp_strip_lands_on_the_last_settled_row", () => {
+    const source = "# T\n\nbody";
+    const streaming = entry("a1", [textPart("p0", source)], { status: "streaming" });
+    const live = rowsForEntry(streaming, { parse });
+    expect(live.every((row) => row.timestamp === null)).toBe(true);
+    expect(live.every((row) => row.copyText === null)).toBe(true);
+    const settled = rowsForEntry(entry("a1", [textPart("p0", source)]), { parse });
+    // Only the LAST settled row carries the timestamp + copy affordance.
+    expect(settled.map((row) => row.timestamp === null)).toEqual([true, false]);
+    expect(settled[settled.length - 1]!.copyText).toBe(source);
+    // Identical settles are diff-stable (the cache case).
+    const settledAgain = rowsForEntry(entry("a1", [textPart("p0", source)]), { parse });
+    expect(diffRows(settled, settledAgain)).toBeNull();
+    // The live→settled flip keeps every id but changes the diff keys (the
+    // streaming bit, the settle bit): an in-place remeasure, never a splice.
+    const flipped = diffRows(live, settled);
+    expect(flipped).toEqual([0, live.length, settled.length]);
+  });
+});
+
+describe("sentMentionDisplay (composer.rs:1316, projected chips)", () => {
+  const link = (path: string, label = path.split("/").pop()!) =>
+    `[${label}](roboco-file:${encodeURIComponent(path).replaceAll("%2F", "/")})`;
+
+  it("user_rows_project_file_mentions_into_chips", () => {
+    // Plain prompts take the zero-work path.
+    expect(sentMentionDisplay("no mentions here")).toBeNull();
+    const raw = `look at ${link("src/lib/foo.ts")} please`;
+    const projected = sentMentionDisplay(raw);
+    expect(projected).not.toBeNull();
+    // The chip: non-breaking side bearings around `@basename`.
+    expect(projected!.display).toBe("look at \u00a0@foo.ts\u00a0 please");
+    expect(projected!.mentions).toHaveLength(1);
+    expect(projected!.mentions[0]).toMatchObject({ path: "src/lib/foo.ts", isDir: false });
+    // The chip's range covers exactly the projected label run.
+    const span = projected!.mentions[0]!;
+    expect(projected!.display.slice(span.start, span.end)).toBe("\u00a0@foo.ts\u00a0");
+    // The row model carries the projection.
+    const user = entry("u1", [textPart("t0", raw)], { role: "user" });
+    const [row] = rowsForEntry(user, { parse });
+    expect(row!.rowKind).toMatchObject({ kind: "user" });
+    if (row!.rowKind.kind === "user") {
+      expect(row!.rowKind.text).toBe(projected!.display);
+      expect(row!.rowKind.mentions).toHaveLength(1);
+    }
+  });
+
+  it("duplicate basenames take the shortest unique suffix; dirs keep their slash", () => {
+    const raw = `${link("a/util.ts")} and ${link("b/util.ts")}`;
+    const projected = sentMentionDisplay(raw);
+    expect(projected!.display).toContain("\u00a0@a/util.ts\u00a0");
+    expect(projected!.display).toContain("\u00a0@b/util.ts\u00a0");
+    const dir = sentMentionDisplay(link("src/lib/", "lib"));
+    expect(dir!.mentions[0]).toMatchObject({ path: "src/lib/", isDir: true });
+    // Non-mention links and unsafe paths are left untouched.
+    expect(sentMentionDisplay("see [docs](https://x.dev)")).toBeNull();
+    expect(sentMentionDisplay("[evil](roboco-file:..%2F..%2Fetc)")).toBeNull();
+  });
+
+  it("message_copy_keeps_authored_text_and_excludes_tool_traces", () => {
+    const e = entry("a", [textPart("t0", "one"), toolPart("c0", exec("ls")), textPart("t1", "  two  ")]);
+    // Authored bytes preserved, blank parts dropped, tools excluded.
+    expect(assistantCopyText(e)).toBe("one\n\n  two  ");
+    expect(assistantCopyText(entry("b", [toolPart("c0", exec("ls"))]))).toBeNull();
+    // A mention-carrying prompt copies its PROJECTED text.
+    const user = entry("u1", [textPart("t0", `hi ${link("src/a.ts")}`)], { role: "user" });
+    const [row] = rowsForEntry(user, { parse });
+    expect(row!.copyText).toBe(row!.rowKind.kind === "user" ? row!.rowKind.text : null);
+  });
+});
+
+describe("parseForRow (transcript.rs:1557-1650)", () => {
+  it("streaming parses mended, settling hands off the exact live tree", () => {
+    const state = new Map();
+    // A fresh live part: one full parse, nothing stable yet.
+    const first = parseForRow(state, "k", "one\n\ntwo", true);
+    expect(first.outcome.kind).toBe("incremental");
+    if (first.outcome.kind === "incremental") {
+      expect(first.outcome.parsedBytes).toBe("one\n\ntwo".length);
+      expect(first.outcome.stablePrefixBlocks).toBe(0);
+    }
+    // A prefix extension: the reparse tail is the appended bytes, and the
+    // leading paragraph block survives untouched.
+    const second = parseForRow(state, "k", "one\n\ntwo three", true);
+    expect(second.outcome.kind).toBe("incremental");
+    if (second.outcome.kind === "incremental") {
+      expect(second.outcome.parsedBytes).toBe(" three".length);
+      expect(second.outcome.stablePrefixBlocks).toBe(1);
+    }
+    // Identical re-delivery keeps tree identity (no re-render).
+    expect(parseForRow(state, "k", "one\n\ntwo three", true).tree).toBe(second.tree);
+    // The live→complete handoff ADOPTS the live tree when sources match —
+    // the split rows then share the tree the unsplit row painted.
+    const settled = parseForRow(state, "k", "one\n\ntwo three", false);
+    expect(settled.outcome.kind).toBe("handoff");
+    expect(settled.tree).toBe(second.tree);
+    // And the settled entry then serves from cache.
+    expect(parseForRow(state, "k", "one\n\ntwo three", false).outcome.kind).toBe("cached");
+    // A changed settled source re-parses in full, unmended.
+    const fresh = parseForRow(state, "k", "plain *now*", false);
+    expect(fresh.outcome.kind).toBe("full");
+    // The streaming path mends hanging markers (display-only closers).
+    const mended = parseForRow(new Map(), "m", "**bold", true);
+    const runs = mended.tree.blocks[0]?.block;
+    expect(runs !== undefined && runs.kind === "paragraph").toBe(true);
+    if (runs !== undefined && runs.kind === "paragraph") {
+      expect(runs.runs.some((run) => run.style.bold === true)).toBe(true);
+    }
+  });
+});
+
+describe("ViewportAnchor resolve (transcript.rs:2349-2395)", () => {
+  const rows: Row18[] = [
+    { id: "a#0", entryId: "a", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
+    { id: "a#1", entryId: "a", turnStart: false, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
+    { id: "b#0", entryId: "b", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
+    { id: "c#0", entryId: "c", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
+  ];
+
+  it("captures the first row crossing the viewport top, then resolves exactly", () => {
+    const anchor = captureViewportAnchor(rows, 150, [0, 100, 200, 300], [100, 100, 100, 100]);
+    expect(anchor).toMatchObject({ rowId: "a#1", fallbackIx: 1, offsetInRow: 50 });
+    const resolved = resolveViewportAnchor(anchor!, rows, false);
+    expect(resolved).toEqual({ itemIx: 1, offsetInItem: 50 });
+  });
+
+  it("falls back to the same entry's nearest row, then the clamped index", () => {
+    // The anchored row disappeared (a streaming block reshaped).
+    const anchor = { rowId: "a#1", entryId: "a", fallbackIx: 1, offsetInRow: 50 };
+    const reshaped = rows.filter((row) => row.id !== "a#1");
+    // While the replay is pending, fallbacks are disabled: no restore.
+    expect(resolveViewportAnchor(anchor, reshaped, false)).toBeNull();
+    const fallback = resolveViewportAnchor(anchor, reshaped, true);
+    expect(fallback).toEqual({ itemIx: 0, offsetInItem: 0 });
+    // Entry gone entirely: the clamped index.
+    const gone = resolveViewportAnchor({ rowId: "x", entryId: "zz", fallbackIx: 9, offsetInRow: 4 }, rows, true);
+    expect(gone).toEqual({ itemIx: 3, offsetInItem: 0 });
+    expect(resolveViewportAnchor({ rowId: "x", entryId: "zz", fallbackIx: 0, offsetInRow: 0 }, [], true)).toBeNull();
+  });
+
+  it("saved viewports follow the tail when pinned, anchor otherwise", () => {
+    const positions = [0, 100, 200, 300];
+    const heights = [100, 100, 100, 100];
+    expect(captureSavedViewport([], 0, positions, heights, true, 0, null)).toBeNull();
+    const pinned = captureSavedViewport(rows, 0, positions, heights, true, 0, null);
+    expect(pinned).toEqual({ kind: "followTail" });
+    const own: OwnTurnAnchor = { chatId: "c1", messageId: "m1", held: true, positioned: true, seenPrompt: true };
+    const escaped = captureSavedViewport(rows, 150, positions, heights, false, 700, own);
+    expect(escaped).toMatchObject({ kind: "anchored", distanceFromBottom: 700, ownTurn: own });
+    if (escaped !== null && escaped.kind === "anchored") {
+      // Restoring releases the hold � the reservation, not the auto-follow.
+      expect(ownTurnReleasedForRestore(escaped.ownTurn!)).toMatchObject({
+        held: false,
+        positioned: false,
+        seenPrompt: true,
+      });
+    }
+  });
+
+  it("own_turn keeps the runway while the prompt was never seen", () => {
+    const anchor: OwnTurnAnchor = { chatId: "c", messageId: "m", held: true, positioned: false, seenPrompt: false };
+    expect(ownTurnObservesPrompt(anchor, false)).toBe(true);
+    const seen: OwnTurnAnchor = { ...anchor, seenPrompt: true };
+    expect(ownTurnObservesPrompt(seen, true)).toBe(true);
+    // Once seen, a later disappearance is terminal.
+    expect(ownTurnObservesPrompt(seen, false)).toBe(false);
+  });
+});
+
+describe("PendingQueuedTurns (transcript.rs:2307)", () => {
+  const rowOf = (entryId: string, turnStart: boolean): Row18 => ({
+    id: entryId,
+    version: 0,
+    turnStart,
+    rowKind: { kind: "errorChip", message: "" },
+    entryId,
+    timestamp: null,
+    copyText: null,
+  });
+
+  it("registers inert and consumes the newest materialized row", () => {
+    const turns = new PendingQueuedTurns();
+    turns.register("c1", "m1");
+    turns.register("c1", "m2");
+    expect(turns.size).toBe(2);
+    // Nothing materialized yet: inert — the visible turn is untouched.
+    expect(turns.takeLatestMaterialized("c1", [rowOf("other", true)])).toBeNull();
+    expect(turns.size).toBe(2);
+    // Both land in one doc frame: the newest (the last registered) owns the
+    // runway, matching consecutive immediate sends.
+    const rows = [rowOf("m1", true), rowOf("m2", true)];
+    expect(turns.takeLatestMaterialized("c1", rows)).toBe("m2");
+    expect(turns.size).toBe(0);
+    // Re-registering an existing id refreshes it to the back (newest).
+    turns.register("c1", "m1");
+    turns.register("c1", "m2");
+    turns.register("c1", "m1");
+    expect(turns.takeLatestMaterialized("c1", rows)).toBe("m1");
+    // A non-turn-start row with the same entry id does not materialize.
+    turns.register("c2", "q1");
+    expect(turns.takeLatestMaterialized("c2", [rowOf("q1", false)])).toBeNull();
+    expect(turns.size).toBe(1);
+    // Another chat's rows never match.
+    expect(turns.takeLatestMaterialized("c3", [rowOf("q1", true)])).toBeNull();
+  });
+
+  it("bounds itself to MAX_PENDING_QUEUED_TURNS", () => {
+    const turns = new PendingQueuedTurns();
+    for (let ix = 0; ix < 300; ix++) {
+      turns.register("c", `m${ix}`);
+    }
+    expect(turns.size).toBe(256);
+  });
+});
+
+describe("SavedViewportCache (transcript.rs:2401)", () => {
+  it("is per-chat, LRU-bounded, and refreshes on save", () => {
+    const cache = new SavedViewportCache();
+    const tail: SavedViewport = { kind: "followTail" };
+    for (let ix = 0; ix < 256; ix++) {
+      cache.save(`chat-${ix}`, tail);
+    }
+    cache.save("chat-old", tail);
+    expect(cache.get("chat-old")).toEqual(tail);
+    // Saving enough to overflow evicts the least-recently-used — chat-0
+    // goes while chat-old (saved most recently) stays.
+    for (let ix = 0; ix < 255; ix++) {
+      cache.save(`other-${ix}`, tail);
+    }
+    expect(cache.get("chat-0")).toBeUndefined();
+    expect(cache.get("chat-old")).toEqual(tail);
+    cache.clear();
+    expect(cache.get("chat-old")).toBeUndefined();
   });
 });

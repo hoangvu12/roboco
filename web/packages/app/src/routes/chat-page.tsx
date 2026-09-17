@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
+import { methods } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
@@ -10,15 +11,14 @@ import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
+import { bottomClearance } from "../state/layout";
 import { chatRoute } from "../router";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
-import { describeSendError, sendRun } from "../lib/composer-actions";
-import { draftFromChat } from "../lib/composer-draft";
-import { echoStore, type PendingSend } from "../state/transcript-store";
+import { echoStore } from "../state/transcript-store";
 import type { QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 
@@ -185,8 +185,10 @@ export function ChatPage() {
 
   // ── Bottom chrome stack bookkeeping ─────────────────────────────────────
   // `bottom_stack` measured live (the desktop's paint-time canvas): the
-  // height feeds the transcript's bottom fade band through a custom property
-  // on the column, so the fade tracks the composer's compact↔expanded flip.
+  // height feeds BOTH the transcript's bottom fade band through a custom
+  // property on the column AND the last row's clearance pad through
+  // `state/layout.ts`'s store, so the fade and the pad track the composer's
+  // compact↔expanded flip together.
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
   const bottomStackRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -195,10 +197,16 @@ export function ChatPage() {
     if (stack === null || column === null || typeof ResizeObserver === "undefined") {
       return;
     }
-    const observer = new ResizeObserver(() => {
-      column.style.setProperty("--rb-bottom-stack", `${stack.getBoundingClientRect().height}px`);
-    });
+    const publish = (): void => {
+      const height = stack.getBoundingClientRect().height;
+      column.style.setProperty("--rb-bottom-stack", `${height}px`);
+      bottomClearance.set(height);
+    };
+    const observer = new ResizeObserver(publish);
     observer.observe(stack);
+    // `set_bottom_clearance`'s discipline (transcript.rs:2940): publish once
+    // at attach too, not only on change.
+    publish();
     return () => observer.disconnect();
     // `row` gates the main return: the first render(s) take the loading
     // early-return, where the refs are null and the effect above bailed — so
@@ -224,6 +232,17 @@ export function ChatPage() {
     useCallback(() => echoStore.forChat(chatId).length > 0, [chatId]),
   );
 
+  // The session row's `started_at` — the working trailer's timer base
+  // (`session_for(chat_id).started_at` on the desktop).
+  const turnStartedAt = useMemo(() => {
+    const started = snapshot?.statuses.rows.find((row) => row.chatId === chatId)?.startedAt ?? null;
+    if (started === null) {
+      return null;
+    }
+    const parsed = Date.parse(started);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [snapshot, chatId]);
+
   // Opening a chat IS reading it (`mark_chat_seen`): the local stamp lands
   // first and stands whatever the mutation does, so a dropped `Mutate` never
   // makes a chat the user plainly looked at flash unread again.
@@ -235,46 +254,26 @@ export function ChatPage() {
   }, [session, chatId]);
 
   /**
-   * Retry an undelivered echo. A retry is a NEW send of the same text, not a
-   * resend of the old wire message: the store mints a fresh id and restarts
-   * the grace-window clock, and that id is what goes over the wire.
-   *
-   * The draft comes from the chat's own persisted config rather than the
-   * composer's local one — this is a re-send of something already sent, so the
-   * config it was sent under is the right one, and the composer may well have
-   * moved on.
+   * The working trailer's failed-send retry — the desktop's `retry_send`
+   * (transcript.rs:5190): skip when the engine is not connected, restart the
+   * grace clocks (same message ids, so the overlay returns to Sending), and
+   * re-deliver through the engine's `RETRY_DELIVERY` — it re-issues the dead
+   * durable commands with their original message ids, and the host's
+   * user-entry pre-write dedupes by id, so no bubble doubles.
    */
-  const onRetrySend = useCallback(
-    (send: PendingSend) => {
-      if (session === null || row === undefined) {
-        return;
-      }
-      const chat = row.chat;
-      const cwd = chat.cwd ?? null;
-      if (cwd === null || cwd.trim().length === 0) {
-        sidebarNotice.set("This chat has no working directory yet — pick a space first.");
-        return;
-      }
-      const next = echoStore.retry(send.messageId);
-      if (next === null) {
-        return;
-      }
-      const harnesses = session.catalog.getHarnesses().rows;
-      const draft = draftFromChat(chat, harnesses, session.catalog.getModels(chat.config?.harness ?? "claude-code").rows);
-      void (async () => {
-        try {
-          await sendRun(session.client, chat.id, draft, send.text, cwd, {
-            currentConfig: chat.config,
-            mintMessageId: () => next.messageId,
-          });
-        } catch (error) {
-          echoStore.removeEcho(next.messageId);
-          sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
-        }
-      })();
-    },
-    [session, row],
-  );
+  const onRetryDelivery = useCallback(() => {
+    if (session === null || session.client.state !== "connected") {
+      return;
+    }
+    echoStore.restartGrace(chatId, Date.now());
+    void session.client
+      .call(methods.RETRY_DELIVERY, { chatId })
+      .catch((error: unknown) => {
+        sidebarNotice.set(
+          `Could not retry delivery: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }, [session, chatId]);
 
   // The titlebar is the shell's; the route fills its identity and the `+`'s
   // handler. The right pane, its toggle, its surface tabs and its expand
@@ -328,8 +327,10 @@ export function ChatPage() {
               docId={chatId}
               deviceId={deviceId}
               onContextUsage={setContextUsage}
-              onRetrySend={onRetrySend}
+              onRetryDelivery={onRetryDelivery}
               onJumpChange={onJumpChange}
+              indicator={row.status}
+              turnStartedAt={turnStartedAt}
             />
           )}
         </div>

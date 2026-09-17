@@ -50,6 +50,11 @@ export const LIST_HARNESSES = "ListHarnesses";
 export const LIST_MODELS = "ListModels";
 /** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
 export const QUEUE_COMMAND = "QueueCommand";
+/** Failed-send retry (crates/rpc/src/lib.rs:54): `{chatId}` — the engine
+ *  re-issues the chat's dead Run/Steer commands under their original message
+ *  ids; the user-entry pre-write dedupes by id, so the optimistic echo acks
+ *  without doubling. */
+export const RETRY_DELIVERY = "RetryDelivery";
 /** Message-queue surface (crates/engine/rpc.rs §3.5). The queue lives on the chat doc;
  *  `WatchQueue` streams `{items}` snapshots, the rest are mutations that require
  *  an explicit ack so a racing device's row never silently moves. Edit leases

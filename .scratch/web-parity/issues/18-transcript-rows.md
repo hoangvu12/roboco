@@ -13,7 +13,7 @@ bottom, and leaving a chat and coming back restores where you were reading.
 **Blocked by:** 01 (Smoke fixture renders a transcript), 02 (Foundation tokens),
 05 (State fixes: nav history, send ids, optimistic echo).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/02-transcript.md` §3.0, §3.1–§3.8,
 §3.12, §3.13, §3.14, §4.1–§4.6, §4.8, §4.15, §4.16, §4.17, §4.19, §5 rows
@@ -1100,4 +1100,131 @@ Copied verbatim from research 02 §5, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+Landed on `wp2/18-transcript-rows` (worktree `18-transcript`), 2026-09-18.
+
+**What landed**
+
+- The underlay port (the ticket's §2.1 "the shell's outlet wraps it" +
+  §2.2's clearance math): at ≥769px `.chat-body` becomes an absolute
+  full-column region pulled up under the overlay titlebar
+  (`.chat-page { margin-top: -38px }`), and `.bottom-stack` overlays it.
+  The scroller's mask now uses the REAL desktop math — top band inset by
+  `TITLEBAR_HEIGHT`, bottom band `max(--rb-bottom-stack − 24px, 1px)` —
+  replacing the ghost-zone 1px clamp (research round2 §7.1's "durable fix").
+  At phone widths the sibling layout and the 1px band stay exactly as
+  before. Row 0's 64px gap, the 48px own-turn inset, and the
+  clearance + 24 + 8 last-row pad all work off this geometry.
+- `lib/transcript.ts`: the §2.0 constants (TITLEBAR/FADE_BAND sourced from
+  the theme artifact), `flavourWord`/`flavourSeed`/`formatElapsed`/
+  `sendingBridge`, `selectionScrollStep`, `userResizeDurationMs`/
+  `userResizeCurve`, the `sentMentionDisplay` port (composer.rs:860-1338
+  with the shortest-unique-suffix labels), `rowsForEntry`'s user branch
+  carrying `mentions`/`badges`, the `topGapFor` fixes (both-markdown guard,
+  prev-toolGroup → 12), `ViewportAnchor`/`SavedViewport`/`SavedViewportCache`
+  (LRU 256), `OwnTurnAnchor` + `PendingQueuedTurns`, and `parseForRow` with
+  the four `ParseOutcome`s (the handoff adopts the live tree).
+- `stick-controller.ts`: `onOwnSend` (entry glide at 0.85 retain, the
+  positioned one-sided hold with the slack), the fill-check retirement,
+  `restoreViewport`, `beginScrollNavigation`, `jumpToBottom`'s re-arm
+  (expanded prompt releases + pins instead), the own-turn escape rules in
+  `#onScroll` (release hold, keep reservation, re-arm only when returning
+  to a short turn's actual hold), and two web-specific "ours" rules for
+  browser-clamped writes (clamp-to-end and content-shrank-under-our-write —
+  the virtualizer's estimate drift produces both; a user scroll never
+  changes scrollHeight).
+- `transcript.tsx`: per-row gutters (16px phone / 48px ≥769) around the
+  736px `.trow-col` (`.transcript-col` removed — each row owns its column,
+  which is what lets the last row carry its clearance pad); the own-turn
+  reservation as bottom-spacer space (the DOM row keeps its natural height
+  — the floor never paints); the scroller-presence ref so the stick
+  re-attaches when an empty chat's scroller mounts late; viewport save on
+  unmount / restore after a populated replay (gated on the anchor row's
+  first measurement, the viewport-finalize analogue); the row-shell hover
+  ownership guard; `RowMeta` (32px reserved lane, justify-end on user rows,
+  12px text-muted @55%, the 24px COPY→CHECK icon button with the 1200ms
+  clear); the `UserRow` rebuild (measured-height collapse at 110px + the
+  ellipsis row, the epoch-keyed height tween over `user_resize_spec`, the
+  360ms long-press with move-cancel, the compensation scroll stepper,
+  lifted fold state so virtualizer remounts never lose it, mention chips);
+  the §2.9/§2.10 chip rebuilds; the selection-drag edge auto-scroll; the
+  offline strip; and the `alignTop` subagent parameterization (row-0 gap
+  16, top-open, top-only fade gated on `scrollTop > 1`, doc-liveness
+  trailer — the dialog passes it today, ticket 19 gets the pane).
+- `working-trailer.tsx` (new) + the trailer state derivation in the surface
+  (the subagent doc-liveness branch, the undelivered-first branch, the
+  sending bridge). The retry clicks through to chat-page's
+  `onRetryDelivery`: engine-connected gate, `echoStore.restartGrace`
+  (state.rs `retry_pending_send` — same ids), and the `RETRY_DELIVERY` RPC
+  (added to engine-client methods; the engine re-issues dead commands under
+  their original message ids).
+- `state/transcript-store.ts`: `replay` (pending/empty/populated) on the
+  snapshot, the module-scoped `savedViewportCache`/`pendingQueuedTurns`,
+  and `EchoStore.restartGrace`. `state/layout.ts`: the
+  `bottomClearance` store the chat page's existing `--rb-bottom-stack`
+  ResizeObserver now also publishes.
+- Tests: all §6 cases in `transcript-model.test.ts` (705 total green).
+
+**Deviations / judgment calls**
+
+- **Underlay in this ticket, not 06.** The ticket's clearance math
+  (`clearance + 24 + 8`) and "the shell's outlet wraps it" only close over
+  the underlay geometry, and the task brief explicitly allowed the real
+  port — so it landed here. The titlebar overlay itself was already
+  ticket-06/07 architecture; this only removed `.main`'s pad for the chat
+  route via the negative margin, plus the stack overlay.
+- **Parking accuracy.** The own-turn hold rests within ~20px of the 48px
+  inset on non-row-0 turns (row-0 parks exactly at 64). The residual is the
+  virtualizer's estimate drift (the desktop's list offsets are logical and
+  exact); the clamped-write rules keep it stable instead of fighting.
+- **Viewport restore accuracy.** Leaving and returning lands within ~100px
+  of the saved offset (the anchor + per-commit preserve converge from
+  estimates). FollowTail restores are exact. The finalize pass is precise
+  enough for the acceptance bullet; a measurement-complete finalize token
+  is follow-up polish.
+- **The queued branch is unreachable live**: `chat_delivery_degraded` has
+  no web stream (research 14 §5, standing decision) — the trailer renders
+  "Queued — will send automatically" only when a degraded flag arrives.
+  `PendingQueuedTurns` ships tested; the web composer has no queue-send
+  path yet, so nothing registers live (no call site to wire).
+- **OWN_SEND_SCROLL_SLACK_PX** (2px) is not added to the reservation: it
+  exists to keep gpui's list out of a shorter-than-viewport regime the web
+  scroller doesn't have.
+- **Reservation expansion term** (the fold tween's height joining the
+  reservation, transcript.rs:3497-3504) omitted — folds on the anchor row
+  during a live runway re-derive the floor next commit anyway.
+- **`.transcript-fade`** from the CSS list: no such class existed (the fade
+  is the mask on `.transcript`); the mask was rewritten instead.
+- **Selection clear-on-long-press-fire** (desktop clears its owned
+  selection registry first) skipped: native DOM selection, nothing to clear.
+- **`(e) question + error chips` screenshot pair skipped**: the smoke
+  mock's script (registry.rs `mock_script`) emits text/tool events only —
+  no input/error parts exist to capture against. The chips are covered by
+  the row-model unit tests and match §2.9/§2.10's numbers in CSS.
+- **Desktop-side pairs**: no desktop app running in this environment; the
+  web captures pair against the standing references in
+  `.scratch/web-client/parity/` (the same practice tickets 12/13 used).
+- `ROBOCO_MOCK_DELAY_MS=1200` was set in the smoke bat for the mid-run
+  captures (the only addition to the prescribed runbook content).
+
+**Verification**
+
+- `pnpm -r build` (web root) green; `pnpm --filter @roboco/app test` green
+  (46 files / 705 tests).
+- Browser (`web_smoke` @ 1440×900, paced mock): boot with no error boundary
+  (checked after pairing, mid-run, and through an engine kill); row-0 gap
+  64px / gutters 48px / `.trow-col` 736px; the meta lane reserved at 32px
+  with the "Sep 18, 6:00 AM" timestamp + copy button revealing on hover;
+  collapse at exactly 110px + ellipsis + "Show more" → 154px expanded
+  "Show less"; the trailer ("Musing… 1s", MatrixSpinner) under the last
+  row; a non-row-0 send parks and holds through the stream (released
+  reservation survives to run end; the fill retirement engages the pin);
+  leaving/returning restores near the saved offset; the offline strip
+  shows "Reconnecting… Cached history is read-only." with the cached rows
+  still rendered; phone-width sanity (480px: sibling layout, 12px gutters,
+  composer docked, no boundary).
+- Screenshots: `.scratch/web-parity/shots/18/` — `boot.png`,
+  `boot-final.png`, `web-a-settled-hovered.png`, `web-b-collapsed.png`,
+  `web-b-expanded.png`, `web-c-working-trailer.png`,
+  `web-d-send-parked.png`, `web-f-offline-strip.png`,
+  `web-phone-sanity.png`. Skipped: the (e) chips pair (above).
+

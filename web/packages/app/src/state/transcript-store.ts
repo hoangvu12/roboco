@@ -1,7 +1,12 @@
 import type { ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
-import { applyTranscriptFrame, TranscriptDesync } from "../lib/transcript";
+import {
+  PendingQueuedTurns,
+  SavedViewportCache,
+  applyTranscriptFrame,
+  TranscriptDesync,
+} from "../lib/transcript";
 
 /**
  * One chat's live transcript — the store behind the transcript view. Subscribes
@@ -13,6 +18,13 @@ import { applyTranscriptFrame, TranscriptDesync } from "../lib/transcript";
  * Same React-binding contract as the watch cache: `getSnapshot()` is
  * identity-stable until an actual change, `subscribe` fires once per change.
  */
+
+/**
+ * `TranscriptReplayState` (transcript.rs:2426): a saved viewport is restored
+ * only after a populated replay — an `empty` replay is authoritative (the
+ * chat really has no messages) and `pending` is neither.
+ */
+export type TranscriptReplayState = "pending" | "empty" | "populated";
 
 export interface TranscriptSnapshot {
   /** The transcript entries in document order (immutable, identity-preserving). */
@@ -27,6 +39,8 @@ export interface TranscriptSnapshot {
   readonly error: string | null;
   /** The connection generation these rows belong to. */
   readonly generation: number;
+  /** Where the replay stands (`TranscriptReplayState`). */
+  readonly replay: TranscriptReplayState;
 }
 
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
@@ -198,6 +212,25 @@ export class EchoStore {
     return next;
   }
 
+  /**
+   * `retry_pending_send` (state.rs:1235), the trailer-retry half: restart the
+   * grace clock for EVERY pending send in the chat — same message ids, so the
+   * overlay returns to its Sending phase while the engine's re-delivery runs.
+   * (The durable re-issue itself is the `RETRY_DELIVERY` RPC the caller
+   * fires; this never mints new ids.)
+   */
+  restartGrace(chatId: string, nowMs: number): void {
+    const sends = this.forChat(chatId);
+    if (sends.length === 0) {
+      return;
+    }
+    this.#byChat.set(
+      chatId,
+      sends.map((send) => ({ ...send, startedAtMs: nowMs })),
+    );
+    this.#emit();
+  }
+
   /** Test seam — drops every overlay without notifying anything of substance. */
   reset(): void {
     this.#byChat = new Map();
@@ -216,6 +249,22 @@ function defaultMintEchoId(): string {
 }
 
 export const echoStore = new EchoStore();
+
+/**
+ * Per-chat viewport memory (transcript.rs:2401 `saved_viewports`), module
+ * scoped like the echo store: a `TranscriptStore` is created per open chat
+ * and disposed on every switch, so the viewports must outlive them.
+ */
+export const savedViewportCache = new SavedViewportCache();
+
+/**
+ * Locally-authored queue rows whose stable ids have not appeared in the
+ * transcript yet (transcript.rs:2307) — module scoped for the same reason as
+ * the viewport cache. The web composer has no queue-send path yet, so nothing
+ * registers today; the class ships tested for the composer ticket that adds
+ * one.
+ */
+export const pendingQueuedTurns = new PendingQueuedTurns();
 
 /** The message ids a frame carries — the ack key set. */
 function frameMessageIds(frame: TranscriptFrame): string[] {
@@ -243,6 +292,7 @@ export class TranscriptStore {
   #loaded = false;
   #error: string | null = null;
   #generation = 0;
+  #replay: TranscriptReplayState = "pending";
   #snapshot: TranscriptSnapshot;
   #handle: WatchHandle | null = null;
   readonly #listeners = new Set<() => void>();
@@ -292,6 +342,7 @@ export class TranscriptStore {
     this.#contextUsage = null;
     this.#loaded = false;
     this.#error = null;
+    this.#replay = "pending";
     this.#subscribe();
     this.#commit();
   }
@@ -325,6 +376,7 @@ export class TranscriptStore {
       this.#entries = EMPTY_ENTRIES;
       this.#loaded = false;
       this.#error = null;
+      this.#replay = "pending";
     }
     const frame = asFrame(update);
     if (frame === null) {
@@ -349,6 +401,13 @@ export class TranscriptStore {
       this.#contextUsage = update.contextUsage;
     }
     this.#loaded = true;
+    // The replay state: a reset decides authoritatively (empty vs populated);
+    // any delta means real rows exist.
+    if ("reset" in frame) {
+      this.#replay = frame.reset.length === 0 ? "empty" : "populated";
+    } else {
+      this.#replay = "populated";
+    }
     this.#commit();
   }
 
@@ -369,6 +428,7 @@ export class TranscriptStore {
       streaming: last?.status === "streaming",
       error: this.#error,
       generation: this.#generation,
+      replay: this.#replay,
     };
   }
 
