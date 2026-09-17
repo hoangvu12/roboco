@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { Appearance } from "@roboco/theme";
 import type { NewThreadBackgroundEffect, NewThreadComposerBackground } from "./ui-settings";
 import { AppearanceStore, type AppearancePreferences, resolveAppearance } from "../lib/appearance-store";
-import { applyAppearanceToDocument, applyTypographyToDocument } from "../theme";
+import { applyAppearanceToDocument, applyConversationWidthToDocument, applyTypographyToDocument } from "../theme";
 import { Readiness, resolveNewThreadBackground } from "../lib/new-thread-background";
 import { prepareNewThreadBackgroundEffects } from "../lib/new-thread-background-effects";
 import { uiSettings, type UiSettingsStore } from "./ui-settings";
@@ -325,6 +325,9 @@ export function initAppearance(): () => void {
       codeFontFamily: settings.codeFontFamily,
       codeFontSize: settings.codeFontSize,
     });
+    // The transcript column cap rides the same write path: a live drag
+    // reflow must land with the store's snapshot, not on the next paint.
+    applyConversationWidthToDocument(settings.transcriptWidth);
   };
   applyTypography();
   const unsubscribe = appearanceStore.subscribe(apply);

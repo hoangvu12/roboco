@@ -30,6 +30,7 @@ import { StickController } from "../src/components/stick-controller";
 import { ToolGroupMotionStore, type AutomaticFoldTransition, type FoldState } from "../src/lib/tool-motion";
 import { ChatArrivalWindow } from "../src/lib/chat-arrival";
 import { transcriptFoldCache } from "../src/state/transcript-fold-state";
+import { uiSettings } from "../src/state/ui-settings";
 import type { OwnTurnAnchor, TranscriptRow } from "../src/lib/transcript";
 import {
   echoStore,
@@ -942,5 +943,83 @@ describe("mounted momentum-safe anchor preserve (ticket 85)", () => {
     // the user's momentum; at real fling speeds this was the mobile
     // "content jumping up and down" every frame).
     expect(el.scrollTop).toBe(1100);
+  });
+});
+
+describe("conversation width reflow (upstream cbf2ad84)", () => {
+  it("a width change re-wraps rows in place — no remount, no re-snap, stale heights drop", async () => {
+    // `conversation_width_reflows_streaming_text_without_restarting_animations`
+    // (transcript.rs, upstream cbf2ad84), jsdom edition: the row ELEMENT
+    // identity is the web's veil Rc — row components own the reveal/fade
+    // state, so a remount is exactly a restarted animation — and the
+    // observer's re-measure is the reflow. No browser layout exists here, so
+    // heights arrive by batch and the cache's lifecycle is the evidence:
+    // `noteMeasure` fires only for a batch that REGISTERS (the observer's
+    // 0.5px threshold against the cache), which is exactly what a dropped
+    // cache lets the reflow do again.
+    const noteMeasure = vi.spyOn(ChatArrivalWindow.prototype, "noteMeasure");
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 4000 });
+    const text = "Streaming content should wrap at the configured conversation width. ".repeat(80);
+    const streaming: SessionMessageEntry = {
+      id: "reply",
+      role: "assistant",
+      parts: [{ kind: "text", id: "body", text }],
+      createdAt: 2_000,
+      deviceId: "dev",
+      status: "streaming",
+    };
+    await settleCache(handle, [userEntry("U"), streaming]);
+    const el = handle.el();
+    // The user escapes the seed's pin to the top and the rows measure.
+    act(() => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event("scroll"));
+      pumpRaf(1);
+    });
+    act(() => {
+      deliverHeights({ U: 200, "reply#body.0": 400 });
+      pumpRaf(2);
+    });
+    const row = el.querySelector<HTMLElement>('[data-rid="reply#body.0"]');
+    expect(row).not.toBeNull();
+    // A re-delivery of the SAME batch is a no-op: the cache holds it.
+    noteMeasure.mockClear();
+    act(() => {
+      deliverHeights({ U: 200, "reply#body.0": 400 });
+      pumpRaf(2);
+    });
+    expect(noteMeasure).not.toHaveBeenCalled();
+
+    // The column narrows: the surface re-renders off the settings store,
+    // the streaming row keeps its DOM node, the stick surface and scroll
+    // position stand, and no snap fires (the spring is not restarted).
+    const stick = probe.stick;
+    const snapsBefore = probe.snaps;
+    await act(async () => {
+      uiSettings.updateImmediate({ transcriptWidth: 560 });
+    });
+    act(() => {
+      pumpRaf(2);
+    });
+    expect(el.querySelector('[data-rid="reply#body.0"]')).toBe(row);
+    expect(probe.stick).toBe(stick);
+    expect(probe.snaps).toBe(snapsBefore);
+    expect(el.scrollTop).toBe(0);
+
+    // Heights measured under the old column were dropped (the web
+    // `list.remeasure()`): the same batch now REGISTERS — the reflow
+    // re-measures every row it touches.
+    noteMeasure.mockClear();
+    act(() => {
+      deliverHeights({ U: 200, "reply#body.0": 400 });
+      pumpRaf(2);
+    });
+    expect(noteMeasure).toHaveBeenCalled();
+
+    // Restore the ladder default for the suites that follow.
+    await act(async () => {
+      uiSettings.updateImmediate({ transcriptWidth: 736 });
+    });
   });
 });

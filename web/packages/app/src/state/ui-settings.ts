@@ -73,6 +73,12 @@ export const CODE_FONT_SIZE_DEFAULT = 12.5;
 /** `TERMINAL_FONT_SIZE_DEFAULT`. */
 export const TERMINAL_FONT_SIZE_DEFAULT = 13;
 
+/** `settings.rs`'s transcript column bounds (upstream cbf2ad84). */
+export const TRANSCRIPT_WIDTH_MIN = 560;
+export const TRANSCRIPT_WIDTH_MAX = 1200;
+export const TRANSCRIPT_WIDTH_DEFAULT = 736;
+export const TRANSCRIPT_WIDTH_STEP = 16;
+
 /** How many sidebar rows the jump shortcuts reach. */
 export const JUMP_SLOTS = 9;
 export const JUMP_DEFAULTS: readonly string[] = [
@@ -211,6 +217,11 @@ export interface UiSettings {
   readonly diffSplit: boolean;
   readonly diffWrap: boolean;
   readonly codeFencesFitContent: boolean;
+  /**
+   * Maximum conversation width in logical pixels (`transcript_width`);
+   * the composer's width is independent. Snapped to the 16px ladder.
+   */
+  readonly transcriptWidth: number;
   readonly filesAutosaveEnabled: boolean;
   readonly filesAutosaveDelayMs: number;
   readonly filesWordWrap: boolean;
@@ -310,6 +321,7 @@ export function defaultUiSettings(): UiSettings {
     diffSplit: false,
     diffWrap: false,
     codeFencesFitContent: false,
+    transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT,
     filesAutosaveEnabled: false,
     filesAutosaveDelayMs: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     filesWordWrap: false,
@@ -343,6 +355,12 @@ export function minOr(value: unknown, min: number, fallback: number): number {
     return fallback;
   }
   return Math.max(min, value);
+}
+
+/** `settings.rs::normalize_transcript_width` — clamp, then snap to the ladder. */
+export function normalizeTranscriptWidth(value: unknown): number {
+  const width = clampOr(value, TRANSCRIPT_WIDTH_MIN, TRANSCRIPT_WIDTH_MAX, TRANSCRIPT_WIDTH_DEFAULT);
+  return TRANSCRIPT_WIDTH_MIN + Math.round((width - TRANSCRIPT_WIDTH_MIN) / TRANSCRIPT_WIDTH_STEP) * TRANSCRIPT_WIDTH_STEP;
 }
 
 /** `UiFontSize::normalized` — snap to the nearest offered size, ties low. */
@@ -535,6 +553,7 @@ export function healUiSettings(value: unknown): UiSettings {
     diffSplit: bool(raw.diffSplit, false),
     diffWrap: bool(raw.diffWrap, false),
     codeFencesFitContent: bool(raw.codeFencesFitContent, false),
+    transcriptWidth: normalizeTranscriptWidth(raw.transcriptWidth),
     filesAutosaveEnabled: bool(raw.filesAutosaveEnabled, false),
     filesAutosaveDelayMs: clampOr(
       raw.filesAutosaveDelayMs,

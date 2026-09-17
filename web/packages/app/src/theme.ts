@@ -115,6 +115,18 @@ export function applyTypographyToDocument(
 }
 
 /**
+ * The transcript's content column cap (`transcript_width`, upstream cbf2ad84)
+ * on `--rb-transcript-width` — the variable `.trow-col` consumes. The
+ * composer's 768px column stays independent, as on the desktop.
+ */
+export function applyConversationWidthToDocument(
+  width: number,
+  root: HTMLElement = document.documentElement,
+): void {
+  root.style.setProperty("--rb-transcript-width", `${width}px`);
+}
+
+/**
  * `INK_HAIRLINE_SCALE` — a 1px line needs *more* ink on a bright field than a
  * plate does, so hairlines scale up in light mode where fills do not.
  */

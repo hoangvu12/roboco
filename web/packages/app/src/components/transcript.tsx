@@ -665,6 +665,10 @@ function TranscriptScroller({
   // changes.rs baselines, lib/typography.ts); the estimator's context carries
   // the same value the renderers paint against.
   const codeFontSize = useUiSettings().codeFontSize;
+  // The configurable content column (settings.rs `transcript_width`, upstream
+  // cbf2ad84): the `.trow-col` max-width lands through --rb-transcript-width,
+  // and every cached row height was measured under the PREVIOUS column.
+  const transcriptWidth = useUiSettings().transcriptWidth;
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
   // renders nothing when empty, exactly like the desktop). The attach effect
   // below keys off this presence state so a scroller that mounts after the
@@ -685,6 +689,12 @@ function TranscriptScroller({
   // keys refreshed every render (toolKeysRef, also the observer's tag source).
   const heightKeysRef = useRef(new Map<string, string>());
   const toolKeysRef = useRef(new Map<string, string>());
+  // The column width the current measurements were taken under (the web peer
+  // of Transcript::content_width): a change drops every cached height —
+  // `list.remeasure()` on the desktop — retaining row identity and every
+  // animation/provenance state, so the ResizeObserver re-measures mounted
+  // rows in place and unmounted rows fall back to estimates until remount.
+  const measuredWidthRef = useRef(transcriptWidth);
   const anchorRef = useRef<{ id: string; offset: number; top: number } | null>(null);
   const rowsRef = useRef(rows);
   const positionsRef = useRef<readonly number[]>([]);
@@ -771,6 +781,17 @@ function TranscriptScroller({
         heightKeysRef.current.delete(id);
       }
     }
+  }
+
+  // A conversation-width change re-wraps every row through the CSS variable
+  // without remounting any of them (transcript.rs `content_width != width`),
+  // so prefix sums must not trust heights measured under the old column: drop
+  // the whole cache — mounted rows re-measure through the observer on the
+  // reflow, unmounted rows stand on estimates until they return.
+  if (measuredWidthRef.current !== transcriptWidth) {
+    measuredWidthRef.current = transcriptWidth;
+    heightsRef.current.clear();
+    heightKeysRef.current.clear();
   }
 
   // Bounded tool-row measurement validity (ticket 70 §2.4): a cached tool
@@ -1866,8 +1887,9 @@ function RowShell({
 }) {
   const ref = useCallback((el: HTMLDivElement | null) => register(row.id, el), [register, row.id]);
   return (
-    // Wide gutters (roboco `px-4 @3xl:px-12`) around the 736px column; the
-    // last row's bottom pad clears the chrome the list scrolls under.
+    // Wide gutters (roboco `px-4 @3xl:px-12`) around the configurable
+    // conversation-width column; the last row's bottom pad clears the chrome
+    // the list scrolls under.
     <div
       ref={ref}
       data-rid={row.id}

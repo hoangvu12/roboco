@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
   accentForVariant,
   accentPresets,
@@ -20,7 +20,17 @@ import {
 import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
 import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
-import { uiSettings, useUiSettings, UI_FONT_SIZES, type NewThreadBackgroundEffect } from "../state/ui-settings";
+import {
+  normalizeTranscriptWidth,
+  TRANSCRIPT_WIDTH_DEFAULT,
+  TRANSCRIPT_WIDTH_MAX,
+  TRANSCRIPT_WIDTH_MIN,
+  TRANSCRIPT_WIDTH_STEP,
+  uiSettings,
+  useUiSettings,
+  UI_FONT_SIZES,
+  type NewThreadBackgroundEffect,
+} from "../state/ui-settings";
 import {
   accentHelper,
   APPEARANCE_MODES,
@@ -336,6 +346,7 @@ export function AppearanceSettingsPage() {
       <InterfaceFontBlock settings={settings} />
       <MonoFontBlock kind="terminal" settings={settings} />
       <MonoFontBlock kind="code" settings={settings} />
+      <ConversationWidthBlock settings={settings} />
 
       {(libraryError ?? libraryWarning) !== null && (
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
@@ -646,6 +657,138 @@ function FontSizeSelect(props: {
         </RbSelectPositioner>
       </RbSelectPortal>
     </RbSelect>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The conversation-width slider (appearance.rs render_transcript_width,
+// upstream cbf2ad84)
+// ---------------------------------------------------------------------------
+
+/**
+ * The conversation column's maximum width: a 240px slider on the 560–1200
+ * ladder with a 16px step. Drag samples write through the debounced policy —
+ * the snapshot moves synchronously so the transcript reflows live under the
+ * pointer, while one coalesced write reaches storage; releasing the pointer
+ * flushes it. The value/Reset row and the scale labels share the surrounding
+ * whitespace (invisible, never reflowing) and reveal on hover, drag, and
+ * keyboard focus, as on the desktop.
+ */
+function ConversationWidthBlock(props: {
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const width = props.settings.transcriptWidth;
+  const fraction =
+    (width - TRANSCRIPT_WIDTH_MIN) / (TRANSCRIPT_WIDTH_MAX - TRANSCRIPT_WIDTH_MIN);
+  const sliderRef = useRef<HTMLDivElement | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [keyboard, setKeyboard] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const showDetails = hovered || dragging || (keyboard && focused);
+
+  /** `drag_width` — the pointer's x, mapped across the 7px end insets. */
+  const widthFromPointerX = (x: number): number => {
+    const bounds = sliderRef.current?.getBoundingClientRect();
+    if (bounds === undefined) {
+      return width;
+    }
+    const raw = (x - bounds.left - 7) / Math.max(bounds.width - 14, 1);
+    const clamped = Math.min(Math.max(raw, 0), 1);
+    return normalizeTranscriptWidth(
+      TRANSCRIPT_WIDTH_MIN + clamped * (TRANSCRIPT_WIDTH_MAX - TRANSCRIPT_WIDTH_MIN),
+    );
+  };
+
+  return (
+    <div className="settings-font-block">
+      <div className="settings-font-row">
+        <div className="settings-font-copy">
+          <span className="settings-field-label">Conversation width</span>
+          <p className="settings-font-description">
+            Maximum width of messages. Adapts to smaller windows.
+          </p>
+        </div>
+        <div
+          className="settings-width-control"
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+        >
+          <div className="settings-width-details" data-hidden={showDetails ? undefined : "hidden"}>
+            <span>{`${Math.round(width)} px`}</span>
+            <button
+              type="button"
+              className="settings-width-reset"
+              onClick={() => uiSettings.updateImmediate({ transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT })}
+            >
+              Reset
+            </button>
+          </div>
+          <div
+            ref={sliderRef}
+            className="settings-width-slider"
+            role="slider"
+            tabIndex={0}
+            aria-label="Conversation width"
+            aria-valuemin={TRANSCRIPT_WIDTH_MIN}
+            aria-valuemax={TRANSCRIPT_WIDTH_MAX}
+            aria-valuenow={width}
+            aria-valuetext={`${Math.round(width)} px`}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDragging(true);
+              setKeyboard(false);
+              uiSettings.updateDebounced({
+                transcriptWidth: widthFromPointerX(event.clientX),
+              });
+            }}
+            onPointerMove={(event) => {
+              if (dragging) {
+                uiSettings.updateDebounced({
+                  transcriptWidth: widthFromPointerX(event.clientX),
+                });
+              }
+            }}
+            onLostPointerCapture={() => {
+              setDragging(false);
+              uiSettings.flush();
+            }}
+            onKeyDown={(event) => {
+              const next =
+                event.key === "left" || event.key === "down"
+                  ? width - TRANSCRIPT_WIDTH_STEP
+                  : event.key === "right" || event.key === "up"
+                    ? width + TRANSCRIPT_WIDTH_STEP
+                    : event.key === "home"
+                      ? TRANSCRIPT_WIDTH_MIN
+                      : event.key === "end"
+                        ? TRANSCRIPT_WIDTH_MAX
+                        : null;
+              if (next === null) {
+                return;
+              }
+              setKeyboard(true);
+              event.preventDefault();
+              uiSettings.updateDebounced({ transcriptWidth: next });
+            }}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+          >
+            <div className="settings-width-rail">
+              <div className="settings-width-fill" style={{ width: `${fraction * 100}%` }} />
+              <div
+                className="settings-width-knob"
+                style={{ "--rb-width-fraction": `${fraction * 100}%` } as CSSProperties}
+              />
+            </div>
+          </div>
+          <div className="settings-width-scale" data-hidden={showDetails ? undefined : "hidden"}>
+            <span>560 px</span>
+            <span>1,200 px</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

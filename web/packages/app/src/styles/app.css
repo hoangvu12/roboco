@@ -7239,9 +7239,10 @@ button.files-save-pill:hover {
 
 /* ── Transcript ─────────────────────────────────────────────────────── */
 /* Rows are virtualized by `../components/transcript.tsx`; the geometry
-   constants (736px column, 48px gutters, 64px first-row gap, 32px meta lane,
-   24px fade band) mirror the desktop's transcript.rs, and every color/motion
-   value is a --rb-* token from the generated theme artifact. */
+   constants (the configurable content column — 736px default — 48px
+   gutters, 64px first-row gap, 32px meta lane, 24px fade band) mirror the
+   desktop's transcript.rs, and every color/motion value is a --rb-* token
+   from the generated theme artifact. */
 
 .transcript-wrap {
   position: relative;
@@ -7374,9 +7375,9 @@ button.files-save-pill:hover {
 
 /*
  * A row (transcript.rs:5637-5680): wide gutters (roboco `px-4 @3xl:px-12`)
- * around the 736px content column; the row's own top gap and — on the last
- * row — its chrome-clearance bottom pad. `trow-col` is the column the
- * desktop wraps every row's content in (`w_full max_w(MAX_CONTENT_WIDTH)`).
+ * around the configurable content column; the row's own top gap and — on the
+ * last row — its chrome-clearance bottom pad. `trow-col` is the column the
+ * desktop wraps every row's content in (`w_full max_w(content_width)`).
  */
 .trow {
   min-width: 0;
@@ -7387,7 +7388,9 @@ button.files-save-pill:hover {
 
 .trow-col {
   width: 100%;
-  max-width: 736px;
+  /* `transcript_width` (settings.rs, upstream cbf2ad84): 560–1200 in 16px
+     steps, default 736 — applied by applyConversationWidthToDocument. */
+  max-width: var(--rb-transcript-width, 736px);
   min-width: 0;
 }
 
@@ -10831,6 +10834,96 @@ button.files-save-pill:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* The conversation-width control (appearance.rs `render_transcript_width`,
+ * upstream cbf2ad84): the details occupy the surrounding whitespace, so the
+ * column keeps the same row rhythm as the font controls (my -12). The value +
+ * Reset row and the 560/1,200 scale are laid out even while hidden — only
+ * visibility toggles, exactly like the desktop's `.invisible()`.
+ */
+.settings-width-control {
+  flex: none;
+  margin-block: -12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-width-details,
+.settings-width-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--rb-text-muted);
+}
+
+.settings-width-scale {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.settings-width-details[data-hidden],
+.settings-width-scale[data-hidden] {
+  visibility: hidden;
+}
+
+.settings-width-reset {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.settings-width-reset:hover {
+  color: var(--rb-text);
+}
+
+/* The slider proper: a 240×28 hit area, the rail inset 7px each end and
+ * 4px tall at top 12, a 14px accent knob straddling it — the desktop's
+ * geometry. Focus shows the details row (keyboard users get the same
+ * affordance hover and drag do); the outline stays off the visual.
+ */
+.settings-width-slider {
+  position: relative;
+  width: 240px;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.settings-width-slider:focus-visible {
+  outline: none;
+}
+
+.settings-width-rail {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 12px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--rb-border);
+}
+
+.settings-width-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--rb-accent);
+}
+
+.settings-width-knob {
+  position: absolute;
+  left: var(--rb-width-fraction);
+  top: -5px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 999px;
+  background: var(--rb-accent);
 }
 
 /* The dropdown triggers (appearance.rs:2327-2347, 2397-2417): 220/128×36,
