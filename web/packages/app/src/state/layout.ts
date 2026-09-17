@@ -68,16 +68,83 @@ export function rightPaneTakeoverWidth(viewport: number, sidebar: number): numbe
  * the desktop, not a member of the title row, and the row pads itself past it —
  * which is what lets the identity sit at the sidebar's edge and glide with it.
  */
-const TITLEBAR_CLUSTER_PAD = 10;
-const TITLEBAR_CONTROL_GAP = 2;
-const TITLEBAR_GROUP_GAP = 8;
+export const TITLEBAR_CLUSTER_PAD = 10;
+export const TITLEBAR_CONTROL_GAP = 2;
+export const TITLEBAR_GROUP_GAP = 8;
 /** `TITLEBAR_IDENTITY_GAP` — SPACE_MD. */
-const TITLEBAR_IDENTITY_GAP = 12;
+export const TITLEBAR_IDENTITY_GAP = 12;
 /** A 24px sidebar trigger, an 8px group gap, then two 24px history buttons. */
-const CLUSTER_BUTTONS_WIDTH = 24 * 3 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
+export const CLUSTER_BUTTONS_WIDTH = 24 * 3 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
 /** The new-session `+` budgets one slot so the title never sits under it. */
-const TITLEBAR_ACTION_SLOT_WIDTH = TITLEBAR_GROUP_GAP + 24;
+export const TITLEBAR_ACTION_SLOT_WIDTH = TITLEBAR_GROUP_GAP + 24;
 const SPACE_LG = 16;
+
+// ---------------------------------------------------------------------------
+// Per-platform cluster geometry — `shell.rs:211-285`, ported whole so the web
+// tests can assert the desktop's cases AND the web collapse (no traffic lights,
+// no Linux captions: spacer 0, cluster start 10).
+// ---------------------------------------------------------------------------
+
+/** Where the cluster starts off macOS traffic lights (`left: fullscreen ? 12 : 88`). */
+export function titlebarClusterStart(fullscreen: boolean): number {
+  return fullscreen ? 12 : 88;
+}
+
+/** The spacer ahead of the cluster exists only to clear traffic lights. */
+export function titlebarSpacerWidth(isMacos: boolean, fullscreen: boolean, containerPad: number): number {
+  if (!isMacos) {
+    return 0;
+  }
+  return Math.max(titlebarClusterStart(fullscreen) - containerPad, 0);
+}
+
+/** A row of `count` caption buttons on the cluster's 24px/2px rhythm. */
+export function captionButtonsWidth(count: number): number {
+  if (count === 0) {
+    return 0;
+  }
+  return count * 24 + (count - 1) * 2;
+}
+
+/** Where the cluster's first button starts, from the window's left edge. */
+export function clusterButtonsStart(
+  isMacos: boolean,
+  fullscreen: boolean,
+  linuxLeftCaptions: number,
+): number {
+  if (isMacos) {
+    return titlebarClusterStart(fullscreen);
+  }
+  if (linuxLeftCaptions > 0) {
+    return 10 + captionButtonsWidth(linuxLeftCaptions) + 2;
+  }
+  return 10;
+}
+
+/** Left clearance a full-bleed header needs to start past the overlay cluster. */
+export function clusterClearance(
+  isMacos: boolean,
+  fullscreen: boolean,
+  linuxLeftCaptions: number,
+  containerPad: number,
+): number {
+  return Math.max(
+    clusterButtonsStart(isMacos, fullscreen, linuxLeftCaptions) +
+      CLUSTER_BUTTONS_WIDTH +
+      TITLEBAR_GROUP_GAP -
+      containerPad,
+    0,
+  );
+}
+
+/**
+ * `titlebar_new_session_alpha` (`shell.rs:193-199`): the `+` shows only while
+ * an existing chat is selected on the chat route — never on the blank canvas,
+ * never in Settings.
+ */
+export function titlebarNewSessionAlpha(isChatRoute: boolean, hasSelectedChat: boolean): number {
+  return isChatRoute && hasSelectedChat ? 1 : 0;
+}
 
 /**
  * Where titlebar content may start: past the cluster, plus its identity gap.
@@ -106,6 +173,9 @@ export function titlebarRowLeft(options: {
 }): number {
   const plusInset = options.showsNewSession ? TITLEBAR_ACTION_SLOT_WIDTH : 0;
   if (options.takeover) {
+    // The − 14 cancels `TITLEBAR_IDENTITY_GAP(12)` minus the strip's own left
+    // pad (`tabs.rs:216-218`): in takeover the pane's band owns the row and
+    // its first chip must land on the pane's own gutter, not 12px past it.
     const clusterEnd = TITLEBAR_CONTENT_START - TITLEBAR_IDENTITY_GAP + plusInset - 14;
     return Math.max(options.sidebar - 8, clusterEnd);
   }

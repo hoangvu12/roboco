@@ -35,10 +35,12 @@ import {
 } from "../lib/transcript";
 import { OVERDRAW_PX } from "../lib/stick-spring";
 import { VeilTracker } from "../lib/veil";
+import type { ChatIndicator } from "../lib/view";
 import { MarkdownBlockView } from "./markdown";
 import { StickController } from "./stick-controller";
 import { SubagentDialog } from "./subagent-dialog";
 import { UserAttachments } from "./attachments/user-attachments";
+import { MatrixSpinner } from "./glyph-spinner";
 
 /**
  * The chat transcript — virtualization at block granularity over the row model
@@ -53,12 +55,19 @@ const MAX_CONTENT_WIDTH = 736;
 /** Line cap for a FETCHED full output (defensive; desktop FULL_OUTPUT_MAX_LINES). */
 const FULL_OUTPUT_MAX_LINES = 400;
 
+/** The jump pill's visibility + action, published up to the chat page. */
+export interface JumpButtonState {
+  readonly shown: boolean;
+  readonly jump: () => void;
+}
+
 export function TranscriptView({
   client,
   docId,
   deviceId,
   onContextUsage,
   onRetrySend,
+  onJumpChange,
 }: {
   client: EngineClient;
   docId: string;
@@ -72,6 +81,12 @@ export function TranscriptView({
   onContextUsage?: (usage: ContextUsage | null) => void;
   /** Re-send an echo the grace window declared undelivered (§2.3's retry). */
   onRetrySend?: (send: PendingSend) => void;
+  /**
+   * The jump-to-bottom button's live state (`transcript.jump_button_shown()`).
+   * The pill itself lives over the composer — outside this component — so the
+   * chat page owns where it renders; this callback is how it learns.
+   */
+  onJumpChange?: (state: JumpButtonState) => void;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -95,6 +110,7 @@ export function TranscriptView({
       deviceId={deviceId}
       onContextUsage={onContextUsage}
       onRetrySend={onRetrySend}
+      onJumpChange={onJumpChange}
     />
   );
 }
@@ -105,12 +121,14 @@ function TranscriptSurface({
   deviceId,
   onContextUsage,
   onRetrySend,
+  onJumpChange,
 }: {
   store: TranscriptStore;
   client: EngineClient;
   deviceId: string | null;
   onContextUsage?: (usage: ContextUsage | null) => void;
   onRetrySend?: (send: PendingSend) => void;
+  onJumpChange?: (state: JumpButtonState) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
@@ -212,6 +230,7 @@ function TranscriptSurface({
           onRetrySend?.(send);
         }
       }}
+      onJumpChange={onJumpChange}
     />
   );
 }
@@ -255,6 +274,7 @@ interface ScrollerProps {
   readonly deviceId: string | null;
   /** Retry an undelivered echo, by its message id (= the row's entry id). */
   readonly onRetryRow: (messageId: string) => void;
+  readonly onJumpChange?: (state: JumpButtonState) => void;
 }
 
 /** Capture the first visible row + its pixel offset — the escape anchor. */
@@ -308,6 +328,7 @@ function TranscriptScroller({
   client,
   deviceId,
   onRetryRow,
+  onJumpChange,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
@@ -431,6 +452,16 @@ function TranscriptScroller({
     stick.setStreaming(streaming);
   }, [stick, streaming]);
 
+  // Publish the jump button's state up to the chat page, which renders the
+  // pill over the composer (`render_jump_to_bottom` floats outside the
+  // transcript's fade, anchored above the composer stack). The cleanup hides
+  // it again when the surface unmounts (chat switch).
+  useEffect(() => {
+    const state: JumpButtonState = { shown: showJump, jump: () => stickRef.current?.jumpToBottom() };
+    onJumpChange?.(state);
+    return () => onJumpChange?.({ ...state, shown: false });
+  }, [showJump, onJumpChange]);
+
   // Initial load: open at the end (desktop opens a transcript at the bottom).
   const snappedRef = useRef(false);
   useLayoutEffect(() => {
@@ -522,28 +553,13 @@ function TranscriptScroller({
         </div>
         <div style={{ height: bottomPad }} aria-hidden />
       </div>
-      <div className="transcript-fade" aria-hidden />
       {/*
-        The reserved status strip (`layout::STATUS_STRIP_HEIGHT`) belongs to
-        the SHELL on the desktop, not to this component — ticket 06 builds it
-        there. Nothing reserves that height in between.
-      */}
-      {showJump && (
-        <button
-          type="button"
-          className="jump-bottom"
-          aria-label="Scroll to bottom"
-          onClick={() => stick.jumpToBottom()}
-        >
-          ↓
-        </button>
-      )}
-      {/*
-        A stream error has no floating card here: the desktop surfaces it as a
-        24px shell strip above the list ("Engine off. Cached history is
-        read-only."), which ticket 18/01 owns. `error`/`onRetry` stay on the
-        props so that strip can read them without a caller change; until then
-        an active stream error is simply not shown.
+        The edge fade is the scroller's own mask now (`.transcript` in
+        app.css): the desktop's per-glyph EdgeFade is a mask, not a painted
+        overlay, with a 24px quadratic band at the top and a bottom band sized
+        to the chrome stack via `--rb-bottom-stack`. No overlay element, and
+        nothing reserves the status strip's height here — the strip lives in
+        the chat page's bottom stack (ticket 06).
       */}
       {subagentDoc !== null && (
         <SubagentDialog client={client} docId={subagentDoc} deviceId={deviceId} onClose={() => setSubagentDoc(null)} />
@@ -1169,6 +1185,58 @@ function ErrorChipRow({ message }: { message: string }) {
         !
       </span>
       <span className="error-chip-text">{message}</span>
+    </div>
+  );
+}
+
+// ── Shell chrome published from the transcript surface ──────────────────────
+
+/**
+ * The "↓ Scroll to bottom" pill — the desktop's `jump_pill` (`shell.rs:6192`):
+ * a 30px rounded-full labeled chip, frosted (blur 16 under the floating-card
+ * tint), hairline border, `↓` + label at 13px, paddings 11/13 around a 6px
+ * gap. Reusable so ticket 07/19's subagent pane can host its second instance.
+ *
+ * The entrance (`dialog_in`: 180ms, opacity 0→1, top 2px→0) and the hover
+ * wash live in the stylesheet.
+ */
+export function JumpPill({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="jump-pill" onClick={onClick}>
+      <span className="jump-pill-inner">
+        <span className="jump-pill-glyph" aria-hidden>
+          ↓
+        </span>
+        <span className="jump-pill-label">Scroll to bottom</span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The reserved status strip — the desktop's `render_status_strip`
+ * (`shell.rs:6373`): 24px tall, ALWAYS reserved so the composer below never
+ * shifts, aligned with the composer column (max-width 768, centered,
+ * 24px inner gutters, 11px type). The working loader and the awaiting-input
+ * surface live elsewhere now; what is left is the error word and the sending
+ * indicator.
+ */
+export function StatusStrip({ status, sending }: { status: ChatIndicator; sending: boolean }) {
+  return (
+    <div className="status-strip" role="status">
+      {status === "errored" ? (
+        <span className="status-strip-error">Run failed</span>
+      ) : sending ? (
+        <>
+          {/*
+            The desktop's `gradient_spinner("sending-indicator", speed 2.5)`;
+            `MatrixSpinner` is that spinner's standing port, sized to the
+            24px strip — its exact geometry is ticket 20's.
+          */}
+          <MatrixSpinner size={16} className="status-strip-spinner" />
+          <span className="status-strip-sending">Sending…</span>
+        </>
+      ) : null}
     </div>
   );
 }

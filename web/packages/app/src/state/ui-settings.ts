@@ -191,6 +191,11 @@ export interface UiSettings {
   readonly terminalHeight: number;
   readonly keymap: KeymapConfig;
   readonly escapeStopsActiveAgent: boolean;
+  /**
+   * The update version the user dismissed from the sidebar's update strip
+   * (`update_dismissed` on the desktop). Null while nothing is dismissed.
+   */
+  readonly dismissedUpdateVersion: string | null;
   readonly appearance: UiAppearance;
   readonly gitHistoryColumns: GitHistoryColumns;
   readonly gitHistoryColumnWidths: GitHistoryColumnWidths;
@@ -279,6 +284,7 @@ export function defaultUiSettings(): UiSettings {
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
     keymap: defaultKeymap(),
     escapeStopsActiveAgent: false,
+    dismissedUpdateVersion: null,
     appearance: "system",
     gitHistoryColumns: { author: true, date: true, sha: true },
     gitHistoryColumnWidths: { author: 88, date: 88, sha: 74 },
@@ -475,6 +481,7 @@ export function healUiSettings(value: unknown): UiSettings {
     ),
     keymap: healKeymap(raw.keymap),
     escapeStopsActiveAgent: bool(raw.escapeStopsActiveAgent, false),
+    dismissedUpdateVersion: nullableString(raw.dismissedUpdateVersion),
     appearance: oneOf(raw.appearance, ["system", "light", "dark"], "system"),
     gitHistoryColumns: {
       author: bool(columns.author, true),

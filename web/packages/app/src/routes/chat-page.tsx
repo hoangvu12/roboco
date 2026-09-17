@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
@@ -6,14 +6,13 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
-import { TranscriptView } from "../components/transcript";
+import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
 import { rightPaneStore } from "../state/right-pane";
 import { chatRoute } from "../router";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
-import { ChangeRequestBadge } from "../components/change-request-badge";
 import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
@@ -200,6 +199,47 @@ export function ChatPage() {
       ? undefined
       : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows);
 
+  // ── Bottom chrome stack bookkeeping ─────────────────────────────────────
+  // `bottom_stack` measured live (the desktop's paint-time canvas): the
+  // height feeds the transcript's bottom fade band through a custom property
+  // on the column, so the fade tracks the composer's compact↔expanded flip.
+  const chatColumnRef = useRef<HTMLDivElement | null>(null);
+  const bottomStackRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const stack = bottomStackRef.current;
+    const column = chatColumnRef.current;
+    if (stack === null || column === null || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      column.style.setProperty("--rb-bottom-stack", `${stack.getBoundingClientRect().height}px`);
+    });
+    observer.observe(stack);
+    return () => observer.disconnect();
+    // `row` gates the main return: the first render(s) take the loading
+    // early-return, where the refs are null and the effect above bailed — so
+    // the observer must re-arm once the row lands and the tree with the refs
+    // actually mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, row?.chat.id]);
+
+  // The jump pill's state, published by the transcript surface. The pill
+  // itself renders over the composer (see `JumpPillAnchor`).
+  const [jumpState, setJumpState] = useState<JumpButtonState | null>(null);
+  const onJumpChange = useCallback((state: JumpButtonState) => {
+    setJumpState((current) =>
+      current?.shown === state.shown && state.shown === false ? current : state,
+    );
+  }, []);
+
+  // `composer.is_sending()`: a send is still awaiting its confirmation. The
+  // pending sends live on the app-wide echo store, so the strip sees them
+  // even though the composer owns the sends themselves.
+  const sending = useSyncExternalStore(
+    useCallback((listener: () => void) => echoStore.subscribe(listener), []),
+    useCallback(() => echoStore.forChat(chatId).length > 0, [chatId]),
+  );
+
   // Opening a chat IS reading it (`mark_chat_seen`): the local stamp lands
   // first and stands whatever the mutation does, so a dropped `Mutate` never
   // makes a chat the user plainly looked at flash unread again.
@@ -252,22 +292,20 @@ export function ChatPage() {
     [session, row],
   );
 
-  // The titlebar is the shell's; the route fills its identity and its ONE
-  // trailing control — the right pane's toggle (the desktop's
-  // `toggle-changes`). Panel surfaces are tabs in that pane, never buttons in
-  // the bar. Hooks run unconditionally; the early returns below come after.
-  // The titlebar is the shell's; this route fills only its identity. The right
-  // pane, its toggle, its surface tabs and its expand control are all shell
-  // chrome — see `state/chrome.ts` for why they must not travel through here.
-  // Note `pane` is deliberately NOT a dep: this effect clears the store on
-  // every dep change, and a toggle rebuilding the chrome is what used to tear
-  // the pane column down mid-animation.
+  // The titlebar is the shell's; the route fills its identity and the `+`'s
+  // handler. The right pane, its toggle, its surface tabs and its expand
+  // control are all shell chrome — see `state/chrome.ts` for why they must
+  // not travel through here. `onNewSession` is null when the chat is not in
+  // the engine's list: `titlebar_plus_alpha` requires a SELECTED chat, and a
+  // missing row selects nothing. Note `pane` is deliberately NOT a dep: this
+  // effect clears the store on every dep change, and a toggle rebuilding the
+  // chrome is what used to tear the pane column down mid-animation.
   useTitlebar(
     () => ({
-      identity: row === undefined ? null : <ChatIdentity row={row} crSummary={crSummary} />,
-      onNewSession: () => emitShortcut("new-chat"),
+      identity: row === undefined ? null : <ChatIdentity row={row} />,
+      onNewSession: row === undefined ? null : () => emitShortcut("new-chat"),
     }),
-    [chatId, row?.chat.id, row?.chat.title, row?.status, row?.folder, row?.harness, crSummary],
+    [chatId, row?.chat.id, row?.chat.title, row?.folder, row?.harness],
   );
 
   if (snapshot === null || !snapshot.chats.loaded) {
@@ -286,12 +324,15 @@ export function ChatPage() {
   return (
     <div className="chat-page">
       {/*
-        The conversation column: the transcript, the queue, the composer and
-        the session footer. Its sibling — the right pane, carrying whichever
-        surface its tabs select — is a SHELL column mounted by `AppShell`, as
-        on the desktop; this page only names the chat that owns it.
+        The conversation column: the transcript, then the bottom chrome stack
+        (`render_main`'s flex-none bottom section): the reserved status strip,
+        the queue panel, the composer — with the jump pill floating over the
+        composer — and the session footer. Its sibling — the right pane,
+        carrying whichever surface its tabs select — is a SHELL column mounted
+        by `AppShell`, as on the desktop; this page only names the chat that
+        owns it.
       */}
-      <div className="chat-column">
+      <div className="chat-column" ref={chatColumnRef}>
         <div className="chat-body">
           {session === null ? (
             <div className="empty-state">
@@ -304,52 +345,85 @@ export function ChatPage() {
               deviceId={deviceId}
               onContextUsage={setContextUsage}
               onRetrySend={onRetrySend}
+              onJumpChange={onJumpChange}
             />
           )}
         </div>
-        {queueStore !== null && deviceId !== null ? (
-          <QueueStoreProvider value={queueStore}>
-            <QueuePanel
-              editorDeviceId={deviceId}
-              onEditRow={onEditRow}
-              editingRowId={editingRow?.id ?? null}
-            />
-            {session !== null && (
-              <Composer
-                session={session}
-                chat={row.chat}
-                catalog={session.catalog}
-                editingMessage={editingRow}
-                onEditFinish={onEditFinish}
+        {/*
+          The bottom chrome stack. The ResizeObserver measures its height into
+          `--rb-bottom-stack` on the column, which the transcript's bottom
+          fade band reads — the web peer of the desktop's paint-time canvas
+          that measures `bottom_stack` for the EdgeFade inset.
+        */}
+        <div className="bottom-stack" ref={bottomStackRef}>
+          <StatusStrip status={row.status} sending={sending} />
+          {queueStore !== null && deviceId !== null ? (
+            <QueueStoreProvider value={queueStore}>
+              <QueuePanel
+                editorDeviceId={deviceId}
+                onEditRow={onEditRow}
+                editingRowId={editingRow?.id ?? null}
               />
-            )}
-          </QueueStoreProvider>
-        ) : (
-          session !== null && <Composer session={session} chat={row.chat} catalog={session.catalog} />
-        )}
-        <ComposerFooter branch={row.branch} crSummary={crSummary} contextUsage={contextUsage} />
-        {editingRow !== null && (
-          <div className="chat-edit-toolbar">
-            <button type="button" className="btn btn-ghost" onClick={onEditCancel}>
-              Cancel edit
-            </button>
-          </div>
-        )}
+              {session !== null && (
+                <div className="persistent-composer">
+                  <Composer
+                    session={session}
+                    chat={row.chat}
+                    catalog={session.catalog}
+                    editingMessage={editingRow}
+                    onEditFinish={onEditFinish}
+                  />
+                  <JumpPillAnchor state={jumpState} />
+                </div>
+              )}
+            </QueueStoreProvider>
+          ) : (
+            session !== null && (
+              <div className="persistent-composer">
+                <Composer session={session} chat={row.chat} catalog={session.catalog} />
+                <JumpPillAnchor state={jumpState} />
+              </div>
+            )
+          )}
+          <ComposerFooter branch={row.branch} crSummary={crSummary} contextUsage={contextUsage} />
+          {editingRow !== null && (
+            <div className="chat-edit-toolbar">
+              <button type="button" className="btn btn-ghost" onClick={onEditCancel}>
+                Cancel edit
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 /**
- * The titlebar's centred identity — the desktop's transcript identity group:
- * the harness's brand mark, the chat title, and the `space @ device` line in
- * the muted subline tone, with the change-request badge trailing. It is a drag
- * region on the desktop; here it is just chrome.
- *
- * Archived chats carry no badge — the desktop's identity row is mark + title +
- * folder and nothing else, so the word rides the folder line instead.
+ * `render_jump_to_bottom`'s positioner: the pill floats 36px ABOVE the
+ * composer, horizontally centered across the composer's own width less its
+ * 10px right inset. It paints outside the transcript's fade, over whatever
+ * sits above the composer.
  */
-function ChatIdentity({ row, crSummary }: { row: ChatRow; crSummary: ChangeRequestSummary | null }) {
+function JumpPillAnchor({ state }: { state: JumpButtonState | null }) {
+  if (state === null || !state.shown) {
+    return null;
+  }
+  return (
+    <div className="jump-pill-anchor">
+      <JumpPill onClick={state.jump} />
+    </div>
+  );
+}
+
+/**
+ * The titlebar's identity group — the desktop's (`tabs.rs:318-350`): the
+ * harness's 14px brand mark, the 12px/500 title at `text @ 85%`, and the
+ * 12px `folder @ device` tag at `text_muted @ 50%`. Nothing else — no badge,
+ * no archived marker; the group's own gap (6px) and truncation live in the
+ * stylesheet.
+ */
+function ChatIdentity({ row }: { row: ChatRow }) {
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   return (
     <>
@@ -362,10 +436,7 @@ function ChatIdentity({ row, crSummary }: { row: ChatRow; crSummary: ChangeReque
         />
       )}
       <span className="identity-title">{row.chat.title ?? "New session"}</span>
-      <span className="identity-folder">
-        {row.chat.archived ? `${row.folder} · Archived` : row.folder}
-      </span>
-      {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
+      <span className="identity-folder">{row.folder}</span>
     </>
   );
 }
