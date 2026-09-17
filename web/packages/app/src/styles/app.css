@@ -5209,6 +5209,17 @@ button.files-row-active:hover {
 
 /* ── The four picker popovers' shared pieces (§2.4, ticket 10) ─────── */
 
+/*
+ * The card's key frame: a `display: contents` sink for the picker's cursor
+ * keyboard model (↑/↓ walk `menuStep`, Enter/Cmd+Enter submit — keys bubble
+ * here from the focused search input, the old PopoverCard's own mount).
+ * Contents keeps the popup's flex column flowing through it unchanged —
+ * the same wrapper ticket 12's list frames used.
+ */
+.picker-key-frame {
+  display: contents;
+}
+
 /* The scroll region for ref/project/device rows: 224px cap, native
    scrollbar hidden (the short lists cap under a screenful). */
 .picker-list {

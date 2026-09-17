@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "@roboco/icons";
 import { methods } from "@roboco/engine-client";
 import type { ChangeRequestSummary, ContextUsage, Device, RepoRef, Space } from "@roboco/proto";
@@ -6,15 +6,14 @@ import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
-import { anchorAbove, anchorAboveEnd } from "../lib/popover-anchor";
 import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberTarget } from "../lib/composer-draft";
 import { ContextUsageIndicator } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
-import { PopoverCard, SearchInputFrame } from "./popover/menu";
+import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { SearchInputFrame } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { ErrorRow, SkeletonRows } from "./popover/skeleton";
-import { POPUP_TRIGGER_ATTR, Popup, usePopup } from "./popover/popup";
 
 /**
  * The session footer under the composer — the desktop's `workspace_footer_row`
@@ -30,6 +29,15 @@ import { POPUP_TRIGGER_ATTR, Popup, usePopup } from "./popover/popup";
  * ref is fixed at creation, so the desktop never offers a picker there. The
  * trailing cluster (change-request badge + usage indicator) belongs to both
  * variants; the row's geometry is ticket 13's.
+ *
+ * Each chip's popover rides `RbPopover` + `RbPopoverTrigger` (the trigger's
+ * `trigger-press` reason replaces the old noteTriggerPress dance; pressing
+ * another chip dismisses the first popover and opens that chip's own — the
+ * four-chip switching behavior). All four register the
+ * `composer-pickers` overlayKeyboard source while open, keeping session-nav
+ * shortcuts quiet under any of them — the desktop's
+ * `composer.pickers().is_open()` covers the footer pickers too
+ * (shell.rs:3681-3683).
  */
 
 /** `MAX_REF_ROWS` (pickers.rs) — the ref list's cap, surfaced as "Showing X of Y". */
@@ -139,45 +147,35 @@ const EMPTY_SPACES: readonly Space[] = [];
 // FooterChip / FooterLabel (pickers.rs:2341-2422)
 // ---------------------------------------------------------------------------
 
-interface FooterChipProps {
+interface FooterChipProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   readonly id: string;
   readonly icon: IconName;
   readonly label: string;
   readonly open: boolean;
   readonly offline?: boolean;
   readonly title: string;
-  readonly onPointerDown: () => void;
-  readonly onClick: () => void;
-  /**
-   * The trigger rect's owner — React 19 passes `ref` as a plain prop. The
-   * chip's popover anchors to this button (`placeAbove`/`placeAboveEnd` read
-   * `chipRef.current.getBoundingClientRect()`), so every caller must hand
-   * its chip ref through; a dead ref falls back to the viewport corner.
-   */
-  readonly ref?: React.Ref<HTMLButtonElement>;
 }
 
 /**
  * The small ghost dropdown chip: 20px tall, 6px radius, 12px medium; the wash
  * is quiet until hovered, open holding the hover fill (snapped, no fade).
  * The offline device chip overrides its text to `warning @ 0.8`.
+ *
+ * Rendered through `RbPopoverTrigger`'s `render` prop, which merges the
+ * trigger's toggling/ARIA props onto this element — so the extra props
+ * spread onto the button.
  */
 export function FooterChip(props: FooterChipProps) {
-  const { id, icon, label, open, offline, title, onPointerDown, onClick, ref } = props;
+  const { id, icon, label, open, offline, title, className, ...rest } = props;
   return (
     <button
       type="button"
       id={id}
-      ref={ref}
-      {...{ [POPUP_TRIGGER_ATTR]: "" }}
       className={`footer-menu-chip ${open ? "footer-menu-chip-open" : ""} ${
         offline === true ? "footer-menu-chip-offline" : ""
-      }`}
-      onPointerDown={onPointerDown}
-      onClick={onClick}
-      aria-haspopup="menu"
-      aria-expanded={open}
+      } ${className ?? ""}`}
       title={title}
+      {...rest}
     >
       <Icon name={icon} size={12} className="footer-menu-chip-icon" />
       <span className="footer-menu-chip-label">{label}</span>
@@ -211,8 +209,7 @@ function DeviceChip({
   readonly ownDeviceId: string | null;
   readonly now: number;
 }) {
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"device">();
+  const [open, setOpen] = useState(false);
 
   // Device order: this device first, then by lowercased name, then by id.
   const rows = useMemo(() => {
@@ -232,39 +229,50 @@ function DeviceChip({
 
   return (
     <>
-      <FooterChip
-        id="picker-device"
-        ref={chipRef}
-        icon="monitor"
-        label={label}
-        open={popup.get() !== null}
-        offline={offline}
-        title={label}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("device");
-        }}
+      <RbPopoverTrigger
+        render={
+          <FooterChip
+            id="picker-device"
+            icon="monitor"
+            label={label}
+            open={open}
+            offline={offline}
+            title={label}
+          />
+        }
       />
-      <Popup popup={popup} placement={(size) => placeAbove(chipRef, size)}>
-        {() => (
-          <DeviceCard popup={popup} rows={rows} ownDeviceId={ownDeviceId} effectiveDeviceId={effectiveDevice?.id ?? null} now={now} />
-        )}
-      </Popup>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorAbove"
+        role="dialog"
+        ariaLabel="Devices"
+        style={{ width: 224 }}
+        overlaySource="composer-pickers"
+      >
+        <DeviceCard
+          open={open}
+          onClose={() => setOpen(false)}
+          rows={rows}
+          ownDeviceId={ownDeviceId}
+          effectiveDeviceId={effectiveDevice?.id ?? null}
+          now={now}
+        />
+      </RbPopover>
     </>
   );
 }
 
 function DeviceCard({
-  popup,
+  open,
+  onClose,
   rows,
   ownDeviceId,
   effectiveDeviceId,
   now,
 }: {
-  readonly popup: ReturnType<typeof usePopup<"device">>;
+  readonly open: boolean;
+  readonly onClose: () => void;
   readonly rows: readonly Device[];
   readonly ownDeviceId: string | null;
   readonly effectiveDeviceId: string | null;
@@ -275,7 +283,7 @@ function DeviceCard({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (popup.isOpen()) {
+    if (open) {
       setQuery("");
       // Device → the effective device's index, else 0.
       const target = rows.findIndex((device) => device.id === effectiveDeviceId);
@@ -283,7 +291,7 @@ function DeviceCard({
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popup.isOpen()]);
+  }, [open]);
 
   const names = rows.map((device) => device.name);
   const filtered = filterIndices(query, names).map((ix) => rows[ix]!);
@@ -291,11 +299,11 @@ function DeviceCard({
   function pick(device: Device): void {
     const snapshot = composerDefaults.getSnapshot();
     rememberTarget(device.id, snapshot.project, snapshot.noProject);
-    popup.dismiss();
+    onClose();
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!open) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -310,16 +318,11 @@ function DeviceCard({
       if (device !== undefined) {
         pick(device);
       }
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
     }
   };
 
   return (
-    <PopoverCard role="dialog" aria-label="Devices" style={{ width: 224 }} onKeyDown={onKeyDown}>
+    <div className="picker-key-frame" onKeyDown={onKeyDown}>
       <SearchInputFrame>
         <input
           ref={inputRef}
@@ -354,7 +357,7 @@ function DeviceCard({
           ))}
         </div>
       )}
-    </PopoverCard>
+    </div>
   );
 }
 
@@ -369,42 +372,39 @@ function ProjectChip({
   readonly spaces: readonly Space[];
   readonly currentSpaceId: string | null;
 }) {
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"project">();
+  const [open, setOpen] = useState(false);
 
   const pickedSpace = currentSpaceId === null ? null : spaces.find((space) => space.id === currentSpaceId) ?? null;
   const label = pickedSpace === null ? "All projects" : spaceDisplayName(pickedSpace);
 
   return (
     <>
-      <FooterChip
-        id="picker-project"
-        ref={chipRef}
-        icon="folder"
-        label={label}
-        open={popup.get() !== null}
-        title={label}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("project");
-        }}
+      <RbPopoverTrigger
+        render={<FooterChip id="picker-project" icon="folder" label={label} open={open} title={label} />}
       />
-      <Popup popup={popup} placement={(size) => placeAboveEnd(chipRef, size)}>
-        {() => <ProjectCard popup={popup} spaces={spaces} currentSpaceId={currentSpaceId} />}
-      </Popup>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorAboveEnd"
+        role="dialog"
+        ariaLabel="Project"
+        style={{ width: 280 }}
+        overlaySource="composer-pickers"
+      >
+        <ProjectCard open={open} onClose={() => setOpen(false)} spaces={spaces} currentSpaceId={currentSpaceId} />
+      </RbPopover>
     </>
   );
 }
 
 function ProjectCard({
-  popup,
+  open,
+  onClose,
   spaces,
   currentSpaceId,
 }: {
-  readonly popup: ReturnType<typeof usePopup<"project">>;
+  readonly open: boolean;
+  readonly onClose: () => void;
   readonly spaces: readonly Space[];
   readonly currentSpaceId: string | null;
 }) {
@@ -413,7 +413,7 @@ function ProjectCard({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (popup.isOpen()) {
+    if (open) {
       setQuery("");
       // Space → the current space's index; the trailing "opt-out" row when
       // the draft has no project; NO_ACTIVE_ROW means 0 on the first Down.
@@ -425,7 +425,7 @@ function ProjectCard({
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popup.isOpen()]);
+  }, [open]);
 
   const labels = spaces.map((space) => spaceDisplayName(space));
   const filtered = filterIndices(query, labels).map((ix) => spaces[ix]!);
@@ -433,17 +433,17 @@ function ProjectCard({
   function pickSpace(space: Space): void {
     const snapshot = composerDefaults.getSnapshot();
     rememberTarget(snapshot.device, space.id, false);
-    popup.dismiss();
+    onClose();
   }
 
   function pickNoProject(): void {
     const snapshot = composerDefaults.getSnapshot();
     rememberTarget(snapshot.device, null, true);
-    popup.dismiss();
+    onClose();
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!open) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -460,16 +460,11 @@ function ProjectCard({
       } else if (cursor === filtered.length) {
         pickNoProject();
       }
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
     }
   };
 
   return (
-    <PopoverCard role="dialog" aria-label="Project" style={{ width: 280 }} onKeyDown={onKeyDown}>
+    <div className="picker-key-frame" onKeyDown={onKeyDown}>
       <SearchInputFrame>
         <input
           ref={inputRef}
@@ -512,7 +507,7 @@ function ProjectCard({
           // Close this popover, THEN open the add-space palette
           // (pickers.rs:2115-2121 / §2.4.3 — ticket 11's `addSpaceStore`
           // owns the surface).
-          popup.dismiss();
+          onClose();
           addSpaceStore.open();
         }}
       >
@@ -528,7 +523,7 @@ function ProjectCard({
         <Icon name="close" size={12} className="picker-row-icon" />
         <span className="menu-row-label">Don&apos;t work in a project</span>
       </MenuRowNav>
-    </PopoverCard>
+    </div>
   );
 }
 
@@ -545,8 +540,7 @@ function CheckoutChip({
   readonly pickedRefHasWorktree: boolean;
   readonly onPick: (kind: CheckoutKind) => void;
 }) {
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"checkout">();
+  const [open, setOpen] = useState(false);
 
   // `checkout_label` (pickers.rs:1280-1304): "New worktree" |
   // "Current worktree" when the picked ref has an existing worktree, else
@@ -554,50 +548,59 @@ function CheckoutChip({
   const label =
     checkout === "newWorktree" ? "New worktree" : pickedRefHasWorktree ? "Current worktree" : "Current checkout";
 
-  function pick(kind: CheckoutKind): void {
-    onPick(kind);
-    popup.dismiss();
-  }
-
   return (
     <>
-      <FooterChip
-        id="picker-checkout"
-        ref={chipRef}
-        icon={checkout === "newWorktree" || pickedRefHasWorktree ? "folderWithFiles" : "folder"}
-        label={label}
-        open={popup.get() !== null}
-        title={label}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("checkout");
-        }}
+      <RbPopoverTrigger
+        render={
+          <FooterChip
+            id="picker-checkout"
+            icon={checkout === "newWorktree" || pickedRefHasWorktree ? "folderWithFiles" : "folder"}
+            label={label}
+            open={open}
+            title={label}
+          />
+        }
       />
-      <Popup popup={popup} placement={(size) => placeAbove(chipRef, size)}>
-        {() => <CheckoutCard popup={popup} checkout={checkout} onPick={pick} />}
-      </Popup>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorAbove"
+        role="dialog"
+        ariaLabel="Checkout kind"
+        style={{ width: 224 }}
+        overlaySource="composer-pickers"
+        // No search input here — the card never moved focus on open, and the
+        // default would land it on the first row; `false` keeps focus put.
+        initialFocus={false}
+      >
+        <CheckoutCard open={open} onClose={() => setOpen(false)} checkout={checkout} onPick={onPick} />
+      </RbPopover>
     </>
   );
 }
 
 function CheckoutCard({
-  popup,
+  open,
+  onClose,
   checkout,
   onPick,
 }: {
-  readonly popup: ReturnType<typeof usePopup<"checkout">>;
+  readonly open: boolean;
+  readonly onClose: () => void;
   readonly checkout: CheckoutKind;
   readonly onPick: (kind: CheckoutKind) => void;
 }) {
   const [cursor, setCursor] = useState<CheckoutKind>(checkout);
 
+  function pick(kind: CheckoutKind): void {
+    onPick(kind);
+    onClose();
+  }
+
   // Enter picks the highlighted kind; ↑/↓ walk the two rows (toggle step 5:
   // Checkout anchors on 0 or 1).
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!open) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -608,40 +611,33 @@ function CheckoutCard({
     }
     if (key === "enter" || key === "mod-enter") {
       event.preventDefault();
-      onPick(cursor);
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
+      pick(cursor);
     }
   };
 
   return (
-    <PopoverCard role="dialog" aria-label="Checkout kind" style={{ width: 224 }} onKeyDown={onKeyDown}>
-      <div className="picker-list picker-list-plain">
-        <MenuRowNav
-          fadeKey="local"
-          highlighted={cursor === "local" && checkout !== "local"}
-          selected={checkout === "local"}
-          onMouseEnter={() => setCursor("local")}
-          onClick={() => onPick("local")}
-        >
-          <Icon name="folder" size={14} className="picker-row-icon-muted" />
-          <span className="menu-row-label">Current checkout</span>
-        </MenuRowNav>
-        <MenuRowNav
-          fadeKey="newWorktree"
-          highlighted={cursor === "newWorktree" && checkout !== "newWorktree"}
-          selected={checkout === "newWorktree"}
-          onMouseEnter={() => setCursor("newWorktree")}
-          onClick={() => onPick("newWorktree")}
-        >
-          <Icon name="folderWithFiles" size={14} className="picker-row-icon-muted" />
-          <span className="menu-row-label">New worktree</span>
-        </MenuRowNav>
-      </div>
-    </PopoverCard>
+    <div className="picker-list picker-list-plain" onKeyDown={onKeyDown}>
+      <MenuRowNav
+        fadeKey="local"
+        highlighted={cursor === "local" && checkout !== "local"}
+        selected={checkout === "local"}
+        onMouseEnter={() => setCursor("local")}
+        onClick={() => pick("local")}
+      >
+        <Icon name="folder" size={14} className="picker-row-icon-muted" />
+        <span className="menu-row-label">Current checkout</span>
+      </MenuRowNav>
+      <MenuRowNav
+        fadeKey="newWorktree"
+        highlighted={cursor === "newWorktree" && checkout !== "newWorktree"}
+        selected={checkout === "newWorktree"}
+        onMouseEnter={() => setCursor("newWorktree")}
+        onClick={() => pick("newWorktree")}
+      >
+        <Icon name="folderWithFiles" size={14} className="picker-row-icon-muted" />
+        <span className="menu-row-label">New worktree</span>
+      </MenuRowNav>
+    </div>
   );
 }
 
@@ -676,8 +672,7 @@ function RefChip({
   readonly onPick: (name: string) => void;
   readonly onRefs: (rows: readonly RepoRef[]) => void;
 }) {
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"branch">();
+  const [open, setOpen] = useState(false);
   const [refs, setRefs] = useState<RefsState>({ rows: [], loading: false, error: null });
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -711,12 +706,12 @@ function RefChip({
   // Every open force-reloads refs and clears any stale switch error
   // (toggle steps 7-8).
   useEffect(() => {
-    if (popup.isOpen()) {
+    if (open) {
       setSwitchError(null);
       void loadRefs(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popup.isOpen()]);
+  }, [open]);
 
   const picked = draftBranch ?? currentBranch;
   const label = refLabel(picked, checkout);
@@ -729,12 +724,12 @@ function RefChip({
     if (row.worktreePath !== null && row.worktreePath !== undefined) {
       // Reuse the ref's existing worktree ("Current worktree").
       onPick(row.name);
-      popup.dismiss();
+      setOpen(false);
       return;
     }
     if (checkout === "newWorktree" || row.current) {
       onPick(row.name);
-      popup.dismiss();
+      setOpen(false);
       return;
     }
     // Local mode + a plain non-current ref: CHECK OUT the space folder via
@@ -753,7 +748,7 @@ function RefChip({
       }
       await session.client.call(methods.SWITCH_REF, params);
       onPick(row.name);
-      popup.dismiss();
+      setOpen(false);
       void loadRefs(true);
     } catch (error) {
       setSwitchError(error instanceof Error ? error.message : String(error));
@@ -764,41 +759,37 @@ function RefChip({
 
   return (
     <>
-      <FooterChip
-        id="picker-branch"
-        ref={chipRef}
-        icon="gitBranch"
-        label={label}
-        open={popup.get() !== null}
-        title={label}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("branch");
-        }}
+      <RbPopoverTrigger
+        render={<FooterChip id="picker-branch" icon="gitBranch" label={label} open={open} title={label} />}
       />
-      <Popup popup={popup} placement={(size) => placeAbove(chipRef, size)}>
-        {() => (
-          <BranchCard
-            popup={popup}
-            refs={refs}
-            repoPath={repoPath}
-            switching={switching}
-            switchError={switchError}
-            picked={picked}
-            onRetry={() => void loadRefs(true)}
-            onPick={(row) => void pickRef(row)}
-          />
-        )}
-      </Popup>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorAbove"
+        role="dialog"
+        ariaLabel="Ref"
+        style={{ width: 320 }}
+        overlaySource="composer-pickers"
+      >
+        <BranchCard
+          open={open}
+          onClose={() => setOpen(false)}
+          refs={refs}
+          repoPath={repoPath}
+          switching={switching}
+          switchError={switchError}
+          picked={picked}
+          onRetry={() => void loadRefs(true)}
+          onPick={(row) => void pickRef(row)}
+        />
+      </RbPopover>
     </>
   );
 }
 
 function BranchCard({
-  popup,
+  open,
+  onClose,
   refs,
   repoPath,
   switching,
@@ -807,7 +798,8 @@ function BranchCard({
   onRetry,
   onPick,
 }: {
-  readonly popup: ReturnType<typeof usePopup<"branch">>;
+  readonly open: boolean;
+  readonly onClose: () => void;
   readonly refs: RefsState;
   readonly repoPath: string | null;
   readonly switching: string | null;
@@ -829,7 +821,7 @@ function BranchCard({
   const count = Math.min(refs.rows.length, MAX_REF_ROWS);
 
   useEffect(() => {
-    if (popup.isOpen()) {
+    if (open) {
       setQuery("");
       // Branch → the current ref's row, capped to 299 (toggle step 5).
       const target = picked === null ? 0 : filtered.findIndex((row) => row.name === picked);
@@ -837,10 +829,10 @@ function BranchCard({
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popup.isOpen()]);
+  }, [open]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!open) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -855,11 +847,6 @@ function BranchCard({
       if (row !== undefined) {
         onPick(row);
       }
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
     }
   };
 
@@ -869,7 +856,7 @@ function BranchCard({
   }, [cursor, filtered.length]);
 
   return (
-    <PopoverCard role="dialog" aria-label="Ref" style={{ width: 320 }} onKeyDown={onKeyDown}>
+    <div className="picker-key-frame" onKeyDown={onKeyDown}>
       <SearchInputFrame>
         <input
           ref={inputRef}
@@ -927,7 +914,7 @@ function BranchCard({
           {`Showing ${Math.min(refs.rows.length, MAX_REF_ROWS)} of ${refs.rows.length} refs`}
         </div>
       )}
-    </PopoverCard>
+    </div>
   );
 }
 
@@ -937,30 +924,4 @@ function refLabel(picked: string | null, checkout: CheckoutKind): string {
     return "Select ref";
   }
   return checkout === "newWorktree" ? `From ${picked}` : picked;
-}
-
-// ---------------------------------------------------------------------------
-// Shared placement helpers
-// ---------------------------------------------------------------------------
-
-function placeAbove(
-  chipRef: React.RefObject<HTMLButtonElement | null>,
-  size: { width: number; height: number },
-): CSSProperties {
-  const rect = chipRef.current?.getBoundingClientRect();
-  if (rect === undefined) {
-    return { left: 8, top: 8 };
-  }
-  return anchorAbove(rect, size);
-}
-
-function placeAboveEnd(
-  chipRef: React.RefObject<HTMLButtonElement | null>,
-  size: { width: number; height: number },
-): CSSProperties {
-  const rect = chipRef.current?.getBoundingClientRect();
-  if (rect === undefined) {
-    return { left: 8, top: 8 };
-  }
-  return anchorAboveEnd(rect, size);
 }
