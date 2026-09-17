@@ -1,78 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import type { Space } from "@roboco/proto";
+import { useEffect, useMemo, useState } from "react";
 import { useEngineSession } from "../state/session-provider";
-import { useEngineStatus, useWatchSnapshot } from "../state/hooks";
-import { spaceDisplayName } from "../lib/view";
 import { WorkspaceFilesClient } from "../lib/files-client";
-import { FileTreeModel, type FileWatchEvent } from "../lib/file-tree";
-import { FileDocument } from "../lib/file-document";
-import { isImagePath } from "../lib/files";
+import { FileTreeModel } from "../lib/file-tree";
 import { FileTreePanel } from "../components/files/file-tree-panel";
-import { FileViewer } from "../components/files/file-viewer";
+import { rightPaneStore } from "../state/right-pane";
+import { uiSettings } from "../state/ui-settings";
 
 /**
- * The space's files: a lazy tree beside a viewer/editor pane — the desktop's
- * Files right-pane surface. The target is the selected space's checkout.
+ * The right pane's Files surface — the desktop's browser-mode `tree_pane`
+ * (mod.rs render_header + watch banner + tree). The pane is chat-scoped
+ * chrome with no URL of its own, and its target is the **active chat's
+ * checkout** (`{ chatId }`, the desktop's `FilesRequestContext::for_chat`),
+ * never a space picked independently of the open chat: a chat running in a
+ * worktree sees the worktree's files.
  *
- * Files is a PANE surface, never a route: the desktop has no `/files` page,
- * and a route here stripped the pane column off its own chrome. Selection
- * therefore lives in the surface's local state, not in search params.
+ * Opening a file from the tree or the search asks the pane host (ticket 07)
+ * for that file's own tab (`rightPaneStore.addFileSurface`) — the desktop's
+ * `FilesEvent::OpenFile` → `shell.rs::add_file_surface`. The viewer itself
+ * is ticket 25's file-surface body.
  *
- * At phone widths the panes stack: opening a file swaps the tree for the
- * viewer, "‹ Files" returns.
+ * The tree model (and its workspace change watch) lives as long as the
+ * (session, chat) pair it browses; `filesShowAll` seeds the model and every
+ * open Files surface re-applies the stored preference when it changes (the
+ * desktop shell's `set_show_all_files` fan-out).
  */
-/**
- * The right pane's Files surface. The pane is chat-scoped chrome with no URL
- * of its own, so the space and the open path live in local state here.
- */
-export function FilesSurface() {
-  const [space, setSpace] = useState<string | null>(null);
-  const [path, setPath] = useState<string | null>(null);
-  return (
-    <FilesBody
-      requestedSpace={space}
-      path={path}
-      onOpen={(nextSpace, nextPath) => {
-        setSpace(nextSpace);
-        setPath(nextPath);
-      }}
-    />
-  );
-}
-
-interface FilesBodyProps {
-  readonly requestedSpace: string | null;
-  readonly path: string | null;
-  /** `path === null` closes the viewer and returns to the tree. */
-  readonly onOpen: (space: string | null, path: string | null) => void;
-}
-
-function FilesBody({ requestedSpace, path, onOpen }: FilesBodyProps) {
+export function FilesSurface({ chatId }: { chatId: string }) {
   const session = useEngineSession();
-  const status = useEngineStatus(session);
-  const snapshot = useWatchSnapshot(session);
-
-  const deviceId = status?.state === "connected" ? status.info.deviceId : null;
-  const spaces = snapshot?.spaces.rows ?? [];
-  const owned = spaces.filter((space) => deviceId !== null && space.deviceId === deviceId);
-  const spaceId =
-    requestedSpace !== null && owned.some((space) => space.id === requestedSpace)
-      ? requestedSpace
-      : (owned[0]?.id ?? null);
 
   const client = useMemo(
-    () => (session !== null && spaceId !== null ? new WorkspaceFilesClient(session.client, { spaceId }) : null),
-    [session, spaceId],
+    () => (session !== null ? new WorkspaceFilesClient(session.client, { chatId }) : null),
+    [session, chatId],
   );
 
   const [model, setModel] = useState<FileTreeModel | null>(null);
-  const [document, setDocument] = useState<FileDocument | null>(null);
-  const documentRef = useRef<FileDocument | null>(null);
-  documentRef.current = document;
 
-  // The tree model (and its workspace change watch) lives as long as the
-  // (session, space) pair it browses; StrictMode-safe create/dispose here.
   useEffect(() => {
     if (client === null || session === null) {
       setModel(null);
@@ -81,7 +42,7 @@ function FilesBody({ requestedSpace, path, onOpen }: FilesBodyProps) {
     const created = new FileTreeModel({
       client,
       watch: (handlers) => client.watchFiles(session.client, handlers),
-      onFileEvent: (event) => forwardFileEvent(documentRef.current, event),
+      includeIgnored: uiSettings.getSnapshot().filesShowAll,
     });
     created.start();
     setModel(created);
@@ -91,135 +52,17 @@ function FilesBody({ requestedSpace, path, onOpen }: FilesBodyProps) {
     };
   }, [client, session]);
 
-  // The open document follows the URL path; images need no document.
-  useEffect(() => {
-    if (client === null || path === null || isImagePath(path)) {
-      setDocument(null);
-      return;
-    }
-    const created = new FileDocument(client, path);
-    created.load();
-    setDocument(created);
-    return () => {
-      created.dispose();
-      setDocument((current) => (current === created ? null : current));
-    };
-  }, [client, path]);
-
-  const openPath = (next: string) => onOpen(spaceId, next);
-  const closePath = () => onOpen(spaceId, null);
-
-  if (snapshot === null) {
-    return (
-      <div className="empty-state">
-        <p>Pair an engine to browse its files.</p>
-        <Link to="/pair" className="btn btn-solid">
-          Pair an engine
-        </Link>
-      </div>
-    );
-  }
-  if (!snapshot.spaces.loaded) {
-    return (
-      <div className="empty-state">
-        <p>Loading spaces…</p>
-      </div>
-    );
-  }
-  if (owned.length === 0) {
-    return (
-      <div className="empty-state">
-        <p>This engine has no spaces yet.</p>
-      </div>
-    );
-  }
-
   return (
-    <div className={`files-page ${path !== null ? "files-page-open" : ""}`}>
-      <header className="files-toolbar">
-        <SpacePicker
-          spaces={owned}
-          spaceId={spaceId}
-          onChange={(next) => onOpen(next, null)}
+    <div className="files-page">
+      {model !== null && client !== null ? (
+        <FileTreePanel
+          model={model}
+          client={client}
+          onOpenFile={(path) => rightPaneStore.addFileSurface(chatId, path)}
         />
-      </header>
-      <div className="files-body">
-        <aside className="files-tree-pane panel">
-          {model !== null && client !== null ? (
-            <FileTreePanel model={model} client={client} selectedPath={path} onOpenFile={openPath} />
-          ) : (
-            <p className="files-note">Loading…</p>
-          )}
-        </aside>
-        <section className="files-viewer-pane">
-          {path !== null && client !== null ? (
-            <FileViewer client={client} path={path} document={document} onOpenPath={openPath} onClose={closePath} />
-          ) : (
-            <div className="empty-state">
-              <p>Pick a file to read or edit.</p>
-            </div>
-          )}
-        </section>
-      </div>
+      ) : (
+        <div className="files-tree-panel" />
+      )}
     </div>
   );
-}
-
-function SpacePicker({
-  spaces,
-  spaceId,
-  onChange,
-}: {
-  spaces: readonly Space[];
-  spaceId: string | null;
-  onChange: (spaceId: string) => void;
-}) {
-  return (
-    <select
-      className="input files-space-picker"
-      aria-label="Space"
-      value={spaceId ?? ""}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {spaces.map((space) => (
-        <option key={space.id} value={space.id}>
-          {spaceDisplayName(space)}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-/** The watch outcomes the open document cares about (desktop watch.rs). */
-function forwardFileEvent(document: FileDocument | null, event: FileWatchEvent): void {
-  if (document === null) {
-    return;
-  }
-  switch (event.kind) {
-    case "created":
-      if (event.path === document.path) {
-        document.restore();
-      }
-      break;
-    case "modified":
-      if (event.path === document.path) {
-        document.reconcile();
-      }
-      break;
-    case "removed":
-      if (event.path === document.path) {
-        document.markDeleted();
-      }
-      break;
-    case "renamed":
-      // The desktop follows the rename onto the new path; web v1 marks the
-      // old path deleted instead (the buffer is preserved either way).
-      if (event.oldPath === document.path) {
-        document.markDeleted();
-      }
-      break;
-    case "resync":
-      document.reconcile();
-      break;
-  }
 }

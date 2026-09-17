@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Appearance } from "@roboco/theme";
-import { AppearanceStore, type AppearancePreferences } from "../lib/appearance-store";
+import { AppearanceStore, type AppearancePreferences, resolveAppearance } from "../lib/appearance-store";
 import { applyAppearanceToDocument } from "../theme";
 
 /**
@@ -42,6 +42,17 @@ export function useSystemAppearance(): Appearance {
     return () => media?.removeEventListener?.("change", listener);
   };
   return useSyncExternalStore(subscribe, () => (darkMedia()?.matches === false ? "light" : "dark"));
+}
+
+/**
+ * The appearance that actually paints: the stored mode resolved against the
+ * OS state. Surfaces that need to pick appearance-dependent assets (the
+ * file-type icons' `dark/` tree) read this, not the raw preference.
+ */
+export function useResolvedAppearance(): Appearance {
+  const preferences = useAppearance();
+  const system = useSystemAppearance();
+  return resolveAppearance(preferences.mode, system);
 }
 
 function systemAppearance(): Appearance {

@@ -987,28 +987,6 @@ a:focus-visible,
   border-top: none;
 }
 
-/* In the pane the tree and the viewer stack, as they do at phone widths. */
-.right-pane-body .files-body {
-  position: relative;
-}
-
-.right-pane-body .files-tree-pane {
-  width: 100%;
-  border-right: none;
-}
-
-.right-pane-body .files-viewer-pane {
-  display: none;
-}
-
-.right-pane-body .files-page-open .files-tree-pane {
-  display: none;
-}
-
-.right-pane-body .files-page-open .files-viewer-pane {
-  display: flex;
-}
-
 
 /*
  * A flush, left-bordered glass panel — not an inset card. As a shell column it
@@ -4571,7 +4549,7 @@ a:focus-visible,
   font-size: 12px;
 }
 
-/* ── Files page ─────────────────────────────────────────────────────── */
+/* ── Files surface (the pane's tree_pane) ────────────────────────────── */
 
 .files-page {
   flex: 1;
@@ -4580,43 +4558,7 @@ a:focus-visible,
   flex-direction: column;
 }
 
-.files-toolbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-xs) var(--rb-space-md);
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.files-space-picker {
-  width: auto;
-  max-width: 40vw;
-}
-
-.files-toggle-on {
-  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
-  color: var(--rb-text);
-}
-
-.files-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-
-.files-tree-pane {
-  flex: none;
-  width: 286px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-left: none;
-}
-
+/* The pane surface's own column (the desktop `tree_pane`, mod.rs:260-310). */
 .files-tree-panel {
   flex: 1;
   min-height: 0;
@@ -4624,19 +4566,148 @@ a:focus-visible,
   flex-direction: column;
 }
 
-.files-search {
+/* `render_header` rides the shared `surface_chrome::toolbar` row (ticket
+   07's `.surface-toolbar`): 38px, hairline top+bottom, 8px edge inset, 4px
+   control gap. */
+.files-header {
   flex: none;
-  padding: var(--rb-space-sm);
-  border-bottom: 1px solid var(--rb-border);
 }
 
+/* `surface_chrome::input` + the search field's ComposerInput: the magnifier
+   at 12px text-faint beside the borderless input (mod.rs:977-984), text
+   metrics 11/16 (mod.rs:500-503). */
+.surface-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+  padding: 0;
+}
+
+.files-search input {
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.files-search-icon {
+  flex: none;
+  color: var(--rb-text-faint);
+}
+
+/* `mod.rs::toolbar_button` + the ignored toggle's states (46-48, 995-1011):
+   24px square, radius 6, icon 14; showing = wash(0.1) bg + text icon,
+   hidden = text_muted icon; hover wash(0.14). */
+.files-toggle-ignored {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+button.files-toggle-ignored:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+.files-toggle-ignored-on {
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text);
+}
+
+/* The watch-error banner (mod.rs:268-309): 27px, warning hairline + 4.5%
+   wash, 10px warning-muted text, the trailing "Refresh now" pill. */
 .files-watch-note {
   flex: none;
+  height: 27px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--rb-warning) 22%, transparent);
+  background: color-mix(in srgb, var(--rb-warning) 4.5%, transparent);
+  font-size: 10px;
+  color: var(--rb-warning-muted);
+}
+
+.files-watch-icon {
+  flex: none;
+}
+
+.files-watch-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-watch-refresh {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+button.files-watch-refresh:hover {
+  background: rgb(var(--rb-wash) / 0.07);
+}
+
+/* The root-load error + Retry (mod.rs:213-247). */
+.files-root-error {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 28px;
+}
+
+.files-root-error-message {
   margin: 0;
-  padding: var(--rb-space-xs) var(--rb-space-sm);
+  text-align: center;
   font-size: 12px;
-  color: var(--rb-warning);
-  border-bottom: 1px solid var(--rb-border);
+  color: var(--rb-text-muted);
+}
+
+.files-root-retry {
+  height: 28px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--rb-border);
+  border-radius: 7px;
+  background: rgb(var(--rb-wash) / 0.04);
+  color: var(--rb-text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+button.files-root-retry:hover {
+  background: rgb(var(--rb-wash) / 0.09);
+}
+
+/* The first-load placeholder (mod.rs:248-254): a blank flex, nothing else. */
+.files-placeholder {
+  flex: 1;
+  min-height: 0;
 }
 
 .files-tree {
@@ -4645,48 +4716,83 @@ a:focus-visible,
   overflow-y: auto;
   list-style: none;
   margin: 0;
-  padding: var(--rb-space-xs) var(--rb-space-xs);
+  padding: 0;
+  outline: none;
 }
 
+/*
+ * `render_tree_row` (tree.rs:95-265): 27px rows, the row gap of 4, 11.5px
+ * labels in text-muted (text when selected), square corners, full-bleed
+ * washes. Ignored rows dim the whole row to 0.52 — not a color swap.
+ */
 .files-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
-  min-height: 27px;
-  padding: 0 var(--rb-space-sm) 0 0;
+  height: 27px;
+  padding: 0 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
-  color: var(--rb-text);
-  font-size: 13px;
+  color: var(--rb-text-muted);
+  font-size: 11.5px;
   text-align: left;
   cursor: pointer;
 }
 
-button.files-row:hover {
-  background: var(--rb-hover);
+li.files-row {
+  cursor: default;
 }
 
-.files-row-active,
-button.files-row-active:hover {
-  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+button.files-row:hover {
+  background: rgb(var(--rb-wash) / 0.055);
 }
 
 /*
- * The disclosure glyph swaps instantly (`ALT_ARROW_RIGHT` ↔ `ALT_ARROW_DOWN`)
- * — the desktop tweens nothing here, so neither does this.
+ * Selection is a NEUTRAL wash — never the accent (tree.rs:149): 0.12 while
+ * the tree holds focus, 0.08 unfocused; search rows are always 0.1.
+ */
+.files-row-active,
+button.files-row:hover.files-row-active {
+  background: rgb(var(--rb-wash) / 0.08);
+  color: var(--rb-text);
+}
+
+.files-tree:focus-within .files-row-active,
+.files-tree:focus-within button.files-row:hover.files-row-active {
+  background: rgb(var(--rb-wash) / 0.12);
+}
+
+.files-row-search.files-row-active,
+button.files-row-search:hover.files-row-active {
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text);
+}
+
+.files-row-ignored {
+  opacity: 0.52;
+}
+
+/*
+ * The disclosure slot (tree.rs:164-181): a 14px box with the 11px
+ * ALT_ARROW_RIGHT/DOWN glyph in text-faint. The icon SWAPS instantly — the
+ * desktop tweens nothing here, so neither does this.
  */
 .files-chevron {
   flex: none;
   width: 14px;
-  text-align: center;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--rb-text-faint);
-  font-size: 11px;
 }
 
-.files-chevron-open {
-  transform: rotate(90deg);
+/* The polychrome file-type icon (tree.rs:183-187): an <img>, never tinted. */
+.files-row-icon {
+  flex: none;
+  display: block;
 }
 
 .files-row-name {
@@ -4697,40 +4803,114 @@ button.files-row-active:hover {
   white-space: nowrap;
 }
 
-.files-row-ignored {
-  color: var(--rb-text-faint);
+/* Search rows: files in text, directories in text_muted (search.rs:597-601). */
+.files-row-search {
+  color: var(--rb-text);
 }
 
-/* Tree rows carry a name only — the desktop shows no size column. */
-.files-row-path {
-  flex: none;
-  font-size: 11px;
-  color: var(--rb-text-faint);
+.files-row-name-directory {
+  color: var(--rb-text-muted);
 }
 
-.files-row-path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  max-width: 55%;
-}
-
+/* `status_row` (tree.rs:199-211, 374-395): 10.5px faint status text. */
 .files-row-note {
+  font-size: 10.5px;
   color: var(--rb-text-faint);
-  cursor: default;
+}
+
+.files-row-empty {
+  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
 }
 
 .files-row-action {
-  color: var(--rb-accent);
+  color: var(--rb-text-muted);
 }
 
+/* The error row: "{message} — Retry" in danger(0.82), the whole row is the
+ * retry target (tree.rs:213-243). */
 .files-row-error {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-danger) 82%, transparent);
+}
+
+/* ── Search results ─────────────────────────────────────────────────── */
+
+.files-search-results-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The capped-results banner (search.rs:487-502). */
+.files-search-banner {
+  flex: none;
+  height: 24px;
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
-  color: var(--rb-danger);
-  cursor: default;
+  padding: 0 10px;
+  font-size: 10px;
+  color: var(--rb-text-faint);
+}
+
+/* `centered_search_message` (search.rs:608-620). */
+.files-search-message {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--rb-text-faint);
+}
+
+.files-search-message-error {
+  color: color-mix(in srgb, var(--rb-danger) 82%, transparent);
+}
+
+/* `WorkspacePathDragGhost` (mod.rs:94-129): the drag pill — 24px, ≤220px,
+   raised surface, strong border, 11.5px, opacity 0.85. Off-stage (its only
+   job is to be snapshotted by setDragImage). */
+.files-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  height: 24px;
+  max-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: 6px;
+  background: var(--rb-raised);
+  color: var(--rb-text);
+  font-size: 11.5px;
+  opacity: 0.85;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.files-drag-ghost span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.files-drag-ghost img {
+  flex: none;
+  display: block;
 }
 
 .files-viewer-pane {
@@ -5071,37 +5251,11 @@ button.files-row-active:hover {
     display: block;
   }
 
-  /* Files: tree and viewer stack; opening a file swaps tree for viewer. */
-  .files-body {
-    position: relative;
-  }
-
-  .files-tree-pane {
-    width: 100%;
-    border-right: none;
-  }
-
-  .files-viewer-pane {
-    display: none;
-  }
-
-  .files-page-open .files-tree-pane {
-    display: none;
-  }
-
-  .files-page-open .files-viewer-pane {
-    display: flex;
-  }
-
-  .files-back {
-    display: inline-flex;
-  }
-
-  .files-space-picker {
-    max-width: none;
-    flex: 1;
-    min-width: 0;
-  }
+  /*
+   * The right pane's Files surface needs no phone-specific rules: it is a
+   * single tree column at every width, and opening a file swaps the pane's
+   * whole surface (the file tab), which the host already handles.
+   */
 }
 
 @media (min-width: 769px) {
@@ -9157,6 +9311,7 @@ html[data-surface="frosted"] .cr-tooltip {
 .settings-nav-sections,
 .drawer,
 .files-tree,
+.files-search-results,
 .files-text-preview,
 .files-markdown-scroll,
 .files-image-body,
@@ -9176,6 +9331,7 @@ html[data-surface="frosted"] .cr-tooltip {
 .settings-nav-sections::-webkit-scrollbar,
 .drawer::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
+.files-search-results::-webkit-scrollbar,
 .files-text-preview::-webkit-scrollbar,
 .files-markdown-scroll::-webkit-scrollbar,
 .files-image-body::-webkit-scrollbar,
