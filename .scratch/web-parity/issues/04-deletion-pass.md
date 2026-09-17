@@ -13,7 +13,7 @@ unused prop, or a broken layout.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** every research file's §5 gap table, filtered to rows whose
 `kind` column is `INVENTED` (including the `**INVENTED**` bold-markdown
@@ -268,4 +268,97 @@ as-is.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation note (branch `wp1/04-deletion`)
+
+**Landed — all 40 items in §2.** Every identifier in §3 greps to zero across
+`web/` (evidence in the PR description). Highlights and anything that needed a
+judgement call:
+
+- **Item 2 (`.identity-badge`).** The badge was not in the titlebar identity
+  component; it renders the chat's **Archived** state from
+  `chat-page.tsx::ChatIdentity`. Per the row's own instruction the text was
+  folded into the existing folder line (`{folder} · Archived`) rather than
+  dropped — the badge SHAPE is gone, the information is not.
+- **Item 4 (routes).** `/chat/$id/changes` and `/files` are gone from
+  `router.tsx` along with `ChangesPage`/`FilesPage`. No `<Link>`/`useNavigate`
+  anywhere else targeted them (grep clean), so nothing needed repointing to
+  `rightPaneStore.show(...)`. `ChangesSurface`/`FilesSurface` are unchanged and
+  still hosted by the pane. `ChangesBody`'s now-impossible `standalone` prop
+  and its back-link/`<h1>` branch went with them, plus the `.changes-back`
+  /`.changes-header-titles` CSS. The two files still live under `routes/`
+  (they now export only surfaces) — renaming them would have churned imports
+  for no behaviour change; a future ticket can move them.
+- **Item 12 (Sandbox).** Picker gone. `DraftConfigUpdate.sandbox` was removed
+  too — with no UI able to set it, the field typed a case that can no longer
+  occur; `updateDraft` now always preserves `current.sandbox`. Construction
+  sites are unchanged and already correct: literal `"workspace-write"` on
+  create (`composer-draft.ts:21`, `composer.tsx:161`), preserved from the
+  persisted config otherwise.
+- **Item 16 (`setChatConfig` before send).** Only the call site was removed.
+  Verified as the row asked: `chat-actions.ts::createChat` writes **no**
+  config today, so `maybePersistConfig`/`persistChatConfig`/`sameChatConfig`/
+  `sameModelOptions` are still the right mechanism for the new-chat write and
+  are kept, with a comment saying so. The repo has no ESLint, and
+  `tsconfig.base.json` sets neither `noUnusedLocals` nor `noUnusedParameters`,
+  so the now-callerless helper needs no suppression (same for
+  `queueMessage`/`QueueStore.renewEdit`, items 29/30 — untouched;
+  `renewEdit`/`steerNow` gained a "no UI call site, by design" doc comment).
+- **Item 24 (harness rows).** `harnessPickerItems` now filters on
+  `installed !== false && enabled !== false`. With everything filtered out the
+  picker falls through to its existing "No harnesses installed." empty state,
+  which reads correctly.
+- **Item 26 (`.menu-backdrop`).** Verified: still no `background`/
+  `background-color` — left exactly as-is, as instructed.
+- **Item 13.** Verified: no CSS selector mentions `sandbox`; the shared
+  `.identity-tabs`/`.identity-tab-*` rules are untouched for ticket 10.
+- **Item 22 (`@media (max-width:768px) { font-size:16px }`).** **Left in
+  place**, as instructed. **Product decision needed:** the rule's own comment
+  says "iOS zooms any field under 16px on focus", so it looks like a real
+  mobile-Safari workaround, not invention. Spec decision #5 puts phone widths
+  out of scope; recommend keeping it.
+
+**Known regressions, all deliberate and ticketed elsewhere:**
+
+- **Transcript stream errors are no longer surfaced anywhere.** The floating
+  `.transcript-error` card is gone; `error`/`onRetry` stay on `ScrollerProps`
+  so the real 24px shell strip (ticket 18/01) can read them. Until that lands
+  a live stream failure is silent. This is the one real UX loss in this pass.
+- **No reserved status-strip height inside the transcript.** `.status-strip`
+  is no longer rendered by `transcript.tsx` (the CSS rule stays for the shell
+  to use). Until ticket 06 reserves it shell-side, the composer may shift by
+  `--rb-status-strip-height` when the working indicator appears.
+- **Tool chips show no run state.** No pending dot, no "failed" word, no
+  subagent status dot — ticket 19 brings the `GlyphSpinner`/danger tint.
+- **Drag-and-drop-to-attach has no visual feedback.** The strip's drop veil is
+  gone and no shell `#chat-dropzone` exists yet (not ticketed in this batch).
+- **Upload progress is invisible.** The strip's bar is gone; the
+  `uploadProgress` plumbing in `composer.tsx` is intact for ticket 17.
+- **Discovered dev servers have no UI at all.** `preview-panel.tsx` is
+  deleted and `"preview"` is out of `RightSurface`. Checked ticket 07 first,
+  as the row asked: it does not reintroduce Preview — it says "Ticket 04 …
+  just verify the file and the `"preview"` surface kind are gone"
+  (`07-right-pane-host.md:1154-1159`) and lists the file under **delete (if
+  ticket 04 row 40 has not already)**. Safe to land ahead of it. (Ticket 10's
+  "do not touch `preview-panel.tsx`" is satisfied by the file no longer
+  existing.)
+- **Empty/loading transcript renders nothing.** Ticket 15 owns the hero.
+
+**Decision a human may want to make:** `src/lib/preview.ts`,
+`src/state/preview.ts` and `tests/preview.test.ts` now have no UI consumer.
+They are pure logic + a watch store for a real engine capability, they are not
+on this ticket's file list, and an embedded-browser-tab feature would reuse
+them, so they were KEPT rather than deleted. Say the word and they go.
+
+**Verification.** `pnpm -r build` (tsc + vite) green. `packages/app` vitest:
+29 files / 411 tests passing. `packages/engine-client`'s `conformance` and
+`web-smoke` suites time out in their `beforeAll` cargo build on this machine —
+pre-existing and unrelated (that package was not touched). Tests updated:
+`composer-actions.test.ts` (the two setChatConfig assertions collapse into one
+"sends only QueueCommand Run", and the attachment test's call indices shift by
+one) and `change-requests.test.ts` (the whole `changeRequestCreateUrl` describe
+deleted; the `PROVIDERS` assertion moved into `normalizeProvider`).
+
+**Screenshots:** `.scratch/web-parity/shots/04/` in the main checkout —
+`chat.png` (chat open: titlebar with no pressed toggle state, identity with no
+badge, sidebar space header with no sort button, composer footer chip with no
+radius).

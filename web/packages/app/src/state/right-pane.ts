@@ -20,28 +20,31 @@ import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
  */
 
 /** The surfaces the web client can host. The desktop's `RightSurface` also
- *  carries File, Subagent, and Browser tabs, which have no web peer yet. */
-export type RightSurface = "changes" | "files" | "terminal" | "preview";
+ *  carries File, Subagent, and Browser tabs, which have no web peer yet.
+ *
+ *  There is no Preview surface: on the desktop the discovered dev-server list
+ *  is the EMPTY-TAB BODY of an embedded native Browser tab
+ *  (`browser/view.rs::preview_body`), framed by that tab's own chrome. The web
+ *  has no embedded browser tab, so there is nothing to host it in. */
+export type RightSurface = "changes" | "files" | "terminal";
 
-export const RIGHT_SURFACES: readonly RightSurface[] = ["changes", "files", "terminal", "preview"];
+export const RIGHT_SURFACES: readonly RightSurface[] = ["changes", "files", "terminal"];
 
 /** Tab labels, matching the desktop's surface titles. */
 export const SURFACE_TITLES: Record<RightSurface, string> = {
   changes: "Changes",
   files: "Files",
   terminal: "Terminal",
-  preview: "Preview",
 };
 
 /**
  * Tab glyphs — `shell.rs`'s `icon_path` table: a diff is the list glyph,
- * Files the folder-with-files, Terminal and Browser their own marks.
+ * Files the folder-with-files, Terminal its own mark.
  */
-export const SURFACE_ICONS: Record<RightSurface, "list" | "folderWithFiles" | "terminal" | "globe"> = {
+export const SURFACE_ICONS: Record<RightSurface, "list" | "folderWithFiles" | "terminal"> = {
   changes: "list",
   files: "folderWithFiles",
   terminal: "terminal",
-  preview: "globe",
 };
 
 export interface ChatPaneState {

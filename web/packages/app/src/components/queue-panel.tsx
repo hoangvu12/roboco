@@ -86,26 +86,6 @@ export function QueuePanel({ editorDeviceId, onEditRow, editingRowId }: QueuePan
     [store],
   );
 
-  const onSteerNow = useCallback(
-    async (row: QueuedMessage) => {
-      if (busy.current) {
-        return;
-      }
-      busy.current = true;
-      try {
-        const sent = await store.steerNow(row.id);
-        if (!sent) {
-          sidebarNotice.set("That message was already drained by another device.");
-        }
-      } catch (error) {
-        sidebarNotice.set(`Could not steer now: ${describeQueueError(error)}`);
-      } finally {
-        busy.current = false;
-      }
-    },
-    [store],
-  );
-
   const onEdit = useCallback(
     async (row: QueuedMessage) => {
       if (busy.current) {
@@ -185,7 +165,6 @@ export function QueuePanel({ editorDeviceId, onEditRow, editingRowId }: QueuePan
             reviewRequired={reviewRequired(row)}
             isLocalEditing={editingRowId === row.id}
             onSendNow={() => void onSendNow(row)}
-            onSteerNow={() => void onSteerNow(row)}
             onEdit={() => void onEdit(row)}
             onRemove={() => void onRemove(row)}
             onDrop={(toIndex) => void onDrop(row.id, toIndex)}
@@ -202,14 +181,13 @@ interface QueueRowProps {
   readonly reviewRequired: boolean;
   readonly isLocalEditing: boolean;
   readonly onSendNow: () => void;
-  readonly onSteerNow: () => void;
   readonly onEdit: () => void;
   readonly onRemove: () => void;
   readonly onDrop: (toIndex: number) => void;
 }
 
 function QueueRow(props: QueueRowProps) {
-  const { row, lockedByOther, reviewRequired, isLocalEditing, onSendNow, onSteerNow, onEdit, onRemove, onDrop } = props;
+  const { row, lockedByOther, reviewRequired, isLocalEditing, onSendNow, onEdit, onRemove, onDrop } = props;
   const [dragOver, setDragOver] = useState<number | null>(null);
   const singleLineText = useMemo(() => collapseWhitespace(row.text), [row.text]);
   const hasAttachments = (row.attachments?.length ?? 0) > 0;
@@ -218,7 +196,7 @@ function QueueRow(props: QueueRowProps) {
   const draggable = !lockedByOther && !isLocalEditing;
   return (
     <div
-      className={`queue-row ${row.holdForTurnEnd === true ? "queue-row-hold" : ""} ${lockedByOther ? "queue-row-locked" : ""} ${reviewRequired ? "queue-row-review" : ""} ${isLocalEditing ? "queue-row-editing" : ""} ${dragOver === 0 ? "queue-row-drop-top" : ""}`}
+      className={`queue-row ${lockedByOther ? "queue-row-locked" : ""} ${reviewRequired ? "queue-row-review" : ""} ${isLocalEditing ? "queue-row-editing" : ""} ${dragOver === 0 ? "queue-row-drop-top" : ""}`}
       role="listitem"
       draggable={draggable}
       onDragStart={(event) => {
@@ -262,7 +240,10 @@ function QueueRow(props: QueueRowProps) {
         {summary}
       </div>
       <div className="queue-row-meta">
-        {row.holdForTurnEnd === true && <span className="queue-row-chip">Hold</span>}
+        {/*
+          `hold_for_turn_end` is engine-side only — it gates auto-drain and the
+          desktop's row never shows it. It stays on the data model, unrendered.
+        */}
         {lockedByOther && <span className="queue-row-chip queue-row-chip-locked">Editing</span>}
         {reviewRequired && <span className="queue-row-chip queue-row-chip-review">Review</span>}
         {isLocalEditing && <span className="queue-row-chip queue-row-chip-editing">Editing here</span>}
@@ -276,15 +257,6 @@ function QueueRow(props: QueueRowProps) {
           title="Send now (interrupt)"
         >
           Send now
-        </button>
-        <button
-          type="button"
-          className="btn btn-ghost queue-row-action"
-          onClick={onSteerNow}
-          disabled={lockedByOther || reviewRequired}
-          title="Steer the live run with this message"
-        >
-          Steer now
         </button>
         <button
           type="button"

@@ -123,12 +123,7 @@ export function Titlebar({
               )}
             </div>
           </div>
-          <WindowControl
-            icon="sidebarMinimalistic"
-            label="Toggle panel"
-            onClick={onTogglePane}
-            active={paneOpen}
-          />
+          <WindowControl icon="sidebarMinimalistic" label="Toggle panel" onClick={onTogglePane} />
         </div>
       )}
     </div>
@@ -141,24 +136,25 @@ export function Titlebar({
  * glyph, quiet until hovered. Disabled controls stay in place at reduced
  * opacity — the desktop's `nav_history_button` does not remove them, so the
  * cluster never reflows.
+ *
+ * There is no pressed/active variant: `window_control_button` has one resting
+ * look and one hover, whatever the control it drives is currently doing.
  */
 function WindowControl({
   icon,
   label,
   onClick,
   disabled = false,
-  active = false,
 }: {
   icon: IconName;
   label: string;
   onClick: () => void;
   disabled?: boolean;
-  active?: boolean;
 }) {
   return (
     <button
       type="button"
-      className={`window-control ${active ? "window-control-active" : ""}`}
+      className="window-control"
       onClick={onClick}
       disabled={disabled}
       aria-label={label}

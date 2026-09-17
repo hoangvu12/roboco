@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { describeFilesError, type WorkspaceFilesClient } from "../../lib/files-client";
-import { fileName, formatBytes, isImagePath, isMarkdownPath, readOnlyMessage } from "../../lib/files";
+import { fileName, isImagePath, isMarkdownPath, readOnlyMessage } from "../../lib/files";
 import { parseMarkdown } from "../../lib/markdown-doc";
 import { MarkdownView } from "./markdown-view";
 
@@ -39,13 +39,11 @@ export function FileViewer({
 
 function ViewerHeader({
   path,
-  file,
   dirty,
   onClose,
   actions,
 }: {
   path: string;
-  file: { size: number; modifiedAt?: string | null } | null;
   dirty: boolean;
   onClose: () => void;
   actions?: React.ReactNode;
@@ -64,7 +62,7 @@ function ViewerHeader({
           </span>
         ))}
       </div>
-      {file !== null && <span className="files-viewer-meta">{formatBytes(file.size)}</span>}
+      {/* No byte-size badge: the desktop's breadcrumb toolbar carries none. */}
       {actions}
     </header>
   );
@@ -116,7 +114,6 @@ function TextViewer({
     <div className="files-viewer">
       <ViewerHeader
         path={path}
-        file={snapshot.file}
         dirty={snapshot.dirty}
         onClose={onClose}
         actions={
@@ -292,12 +289,7 @@ function ImageViewer({ client, path, onClose }: { client: WorkspaceFilesClient; 
 
   return (
     <div className="files-viewer">
-      <ViewerHeader
-        path={path}
-        file={state.kind === "loaded" ? { size: state.size } : null}
-        dirty={false}
-        onClose={onClose}
-      />
+      <ViewerHeader path={path} dirty={false} onClose={onClose} />
       <div className="files-viewer-body files-image-body">
         {state.kind === "loading" && <p className="files-note">Loading…</p>}
         {state.kind === "error" && <p className="files-note">{state.message}</p>}

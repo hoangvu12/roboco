@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import type { Space } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useWatchSnapshot } from "../state/hooks";
@@ -10,34 +10,18 @@ import { FileDocument } from "../lib/file-document";
 import { isImagePath } from "../lib/files";
 import { FileTreePanel } from "../components/files/file-tree-panel";
 import { FileViewer } from "../components/files/file-viewer";
-import { filesRoute } from "../router";
 
 /**
- * The space's files: a lazy tree beside a preview/editor pane (the desktop's
- * Files right-pane surface, promoted to a page). The target is the selected
- * space's checkout; selection lives in the URL (`?space=`/`?path=`) so a
- * file link is shareable within the origin. At phone widths the panes
- * stack: opening a file swaps the tree for the viewer, "‹ Files" returns.
+ * The space's files: a lazy tree beside a viewer/editor pane — the desktop's
+ * Files right-pane surface. The target is the selected space's checkout.
+ *
+ * Files is a PANE surface, never a route: the desktop has no `/files` page,
+ * and a route here stripped the pane column off its own chrome. Selection
+ * therefore lives in the surface's local state, not in search params.
+ *
+ * At phone widths the panes stack: opening a file swaps the tree for the
+ * viewer, "‹ Files" returns.
  */
-/**
- * The routed page: selection lives in the URL (`?space=`/`?path=`) so a file
- * link is shareable within the origin. Kept so `/files` links stay valid; the
- * right pane hosts the same body through `FilesSurface`.
- */
-export function FilesPage() {
-  const search = useSearch({ from: filesRoute.id });
-  const navigate = useNavigate();
-  return (
-    <FilesBody
-      requestedSpace={search.space ?? null}
-      path={search.path ?? null}
-      onOpen={(space, path) =>
-        void navigate({ to: "/files", search: { space: space ?? undefined, ...(path === null ? {} : { path }) } })
-      }
-    />
-  );
-}
-
 /**
  * The right pane's Files surface. The pane is chat-scoped chrome with no URL
  * of its own, so the space and the open path live in local state here.

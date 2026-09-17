@@ -72,12 +72,10 @@ export function TranscriptView({
       setStore((current) => (current === created ? null : current));
     };
   }, [client, docId]);
+  // The desktop transcript renders NOTHING while it has no document — the
+  // shell owns the empty/loading case, not this component.
   if (store === null) {
-    return (
-      <div className="transcript">
-        <p className="chat-transcript-empty">Loading…</p>
-      </div>
-    );
+    return null;
   }
   return (
     <TranscriptSurface
@@ -371,12 +369,10 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, d
 
   const openSubagent = useCallback((doc: string) => setSubagentDoc(doc), []);
 
+  // Empty transcript: nothing at all, as on the desktop. The shell's new-chat
+  // hero (ticket 15) is what will occupy this space.
   if (loaded && rows.length === 0 && error === null) {
-    return (
-      <div className="transcript">
-        <p className="chat-transcript-empty">No messages yet.</p>
-      </div>
-    );
+    return null;
   }
 
   // The visible window, with the desktop's 320px overdraw on both ends.
@@ -423,16 +419,13 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, d
           })}
         </div>
         <div style={{ height: bottomPad }} aria-hidden />
-        {!loaded && error === null && <p className="chat-transcript-empty">Loading…</p>}
       </div>
       <div className="transcript-fade" aria-hidden />
       {/*
-        The reserved status strip under the content outlet
-        (`layout::STATUS_STRIP_HEIGHT`): the desktop keeps it whether or not
-        anything occupies it, so the composer never shifts when the working
-        indicator appears.
+        The reserved status strip (`layout::STATUS_STRIP_HEIGHT`) belongs to
+        the SHELL on the desktop, not to this component — ticket 06 builds it
+        there. Nothing reserves that height in between.
       */}
-      <div className="status-strip" />
       {showJump && (
         <button
           type="button"
@@ -443,14 +436,13 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, d
           ↓
         </button>
       )}
-      {error !== null && (
-        <div className="transcript-error" role="alert">
-          <span>The transcript stream failed: {error}</span>
-          <button type="button" className="btn btn-ghost" onClick={onRetry}>
-            Retry
-          </button>
-        </div>
-      )}
+      {/*
+        A stream error has no floating card here: the desktop surfaces it as a
+        24px shell strip above the list ("Engine off. Cached history is
+        read-only."), which ticket 18/01 owns. `error`/`onRetry` stay on the
+        props so that strip can read them without a caller change; until then
+        an active stream error is simply not shown.
+      */}
       {subagentDoc !== null && (
         <SubagentDialog client={client} docId={subagentDoc} deviceId={deviceId} onClose={() => setSubagentDoc(null)} />
       )}
@@ -904,14 +896,12 @@ function ToolChipView({
         <ToolGlyph tool={tool} />
         <span className="tool-chip-label">{label}</span>
         {detail.length > 0 && <span className="tool-chip-detail">{detail}</span>}
-        {spawn && tool.subagentStatus !== null && (
-          <span
-            className={`subagent-dot subagent-dot-${tool.subagentStatus}`}
-            aria-label={`Subagent ${tool.subagentStatus}`}
-          />
-        )}
-        {!tool.resolved && !spawn && <span className="chip-pending" aria-label="Running" />}
-        {tool.isError && <span className="chip-error-mark">failed</span>}
+        {/*
+          No status dot, no pending dot, no "failed" word: the desktop shows a
+          `mini_glyph_spinner` while running, a quiet chip when done, and the
+          danger tint when failed. Building that spinner/tint is ticket 19;
+          until then the chip carries no run-state indicator at all.
+        */}
         {model !== null && <span className="tool-chip-model">{model}</span>}
         {expandable && (
           <span className={`tool-chip-chevron ${open ? "tool-chip-chevron-open" : ""}`} aria-hidden>

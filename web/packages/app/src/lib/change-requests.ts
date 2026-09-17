@@ -1,10 +1,11 @@
 import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
 
 /**
- * Pure helpers for change-request display: tone mapping, badge model, and
- * the provider's create-page URL when the engine does not expose a wire
- * `CreateChangeRequest` RPC (today's case — the web v1 fallback opens the
- * provider's compare/merge-request URL with the head ref pre-filled).
+ * Pure helpers for change-request display: tone mapping and the badge model.
+ *
+ * There is no create-page URL builder: the desktop has no create flow at all
+ * (no wire `CreateChangeRequest`, no button), so guessing a provider's compare
+ * URL was web-only invention and is gone.
  */
 
 export type BadgeTone = "open" | "merged" | "closed";
@@ -50,7 +51,7 @@ const PROVIDER_KEYS: Readonly<Record<string, string>> = {
   codeberg: "codeberg",
 };
 
-/** The provider keys the create-URL builder understands. */
+/** The provider keys `normalizeProvider` recognizes. */
 export const PROVIDERS: readonly string[] = Object.keys(PROVIDER_KEYS);
 
 function providerKey(provider: string): string {
@@ -74,42 +75,6 @@ export function normalizeProvider(provider: string | null | undefined): string |
     return null;
   }
   return providerKey(trimmed);
-}
-
-function repoPath(cwd: string): string {
-  return cwd.replace(/\\/g, "/").replace(/\.git$/, "");
-}
-
-/**
- * Best-effort provider URL that opens the change-request create page with
- * the head ref pre-filled. `null` when we can't guess one (e.g. unknown
- * provider or empty base/head refs).
- */
-export function changeRequestCreateUrl(provider: string, baseRef: string, headRef: string, cwd: string): string | null {
-  const trimmedBase = baseRef.trim();
-  const trimmedHead = headRef.trim();
-  if (trimmedBase.length === 0 || trimmedHead.length === 0) {
-    return null;
-  }
-  const key = providerKey(provider);
-  const path = repoPath(cwd);
-  if (path.length === 0) {
-    return null;
-  }
-  switch (key) {
-    case "github":
-      return `https://github.com/${path}/compare/${encodeURIComponent(trimmedBase)}...${encodeURIComponent(trimmedHead)}?expand=1`;
-    case "gitlab":
-      return `https://gitlab.com/${path}/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(trimmedHead)}&merge_request[target_branch]=${encodeURIComponent(trimmedBase)}`;
-    case "bitbucket":
-      return `https://bitbucket.org/${path}/pull-requests/new?source=${encodeURIComponent(trimmedHead)}&dest=${encodeURIComponent(trimmedBase)}`;
-    case "azuredevops":
-      return `https://dev.azure.com/${path}/pullrequestcreate?sourceRef=${encodeURIComponent(trimmedHead)}&targetRef=${encodeURIComponent(trimmedBase)}`;
-    case "codeberg":
-      return `https://codeberg.org/${path}/compare/${encodeURIComponent(trimmedBase)}...${encodeURIComponent(trimmedHead)}`;
-    default:
-      return null;
-  }
 }
 
 /**

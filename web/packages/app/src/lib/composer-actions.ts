@@ -24,11 +24,15 @@ export interface DraftConfig {
   readonly modelOptions: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * What a picker may change. `sandbox` is deliberately absent: the desktop
+ * writes `SandboxLevel::WorkspaceWrite` when the chat is created and preserves
+ * it thereafter — it is never a user choice, so no update can carry it.
+ */
 export interface DraftConfigUpdate {
   harness?: HarnessId;
   model?: string | null;
   reasoning?: ReasoningLevel | null;
-  sandbox?: SandboxLevel;
   modelOptions?: Record<string, unknown>;
 }
 
@@ -98,9 +102,13 @@ function defaultMint(): string {
 }
 
 /**
- * Send a message to the harness: `Mutate setChatConfig` (if the draft drifted
- * from the persisted config) followed by `QueueCommand` with a Run payload.
+ * Send a message to the harness: one `QueueCommand` with a Run payload.
  * Returns the message id the engine will claim for the user bubble.
+ *
+ * No `Mutate setChatConfig` rides ahead of it. The desktop carries
+ * model/reasoning/options ON the `RunRequest` itself (which `buildRunRequest`
+ * already does); only a genuinely NEW chat persists a `ChatConfig`, via
+ * `Mutate createChat`.
  *
  * When `stagedAttachments` is non-empty, the caller uploads the bytes to
  * the chat's host device first, folds the returned paths into the prompt
@@ -127,7 +135,6 @@ export async function sendRun(
     throw new Error("This chat has no working directory yet");
   }
   const messageId = options.mintMessageId ?? defaultMint;
-  await maybePersistConfig(caller, chatId, draft, options.currentConfig ?? null);
   const uploaded: readonly UploadedAttachment[] = await uploadStage(
     caller,
     staged,
@@ -208,6 +215,13 @@ export async function persistChatConfig(
   });
 }
 
+/**
+ * Retained, not wired: `sendRun` no longer mutates the chat's config before
+ * every send (ticket 04 — the desktop only writes one on `Mutate createChat`).
+ * `chat-actions.ts::createChat` writes no config today, so this is still the
+ * right mechanism for the genuinely-new-chat write once that path is built
+ * (tickets 13/15). Deliberately left with no call site until then.
+ */
 async function maybePersistConfig(
   caller: CommandCaller,
   chatId: string,

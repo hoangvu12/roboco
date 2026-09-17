@@ -238,8 +238,8 @@ export function ChatPage() {
       <div className="chat-column">
         <div className="chat-body">
           {session === null ? (
-            <div className="chat-transcript">
-              <p className="chat-transcript-empty">No engine connected.</p>
+            <div className="empty-state">
+              <p>No engine connected.</p>
             </div>
           ) : (
             <TranscriptView
@@ -286,8 +286,11 @@ export function ChatPage() {
 /**
  * The titlebar's centred identity — the desktop's transcript identity group:
  * the harness's brand mark, the chat title, and the `space @ device` line in
- * the muted subline tone, with the archived and change-request badges
- * trailing. It is a drag region on the desktop; here it is just chrome.
+ * the muted subline tone, with the change-request badge trailing. It is a drag
+ * region on the desktop; here it is just chrome.
+ *
+ * Archived chats carry no badge — the desktop's identity row is mark + title +
+ * folder and nothing else, so the word rides the folder line instead.
  */
 function ChatIdentity({ row, crSummary }: { row: ChatRow; crSummary: ChangeRequestSummary | null }) {
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
@@ -302,8 +305,9 @@ function ChatIdentity({ row, crSummary }: { row: ChatRow; crSummary: ChangeReque
         />
       )}
       <span className="identity-title">{row.chat.title ?? "New session"}</span>
-      <span className="identity-folder">{row.folder}</span>
-      {row.chat.archived && <span className="identity-badge">Archived</span>}
+      <span className="identity-folder">
+        {row.chat.archived ? `${row.folder} · Archived` : row.folder}
+      </span>
       {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
     </>
   );

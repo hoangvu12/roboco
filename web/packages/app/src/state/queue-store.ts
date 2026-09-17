@@ -303,7 +303,13 @@ export class QueueStore {
     return sendQueuedMessageNowRpc(this.#client, this.#chatId, messageId);
   }
 
-  /** Steer the live run with this queued row. Returns the `sent` ack. */
+  /**
+   * Steer the live run with this queued row. Returns the `sent` ack.
+   *
+   * No UI call site, by design: the desktop's queue row offers Send now only
+   * ("All providers use Send now", `queue.rs`) and spec decision #3 keeps
+   * Steer-now off the web too. Kept available for a future capability.
+   */
   async steerNow(messageId: string): Promise<boolean> {
     return steerQueuedMessageNowRpc(this.#client, this.#chatId, messageId);
   }

@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "@roboco/theme";
-import { PreviewPanel } from "./preview-panel";
 import { ChangesSurface } from "../routes/changes-page";
 import { FilesSurface } from "../routes/files-page";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { useTerminalStore } from "../terminal/store";
-import { rightPaneStore, type ChatPaneState } from "../state/right-pane";
+import type { ChatPaneState } from "../state/right-pane";
 
 /**
- * The right pane — the desktop's changes/files/terminal/browser panel.
+ * The right pane — the desktop's changes/files/terminal panel.
  *
  * It is a flush, left-bordered glass panel beside the conversation column, not
  * an inset card, and it is a sibling of that column at the SHELL level (the
@@ -83,9 +82,6 @@ export function RightPane({
               <>
                 {pane.active === "changes" && <ChangesSurface chatId={chatId} />}
                 {pane.active === "files" && <FilesSurface />}
-                {pane.active === "preview" && (
-                  <PreviewPanel chatId={chatId} onClose={() => rightPaneStore.close(chatId)} />
-                )}
                 {pane.active === "terminal" && (
                   <TerminalDock store={terminalStore} chatId={chatId} docked />
                 )}
