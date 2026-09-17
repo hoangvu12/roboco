@@ -37,7 +37,7 @@
  *   caller in if that ever changes.
  */
 
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Dialog, type DialogRootProps, type DialogPopupProps } from "@base-ui/react/dialog";
 import { useOverlayKeyboardSource } from "./overlay";
 
@@ -82,6 +82,68 @@ export function RbDialog(props: RbDialogProps) {
           aria-label={props.ariaLabel}
           initialFocus={props.initialFocus}
           finalFocus={props.finalFocus}
+        >
+          {props.children}
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+export interface RbDialogGlassProps {
+  /** Controlled open — the exit plays `[data-closed]` CSS (the palette fades). */
+  readonly open: boolean;
+  /**
+   * Base UI's change event verbatim. A `false` from a scrim press or the
+   * escape ladder routes here — the caller closes its store.
+   */
+  readonly onOpenChange: NonNullable<DialogRootProps["onOpenChange"]>;
+  /** The exit drained — the palette's "fully closed" moment (flow dropped). */
+  readonly onOpenChangeComplete?: DialogRootProps["onOpenChangeComplete"];
+  /** The dialog's accessible name. */
+  readonly ariaLabel?: string;
+  /** Registers this name on the `overlayKeyboard` registry while claimed. */
+  readonly overlaySource?: string;
+  /**
+   * Overrides the registry window: the palette holds its claim through the
+   * exit (`status !== "closed"`) — the scrim is still up while the card
+   * fades, and a jump firing under a visible modal would strand it over a
+   * chat the user never picked (ticket 11's comment).
+   */
+  readonly overlayOpen?: boolean;
+  /** Extra classes on the backdrop (`.modal-glass-backdrop` is always applied). */
+  readonly backdropClassName?: string;
+  /** Extra classes on the card (`.modal-card .rb-dialog-card` are applied). */
+  readonly cardClassName?: string;
+  /** Inline style on the card (the palette's 14px radius rides CSS instead). */
+  readonly style?: CSSProperties;
+  readonly children: ReactNode;
+}
+
+/**
+ * `RbDialogGlass` — the `modal_glass` variant (popover.rs:684-705): the
+ * lighter 0.35 scrim, and scrim presses DO dismiss (the add-space palette's
+ * contract — "clicking the scrim dismisses, same as Escape"). Same card
+ * self-centering, frost, and `[data-open]` entrance as `RbDialog`; the exit
+ * is the caller's `[data-closed]` CSS, which Base UI's animation-aware
+ * unmount waits out — the palette's 100ms layer fade, replacing the old
+ * layer's reap timer.
+ */
+export function RbDialogGlass(props: RbDialogGlassProps) {
+  useOverlayKeyboardSource(props.overlaySource, props.overlayOpen ?? props.open);
+  return (
+    <Dialog.Root
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+      onOpenChangeComplete={props.onOpenChangeComplete}
+      modal
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className={`modal-glass-backdrop ${props.backdropClassName ?? ""}`} />
+        <Dialog.Popup
+          className={`modal-card rb-dialog-card ${props.cardClassName ?? ""}`}
+          style={props.style}
+          aria-label={props.ariaLabel}
         >
           {props.children}
         </Dialog.Popup>

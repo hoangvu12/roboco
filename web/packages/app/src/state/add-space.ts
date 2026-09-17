@@ -9,7 +9,6 @@ import type {
   Space,
 } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
-import { PopupLifecycle, type PopupStatus } from "../lib/popup-lifecycle";
 import { classifyKey, menuStep } from "../lib/picker-search";
 import {
   addSpaceCompletion,
@@ -34,8 +33,11 @@ import { uiSettings } from "./ui-settings";
  * search-edit decision tree, the keyboard handler, manual-path prepare, and
  * submit with its optimistic space row.
  *
- * The open → closing → closed mount lifecycle rides ticket 09's
- * `PopupLifecycle` (100ms exit, then unmount); the flow object itself is
+ * The mount lifecycle rides the Base UI dialog (`RbDialogGlass` in the
+ * palette component): `open` is the dialog's open flag, and the exit
+ * window — open=false while the layer still paints its `[data-closed]`
+ * fade — ends when the component reports `onOpenChangeComplete(false)`
+ * (`unmounted()`), which drops the flow. The flow object itself is
  * immutable and swapped on every mutation, so the external-store snapshot
  * stays referentially honest.
  *
@@ -43,6 +45,9 @@ import { uiSettings } from "./ui-settings";
  * spaces-menu "New project…" row and ticket 12's `Mod+K` binding both
  * open this surface (the desktop's `open_add_space`).
  */
+
+/** The palette's mount phases, as the component and CSS read them. */
+export type AddSpaceStatus = "closed" | "open" | "closing";
 
 export type AddSpaceListing =
   | "idle"
@@ -86,12 +91,12 @@ export interface AddSpaceFlow {
 }
 
 export interface AddSpaceSnapshot {
-  readonly status: PopupStatus;
+  readonly status: AddSpaceStatus;
   readonly flow: AddSpaceFlow | null;
   /**
    * Optimistic space rows minted by a submit still on the wire (the
    * desktop's `AppState.spaces` echo). Ticket 10's spaces menu merges them
-   * by id; a failed createSpace rolls its row back here.
+   * by id; a failed createSpace rolls the row back here.
    */
   readonly pendingSpaces: readonly Space[];
 }
@@ -112,7 +117,10 @@ function errorMessage(error: unknown): string {
 }
 
 export class AddSpaceStore {
-  readonly #popup = new PopupLifecycle<null>();
+  /** The dialog's open flag — `false` through the exit window. */
+  #open = false;
+  /** False only once the exit has drained (the old "closed" state). */
+  #mounted = false;
   #flow: AddSpaceFlow | null = null;
   #pending: Space[] = [];
   #context: AddSpaceContext | null = null;
@@ -120,19 +128,6 @@ export class AddSpaceStore {
   #submitInFlight = false;
   #snapshot: AddSpaceSnapshot = { status: "closed", flow: null, pendingSpaces: [] };
   readonly #listeners = new Set<() => void>();
-
-  constructor() {
-    // The popup machine drives the mount phases; when it finishes the reap
-    // the flow state goes with it.
-    this.#popup.subscribe(() => {
-      if (this.#popup.status() === "closed") {
-        this.#flow = null;
-        this.#manualInFlight = false;
-        this.#submitInFlight = false;
-      }
-      this.#commit();
-    });
-  }
 
   getSnapshot(): AddSpaceSnapshot {
     return this.#snapshot;
@@ -178,16 +173,46 @@ export class AddSpaceStore {
       error: null,
       browserRepo: false,
     };
-    this.#popup.open(null);
+    this.#open = true;
+    this.#mounted = true;
+    this.#commit();
     if (device !== undefined && device !== null) {
       this.#loadFolders(null);
       this.#loadDrives();
     }
   }
 
-  /** Every close path funnels here: the exit phase, then the reap. */
+  /** Every close path funnels here: the exit window, then the drain. */
   close(): void {
-    this.#popup.dismiss();
+    if (this.#open) {
+      this.#open = false;
+      this.#commit();
+    }
+  }
+
+  /**
+   * The exit drained (`RbDialogGlass`'s `onOpenChangeComplete(false)`): the
+   * layer is gone, so the flow goes with it.
+   */
+  unmounted(): void {
+    if (!this.#mounted) {
+      return;
+    }
+    this.#open = false;
+    this.#mounted = false;
+    this.#flow = null;
+    this.#manualInFlight = false;
+    this.#submitInFlight = false;
+    this.#commit();
+  }
+
+  /**
+   * Hard close for a host that is unmounting (an engine switch remounts the
+   * sidebar): there is nothing left to paint, so no exit window either.
+   */
+  forceClose(): void {
+    this.close();
+    this.unmounted();
   }
 
   /** The component's session binding — re-called on engine switches. */
@@ -743,7 +768,7 @@ export class AddSpaceStore {
 
   /** The flow, but only while genuinely open — closing reads as gone. */
   #aliveFlow(): AddSpaceFlow | null {
-    return this.#popup.isOpen() ? this.#flow : null;
+    return this.#open ? this.#flow : null;
   }
 
   #session(): EngineSession | null {
@@ -804,7 +829,7 @@ export class AddSpaceStore {
 
   #commit(): void {
     this.#snapshot = {
-      status: this.#popup.status(),
+      status: !this.#mounted ? "closed" : this.#open ? "open" : "closing",
       flow: this.#flow,
       pendingSpaces: this.#pending,
     };

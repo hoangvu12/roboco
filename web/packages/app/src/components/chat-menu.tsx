@@ -1,29 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState, type ReactElement } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon } from "@roboco/icons";
 import type { Chat } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { sidebarNotice } from "../state/notice";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
-import { classifyKey } from "../lib/picker-search";
-import { menuAt } from "../lib/popover-anchor";
+import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
 import { RbDialog } from "./base/dialog";
-import { PopoverCard, MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
+import { MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
 import { MenuRow } from "./popover/menu-row";
-import { Popup, usePopup } from "./popover/popup";
 
 /**
  * The chat row's management surface — the desktop's `ChatMenuState`
  * (shell.rs:5433-5608). Opened by RIGHT mouse-down at the pointer (both the
  * active list and the archived shelf reuse it), positioned clamp-only at
- * the pointer (`menu_at` — no flip), 216px wide. The Copy row swaps the
- * card's content to a Copy page IN PLACE — no second floating layer. Rename
- * and delete open modal dialogs; mutation failures surface in the sidebar
- * notice strip.
+ * the pointer (`menu_at` — no flip) by `RbContextMenu`, 216px wide. The
+ * Copy row swaps the card's content to a Copy page IN PLACE — no second
+ * floating layer. Rename and delete open modal dialogs; mutation failures
+ * surface in the sidebar notice strip.
  *
  * There is no kebab: the right-click is the only affordance (the ticket
  * settles the research's open question — right-click only, kebab removed).
+ *
+ * The menu is a Base UI `ContextMenu` — the trigger wraps the chat row
+ * (`menu(row)`), the library owns the right-click/long-press open, the
+ * pointer positioning, Escape and outside-press dismissal, and the exit
+ * window (`.rb-popover-popup`'s `[data-closed]` motion + occluder).
  */
 
 /** The card width (`shell.rs`'s ChatMenu card). */
@@ -31,7 +35,7 @@ const CHAT_MENU_WIDTH = 216;
 
 export function useChatMenu(chat: Chat) {
   const session = useEngineSession();
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
 
   function run(mutation: (caller: MutateCaller) => Promise<unknown>): void {
@@ -44,32 +48,48 @@ export function useChatMenu(chat: Chat) {
     });
   }
 
-  /** Open the context menu at the pointer (`ChatMenuState::position`). */
-  const openAt = useCallback((x: number, y: number): void => {
-    setMenu({ x, y });
-  }, []);
+  /**
+   * Wraps a chat row element so a right-click (or long-press) opens this
+   * menu at the pointer. The Trigger adopts the row via its `render` prop —
+   * no wrapper div, the row's own DOM is unchanged.
+   */
+  function menu(row: ReactElement): ReactElement {
+    return (
+      <RbContextMenu open={open} onOpenChange={setOpen}>
+        <ContextMenu.Trigger render={row} />
+        <ContextMenu.Portal>
+          <RbContextMenuPositioner>
+            <ContextMenu.Popup
+              className="rb-popover-popup popover-card"
+              role="menu"
+              aria-label="Chat actions"
+              style={{ width: CHAT_MENU_WIDTH }}
+            >
+              <ChatMenuPages
+                chat={chat}
+                onRename={() => {
+                  setOpen(false);
+                  setDialog("rename");
+                }}
+                onArchive={() => {
+                  setOpen(false);
+                  run((caller) => setChatArchived(caller, chat.id, true));
+                }}
+                onDelete={() => {
+                  setOpen(false);
+                  setDialog("delete");
+                }}
+                onClose={() => setOpen(false)}
+              />
+            </ContextMenu.Popup>
+          </RbContextMenuPositioner>
+        </ContextMenu.Portal>
+      </RbContextMenu>
+    );
+  }
 
   const element = (
     <>
-      {menu !== null && (
-        <ChatMenu
-          chat={chat}
-          anchor={menu}
-          onRename={() => {
-            setMenu(null);
-            setDialog("rename");
-          }}
-          onArchive={() => {
-            setMenu(null);
-            run((caller) => setChatArchived(caller, chat.id, true));
-          }}
-          onDelete={() => {
-            setMenu(null);
-            setDialog("delete");
-          }}
-          onClose={() => setMenu(null)}
-        />
-      )}
       {dialog === "rename" && (
         <RenameChatDialog
           chat={chat}
@@ -83,43 +103,25 @@ export function useChatMenu(chat: Chat) {
     </>
   );
 
-  return { openAt, element };
+  return { menu, element };
 }
 
-function ChatMenu({
+function ChatMenuPages({
   chat,
-  anchor,
   onRename,
   onArchive,
   onDelete,
   onClose,
 }: {
   readonly chat: Chat;
-  readonly anchor: { x: number; y: number };
   readonly onRename: () => void;
   readonly onArchive: () => void;
   readonly onDelete: () => void;
   readonly onClose: () => void;
 }) {
-  const popup = usePopup<"chat">();
+  // Mounts per open (the popup's content unmounts once the exit has
+  // drained), so the page resets to "root" on every open, as before.
   const [page, setPage] = useState<"root" | "copy">("root");
-
-  // Open on mount at the pointer — clamp-only, never flipping above.
-  useEffect(() => {
-    popup.open("chat");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
-      return;
-    }
-    if (classifyKey(event.key, event.metaKey, event.ctrlKey) === "escape") {
-      event.preventDefault();
-      onClose();
-      popup.closeByEscape();
-    }
-  };
 
   const codexLink = codexConversationLink(chat);
   const harnessSessionId =
@@ -154,78 +156,64 @@ function ChatMenu({
     sidebarNotice.set(notice);
   }
 
-  return (
-    <Popup popup={popup} placement={(size) => menuAt(anchor, size)}>
-      {() => (
-        <PopoverCard role="menu" aria-label="Chat actions" style={{ width: CHAT_MENU_WIDTH }} onKeyDown={onKeyDown}>
-          {page === "root" ? (
-              <>
-                <MenuRow fadeKey="rename" onClick={onRename}>
-                  <Icon name="pen" size={16} className="chat-menu-row-icon" />
-                  <span className="menu-row-label">Rename…</span>
-                </MenuRow>
-                <MenuRow fadeKey="archive" onClick={onArchive}>
-                  <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
-                  <span className="menu-row-label">Archive</span>
-                </MenuRow>
-                <MenuRow
-                  fadeKey="copy"
-                  onClick={() => {
-                    // The Copy page replaces the card's content IN PLACE —
-                    // no second floating layer, no portal remount.
-                    setPage("copy");
-                  }}
-                >
-                  <Icon name="copy" size={16} className="chat-menu-row-icon" />
-                  <span className="menu-row-label">Copy</span>
-                  <span className="chat-menu-row-spring" />
-                  <Icon name="altArrowRight" size={14} className="chat-menu-row-arrow" />
-                </MenuRow>
-                <MenuSeparator />
-                <MenuRow fadeKey="delete" className="chat-menu-row-danger" onClick={onDelete}>
-                  <Icon name="trashBinMinimalistic" size={16} className="chat-menu-row-icon-danger" />
-                  <span className="menu-row-label">Delete…</span>
-                </MenuRow>
-              </>
-            ) : (
-              <>
-                <MenuRow
-                  fadeKey="back"
-                  onClick={() => {
-                    setPage("root");
-                  }}
-                >
-                  <Icon name="altArrowLeft" size={16} className="chat-menu-row-icon" />
-                  <span className="menu-row-label">Back</span>
-                </MenuRow>
-                <MenuSeparator />
-                <MenuRow fadeKey="roboco-link" onClick={() => void copyConversationLink()}>
-                  <Icon name="copy" size={16} className="chat-menu-row-icon" />
-                  <span className="menu-row-label">Roboco conversation link</span>
-                </MenuRow>
-                {codexLink !== null && (
-                  <MenuRow
-                    fadeKey="codex-link"
-                    onClick={() => void copyText(codexLink.url, `${codexLink.label} copied`)}
-                  >
-                    <Icon name="copy" size={16} className="chat-menu-row-icon" />
-                    <span className="menu-row-label">{codexLink.label}</span>
-                  </MenuRow>
-                )}
-                {harnessSessionId !== null && (
-                  <MenuRow
-                    fadeKey="harness-session"
-                    onClick={() => void copyText(harnessSessionId, "Harness session ID copied")}
-                  >
-                    <Icon name="copy" size={16} className="chat-menu-row-icon" />
-                    <span className="menu-row-label">Harness session ID</span>
-                  </MenuRow>
-                )}
-              </>
-            )}
-          </PopoverCard>
-        )}
-      </Popup>
+  return page === "root" ? (
+    <>
+      <MenuRow fadeKey="rename" onClick={onRename}>
+        <Icon name="pen" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">Rename…</span>
+      </MenuRow>
+      <MenuRow fadeKey="archive" onClick={onArchive}>
+        <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">Archive</span>
+      </MenuRow>
+      <MenuRow
+        fadeKey="copy"
+        onClick={() => {
+          // The Copy page replaces the card's content IN PLACE —
+          // no second floating layer, no portal remount.
+          setPage("copy");
+        }}
+      >
+        <Icon name="copy" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">Copy</span>
+        <span className="chat-menu-row-spring" />
+        <Icon name="altArrowRight" size={14} className="chat-menu-row-arrow" />
+      </MenuRow>
+      <MenuSeparator />
+      <MenuRow fadeKey="delete" className="chat-menu-row-danger" onClick={onDelete}>
+        <Icon name="trashBinMinimalistic" size={16} className="chat-menu-row-icon-danger" />
+        <span className="menu-row-label">Delete…</span>
+      </MenuRow>
+    </>
+  ) : (
+    <>
+      <MenuRow
+        fadeKey="back"
+        onClick={() => {
+          setPage("root");
+        }}
+      >
+        <Icon name="altArrowLeft" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">Back</span>
+      </MenuRow>
+      <MenuSeparator />
+      <MenuRow fadeKey="roboco-link" onClick={() => void copyConversationLink()}>
+        <Icon name="copy" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">Roboco conversation link</span>
+      </MenuRow>
+      {codexLink !== null && (
+        <MenuRow fadeKey="codex-link" onClick={() => void copyText(codexLink.url, `${codexLink.label} copied`)}>
+          <Icon name="copy" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">{codexLink.label}</span>
+        </MenuRow>
+      )}
+      {harnessSessionId !== null && (
+        <MenuRow fadeKey="harness-session" onClick={() => void copyText(harnessSessionId, "Harness session ID copied")}>
+          <Icon name="copy" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">Harness session ID</span>
+        </MenuRow>
+      )}
+    </>
   );
 }
 

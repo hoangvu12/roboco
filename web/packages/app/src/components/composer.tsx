@@ -656,7 +656,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
             chatConfig={chat.config}
             onDraft={applyDraft}
             onPersist={persistDraft}
-            onReturnFocus={() => textareaRef.current?.focus()}
+            escapeFocusTarget={() => textareaRef.current}
           />
           <button
             type="button"

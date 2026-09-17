@@ -1411,8 +1411,9 @@ a:focus-visible,
 
 /*
  * `render_spaces_menu`'s card (§2.7, spaces.rs:1187-1323): the shared
- * PopoverCard at the trigger row's width; the list scrolls at a 336px cap
- * over a 2px row rhythm. Selection is the row wash — no check glyph.
+ * popover card (RbPopover's popup) at the trigger row's width; the list
+ * scrolls at a 336px cap over a 2px row rhythm. Selection is the row wash
+ * — no check glyph.
  */
 .spaces-menu-card {
   display: flex;
@@ -3131,59 +3132,24 @@ a:focus-visible,
 }
 
 /*
- * The portal layer (`Popup`): position comes from the anchored-menu helpers
- * (`lib/popover-anchor.ts`). The open/close animations live on the CARD, not
- * this layer — CSS `backdrop-filter` fades naturally with the element's own
- * opacity but is clipped by an ancestor's, so the glass must animate itself.
- * While closing the layer is dead to hit-testing; the occluding overlay on
- * top re-enables pointer events so stray clicks neither hit the dying rows
- * nor pass through to the page underneath (popover.rs:406).
- */
-.popover-layer {
-  position: fixed;
-  /* One menu generation: the popover family IS the menu tier (55). */
-  z-index: var(--rb-z-menu);
-}
-
-.popover-layer[data-rb-popup="open"] .popover-card,
-.popover-layer[data-rb-popup="open"] .palette-card {
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
-}
-
-.popover-layer[data-rb-popup="closing"] {
-  pointer-events: none;
-}
-
-.popover-layer[data-rb-popup="closing"] .popover-card,
-.popover-layer[data-rb-popup="closing"] .palette-card {
-  /* `forwards` holds opacity 0 through the 20ms reap grace after the 100ms
-     animation ends — the default `none` reverted the card to base opacity 1
-     for those frames, a full-opacity flash on every close. The desktop never
-     has the window: its exit progress is wall-clock and clamped at 1
-     (`exit_progress`, popover.rs:348-362). */
-  animation: rb-menu-out var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
-}
-
-.popover-exit-occlude {
-  position: absolute;
-  inset: 0;
-  pointer-events: auto;
-}
-
-/*
  * The Base UI popup contract (components/base/*, adoption blueprint §4):
  * open/close key off the popup's own data attributes — `[data-open]` runs
  * the entrance, `[data-closed]` the exit — and Base UI keeps the element
- * mounted (and painting) until `getAnimations()` drains, which replaces the
- * lifecycle's reap timer. The exit turns the card dead to hit-testing and
- * the full-bleed `::after` occluder replaces `.popover-exit-occlude`
+ * mounted (and painting) until `getAnimations()` drains, which replaces
+ * the hand-rolled layer's reap timer. The exit turns the card dead to
+ * hit-testing and the full-bleed `::after` occluder swallows stray clicks
  * (popover.rs:406): a dying menu's rows must not take clicks, and stray
  * clicks must not reach the page underneath. The wrapper may rescale
  * `--rb-motion-menu-out` (the desktop's motion speed setting); the unmount
- * follows whatever duration results. No consumer rides these selectors
- * until the Phase 2 popover migration; the `[data-rb-popup]` rules above
- * keep serving the hand-rolled layer until then.
+ * follows whatever duration results.
  */
+.rb-popover-positioner {
+  /* One menu generation: the popover family IS the menu tier (55) — same
+     z-index the old `.popover-layer` carried. Base UI sets no z-index; the
+     positioner (position: fixed) participates in the root stacking context. */
+  z-index: var(--rb-z-menu);
+}
+
 .rb-popover-popup[data-open] {
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
@@ -3838,18 +3804,9 @@ a:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .composer-input-wrap,
-  .popover-layer {
+  .composer-input-wrap {
     animation: none;
     transition: none;
-  }
-
-  /* The exit snaps shut instead of playing out; loaders freeze at the
-     pulse floor (phase 0). */
-  .popover-layer[data-rb-popup="closing"] .popover-card,
-  .popover-layer[data-rb-popup="closing"] .palette-card {
-    animation: none;
-    opacity: 0;
   }
 
   /* The Base UI popups (components/base/*) snap the same way: entrances
@@ -5204,6 +5161,17 @@ button.files-row-active:hover {
 
 /* ── The four picker popovers' shared pieces (§2.4, ticket 10) ─────── */
 
+/*
+ * The card's key frame: a `display: contents` sink for the picker's cursor
+ * keyboard model (↑/↓ walk `menuStep`, Enter/Cmd+Enter submit — keys bubble
+ * here from the focused search input, the old PopoverCard's own mount).
+ * Contents keeps the popup's flex column flowing through it unchanged —
+ * the same wrapper ticket 12's list frames used.
+ */
+.picker-key-frame {
+  display: contents;
+}
+
 /* The scroll region for ref/project/device rows: 224px cap, native
    scrollbar hidden (the short lists cap under a screenful). */
 .picker-list {
@@ -6270,13 +6238,13 @@ button.files-row-active:hover {
 
 
 /*
- * ── Chat context menu (shell.rs:5433-5608, ticket 10) ────────────────
+ * ── Chat context menu (shell.rs:5433-5608, ticket 10) ─────────────────
  *
- * Rebuilt on the popover primitive: a 216px PopoverCard at the pointer
- * (clamp-only, no flip), one row per action with a 16px leading icon, the
- * Copy row swapping the card's content to a Copy page IN PLACE. The old
- * hover-revealed kebab and its wheel/backdrop-dismissal habits are gone
- * (gap rows 67-73).
+ * Rebuilt on the Base UI context menu: a 216px popover card at the pointer
+ * (clamp-only, no flip — RbContextMenu), one row per action with a 16px
+ * leading icon, the Copy row swapping the card's content to a Copy page IN
+ * PLACE. The old hover-revealed kebab and its wheel/backdrop-dismissal
+ * habits are gone (gap rows 67-73).
  */
 .chat-menu-row-icon {
   flex: none;
@@ -7915,16 +7883,22 @@ button.files-row-active:hover {
 /*
  * The ?K-style "New project" card: a 680px palette_card with its OWN 14px
  * radius (deliberately not the generic 12px CARD_RADIUS), centered on the
- * lighter 0.35 modal_glass scrim (ticket 09's `.modal-glass-backdrop`
- * recipe). The `.modal-card` frost wrapper supplies the 44px blur and the
- * `dialog_in` entrance, so the card itself carries only the glass tint —
- * stacking two blurs would double-frost it. Exit: the whole layer fades
- * over MENU_OUT (100ms, EASE) while dead to hit-testing, then unmounts
- * (the PopupLifecycle reap).
+ * lighter 0.35 modal_glass scrim (`RbDialogGlass` — Backdrop and card are
+ * portal siblings, so the card self-centers via `.rb-dialog-card` and the
+ * frost wrapper supplies the 44px blur with the `dialog_in` entrance; the
+ * card itself carries only the glass tint — stacking two blurs would
+ * double-frost it). Exit: both siblings fade over MENU_OUT (100ms, EASE)
+ * while dead to hit-testing, then unmount — Base UI's animation-aware
+ * unmount replaces the old layer's reap timer.
  */
-.add-space-backdrop[data-rb-popup="closing"] {
+.add-space-frost {
+  border-radius: 14px;
+}
+
+.add-space-backdrop[data-closed],
+.add-space-frost[data-closed] {
   pointer-events: none;
-  /* `forwards` holds the exit's opacity 0 through the 20ms reap grace — the
+  /* `forwards` holds the exit's opacity 0 until the unmount drains — the
      same flash guard as `rb-menu-out` above (popover.rs:348-362). */
   animation: rb-add-space-exit var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
 }
@@ -8333,7 +8307,8 @@ button.files-row-active:hover {
     animation: none;
   }
 
-  .add-space-backdrop[data-rb-popup="closing"] {
+  .add-space-backdrop[data-closed],
+  .add-space-frost[data-closed] {
     animation: none;
     opacity: 0;
   }

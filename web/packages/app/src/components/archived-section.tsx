@@ -113,7 +113,7 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
   const session = useEngineSession();
   const harness = showHarness ? row.chat.config?.harness ?? null : null;
   const brand = harness === null ? null : harnessBrandIcon(harness);
-  const { openAt, element } = useChatMenu(row.chat);
+  const { menu, element } = useChatMenu(row.chat);
 
   function unarchive(event: React.MouseEvent): void {
     // The row's own click opens the chat; only the pill restores.
@@ -130,40 +130,39 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
 
   // Both right-slot children stay mounted; CSS swaps them on row hover (and
   // pins the pill on touch, where hover never fires) — the desktop renders
-  // exactly one of the two, same pixels.
+  // exactly one of the two, same pixels. `menu` wraps the Link so a
+  // right-click opens the SAME chat context menu the active rows use, at
+  // the pointer.
   return (
     <li className="arch-row-item">
-      <Link
-        to="/chat/$chatId"
-        params={{ chatId: row.chat.id }}
-        className="arch-row"
-        activeProps={{ className: "arch-row arch-row-active" }}
-        onContextMenu={(event) => {
-          // The SAME chat context menu the active rows use, at the pointer.
-          event.preventDefault();
-          openAt(event.clientX, event.clientY);
-        }}
-      >
-        {brand !== null && (
-          <Icon
-            name={brand.name}
-            size={SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE}
-            className="arch-row-brand"
-            style={brand.tint === null ? undefined : { color: brand.tint }}
-          />
-        )}
-        <span className="arch-row-title">{row.title}</span>
-        <span className="arch-row-time">{row.timeAgo}</span>
-        <button
-          type="button"
-          className="arch-row-unarchive"
-          aria-label="Unarchive chat"
-          onClick={unarchive}
+      {menu(
+        <Link
+          to="/chat/$chatId"
+          params={{ chatId: row.chat.id }}
+          className="arch-row"
+          activeProps={{ className: "arch-row arch-row-active" }}
         >
-          <Icon name="archiveUpMinimalistic" size={11} />
-          Unarchive
-        </button>
-      </Link>
+          {brand !== null && (
+            <Icon
+              name={brand.name}
+              size={SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE}
+              className="arch-row-brand"
+              style={brand.tint === null ? undefined : { color: brand.tint }}
+            />
+          )}
+          <span className="arch-row-title">{row.title}</span>
+          <span className="arch-row-time">{row.timeAgo}</span>
+          <button
+            type="button"
+            className="arch-row-unarchive"
+            aria-label="Unarchive chat"
+            onClick={unarchive}
+          >
+            <Icon name="archiveUpMinimalistic" size={11} />
+            Unarchive
+          </button>
+        </Link>,
+      )}
       {element}
     </li>
   );

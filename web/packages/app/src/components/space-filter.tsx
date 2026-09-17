@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Device, Space } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
@@ -8,12 +9,12 @@ import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
 import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, spacesSorted } from "../lib/view";
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
-import { anchorBelow, anchorBelowEnd, menuAt } from "../lib/popover-anchor";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
+import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
 import { RbDialog } from "./base/dialog";
 import {
-  PopoverCard,
   SearchInputFrame,
   DialogCard,
   DialogTitle,
@@ -24,7 +25,6 @@ import {
   BtnDanger,
 } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
-import { POPUP_TRIGGER_ATTR, Popup, usePopup } from "./popover/popup";
 
 /**
  * The sidebar's space header — the desktop's `render_spaces_filter` row:
@@ -56,7 +56,7 @@ export function SpaceFilter() {
   const sidebar = useSidebar();
   const now = useNow(30_000);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"spaces">();
+  const [open, setOpen] = useState(false);
   // The right-click overlay: the context menu first, then whichever dialog
   // its rows open — the dialog state must outlive the menu's unmount.
   const [spaceOverlay, setSpaceOverlay] = useState<SpaceOverlay | null>(null);
@@ -101,7 +101,7 @@ export function SpaceFilter() {
 
   // Opening: mints a fresh search input; anchors the cursor on the row
   // matching the current filter (spaces.rs:1200-1210).
-  const opened = popup.isOpen();
+  const opened = open;
   useEffect(() => {
     if (!opened) {
       return;
@@ -110,7 +110,8 @@ export function SpaceFilter() {
     const target =
       filter === null ? 0 : rows.findIndex((row) => row !== "all" && row !== "new" && row.id === filter);
     setCursor(target < 0 ? 0 : target);
-    // The search input takes focus before first paint (spaces.rs:1207).
+    // The search input takes focus before first paint (spaces.rs:1207);
+    // `initialFocus` below races for it too — same element either way.
     inputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened]);
@@ -118,23 +119,27 @@ export function SpaceFilter() {
   function pick(row: Space | "all" | "new"): void {
     if (row === "all") {
       sidebarStore.setSpaceFilter(null);
-      popup.dismiss();
+      setOpen(false);
       return;
     }
     if (row === "new") {
       // "New project…" closes the menu, THEN opens the add-space palette
       // (spaces.rs:1204-1207 / §2.7 — `close_space_menu` always runs before
       // the overlay opens; ticket 11's `addSpaceStore` owns the surface).
-      popup.dismiss();
+      setOpen(false);
       addSpaceStore.open();
       return;
     }
     sidebarStore.setSpaceFilter(row.id);
-    popup.dismiss();
+    setOpen(false);
   }
 
+  // The cursor keyboard model stays consumer-side (blueprint §6.5): ↑/↓
+  // walk `menuStep` over the rows, Enter/Cmd+Enter activate, typing resets
+  // to 0 in the input's own onChange. Escape is Base UI's — the dismiss
+  // pipeline owns it, and this menu has no focus-return contract.
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!opened) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -149,11 +154,6 @@ export function SpaceFilter() {
       if (row !== undefined) {
         pick(row);
       }
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
     }
   };
 
@@ -164,14 +164,8 @@ export function SpaceFilter() {
   }, [cursor, rows.length]);
 
   // The card spans the trigger row's content width — `sidebarWidth - 16`
-  // (two SPACE_SM gutters) — and opens 6px below it, clamped 8px inside.
-  const placeBelowTrigger = (size: { width: number; height: number }): CSSProperties => {
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect === undefined) {
-      return { left: 8, top: 8 };
-    }
-    return anchorBelow(rect, size);
-  };
+  // (two SPACE_SM gutters) — and opens 6px below it (`anchorBelow`),
+  // clamped 8px inside the window. Floating UI tracks the live trigger.
 
   // The trigger renders unconditionally, empty engine included (shell.rs:4935
   // gates `render_spaces_filter` on nothing): with zero spaces the label falls
@@ -183,20 +177,9 @@ export function SpaceFilter() {
 
   return (
     <>
-      <button
-        type="button"
+      <RbPopoverTrigger
         ref={triggerRef}
-        {...{ [POPUP_TRIGGER_ATTR]: "" }}
-        className={`space-filter-trigger ${popup.get() !== null ? "space-filter-trigger-open" : ""}`}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("spaces");
-        }}
-        aria-haspopup="listbox"
-        aria-expanded={popup.get() !== null}
+        className={`space-filter-trigger ${open ? "space-filter-trigger-open" : ""}`}
       >
         <Icon name="folder" size={16} className="space-filter-icon" />
         <span className="space-filter-label">
@@ -209,100 +192,100 @@ export function SpaceFilter() {
           )}
         </span>
         <Icon name="altArrowDown" size={14} className="space-filter-caret" />
-      </button>
-      <Popup popup={popup} placement={placeBelowTrigger}>
-        {() => (
-          <PopoverCard
-            role="listbox"
-            aria-label="Projects"
-            className="spaces-menu-card"
-            style={{ width: rowContentWidth(triggerRef.current) }}
-            onKeyDown={onKeyDown}
-          >
-            <SearchInputFrame>
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setCursor(0);
+      </RbPopoverTrigger>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorBelow"
+        cardClassName="popover-card spaces-menu-card"
+        role="listbox"
+        ariaLabel="Projects"
+        style={{ width: rowContentWidth(triggerRef.current) }}
+        onKeyDown={onKeyDown}
+        initialFocus={inputRef}
+      >
+        <SearchInputFrame>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setCursor(0);
+            }}
+            placeholder="Search projects…"
+            spellCheck={false}
+            autoComplete="off"
+            aria-label="Search projects"
+          />
+        </SearchInputFrame>
+        <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
+          {rows.map((row, ix) => {
+            if (row === "all") {
+              return (
+                <MenuRowNav
+                  key="all"
+                  fadeKey="all"
+                  data-space-index={ix}
+                  highlighted={ix === cursor && filter !== null}
+                  selected={filter === null}
+                  onClick={() => pick(row)}
+                >
+                  <Icon name="folder" size={15} className="spaces-menu-row-icon" />
+                  <span className="menu-row-label">All projects</span>
+                </MenuRowNav>
+              );
+            }
+            if (row === "new") {
+              return (
+                <MenuRowNav key="new" fadeKey="new" data-space-index={ix} onClick={() => pick(row)}>
+                  <Icon name="plus" size={15} className="spaces-menu-row-icon" />
+                  <span className="menu-row-label">New project…</span>
+                </MenuRowNav>
+              );
+            }
+            const tag = spaceDeviceTag(row, devices, now);
+            return (
+              <SpaceRowContext
+                key={row.id}
+                row={row}
+                ix={ix}
+                highlighted={ix === cursor && row.id !== filter}
+                selected={row.id === filter}
+                tag={tag}
+                onPick={() => pick(row)}
+                menuOpen={spaceOverlay !== null && spaceOverlay.kind === "menu" && spaceOverlay.space.id === row.id}
+                onMenuOpen={() => setSpaceOverlay({ kind: "menu", space: row })}
+                onMenuDismiss={(reason, event) => {
+                  setSpaceOverlay(null);
+                  // An outside press that landed outside the spaces card too
+                  // dismisses BOTH menus — the desktop's every-open-popup
+                  // mouse-down-out listener, and the old layer's guard, did
+                  // exactly that; Base UI's tree nesting shields the parent
+                  // while the child is open, so this closes the gap. Presses
+                  // inside the card (the search input, a row) stay open.
+                  if (
+                    reason === "outside-press" &&
+                    open &&
+                    !(event instanceof MouseEvent && event.target instanceof Node && spacesCardContains(event.target))
+                  ) {
+                    setOpen(false);
+                  }
                 }}
-                placeholder="Search projects…"
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="Search projects"
+                onOpenDialog={(kind) => {
+                  // The context menu always closes before its follow-up
+                  // dialog opens, and the spaces menu dismisses with it
+                  // (`close_space_menu`, spaces.rs:3278-3283).
+                  setSpaceOverlay(kind === "rename" ? { kind: "rename", space: row } : { kind: "delete", space: row });
+                  setOpen(false);
+                }}
               />
-            </SearchInputFrame>
-            <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
-              {rows.map((row, ix) => {
-                if (row === "all") {
-                  return (
-                    <MenuRowNav
-                      key="all"
-                      fadeKey="all"
-                      data-space-index={ix}
-                      highlighted={ix === cursor && filter !== null}
-                      selected={filter === null}
-                      onClick={() => pick(row)}
-                    >
-                      <Icon name="folder" size={15} className="spaces-menu-row-icon" />
-                      <span className="menu-row-label">All projects</span>
-                    </MenuRowNav>
-                  );
-                }
-                if (row === "new") {
-                  return (
-                    <MenuRowNav key="new" fadeKey="new" data-space-index={ix} onClick={() => pick(row)}>
-                      <Icon name="plus" size={15} className="spaces-menu-row-icon" />
-                      <span className="menu-row-label">New project…</span>
-                    </MenuRowNav>
-                  );
-                }
-                const tag = spaceDeviceTag(row, devices, now);
-                return (
-                  <MenuRowNav
-                    key={row.id}
-                    fadeKey={row.id}
-                    data-space-index={ix}
-                    highlighted={ix === cursor && row.id !== filter}
-                    selected={row.id === filter}
-                    onClick={() => pick(row)}
-                    onContextMenu={(event) => {
-                      // Right-click on a space row opens the space context
-                      // menu at the pointer (spaces.rs:3336-3389).
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setSpaceOverlay({ kind: "menu", space: row, x: event.clientX, y: event.clientY });
-                    }}
-                  >
-                    <Icon name="folder" size={15} className="spaces-menu-row-icon" />
-                    <span className="menu-row-label">{spaceDisplayName(row)}</span>
-                    <span className="picker-row-tag">{tag.tag}</span>
-                    {!tag.online && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
-                  </MenuRowNav>
-                );
-              })}
-            </div>
-          </PopoverCard>
-        )}
-      </Popup>
+            );
+          })}
+        </div>
+      </RbPopover>
       {spaceOverlay !== null && session !== null && (
         <>
-          {spaceOverlay.kind === "menu" && (
-            <SpaceContextMenu
-              space={spaceOverlay.space}
-              point={spaceOverlay}
-              onClose={() => setSpaceOverlay(null)}
-              onOpenDialog={(kind) =>
-                setSpaceOverlay(
-                  kind === "rename"
-                    ? { kind: "rename", space: spaceOverlay.space }
-                    : { kind: "delete", space: spaceOverlay.space },
-                )
-              }
-            />
-          )}
           {spaceOverlay.kind === "rename" && (
             <RenameSpaceDialog
               space={spaceOverlay.space}
@@ -335,7 +318,7 @@ export function SpaceFilter() {
 
 /** The right-click overlay states: the context menu, then its dialogs. */
 type SpaceOverlay =
-  | { readonly kind: "menu"; readonly space: Space; readonly x: number; readonly y: number }
+  | { readonly kind: "menu"; readonly space: Space }
   | { readonly kind: "rename"; readonly space: Space }
   | { readonly kind: "delete"; readonly space: Space };
 
@@ -378,6 +361,16 @@ function rowContentWidth(rowChild: HTMLElement | null): number {
   return Math.max(200, parent.clientWidth - 16);
 }
 
+/**
+ * Whether a click target sits inside the OPEN spaces-menu card — the
+ * context menu's outside-press handler uses this to decide whether the
+ * spaces menu should dismiss too (a press inside the card leaves it open).
+ */
+function spacesCardContains(target: Node): boolean {
+  const card = document.querySelector(".rb-popover-popup[data-open].spaces-menu-card");
+  return card instanceof Node && card.contains(target);
+}
+
 // ---------------------------------------------------------------------------
 // SidebarViewMenu (spaces.rs:871-973) — the sort button's Organize/Sort/Show card
 // ---------------------------------------------------------------------------
@@ -405,7 +398,7 @@ const SIDEBAR_VIEW_ROWS: readonly { row: ViewRow; label: string; icon: IconName 
 export function SidebarViewMenu() {
   const sidebar = useSidebar();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"view">();
+  const [open, setOpen] = useState(false);
   const [tooltip, setTooltip] = useState(false);
   const [cursor, setCursor] = useState<number | null>(null);
 
@@ -472,12 +465,18 @@ export function SidebarViewMenu() {
         break;
     }
     if (closes(row)) {
-      popup.dismiss();
+      setOpen(false);
     }
   }
 
+  // The desktop's view menu is a CURSOR menu (menu_step over the seven
+  // rows, `Option<usize>` starting at None, Enter/Cmd+Enter activate,
+  // "click clears the cursor"), not a roving-focus menu — so it rides
+  // RbPopover, not RbMenu, keeping the keyboard model verbatim (§6.5's
+  // split; the blueprint's "RbMenu for view-options" sketch would change
+  // the keyboard semantics). Escape is Base UI's dismiss.
   const onKeyDownCard = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (popup.asOpen() === null) {
+    if (!open) {
       return;
     }
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
@@ -496,60 +495,26 @@ export function SidebarViewMenu() {
           activate(entry.row);
         }
       }
-      return;
-    }
-    if (key === "escape") {
-      event.preventDefault();
-      popup.closeByEscape();
     }
   };
 
   // `anchorBelowEnd` — right-aligned so the full-width card opens leftward
   // without leaving the sidebar.
-  const placeBelowEnd = (size: { width: number; height: number }): CSSProperties => {
-    const rect = buttonRef.current?.getBoundingClientRect();
-    if (rect === undefined) {
-      return { left: 8, top: 8 };
-    }
-    return anchorBelowEnd(rect, size);
-  };
-
-  const open = popup.get() !== null;
   return (
     <>
-      <button
-        type="button"
+      <RbPopoverTrigger
         ref={buttonRef}
-        {...{ [POPUP_TRIGGER_ATTR]: "" }}
         className={`space-filter-sort ${open ? "space-filter-sort-open" : ""}`}
-        role="button"
         aria-label="Sidebar view options"
-        aria-expanded={open}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("view");
-        }}
         onMouseEnter={showTooltip}
         onFocus={showTooltip}
         onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
+          // Enter/Space toggle through the trigger's own click semantics;
+          // ArrowDown only opens, never closes (spaces.rs:966-973).
+          if (event.key === "ArrowDown" && !open) {
             event.preventDefault();
             event.stopPropagation();
-            if (popup.isOpen()) {
-              popup.dismiss();
-            } else {
-              popup.open("view");
-            }
-            return;
-          }
-          // ArrowDown only opens, never closes.
-          if (event.key === "ArrowDown" && !popup.isOpen()) {
-            event.preventDefault();
-            event.stopPropagation();
-            popup.open("view");
+            setOpen(true);
           }
         }}
       >
@@ -559,27 +524,26 @@ export function SidebarViewMenu() {
             Sidebar view options
           </span>
         )}
-      </button>
-      <Popup popup={popup} placement={placeBelowEnd}>
-        {() => (
-          <PopoverCard
-            role="menu"
-            aria-label="Sidebar view options"
-            className="spaces-menu-card"
-            style={{ width: rowContentWidth(buttonRef.current) }}
-            onKeyDown={onKeyDownCard}
-          >
-            <MenuHeadingRow label="Organize" />
-            <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 2)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-            <SeparatorRow />
-            <MenuHeadingRow label="Sort" />
-            <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(2, 4)} offset={2} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-            <SeparatorRow />
-            <MenuHeadingRow label="Show" />
-            <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(4, 7)} offset={4} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-          </PopoverCard>
-        )}
-      </Popup>
+      </RbPopoverTrigger>
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorBelowEnd"
+        cardClassName="popover-card spaces-menu-card"
+        role="menu"
+        ariaLabel="Sidebar view options"
+        style={{ width: rowContentWidth(buttonRef.current) }}
+        onKeyDown={onKeyDownCard}
+      >
+        <MenuHeadingRow label="Organize" />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 2)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <SeparatorRow />
+        <MenuHeadingRow label="Sort" />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(2, 4)} offset={2} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <SeparatorRow />
+        <MenuHeadingRow label="Show" />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(4, 7)} offset={4} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+      </RbPopover>
     </>
   );
 }
@@ -632,72 +596,86 @@ function ViewMenuRows({
 // SpaceContextMenu (spaces.rs:3336-3389) — rename/delete at the pointer
 // ---------------------------------------------------------------------------
 
-function SpaceContextMenu({
-  space,
-  point,
-  onClose,
-  onOpenDialog,
-}: {
-  readonly space: Space;
-  readonly point: { x: number; y: number };
-  readonly onClose: () => void;
-  /** Opens the named dialog — the dialog state lives ABOVE this unmount. */
+/**
+ * One space row of the spaces menu, wrapped so a right-click opens the
+ * space context menu at the pointer (`RbContextMenu` — clamp-only
+ * `menu_at` geometry, 170px card). The `ContextMenu.Trigger` adopts the
+ * `MenuRowNav` itself via `render`, so the row's DOM is unchanged.
+ */
+function SpaceRowContext(props: {
+  readonly row: Space;
+  readonly ix: number;
+  readonly highlighted: boolean;
+  readonly selected: boolean;
+  readonly tag: { tag: string; online: boolean };
+  readonly onPick: () => void;
+  readonly menuOpen: boolean;
+  readonly onMenuOpen: () => void;
+  /** Any dismissal (Escape, outside press, row pick) — with the reason. */
+  readonly onMenuDismiss: (reason: string, event: Event | undefined) => void;
   readonly onOpenDialog: (kind: "rename" | "delete") => void;
 }) {
-  const popup = usePopup<"space-context">();
-
-  // Open on mount; Escape and outside-press dismiss (the card is clamp-only
-  // at the pointer — `menu_at`, no flip).
-  useEffect(() => {
-    popup.open("space-context");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
-    <Popup popup={popup} placement={(size) => menuAt(point, size)}>
-      {() => (
-        <PopoverCard role="menu" aria-label="Project actions" style={{ width: 170 }} onKeyDown={onKeyDownMenu(popup, onClose)}>
+    <RbContextMenu
+      open={props.menuOpen}
+      onOpenChange={(next, details) => {
+        if (next) {
+          props.onMenuOpen();
+        } else if (props.menuOpen) {
+          props.onMenuDismiss(details.reason, details.event);
+        }
+      }}
+    >
+      <ContextMenu.Trigger
+        render={
           <MenuRowNav
-            fadeKey="space-menu-rename"
-            onClick={() => {
-              onClose();
-              onOpenDialog("rename");
-            }}
+            fadeKey={props.row.id}
+            data-space-index={props.ix}
+            highlighted={props.highlighted}
+            selected={props.selected}
+            onClick={props.onPick}
           >
-            <Icon name="pen" size={16} className="spaces-menu-row-icon" />
-            <span className="menu-row-label">Rename…</span>
+            <Icon name="folder" size={15} className="spaces-menu-row-icon" />
+            <span className="menu-row-label">{spaceDisplayName(props.row)}</span>
+            <span className="picker-row-tag">{props.tag.tag}</span>
+            {!props.tag.online && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
           </MenuRowNav>
-          <MenuRowNav
-            fadeKey="space-menu-delete"
-            className="chat-menu-row-danger"
-            onClick={() => {
-              onClose();
-              onOpenDialog("delete");
-            }}
+        }
+      />
+      <ContextMenu.Portal>
+        <RbContextMenuPositioner>
+          <ContextMenu.Popup
+            className="rb-popover-popup popover-card"
+            role="menu"
+            aria-label="Project actions"
+            style={{ width: 170 }}
           >
-            <Icon name="trashBinMinimalistic" size={16} className="spaces-menu-row-icon-danger" />
-            <span className="menu-row-label">Remove…</span>
-          </MenuRowNav>
-        </PopoverCard>
-      )}
-    </Popup>
+            <MenuRowNav
+              fadeKey="space-menu-rename"
+              onClick={() => {
+                props.onMenuDismiss("item-press", undefined);
+                props.onOpenDialog("rename");
+              }}
+            >
+              <Icon name="pen" size={16} className="spaces-menu-row-icon" />
+              <span className="menu-row-label">Rename…</span>
+            </MenuRowNav>
+            <MenuRowNav
+              fadeKey="space-menu-delete"
+              className="chat-menu-row-danger"
+              onClick={() => {
+                props.onMenuDismiss("item-press", undefined);
+                props.onOpenDialog("delete");
+              }}
+            >
+              <Icon name="trashBinMinimalistic" size={16} className="spaces-menu-row-icon-danger" />
+              <span className="menu-row-label">Remove…</span>
+            </MenuRowNav>
+          </ContextMenu.Popup>
+        </RbContextMenuPositioner>
+      </ContextMenu.Portal>
+    </RbContextMenu>
   );
-}
-
-function onKeyDownMenu(
-  popup: ReturnType<typeof usePopup<string>>,
-  onClose: () => void,
-): (event: React.KeyboardEvent<HTMLDivElement>) => void {
-  return (event) => {
-    if (popup.asOpen() === null) {
-      return;
-    }
-    if (classifyKey(event.key, event.metaKey, event.ctrlKey) === "escape") {
-      event.preventDefault();
-      onClose();
-      popup.closeByEscape();
-    }
-  };
 }
 
 /** The rename dialog (`open_rename_space` / `submit_rename_space`). */

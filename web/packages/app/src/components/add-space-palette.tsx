@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
-import { createPortal } from "react-dom";
+import type { ReactNode, RefObject } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
@@ -16,8 +15,8 @@ import {
   filteredFolders,
 } from "../lib/add-space";
 import { addSpaceStore, useAddSpaceSnapshot, type AddSpaceFlow } from "../state/add-space";
-import { overlayKeyboard } from "../state/keymap";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
+import { RbDialogGlass } from "./base/dialog";
 import { KeyHint, KeyHintPair, KeyHintText } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { ErrorRow, SkeletonRows } from "./popover/skeleton";
@@ -29,15 +28,16 @@ import { ErrorRow, SkeletonRows } from "./popover/skeleton";
  * centered on the lighter 0.35 `modal_glass` scrim. Input row → body
  * (breadcrumbs + folder list beside the devices/locations rail) → footer.
  *
- * Headless while closed — the state machine lives in `state/add-space.ts`
- * (`addSpaceStore`); ticket 10's spaces-menu row and ticket 12's `Mod+K`
- * binding call `open()`, and this component only renders what the store
- * holds. Escape resolves on the shell's capture ladder at the reserved
- * `addSpace` priority, so one keystroke can never reach two handlers.
+ * The mount lifecycle rides `RbDialogGlass`: the store's `open` flag drives
+ * the dialog, scrim presses and the escape ladder close through
+ * `addSpaceStore.close()`, and the 100ms `[data-closed]` layer fade IS the
+ * exit window — `unmounted()` fires when Base UI's animation-aware unmount
+ * drains, dropping the flow. Headless while closed — the state machine
+ * lives in `state/add-space.ts` (`addSpaceStore`); ticket 10's spaces-menu
+ * row and ticket 12's `Mod+K` binding call `open()`. Escape resolves on the
+ * shell's capture ladder at the reserved `addSpace` priority, so one
+ * keystroke can never reach two handlers.
  */
-
-/** The palette's own corner radius — 14px, not the popover card's 12px. */
-const CARD_RADIUS = 14;
 
 /**
  * The Devices-page platform mapping (settings::devices) — LAPTOP for
@@ -86,7 +86,8 @@ export function AddSpacePalette() {
       },
     });
     return () => {
-      addSpaceStore.close();
+      // The host is unmounting — nothing is left to paint, so no exit.
+      addSpaceStore.forceClose();
     };
   }, [session]);
 
@@ -105,19 +106,6 @@ export function AddSpacePalette() {
       // exit window must not fall through to the chat interrupt.
       return true;
     });
-  }, [state.status]);
-
-  // The open palette owns the keyboard (`overlay_owns_keyboard`,
-  // shell.rs:3681-3683): session-nav shortcuts (cycle/jump/archive) go
-  // quiet underneath it and the sidebar's jump chips drop — the same
-  // registration the composer pickers make while open. Registered through
-  // the exit window too: the scrim is still up while the card fades, and a
-  // jump firing under a visible modal would strand it over a chat the user
-  // never picked.
-  useEffect(() => {
-    const mounted = state.status !== "closed";
-    overlayKeyboard.set("add-space", mounted);
-    return () => overlayKeyboard.set("add-space", false);
   }, [state.status]);
 
   // `focus_pending`: the search input takes focus on open.
@@ -150,54 +138,54 @@ export function AddSpacePalette() {
   const driveMount = activeDrive !== undefined ? activeDrive.path.replace(/\/+$/, "") : null;
   const foldDrive = driveMount !== null && driveMount.length > 0 ? driveMount : null;
 
-  // The scrim is the dismiss surface: a pointerdown on it closes and
-  // swallows that press; the following click passes through normally.
-  const onBackdropPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.target !== event.currentTarget) {
-      return;
-    }
-    addSpaceStore.close();
-    event.stopPropagation();
-    event.preventDefault();
-  };
-
-  return createPortal(
-    <div
-      className="modal-glass-backdrop add-space-backdrop"
-      data-rb-popup={state.status}
-      onPointerDown={onBackdropPointerDown}
+  // The scrim press is Base UI's dismissal now (modal Dialog, pointer
+  // dismissal on — the `modal_glass` contract); `overlayOpen` holds the
+  // keyboard claim through the exit window (the scrim is still up while the
+  // card fades).
+  return (
+    <RbDialogGlass
+      open={state.status === "open"}
+      onOpenChange={(next) => {
+        if (!next) {
+          addSpaceStore.close();
+        }
+      }}
+      onOpenChangeComplete={(next) => {
+        if (!next) {
+          addSpaceStore.unmounted();
+        }
+      }}
+      ariaLabel="New project"
+      overlaySource="add-space"
+      // The component renders through the exit window ("closing"), so the
+      // claim holds until the layer is truly gone — a jump firing under a
+      // still-visible scrim would strand it (ticket 11's comment).
+      overlayOpen
+      backdropClassName="add-space-backdrop"
+      cardClassName="add-space-frost"
     >
-      <div
-        className="modal-card add-space-frost"
-        style={{ borderRadius: `${CARD_RADIUS}px` }}
-        role="dialog"
-        aria-modal="true"
-        aria-label="New project"
-      >
-        <div className="add-space-card">
-          <InputRow
-            flow={flow}
-            completion={completion}
-            listingReady={listing !== null}
-            inputRef={inputRef}
-          />
-          <Body
-            flow={flow}
-            listing={listing}
-            loadError={loadError}
-            loading={loading}
-            rows={rows}
-            device={device}
-            devices={devices}
-            now={now}
-            foldDrive={foldDrive}
-            listRef={listRef}
-          />
-          <Footer error={flow.error} />
-        </div>
+      <div className="add-space-card">
+        <InputRow
+          flow={flow}
+          completion={completion}
+          listingReady={listing !== null}
+          inputRef={inputRef}
+        />
+        <Body
+          flow={flow}
+          listing={listing}
+          loadError={loadError}
+          loading={loading}
+          rows={rows}
+          device={device}
+          devices={devices}
+          now={now}
+          foldDrive={foldDrive}
+          listRef={listRef}
+        />
+        <Footer error={flow.error} />
       </div>
-    </div>,
-    document.body,
+    </RbDialogGlass>
   );
 }
 
