@@ -190,6 +190,16 @@ a:focus-visible,
   background: var(--rb-danger);
 }
 
+/*
+ * The offline pill's 5px warning dot (`shell.rs:4815-4821`) — smaller than
+ * the connection states that share `.dot`.
+ */
+.dot-offline {
+  width: 5px;
+  height: 5px;
+  background: var(--rb-warning);
+}
+
 /* ── Shell layout ───────────────────────────────────────────────────── */
 
 /*
@@ -767,19 +777,56 @@ a:focus-visible,
   will-change: transform;
 }
 
-.sidebar-scroll {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  /* SIDEBAR_GLASS_FADE_BAND: the scroll edge dissolves rather than cutting. */
-  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%);
+/*
+ * `shell.rs::RESORT` — the sidebar's FLIP glide duration. A UI-level spec
+ * (it lives beside the FLIP code in shell.rs, not in the proto motion
+ * catalog the theme artifact exports), so it is declared here rather than
+ * through @roboco/theme; the curve is the catalog's easeOutQuint
+ * (`--rb-ease-ease-out-quint`, EASE_RESORT's alias).
+ */
+:root {
+  --rb-motion-resort: 260ms;
 }
 
+/*
+ * The list region (`edge_faded` + `#sidebar-lists`): this wrapper carries the
+ * quadratic edge mask, gated per edge from the live scroll offset (see
+ * SidebarScroll) with a 1px dead-zone. Both gates start closed — the very
+ * first row never dims when there is nothing to scroll past above it.
+ */
+.sidebar-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  --rb-sidebar-fade-top: 0;
+  --rb-sidebar-fade-bottom: 0;
+  /* edge_fade.rs: alpha = (distance / band)², band = SIDEBAR_GLASS_FADE_BAND 24. */
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0)) 0px,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.0625)) 6px,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.25)) 12px,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.5625)) 18px,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 1)) 24px,
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 1)) calc(100% - 24px),
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.5625)) calc(100% - 18px),
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.25)) calc(100% - 12px),
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.0625)) calc(100% - 6px),
+    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0)) 100%
+  );
+}
+
+/*
+ * `#sidebar-lists`: fills the faded wrapper, scrolls alone, and lays out the
+ * active list and the archived shelf in one column (px 8, pt 4).
+ */
 .sidebar-list {
-  flex: none;
-  padding: var(--rb-space-xs) var(--rb-space-sm);
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--rb-space-xs) var(--rb-space-sm) 0;
 }
 
 .sidebar-note {
@@ -792,55 +839,107 @@ a:focus-visible,
   color: var(--rb-danger);
 }
 
+/*
+ * The empty list (shell.rs:4981-4987): "No sessions yet" geometry with the
+ * web's "chats" vocabulary — 12px, faint, inset 8px.
+ */
+.sidebar-empty {
+  margin: 0;
+  padding: 0 var(--rb-space-sm) var(--rb-space-sm);
+  color: var(--rb-text-faint);
+  font-size: 12px;
+}
+
 /* ── Space filter header ────────────────────────────────────────────── */
 
+/*
+ * `spaces.rs::render_spaces_filter`'s container row: the trigger (and,
+ * from ticket 10 on, the view-options button beside it) over a 4px gap,
+ * 8px inline padding, 8px top / 4px bottom.
+ */
 .space-filter {
   position: relative;
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--rb-space-xs);
-  padding: var(--rb-space-sm) var(--rb-space-md) var(--rb-space-xs);
+  padding: var(--rb-space-sm) var(--rb-space-sm) var(--rb-space-xs);
 }
 
+/*
+ * The filter trigger itself (`spaces.rs:1001-1086`): 29px tall, 8px radius,
+ * 8px inline padding on an 8px gap, 13px MEDIUM; the wash is quiet until
+ * hovered (0.8-brightness text at rest), open holding the hover fill.
+ */
 .space-filter-trigger {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--rb-space-xs);
-  padding: 4px 6px;
+  gap: var(--rb-space-sm);
+  height: 29px;
+  padding: 0 var(--rb-space-sm);
   border: none;
-  border-radius: var(--rb-radius-control);
+  border-radius: 8px;
   background: transparent;
-  color: var(--rb-text);
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .space-filter-trigger:hover,
 .space-filter-trigger-open {
   background: var(--rb-hover);
+  color: var(--rb-text);
 }
 
+/* The leading FOLDER mark, 16px muted (`spaces.rs:1044-1047`). */
+.space-filter-icon {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The name bound: flex-1 with the "@ device" tag hugging the name inside it
+ * (`spaces.rs:1052-1079`) rather than sitting by the caret.
+ */
 .space-filter-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.space-filter-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* The chevron rotates on disclosure over `motion.chevron` — 200ms ease. */
-.chevron {
+/* The "@ device" tag: 10px NORMAL, muted at 45% (`spaces.rs:1063-1068`). */
+.space-filter-tag {
   flex: none;
-  color: var(--rb-text-muted);
-  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
+  font-size: 10px;
+  font-weight: 400;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+  white-space: nowrap;
 }
 
-.chevron-open {
-  transform: rotate(180deg);
+/* Disconnected GLYPH, not the word (`spaces.rs:1071-1078`). */
+.space-filter-offline {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+/* The trailing caret, 14px muted at 60% (`spaces.rs:1082-1085`). */
+.space-filter-caret {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
 .space-filter-menu {
@@ -999,8 +1098,8 @@ a:focus-visible,
 
 .user-menu-sub {
   font-size: 11px;
-  line-height: 14px;
-  color: var(--rb-text-faint);
+  line-height: 15px;
+  color: var(--rb-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1008,7 +1107,8 @@ a:focus-visible,
 
 .user-menu-card {
   position: absolute;
-  bottom: calc(100% - var(--rb-space-xs));
+  /* Opens UPWARD with a true 6px gap above the trigger. */
+  bottom: calc(100% + 6px);
   left: var(--rb-space-sm);
   right: var(--rb-space-sm);
   z-index: 30;
@@ -1021,6 +1121,19 @@ a:focus-visible,
   background: var(--rb-dialog);
   box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+/*
+ * The menu's identity line (`shell.rs:5280-5289`): 11px, muted at 70%,
+ * px 8 / pt 6 / pb 4, truncated.
+ */
+.user-menu-identity {
+  padding: 6px var(--rb-space-sm) 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
 }
 
 /* ── Activity glyphs (loaders.rs) ───────────────────────────────────── */
@@ -1210,9 +1323,25 @@ a:focus-visible,
   list-style: none;
   margin: 0;
   padding: 0;
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/*
+ * The §2.7 resort wrappers: `.chat-row-resort` is the paint-only glide box
+ * (Web Animations drives the transform; layout is already at the final
+ * position), `.chat-row-in` the 150ms fade-in a NEW key wears
+ * (`motion::fade_quick`).
+ */
+.chat-row-resort {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-row-in {
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
 }
 
 /*
@@ -1288,6 +1417,16 @@ a:focus-visible,
   gap: 4px;
 }
 
+/*
+ * The sidebar's status dot is 6px (`shell.rs:4583-4588`), not the 8px
+ * `.dot` default — a smaller, quieter mark than the connection states that
+ * share the class.
+ */
+.chat-row-status .dot {
+  width: 6px;
+  height: 6px;
+}
+
 .status-working {
   color: var(--rb-activity);
 }
@@ -1327,6 +1466,25 @@ a:focus-visible,
   background: rgb(var(--rb-wash) / 0.18);
 }
 
+/*
+ * The jump hint (`shell.rs:4497-4521`): replaces the corner outright while
+ * the jump modifier is held, cut to the PR badge's exact sidebar cloth —
+ * 16px tall, px 4, radius 4, an 0.08 muted fill with 0.85 muted text, the
+ * label in mono at 10 MEDIUM.
+ */
+.chat-row-jump {
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--rb-text-muted) 8%, transparent);
+  color: color-mix(in srgb, var(--rb-text-muted) 85%, transparent);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 /* Line 2: the harness mark belongs directly with the title. */
 .chat-row-title-line {
   width: 100%;
@@ -1335,9 +1493,14 @@ a:focus-visible,
   gap: var(--rb-space-sm);
 }
 
+/*
+ * The brand mark's fallback is the SUBLINE tone (`subline` = text_muted at
+ * 50%, `shell.rs:4744`) at opacity 0.8 — a brand tint overrides the hue, not
+ * the strength.
+ */
 .chat-row-brand {
   flex: none;
-  color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
   opacity: 0.8;
 }
 
@@ -1358,6 +1521,20 @@ a:focus-visible,
   align-items: center;
   gap: 4px;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/*
+ * The stable invisible spring (`shell.rs:4785-4787`): keeps the PR badge
+ * pinned right without changing the no-badge paint.
+ */
+.chat-row-meta-spring {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The badge anchor wrapper: the badge's own link owns its click. */
+.chat-row-pr {
+  flex: none;
 }
 
 .chat-row-branch {
@@ -3959,7 +4136,9 @@ button.files-row-active:hover {
 @media (prefers-reduced-motion: reduce) {
   .veil-fade,
   .chip-reveal,
-  .jump-bottom {
+  .jump-bottom,
+  /* A new sidebar row appears at full opacity; the glide is skipped in JS. */
+  .chat-row-in {
     animation: none;
   }
 
@@ -3976,27 +4155,6 @@ button.files-row-active:hover {
   }
 }
 /* ── Chat & fleet management (sidebar tools, menus, dialogs, archived) ── */
-
-.sidebar-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
-  padding: var(--rb-space-xs) var(--rb-space-sm);
-  flex: none;
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.space-filter {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  padding: 4px 8px;
-}
-
-.new-chat {
-  flex: none;
-  font-size: 12px;
-}
 
 /* Row kebab: hidden until hover/focus, always present on touch. */
 .chat-row-item {
@@ -4027,8 +4185,7 @@ button.files-row-active:hover {
 }
 
 .chat-row-item:hover .chat-row-kebab,
-.chat-row-item:focus-within .chat-row-kebab,
-.chat-row-kebab[data-open] {
+.chat-row-item:focus-within .chat-row-kebab {
   visibility: visible;
 }
 
@@ -4133,49 +4290,86 @@ button.files-row-active:hover {
   gap: var(--rb-space-sm);
 }
 
-/* Archived shelf. */
-.archived {
-  flex: none;
-  padding: 0 var(--rb-space-sm) var(--rb-space-xs);
+/*
+ * ── Sidebar disclosures (ByDevice groups + the archived shelf) ────────
+ *
+ * One shared pair (`spaces.rs::sidebar_disclosure_header` /
+ * `render_sidebar_disclosure_body`): a 28px header of muted 12px MEDIUM
+ * label, a hairline filling the middle, a 12px chevron that rides the
+ * 180ms ease-out tween (JS-driven, in sidebar-disclosure.tsx); the body
+ * clips to the tween's height with its 4px inset before the first row.
+ * Every section — group or archived — sits under a 12px top band
+ * (SIDEBAR_SECTION_GAP), well over 2× the intra-list 2px row gap, so
+ * sections read as distinct bands.
+ */
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+  padding-top: 12px;
 }
 
-.archived-header {
+.sidebar-disclosure-header {
   display: flex;
   align-items: center;
   gap: var(--rb-space-sm);
-  width: 100%;
-  padding: 4px var(--rb-space-xs);
+  height: 28px;
+  padding: 0 var(--rb-space-sm);
   border: none;
   background: transparent;
-  color: var(--rb-text-faint);
-  font-size: 12px;
   cursor: pointer;
+  text-align: left;
 }
 
-.archived-header:hover {
-  color: var(--rb-text-muted);
+.sidebar-disclosure-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  white-space: nowrap;
 }
 
-.archived-rule {
+.sidebar-disclosure-rule {
   flex: 1;
   height: 1px;
-  background: var(--rb-border);
+  background: rgb(var(--rb-hairline) / calc(0.6 * var(--rb-hairline-scale)));
 }
 
-.archived-chevron {
-  display: inline-block;
-  font-size: 10px;
-  transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+.sidebar-disclosure-chevron {
+  flex: none;
+  display: inline-flex;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
-.archived-chevron-open {
-  transform: rotate(90deg);
+/* The clipping wrapper: height/opacity/top are tweened inline. */
+.sidebar-disclosure-body {
+  width: 100%;
+  flex: none;
+  overflow: hidden;
+  position: relative;
+}
+
+.sidebar-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+/* ── Archived shelf ─────────────────────────────────────────────────── */
+
+.archived {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding-top: 12px;
 }
 
 .archived-list {
   list-style: none;
-  margin: 2px 0 0;
+  margin: 0;
   padding: 0;
+  /* SIDEBAR_DISCLOSURE_BODY_INSET — the body's handoff from its header. */
+  padding-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4185,13 +4379,18 @@ button.files-row-active:hover {
   position: relative;
 }
 
+/*
+ * The slim one-liner (`spaces.rs:1716-1728`): 36px, a 10px harness gap
+ * (looser than the active row's 8 — a one-line shelf carries a bigger mark
+ * with more air), radius 6, selected wash, hover fill.
+ */
 .arch-row {
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
+  gap: 10px;
   height: 36px;
   padding: 0 var(--rb-space-sm);
-  border-radius: 8px;
+  border-radius: 6px;
   text-decoration: none;
   color: var(--rb-text-muted);
   cursor: pointer;
@@ -4201,77 +4400,110 @@ button.files-row-active:hover {
   background: var(--rb-hover);
 }
 
+.arch-row-active,
+.arch-row-active:hover {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+}
+
+/* Dimmed-until-touched: mark and title restore on hover or selection. */
+.arch-row-brand {
+  flex: none;
+  opacity: 0.4;
+}
+
 .arch-row-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--rb-text) 55%, transparent);
+}
+
+.arch-row:hover .arch-row-brand,
+.arch-row-active .arch-row-brand {
+  opacity: 1;
+}
+
+.arch-row:hover .arch-row-title,
+.arch-row-active .arch-row-title {
+  color: var(--rb-text);
 }
 
 .arch-row-time {
   flex: none;
   font-size: 11px;
-  color: var(--rb-text-faint);
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
 }
 
-.arch-row-action {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
+/*
+ * The Unarchive pill, matching the active row's Archive pill EXACTLY
+ * (18px, gap 4, px 4 bleeding into the row's own padding via mr -4, radius
+ * 5, wash 0.10 → 0.18) — two sizes of the same affordance.
+ */
+.arch-row-unarchive {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  flex: none;
+  padding-inline: 4px;
+  margin-right: -4px;
+  border: none;
+  border-radius: 5px;
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+/* The right slot swaps: time yields to the pill on row hover/focus. */
+.arch-row:hover .arch-row-time,
+.arch-row-item:focus-within .arch-row-time {
   display: none;
 }
 
-.arch-row-item:hover .arch-row-time,
-.arch-row-item:focus-within .arch-row-time {
-  visibility: hidden;
-}
-
-.arch-row-item:hover .arch-row-action,
-.arch-row-item:focus-within .arch-row-action {
+.arch-row:hover .arch-row-unarchive,
+.arch-row-item:focus-within .arch-row-unarchive {
   display: inline-flex;
 }
 
-.arch-row-unarchive {
-  border: none;
-  border-radius: 5px;
-  padding: 2px 6px;
-  background: var(--rb-hover);
-  color: var(--rb-text-muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
 .arch-row-unarchive:hover {
-  color: var(--rb-text);
+  background: rgb(var(--rb-wash) / 0.18);
 }
 
+/* Touch has no hover to swap the slot — the pill stays put. */
 @media (hover: none) {
-  .arch-row-action {
+  .arch-row-unarchive {
     display: inline-flex;
   }
   .arch-row-time {
-    visibility: hidden;
+    display: none;
   }
 }
 
+/* "Show N more": 36px, gap 10, radius 6, muted at 55% until hovered. */
 .archived-more {
-  width: 100%;
-  padding: 6px var(--rb-space-sm);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  margin-top: 2px;
+  padding: 0 var(--rb-space-sm);
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
-  color: var(--rb-text-faint);
-  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
 }
 
 .archived-more:hover {
   background: var(--rb-hover);
-  color: var(--rb-text-muted);
+  color: var(--rb-text);
 }
 
 /* Mutation-failure notice strip: click dismisses. */
@@ -5298,9 +5530,10 @@ html[data-surface="frosted"] .modal-card {
   flex: none;
 }
 
+/* `pull_request_badge`'s Sidebar surface: h 16, gap 0, px 4, radius 4, 10px. */
 .cr-badge-sidebar {
   height: 16px;
-  padding: 0 6px;
+  padding: 0 4px;
   font-size: 10px;
   border-radius: 4px;
   gap: 0;

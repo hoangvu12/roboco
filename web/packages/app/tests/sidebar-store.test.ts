@@ -14,7 +14,18 @@ function memoryStorage(): StorageLike {
 describe("SidebarStore", () => {
   it("starts unfiltered with the archived shelf closed", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
-    expect(store.getSnapshot()).toEqual({ spaceFilter: null, lastSpaceId: null, archivedOpen: false });
+    expect(store.getSnapshot()).toEqual({
+      spaceFilter: null,
+      lastSpaceId: null,
+      archivedOpen: false,
+      // The five view options ride along at their desktop defaults
+      // (settings.rs:658-665) — ticket 10's menu writes them.
+      organization: "inOneList",
+      sort: "lastUpdated",
+      showHarness: true,
+      showBranch: true,
+      showPullRequest: true,
+    });
   });
 
   it("persists the filter and the last selected space across reloads", () => {

@@ -1,5 +1,5 @@
 import type { StorageLike } from "./engine-store";
-import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
+import { UiSettingsStore, uiSettings, type SidebarOrganization, type SidebarSort, type UiSettings } from "../state/ui-settings";
 
 /**
  * Browser-side sidebar UI state — the web peer of the desktop's
@@ -9,6 +9,10 @@ import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settin
  * projects" it lands in the last selected (then first) space, or project-
  * less when the engine has no spaces. `archivedOpen` mirrors the desktop's
  * in-memory disclosure flag and is deliberately not persisted.
+ *
+ * The five sidebar view options (`sidebarOrganization`/`sidebarSort`/the
+ * three Show toggles, settings.rs:507-544) ride along read-only here —
+ * ticket 10's view menu writes them; the sidebar only reads.
  *
  * Persistence is the consolidated `state/ui-settings.ts` store — this class
  * owns the sidebar's *view* of it plus the one flag that never reaches
@@ -22,6 +26,13 @@ export interface SidebarState {
   readonly lastSpaceId: string | null;
   /** The archived shelf's disclosure (in-memory, like the desktop). */
   readonly archivedOpen: boolean;
+  /** ByDevice buckets the list under per-device disclosures; InOneList is flat. */
+  readonly organization: SidebarOrganization;
+  /** The comparator the active list, jump order, and archived shelf share. */
+  readonly sort: SidebarSort;
+  readonly showHarness: boolean;
+  readonly showBranch: boolean;
+  readonly showPullRequest: boolean;
 }
 
 export interface SidebarStoreOptions {
@@ -86,6 +97,11 @@ export class SidebarStore {
       spaceFilter: settings.spaceFilter,
       lastSpaceId: settings.lastSpaceId,
       archivedOpen: this.#archivedOpen,
+      organization: settings.sidebarOrganization,
+      sort: settings.sidebarSort,
+      showHarness: settings.sidebarShowHarness,
+      showBranch: settings.sidebarShowBranch,
+      showPullRequest: settings.sidebarShowPullRequest,
     };
   }
 
@@ -93,7 +109,12 @@ export class SidebarStore {
     if (
       state.spaceFilter === this.#state.spaceFilter &&
       state.lastSpaceId === this.#state.lastSpaceId &&
-      state.archivedOpen === this.#state.archivedOpen
+      state.archivedOpen === this.#state.archivedOpen &&
+      state.organization === this.#state.organization &&
+      state.sort === this.#state.sort &&
+      state.showHarness === this.#state.showHarness &&
+      state.showBranch === this.#state.showBranch &&
+      state.showPullRequest === this.#state.showPullRequest
     ) {
       return;
     }
