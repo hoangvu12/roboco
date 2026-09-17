@@ -12,7 +12,7 @@ possible.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/parity-checklist.md` section "Fixture gap";
 `../../web-client/research/00-index.md` "Findings that change the plan" #1
@@ -269,46 +269,154 @@ probe, so `ListHarnesses` is a pure in-memory read with no I/O, no
 
 ## 6. Acceptance
 
-- [ ] `crates/engine/src/registry.rs` exposes `smoke_registry()` and a shared
+- [x] `crates/engine/src/registry.rs` exposes `smoke_registry()` and a shared
       `mock_script()` helper; `default_registry()` calls the same
       `mock_script()` (no duplicated script literal).
-- [ ] `crates/engine/examples/web_smoke.rs` constructs its `EngineCore` with
+- [x] `crates/engine/examples/web_smoke.rs` constructs its `EngineCore` with
       `smoke_registry()` instead of `HarnessRegistry::new()`.
-- [ ] `cargo build -p roboco-engine --example web_smoke` succeeds; running it
+- [x] `cargo build -p roboco-engine --example web_smoke` succeeds; running it
       prints `SMOKE READY <url>` and keeps running.
-- [ ] Opening the printed URL in a browser (via the `use-browser` skill)
+- [x] Opening the printed URL in a browser (via the `use-browser` skill)
       shows "Browser smoke chat" in the sidebar, selected, with the composer
       textarea, attach button, and send button all enabled (not greyed out)
       within a few seconds of page load — no manual retry needed.
-- [ ] On Windows, `ListHarnesses` against `web_smoke` answers in under 1s,
+- [x] On Windows, `ListHarnesses` against `web_smoke` answers in under 1s,
       verified by a timestamped log line bracketing the request and the
       reply (e.g. a temporary `tracing::info!` before/after the
       `self.registry.descriptors()` call, or a client-side timestamp around
       the `loadHarnesses()` call) — this is the platform the original hang
       was observed on, so it is the one that must be positively verified,
       not just "presumed fixed by construction."
-- [ ] If it still hangs on Windows after switching to `smoke_registry()`,
+- [x] (n/a) If it still hangs on Windows after switching to `smoke_registry()`,
       do not guess further: capture a thread dump (or add temporary
       `tracing` spans around `descriptors()` and each lazy `installed()`
       call, if any lazy slot is still reachable) to find exactly where the
       call is parked, and record the actual confirmed cause in this
       ticket's Comments section before closing it.
-- [ ] Typing "hi" and sending it renders, in order: the user's own bubble
+- [x] Typing "hi" and sending it renders, in order: the user's own bubble
       ("hi"), then the mock reply's markdown heading ("Streaming pipeline"),
       its numbered list, a code-block with `rust` syntax highlighting
       containing `folded = fold_event_into_parts(...)`, and two tool-call
       rows for `cargo test --workspace` and the `git log`/`git merge-base`
       command.
-- [ ] Screenshot pair: N/A for this ticket (no desktop equivalent — this is
+- [x] Screenshot pair: N/A for this ticket (no desktop equivalent — this is
       infrastructure). Take one web screenshot of the rendered transcript
       described above and attach it to the PR/ticket as the "fixture now
       works" evidence; later tickets (18, 02, etc.) are the ones that
       screenshot-diff transcript styling against the desktop.
-- [ ] `pnpm -r build` green (no web files should need to change for this
+- [x] `pnpm -r build` green (no web files should need to change for this
       ticket; if `picker-catalog.ts`/`composer.tsx` needed edits to make the
       fixture work, something in the diagnosis was wrong — investigate
       before patching around it).
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation note — branch `wp1/01-smoke`
+
+**What landed.** Rust only; no web file changed.
+
+- `crates/engine/src/registry.rs` — the mock script literal that was inline in
+  `default_registry()` is now `fn mock_script() -> Vec<AgentEvent>`; both
+  builders call it, so there is one copy. New
+  `pub fn smoke_registry() -> HarnessRegistry`: one eager
+  `Slot::Ready(MockHarness)` under `HarnessId::Mock`, zero lazy slots, no
+  `shell_env::prewarm()`. Two new unit tests:
+  `smoke_registry_lists_only_the_mock_and_probes_nothing` and
+  `mock_script_covers_every_transcript_shape_the_fixture_screenshots`.
+- `crates/engine/src/lib.rs` — `smoke_registry` re-exported at the crate root
+  next to `default_registry`.
+- `crates/engine/examples/web_smoke.rs` — `HarnessRegistry::new()` →
+  `smoke_registry()`. Nothing else in the example changed (still one seeded
+  "Browser smoke chat" with a `cwd`).
+
+**Verification.**
+
+- `pnpm -r build` (typecheck + vite bundle) green; no web package touched, so
+  no vitest run was needed.
+- `cargo build -p roboco-engine --example web_smoke` succeeds; the two engine
+  warnings in the output (`diff_sync.rs:38` unused import,
+  `workspace_files.rs:1814` unused variable) are pre-existing and unrelated.
+- `cargo test -p roboco-engine --lib registry` — 14 passed, 0 failed
+  (12 pre-existing + the 2 added here).
+- Running the example prints `SMOKE READY <url>` and stays up.
+
+**§6 "answers in under 1s on Windows" — confirmed, not presumed.** A temporary
+`eprintln!` bracket was added around `self.registry.descriptors()` at
+`crates/engine/src/rpc.rs:879`, the fixture was run, and the browser drove a
+real `ListHarnesses`:
+
+```
+TEMP-PROBE ListHarnesses enter
+TEMP-PROBE ListHarnesses exit rows=1 elapsed_ms=0.141
+```
+
+0.141 ms, one row (Mock), on Windows 11. Reproduced twice across two fixture
+runs (0.171 ms / 0.141 ms). The instrumentation was reverted before committing
+— `rpc.rs` is untouched in this branch's diff. §3's step 5 (the unconfirmed
+Windows `resolve_executable` PATH/PATHEXT-walk hypothesis) was therefore never
+exercised and remains unconfirmed; with zero lazy slots there is nothing left
+to instrument, so it stays the leading candidate if anyone ever re-introduces
+`default_registry()` here.
+
+**Acceptance walk (all via `use-browser` against the live fixture).** Open the
+printed pairing URL → pair → sidebar shows "Browser smoke chat" → click it →
+textarea, attach and send all enable within well under a second. Typed "hi",
+sent, and the transcript rendered in order: the user's "hi" bubble, the
+`## Streaming pipeline` heading, the 3-item numbered list, a "Ran 2 commands"
+tool group holding `cargo test --workspace` and
+`git log -5 --oneline --decorate && git merge-base HEAD origin/main`, and the
+fenced `rust` block with `folded = fold_event_into_parts(...)` syntax-highlighted.
+
+Screenshots (in the main checkout, not this worktree):
+`.scratch/web-parity/shots/01/01-composer-enabled.png`,
+`02-composer-send-enabled.png`, `03-transcript.png`,
+`04-tool-rows-expanded.png`.
+
+**Skipped, per §5.** No change to `default_registry()`'s behavior, no new lazy
+slots / scripts / seeded chats, no `shell_env` work, no fix to
+`PickerCatalog.loadHarnesses`.
+
+### Findings for later tickets (not fixed here)
+
+1. **Send is Mod+Enter on web, not Enter.** §6 says "typing 'hi' and pressing
+   Enter"; `composer.tsx:385-390` deliberately makes plain Enter insert a
+   newline and Mod+Enter submit, with a comment explaining why. The walk above
+   used Ctrl+Enter. Ticket 13 (Composer core) owns whether that stays.
+
+2. **`PickerCatalog.loadHarnesses`'s failure latch resurfaces — raise it
+   separately, as §5 predicted.** It is worse than the checklist's
+   "latched loading" framing. `EngineClient.call`
+   (`web/packages/engine-client/src/client.ts:216-222`) *throws synchronously*
+   with `RpcError("transport", "Engine is offline; reconnecting")` when the
+   socket is not yet established — unlike `watch()` (`:233-247`), which queues
+   and re-subscribes after connect. `ChatPage`'s
+   `void session.catalog.loadHarnesses()` (`routes/chat-page.tsx:67-72`) fires
+   as soon as `session` is non-null, which on a **cold full page load of
+   `/chat/<id>`** is before the socket connects. The call is rejected before a
+   frame is ever sent (verified: the engine's `ListHarnesses` probe logs
+   nothing at all on that path), `loadHarnesses` catches into `listWithError`,
+   and nothing retries — the composer stays disabled indefinitely while the
+   transcript itself streams fine, because watches survive the same race and
+   unary calls do not. Reproduced deterministically; observed disabled 250+
+   seconds after load. **Workaround for fixture users: always enter through the
+   printed pairing URL and reach the chat by clicking its sidebar row (the
+   client-side route transition runs against an already-connected client).
+   Do not hard-navigate or reload straight onto `/chat/<id>`.** The real fix is
+   for `loadHarnesses` to retry on the client's connect transition, not for
+   this ticket.
+
+3. **Expanding a tool group hides every part after it in the same message.**
+   With "Ran 2 commands" collapsed, the trailing markdown paragraph and the
+   fenced `rust` block render; clicking to expand makes the two `Run` rows
+   visible and simultaneously removes that trailing text and code block from
+   the DOM; collapsing restores them. Fully reversible and reproducible. This
+   is why `03-transcript.png` (collapsed, shows the code block) and
+   `04-tool-rows-expanded.png` (expanded, shows both command rows) are two
+   separate captures rather than one. Belongs to ticket 19 (Tool groups) /
+   18 (Transcript rows).
+
+4. **The user bubble wraps one character per line.** "hi" renders as "h" over
+   "i" in a bubble roughly one character wide (visible in `03-transcript.png`).
+   Cosmetic, pre-existing, and squarely ticket 18's (Transcript rows) —
+   flagged here only so the next ticket's screenshot diff is not surprised
+   by it.

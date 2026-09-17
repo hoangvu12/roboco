@@ -3,7 +3,7 @@
 //! Seeds one chat with unseen activity so the chat list has a row to show.
 use std::sync::Arc;
 
-use roboco_engine::{EngineCore, EngineProfile, HarnessRegistry, pairing::PairingStore};
+use roboco_engine::{EngineCore, EngineProfile, pairing::PairingStore, smoke_registry};
 use roboco_rpc::RpcService;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -11,7 +11,7 @@ async fn main() {
     let dir = tempfile::tempdir().unwrap();
     let core = EngineCore::assemble_with_profile(
         EngineProfile::local(dir.path()).unwrap(),
-        Arc::new(HarnessRegistry::new()),
+        Arc::new(smoke_registry()),
         roboco_engine::HarnessId::Mock,
     )
     .unwrap();
