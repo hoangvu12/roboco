@@ -3,7 +3,6 @@ import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
 import { classifyKey, menuStep } from "../lib/picker-search";
-import { anchorAboveEnd } from "../lib/popover-anchor";
 import {
   applyDraftUpdate,
   composerDefaults,
@@ -19,13 +18,12 @@ import {
 import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
-import { overlayKeyboard } from "../state/keymap";
 import { isMacPlatform } from "../state/shortcuts";
-import { PopoverCardFlush, KbdHint, MenuHeading, MenuSeparator } from "./popover/menu";
+import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { KbdHint, MenuHeading, MenuSeparator } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { MenuScrollbar } from "./popover/scrollbar";
 import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./popover/skeleton";
-import { POPUP_TRIGGER_ATTR, Popup, usePopup } from "./popover/popup";
 import { GlyphSpinner } from "./glyph-spinner";
 
 /**
@@ -65,14 +63,17 @@ export interface ComposerPickersProps {
   readonly onDraft: (next: DraftConfig) => void;
   /** Persist the next config on an existing chat (`Mutate setChatConfig`). */
   readonly onPersist: (next: DraftConfig) => void;
-  /** Escape's focus return — the composer's textarea (`animate_close`). */
-  readonly onReturnFocus: () => void;
+  /**
+   * Escape's focus return — the composer's textarea (`animate_close`,
+   * pickers.rs:866): Base UI's escape-key dismissal routes it through
+   * `RbPopover`'s finalFocus.
+   */
+  readonly escapeFocusTarget: () => HTMLElement | null;
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, onDraft, onPersist, onReturnFocus } = props;
-  const chipRef = useRef<HTMLButtonElement | null>(null);
-  const popup = usePopup<"model">({ onClosedByEscape: onReturnFocus });
+  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget } = props;
+  const [open, setOpen] = useState(false);
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -196,27 +197,12 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const suffix = traitsSummary(selectedModel, draft.reasoning, draft.modelOptions);
   const suffixActive = traitsCustomized(selectedModel, draft.reasoning, ladder, draft.modelOptions);
 
-  const placeAboveEndChip = (size: { width: number; height: number }): CSSProperties => {
-    const rect = chipRef.current?.getBoundingClientRect();
-    if (rect === undefined) {
-      return { left: 8, top: 8 };
-    }
-    // `anchored_menu_above_end` — the card's RIGHT edge flush with the chip's.
-    return anchorAboveEnd(rect, size);
-  };
-
   // Force: the enabled set moves under us (Settings → Agents, possibly from
   // another viewer) — every open revalidates, keeping current rows visible
-  // until the fresh catalog lands (pickers.rs:1003-1019).
-  const opened = popup.isOpen();
-  // An open composer picker owns the keyboard (`overlay_owns_keyboard`,
-  // shell.rs:3681-3683): session-nav shortcuts go quiet underneath it, and
-  // the sidebar's jump chips drop. The add-space palette (ticket 11)
-  // registers itself the same way.
-  useEffect(() => {
-    overlayKeyboard.set("composer-pickers", opened);
-    return () => overlayKeyboard.set("composer-pickers", false);
-  }, [opened]);
+  // until the fresh catalog lands (pickers.rs:1003-1019). The
+  // overlaySource prop below registers the `composer-pickers` overlay
+  // keyboard source while the card is open (shell.rs:3681-3683).
+  const opened = open;
   useEffect(() => {
     if (opened) {
       void catalog.loadHarnesses({ force: true });
@@ -226,21 +212,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
 
   return (
     <div className="composer-pickers">
-      <button
-        type="button"
+      <RbPopoverTrigger
         id="picker-model"
-        ref={chipRef}
-        {...{ [POPUP_TRIGGER_ATTR]: "" }}
-        className={`identity-chip ${popup.get() !== null ? "identity-chip-open" : ""}`}
-        onPointerDown={() => popup.noteTriggerPress()}
-        onClick={() => {
-          if (popup.takePressWasOpen()) {
-            return;
-          }
-          popup.open("model");
-        }}
-        aria-haspopup="menu"
-        aria-expanded={popup.get() !== null}
+        className={`identity-chip ${open ? "identity-chip-open" : ""}`}
         title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
       >
         {noAgents ? (
@@ -265,37 +239,47 @@ export function ComposerPickers(props: ComposerPickersProps) {
             {suffix}
           </span>
         )}
-      </button>
-      <Popup popup={popup} placement={placeAboveEndChip}>
-        {() => (
-          <IdentityCard
-            popup={popup}
-            harnesses={harnesses}
-            harnessError={harnessError}
-            noAgents={noAgents}
-            locked={locked}
-            railDescriptors={railDescriptors}
-            modelsLists={modelsLists}
-            effectiveHarness={effectiveHarness}
-            draft={draft}
-            favorites={favorites}
-            selectedModel={selectedModel}
-            ladder={ladder}
-            onRetryHarnesses={() => catalog.retryHarnessCatalog()}
-            onRetryModels={() => {
-              catalog.resetModels(effectiveHarness);
-              void catalog.loadModels(effectiveHarness, { force: true });
-            }}
-            onPickHarness={pickHarness}
-            onPickModel={pickModel}
-            onPickReasoning={pickReasoning}
-            onPickOption={pickOption}
-            onToggleFavorite={(harness, model) => {
-              toggleModelFavorite(harness, model.id, model.label);
-            }}
-          />
-        )}
-      </Popup>
+      </RbPopoverTrigger>
+      {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
+          chip's, opening upward with a 6px gap, clamped 8px inside. */}
+      <RbPopover
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorAboveEnd"
+        cardClassName="popover-card popover-card-flush identity-card"
+        role="dialog"
+        ariaLabel="Run identity"
+        style={{ width: 304, maxHeight: 640 }}
+        overlaySource="composer-pickers"
+        escapeFocusTarget={escapeFocusTarget}
+      >
+        <IdentityCard
+          open={open}
+          harnesses={harnesses}
+          harnessError={harnessError}
+          noAgents={noAgents}
+          locked={locked}
+          railDescriptors={railDescriptors}
+          modelsLists={modelsLists}
+          effectiveHarness={effectiveHarness}
+          draft={draft}
+          favorites={favorites}
+          selectedModel={selectedModel}
+          ladder={ladder}
+          onRetryHarnesses={() => catalog.retryHarnessCatalog()}
+          onRetryModels={() => {
+            catalog.resetModels(effectiveHarness);
+            void catalog.loadModels(effectiveHarness, { force: true });
+          }}
+          onPickHarness={pickHarness}
+          onPickModel={pickModel}
+          onPickReasoning={pickReasoning}
+          onPickOption={pickOption}
+          onToggleFavorite={(harness, model) => {
+            toggleModelFavorite(harness, model.id, model.label);
+          }}
+        />
+      </RbPopover>
     </div>
   );
 }
@@ -361,7 +345,7 @@ function useCatalogModels(
 // ---------------------------------------------------------------------------
 
 interface IdentityCardProps {
-  readonly popup: ReturnType<typeof usePopup<"model">>;
+  readonly open: boolean;
   readonly harnesses: LoadableList<HarnessDescriptor>;
   readonly harnessError: string | null;
   readonly noAgents: boolean;
@@ -384,7 +368,7 @@ interface IdentityCardProps {
 
 function IdentityCard(props: IdentityCardProps) {
   const {
-    popup,
+    open,
     harnesses,
     harnessError,
     noAgents,
@@ -461,7 +445,7 @@ function IdentityCard(props: IdentityCardProps) {
   );
 
   // Fresh search box + focus on open; forced reload (toggle steps 3-8).
-  const opened = popup.isOpen();
+  const opened = open;
   useEffect(() => {
     if (!opened) {
       return;
@@ -472,10 +456,9 @@ function IdentityCard(props: IdentityCardProps) {
     setRail(!locked && favorites.length > 0 ? "favorites" : "harness");
     anchorCursor(selectedModelIndex);
     // Focus the search input; the takeover states have none, so the card
-    // itself takes focus (toggle step 7) — otherwise keys never reach the
-    // card's handler.
+    // itself takes focus (toggle step 7). The card IS the popup element.
     if (inputRef.current === null) {
-      (document.querySelector('[data-rb-popup="open"]') as HTMLElement | null)?.focus();
+      (document.querySelector(".rb-popover-popup[data-open]") as HTMLElement | null)?.focus();
     } else {
       inputRef.current.focus();
     }
@@ -503,14 +486,16 @@ function IdentityCard(props: IdentityCardProps) {
   // Key handling rides a capture-phase window listener while the card is
   // open — the desktop mounts it on the card so keys bubble from the
   // focused search input, but the takeover states have no input to focus,
-  // so a card-scoped handler would never see Escape there. "any" context,
-  // per §2.5's table.
+  // so a card-scoped handler would never see the keys there. "any" context,
+  // per §2.5's table. Escape is NOT handled here: Base UI's dismiss
+  // pipeline owns it, which is what records the `escape-key` reason the
+  // RbPopover's finalFocus decision reads (the composer focus return).
   useEffect(() => {
     if (!opened) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (popup.asOpen() === null) {
+      if (!open) {
         // A closing card ignores keys (it keeps painting through the exit).
         return;
       }
@@ -537,10 +522,6 @@ function IdentityCard(props: IdentityCardProps) {
           event.preventDefault();
           activateRow(cursor);
           return;
-        case "escape":
-          event.preventDefault();
-          popup.closeByEscape();
-          return;
         default:
           return;
       }
@@ -553,7 +534,7 @@ function IdentityCard(props: IdentityCardProps) {
     // every open only; the handler closure would otherwise go stale. The
     // rows.length/cursor deps re-arm cheaply on list changes instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, rows.length, cursor]);
+  }, [opened, rows.length, cursor, open]);
 
   // Scroll the highlighted row into view as the cursor moves.
   useEffect(() => {
@@ -580,7 +561,7 @@ function IdentityCard(props: IdentityCardProps) {
   const showTraits = ladder.length > 0 || (selectedModel?.options ?? []).length > 0;
 
   return (
-    <PopoverCardFlush role="dialog" aria-label="Run identity" className="identity-card" style={{ width: 304, maxHeight: 640 }}>
+    <>
       {(() => {
         // Card-level takeover states render instead of the whole stack.
         if (!harnesses.loaded && harnessError === null) {
@@ -733,10 +714,10 @@ function IdentityCard(props: IdentityCardProps) {
                 onPickOption={onPickOption}
               />
             )}
-          </>
-        );
+           </>
+         );
       })()}
-    </PopoverCardFlush>
+    </>
   );
 }
 
