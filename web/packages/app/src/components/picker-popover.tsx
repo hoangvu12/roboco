@@ -103,11 +103,8 @@ export function PickerPopover<T extends PickerItem>(props: PickerPopoverProps<T>
         event.preventDefault();
         onCloseRef.current();
         return;
-      case "Tab":
-        // Tabbing out closes the popover so focus can move on.
-        event.preventDefault();
-        onCloseRef.current();
-        return;
+      // No Tab handling: `popover.rs`/`pickers.rs` have none, so Tab keeps the
+      // browser's native focus move.
     }
   };
 
@@ -204,12 +201,20 @@ export function modelPickerItems(models: readonly Model[]): PickerItem[] {
   }));
 }
 
-/** Pick a harness item (id = harness.id). */
+/**
+ * Pick a harness item (id = harness.id).
+ *
+ * Uninstalled harnesses are FILTERED OUT, not offered disabled: the desktop's
+ * `offered_harnesses` never puts one in the list, so there is no "CLI not
+ * detected" row to grey. With none installed the picker falls through to its
+ * own empty state ("No harnesses installed.").
+ */
 export function harnessPickerItems(harnesses: readonly HarnessDescriptor[]): PickerItem[] {
-  return harnesses.map((harness) => ({
-    id: harness.id,
-    label: harness.name.length > 0 ? harness.name : harness.id,
-    secondary: harness.installed === false ? "CLI not detected" : null,
-    disabled: harness.installed === false,
-  }));
+  return harnesses
+    .filter((harness) => harness.installed !== false && harness.enabled !== false)
+    .map((harness) => ({
+      id: harness.id,
+      label: harness.name.length > 0 ? harness.name : harness.id,
+      secondary: null,
+    }));
 }

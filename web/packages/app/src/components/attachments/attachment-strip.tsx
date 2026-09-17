@@ -178,7 +178,6 @@ export function AttachmentStrip({
   );
 
   const hasStaged = staged.length > 0;
-  const showProgressBar = uploadProgress !== null && uploadProgress < 1;
 
   return (
     <div
@@ -200,25 +199,12 @@ export function AttachmentStrip({
         tabIndex={-1}
         aria-hidden
       />
-      {dragOver && (
-        <div className="composer-attachments-overlay" aria-hidden>
-          Drop images to attach
-        </div>
-      )}
+      {/*
+        No drop veil and no inline attach button here: the drop overlay belongs
+        to the shell's `#chat-dropzone`, and the composer's ONE attach
+        affordance is the paperclip in its actions cluster (`pickerRef`).
+      */}
       <div className="composer-attachments-row">
-        {pickerRef === undefined && (
-          <button
-            type="button"
-            className="composer-attach-button"
-            onClick={openPicker}
-            disabled={disabled === true}
-            title="Attach images (or drop files here)"
-            aria-label="Attach images"
-          >
-            <span aria-hidden>📎</span>
-            <span>Attach</span>
-          </button>
-        )}
         {hasStaged && (
           <div className="composer-attachments-strip">
             {staged.map((att) => (
@@ -231,17 +217,11 @@ export function AttachmentStrip({
           </div>
         )}
       </div>
-      {showProgressBar && (
-        <div className="composer-attachments-progress" aria-live="polite">
-          <div
-            className="composer-attachments-progress-bar"
-            style={{ width: `${Math.round((uploadProgress ?? 0) * 100)}%` }}
-          />
-          <span className="composer-attachments-progress-label">
-            Uploading… {Math.round((uploadProgress ?? 0) * 100)}%
-          </span>
-        </div>
-      )}
+      {/*
+        No progress bar in the strip: the desktop publishes upload progress
+        into `AppState.begin_upload_progress` and renders it elsewhere. The
+        `uploadProgress` plumbing stays (ticket 17 picks where it surfaces).
+      */}
     </div>
   );
 }
@@ -270,7 +250,7 @@ function StagedAttachmentRow({
       >
         ×
       </button>
-      <span className="composer-staged-name">{attachment.name}</span>
+      {/* No filename caption: the desktop's strip shows thumbs only. */}
     </div>
   );
 }

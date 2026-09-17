@@ -3,7 +3,6 @@ import type { WorkspaceFileSearchMatch } from "@roboco/proto";
 import type { FileTreeModel, TreeRow } from "../../lib/file-tree";
 import type { WorkspaceFilesClient } from "../../lib/files-client";
 import { describeFilesError } from "../../lib/files-client";
-import { formatBytes } from "../../lib/files";
 
 const SEARCH_DEBOUNCE_MS = 250;
 const SEARCH_RESULT_LIMIT = 200;
@@ -102,10 +101,12 @@ function TreeRowView({
             title={row.path}
           >
             <span className="files-chevron" aria-hidden />
-            <span className={`files-row-name ${entry.ignored ? "files-row-ignored" : ""}`}>
-              {entry.kind === "symlink" ? `${entry.name} ↪` : entry.name}
-            </span>
-            {typeof entry.size === "number" && <span className="files-row-size">{formatBytes(entry.size)}</span>}
+            {/*
+              No size column and no symlink glyph: the desktop's rows carry a
+              name only, and mark a symlink by swapping the file ICON
+              (`FileIconIdentity::symlink`), which the web does not have yet.
+            */}
+            <span className={`files-row-name ${entry.ignored ? "files-row-ignored" : ""}`}>{entry.name}</span>
           </button>
         </li>
       );

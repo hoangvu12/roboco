@@ -249,7 +249,6 @@ function RowContent({ row, layout, wrap, isExpanded, onToggleCollapse }: RowCont
       return (
         <FileHeaderRow
           file={row.file}
-          fileIx={row.fileIx}
           expanded={row.expanded}
           onToggle={() => onToggleCollapse?.(row.file.path)}
         />
@@ -271,7 +270,12 @@ function RowContent({ row, layout, wrap, isExpanded, onToggleCollapse }: RowCont
   }
 }
 
-function FileHeaderRow({ file, fileIx, expanded, onToggle }: { file: FileDiff; fileIx: number; expanded: boolean; onToggle: () => void }) {
+/**
+ * The file header: chevron, path, counts. No status word and no index chip —
+ * the desktop has neither; a file's added/deleted/renamed state is carried by
+ * the notice row alone.
+ */
+function FileHeaderRow({ file, expanded, onToggle }: { file: FileDiff; expanded: boolean; onToggle: () => void }) {
   return (
     <div className={`diff-file-header ${expanded ? "diff-file-expanded" : "diff-file-collapsed"}`}>
       <button type="button" className="diff-file-button" onClick={onToggle} aria-expanded={expanded}>
@@ -280,27 +284,10 @@ function FileHeaderRow({ file, fileIx, expanded, onToggle }: { file: FileDiff; f
           {file.oldPath !== null ? <span className="diff-file-rename">{file.oldPath} → </span> : null}
           {file.path}
         </span>
-        <span className="diff-file-status">{statusLabel(file)}</span>
         <span className="diff-file-counts mono">{fileCounts(file)}</span>
       </button>
-      <span className="diff-file-index" aria-hidden>
-        #{fileIx + 1}
-      </span>
     </div>
   );
-}
-
-function statusLabel(file: FileDiff): string {
-  switch (file.status) {
-    case "added":
-      return "new";
-    case "deleted":
-      return "deleted";
-    case "renamed":
-      return "renamed";
-    case "modified":
-      return "";
-  }
 }
 
 function HunkHeaderRow({ file, hunkIx }: { file: FileDiff; hunkIx: number }) {

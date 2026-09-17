@@ -1,12 +1,14 @@
 import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
-import { changeRequestCreateUrl } from "../lib/change-requests";
 
 /**
  * The change-request badge — the web peer of `crates/ui/src/change_requests.rs`.
  * A pill that shows `#N` + the state word; tone by state (Open / Merged /
- * Closed). Click opens the change-request URL (or the provider's create
- * page if none exists yet). On hover, a frosted tooltip card surfaces the
- * title and the same `PR #N · State` label the desktop uses.
+ * Closed). Click opens the change request's own URL. On hover, a frosted
+ * tooltip card surfaces the title and the same `PR #N · State` label the
+ * desktop uses.
+ *
+ * There is no create affordance: the desktop has no `CreateChangeRequest` RPC
+ * and no button — the badge simply does not appear until a PR exists.
  *
  * Used in two places: the chat header (per-chat status) and the changes
  * surface's checkout card (the underlying CR for the displayed diff).
@@ -65,43 +67,6 @@ export function ChangeRequestBadge({ summary, size = "sidebar" }: ChangeRequestB
         </span>
         <span className="cr-tooltip-title">{title}</span>
       </span>
-    </a>
-  );
-}
-
-export interface CreateChangeRequestButtonProps {
-  /** Provider key the create-URL builder understands. `null` disables the button. */
-  readonly provider: string | null;
-  readonly baseRef: string;
-  readonly headRef: string;
-  readonly cwd: string;
-  readonly size?: "composer" | "sidebar";
-}
-
-/**
- * A "Create PR/MR" affordance when the engine has no Create RPC — falls
- * back to opening the provider's compare/merge-request page with the
- * head branch pre-filled. Disabled when no base ref is available or when
- * no provider has been detected yet for this checkout.
- */
-export function CreateChangeRequestButton({ provider, baseRef, headRef, cwd, size = "sidebar" }: CreateChangeRequestButtonProps) {
-  const url = provider === null ? null : changeRequestCreateUrl(provider, baseRef, headRef, cwd);
-  const disabled = url === null;
-  if (disabled) {
-    return (
-      <span className={`cr-create cr-create-disabled cr-create-${size}`} aria-disabled>
-        Create PR
-      </span>
-    );
-  }
-  return (
-    <a
-      className={`cr-create btn btn-ghost cr-create-${size}`}
-      href={url}
-      target="_blank"
-      rel="noreferrer noopener"
-    >
-      Create PR
     </a>
   );
 }

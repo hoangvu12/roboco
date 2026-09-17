@@ -118,7 +118,6 @@ function ChatMenu({
     <div
       className="menu-backdrop"
       onClick={onClose}
-      onWheel={onClose}
       onContextMenu={(event) => {
         event.preventDefault();
         onClose();

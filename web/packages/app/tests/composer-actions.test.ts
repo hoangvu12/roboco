@@ -87,34 +87,28 @@ describe("buildRunRequest", () => {
 });
 
 describe("sendRun", () => {
-  it("sends Mutate setChatConfig (when the draft drifted) then QueueCommand Run", async () => {
+  // The desktop carries model/reasoning/options on the RunRequest itself and
+  // only writes a ChatConfig via `Mutate createChat`; a per-send setChatConfig
+  // mutation was web-only invention (ticket 04).
+  it("sends only QueueCommand Run — never a setChatConfig mutation", async () => {
     const caller = new FakeCaller();
     caller.replies.set("QueueCommand", { commandId: "cmd-1" });
     await sendRun(caller, "chat-1", DRAFT, "  ship it  ", "/Users/me/proj", {
       currentConfig: null,
       mintMessageId: () => "msg-1",
     });
-    expect(caller.calls.map((entry) => entry.method)).toEqual(["Mutate", "QueueCommand"]);
-    const setConfig = caller.calls[0]!.params as { op: string; chatId: string; config: ChatConfig };
-    expect(setConfig.op).toBe("setChatConfig");
-    expect(setConfig.chatId).toBe("chat-1");
-    expect(setConfig.config).toEqual(PERSISTED);
-    const queue = caller.calls[1]!.params as { chatId: string; command: { kind: string; messageId: string; request: { prompt: string; cwd: string } } };
+    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    const queue = caller.calls[0]!.params as { chatId: string; command: { kind: string; messageId: string; request: { prompt: string; cwd: string; harness: string; model: string | null; reasoning: string | null } } };
     expect(queue.chatId).toBe("chat-1");
     expect(queue.command.kind).toBe("run");
     expect(queue.command.messageId).toBe("msg-1");
     expect(queue.command.request.prompt).toBe("ship it");
     expect(queue.command.request.cwd).toBe("/Users/me/proj");
-  });
-
-  it("skips setChatConfig when the persisted config already matches the draft", async () => {
-    const caller = new FakeCaller();
-    caller.replies.set("QueueCommand", { commandId: "cmd-1" });
-    await sendRun(caller, "chat-1", DRAFT, "ship", "/Users/me/proj", {
-      currentConfig: PERSISTED,
-      mintMessageId: () => "msg-1",
-    });
-    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    // The draft's identity rides the request, which is why the pre-send
+    // mutation was redundant.
+    expect(queue.command.request.harness).toBe(DRAFT.harness);
+    expect(queue.command.request.model).toBe(DRAFT.model);
+    expect(queue.command.request.reasoning).toBe(DRAFT.reasoning);
   });
 
   it("rejects an empty prompt before touching the wire", async () => {
@@ -247,19 +241,19 @@ describe("sendRun with attachments", () => {
     );
 
     const methods = caller.calls.map((entry) => entry.method);
-    expect(methods).toEqual(["Mutate", "UploadChunk", "UploadCommit", "QueueCommand"]);
+    expect(methods).toEqual(["UploadChunk", "UploadCommit", "QueueCommand"]);
 
-    const uploadChunk = caller.calls[1]!.params as { uploadId: string; data: string; seq: number };
+    const uploadChunk = caller.calls[0]!.params as { uploadId: string; data: string; seq: number };
     expect(typeof uploadChunk.uploadId).toBe("string");
     expect(uploadChunk.uploadId.length).toBeGreaterThan(0);
     expect(uploadChunk.seq).toBe(0);
     expect(uploadChunk.data.length).toBeGreaterThan(0);
 
-    const commit = caller.calls[2]!.params as { uploadId: string; fileName: string };
+    const commit = caller.calls[1]!.params as { uploadId: string; fileName: string };
     expect(commit.uploadId).toBe(uploadChunk.uploadId);
     expect(commit.fileName).toBe("shot.png");
 
-    const queue = caller.calls[3]!.params as {
+    const queue = caller.calls[2]!.params as {
       chatId: string;
       command: { kind: string; request: { prompt: string }; messageId: string };
       transfers: Array<{ uploadId: string; fileName: string }>;

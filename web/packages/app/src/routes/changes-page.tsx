@@ -1,67 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useWatchSnapshot } from "../state/hooks";
 import { ChangesStore } from "../state/changes-store";
-import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat, providerForCheckout } from "../state/change-requests-store";
+import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { chatPageRow } from "../lib/view";
 import { DIFF_SCOPE_LABELS, cleanMessage, defaultBaseRef, scopeLabel, type DiffScope } from "../lib/diff";
 import { DiffView, type DiffLayout } from "../components/diff-view";
-import { ChangeRequestBadge, CreateChangeRequestButton } from "../components/change-request-badge";
-import { changesRoute } from "../router";
+import { ChangeRequestBadge } from "../components/change-request-badge";
 import { useNow } from "../state/hooks";
 import type { ChangeRequestSummary } from "@roboco/proto";
 
 /**
- * The Changes page for one chat — the per-checkout diff view with folding
- * (Working tree / Branch / Latest turn), plus the change-request header
- * card. Web peer of the desktop's right-pane Changes tab, promoted to a
- * routed page so the diff, the picker, and the CR card all share a chrome
- * and a URL state (`?scope=` / `?base=`).
+ * The Changes surface for one chat — the per-checkout diff view with folding
+ * (Working tree / Branch / Latest turn), plus the change-request header card.
+ * Web peer of the desktop's right-pane Changes tab.
  *
- * The CR card is reactive: the page subscribes a `WatchCheckoutChangeRequest`
- * per the chat's `(device, cwd, branch)` tuple, derives the visible summary,
- * and offers a "Create PR" affordance that opens the provider's compare
- * page (the engine has no wire Create RPC today).
+ * Changes is a PANE surface, never a route: the desktop has no `/changes`
+ * page, and a route here stripped the pane column off its own chrome. Scope
+ * and base live in the surface's local state instead of in search params.
  *
- * At phone widths the scope chips and base ref picker wrap; the diff scroller
- * keeps the desktop's gutter + marker columns and lets lines wrap on narrow
- * screens instead of horizontal-scrolling the entire file.
+ * The CR card is reactive: the surface subscribes a
+ * `WatchCheckoutChangeRequest` per the chat's `(device, cwd, branch)` tuple
+ * and derives the visible summary. When no change request exists the card is
+ * absent — the desktop offers no create flow to mirror.
  */
-/**
- * The routed page: URL-bound scope/base, with the back link to the chat.
- * Kept so `/chat/$id/changes` links stay valid; the pane hosts the same body
- * through `ChangesSurface`.
- */
-export function ChangesPage() {
-  const { chatId } = useParams({ from: changesRoute.id });
-  const search = useSearch({ from: changesRoute.id });
-  const navigate = useNavigate();
-  const scope = (search.scope === "branch" || search.scope === "turn" ? search.scope : "workingTree") as DiffScope;
-  return (
-    <ChangesBody
-      chatId={chatId}
-      scope={scope}
-      requestedBase={search.base ?? null}
-      standalone
-      onScopeChange={(next) => {
-        void navigate({
-          to: "/chat/$chatId/changes",
-          params: { chatId },
-          search: { scope: next, base: next === "branch" ? search.base ?? "" : "" },
-        });
-      }}
-      onBaseChange={(next) => {
-        void navigate({
-          to: "/chat/$chatId/changes",
-          params: { chatId },
-          search: { scope: "branch", base: next },
-        });
-      }}
-    />
-  );
-}
-
 /**
  * The right pane's Changes surface. The pane is chat-scoped chrome with no
  * URL of its own, so scope and base live in local state here rather than in
@@ -75,7 +38,6 @@ export function ChangesSurface({ chatId }: { chatId: string }) {
       chatId={chatId}
       scope={scope}
       requestedBase={base}
-      standalone={false}
       onScopeChange={(next) => {
         setScope(next);
         if (next !== "branch") {
@@ -94,13 +56,11 @@ interface ChangesBodyProps {
   readonly chatId: string;
   readonly scope: DiffScope;
   readonly requestedBase: string | null;
-  /** The routed page draws a back link and a heading; the pane does not. */
-  readonly standalone: boolean;
   readonly onScopeChange: (next: DiffScope) => void;
   readonly onBaseChange: (next: string) => void;
 }
 
-function ChangesBody({ chatId, scope, requestedBase, standalone, onScopeChange, onBaseChange }: ChangesBodyProps) {
+function ChangesBody({ chatId, scope, requestedBase, onScopeChange, onBaseChange }: ChangesBodyProps) {
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const snapshot = useWatchSnapshot(session);
@@ -198,17 +158,6 @@ function ChangesBody({ chatId, scope, requestedBase, standalone, onScopeChange, 
     return null;
   }, [crSnap, deviceId, cwd, branch, checkoutId]);
 
-  // The provider the engine has most recently reported for this checkout.
-  // `null` until the engine has resolved a CR whose summary carried a
-  // provider string; the create-PR button is hidden until then so we never
-  // link a non-GitHub checkout to a github.com compare URL.
-  const createProvider: string | null = useMemo(() => {
-    if (crSnap === null || deviceId === null || cwd === null) {
-      return null;
-    }
-    return providerForCheckout(crSnap.providers, deviceId, cwd);
-  }, [crSnap, deviceId, cwd]);
-
   const [layout, setLayout] = useState<DiffLayout>("unified");
   const [wrap, setWrap] = useState(false);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
@@ -257,20 +206,11 @@ function ChangesBody({ chatId, scope, requestedBase, standalone, onScopeChange, 
     );
   }
 
-  const title = chat.title !== null ? chat.title : "New session";
   const crUnsupported = crSnap !== null && !crSnap.supported;
 
   return (
-    <div className={`changes-page ${standalone ? "" : "changes-page-surface"}`}>
+    <div className="changes-page changes-page-surface">
       <header className="changes-header">
-        {standalone && (
-          <div className="changes-header-titles">
-            <Link to="/chat/$chatId" params={{ chatId }} className="changes-back">
-              ‹ {title}
-            </Link>
-            <h1>Changes</h1>
-          </div>
-        )}
         <nav className="changes-scope" aria-label="Diff scope">
           {(Object.keys(DIFF_SCOPE_LABELS) as DiffScope[]).map((option) => (
             <button
@@ -349,17 +289,11 @@ function ChangesBody({ chatId, scope, requestedBase, standalone, onScopeChange, 
             {crSummary.baseRef} ← {crSummary.headRef}
           </span>
         </div>
-      ) : cwd !== null && branch !== null && branch.trim().length > 0 && createProvider !== null ? (
-        <div className="changes-cr-card changes-cr-card-empty" role="status">
-          <span className="changes-cr-card-label">No change request open</span>
-          <CreateChangeRequestButton
-            provider={createProvider}
-            baseRef={baseForLabel ?? "main"}
-            headRef={branch}
-            cwd={cwd}
-          />
-        </div>
       ) : null}
+      {/*
+        No PR yet → no card. The desktop's badge appears only once a change
+        request exists; it has no create affordance to mirror.
+      */}
 
       <div className="changes-body">
         {error !== null ? (

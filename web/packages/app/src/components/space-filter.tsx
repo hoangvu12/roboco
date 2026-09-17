@@ -8,7 +8,7 @@ import { healedSpaceFilter, spaceDisplayName, spacesSorted } from "../lib/view";
 /**
  * The sidebar's space header — the desktop's space-filter row: a quiet
  * disclosure trigger reading "All projects" (or the picked space) with a
- * chevron, and the sort control at the right edge.
+ * chevron.
  *
  * The picked space both filters the chat list and targets the new-chat flow;
  * a dangling pick — space deleted, or an engine switch — heals to "All
@@ -68,9 +68,6 @@ export function SpaceFilter() {
       >
         <span className="space-filter-label">{label}</span>
         <Icon name="altArrowDown" size={14} className={`chevron ${open ? "chevron-open" : ""}`} />
-      </button>
-      <button type="button" className="space-filter-sort" aria-label="Sort chats" title="Sort chats">
-        <Icon name="sortVertical" size={14} />
       </button>
       {open && (
         <div className="space-filter-menu" role="listbox">

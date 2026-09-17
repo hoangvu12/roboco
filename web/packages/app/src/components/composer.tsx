@@ -29,8 +29,6 @@ import { AttachmentStrip } from "./attachments/attachment-strip";
 const COMPACT_HEIGHT_PX = 49;
 const EXPANDED_MIN_PX = 124;
 const EXPANDED_MAX_PX = 308;
-/** Animation duration (composer.rs flip rules use `motion.collapse` = 180ms ease-out). */
-const FLIP_DURATION_MS = 180;
 
 const NAVIGATION_MS_THRESHOLD = 250;
 
@@ -219,7 +217,8 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
         harness: update.harness ?? current.harness,
         model: update.model !== undefined ? update.model : current.model,
         reasoning: update.reasoning !== undefined ? update.reasoning : current.reasoning,
-        sandbox: update.sandbox ?? current.sandbox,
+        // Never user-picked: written on create, preserved from then on.
+        sandbox: current.sandbox,
         modelOptions: update.modelOptions !== undefined ? { ...update.modelOptions } : current.modelOptions,
       };
       return next;
@@ -466,7 +465,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
         onError={onStageError}
         pickerRef={attachRef}
       />
-      <div className="composer-input-wrap" style={{ animationDuration: `${FLIP_DURATION_MS}ms` }}>
+      <div className="composer-input-wrap">
         <textarea
           ref={textareaRef}
           className="composer-input"

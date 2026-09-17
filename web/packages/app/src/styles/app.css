@@ -321,11 +321,10 @@ a:focus-visible,
   color: var(--rb-text);
 }
 
-.window-control-active {
-  background: rgb(var(--rb-wash) / 0.11);
-  color: var(--rb-text);
-}
-
+/*
+ * No pressed/active variant: `window_control_button` has one resting look and
+ * one hover, whatever the control it drives is currently doing.
+ */
 .window-control:disabled {
   opacity: 0.35;
   cursor: default;
@@ -369,19 +368,7 @@ a:focus-visible,
   text-overflow: ellipsis;
 }
 
-.identity-badge {
-  flex: none;
-  height: 16px;
-  padding-inline: 4px;
-  display: inline-flex;
-  align-items: center;
-  border-radius: 4px;
-  background: rgb(var(--rb-ink) / 0.08);
-  color: color-mix(in srgb, var(--rb-text-muted) 85%, transparent);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 10px;
-  font-weight: 500;
-}
+/* The identity row carries no badge — mark + title + `folder @ device` only. */
 
 /*
  * The trailing section. The pane toggle is the fixed right-edge anchor, like
@@ -573,7 +560,6 @@ a:focus-visible,
 /* Surfaces fill the pane instead of laying themselves out as routed pages. */
 .right-pane-body > .changes-page,
 .right-pane-body > .files-page,
-.right-pane-body > .preview-panel,
 .right-pane-body > .term-dock {
   flex: 1;
   min-height: 0;
@@ -844,28 +830,6 @@ a:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.space-filter-sort {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  border-radius: var(--rb-radius-control);
-  background: transparent;
-  color: var(--rb-text-muted);
-  cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
-    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
-}
-
-.space-filter-sort:hover {
-  background: var(--rb-hover);
-  color: var(--rb-text);
 }
 
 /* The chevron rotates on disclosure over `motion.chevron` — 200ms ease. */
@@ -1427,23 +1391,13 @@ a:focus-visible,
   flex-direction: column;
 }
 
-.chat-transcript {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--rb-space-lg);
-}
 
-.chat-transcript-empty {
-  color: var(--rb-text-faint);
-  text-align: center;
-  margin-top: 15%;
-}
+/*
+ * No empty/loading paragraph: the transcript renders nothing in those states,
+ * as on the desktop — the shell owns the empty case.
+ */
 
-/* Chat body holds the transcript and an on-demand preview pane. At
-   desktop widths they sit side-by-side; at phone widths the preview
-   stacks beneath the transcript (the preview-panel stays at its
-   min(520px, 45%) desktop size otherwise). */
+/* Chat body holds the transcript column. */
 .chat-body {
   flex: 1;
   min-height: 0;
@@ -1454,13 +1408,6 @@ a:focus-visible,
 @media (max-width: 768px) {
   .chat-body {
     flex-direction: column;
-  }
-
-  .preview-panel {
-    width: 100%;
-    border-left: none;
-    border-top: 1px solid var(--rb-border);
-    max-height: 50vh;
   }
 }
 
@@ -1505,10 +1452,7 @@ a:focus-visible,
   background: var(--rb-hover);
 }
 
-.queue-row-hold {
-  border-left: 2px solid var(--rb-accent);
-}
-
+/* `hold_for_turn_end` is engine-side only — the desktop's row never marks it. */
 .queue-row-locked {
   border-color: color-mix(in srgb, var(--rb-danger) 50%, var(--rb-border));
   background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
@@ -2042,15 +1986,6 @@ a:focus-visible,
   }
 }
 
-@keyframes composer-flip {
-  from {
-    transform: translateY(2px);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
 @media (max-width: 768px) {
   /* iOS zooms any field under 16px on focus. */
   .composer-input {
@@ -2084,54 +2019,16 @@ a:focus-visible,
   pointer-events: none;
 }
 
-.composer-attachments-overlay {
-  position: absolute;
-  inset: -6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1.5px dashed color-mix(in srgb, var(--rb-accent) 65%, var(--rb-border));
-  border-radius: var(--rb-radius-control);
-  background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
-  color: var(--rb-accent);
-  font-size: 12.5px;
-  pointer-events: none;
-  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
-  z-index: 2;
-}
-
+/*
+ * No drop veil here (that is the shell's `#chat-dropzone`) and no inline
+ * attach button — the composer has exactly one attach affordance, the
+ * paperclip in its actions cluster.
+ */
 .composer-attachments-row {
   display: flex;
   align-items: center;
   gap: var(--rb-space-xs);
   min-height: 0;
-}
-
-.composer-attach-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  background: transparent;
-  color: var(--rb-text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  flex: none;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
-}
-
-.composer-attach-button:hover:not(:disabled) {
-  background: var(--rb-hover);
-  color: var(--rb-text);
-}
-
-.composer-attach-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .composer-attachments-strip {
@@ -2191,48 +2088,11 @@ a:focus-visible,
   background: var(--rb-hover);
 }
 
-.composer-staged-name {
-  max-width: 56px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10.5px;
-  color: var(--rb-text-faint);
-}
-
-.composer-attachments-progress {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 4px;
-  margin-top: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--rb-text) 7%, transparent);
-  overflow: hidden;
-}
-
-.composer-attachments-progress-bar {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--rb-accent);
-  border-radius: 999px;
-  transition: width var(--rb-motion-fade-quick) var(--rb-ease-ease-out);
-}
-
-.composer-attachments-progress-label {
-  position: absolute;
-  right: 0;
-  top: -16px;
-  font-size: 10.5px;
-  color: var(--rb-text-muted);
-}
-
-@media (max-width: 768px) {
-  .composer-attachments-overlay {
-    inset: -4px;
-  }
-}
+/*
+ * No filename caption under a thumb, and no upload progress bar in the strip:
+ * the desktop's strip is thumbs only, and upload progress is published into
+ * `AppState.begin_upload_progress` and drawn elsewhere.
+ */
 
 /* ── User-row attachment thumbs (transcript) ────────────────────────── */
 
@@ -2376,18 +2236,13 @@ a:focus-visible,
   border-bottom: 1px solid var(--rb-border);
 }
 
+/* `render_tab_bar` is a plain flex row: with enough tabs it simply overflows. */
 .term-tabstrip {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.term-tabstrip::-webkit-scrollbar {
-  display: none;
 }
 
 .term-tab {
@@ -2812,13 +2667,16 @@ button.files-row-active:hover {
   background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
 }
 
+/*
+ * The disclosure glyph swaps instantly (`ALT_ARROW_RIGHT` ↔ `ALT_ARROW_DOWN`)
+ * — the desktop tweens nothing here, so neither does this.
+ */
 .files-chevron {
   flex: none;
   width: 14px;
   text-align: center;
   color: var(--rb-text-faint);
   font-size: 11px;
-  transition: transform var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
 }
 
 .files-chevron-open {
@@ -2837,7 +2695,7 @@ button.files-row-active:hover {
   color: var(--rb-text-faint);
 }
 
-.files-row-size,
+/* Tree rows carry a name only — the desktop shows no size column. */
 .files-row-path {
   flex: none;
   font-size: 11px;
@@ -2917,12 +2775,7 @@ button.files-row-active:hover {
   color: var(--rb-warning);
 }
 
-.files-viewer-meta {
-  flex: none;
-  font-size: 11px;
-  color: var(--rb-text-faint);
-}
-
+/* The breadcrumb toolbar carries no byte-size badge. */
 .files-banner {
   flex: none;
   display: flex;
@@ -3330,6 +3183,7 @@ button.files-row-active:hover {
   min-width: 0;
 }
 
+/* `footer_label` has no radius and no background — it is plain text in a slot. */
 .footer-chip {
   display: inline-flex;
   align-items: center;
@@ -3337,7 +3191,6 @@ button.files-row-active:hover {
   min-width: 0;
   height: 20px;
   padding-inline: 6px;
-  border-radius: var(--rb-radius-control);
   color: var(--rb-text-faint);
   font-size: 11px;
 }
@@ -3417,22 +3270,11 @@ button.files-row-active:hover {
   }
 }
 
-.transcript-error {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(var(--rb-transcript-fade-band) + 12px);
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  max-width: min(90%, 40rem);
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--rb-danger-muted);
-  border: 1px solid var(--rb-danger);
-  color: var(--rb-text);
-  font-size: 12px;
-}
+/*
+ * No floating error card: a stream error is a 24px SHELL strip above the list
+ * on the desktop ("Engine off. Cached history is read-only."), which is
+ * ticket 18/01's to build.
+ */
 
 /* ── User bubble ────────────────────────────────────────────────────── */
 
@@ -3961,30 +3803,11 @@ button.files-row-active:hover {
   text-decoration: underline;
 }
 
-.chip-pending {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--rb-activity);
-  animation: rb-chip-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease) infinite;
-}
-
-@keyframes rb-chip-pulse {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.chip-error-mark {
-  flex: none;
-  color: var(--rb-danger);
-  font-size: 11px;
-}
+/*
+ * No per-chip pending dot and no "failed" word: the desktop shows a
+ * `mini_glyph_spinner` while running and expresses failure through the danger
+ * tint plus the group summary's "· N failed" count (ticket 19).
+ */
 
 .tool-chip-error .tool-chip-label {
   color: var(--rb-danger);
@@ -4007,25 +3830,7 @@ button.files-row-active:hover {
   background: var(--rb-hover);
 }
 
-.subagent-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.subagent-dot-running {
-  background: var(--rb-activity);
-  animation: rb-chip-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease) infinite;
-}
-
-.subagent-dot-done {
-  background: var(--rb-success);
-}
-
-.subagent-dot-failed {
-  background: var(--rb-danger);
-}
+/* No coloured status dots on a subagent chip — the desktop has none. */
 
 .subagent-dialog {
   width: min(56rem, 100%);
@@ -4118,8 +3923,6 @@ button.files-row-active:hover {
 @media (prefers-reduced-motion: reduce) {
   .veil-fade,
   .chip-reveal,
-  .chip-pending,
-  .subagent-dot-running,
   .jump-bottom {
     animation: none;
   }
@@ -4461,114 +4264,12 @@ button.files-row-active:hover {
 }
 
 
-/* ── Preview panel (dev servers framed through the engine proxy) ────── */
-
-.preview-panel {
-  flex: none;
-  width: min(520px, 45%);
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--rb-border);
-  background: var(--rb-shell);
-}
-
-.preview-bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  height: var(--rb-header-height);
-  padding: 0 var(--rb-space-sm);
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.preview-bar-title {
-  flex: none;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.preview-bar-url {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 11px;
-  color: var(--rb-text-faint);
-}
-
-.preview-frame {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  border: 0;
-  background: var(--rb-bg);
-}
-
-.preview-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--rb-space-md);
-}
-
-.preview-subtitle {
-  margin: 0 0 var(--rb-space-sm);
-  font-size: 12px;
-  color: var(--rb-text-muted);
-}
-
-.preview-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-xs);
-}
-
-.preview-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 56px;
-  padding: 0 14px;
-  border: 1px solid var(--rb-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--rb-text) 2%, transparent);
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
-}
-
-.preview-row:not(.preview-row-disabled) {
-  cursor: pointer;
-}
-
-.preview-row:not(.preview-row-disabled):hover {
-  background: color-mix(in srgb, var(--rb-text) 5%, transparent);
-  border-color: var(--rb-border-strong);
-}
-
-.preview-row-disabled {
-  opacity: 0.65;
-}
-
-.preview-row-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.preview-row-name {
-  font-size: 13px;
-  font-weight: 500;
-}
+/*
+ * No Preview surface. On the desktop the discovered dev-server list is the
+ * empty-tab body of an embedded native Browser tab, framed by that tab's own
+ * chrome (`browser/view.rs::preview_body`) — the web has no embedded browser
+ * tab to host it, so there is nothing here to style.
+ */
 
 
 /* ── Settings (ticket 16) ───────────────────────────────────────────── */
@@ -5191,31 +4892,7 @@ html[data-surface="frosted"] .modal-card {
   flex: none;
 }
 
-.changes-header-titles {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  min-width: 0;
-}
-
-.changes-header h1 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.changes-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--rb-text-muted);
-  text-decoration: none;
-}
-
-.changes-back:hover {
-  color: var(--rb-text);
-}
-
+/* Changes is a pane surface, not a routed page: no title row, no back link. */
 .changes-scope {
   display: flex;
   align-items: center;
@@ -5344,10 +5021,6 @@ html[data-surface="frosted"] .modal-card {
   color: var(--rb-text-faint);
 }
 
-.changes-cr-card-empty {
-  background: var(--rb-raised);
-}
-
 .changes-cr-card-disabled {
   background: var(--rb-warning-muted);
   color: var(--rb-text-muted);
@@ -5447,24 +5120,14 @@ html[data-surface="frosted"] .modal-card {
   color: var(--rb-text-faint);
 }
 
-.diff-file-status {
-  font-size: 11px;
-  color: var(--rb-text-faint);
-  flex: none;
-}
-
+/* No status word in the header — the notice row carries new/deleted/renamed. */
 .diff-file-counts {
   font-size: 11px;
   color: var(--rb-text-muted);
   flex: none;
 }
 
-.diff-file-index {
-  font-size: 11px;
-  color: var(--rb-text-faint);
-  flex: none;
-}
-
+/* No `#N` index chip — the desktop's file header has none. */
 .diff-hunk-header {
   padding: 4px var(--rb-space-md);
   background: var(--rb-diff-hunk);
@@ -5721,16 +5384,7 @@ html[data-surface="frosted"] .modal-card {
   white-space: nowrap;
 }
 
-.cr-create {
-  font-size: 12px;
-}
-
-.cr-create-disabled {
-  opacity: 0.5;
-  pointer-events: none;
-  color: var(--rb-text-faint);
-  font-size: 12px;
-}
+/* No create-PR affordance: the desktop has no create flow to mirror. */
 
 @media (max-width: 768px) {
   .changes-header {

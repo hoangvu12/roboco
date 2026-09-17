@@ -236,7 +236,10 @@ export function AppShell() {
         onBack={() => router.history.back()}
         onForward={() => router.history.forward()}
         canBack={router.history.canGoBack()}
-        canForward
+        // TODO(ticket 05): wire to NavHistory.canForward() (`index + 1 <
+        // entries.len()`). The web tracks no forward history today, so the
+        // control stays disabled rather than enabled-and-inert.
+        canForward={false}
         onNewSession={paired ? chrome.onNewSession ?? onNewChat : null}
         identity={chrome.identity}
         // Every pane control is shell-owned and synchronous with the store, so

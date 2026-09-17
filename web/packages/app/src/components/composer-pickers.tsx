@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import type { HarnessDescriptor, Model, ReasoningLevel, SandboxLevel } from "@roboco/proto";
+import type { HarnessDescriptor, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
 import { traitsActive, traitsSummary } from "../lib/traits-summary";
 import {
@@ -21,13 +21,16 @@ import {
  * departs from its default. No suffix when the model has neither a ladder nor
  * options.
  *
- * Opening the chip reveals the harness, model, reasoning, and sandbox lists in
- * one stack (the desktop's tabbed `render_harness_model_popover`). The harness
+ * Opening the chip reveals the harness, model, and reasoning lists in one
+ * stack (the desktop's tabbed `render_harness_model_popover`). The harness
  * list dims once the chat has a persisted `ChatConfig` — the desktop locks it
  * (`pickers.rs HarnessModelPicker`).
+ *
+ * There is no sandbox facet: `SandboxLevel::WorkspaceWrite` is written when a
+ * chat is created and preserved thereafter — the desktop never offers it as a
+ * choice, so neither does this.
  */
 
-const SANDBOX_LEVELS: readonly SandboxLevel[] = ["read-only", "workspace-write", "danger-full-access"];
 const DEFAULT_REASONING: readonly ReasoningLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode", "ultrathink"];
 
 interface ComposerPickersProps {
@@ -42,7 +45,7 @@ interface ComposerPickersProps {
   readonly onRetryModels: () => void;
 }
 
-type OpenPicker = "harness" | "model" | "reasoning" | "sandbox" | null;
+type OpenPicker = "harness" | "model" | "reasoning" | null;
 
 export function ComposerPickers(props: ComposerPickersProps) {
   const { draft, harnesses, models, harnessError, modelsError, harnessLocked, onChange, onRetryHarnesses, onRetryModels } = props;
@@ -72,13 +75,11 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const harnessItems = harnessPickerItems(harnesses);
   const modelItems = modelPickerItems(models);
   const reasoningItems = stringPickerItems(modelItems.length === 0 ? DEFAULT_REASONING : (models.find((m) => m.id === draft.model)?.reasoningLevels ?? DEFAULT_REASONING));
-  const sandboxItems = stringPickerItems(SANDBOX_LEVELS);
 
   const harnessLabel = harnesses.find((h) => h.id === draft.harness)?.name ?? draft.harness;
   const pickedModel = models.find((m) => m.id === draft.model);
   const modelLabel = pickedModel?.label ?? draft.model ?? "Model";
   const reasoningLabel = draft.reasoning ?? "Reasoning";
-  const sandboxLabel = draft.sandbox;
   const brand = harnessBrandIcon(draft.harness);
   const suffix = traitsSummary(pickedModel, draft.reasoning, draft.modelOptions);
   const suffixActive = traitsActive(pickedModel, draft.reasoning, draft.modelOptions);
@@ -116,7 +117,6 @@ export function ComposerPickers(props: ComposerPickersProps) {
           <IdentityTab id="harness" open={open} setOpen={setOpen} label="Harness" value={harnessLabel} dim={harnessLocked} />
           <IdentityTab id="model" open={open} setOpen={setOpen} label="Model" value={modelLabel} />
           <IdentityTab id="reasoning" open={open} setOpen={setOpen} label="Effort" value={reasoningLabel} />
-          <IdentityTab id="sandbox" open={open} setOpen={setOpen} label="Sandbox" value={sandboxLabel} />
         </div>
       )}
       {open === "harness" && (
@@ -173,23 +173,13 @@ export function ComposerPickers(props: ComposerPickersProps) {
           onClose={() => setOpen(null)}
         />
       )}
-      {open === "sandbox" && (
-        <PickerPopover
-          items={sandboxItems}
-          selectedId={draft.sandbox}
-          placeholder="Search sandbox…"
-          emptyHint="No sandbox levels."
-          onPick={(item: PickerItem) => pick({ sandbox: item.id as SandboxLevel })}
-          onClose={() => setOpen(null)}
-        />
-      )}
     </div>
   );
 }
 
 /**
  * One tab of the opened identity popover. The desktop's popover is tabbed
- * across harness and model with the traits ladder beside them; the same four
+ * across harness and model with the traits ladder beside them; the same three
  * facets live here as a single row of quiet tabs above whichever list is open.
  */
 function IdentityTab({
