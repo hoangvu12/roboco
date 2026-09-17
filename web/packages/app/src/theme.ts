@@ -62,7 +62,7 @@ export function applyAppearanceToDocument(
   for (const [name, value] of Object.entries(inkCssVars(variant.appearance))) {
     root.style.setProperty(name, value);
   }
-  root.dataset.surface = resolveSurfaceTreatment(preferences.surface, variant);
+  root.dataset.surface = resolveSurfaceTreatment();
   root.style.colorScheme = variant.appearance;
 }
 

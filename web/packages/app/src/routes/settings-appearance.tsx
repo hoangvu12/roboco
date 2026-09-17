@@ -21,13 +21,14 @@ import {
  * accent preset swatches, and the glass surface choices. Everything applies
  * live and persists in this browser's storage — the desktop's "These
  * settings stay on this device." Builtin variants only (spec §Theme scope).
+ * Web deviation: no Frosted choice — the surface is forced opaque
+ * (see `resolveSurfaceTreatment`).
  */
 export function AppearanceSettingsPage() {
   const preferences = useAppearance();
   const system = useSystemAppearance();
   const resolved = resolveAppearance(preferences.mode, system);
-  const variant = findVariant(resolveVariantId(preferences, resolved));
-  const surfaceResolved = variant !== undefined ? resolveSurfaceTreatment(preferences.surface, variant) : "opaque";
+  const surfaceResolved = resolveSurfaceTreatment();
 
   return (
     <div className="settings-page">

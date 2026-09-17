@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
+import { evalWidthTween } from "../state/layout";
 import { resolvedActive, type ChatPaneState } from "../state/right-pane";
 import { renderRightSurface, surfaceEntry } from "./surface-registry";
 
@@ -23,6 +24,13 @@ import { renderRightSurface, surfaceEntry } from "./surface-registry";
  * intermediate one — the same clip-don't-squeeze trick the sidebar uses,
  * mirrored. The column stays mounted at width 0 while closed, because a CSS
  * width transition has nothing to animate from if the element is absent.
+ *
+ * EXCEPT on a takeover flip: `right_takeover_content_tween` (shell.rs:3833-3838)
+ * gives the inner child the SAME tween endpoints as the column, so the
+ * surface's layout width tracks the animating width per frame — the pane
+ * really is changing to a different width there, and holding one end would
+ * leave the surface laid out wrong for the whole 200ms (and snap at the end).
+ * A rAF loop ports `eval_tween` per frame, the pane-seam bounce's pattern.
  *
  * The pane's edge bounce (`eval_resize_edge_bounce`) adds its offset through
  * the `--rb-pane-edge-offset` var the shell composes in — the desktop's
@@ -53,6 +61,7 @@ export function RightPane({
   const filesWhileClosing = closing && (active.kind === "files" || active.kind === "file");
   const entry = surfaceEntry(active.kind);
   const ctx = { chatId };
+  const innerRef = useRef<HTMLDivElement | null>(null);
 
   let content: ReactNode = null;
   if (!filesWhileClosing) {
@@ -67,6 +76,44 @@ export function RightPane({
       );
   }
 
+  // `right_takeover_content_tween`: while a takeover glide runs, drive the
+  // inner width per frame on the tween's own clock. The first write lands
+  // before paint (a layout effect), so the surface never renders at a
+  // shrink-to-fit width; the loop's final write is `to`, which is exactly
+  // where the settled inline style takes over. Keyed on the tween object's
+  // identity, which only changes when a glide arms or clears.
+  const tween = glide.tween;
+  useLayoutEffect(() => {
+    if (tween === null) {
+      return;
+    }
+    const inner = innerRef.current;
+    if (inner === null) {
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      // The CSS has already snapped the column; the content must not trail.
+      inner.style.width = `${tween.to}px`;
+      return;
+    }
+    const { from, to } = tween;
+    const started = performance.now();
+    let raf = 0;
+    const write = (elapsed: number): void => {
+      inner.style.width = `${evalWidthTween(from, to, elapsed)}px`;
+    };
+    write(0);
+    const tick = (now: number): void => {
+      const elapsed = now - started;
+      write(elapsed);
+      if (elapsed < RESIZE_MS) {
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [tween]);
+
   return (
     <aside
       className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}`}
@@ -74,8 +121,14 @@ export function RightPane({
       aria-label="Panel"
       aria-hidden={!pane.open}
     >
-      {/* `null` width = follow the column, which is what takeover wants. */}
+      {/*
+        A takeover glide drives this width per frame (the effect above); any
+        other glide holds the wider endpoint's width; `null` only ever means
+        "the tween owns it", never "follow the column" — the inner is
+        absolutely positioned and shrink-to-fits without a width.
+      */}
       <div
+        ref={innerRef}
         className="right-pane-inner"
         style={glide.content === null ? undefined : { width: glide.content }}
       >
@@ -87,6 +140,12 @@ export function RightPane({
       </div>
     </aside>
   );
+}
+
+/** An armed width tween's endpoints — the `from`/`to` `eval_tween` lerps. */
+export interface PaneGlideTween {
+  readonly from: number;
+  readonly to: number;
 }
 
 /**
@@ -102,8 +161,7 @@ export function RightPane({
  * - **Takeover** (`toggle_right_pane_expand`) sets that tween to the same
  *   endpoints as the column, so the content TRACKS the animating width. The
  *   pane really is changing to a different width here, and holding one end
- *   would leave the surface laid out wrong for the whole 200ms. `null` means
- *   "follow the column" — the stylesheet's 100%.
+ *   would leave the surface laid out wrong for the whole 200ms.
  *
  * Drags are excluded by construction: they change neither flag, and must track
  * the pointer exactly rather than lag behind a held width.
@@ -117,35 +175,43 @@ export function usePaneGlide(
   open: boolean,
   expanded: boolean,
   openWidth: number,
-): { mounted: boolean; content: number | null; gliding: boolean } {
-  const [glide, setGlide] = useState<{ held: number | null } | null>(null);
+): { mounted: boolean; content: number | null; gliding: boolean; tween: PaneGlideTween | null } {
+  const [glide, setGlide] = useState<{ held: number | null; tween: PaneGlideTween | null } | null>(null);
   const previous = useRef({ open, expanded, openWidth });
 
-  useEffect(() => {
+  // A layout effect, not a passive one: arming in the flip's own commit means
+  // the first painted frame of the glide already carries the held (or
+  // tweened) content width — arming a frame late painted the new endpoint
+  // for one frame and then yanked it back.
+  useLayoutEffect(() => {
     const was = previous.current;
     previous.current = { open, expanded, openWidth };
     if (was.open === open && was.expanded === expanded) {
       // A drag (or a window resize): retarget with no glide and no hold.
       return;
     }
-    // Takeover tracks; an open/close holds the wider endpoint.
-    const held =
-      was.expanded === expanded
-        ? Math.max(was.open ? was.openWidth : 0, open ? openWidth : 0)
-        : null;
-    setGlide({ held });
+    // Takeover tracks; an open/close — including closing out of takeover,
+    // which resets `expanded` — holds the wider endpoint
+    // (`toggle_right_pane` never arms the content tween).
+    const takeoverFlip = was.open && open && was.expanded !== expanded;
+    const held = takeoverFlip ? null : Math.max(was.open ? was.openWidth : 0, open ? openWidth : 0);
+    const tween = takeoverFlip
+      ? { from: was.open ? was.openWidth : 0, to: open ? openWidth : 0 }
+      : null;
+    setGlide({ held, tween });
     const timer = window.setTimeout(() => setGlide(null), RESIZE_MS);
     return () => window.clearTimeout(timer);
   }, [open, expanded, openWidth]);
 
   if (glide === null) {
-    return { mounted: open, content: openWidth, gliding: false };
+    return { mounted: open, content: openWidth, gliding: false, tween: null };
   }
   // Mid-glide the surface is mounted whichever way the column is moving.
   return {
     mounted: true,
     content: glide.held === null ? null : Math.max(glide.held, openWidth),
     gliding: true,
+    tween: glide.tween,
   };
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent } from "react";
 import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
@@ -682,12 +682,17 @@ export function AppShell() {
  * Only `expanded` triggers it — the desktop arms this tween in
  * `toggle_right_pane_expand` (both directions) and, for a plain open/close,
  * only when leaving takeover.
+ *
+ * A layout effect, not a passive one: the class it flips
+ * (`shell-pane-gliding`) must ride the SAME commit as the takeover flip, or
+ * the titlebar's row-left jump would spend a frame inside its padding-left
+ * transition before the suppression below lands.
  */
 function useTakeoverStableWidth(takeover: boolean, conversation: number): number | null {
   const [stable, setStable] = useState<number | null>(null);
   const previous = useRef({ takeover, conversation });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = previous.current;
     previous.current = { takeover, conversation };
     if (was.takeover === takeover) {

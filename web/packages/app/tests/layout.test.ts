@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { motion } from "@roboco/theme";
 import {
   CHAT_PANEL_MIN,
   PANE_RESIZE_HITBOX_HALF_WIDTH,
@@ -15,6 +16,8 @@ import {
   clusterClearance,
   clusterButtonsStart,
   conversationWidth,
+  cubicBezierEval,
+  evalWidthTween,
   resizeBounceOffset,
   resizeDragSample,
   rightPaneMaxWidth,
@@ -302,6 +305,73 @@ describe("right_panel_content_keeps_the_larger_width_only_during_transition", ()
     // Steady state: the target itself.
     expect(stablePanelContentWidth(520, null)).toBe(520);
     expect(stablePanelContentWidth(0, [520, 0])).toBe(520);
+  });
+});
+
+describe("cubic_bezier_eval", () => {
+  it("evaluates the resize curve (ease-out) at the known points", () => {
+    const easeOut: [number, number, number, number] = [0, 0, 0.58, 1];
+    expect(cubicBezierEval(easeOut, 0)).toBe(0);
+    expect(cubicBezierEval(easeOut, 1)).toBe(1);
+    // CSS ease-out at half progress ≈ 0.685 — the UnitBezier solve's
+    // published value for cubic-bezier(0, 0, 0.58, 1).
+    expect(cubicBezierEval(easeOut, 0.5)).toBeCloseTo(0.685, 3);
+    // Endpoints fixed at (0,0)/(1,1): outside inputs clamp.
+    expect(cubicBezierEval(easeOut, -0.5)).toBe(0);
+    expect(cubicBezierEval(easeOut, 1.5)).toBe(1);
+  });
+
+  it("is the identity when x and y share one curve", () => {
+    // Same control points on both axes: y(t(x)) = x for every input.
+    const identity: [number, number, number, number] = [0, 0, 1, 1];
+    for (const x of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+      expect(cubicBezierEval(identity, x)).toBeCloseTo(x, 6);
+    }
+  });
+
+  it("is monotonic non-decreasing along the resize curve", () => {
+    const easeOut: [number, number, number, number] = [0, 0, 0.58, 1];
+    let previous = 0;
+    for (let step = 1; step <= 100; step += 1) {
+      const value = cubicBezierEval(easeOut, step / 100);
+      expect(value).toBeGreaterThanOrEqual(previous);
+      previous = value;
+    }
+  });
+});
+
+describe("eval_tween_widths", () => {
+  it("rides the catalog's resize spec — 200ms on the ease-out curve", () => {
+    const spec = motion.specs.find((entry) => entry.name === "resize");
+    expect(spec).toBeDefined();
+    expect(spec!.durationMs).toBe(200);
+    expect(motion.curves[spec!.curve]).toEqual([0, 0, 0.58, 1]);
+  });
+
+  it("starts at `from`, ends exactly at `to`, never overshoots", () => {
+    expect(evalWidthTween(520, 1064, 0)).toBe(520);
+    expect(evalWidthTween(520, 1064, 200)).toBe(1064);
+    // Stale (past the duration): exactly the target — the settled inline
+    // style the rAF loop hands over to is the same value.
+    expect(evalWidthTween(520, 1064, 10_000)).toBe(1064);
+    expect(evalWidthTween(520, 0, 200)).toBe(0);
+    expect(evalWidthTween(520, 0, 0)).toBe(520);
+  });
+
+  it("lerps on the eased progress, monotonic toward the target", () => {
+    const spec = motion.specs.find((entry) => entry.name === "resize")!;
+    const curve = motion.curves[spec.curve]!;
+    expect(evalWidthTween(520, 1064, 50)).toBeCloseTo(
+      520 + (1064 - 520) * cubicBezierEval(curve, 0.25),
+      5,
+    );
+    let previous = 520;
+    for (let elapsed = 0; elapsed <= 200; elapsed += 10) {
+      const value = evalWidthTween(520, 1064, elapsed);
+      expect(value).toBeGreaterThanOrEqual(previous);
+      expect(value).toBeLessThanOrEqual(1064);
+      previous = value;
+    }
   });
 });
 

@@ -35,8 +35,13 @@ export type AppearanceMode = "system" | "light" | "dark";
 /** Accent selection: the variant's authored accent, or one of the 7 presets. */
 export type AccentSelection = "themeDefault" | AccentPresetId;
 
-/** Surface policy resolved against the variant's recommended treatment. */
-export type SurfacePreference = "themeDefault" | "frosted" | "opaque";
+/**
+ * Surface policy. Deliberate web deviation from the desktop (which offers
+ * Theme default / Frosted / Opaque, settings/appearance.rs:522-527): the
+ * frosted choice is removed by product decision and the resolution is forced
+ * opaque — see `resolveSurfaceTreatment`.
+ */
+export type SurfacePreference = "themeDefault" | "opaque";
 
 export interface AppearancePreferences {
   readonly mode: AppearanceMode;
@@ -58,7 +63,7 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
 };
 
 export const APPEARANCE_MODES: readonly AppearanceMode[] = ["system", "light", "dark"];
-export const SURFACE_PREFERENCES: readonly SurfacePreference[] = ["themeDefault", "frosted", "opaque"];
+export const SURFACE_PREFERENCES: readonly SurfacePreference[] = ["themeDefault", "opaque"];
 
 /** The user's choice combined with the OS state (appearance.rs `resolve`). */
 export function resolveAppearance(mode: AppearanceMode, system: Appearance): Appearance {
@@ -78,42 +83,15 @@ export function resolveVariantId(preferences: AppearancePreferences, appearance:
 }
 
 /**
- * Does this browser composite `backdrop-filter`?
- *
- * The browser analog of the desktop's platform check (`GLASS_ALPHA`,
- * crates/proto/src/layout.rs:71): macOS and Windows guarantee compositor blur
- * and get frosted chrome, Linux does not and stays opaque, because a merely
- * translucent window would expose whatever is behind it unblurred. A browser
- * without `backdrop-filter` is in exactly Linux's position.
+ * The surface treatment in effect. A product decision (2026-09-17): the web
+ * never frosts — the treatment is forced opaque regardless of the stored
+ * preference or the theme author's recommendation (both default themes
+ * recommend frosted, so honoring "themeDefault" would leave the app frosted
+ * anyway). A deliberate deviation from the desktop's
+ * `SurfacePreference::resolve`; the one seam a future flip restores.
  */
-export function supportsBackdropFilter(): boolean {
-  return (
-    typeof CSS !== "undefined" &&
-    (CSS.supports("backdrop-filter", "blur(1px)") ||
-      CSS.supports("-webkit-backdrop-filter", "blur(1px)"))
-  );
-}
-
-/**
- * The surface treatment in effect: the explicit choice, or the theme
- * author's recommendation when "themeDefault" (SurfacePreference::resolve).
- *
- * Capability wins over both. Where the blur cannot be composited there is no
- * frost to be had, only a see-through shell, so the treatment is forced opaque
- * ahead of the preference — the desktop's Linux branch, one layer up.
- */
-export function resolveSurfaceTreatment(surface: SurfacePreference, variant: ThemeVariant): SurfaceTreatment {
-  if (!supportsBackdropFilter()) {
-    return "opaque";
-  }
-  switch (surface) {
-    case "frosted":
-      return "frosted";
-    case "opaque":
-      return "opaque";
-    default:
-      return variant.recommendedSurfaceTreatment;
-  }
+export function resolveSurfaceTreatment(): SurfaceTreatment {
+  return "opaque";
 }
 
 /**
@@ -142,8 +120,6 @@ export function surfaceLabel(surface: SurfacePreference): string {
   switch (surface) {
     case "themeDefault":
       return "Theme default";
-    case "frosted":
-      return "Frosted";
     case "opaque":
       return "Opaque";
   }
@@ -163,8 +139,6 @@ export function surfaceHelper(surface: SurfacePreference, resolved: SurfaceTreat
   switch (surface) {
     case "themeDefault":
       return `Uses this theme's ${resolved} default.`;
-    case "frosted":
-      return "Theme-colored glass where supported.";
     case "opaque":
       return "Solid surfaces for every theme.";
   }

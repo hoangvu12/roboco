@@ -209,7 +209,9 @@ describe("migration", () => {
     expect(settings.appearance).toBe("dark");
     expect(settings.themeSelection).toEqual({ light: "github-light", dark: "nord" });
     expect(settings.accent).toBe("pink");
-    expect(settings.surface).toBe("frosted");
+    // Frosted was removed by product decision; a stored one heals to the
+    // explicit opaque choice, not back to the theme default.
+    expect(settings.surface).toBe("opaque");
 
     // Anything the legacy keys never covered takes its own default.
     expect(settings.terminalHeight).toBe(280);

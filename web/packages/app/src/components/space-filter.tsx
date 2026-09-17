@@ -173,7 +173,11 @@ export function SpaceFilter() {
     return anchorBelow(rect, size);
   };
 
-  if (snapshot === null || !snapshot.spaces.loaded || spaces.length === 0) {
+  // The trigger renders unconditionally, empty engine included (shell.rs:4935
+  // gates `render_spaces_filter` on nothing): with zero spaces the label falls
+  // back to "All projects" and the menu degenerates to ["All projects",
+  // "New project…"], exactly the desktop's empty-engine rows.
+  if (snapshot === null || !snapshot.spaces.loaded) {
     return null;
   }
 

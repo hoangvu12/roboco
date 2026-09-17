@@ -116,7 +116,7 @@ export type GitHistoryAuthorDisplay = "avatar" | "name";
 export type GitHistoryColumn = "author" | "date" | "sha";
 export type UiFontFamily = "geist" | "geistMono" | "system" | `installed:${string}`;
 export type UiAccentSelection = "themeDefault" | AccentPresetId;
-export type UiSurfacePreference = "themeDefault" | "frosted" | "opaque";
+export type UiSurfacePreference = "themeDefault" | "opaque";
 export type NewThreadBackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanlines";
 
 /**
@@ -520,7 +520,11 @@ export function healUiSettings(value: unknown): UiSettings {
     ),
     filesShowAll: bool(raw.filesShowAll, false),
     accent: oneOf(raw.accent, ACCENT_IDS, "themeDefault"),
-    surface: oneOf(raw.surface, ["themeDefault", "frosted", "opaque"], "themeDefault"),
+    // Frosted is no longer selectable (product decision, forced opaque on
+    // the web); a stored one heals to the explicit opaque choice, not back
+    // to the theme default the user deliberately moved off of.
+    surface:
+      raw.surface === "frosted" ? "opaque" : oneOf(raw.surface, ["themeDefault", "opaque"], "themeDefault"),
     newThreadComposerBackground: healBackground(raw.newThreadComposerBackground),
     newThreadBackgroundEffect: oneOf(
       raw.newThreadBackgroundEffect,

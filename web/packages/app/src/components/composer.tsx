@@ -13,6 +13,7 @@ import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
 import { formatToMime, type StagedAttachment } from "../lib/attachments";
 import { seedAttachment } from "../state/attachment-cache";
+import { composerFlip, resizeSettling } from "../lib/composer-flip";
 import { ComposerPickers } from "./composer-pickers";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 
@@ -29,10 +30,25 @@ import { AttachmentStrip } from "./attachments/attachment-strip";
  * is mirrored by the chat-page's `min-height: 0` on the transcript column).
  */
 
-/** The flip-morph boundaries (composer.rs compact/expanded). */
-const COMPACT_HEIGHT_PX = 49;
-const EXPANDED_MIN_PX = 124;
-const EXPANDED_MAX_PX = 308;
+/**
+ * The flip-morph boundaries (composer.rs). The textarea BOX clamps are the
+ * CSS clamps (`min-height: 47px; max-height: 260px`): TEXTAREA_MIN/MAX
+ * (composer.rs:56-61). The 124-308 pill totals come from the box plus the
+ * 46px actions row and the 2px hairline naturally — never clamp the box by
+ * them.
+ */
+const TEXTAREA_MIN_PX = 76;
+const TEXTAREA_MAX_PX = 260;
+/** The compact one-line box: 22.75px text inside `py-3` (24), rounded. */
+const COMPACT_INPUT_HEIGHT_PX = 47;
+/**
+ * The compact wrap reservation: `pl 16` + the 200px `padding-right` the
+ * compact mode reserves for the absolutely-positioned actions row. The
+ * capacity — the compact-mode wrap width the flip measures against — is
+ * `textarea.offsetWidth - COMPACT_PAD_H`, a number the flip cannot change
+ * (the pill's outer width is mode-independent; only the paddings differ).
+ */
+const COMPACT_PAD_H = 216;
 
 const NAVIGATION_MS_THRESHOLD = 250;
 
@@ -61,6 +77,16 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
   // this only maps keys to intents).
   const sendBehavior = useUiSettings().composerSendBehavior;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The text-width mirror: a hidden `white-space: pre` twin whose offsetWidth
+  // is the unwrapped width of the widest line — the desktop's
+  // `measured_text_width` (composer.rs:1996). Measuring the TEXT WIDTH (never
+  // the textarea's post-flip scrollHeight, which differs per mode and would
+  // feed back into the decision) is what makes the flip layout-stable.
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  // The resize-settle bookkeeping (`width_changed_at` / `last_seen_width`,
+  // composer.rs:7240-7246): a capacity move past the epsilon arms a 150ms
+  // settle window during which an expanded composer will not collapse.
+  const resizeRef = useRef({ capacity: 0, changedAtMs: null as number | null });
   // The paperclip lives in the actions cluster (composer.rs), so the strip
   // hands its picker up here rather than drawing its own attach button.
   const attachRef = useRef<(() => void) | null>(null);
@@ -89,6 +115,10 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
   );
 
   const [text, setText] = useState("");
+  // The flip decision reads the live text through a ref (its callback is
+  // identity-stable so the ResizeObserver below never re-binds).
+  const textRef = useRef(text);
+  textRef.current = text;
   const [draft, setDraft] = useState<DraftConfig>(() =>
     draftFromChat(chat, harnesses.rows, catalog.getModels(chat.config?.harness ?? "claude-code").rows),
   );
@@ -133,7 +163,6 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     lastEditingIdRef.current = id;
     if (editingMessage !== null && editingMessage !== undefined) {
       setText(editingMessage.text);
-      setFlipExpanded(editingMessage.text.length > 0);
     }
   }, [editingMessage]);
 
@@ -230,22 +259,69 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     });
   }, [models.rows]);
 
-  // Auto-resize the textarea between compact and expanded based on content
-  // height, with a small hysteresis to avoid flip-flopping near the boundary.
+  // The compact↔expanded flip decision — `composer_flip` (composer.rs:107-144)
+  // ported whole: the widest line's unwrapped width vs the compact wrap
+  // capacity, hysteresis, the newline guard, and the resize-settle window.
+  // Both inputs are mode-independent (the mirror's box and the pill's outer
+  // width do not change with the flip), so the decision cannot feed back on
+  // itself — the desktop's "at most one flip per layout pass" epoch guard is
+  // satisfied by construction. React bails out when the value is unchanged,
+  // so re-running this on every width change costs nothing when nothing
+  // flips.
+  const evaluateFlip = useCallback(() => {
+    const el = textareaRef.current;
+    const mirror = measureRef.current;
+    if (el === null || mirror === null) {
+      return;
+    }
+    const capacity = el.offsetWidth - COMPACT_PAD_H;
+    const textWidth = mirror.offsetWidth;
+    const { resizing, changedAtMs } = resizeSettling(
+      resizeRef.current.changedAtMs,
+      performance.now(),
+      resizeRef.current.capacity,
+      capacity,
+    );
+    resizeRef.current = { capacity, changedAtMs };
+    setFlipExpanded((current) =>
+      composerFlip(current, textWidth, capacity, textRef.current.includes("\n"), resizing),
+    );
+  }, []);
+
+  // The single height writer (composer.rs's auto-grow, box clamps 76-260):
+  // compact pins the one-line box, expanded clamps the measured content.
+  // No other inline height exists — a competing render-time writer made the
+  // render phase disagree with the post-commit measurement.
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (el === null) {
       return;
     }
     el.style.height = "auto";
-    const target = Math.min(Math.max(el.scrollHeight, COMPACT_HEIGHT_PX), EXPANDED_MAX_PX);
-    const wantExpanded = target > COMPACT_HEIGHT_PX + 1;
-    if (wantExpanded !== flipExpanded) {
-      setFlipExpanded(wantExpanded);
-    }
+    const target = flipExpanded
+      ? Math.min(Math.max(el.scrollHeight, TEXTAREA_MIN_PX), TEXTAREA_MAX_PX)
+      : COMPACT_INPUT_HEIGHT_PX;
     el.style.height = `${target}px`;
-    el.style.overflowY = el.scrollHeight > EXPANDED_MAX_PX ? "auto" : "hidden";
+    el.style.overflowY = flipExpanded && el.scrollHeight > TEXTAREA_MAX_PX ? "auto" : "hidden";
   }, [text, flipExpanded]);
+
+  // The decision runs on every text change (the same commit as the height
+  // write) and — the desktop re-evaluates per layout pass — whenever the
+  // textarea's width moves, which on the web only a conversation-column
+  // resize does. A drag never changes the textarea's width mid-keystroke.
+  useLayoutEffect(() => {
+    evaluateFlip();
+  }, [text, evaluateFlip]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el === null) {
+      return;
+    }
+    const observer = new ResizeObserver(() => evaluateFlip());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [evaluateFlip]);
 
   const applyDraft = useCallback((next: DraftConfig) => {
     setDraft(next);
@@ -532,8 +608,6 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     sidebarNotice.set(message);
   }, []);
 
-  const heightPx = flipExpanded ? Math.max(EXPANDED_MIN_PX, textareaRef.current?.scrollHeight ?? EXPANDED_MIN_PX) : COMPACT_HEIGHT_PX;
-
   return (
     <div
       className={`composer ${flipExpanded ? "composer-expanded" : "composer-compact"} ${isWorking ? "composer-working" : ""} ${editingMessage !== null && editingMessage !== undefined ? "composer-editing" : ""}`}
@@ -562,8 +636,10 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
           autoComplete="off"
           disabled={!composerReady}
           aria-label={editingMessage !== null && editingMessage !== undefined ? "Edit queued message" : "Compose message"}
-          style={{ height: `${heightPx}px` }}
         />
+        <div ref={measureRef} className="composer-input-measure" aria-hidden="true">
+          {text}
+        </div>
       </div>
       {/*
         The actions row — composer.rs `render`'s cluster: the pickers and the

@@ -9,46 +9,10 @@ import {
   resolveSurfaceTreatment,
   resolveVariantId,
   SURFACE_PREFERENCES,
-  supportsBackdropFilter,
   surfaceHelper,
   variantChoices,
 } from "../src/lib/appearance-store";
 import type { StorageLike } from "../src/lib/engine-store";
-
-type CssGlobal = { supports(property: string, value: string): boolean };
-
-/**
- * Run `body` with a stubbed `CSS.supports`. The test environment is `node`,
- * which has no CSS API at all, so every case that depends on the browser's
- * `backdrop-filter` capability states it explicitly. `supports` of `null`
- * removes the global entirely (the SSR/worker case).
- */
-function withCssSupports(
-  supports: ((property: string, value: string) => boolean) | null,
-  body: () => void,
-): void {
-  const host = globalThis as { CSS?: CssGlobal };
-  const previous = host.CSS;
-  if (supports === null) {
-    delete host.CSS;
-  } else {
-    host.CSS = { supports };
-  }
-  try {
-    body();
-  } finally {
-    if (previous === undefined) {
-      delete host.CSS;
-    } else {
-      host.CSS = previous;
-    }
-  }
-}
-
-/** `withCssSupports` for the common "everything is / nothing is" cases. */
-function withBackdropFilter(supported: boolean, body: () => void): void {
-  withCssSupports(() => supported, body);
-}
 
 function memoryStorage(): StorageLike & { dump(): Map<string, string> } {
   const map = new Map<string, string>();
@@ -76,14 +40,14 @@ describe("AppearanceStore", () => {
     store.setVariant("light", "github-light");
     store.setVariant("dark", "nord");
     store.setAccent("pink");
-    store.setSurface("frosted");
+    store.setSurface("opaque");
     const reloaded = new AppearanceStore({ storage });
     expect(reloaded.getSnapshot()).toEqual({
       mode: "light",
       lightVariant: "github-light",
       darkVariant: "nord",
       accent: "pink",
-      surface: "frosted",
+      surface: "opaque",
     });
   });
 
@@ -129,7 +93,7 @@ describe("AppearanceStore", () => {
         lightVariant: "github-light",
         darkVariant: "nord",
         accent: "pink",
-        surface: "frosted",
+        surface: "opaque",
       }),
     );
     expect(new AppearanceStore({ storage }).getSnapshot()).toEqual({
@@ -137,9 +101,20 @@ describe("AppearanceStore", () => {
       lightVariant: "github-light",
       darkVariant: "nord",
       accent: "pink",
-      surface: "frosted",
+      surface: "opaque",
     });
     expect(storage.getItem("roboco.ui-settings.v1")).not.toBe(null);
+  });
+
+  it("heals a persisted frosted choice to the explicit opaque one", () => {
+    // Frosted was removed by product decision; a stored one must not fall
+    // back to the theme default the user had deliberately moved off of.
+    const storage = memoryStorage();
+    storage.setItem(
+      "roboco.ui-settings.v1",
+      JSON.stringify({ ...DEFAULT_APPEARANCE, surface: "frosted" }),
+    );
+    expect(new AppearanceStore({ storage }).getSnapshot().surface).toBe("opaque");
   });
 
   it("falls back per-field when persisted values are unknown", () => {
@@ -173,51 +148,21 @@ describe("appearance resolution", () => {
     expect(resolveVariantId(preferences, "dark")).toBe("dracula");
   });
 
-  it("resolves the surface policy against the theme's recommendation", () => {
-    const frosted = findVariant("roboco-dark"); // recommended: frosted
-    const opaque = findVariant("nord"); // recommended: opaque
-    expect(frosted).toBeDefined();
-    expect(opaque).toBeDefined();
-    withBackdropFilter(true, () => {
-      expect(resolveSurfaceTreatment("themeDefault", frosted!)).toBe("frosted");
-      expect(resolveSurfaceTreatment("themeDefault", opaque!)).toBe("opaque");
-      expect(resolveSurfaceTreatment("frosted", opaque!)).toBe("frosted");
-      expect(resolveSurfaceTreatment("opaque", frosted!)).toBe("opaque");
-    });
-  });
-
   /*
-   * The browser analog of the desktop's platform branch (Linux gets opaque
-   * chrome because compositor blur is not guaranteed): without
-   * `backdrop-filter` there is no frost to be had, only a see-through shell.
+   * Product decision (2026-09-17): the web never frosts — the resolution is
+   * forced opaque regardless of the stored preference or the variant's
+   * recommendation (both default themes recommend frosted). A deliberate
+   * deviation from the desktop's SurfacePreference::resolve.
    */
-  it("forces opaque surfaces when the browser cannot composite backdrop-filter", () => {
-    const frosted = findVariant("roboco-dark")!;
-    const opaque = findVariant("nord")!;
-    withBackdropFilter(false, () => {
-      expect(supportsBackdropFilter()).toBe(false);
-      for (const surface of SURFACE_PREFERENCES) {
-        expect(resolveSurfaceTreatment(surface, frosted)).toBe("opaque");
-        expect(resolveSurfaceTreatment(surface, opaque)).toBe("opaque");
-      }
-    });
-  });
-
-  it("honors the -webkit- prefixed capability alone", () => {
-    const frosted = findVariant("roboco-dark")!;
-    withCssSupports(
-      (property) => property === "-webkit-backdrop-filter",
-      () => {
-        expect(supportsBackdropFilter()).toBe(true);
-        expect(resolveSurfaceTreatment("themeDefault", frosted)).toBe("frosted");
-      },
-    );
-  });
-
-  it("treats a CSS-less environment as unsupported", () => {
-    withCssSupports(null, () => {
-      expect(supportsBackdropFilter()).toBe(false);
-    });
+  it("forces opaque surfaces for every preference, recommendation notwithstanding", () => {
+    const frosted = findVariant("roboco-dark"); // recommended: frosted
+    expect(frosted).toBeDefined();
+    expect(frosted!.recommendedSurfaceTreatment).toBe("frosted");
+    expect(SURFACE_PREFERENCES).toEqual(["themeDefault", "opaque"]);
+    for (const surface of SURFACE_PREFERENCES) {
+      expect(resolveSurfaceTreatment()).toBe("opaque");
+      expect(surface).not.toBe("frosted");
+    }
   });
 });
 
@@ -239,9 +184,8 @@ describe("helper copy and swatches", () => {
   });
 
   it("mirrors the desktop's surface helper text", () => {
-    expect(surfaceHelper("themeDefault", "frosted")).toBe("Uses this theme's frosted default.");
-    expect(surfaceHelper("frosted", "opaque")).toBe("Theme-colored glass where supported.");
-    expect(surfaceHelper("opaque", "frosted")).toBe("Solid surfaces for every theme.");
+    expect(surfaceHelper("themeDefault", "opaque")).toBe("Uses this theme's opaque default.");
+    expect(surfaceHelper("opaque", "opaque")).toBe("Solid surfaces for every theme.");
   });
 
   it("picks the swatch color for the resolved appearance", () => {

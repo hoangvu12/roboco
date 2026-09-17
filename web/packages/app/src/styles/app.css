@@ -824,12 +824,6 @@ a:focus-visible,
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
-html[data-surface="frosted"] .right-plus-menu {
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  backdrop-filter: blur(44px);
-  -webkit-backdrop-filter: blur(44px);
-}
-
 /* `popover::menu_row`: gap 10, padding 8/6, radius 8. */
 .right-plus-menu-row {
   display: flex;
@@ -933,10 +927,6 @@ html[data-surface="frosted"] .right-plus-menu {
   border-top: 1px solid var(--rb-border);
   border-bottom: 1px solid var(--rb-border);
   background: var(--rb-card);
-}
-
-html[data-surface="frosted"] .surface-toolbar {
-  background: color-mix(in srgb, var(--rb-card) 26%, transparent);
 }
 
 /* `surface_chrome::input`: the shared field treatment tickets 22/24/26 fill. */
@@ -1050,13 +1040,7 @@ html[data-surface="frosted"] .surface-toolbar {
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--rb-border);
-  /* Opaque by default; frosted thins to 40% bg (`theme.is_glass()` branch,
-     gap P16). */
   background: var(--rb-bg);
-}
-
-html[data-surface="frosted"] .right-pane-inner {
-  background: color-mix(in srgb, var(--rb-bg) 40%, transparent);
 }
 
 /*
@@ -1228,19 +1212,27 @@ html[data-surface="frosted"] .right-pane-inner {
   min-height: 0;
   --rb-sidebar-fade-top: 0;
   --rb-sidebar-fade-bottom: 0;
-  /* edge_fade.rs: alpha = (distance / band)², band = SIDEBAR_GLASS_FADE_BAND 24. */
+  /*
+   * edge_fade.rs: alpha = (distance / band)², band = SIDEBAR_GLASS_FADE_BAND
+   * 24. Each gated stop blends between the OPAQUE rest value and the fade
+   * ramp — `1 − gate × (1 − ramp)`, the complement of the naive
+   * `gate × ramp` — because a CSS mask paints at the gradient's alpha and
+   * `edge_fade.rs:184-202` paints fully opaque when no edge is active: the
+   * gate removes the FADE, never the content. Gate 1 lands exactly on the
+   * quadratic ramp (0, 1/16, 1/4, 9/16, 1).
+   */
   mask-image: linear-gradient(
     to bottom,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0)) 0px,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.0625)) 6px,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.25)) 12px,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 0.5625)) 18px,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-top) * 1)) 24px,
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 1)) calc(100% - 24px),
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.5625)) calc(100% - 18px),
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.25)) calc(100% - 12px),
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0.0625)) calc(100% - 6px),
-    rgba(0, 0, 0, calc(var(--rb-sidebar-fade-bottom) * 0)) 100%
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-top) * 1)) 0px,
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-top) * 0.9375)) 6px,
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-top) * 0.75)) 12px,
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-top) * 0.4375)) 18px,
+    rgba(0, 0, 0, 1) 24px,
+    rgba(0, 0, 0, 1) calc(100% - 24px),
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-bottom) * 0.4375)) calc(100% - 18px),
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-bottom) * 0.75)) calc(100% - 12px),
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-bottom) * 0.9375)) calc(100% - 6px),
+    rgba(0, 0, 0, calc(1 - var(--rb-sidebar-fade-bottom) * 1)) 100%
   );
 }
 
@@ -1807,6 +1799,18 @@ html[data-surface="frosted"] .right-pane-inner {
   overflow: hidden;
 }
 
+/*
+ * A takeover flip's row-left jump SNAPS: `row_left` (tabs.rs:206-221, applied
+ * as `pl(row_left)` at tabs.rs:305) is recomputed per render and is not itself
+ * tweened — it glides only when the sidebar tweens, which on the web is the
+ * `.titlebar`'s padding-left transition at the top of this file. Suppressed
+ * only while a takeover glide is in flight (`shell-pane-gliding` is armed by
+ * takeover flips alone), so sidebar-collapse transitions keep animating.
+ */
+.shell-pane-gliding .titlebar {
+  transition: none;
+}
+
 .conn {
   display: inline-flex;
   align-items: center;
@@ -1963,6 +1967,39 @@ html[data-surface="frosted"] .right-pane-inner {
 .gate-pair-link {
   font-size: 13px;
   color: var(--rb-accent);
+}
+
+/*
+ * The root error boundary's fallback (web-only): a centered column over the
+ * plain background — the gate tier's geometry without the grid, since the
+ * tree that owns the backdrop may be the thing that failed.
+ */
+.app-error {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rb-space-md);
+  background: var(--rb-bg);
+  color: var(--rb-text);
+}
+
+.app-error-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.app-error-detail {
+  margin: 0;
+  max-width: 480px;
+  padding: 0 var(--rb-space-md);
+  font-size: 13px;
+  color: var(--rb-text-muted);
+  text-align: center;
+  overflow-wrap: break-word;
 }
 
 /*
@@ -2510,6 +2547,24 @@ html[data-surface="frosted"] .right-pane-inner {
 
 .composer-expanded .composer-input {
   padding: 16px 16px 4px;
+}
+
+/*
+ * The flip decision's text-width mirror: `white-space: pre` +
+ * `width: max-content` make its offsetWidth the unwrapped width of the
+ * widest line — the desktop's `measured_text_width` (max_line_width,
+ * composer.rs:1996). The font stack MUST stay identical to
+ * `.composer-input` above so the number matches what the textarea wraps at.
+ */
+.composer-input-measure {
+  position: absolute;
+  visibility: hidden;
+  width: max-content;
+  white-space: pre;
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 22.75px;
+  pointer-events: none;
 }
 
 .composer-input:disabled {
@@ -6845,18 +6900,6 @@ button.files-row-active:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-/* Frosted surface treatment: floating cards thin to glass over a blur. */
-html[data-surface="frosted"] .settings-card {
-  background: color-mix(in srgb, var(--rb-card) calc(var(--rb-glass-card-alpha) * 100%), transparent);
-}
-
-html[data-surface="frosted"] .drawer,
-html[data-surface="frosted"] .modal-card {
-  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
 }
 
 @media (max-width: 768px) {

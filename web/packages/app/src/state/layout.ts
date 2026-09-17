@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { motion } from "@roboco/theme";
 import {
   CHAT_PANEL_MIN,
   SIDEBAR_DEFAULT,
@@ -83,6 +84,98 @@ export function rightPanelContentWidth(
   takeover: number | null,
 ): number {
   return takeover ?? stablePanelContentWidth(target, transition);
+}
+
+// ---------------------------------------------------------------------------
+// Width tweens — `shell.rs::eval_tween` (3753-3767) over `motion.rs`'s curves
+// ---------------------------------------------------------------------------
+
+/** The resize spec off the motion catalog: 200ms on the `easeOut` curve. */
+const RESIZE_SPEC = motion.specs.find((spec) => spec.name === "resize") ?? {
+  name: "resize",
+  durationMs: 200,
+  delayMs: 0,
+  curve: "easeOut",
+};
+const RESIZE_CURVE = motion.curves[RESIZE_SPEC.curve] ?? ([0, 0, 0.58, 1] as const);
+
+/**
+ * `motion.rs::CubicBezier::eval` (125-205), ported: a CSS
+ * `cubic-bezier(x1, y1, x2, y2)` timing function — Newton-Raphson on x(t)
+ * with a bisection fallback, output clamped hard (f32 rounding can push
+ * `sample_y` a hair past 1).
+ */
+export function cubicBezierEval(
+  curve: readonly [number, number, number, number],
+  x: number,
+): number {
+  const [x1, y1, x2, y2] = curve;
+  const coefficients = (a: number, b: number): readonly [number, number, number] => {
+    const c = 3 * a;
+    const bb = 3 * (b - a) - c;
+    const aa = 1 - c - bb;
+    return [aa, bb, c];
+  };
+  const sampleX = (t: number): number => {
+    const [a, b, c] = coefficients(x1, x2);
+    return ((a * t + b) * t + c) * t;
+  };
+  const sampleY = (t: number): number => {
+    const [a, b, c] = coefficients(y1, y2);
+    return ((a * t + b) * t + c) * t;
+  };
+  const sampleXDerivative = (t: number): number => {
+    const [a, b, c] = coefficients(x1, x2);
+    return (3 * a * t + 2 * b) * t + c;
+  };
+  const solveTForX = (x: number): number => {
+    let t = x;
+    for (let step = 0; step < 8; step += 1) {
+      const err = sampleX(t) - x;
+      if (Math.abs(err) < 1e-6) {
+        return t;
+      }
+      const d = sampleXDerivative(t);
+      if (Math.abs(d) < 1e-6) {
+        break;
+      }
+      t -= err / d;
+    }
+    let lo = 0;
+    let hi = 1;
+    for (let step = 0; step < 32; step += 1) {
+      const mid = (lo + hi) / 2;
+      if (sampleX(mid) < x) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return (lo + hi) / 2;
+  };
+  if (x <= 0) {
+    return 0;
+  }
+  if (x >= 1) {
+    return 1;
+  }
+  return Math.min(1, Math.max(0, sampleY(solveTForX(x))));
+}
+
+/**
+ * `shell.rs::eval_tween` (3753-3767) for widths: the eased 200ms lerp from
+ * `from` to `to` on the resize curve. Absent, stale, or past the duration:
+ * exactly `to`. Reduced motion is the caller's branch — the CSS has already
+ * snapped, so the JS writes the endpoint directly.
+ */
+export function evalWidthTween(from: number, to: number, elapsedMs: number): number {
+  const total = RESIZE_SPEC.durationMs;
+  const raw = elapsedMs / total;
+  if (raw >= 1) {
+    return to;
+  }
+  const eased = cubicBezierEval(RESIZE_CURVE, Math.min(Math.max(raw, 0), 1));
+  return from + (to - from) * eased;
 }
 
 // ---------------------------------------------------------------------------

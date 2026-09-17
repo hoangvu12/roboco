@@ -148,6 +148,13 @@ interface FooterChipProps {
   readonly title: string;
   readonly onPointerDown: () => void;
   readonly onClick: () => void;
+  /**
+   * The trigger rect's owner — React 19 passes `ref` as a plain prop. The
+   * chip's popover anchors to this button (`placeAbove`/`placeAboveEnd` read
+   * `chipRef.current.getBoundingClientRect()`), so every caller must hand
+   * its chip ref through; a dead ref falls back to the viewport corner.
+   */
+  readonly ref?: React.Ref<HTMLButtonElement>;
 }
 
 /**
@@ -156,11 +163,12 @@ interface FooterChipProps {
  * The offline device chip overrides its text to `warning @ 0.8`.
  */
 export function FooterChip(props: FooterChipProps) {
-  const { id, icon, label, open, offline, title, onPointerDown, onClick } = props;
+  const { id, icon, label, open, offline, title, onPointerDown, onClick, ref } = props;
   return (
     <button
       type="button"
       id={id}
+      ref={ref}
       {...{ [POPUP_TRIGGER_ATTR]: "" }}
       className={`footer-menu-chip ${open ? "footer-menu-chip-open" : ""} ${
         offline === true ? "footer-menu-chip-offline" : ""
@@ -226,6 +234,7 @@ function DeviceChip({
     <>
       <FooterChip
         id="picker-device"
+        ref={chipRef}
         icon="monitor"
         label={label}
         open={popup.get() !== null}
@@ -370,6 +379,7 @@ function ProjectChip({
     <>
       <FooterChip
         id="picker-project"
+        ref={chipRef}
         icon="folder"
         label={label}
         open={popup.get() !== null}
@@ -553,6 +563,7 @@ function CheckoutChip({
     <>
       <FooterChip
         id="picker-checkout"
+        ref={chipRef}
         icon={checkout === "newWorktree" || pickedRefHasWorktree ? "folderWithFiles" : "folder"}
         label={label}
         open={popup.get() !== null}
@@ -755,6 +766,7 @@ function RefChip({
     <>
       <FooterChip
         id="picker-branch"
+        ref={chipRef}
         icon="gitBranch"
         label={label}
         open={popup.get() !== null}
