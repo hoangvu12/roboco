@@ -10,11 +10,37 @@ import {
   shouldBreakPin,
   shouldRestick,
 } from "../lib/stick-spring";
+import {
+  OWN_SEND_GLIDE_RETAIN,
+  OWN_SEND_GLIDE_SNAP_PX,
+  OWN_SEND_SCROLL_SLACK_PX,
+  OWN_SEND_TOP_INSET_PX,
+  type OwnTurnAnchor,
+} from "../lib/transcript";
 
 /**
- * The DOM driver for the stick-to-bottom spring — the web peer of the
- * desktop transcript's `handle_scroll`/`step_spring`/`engage_pin`
- * (crates/ui/src/transcript.rs):
+ * The scroller's row geometry, read at frame time (the virtualizer keeps the
+ * ref fresh per render): where the own-turn anchor row sits in content space,
+ * and whether the reply's natural content has already filled the reservation.
+ */
+export interface OwnTurnGeometry {
+  readonly anchor: { readonly top: number; readonly ix: number } | null;
+  readonly filled: boolean;
+}
+
+export interface StickControllerOptions {
+  onJumpVisibility: (shown: boolean) => void;
+  /** The runway installed/retired/re-armed — the virtualizer recomputes its floor. */
+  onOwnTurnChange?: () => void;
+  /** User scroll input (not ours) — the surface cancels its hold/anim state. */
+  onUserInput?: () => void;
+  reducedMotion?: MediaQueryList | null;
+}
+
+/**
+ * The DOM driver for the stick-to-bottom spring and the own-turn runway —
+ * the web peer of the desktop transcript's `handle_scroll`/`step_spring`/
+ * `step_own_turn`/`engage_pin` (crates/ui/src/transcript.rs):
  *
  * - Escape: a scroll the controller didn't write that moves AWAY from the
  *   bottom breaks the pin (wheel, touch, keys, scrollbar drag all surface as
@@ -28,6 +54,13 @@ import {
  *   its measured height grows (`shouldAnchorLiveStream`).
  * - Settle grace: 500ms after landing the spring state parks; a layout kick
  *   inside the grace reuses it.
+ * - Own-turn runway: `onOwnSend` installs an anchor whose entry glide eases
+ *   the prompt to `OWN_SEND_TOP_INSET_PX` below the viewport top (row 0
+ *   excepted — its own top gap already carries the titlebar chrome) and whose
+ *   positioned hold re-asserts that spot after every layout. Wheel input
+ *   releases the hold; the reservation itself is the virtualizer's floor and
+ *   survives until the reply fills it, the prompt disappears, or the chat is
+ *   left and revisited.
  */
 export class StickController {
   #el: HTMLElement | null = null;
@@ -40,13 +73,23 @@ export class StickController {
   #kick = false;
   /** Our own scrollTop writes, so the scroll handler can tell ours from the user's. */
   #expected: number | null = null;
+  /** The scrollHeight at the time of our write — a browser clamp from a
+   *  layout shrink (virtualizer estimate drift) is still ours. */
+  #expectedHeight = 0;
   #prevDistance = 0;
   #jumpShown = false;
+  #geometry: (() => OwnTurnGeometry) | null = null;
+  #ownTurn: OwnTurnAnchor | null = null;
+  #ownTurnLastTick: number | null = null;
   readonly #onJumpVisibility: (shown: boolean) => void;
+  readonly #onOwnTurnChange: () => void;
+  readonly #onUserInput: () => void;
   readonly #reduced: MediaQueryList | null;
 
-  constructor(options: { onJumpVisibility: (shown: boolean) => void; reducedMotion?: MediaQueryList | null }) {
+  constructor(options: StickControllerOptions) {
     this.#onJumpVisibility = options.onJumpVisibility;
+    this.#onOwnTurnChange = options.onOwnTurnChange ?? (() => {});
+    this.#onUserInput = options.onUserInput ?? (() => {});
     this.#reduced =
       options.reducedMotion ??
       (typeof globalThis.matchMedia === "function" ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null);
@@ -56,10 +99,22 @@ export class StickController {
     return this.#pinned;
   }
 
+  /** The live own-turn anchor (read-only view; the reservation's floor keys off it). */
+  get ownTurn(): OwnTurnAnchor | null {
+    return this.#ownTurn;
+  }
+
+  /** The runway currently owns the viewport (gliding or holding). */
+  get ownTurnHeld(): boolean {
+    return this.#ownTurn?.held === true;
+  }
+
   attach(el: HTMLElement): void {
     this.detach();
     this.#el = el;
     this.#pinned = true;
+    this.#ownTurn = null;
+    this.#ownTurnLastTick = null;
     this.#prevDistance = this.#distance();
     this.#jumpShown = false;
     el.addEventListener("scroll", this.#onScroll, { passive: true });
@@ -79,6 +134,11 @@ export class StickController {
 
   setStreaming(streaming: boolean): void {
     this.#streaming = streaming;
+  }
+
+  /** The virtualizer's live geometry (anchor row position, reservation fill). */
+  setGeometry(provider: () => OwnTurnGeometry): void {
+    this.#geometry = provider;
   }
 
   /** Content or viewport resized: one observation frame (desktop wake_spring). */
@@ -118,25 +178,126 @@ export class StickController {
     this.#setJumpShown(false);
   }
 
-  /** Re-engage the bottom pin with a glide; long jumps teleport first. */
-  jumpToBottom(): void {
+  /**
+   * Apply a saved viewport after a populated replay (`restore_pending_viewport`):
+   * the concrete scroll position, the released runway (the reservation without
+   * the automatic hold — revisiting must not follow new output to the bottom),
+   * and the saved distance's jump-button state.
+   */
+  restoreViewport(scrollTop: number, ownTurn: OwnTurnAnchor | null, distanceFromBottom: number): void {
+    const el = this.#el;
+    if (el === null) {
+      return;
+    }
+    this.#pinned = false;
+    this.#spring.reset();
+    this.#lastTick = null;
+    this.#settledAt = null;
+    this.#ownTurn = ownTurn;
+    this.#ownTurnLastTick = null;
+    this.#onOwnTurnChange();
+    this.#write(Math.max(0, Math.min(scrollTop, this.#maxScroll())));
+    this.#prevDistance = this.#distance();
+    this.#setJumpShown(jumpVisibility(false, distanceFromBottom));
+  }
+
+  /**
+   * `on_own_send` (transcript.rs:3323): reserve the reply's space below a
+   * locally-sent prompt — EVERY send, not just the first. Replacing a
+   * previous anchor starts a new glide.
+   */
+  onOwnSend(chatId: string, messageId: string): void {
+    const geometry = this.#geometry?.() ?? null;
+    const seenPrompt = geometry?.anchor !== null && geometry?.anchor !== undefined;
+    this.#ownTurn = {
+      chatId,
+      messageId,
+      held: true,
+      positioned: false,
+      seenPrompt,
+    };
+    this.#ownTurnLastTick = null;
+    this.#pinned = false;
+    this.#spring.reset();
+    this.#lastTick = null;
+    this.#settledAt = null;
+    this.#setJumpShown(false);
+    this.#onOwnTurnChange();
+    this.#schedule();
+  }
+
+  /**
+   * `begin_scroll_navigation` (transcript.rs:3062): hand viewport ownership to
+   * explicit navigation (a fold toggle, the selection auto-scroll) before it
+   * moves the list — the own-turn hold stands down, the pin drops.
+   */
+  beginScrollNavigation(): void {
+    this.releaseOwnTurnHold();
+    this.#pinned = false;
+    this.#spring.reset();
+    this.#lastTick = null;
+    this.#settledAt = null;
+    this.#kick = false;
+  }
+
+  /** The hold stands down; the reservation (the virtualizer's floor) stays. */
+  releaseOwnTurnHold(): void {
+    if (this.#ownTurn?.held === true) {
+      this.#ownTurn = { ...this.#ownTurn, held: false };
+      this.#ownTurnLastTick = null;
+    } else {
+      this.#ownTurnLastTick = null;
+    }
+  }
+
+  /**
+   * Re-engage the bottom pin with a glide; long jumps teleport first. With a
+   * live runway, "bottom" IS the held position (the reservation makes
+   * prompt-at-top and pad-bottom the same place): re-arm the hold and glide
+   * back instead of destroying the runway — only navigating away and back
+   * clears it (`jump_to_bottom`, transcript.rs:3748).
+   */
+  jumpToBottom(options: { anchorExpanded?: boolean } = {}): void {
+    if (this.#el === null) {
+      return;
+    }
+    // An expanded prompt can be taller than the viewport; jumping should
+    // reveal the reply below it, so the hold releases and the pin engages.
+    if (this.#ownTurn !== null && options.anchorExpanded === true) {
+      this.releaseOwnTurnHold();
+      this.engagePin();
+      return;
+    }
+    if (this.#ownTurn !== null) {
+      this.#ownTurn = { ...this.#ownTurn, held: true, positioned: false };
+      this.#ownTurnLastTick = null;
+      this.#pinned = false;
+      this.#spring.reset();
+      this.#setJumpShown(false);
+      this.#schedule();
+      return;
+    }
+    this.engagePin();
+  }
+
+  /** `engage_pin` (transcript.rs:3782) — pin + hide the pill + wake the spring. */
+  engagePin(): void {
     const el = this.#el;
     if (el === null) {
       return;
     }
     this.#pinned = true;
     this.#setJumpShown(false);
-    const max = this.#maxScroll();
     if (this.#reduced?.matches) {
-      this.#write(max);
+      this.#write(this.#maxScroll());
       this.#prevDistance = 0;
       return;
     }
     const viewport = el.clientHeight;
-    const distance = max - el.scrollTop;
+    const distance = this.#distance();
     const glideMax = GLIDE_MAX_VIEWPORTS * viewport;
     if (viewport > 0 && distance > glideMax) {
-      this.#write(max - glideMax);
+      this.#write(this.#maxScroll() - glideMax);
     }
     this.kick();
   }
@@ -166,7 +327,13 @@ export class StickController {
       return;
     }
     this.#expected = scrollTop;
+    this.#expectedHeight = el.scrollHeight;
     el.scrollTop = scrollTop;
+  }
+
+  /** `own_send_inset` (transcript.rs:3439): row 0's own gap carries the chrome. */
+  static ownSendInset(anchorIx: number): number {
+    return anchorIx === 0 ? 0 : OWN_SEND_TOP_INSET_PX;
   }
 
   #onScroll = (): void => {
@@ -175,10 +342,52 @@ export class StickController {
       return;
     }
     const distance = this.#distance();
-    const ours = this.#expected !== null && Math.abs(el.scrollTop - this.#expected) <= 1.5;
+    // "Ours" also covers a write the browser CLAMPED: the virtualizer's
+    // estimate drift can shrink the DOM's height under our own write (rows
+    // re-measure, the spacer recomputes), and the clamp's landing position
+    // must never read as user input. Two discriminators: a clamp to the
+    // scroll end, or a content height that shrank since the write — a user
+    // scroll never changes the scrollHeight.
+    const ours =
+      this.#expected !== null &&
+      (Math.abs(el.scrollTop - this.#expected) <= 1.5 ||
+        (this.#expected > el.scrollTop && el.scrollTop >= this.#maxScroll() - 0.5) ||
+        (this.#expected > el.scrollTop && el.scrollHeight < this.#expectedHeight - 0.5));
     this.#expected = null;
     if (ours) {
       this.#prevDistance = distance;
+      return;
+    }
+    this.#onUserInput();
+    if (this.#ownTurn !== null) {
+      // Input owns the viewport immediately: the hold releases (the
+      // reservation stays as scrollable space), the pin drops, and reaching
+      // the end preserves normal tail-follow intent. Re-sticking at a short
+      // turn's actual hold re-arms the runway; an off-screen prompt belongs
+      // to an overflowing reply (transcript.rs:3140-3177).
+      const releasedHeld = this.#ownTurn.held;
+      this.releaseOwnTurnHold();
+      this.#pinned = false;
+      this.#spring.reset();
+      this.#lastTick = null;
+      const previous = this.#prevDistance;
+      this.#prevDistance = distance;
+      this.#pinned = distance <= AT_BOTTOM_PX || shouldRestick(distance, previous);
+      const geometry = this.#geometry?.() ?? null;
+      const anchor = geometry?.anchor ?? null;
+      const atHold =
+        anchor !== null &&
+        anchor.top - el.scrollTop >= StickController.ownSendInset(anchor.ix) - OWN_SEND_SCROLL_SLACK_PX - 2;
+      if (!releasedHeld && atHold && shouldRestick(distance, previous)) {
+        this.#ownTurn = { ...this.#ownTurn, held: true, positioned: false };
+        this.#ownTurnLastTick = null;
+        this.#pinned = false;
+        this.#schedule();
+      }
+      if (this.#pinned) {
+        this.kick();
+      }
+      this.#setJumpShown(jumpVisibility(this.#jumpShown, distance) && this.#ownTurn?.held !== true);
       return;
     }
     if (this.#pinned) {
@@ -218,10 +427,18 @@ export class StickController {
   #tick = (): void => {
     this.#raf = 0;
     const el = this.#el;
-    if (el === null || !this.#pinned) {
-      this.#lastTick = null;
+    if (el === null) {
       return;
     }
+    // The own-turn stepper first: while a runway owns the viewport the spring
+    // has nothing to chase (the reservation makes the hold the bottom).
+    const owned = this.#ownTurn !== null ? this.#stepOwnTurn(el) : false;
+    if (!owned && this.#pinned) {
+      this.#stepSpring(el);
+    }
+  };
+
+  #stepSpring(el: HTMLElement): void {
     const now = performance.now();
     if (this.#settledAt !== null && now - this.#settledAt >= SPRING_SETTLE_GRACE_MS) {
       this.#spring.reset();
@@ -286,5 +503,143 @@ export class StickController {
     if (next > pos || StickSpring.needsFrame(remaining)) {
       this.#schedule();
     }
-  };
+  }
+
+  /**
+   * `step_own_turn` (transcript.rs:3529-3734): advance the prompt glide or
+   * hand a filled reservation to tail-follow. Returns true while the runway
+   * owns the viewport (the spring stands down for the frame).
+   */
+  #stepOwnTurn(el: HTMLElement): boolean {
+    const ownTurn = this.#ownTurn;
+    if (ownTurn === null) {
+      return false;
+    }
+    // Layout moves the bottom too (pad refinement, streaming growth): refresh
+    // the wheel handler's escape baseline every frame so only a WHEEL's own
+    // delta registers as user intent.
+    this.#prevDistance = this.#distance();
+    const geometry = this.#geometry?.() ?? null;
+    const anchor = geometry?.anchor ?? null;
+    if (anchor === null) {
+      // The optimistic echo may arrive on the next state notification — but
+      // once the prompt has appeared, its disappearance is terminal.
+      if (ownTurn.seenPrompt) {
+        this.#retireOwnTurn();
+        return false;
+      }
+      this.#schedule();
+      return true;
+    }
+    if (ownTurn.messageId !== this.#ownTurn?.messageId || !ownTurn.seenPrompt) {
+      this.#ownTurn = { ...ownTurn, seenPrompt: true };
+    }
+    const viewportHeight = el.clientHeight;
+    if (viewportHeight <= 0) {
+      this.#schedule();
+      return true;
+    }
+    if (geometry?.filled === true) {
+      // The reply's natural content fills the reservation: retire the runway
+      // and hand the viewport to the ordinary bottom spring.
+      const held = this.#ownTurn?.held === true;
+      this.#retireOwnTurn();
+      if (held || this.#pinned || this.#distance() <= AT_BOTTOM_PX) {
+        this.engagePin();
+      }
+      return false;
+    }
+    if (!this.#ownTurn!.held) {
+      // Released: the reservation stays as plain scrollable space; the
+      // ordinary escape/restick rules apply.
+      return false;
+    }
+    const inset = StickController.ownSendInset(anchor.ix);
+    const target = anchor.top - inset;
+    if (this.#ownTurn!.positioned) {
+      // Landed: re-assert the prompt's position after every layout.
+      // ONE-SIDED: only upward drift (the row below the hold) is corrected;
+      // the slack under the hold is legal resting space (transcript.rs:3587-3653).
+      const err = anchor.top - el.scrollTop - inset;
+      const atScrollEnd = el.scrollTop >= this.#maxScroll() - 0.5;
+      const moved = !atScrollEnd && (err > 0.5 || err < -(OWN_SEND_SCROLL_SLACK_PX + 2));
+      if (moved) {
+        // Correct with the entry glide's ease, not a snap — the only in-band
+        // escapes are one-frame commit transients; an eased return reads as
+        // native rubber-banding.
+        const now = performance.now();
+        const frames =
+          this.#ownTurnLastTick === null
+            ? 1
+            : Math.min((now - this.#ownTurnLastTick) / SPRING_FRAME_MS, SPRING_MAX_CATCHUP_FRAMES);
+        this.#ownTurnLastTick = now;
+        const ease = 1 - OWN_SEND_GLIDE_RETAIN ** frames;
+        if (Math.abs(err) <= OWN_SEND_GLIDE_SNAP_PX) {
+          this.#write(el.scrollTop + err);
+          this.#ownTurnLastTick = null;
+        } else {
+          this.#write(el.scrollTop + err * ease);
+        }
+        this.#schedule();
+      } else {
+        this.#ownTurnLastTick = null;
+      }
+      return true;
+    }
+    // ---- entry glide ------------------------------------------------------
+    const now = performance.now();
+    const frames =
+      this.#ownTurnLastTick === null
+        ? 1
+        : Math.min((now - this.#ownTurnLastTick) / SPRING_FRAME_MS, SPRING_MAX_CATCHUP_FRAMES);
+    this.#ownTurnLastTick = now;
+    const ease = 1 - OWN_SEND_GLIDE_RETAIN ** frames;
+    let err = target - el.scrollTop;
+    const glideMax = GLIDE_MAX_VIEWPORTS * viewportHeight;
+    if (err > glideMax) {
+      this.#write(el.scrollTop + err - glideMax);
+      err = glideMax;
+    }
+    const land = (): void => {
+      this.#write(target);
+      this.#ownTurnLastTick = null;
+      if (this.#ownTurn !== null) {
+        this.#ownTurn = { ...this.#ownTurn, positioned: true };
+      }
+    };
+    if (this.#reduced?.matches) {
+      land();
+    } else if (err <= OWN_SEND_GLIDE_SNAP_PX && err >= -(OWN_SEND_SCROLL_SLACK_PX + 2)) {
+      // At the hold — or resting in the slack under it: land WITHOUT pulling
+      // the view up. Only a still-above position gets the snap.
+      if (err > 0.5) {
+        land();
+      } else if (this.#ownTurn !== null) {
+        this.#ownTurn = { ...this.#ownTurn, positioned: true };
+      }
+      this.#ownTurnLastTick = null;
+    } else {
+      this.#write(el.scrollTop + err * ease);
+      // `own_turn_glide_crossed`: never glide PAST the prompt — provisional
+      // row heights can overshoot the unmeasured reservation's bottom. A
+      // CLAMPED write (the scroll range ends short of the target) is the
+      // same verdict: the hold's floor IS the resting place.
+      if (el.scrollTop > target || (el.scrollTop >= this.#maxScroll() - 0.5 && el.scrollTop < target)) {
+        land();
+      } else {
+        this.#schedule();
+      }
+    }
+    this.#prevDistance = this.#distance();
+    return true;
+  }
+
+  /** Retire the runway (filled, or the prompt disappeared terminally). */
+  #retireOwnTurn(): void {
+    this.#ownTurn = null;
+    this.#ownTurnLastTick = null;
+    this.#prevDistance = this.#distance();
+    this.#setJumpShown(jumpVisibility(this.#jumpShown, this.#prevDistance));
+    this.#onOwnTurnChange();
+  }
 }

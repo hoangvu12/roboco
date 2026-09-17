@@ -487,6 +487,50 @@ export function useSidebarLayout(): SidebarLayout {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Bottom chrome clearance — the shell pushes, the transcript pads
+// ---------------------------------------------------------------------------
+
+/**
+ * The measured height of the conversation's bottom chrome stack (status
+ * strip + queue panel + composer + footer) — the web peer of the desktop's
+ * `set_bottom_clearance` paint-time canvas (transcript.rs:2940). The shell's
+ * `ResizeObserver` publishes it; the transcript pads its last row by
+ * `clearance + TRANSCRIPT_FADE_BAND + 8` so the timestamp strip clears the
+ * chrome the list scrolls under. Deltas ≤ 0.5px are ignored, exactly like the
+ * desktop's, so idle layout never feeds back.
+ */
+class BottomClearanceStore {
+  #height = 0;
+  readonly #listeners = new Set<() => void>();
+
+  getSnapshot = (): number => this.#height;
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  };
+
+  set(height: number): void {
+    if (Math.abs(this.#height - height) <= 0.5) {
+      return;
+    }
+    this.#height = height;
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+}
+
+export const bottomClearance = new BottomClearanceStore();
+
+/** The live measured bottom-chrome height (0 until the shell measures). */
+export function useBottomClearance(): number {
+  return useSyncExternalStore(bottomClearance.subscribe, bottomClearance.getSnapshot, () => 0);
+}
+
 /**
  * The window width — the desktop stamps `viewport_width` every render and the
  * width functions above all need it.

@@ -16,8 +16,14 @@ import type {
   ToolDiffStat,
   TranscriptFrame,
 } from "@roboco/proto";
+import { layout } from "@roboco/theme";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
+
+/** `Theme::TITLEBAR_HEIGHT` (proto/layout.rs:44) — the overlay bar's height. */
+export const TITLEBAR_HEIGHT = layout.chrome.titlebarHeight;
+/** `Theme::TRANSCRIPT_FADE_BAND` (proto/layout.rs) — the edge fade ramp. */
+export const TRANSCRIPT_FADE_BAND = layout.chrome.transcriptFadeBand;
 
 // ---------------------------------------------------------------------------
 // Shared view helpers (crates/proto/src/view.rs)
@@ -621,9 +627,387 @@ export const USER_COLLAPSED_LINES = 5;
 /** Conservative char-count proxy for the fold affordance. */
 export const USER_COLLAPSE_CHARS = 400;
 
+// ---------------------------------------------------------------------------
+// Shared constants (transcript.rs:70-218; the spring pair lives in
+// lib/stick-spring.ts, listed in the ticket for reference only)
+// ---------------------------------------------------------------------------
+
+/** Per-chat saved viewports, LRU-bounded (transcript.rs MAX_SAVED_VIEWPORTS). */
+export const MAX_SAVED_VIEWPORTS = 256;
+/** Locally-authored queue rows awaiting materialization (transcript.rs:87). */
+export const MAX_PENDING_QUEUED_TURNS = 256;
+/** Cadence of the selection drag's edge auto-scroll (transcript.rs:91). */
+export const SELECTION_SCROLL_TICK_MS = 24;
+/** Distance from an edge where a selection drag starts auto-scrolling (:92). */
+export const SELECTION_SCROLL_EDGE_PX = 36;
+/** Max px per selection auto-scroll tick, at full penetration (:93). */
+export const SELECTION_SCROLL_MAX_STEP_PX = 24;
+/** Wrapped line height of the user bubble (transcript.rs USER_LINE_HEIGHT). */
+export const USER_LINE_HEIGHT = 22;
+/** Collapsed prompt text height: 5 lines * 22 (transcript.rs:1771). */
+export const USER_COLLAPSED_TEXT_HEIGHT = USER_COLLAPSED_LINES * USER_LINE_HEIGHT;
+/** Gap between the bubble and its expander (transcript.rs USER_TOGGLE_GAP). */
+export const USER_TOGGLE_GAP = 8;
+/**
+ * A locally-sent prompt parks this far below the viewport top
+ * (transcript.rs:205) — `TITLEBAR_HEIGHT + 10`: the titlebar overlays the
+ * full-height list, so its height is part of the inset.
+ */
+export const OWN_SEND_TOP_INSET_PX = TITLEBAR_HEIGHT + 10;
+/** Legal resting slack under the hold (transcript.rs:213). */
+export const OWN_SEND_SCROLL_SLACK_PX = 2;
+/** Per-60fps-frame retained fraction of the entry glide's error (:216). */
+export const OWN_SEND_GLIDE_RETAIN = 0.85;
+/** The entry glide snaps within this error (transcript.rs:218). */
+export const OWN_SEND_GLIDE_SNAP_PX = 1;
+/** Flavour-word rotation period (transcript.rs FLAVOUR_ROTATE_SECS). */
+export const FLAVOUR_ROTATE_SECS = 7;
+/** Long-press delay that toggles a prompt's fold (transcript.rs:4460). */
+export const USER_HOLD_DELAY_MS = 360;
+/** Copy-feedback clear (transcript.rs:5689, :5721). */
+export const COPIED_CLEAR_MS = 1200;
+/** Tool-group chip stack top pad — ticket 19 consumes (transcript.rs:166). */
+export const CHIPS_TOP_PAD = 2;
+
+// ---------------------------------------------------------------------------
+// Working-trailer helpers (transcript.rs:1886-1952)
+// ---------------------------------------------------------------------------
+
+/** The 21 flavour words, in desktop order (transcript.rs:1886-1915). */
+export const FLAVOUR_WORDS: readonly string[] = [
+  "Robocoing",
+  "Thinking",
+  "Pondering",
+  "Scheming",
+  "Brewing",
+  "Weaving",
+  "Tinkering",
+  "Musing",
+  "Composing",
+  "Sifting",
+  "Untangling",
+  "Distilling",
+  "Sketching",
+  "Plotting",
+  "Riffing",
+  "Combobulating",
+  "Percolating",
+  "Marinating",
+  "Noodling",
+  "Puzzling",
+  "Conjuring",
+];
+
+/** The flavour word for a seed at an elapsed time (transcript.rs:1919). */
+export function flavourWord(seed: number, elapsedSecs: number): string {
+  const step = Math.floor(Math.max(elapsedSecs, 0) / FLAVOUR_ROTATE_SECS);
+  const count = FLAVOUR_WORDS.length;
+  const ix = ((Math.trunc(seed) + step) % count + count) % count;
+  return FLAVOUR_WORDS[ix]!;
+}
+
+/** A stable per-chat seed (transcript.rs:1925 — fnv1a over the id). */
+export function flavourSeed(chatId: string): number {
+  return fnv1a(chatId);
+}
+
+/** "1m 32s"-style elapsed formatting (transcript.rs:1945). */
+export function formatElapsed(secs: number): string {
+  const clamped = Math.max(0, Math.floor(secs));
+  if (clamped < 60) {
+    return `${clamped}s`;
+  }
+  return `${Math.floor(clamped / 60)}m ${clamped % 60}s`;
+}
+
+/**
+ * The working trailer's "Sending…" bridge (transcript.rs:1933): true while an
+ * in-flight send is fresher than the session row's turn start — the row still
+ * carries the PREVIOUS turn (or none), so a timer would count the send
+ * round-trip and restart when the turn actually begins.
+ */
+export function sendingBridge(sendStarted: number | null, turnStarted: number | null): boolean {
+  if (sendStarted === null) {
+    return false;
+  }
+  if (turnStarted === null) {
+    return true;
+  }
+  return turnStarted <= sendStarted;
+}
+
+// ---------------------------------------------------------------------------
+// Selection drag auto-scroll (transcript.rs:142, §3.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * The t²-ramped auto-scroll step while a selection drag sits near a viewport
+ * edge. Positive moves toward the document bottom; the tick cadence is
+ * `SELECTION_SCROLL_TICK_MS` (24ms).
+ */
+export function selectionScrollStep(
+  bounds: { top: number; bottom: number },
+  position: { x: number; y: number },
+): number {
+  const height = bounds.bottom - bounds.top;
+  if (height <= 0) {
+    return 0;
+  }
+  const edge = Math.min(SELECTION_SCROLL_EDGE_PX, height / 3);
+  if (edge <= 0) {
+    return 0;
+  }
+  const scaled = (penetration: number): number => {
+    const t = Math.min(Math.max(penetration / edge, 0), 1);
+    return SELECTION_SCROLL_MAX_STEP_PX * t * t;
+  };
+  if (position.y < bounds.top + edge) {
+    return -scaled(bounds.top + edge - position.y);
+  }
+  if (position.y > bounds.bottom - edge) {
+    return scaled(position.y - (bounds.bottom - edge));
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// User-fold resize spec (transcript.rs:1178-1192)
+// ---------------------------------------------------------------------------
+
+/** Fold tween duration scales with travel, bounded to 850ms (:1178). */
+export function userResizeDurationMs(heightDelta: number): number {
+  return Math.round(Math.min(220 + Math.max(heightDelta, 0) * 0.32, 850));
+}
+
+/**
+ * The fold tween's curve (:1185): short folds keep the decisive ease-out;
+ * large folds ease-in-out so thousands of pixels do not vanish in the first
+ * few frames of a front-loaded curve. The name maps to the motion catalog's
+ * `--rb-ease-<curve>` custom property.
+ */
+export function userResizeCurve(heightDelta: number): "easeInOut" | "easeOut" {
+  return heightDelta > 500 ? "easeInOut" : "easeOut";
+}
+
 /** Whether a prompt may need a fold affordance (first-frame proxy). */
 export function userMessageNeedsCollapse(text: string): boolean {
   return text.split("\n").length > USER_COLLAPSED_LINES || [...text].length > USER_COLLAPSE_CHARS;
+}
+
+// ---------------------------------------------------------------------------
+// Sent file mentions (crates/ui/src/composer.rs:860-1338 — the projection the
+// transcript reuses so sent chips read as chips, not raw Markdown)
+// ---------------------------------------------------------------------------
+
+/**
+ * A private URI scheme keeps file mentions distinguishable from ordinary
+ * Markdown links pasted into the composer (composer.rs:870).
+ */
+const FILE_MENTION_SCHEME = "roboco-file:";
+const MENTION_PREFIX = "@";
+/** Non-breaking side bearings around the chip label (composer.rs:867). */
+const MENTION_SIDE_PAD = "\u00a0";
+
+/** One chip in a *sent* message: its range over the projected display string. */
+export interface SentMentionSpan {
+  readonly start: number;
+  readonly end: number;
+  /** Full workspace-relative path (labels can be shortened to basenames). */
+  readonly path: string;
+  readonly isDir: boolean;
+}
+
+function percentEncodePath(path: string): string {
+  let out = "";
+  for (const byte of new TextEncoder().encode(path)) {
+    const ch = String.fromCharCode(byte);
+    if (/[A-Za-z0-9\-._~/]/.test(ch)) {
+      out += ch;
+    } else {
+      out += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return out;
+}
+
+function percentDecodePath(encoded: string): string | null {
+  try {
+    return new TextDecoder().decode(new Uint8Array(percentDecodeBytes(encoded)));
+  } catch {
+    return null;
+  }
+}
+
+function percentDecodeBytes(encoded: string): number[] {
+  const bytes: number[] = [];
+  let at = 0;
+  while (at < encoded.length) {
+    if (encoded[at] === "%") {
+      const hex = encoded.slice(at + 1, at + 3);
+      const value = Number.parseInt(hex, 16);
+      if (hex.length !== 2 || Number.isNaN(value)) {
+        throw new Error("bad escape");
+      }
+      bytes.push(value);
+      at += 3;
+    } else {
+      bytes.push(encoded.charCodeAt(at));
+      at += 1;
+    }
+  }
+  return bytes;
+}
+
+function escapeMentionLabel(label: string): string {
+  return label.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
+}
+
+/** A strict, workspace-relative, no-traversal path (composer.rs:984). */
+function localPathIsSafe(path: string): boolean {
+  return (
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    ![...path].some((ch) => ch.charCodeAt(0) < 32) &&
+    path.split("/").every((part) => part.length > 0 && part !== "." && part !== "..")
+  );
+}
+
+/** The `](` that closes a mention label (composer.rs:994). */
+function labelClose(text: string, start: number): number | null {
+  let escaped = false;
+  for (let at = start; at < text.length; at++) {
+    const ch = text[at]!;
+    if (escaped) {
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "]" && text.slice(at + 1).startsWith("(")) {
+      return at;
+    }
+  }
+  return null;
+}
+
+interface FileMentionLink {
+  readonly start: number;
+  readonly end: number;
+  readonly basename: string;
+  readonly path: string;
+  readonly isDir: boolean;
+}
+
+/** Scan the raw text for strict `[label](roboco-file:…)` links (:1008). */
+function fileMentionLinks(text: string): FileMentionLink[] {
+  const links: FileMentionLink[] = [];
+  let search = 0;
+  for (;;) {
+    const start = text.indexOf("[", search);
+    if (start < 0) {
+      return links;
+    }
+    const labelEnd = labelClose(text, start + 1);
+    if (labelEnd === null) {
+      search = start + 1;
+      continue;
+    }
+    const targetStart = labelEnd + 2;
+    const close = text.indexOf(")", targetStart);
+    if (close < 0) {
+      search = start + 1;
+      continue;
+    }
+    const end = close + 1;
+    const label = text.slice(start + 1, labelEnd);
+    const encoded = text.slice(targetStart, end - 1);
+    if (!encoded.startsWith(FILE_MENTION_SCHEME)) {
+      search = end;
+      continue;
+    }
+    const payload = encoded.slice(FILE_MENTION_SCHEME.length);
+    const decoded = percentDecodePath(payload);
+    let parsed: { path: string; isDir: boolean } | null = null;
+    if (decoded !== null) {
+      const isDir = decoded.endsWith("/");
+      const path = isDir ? decoded.slice(0, -1) : decoded;
+      const basename = path.split("/").pop() ?? "";
+      if (
+        localPathIsSafe(path) &&
+        percentEncodePath(decoded) === payload &&
+        escapeMentionLabel(basename) === label
+      ) {
+        parsed = { path, isDir };
+      }
+    }
+    if (parsed !== null) {
+      links.push({ start, end, basename: parsed.path.split("/").pop() ?? "", path: parsed.path, isDir: parsed.isDir });
+    }
+    search = end;
+  }
+}
+
+/**
+ * Basenames are compact in the common case; duplicate basenames take the
+ * shortest unique path suffix (composer.rs:1267-1298).
+ */
+function mentionDisplayLabels(links: readonly FileMentionLink[]): string[] {
+  return links.map((link, ix) => {
+    if (links.filter((other) => other.basename === link.basename).length === 1) {
+      return link.basename;
+    }
+    const parts = link.path.split("/");
+    for (let count = 1; count <= parts.length; count++) {
+      const suffix = parts.slice(parts.length - count).join("/");
+      const suffixParts = suffix.split("/");
+      const unique = links.every(
+        (other, otherIx) =>
+          otherIx === ix ||
+          other.path.split("/").slice(-suffixParts.length).join("/") !== suffix,
+      );
+      if (unique) {
+        return suffix;
+      }
+    }
+    return link.path;
+  });
+}
+
+/**
+ * Project a sent message's raw Markdown for transcript display
+ * (composer.rs:1316): mention links collapse to the same `@label` chip text
+ * the composer shows, everything else passes through untouched. `null` when
+ * the text has no valid mention, so ordinary prompts stay on the zero-work
+ * path.
+ */
+export function sentMentionDisplay(raw: string): { display: string; mentions: readonly SentMentionSpan[] } | null {
+  if (!raw.includes(FILE_MENTION_SCHEME)) {
+    return null;
+  }
+  const links = fileMentionLinks(raw);
+  if (links.length === 0) {
+    return null;
+  }
+  const labels = mentionDisplayLabels(links);
+  let display = "";
+  const mentions: SentMentionSpan[] = [];
+  let rawAt = 0;
+  links.forEach((link, ix) => {
+    display += raw.slice(rawAt, link.start);
+    const start = display.length;
+    display += MENTION_SIDE_PAD;
+    display += MENTION_PREFIX;
+    display += labels[ix]!.replaceAll(" ", MENTION_SIDE_PAD);
+    display += MENTION_SIDE_PAD;
+    mentions.push({
+      start,
+      end: display.length,
+      path: link.isDir ? `${link.path}/` : link.path,
+      isDir: link.isDir,
+    });
+    rawAt = link.end;
+  });
+  display += raw.slice(rawAt);
+  return { display, mentions };
 }
 
 /**
@@ -675,14 +1059,27 @@ export function fnv1a(text: string): number {
 export type TranscriptRowKind =
   | {
       readonly kind: "user";
+      /**
+       * The visible prompt — the PROJECTED display text when it carries file
+       * mentions (chip labels in place of the raw Markdown links); the
+       * attachment-ref trailer is already stripped.
+       */
       readonly text: string;
+      /** File-mention chips over `text`, in display-string offsets. */
+      readonly mentions: readonly SentMentionSpan[];
+      /**
+       * Structured context the prompt folded in as text, lifted back out
+       * (`badges::split`) — ticket 20 ports the split and the pill; the
+       * call site keeps an empty list until then.
+       */
+      readonly badges: readonly unknown[];
       /** Optimistic echo not yet confirmed by a doc frame. */
       readonly pending: boolean;
       /**
        * A pending echo past `UNDELIVERED_GRACE_MS` with nothing confirming it
-       * (`send_undelivered`) — the bubble carries an explicit
-       * "Not delivered — retry" affordance. Only ever set on echo rows; a real
-       * doc row is delivered by definition.
+       * (`send_undelivered`) — the trailer under the last row carries the
+       * "Not delivered — click to retry" affordance. Only ever set on echo
+       * rows; a real doc row is delivered by definition.
        */
       readonly undelivered?: boolean;
       /** Attachment refs parsed out of the message's refs trailer
@@ -799,14 +1196,24 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       .map((part) => part.text)
       .join("\n\n");
     const parsed = parseUserMessageImages(raw);
-    const copyText = parsed.text.trim().length > 0 ? parsed.text : null;
+    // Badges split BEFORE the mention projection so a comment body's own
+    // Markdown never lands in the bubble (ticket 20 ports `badges::split`;
+    // the call site stays with an empty list until then).
+    const badges: readonly unknown[] = [];
+    // File mentions render as chips here too, not just in the composer. The
+    // projection is pure over the text, so the raw-length row version stays
+    // a valid cache/diff key.
+    const mention = sentMentionDisplay(parsed.text);
+    const text = mention?.display ?? parsed.text;
+    const mentions = mention?.mentions ?? [];
+    const copyText = text.trim().length > 0 ? text : null;
     // `raw.length << 1 | pending` on the desktop; BigInt-free equivalent.
     return [
       {
         id: entry.id,
         version: raw.length * 2 + (pending ? 1 : 0),
         turnStart: true,
-        rowKind: { kind: "user", text: parsed.text, pending, attachments: parsed.attachments },
+        rowKind: { kind: "user", text, mentions, badges, pending, attachments: parsed.attachments },
         entryId: entry.id,
         // User rows always carry the strip (the optimistic echo included).
         timestamp: entry.createdAt,
@@ -1002,9 +1409,12 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
 // Row spacing and diffs
 // ---------------------------------------------------------------------------
 
-const SPACE_SM = 8;
-const SPACE_MD = 12;
-const SPACE_LG = 16;
+/** `Theme::SPACE_SM` (proto/layout.rs) — the small step. */
+export const SPACE_SM = layout.space.sm;
+/** `Theme::SPACE_MD` (proto/layout.rs) — the medium step. */
+export const SPACE_MD = layout.space.md;
+/** `Theme::SPACE_LG` (proto/layout.rs) — the turn gap. */
+export const SPACE_LG = layout.space.lg;
 /** Gap between sibling markdown block rows (render.rs MD_BLOCK_GAP). */
 export const MD_BLOCK_GAP = 12;
 
@@ -1015,24 +1425,25 @@ function partPrefix(id: string): string {
 }
 
 /**
- * Vertical gap opening `row` given its predecessor: turn gap at turn starts;
- * the markdown block gap between sibling rows of the same part; tool groups
- * open with the medium step (their own padding handles the trailing side)
- * and close into the small step.
+ * Vertical gap opening `row` given its predecessor (transcript.rs:1630): the
+ * turn gap at turn starts; the markdown block gap between sibling rows of the
+ * same part (BOTH rows markdown kinds — the guard keeps a chip following a
+ * block on the ordinary small step); tool groups open with the medium step
+ * and close into it.
  */
 export function topGapFor(prev: TranscriptRow | null, row: TranscriptRow): number {
   if (row.turnStart) {
     return SPACE_LG;
   }
-  const samePart = prev !== null && partPrefix(prev.id) === partPrefix(row.id);
-  if (samePart) {
+  const bothMarkdown =
+    prev !== null &&
+    (prev.rowKind.kind === "markdown" || prev.rowKind.kind === "liveMarkdown") &&
+    (row.rowKind.kind === "markdown" || row.rowKind.kind === "liveMarkdown");
+  if (bothMarkdown && partPrefix(prev.id) === partPrefix(row.id)) {
     return MD_BLOCK_GAP;
   }
-  if (row.rowKind.kind === "toolGroup") {
+  if (row.rowKind.kind === "toolGroup" || prev?.rowKind.kind === "toolGroup") {
     return SPACE_MD;
-  }
-  if (prev?.rowKind.kind === "toolGroup") {
-    return SPACE_SM;
   }
   return SPACE_SM;
 }
@@ -1060,6 +1471,316 @@ export function diffRows(
     suffix++;
   }
   return [prefix, oldRows.length - suffix - prefix, newRows.length - suffix - prefix];
+}
+
+// ---------------------------------------------------------------------------
+// Viewport memory + own-turn runway (transcript.rs:2260-2470)
+// ---------------------------------------------------------------------------
+
+/** A stable per-chat viewport anchor (transcript.rs:2349). */
+export interface ViewportAnchor {
+  readonly rowId: string;
+  readonly entryId: string;
+  readonly fallbackIx: number;
+  readonly offsetInRow: number;
+}
+
+/** A resolved scroll position: row index + offset inside that row. */
+export interface RowOffset {
+  readonly itemIx: number;
+  readonly offsetInItem: number;
+}
+
+/**
+ * `ViewportAnchor::capture` (:2357): the first row whose bottom crosses the
+ * viewport top, keeping the intra-row offset. `null` when the list is empty.
+ */
+export function captureViewportAnchor(
+  rows: readonly TranscriptRow[],
+  scrollTop: number,
+  positions: readonly number[],
+  heights: readonly number[],
+): ViewportAnchor | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  for (let ix = 0; ix < rows.length; ix++) {
+    const top = positions[ix] ?? 0;
+    const bottom = top + (heights[ix] ?? 0);
+    if (bottom > scrollTop + 0.5) {
+      const row = rows[ix]!;
+      return { rowId: row.id, entryId: row.entryId, fallbackIx: ix, offsetInRow: scrollTop - top };
+    }
+  }
+  // Scrolled past the last row: pin to the last row, as the desktop's
+  // `item_ix.min(rows.len() - 1)` does for a glued offset.
+  const last = rows.length - 1;
+  const row = rows[last]!;
+  return { rowId: row.id, entryId: row.entryId, fallbackIx: last, offsetInRow: scrollTop - (positions[last] ?? 0) };
+}
+
+/** `resolve_exact` (:2368): the index of the row whose id matches, offset kept. */
+function resolveViewportAnchorExact(anchor: ViewportAnchor, rows: readonly TranscriptRow[]): RowOffset | null {
+  const itemIx = rows.findIndex((row) => row.id === anchor.rowId);
+  if (itemIx < 0) {
+    return null;
+  }
+  return { itemIx, offsetInItem: anchor.offsetInRow };
+}
+
+/**
+ * `resolve` (:2376): exact first; otherwise stay in the same message entry,
+ * choosing the surviving row nearest the old location (the intra-row offset
+ * is no longer meaningful then); else the clamped index with offset 0.
+ * `null` when the list is empty.
+ */
+export function resolveViewportAnchor(
+  anchor: ViewportAnchor,
+  rows: readonly TranscriptRow[],
+  allowFallback: boolean,
+): RowOffset | null {
+  const exact = resolveViewportAnchorExact(anchor, rows);
+  if (exact !== null) {
+    return exact;
+  }
+  if (!allowFallback) {
+    return null;
+  }
+  let best = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  rows.forEach((row, ix) => {
+    if (row.entryId === anchor.entryId) {
+      const distance = Math.abs(ix - anchor.fallbackIx);
+      if (distance < bestDistance) {
+        best = ix;
+        bestDistance = distance;
+      }
+    }
+  });
+  if (best >= 0) {
+    return { itemIx: best, offsetInItem: 0 };
+  }
+  if (rows.length === 0) {
+    return null;
+  }
+  return { itemIx: Math.min(anchor.fallbackIx, rows.length - 1), offsetInItem: 0 };
+}
+
+/**
+ * A locally-sent turn reserves the viewport below its prompt
+ * (transcript.rs:2269). `held`: the runway still owns the viewport (glide →
+ * hold) — any wheel/touch input releases it while the reservation stays as
+ * plain scrollable space. `positioned`: the entry glide has landed; the hold
+ * re-asserts the prompt's position after every layout.
+ */
+export interface OwnTurnAnchor {
+  readonly chatId: string;
+  readonly messageId: string;
+  readonly held: boolean;
+  readonly positioned: boolean;
+  readonly seenPrompt: boolean;
+}
+
+/** `released_for_restore` (:2287): navigation restores the reservation only. */
+export function ownTurnReleasedForRestore(anchor: OwnTurnAnchor): OwnTurnAnchor {
+  return { ...anchor, held: false, positioned: false, seenPrompt: true };
+}
+
+/**
+ * `observe_prompt` (:2294): a fresh send may install the anchor one
+ * notification before its echo. Once the prompt has appeared, its later
+ * disappearance is terminal — the runway must retire.
+ */
+export function ownTurnObservesPrompt(anchor: OwnTurnAnchor, exists: boolean): boolean {
+  return exists || !anchor.seenPrompt;
+}
+
+/**
+ * `PendingQueuedTurns` (transcript.rs:2307): locally-authored queue rows whose
+ * ids have not appeared in the transcript yet. Registration is deliberately
+ * inert; once a matching prompt materializes, the newest match becomes the
+ * own-turn anchor.
+ */
+export class PendingQueuedTurns {
+  #items: Array<{ chatId: string; messageId: string }> = [];
+
+  /** Test seam. */
+  get size(): number {
+    return this.#items.length;
+  }
+
+  register(chatId: string, messageId: string): void {
+    this.#items = this.#items.filter(
+      (item) => item.chatId !== chatId || item.messageId !== messageId,
+    );
+    this.#items.push({ chatId, messageId });
+    while (this.#items.length > MAX_PENDING_QUEUED_TURNS) {
+      this.#items.shift();
+    }
+  }
+
+  /**
+   * Consume every candidate from this chat that is now present (a
+   * `turn_start` row with `entry_id == messageId`) and return the newest.
+   * Multiple rows can land in one doc frame; the last send owns the runway.
+   */
+  takeLatestMaterialized(chatId: string, rows: readonly TranscriptRow[]): string | null {
+    let latest: string | null = null;
+    this.#items = this.#items.filter((item) => {
+      const materialized =
+        item.chatId === chatId &&
+        rows.some((row) => row.turnStart && row.entryId === item.messageId);
+      if (materialized) {
+        latest = item.messageId;
+      }
+      return !materialized;
+    });
+    return latest;
+  }
+}
+
+/**
+ * Session-local viewport state (transcript.rs:2401): chats that were
+ * following their tail keep following it; only user-owned viewports restore a
+ * concrete row anchor.
+ */
+export type SavedViewport =
+  | { readonly kind: "followTail" }
+  | {
+      readonly kind: "anchored";
+      readonly anchor: ViewportAnchor;
+      readonly distanceFromBottom: number;
+      /** The runway that made a short active turn scrollable, released. */
+      readonly ownTurn: OwnTurnAnchor | null;
+    };
+
+/**
+ * `SavedViewport::capture` (:2453): `null` when the rows are empty (a
+ * partial replay must never overwrite an older snapshot).
+ */
+export function captureSavedViewport(
+  rows: readonly TranscriptRow[],
+  scrollTop: number,
+  positions: readonly number[],
+  heights: readonly number[],
+  pinned: boolean,
+  distanceFromBottom: number,
+  ownTurn: OwnTurnAnchor | null,
+): SavedViewport | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  if (pinned) {
+    return { kind: "followTail" };
+  }
+  const anchor = captureViewportAnchor(rows, scrollTop, positions, heights);
+  if (anchor === null) {
+    return null;
+  }
+  return { kind: "anchored", anchor, distanceFromBottom, ownTurn };
+}
+
+/** Per-chat viewport memory, LRU-bounded by `MAX_SAVED_VIEWPORTS`. */
+export class SavedViewportCache {
+  #map = new Map<string, SavedViewport>();
+
+  get(chatId: string): SavedViewport | undefined {
+    return this.#map.get(chatId);
+  }
+
+  save(chatId: string, viewport: SavedViewport): void {
+    this.#map.delete(chatId);
+    this.#map.set(chatId, viewport);
+    while (this.#map.size > MAX_SAVED_VIEWPORTS) {
+      const oldest = this.#map.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.#map.delete(oldest.value);
+    }
+  }
+
+  /** Test seam. */
+  clear(): void {
+    this.#map.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parse wiring (transcript.rs:1557-1650, `parse_for_row`)
+// ---------------------------------------------------------------------------
+
+/** One `parse_for_row` outcome — why the returned tree is what it is. */
+export type ParseOutcome =
+  | { readonly kind: "incremental"; readonly parsedBytes: number; readonly stablePrefixBlocks: number }
+  | { readonly kind: "cached" }
+  | { readonly kind: "handoff" }
+  | { readonly kind: "full" };
+
+export interface ParseEntry {
+  readonly text: string;
+  readonly live: boolean;
+  readonly tree: BlockTree;
+}
+
+/** Leading top-level blocks whose char ranges are unchanged between trees. */
+function stablePrefixBlocks(prior: BlockTree | undefined, next: BlockTree): number {
+  if (prior === undefined) {
+    return 0;
+  }
+  let stable = 0;
+  while (
+    stable < prior.blocks.length &&
+    stable < next.blocks.length &&
+    prior.blocks[stable]!.start === next.blocks[stable]!.start &&
+    prior.blocks[stable]!.end === next.blocks[stable]!.end
+  ) {
+    stable++;
+  }
+  return stable;
+}
+
+/**
+ * `parse_for_row`, the transcript's markdown parse wiring extracted for
+ * testability — one call per text part per sync. Streaming parses with the
+ * mended tail (display-only closers); settling reuses the live tree when the
+ * sources match (the flicker-free handoff), serves settled trees from the
+ * cache, and otherwise parses from scratch.
+ */
+export function parseForRow(
+  state: Map<string, ParseEntry>,
+  key: string,
+  text: string,
+  streaming: boolean,
+): { tree: BlockTree; outcome: ParseOutcome } {
+  const prior = state.get(key);
+  if (streaming) {
+    if (prior !== undefined && prior.live && prior.text === text) {
+      return { tree: prior.tree, outcome: { kind: "incremental", parsedBytes: 0, stablePrefixBlocks: stablePrefixBlocks(prior.tree, prior.tree) } };
+    }
+    const tree = parseMarkdown(text, true);
+    const parsedBytes =
+      prior !== undefined && text.startsWith(prior.text) ? text.length - prior.text.length : text.length;
+    const outcome: ParseOutcome = {
+      kind: "incremental",
+      parsedBytes,
+      stablePrefixBlocks: stablePrefixBlocks(prior?.tree, tree),
+    };
+    state.set(key, { text, live: true, tree });
+    return { tree, outcome };
+  }
+  if (prior !== undefined && prior.text === text) {
+    if (!prior.live) {
+      return { tree: prior.tree, outcome: { kind: "cached" } };
+    }
+    // Live→complete handoff: the live parser's exact tree is adopted — the
+    // split rows then share the tree the unsplit row painted.
+    state.set(key, { text, live: false, tree: prior.tree });
+    return { tree: prior.tree, outcome: { kind: "handoff" } };
+  }
+  const tree = parseMarkdown(text, false);
+  state.set(key, { text, live: false, tree });
+  return { tree, outcome: { kind: "full" } };
 }
 
 // ---------------------------------------------------------------------------
