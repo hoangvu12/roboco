@@ -178,3 +178,18 @@ export function escapeFinalFocusTarget(
   }
   return false;
 }
+
+/**
+ * The dismissal reasons every wrapper VETOES: Base UI's non-modal popovers
+ * close when focus moves out (`focus-out` — Tab away, a programmatic blur),
+ * but the desktop's popover family has no Tab handling and no focus trap
+ * (ticket 09 gap rows 29/87 — "Tab does not close it"), and the old
+ * hand-rolled layer matched the desktop. The wrapper cancels these closes
+ * before the store sees them; outside presses and Escape dismiss normally.
+ */
+export const VETOED_DISMISSAL_REASONS: ReadonlySet<string> = new Set(["focus-out"]);
+
+/** Whether a dismissal reason is one the wrapper cancels outright. */
+export function shouldVetoDismissal(reason: string): boolean {
+  return VETOED_DISMISSAL_REASONS.has(reason);
+}

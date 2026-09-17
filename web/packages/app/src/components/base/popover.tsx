@@ -55,6 +55,7 @@ import {
   escapeFinalFocusTarget,
   exitMotionMs,
   noFlipPositionerProps,
+  shouldVetoDismissal,
   virtualAnchorAt,
   type AnchorHelperId,
   type AnchorPlacement,
@@ -62,7 +63,7 @@ import {
 } from "./positioning";
 import { useOverlayKeyboardSource } from "./overlay";
 
-export { anchorHelperPlacement, noFlipPositionerProps, virtualAnchorAt };
+export { anchorHelperPlacement, noFlipPositionerProps, shouldVetoDismissal, virtualAnchorAt };
 export type { AnchorHelperId, AnchorPlacement, VirtualAnchor };
 
 /**
@@ -84,9 +85,6 @@ export const RbPopoverTrigger = Popover.Trigger;
  * with per-trigger payloads (the blueprint's §6.2 multi-chip shape).
  */
 export const createRbPopoverHandle = Popover.createHandle;
-
-/** The one dismissal reason the wrapper vetoes (see RbPopoverProps). */
-const FOCUS_OUT_REASON = "focus-out";
 
 export interface RbPopoverProps {
   /** Controlled open — every parity consumer is controlled. */
@@ -158,7 +156,7 @@ export function RbPopover(props: RbPopoverProps) {
     <Popover.Root
       open={props.open}
       onOpenChange={(open, details) => {
-        if (!open && details.reason === FOCUS_OUT_REASON) {
+        if (!open && shouldVetoDismissal(details.reason)) {
           // Parity veto (ticket 09 gap rows 29/87, `popover.rs` has no Tab
           // handling and no focus trap): Base UI's non-modal popovers close
           // when focus moves out — the desktop's stay open, and the old

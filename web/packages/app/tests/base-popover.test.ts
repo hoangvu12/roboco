@@ -4,6 +4,7 @@ import {
   escapeFinalFocusTarget,
   exitMotionMs,
   noFlipPositionerProps,
+  shouldVetoDismissal,
   virtualAnchorAt,
   ANCHOR_GAP,
   ESCAPE_KEY_REASON,
@@ -136,6 +137,18 @@ describe("exitMotionMs", () => {
   it("scales with the motion-speed setting", () => {
     expect(exitMotionMs(2)).toBe(200);
     expect(exitMotionMs(0.5)).toBe(50);
+  });
+});
+
+describe("shouldVetoDismissal (ticket 09 gap rows 29/87 — Tab never closes)", () => {
+  it("vetoes focus-out closes: Base UI's non-modal default, not the desktop's", () => {
+    expect(shouldVetoDismissal("focus-out")).toBe(true);
+  });
+
+  it("lets every real dismissal through", () => {
+    for (const reason of ["outside-press", "escape-key", "trigger-press", "close-press", "none"]) {
+      expect(shouldVetoDismissal(reason)).toBe(false);
+    }
   });
 });
 
