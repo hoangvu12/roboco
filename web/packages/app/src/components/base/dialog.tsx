@@ -15,7 +15,7 @@
  *   fold inside the old flex centering) is fixed structurally.
  * - **Frost:** `.modal-card` keeps radius 16 + the 44px `backdrop-filter`
  *   blur; the card content stays `DialogCard`/`DialogTitle`/… from
- *   `components/popover/menu.tsx` (pure styled divs, unchanged).
+ *   `components/ui/Dialog.tsx` (pure styled divs, unchanged).
  * - **Motion:** `rb-dialog-in` (180ms, EASE) keys to `[data-open]` on
  *   `.rb-dialog-card`; the winning keyframe definition animates the
  *   `translate` property, which composes with (not clobbers) the centering

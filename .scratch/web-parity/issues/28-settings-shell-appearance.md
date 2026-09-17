@@ -818,3 +818,9 @@ Two amendments from the post-wave-1 research
   `settings-layout.tsx`, which currently renders the nav inside the main
   column. Whoever picks this up must branch in `app-shell.tsx` (render the
   settings nav inside `.sidebar-inner` on `/settings/*`) or hoist it.
+
+### Shared components addendum (2026-09-18)
+
+Build on components/ui/ + components/base/ (see components/README.md)
+— do not hand-roll card shells, cursor lists, menu rows, chips, or
+tooltips.

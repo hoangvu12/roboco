@@ -777,3 +777,9 @@ Deep-dive notes: `.scratch/web-parity/research-2026-09-17/hero-context-meter.md`
   dock ticks (composer.rs:6249-6258; shell.rs:1289-1295), with the arming
   guards `!reduced_motion && last_rendered_height > 0` and
   `expanded_mode = returning_to_new_thread` at composer.rs:5826-5875.
+
+### Shared components addendum (2026-09-18)
+
+Build on components/ui/ + components/base/ (see components/README.md)
+— do not hand-roll card shells, cursor lists, menu rows, chips, or
+tooltips.

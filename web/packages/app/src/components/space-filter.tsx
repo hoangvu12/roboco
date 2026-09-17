@@ -8,23 +8,16 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
 import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, spacesSorted } from "../lib/view";
-import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
+import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
-import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
 import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
-import { RbDialog } from "./base/dialog";
-import {
-  SearchInputFrame,
-  DialogCard,
-  DialogTitle,
-  DialogBody,
-  DialogField,
-  BtnGhost,
-  BtnPrimary,
-  BtnDanger,
-} from "./popover/menu";
-import { MenuRowNav } from "./popover/menu-row";
+import { openChipClass } from "./ui/Chip";
+import { PickerSearchField, useCursorList } from "./ui/CursorList";
+import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
+import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { PickerCard } from "./ui/PickerCard";
+import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 
 /**
  * The sidebar's space header — the desktop's `render_spaces_filter` row:
@@ -47,8 +40,6 @@ import { MenuRowNav } from "./popover/menu-row";
 
 /** `SPACES_MENU_LIST_MAX_HEIGHT` (spaces.rs) — the menu list's cap. */
 const SPACES_MENU_LIST_MAX_HEIGHT = 336;
-/** The 350ms tooltip show-delay on the view-options button (spaces.rs:960). */
-const VIEW_OPTIONS_TOOLTIP_MS = 350;
 
 export function SpaceFilter() {
   const session = useEngineSession();
@@ -57,9 +48,6 @@ export function SpaceFilter() {
   const now = useNow(30_000);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
-  // Detached-trigger handle: the Trigger renders as a sibling of the
-  // popover's Root, so Base UI needs the shared handle to bind them.
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
   // The right-click overlay: the context menu first, then whichever dialog
   // its rows open — the dialog state must outlive the menu's unmount.
   const [spaceOverlay, setSpaceOverlay] = useState<SpaceOverlay | null>(null);
@@ -83,7 +71,6 @@ export function SpaceFilter() {
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
 
   // Row order: "All projects" (empty query only), spaces ranked by
   // `filterIndices` over the display name, "New project…" always last.
@@ -101,6 +88,23 @@ export function SpaceFilter() {
     list.push("new");
     return list;
   }, [query, matched]);
+
+  // The cursor keyboard model stays card-level (blueprint §6.5): ↑/↓ walk
+  // `menuStep` over the rows, Enter/Cmd+Enter activate, typing resets to
+  // 0 in the input's own onChange. Escape is Base UI's — the dismiss
+  // pipeline owns it, and this menu has no focus-return contract.
+  const { cursor, setCursor, onKeyDown } = useCursorList({
+    enabled: open,
+    count: rows.length,
+    onActivate: (ix) => {
+      const row = rows[ix];
+      if (row !== undefined) {
+        pick(row);
+      }
+    },
+    listRef,
+    rowAttribute: "space-index",
+  });
 
   // Opening: mints a fresh search input; anchors the cursor on the row
   // matching the current filter (spaces.rs:1200-1210).
@@ -137,35 +141,6 @@ export function SpaceFilter() {
     setOpen(false);
   }
 
-  // The cursor keyboard model stays consumer-side (blueprint §6.5): ↑/↓
-  // walk `menuStep` over the rows, Enter/Cmd+Enter activate, typing resets
-  // to 0 in the input's own onChange. Escape is Base UI's — the dismiss
-  // pipeline owns it, and this menu has no focus-return contract.
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!opened) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      setCursor((current) => menuStep(current, rows.length, key === "down" ? 1 : -1) ?? 0);
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      const row = rows[cursor];
-      if (row !== undefined) {
-        pick(row);
-      }
-    }
-  };
-
-  // Scroll the highlighted row into view as the cursor moves.
-  useEffect(() => {
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-space-index="${cursor}"]`);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [cursor, rows.length]);
-
   // The card spans the trigger row's content width — `sidebarWidth - 16`
   // (two SPACE_SM gutters) — and opens 6px below it (`anchorBelow`),
   // clamped 8px inside the window. Floating UI tracks the live trigger.
@@ -180,50 +155,42 @@ export function SpaceFilter() {
 
   return (
     <>
-      <RbPopoverTrigger
-        ref={triggerRef}
-        handle={popoverHandle}
-        className={`space-filter-trigger ${open ? "space-filter-trigger-open" : ""}`}
-      >
-        <Icon name="folder" size={16} className="space-filter-icon" />
-        <span className="space-filter-label">
-          <span className="space-filter-name">{label}</span>
-          {deviceTag !== null && (
-            <>
-              <span className="space-filter-tag">{deviceTag.tag}</span>
-              {!deviceTag.online && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
-            </>
-          )}
-        </span>
-        <Icon name="altArrowDown" size={14} className="space-filter-caret" />
-      </RbPopoverTrigger>
-      <RbPopover
-        handle={popoverHandle}
+      <PickerCard
         open={open}
         onOpenChange={setOpen}
         placement="anchorBelow"
         cardClassName="popover-card spaces-menu-card"
         role="listbox"
         ariaLabel="Projects"
-        style={{ width: rowContentWidth(triggerRef.current) }}
+        width={rowContentWidth(triggerRef.current)}
         onKeyDown={onKeyDown}
         initialFocus={inputRef}
+        trigger={
+          <button type="button" ref={triggerRef} className={openChipClass("space-filter-trigger", open)}>
+            <Icon name="folder" size={16} className="space-filter-icon" />
+            <span className="space-filter-label">
+              <span className="space-filter-name">{label}</span>
+              {deviceTag !== null && (
+                <>
+                  <span className="space-filter-tag">{deviceTag.tag}</span>
+                  {!deviceTag.online && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
+                </>
+              )}
+            </span>
+            <Icon name="altArrowDown" size={14} className="space-filter-caret" />
+          </button>
+        }
       >
-        <SearchInputFrame>
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setCursor(0);
-            }}
-            placeholder="Search projects…"
-            spellCheck={false}
-            autoComplete="off"
-            aria-label="Search projects"
-          />
-        </SearchInputFrame>
+        <PickerSearchField
+          inputRef={inputRef}
+          value={query}
+          onQuery={(value) => {
+            setQuery(value);
+            setCursor(0);
+          }}
+          placeholder="Search projects…"
+          ariaLabel="Search projects"
+        />
         <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
           {rows.map((row, ix) => {
             if (row === "all") {
@@ -288,7 +255,7 @@ export function SpaceFilter() {
             );
           })}
         </div>
-      </RbPopover>
+      </PickerCard>
       {spaceOverlay !== null && session !== null && (
         <>
           {spaceOverlay.kind === "rename" && (
@@ -404,14 +371,14 @@ export function SidebarViewMenu() {
   const sidebar = useSidebar();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
   const [tooltip, setTooltip] = useState(false);
-  const [cursor, setCursor] = useState<number | null>(null);
 
-  // The 350ms show delay — the lone tooltip in the popover family
-  // (spaces.rs:960-966); hovering shorter than that shows nothing.
+  // The 350ms show delay (spaces.rs:960-966) is the shared
+  // `TOOLTIP_VIEW_OPTIONS_MS` convention from `ui/Tooltip.tsx` — the lone
+  // tooltip in the popover family; hovering shorter than that shows
+  // nothing.
   const showTooltip = useCallback(() => {
-    const timer = setTimeout(() => setTooltip(true), VIEW_OPTIONS_TOOLTIP_MS);
+    const timer = setTimeout(() => setTooltip(true), TOOLTIP_VIEW_OPTIONS_MS);
     return () => {
       clearTimeout(timer);
       setTooltip(false);
@@ -477,91 +444,74 @@ export function SidebarViewMenu() {
 
   // The desktop's view menu is a CURSOR menu (menu_step over the seven
   // rows, `Option<usize>` starting at None, Enter/Cmd+Enter activate,
-  // "click clears the cursor"), not a roving-focus menu — so it rides
-  // RbPopover, not RbMenu, keeping the keyboard model verbatim (§6.5's
-  // split; the blueprint's "RbMenu for view-options" sketch would change
-  // the keyboard semantics). Escape is Base UI's dismiss.
-  const onKeyDownCard = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    // The cursor is `Option<usize>` starting at None: the first Down lands
-    // on 0, the first Up on 6.
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      setCursor((current) => menuStep(current, SIDEBAR_VIEW_ROWS.length, key === "down" ? 1 : -1));
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      if (cursor !== null) {
-        const entry = SIDEBAR_VIEW_ROWS[cursor];
-        if (entry !== undefined) {
-          activate(entry.row);
-        }
+  // "click clears the cursor"), not a roving-focus menu — so the card
+  // rides `PickerCard` over the popover part, with the cursor model's
+  // `nullable` mode keeping the keyboard semantics verbatim (§6.5's
+  // split; a focus-walking `RbMenu` would change them). Escape is Base
+  // UI's dismiss.
+  const { cursor, setCursor, onKeyDown: onKeyDownCard } = useCursorList({
+    enabled: open,
+    count: SIDEBAR_VIEW_ROWS.length,
+    mode: "nullable",
+    onActivate: (ix) => {
+      const entry = SIDEBAR_VIEW_ROWS[ix];
+      if (entry !== undefined) {
+        activate(entry.row);
       }
-    }
-  };
+    },
+  });
 
   // `anchorBelowEnd` — right-aligned so the full-width card opens leftward
   // without leaving the sidebar.
   return (
     <>
-      <RbPopoverTrigger
-        ref={buttonRef}
-        handle={popoverHandle}
-        className={`space-filter-sort ${open ? "space-filter-sort-open" : ""}`}
-        aria-label="Sidebar view options"
-        onMouseEnter={showTooltip}
-        onFocus={showTooltip}
-        onKeyDown={(event) => {
-          // Enter/Space toggle through the trigger's own click semantics;
-          // ArrowDown only opens, never closes (spaces.rs:966-973).
-          if (event.key === "ArrowDown" && !open) {
-            event.preventDefault();
-            event.stopPropagation();
-            setOpen(true);
-          }
-        }}
-      >
-        <Icon name="sort" size={16} />
-        {tooltip && !open && (
-          <span className="space-filter-sort-tooltip" role="tooltip">
-            Sidebar view options
-          </span>
-        )}
-      </RbPopoverTrigger>
-      <RbPopover
-        handle={popoverHandle}
+      <PickerCard
         open={open}
         onOpenChange={setOpen}
         placement="anchorBelowEnd"
         cardClassName="popover-card spaces-menu-card"
         role="menu"
         ariaLabel="Sidebar view options"
-        style={{ width: rowContentWidth(buttonRef.current) }}
+        width={rowContentWidth(buttonRef.current)}
         onKeyDown={onKeyDownCard}
+        trigger={
+          <button
+            type="button"
+            ref={buttonRef}
+            className={openChipClass("space-filter-sort", open)}
+            aria-label="Sidebar view options"
+            onMouseEnter={showTooltip}
+            onFocus={showTooltip}
+            onKeyDown={(event) => {
+              // Enter/Space toggle through the trigger's own click semantics;
+              // ArrowDown only opens, never closes (spaces.rs:966-973).
+              if (event.key === "ArrowDown" && !open) {
+                event.preventDefault();
+                event.stopPropagation();
+                setOpen(true);
+              }
+            }}
+          >
+            <Icon name="sort" size={16} />
+            {tooltip && !open && (
+              <span className="space-filter-sort-tooltip" role="tooltip">
+                Sidebar view options
+              </span>
+            )}
+          </button>
+        }
       >
-        <MenuHeadingRow label="Organize" />
+        <MenuHeading>Organize</MenuHeading>
         <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 2)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-        <SeparatorRow />
-        <MenuHeadingRow label="Sort" />
+        <MenuSeparator />
+        <MenuHeading>Sort</MenuHeading>
         <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(2, 4)} offset={2} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-        <SeparatorRow />
-        <MenuHeadingRow label="Show" />
+        <MenuSeparator />
+        <MenuHeading>Show</MenuHeading>
         <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(4, 7)} offset={4} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-      </RbPopover>
+      </PickerCard>
     </>
   );
-}
-
-function MenuHeadingRow({ label }: { label: string }) {
-  return <div className="menu-heading">{label}</div>;
-}
-
-function SeparatorRow() {
-  return <div className="menu-separator" role="separator" />;
 }
 
 function ViewMenuRows({
@@ -700,16 +650,7 @@ function RenameSpaceDialog({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <RbDialog
-      open
-      onOpenChange={(next) => {
-        if (!next) {
-          onCancel();
-        }
-      }}
-      ariaLabel="Rename project"
-      initialFocus={inputRef}
-    >
+    <Dialog ariaLabel="Rename project" onClose={onCancel} initialFocus={inputRef}>
       <DialogCard>
         <DialogTitle>Rename project</DialogTitle>
         <form
@@ -741,7 +682,7 @@ function RenameSpaceDialog({
           </div>
         </form>
       </DialogCard>
-    </RbDialog>
+    </Dialog>
   );
 }
 
@@ -768,15 +709,7 @@ function DeleteSpaceDialog({
       ? `Removing \u201C${name}\u201D permanently deletes its 1 session on ${deviceName}. This can\u2019t be undone.`
       : `Removing \u201C${name}\u201D permanently deletes its ${chatCount} sessions on ${deviceName}. This can\u2019t be undone.`;
   return (
-    <RbDialog
-      open
-      onOpenChange={(next) => {
-        if (!next) {
-          onCancel();
-        }
-      }}
-      ariaLabel="Remove project?"
-    >
+    <Dialog ariaLabel="Remove project?" onClose={onCancel}>
       <DialogCard>
         <DialogTitle>Remove project?</DialogTitle>
         <DialogBody>{copy}</DialogBody>
@@ -785,6 +718,6 @@ function DeleteSpaceDialog({
           <BtnDanger onClick={onConfirm}>Remove</BtnDanger>
         </div>
       </DialogCard>
-    </RbDialog>
+    </Dialog>
   );
 }

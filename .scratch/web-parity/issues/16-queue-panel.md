@@ -623,3 +623,9 @@ rule must not both fire for the same keystroke.
 ## Comments
 
 (empty; appended during implementation)
+
+### Shared components addendum (2026-09-18)
+
+Build on components/ui/ + components/base/ (see components/README.md)
+— do not hand-roll card shells, cursor lists, menu rows, chips, or
+tooltips.
