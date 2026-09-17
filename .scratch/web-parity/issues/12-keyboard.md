@@ -14,7 +14,7 @@ consume. Combos are stored platform-neutrally and rendered with the desktop's
 **Blocked by:** 06 (Titlebar and main-column chrome), 07 (Right pane host and
 multi-instance tabs).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/01-shell-chrome.md` §3.10.1a, §4.6,
 §4.7, §4.8, §4.9, §4.10, §4.16, §5.3 rows S18–S24, §5.6 rows N8, N9, N11, N12,
@@ -703,5 +703,135 @@ Copied verbatim from research §5, filtered to this ticket.
 - [ ] No new literal hex/px where a `--rb-*` token exists.
 
 ## Comments
+
+### What landed
+
+- `state/shortcuts.ts` (rewrite): `ShortcutId`/`SHORTCUT_IDS` (19, `settings.rs`
+  order), `defaultComboOn` (delegates to ticket 03's `defaultKeymap` so the
+  platform-dependent spellings — `ctrl-tab`/`mod-tab`, `ctrl-alt-space`/
+  `mod-alt-space` — have one source), `shortcutLabel`/`shortcutGroup`/
+  `SHORTCUT_GROUPS`/`shortcutAvailable`, the combo formatters
+  (`platformCombo`/`displayCombo`/`badgeCombo`/`comboModifiers`), the small
+  `Keystroke::parse` peer behind `validOrDefault` (same grammar, same
+  "unparseable shortcut combo; using default" log line), `keystrokeFromEvent`,
+  `applyKeymap` + `matchKeybinding`, `jumpHintsVisible`/
+  `modifierSendHintVisible`, `comboFromKeystrokeOn`, `healJumpSlots`,
+  `healReservedComposerShortcuts`, `cycleTarget`, `BROWSER_RESERVED` +
+  `browserReservedCaveat`/`browserNeverDelivers`, and the bus grown from two
+  events to all twelve (jump carries `{slot}`).
+- `state/keymap.ts` (new): `keymapStore`/`useKeymap` as a slice over ticket
+  03's settings store (rebinds heal + persist through `uiSettings`), plus the
+  `overlayKeyboard` registry (`overlay_owns_keyboard`, shell.rs:3681-3683).
+- `state/jump-hints.ts` (new): `jumpHintStore` + capture-phase
+  keydown/keyup/blur/visibilitychange listeners (gap N12), `useJumpHints`
+  (route + overlay re-check at render time, so chips drop the frame a popover
+  opens), `visibleJumpOrder` (slot → chat mapping off the sidebar's displayed
+  order).
+- `app-shell.tsx`: the two-key handler is gone; ONE capture-phase `window`
+  keydown listener consults `applyKeymap`'s table with the desktop's
+  per-route + overlay guards and fans actions out through the bus. Shell-owned
+  actions subscribe (`toggle-sidebar`, `toggle-changes` with the closing→
+  composer focus return, `open-settings` → `/settings`). `TerminalShortcutBridge`
+  (inside `TerminalProvider`) executes `toggle-terminal` against the terminal
+  store.
+- `chat-list.tsx`: jump chips wired into ticket 08's `ChatListRow`
+  `jumpLabel` socket (`badgeCombo` per slot, first nine visible rows), and the
+  session-nav subscriptions (`next-session`/`prev-session` via `cycleTarget`,
+  `jump-session` via the displayed order, `archive-session` →
+  `setChatArchived(selected, true)`).
+- `composer.tsx`: the two key-context policies (message vs wizard socket);
+  Enter follows `ComposerSendBehavior` ("enter" default: bare Enter sends,
+  Mod+Enter always sends); the Escape→submit-while-working branch is deleted.
+- `composer-pickers.tsx`: the `PaletteSearch` let-through rule — the search
+  input's `onKeyDown` is gone entirely, row nav/Enter/Escape moved to the list
+  frame (a `display: contents` wrapper); the picker registers on
+  `overlayKeyboard` while open.
+- `chat-page.tsx`: the capture-phase `Mod+J` → right-pane terminal listener is
+  deleted (S23). `new-chat-button.tsx`: `NewChatListener` subscribes
+  unconditionally; a disconnected engine posts the "Engine not connected"
+  sidebar notice (gap N14).
+- `tests/shortcuts.test.ts`: 53 tests — the bus, the 19-row table (order,
+  labels, groups, availability), both-platform defaults, formatters,
+  `validOrDefault`, `keystrokeFromEvent`/`matchKeybinding`, `BROWSER_RESERVED`
+  (caveat source + no duplicate keystrokes), `applyKeymap` (defaults, rebinds,
+  browser-never skip, fixed-chord-skip, cleared jump slot, unparseable
+  fallback), jump hints, recording, healing, the five `cycle_target` desktop
+  tests, `keymapStore` round-trip, `overlayKeyboard`, `jumpHintStore`.
+  `tests/escape.test.ts` already carried ticket 06's three escape-interrupt
+  tests — nothing to add there.
+
+### Deviations and judgment calls
+
+- **Capture, not bubble (§2.10 says "bubble on window").** The dispatch
+  listener is capture-phase on `window`: gpui runs a matched binding BEFORE
+  any raw `on_key_down` listener, and the one web surface where that ordering
+  is load-bearing is a focused xterm — it `stopPropagation`s the keys it
+  handles, so a bubble-phase listener can never see Mod+J (the deleted
+  chat-page listener documented the same trap). This also emulates
+  binding-before-listener for the composer/palette contexts.
+- **`picker-popover.tsx` does not exist yet** — it is ticket 10's future
+  file; the palette-search input in this base lives in
+  `composer-pickers.tsx`'s `PickerList`. The let-through rule + overlay
+  registration are applied there; t10 must carry them into its rewrite.
+  Similarly the session-nav subscriptions live in `chat-list.tsx` (where the
+  displayed order is computed) rather than a new file — the ticket's file
+  table predates ticket 08's structure.
+- **`KeymapConfig` stays in `state/ui-settings.ts`** (ticket 03 owns the
+  persisted shape; `state/keymap.ts` re-exports the type and wraps the
+  read/write surface). `JUMP_DEFAULTS`/`JUMP_SLOTS` also remain defined in
+  ui-settings and are re-exported from shortcuts.ts — one source of truth.
+- **`healReservedComposerShortcuts(config, isMac?)`** takes an optional
+  platform (defaulting to the detected one) so the platform-dependent reset
+  targets are testable from one machine.
+- **preventDefault fires on every matched binding** even when the action's
+  guards no-op it: letting the browser default run (Mod+S's save dialog,
+  Mod+R's reload) is not the desktop's "nothing". Suppressed session-nav
+  under an overlay still consumes the chord (Chrome would otherwise switch
+  tabs on Ctrl+1).
+- **Editable-target guard applies only to bare-key bindings** (the only kind
+  that could swallow typing); all default combos carry modifiers, so every
+  default works while typing, as on the desktop.
+- **Mod+J's observable today is the terminal store's per-chat open flag**
+  (verified through the right pane's Terminal surface mount/unmount). The
+  bottom-dock mount point and full focus handoff are ticket 26's; the bridge
+  does open→frame-deferred `focusActive`, close→focus `.composer-input`.
+- **Mod+K / Mod+, dispatch now; targets arrive with tickets 11/28** (no
+  palette/Shortcuts page in this base — the chords are quiet no-ops).
+  `jump_model_slot` first refusal is ticket 10's; jumps route straight to
+  the row until then. `save-file` emits under the desktop's guard but has no
+  subscriber until ticket 25.
+- **Key repeats are not filtered** (desktop parity: a held binding re-fires
+  per repeat). Chrome never delivers real Ctrl+Tab/Ctrl+Shift+Tab to the
+  page (the §2.9 caveat) — Firefox does; cycle logic is unit-covered.
+
+### Verification
+
+- `pnpm -r build` (typecheck + vite build) green; `pnpm --filter @roboco/app
+  test` green — 577 tests, 53 in `tests/shortcuts.test.ts`.
+- Live `web_smoke` walkthrough (use-browser, Chrome, Windows/non-mac): jump
+  chips `Ctrl+1` appear holding the primary and vanish with Shift or on
+  release; opening the composer picker drops them the same frame; Escape
+  closes the picker through the frame with focus returned to the chip;
+  Mod+Shift+A archives the selected chat and stays quiet while the picker is
+  open; Mod+B collapses/uncollapses; Mod+R opens/closes the right pane (and
+  never reloads the page); Mod+J toggles the terminal store (verified via the
+  pane's Terminal surface); Mod+1 / Ctrl+Tab / Ctrl+Shift+Tab dispatch;
+  Mod+K is a quiet no-op; Mod+, navigates to `/settings`; Mod+N creates a
+  chat from the Settings route and, with the engine killed, posts the
+  "Engine not connected" notice instead of dead-keying (N14); bare Enter in
+  the composer sends (echo + scripted turn); bare Tab moves focus.
+
+### Screenshots
+
+Web halves captured to `.scratch/web-parity/shots/12/` (untracked evidence
+dir): `web-a-mod-held-chips.png`, `web-b-mod-shift-no-chips.png`,
+`web-c-popover-open-no-chips.png`.
+
+Skips, per the standing precedent (tickets 02/06-09): the desktop halves of
+the pairs — sibling agents (10, 11) are working on this machine and
+`shot.ps1` needs the desktop client foregrounded; the smoke single-row
+sidebar also cannot show nine chips (the states are the predicate's, which
+the unit tests cover). State (d) has nothing to capture — the Shortcuts page
+is ticket 29.
 
 (empty; appended during implementation)

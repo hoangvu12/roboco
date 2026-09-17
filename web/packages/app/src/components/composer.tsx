@@ -10,6 +10,7 @@ import { offeredHarnesses } from "../lib/model-rows";
 import { clampReasoning } from "../lib/traits-summary";
 import { describeSendError, mintMessageId, persistChatConfig, sendInterrupt, sendRun, sendSteer, type DraftConfig } from "../lib/composer-actions";
 import { echoStore } from "../state/transcript-store";
+import { useUiSettings } from "../state/ui-settings";
 import { formatToMime, type StagedAttachment } from "../lib/attachments";
 import { seedAttachment } from "../state/attachment-cache";
 import { ComposerPickers } from "./composer-pickers";
@@ -55,6 +56,10 @@ interface ComposerProps {
 
 export function Composer({ session, chat, catalog, onSwitchChat, editingMessage, onEditFinish }: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
+  // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
+  // Enter sends, Mod+Enter also sends (ticket 13 owns the send path itself;
+  // this only maps keys to intents).
+  const sendBehavior = useUiSettings().composerSendBehavior;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The paperclip lives in the actions cluster (composer.rs), so the strip
   // hands its picker up here rather than drawing its own attach button.
@@ -429,22 +434,49 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
   // The composer is disabled until the catalog has at least the harness list.
   const composerReady = harnesses.loaded;
 
+  /*
+   * The textarea's two key contexts (composer.rs:1347-1349, §2.8):
+   *
+   * - MESSAGE — the resting context. Mod+Enter always submits
+   *   (`ModifiedSubmit`); the bare-Enter policy comes from the
+   *   `ComposerSendBehavior` setting ("enter" submits, "modEnter" inserts a
+   *   newline — or accepts a completion, ticket 14). Every other editing key
+   *   is native; preventDefault fires only on a key this policy consumes.
+   * - WIZARD — the SAME textarea while the input-request wizard is mounted
+   *   (`GENERIC_COMPOSER_CONTEXT`): bare Enter submits the page, and there
+   *   is NO `ModifiedSubmit` — Mod+Enter falls through untouched. Ticket 14
+   *   owns the wizard panel itself (`on_wizard_key`'s digit/Enter/Escape
+   *   rules live there); this flag is its socket.
+   *
+   * Escape never submits: the interrupt is step 4 of the shell's Escape
+   * ladder (opt-in via `escapeStopsActiveAgent`), and dismissing an open
+   * mention/slash completion popup (step 1) is ticket 14's.
+   */
+  const wizardActive = false;
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    // Mod+Enter (cmd/ctrl) submits. Plain Enter inserts a newline so the
-    // textarea behaves like every other web input — Enter-as-newline is the
-    // common web idiom, the desktop's `ComposerSendBehavior` default is
-    // mod+enter-submit. Esc layers with popovers (the popover catches its
-    // own Esc; here we treat Esc as interrupt when working + empty).
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    if (event.key !== "Enter") {
+      return;
+    }
+    const mod = event.metaKey || event.ctrlKey;
+    if (wizardActive) {
+      if (!mod && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        void submit();
+      }
+      return;
+    }
+    if (mod && !event.altKey) {
+      // Mod+Enter submits on every send mode.
       event.preventDefault();
       void submit();
       return;
     }
-    if (event.key === "Escape" && isWorking && text.length === 0) {
+    if (!mod && !event.altKey && !event.shiftKey && sendBehavior === "enter") {
       event.preventDefault();
       void submit();
-      return;
     }
+    // Everything else — Shift+Enter, Alt+Enter, bare Enter under
+    // "modEnter" — is a newline, native.
   };
 
   // Compose the send button label & variant.

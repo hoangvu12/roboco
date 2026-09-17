@@ -1,10 +1,12 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
+import { cycleTarget, onShortcut } from "../state/shortcuts";
+import { useJumpHints, visibleJumpOrder } from "../state/jump-hints";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
 import {
   chatListRows,
@@ -13,6 +15,7 @@ import {
   resortOffsets,
   sidebarGroups,
   sidebarKeyOrderChanged,
+  sidebarVisibleOrder,
   statusWord,
   type ChatRow,
   type SidebarKeyed,
@@ -136,6 +139,7 @@ export function ChatList() {
   const snapshot = useWatchSnapshot(session);
   const sidebar = useSidebar();
   const now = useNow(10_000);
+  const navigate = useNavigate();
   // The paired engine's own device is the web's "local device" — the group
   // its chats land in under ByDevice, promoted to the top.
   const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
@@ -166,6 +170,79 @@ export function ChatList() {
       : [];
 
   const groups = sidebarGroups(rows, sidebar.organization, localDeviceId);
+
+  // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
+  // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
+  // jump-hint chips all read, so keyboard order never drifts from the screen.
+  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId);
+
+  // The chips: while the hints are visible, the first nine rows carry the
+  // slot's `badgeCombo` text in the corner — ticket 08's `.chat-row-jump`
+  // class renders it, this module supplies the label from the same order the
+  // jump shortcut targets.
+  const hints = useJumpHints();
+  const jumpSlotById: Map<string, number> | null = hints.visible
+    ? new Map(visibleJumpOrder(order).map((id, slot) => [id, slot] as const))
+    : null;
+  const jumpLabelFor = (chatId: string): string | null => {
+    const slot = jumpSlotById?.get(chatId);
+    return slot === undefined ? null : (hints.combos[slot] ?? null);
+  };
+
+  // The session-nav shortcuts' execution half. The dispatcher in AppShell
+  // holds the route and overlay guards; these handlers act on the live
+  // order through a ref, so a snapshot tick never re-subscribes them.
+  const navRef = useRef({ order, session });
+  navRef.current = { order, session };
+  useEffect(() => {
+    const selectedChatId = (): string | null => {
+      const match = /^\/chat\/([^/]+)\/?$/.exec(window.location.pathname);
+      if (match === null || match[1] === undefined) {
+        return null;
+      }
+      try {
+        return decodeURIComponent(match[1]);
+      } catch {
+        return match[1];
+      }
+    };
+    const cycleTo = (forward: boolean): void => {
+      const target = cycleTarget(navRef.current.order, selectedChatId(), forward);
+      if (target !== null) {
+        void navigate({ to: "/chat/$chatId", params: { chatId: target } });
+      }
+    };
+    const offs = [
+      onShortcut("next-session", () => cycleTo(true)),
+      onShortcut("prev-session", () => cycleTo(false)),
+      // `jump_to_session`: a slot past the end does nothing; the target takes
+      // the same path a click on that row takes.
+      onShortcut("jump-session", (detail) => {
+        const id = navRef.current.order[detail.slot ?? -1];
+        if (id !== undefined) {
+          void navigate({ to: "/chat/$chatId", params: { chatId: id } });
+        }
+      }),
+      // `archive_selected_chat` — the open chat moves to the archived shelf;
+      // archiving never closes an open chat.
+      onShortcut("archive-session", () => {
+        const chatId = selectedChatId();
+        const liveSession = navRef.current.session;
+        if (chatId === null || liveSession === null) {
+          return;
+        }
+        setChatArchived(liveSession.client, chatId, true).catch((error: unknown) => {
+          sidebarNotice.set(describeMutateError(error));
+        });
+      }),
+    ];
+    return () => {
+      for (const off of offs) {
+        off();
+      }
+    };
+  }, [navigate]);
+
   const keyed: SidebarKeyed[] = [];
   const sections: React.ReactNode[] = [];
   for (const bucket of groups) {
@@ -175,7 +252,7 @@ export function ChatList() {
           key: `c:${row.chat.id}`,
           height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
         });
-        sections.push(<ChatListRow key={row.chat.id} row={row} />);
+        sections.push(<ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />);
       }
       continue;
     }
@@ -193,6 +270,7 @@ export function ChatList() {
         label={bucket.group.deviceName}
         rows={bucket.rows}
         collapsed={collapsed}
+        jumpLabelFor={jumpLabelFor}
         onToggle={() => {
           setCollapsedGroups((current) => {
             const next = new Set(current);
@@ -293,12 +371,14 @@ function DeviceGroupSection({
   label,
   rows,
   collapsed,
+  jumpLabelFor,
   onToggle,
 }: {
   collapseKey: string;
   label: string;
   rows: readonly ChatRow[];
   collapsed: boolean;
+  jumpLabelFor: (chatId: string) => string | null;
   onToggle: () => void;
 }) {
   const bodyHeight = sidebarGroupBodyHeight(rows);
@@ -323,7 +403,7 @@ function DeviceGroupSection({
       <SidebarDisclosureBody bodyRef={bodyRef}>
         <div className="sidebar-group-rows">
           {rows.map((row) => (
-            <ChatListRow key={row.chat.id} row={row} />
+            <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
           ))}
         </div>
       </SidebarDisclosureBody>
@@ -339,7 +419,7 @@ function DeviceGroupSection({
  *    status corner right-aligned. The corner is activity, not position: a
  *    small colored word beside a glyph — Working animates the pixel spinner,
  *    Done wears a check, the rest use a 6px dot — and Idle rows show the
- *    relative time instead. A jump hint (ticket 12 supplies the label)
+ *    relative time instead. A jump hint (the slot's `badgeCombo`, ticket 12)
  *    takes the corner outright above both.
  * 2. The harness brand mark (13px) beside the title at 13px/17px.
  * 3. Structural, not reserved: branch and change-request badge, omitted

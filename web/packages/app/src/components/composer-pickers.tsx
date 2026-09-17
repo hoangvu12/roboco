@@ -19,6 +19,8 @@ import {
 import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
+import { overlayKeyboard } from "../state/keymap";
+import { isMacPlatform } from "../state/shortcuts";
 import { PopoverCardFlush, KbdHint, MenuHeading, MenuSeparator } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { MenuScrollbar } from "./popover/scrollbar";
@@ -207,6 +209,14 @@ export function ComposerPickers(props: ComposerPickersProps) {
   // another viewer) — every open revalidates, keeping current rows visible
   // until the fresh catalog lands (pickers.rs:1003-1019).
   const opened = popup.isOpen();
+  // An open composer picker owns the keyboard (`overlay_owns_keyboard`,
+  // shell.rs:3681-3683): session-nav shortcuts go quiet underneath it, and
+  // the sidebar's jump chips drop. The add-space palette (ticket 11)
+  // registers itself the same way.
+  useEffect(() => {
+    overlayKeyboard.set("composer-pickers", opened);
+    return () => overlayKeyboard.set("composer-pickers", false);
+  }, [opened]);
   useEffect(() => {
     if (opened) {
       void catalog.loadHarnesses({ force: true });
@@ -504,7 +514,12 @@ function IdentityCard(props: IdentityCardProps) {
         // A closing card ignores keys (it keeps painting through the exit).
         return;
       }
-      if (event.metaKey && /^[1-9]$/.test(event.key)) {
+      // The platform modifier — `modifiers.platform` (pickers.rs on_key_down):
+      // Cmd on macOS, Ctrl elsewhere, the same modifier the shell's Mod+1..9
+      // jump binding spells. The global dispatcher (ticket 12) suppresses the
+      // session jump while this overlay owns the keyboard (`jump_model_slot`'s
+      // first refusal); this listener is the picker's half of that handoff.
+      if ((isMacPlatform() ? event.metaKey : event.ctrlKey) && /^[1-9]$/.test(event.key)) {
         // Cmd+1…9 activates the Nth visible row (gap row 16).
         event.preventDefault();
         activateRow(Number(event.key) - 1);
