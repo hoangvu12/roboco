@@ -113,6 +113,12 @@ a:focus-visible,
   color: var(--rb-text);
 }
 
+.btn-active {
+  background: rgb(var(--rb-wash) / 0.11);
+  border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
+  color: var(--rb-text);
+}
+
 .btn-danger-ghost {
   background: transparent;
   color: var(--rb-danger);
@@ -186,57 +192,607 @@ a:focus-visible,
 
 /* ── Shell layout ───────────────────────────────────────────────────── */
 
+/*
+ * The desktop's chrome (shell.rs): a titlebar overlays the full window width
+ * and both columns start beneath it. The sidebar is transparent — it sits
+ * directly on the shell's frost — and the conversation column sits flush and
+ * unbordered, the transcript directly on that same glass; only a hairline at
+ * the seam separates them. No inset cards.
+ */
+
+:root {
+  /* settings.rs SIDEBAR_DEFAULT / _MIN / _MAX. */
+  --rb-sidebar-width: 256px;
+  /* shell.rs: TITLEBAR_CLUSTER_PAD, group and within-group rhythm. */
+  --rb-titlebar-pad: 10px;
+  --rb-titlebar-group-gap: 8px;
+  --rb-titlebar-control-gap: 2px;
+  --rb-titlebar-edge-inset: 6px;
+}
+
+/*
+ * The root row (`shell.rs:8048`): three columns spanning the FULL window
+ * height, with the titlebar overlaid on top rather than stacked above. Column
+ * widths arrive as inline custom properties from `AppShell`, which resolves
+ * them through the desktop's width functions.
+ */
 .shell {
   height: 100%;
-  display: grid;
-  grid-template-columns: 288px 1fr;
+  display: flex;
+  flex-direction: row;
   background: var(--rb-bg);
+  position: relative;
+  --rb-sidebar-now: var(--rb-sidebar-width);
+  --rb-sidebar-content: var(--rb-sidebar-width);
+  --rb-pane-now: 0px;
+  --rb-pane-open: 0px;
+  --rb-pane-band: 0px;
+  --rb-main-stable: auto;
+  /* `TITLEBAR_CONTENT_START` + the new-session slot; the shell overrides it
+     with the live value every render. */
+  --rb-titlebar-row-left: 136px;
 }
 
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-left: none;
-}
+/* ── Titlebar ───────────────────────────────────────────────────────── */
 
-.sidebar-header,
-.sidebar-footer {
+/*
+ * `render_session_title_bar`'s row. Its left inset is NOT the cluster's width:
+ * the cluster is an overlay (below), and the row pads itself to
+ * `--rb-titlebar-row-left` — the conversation column's own left edge, clamped
+ * past the cluster. That is what puts the identity above the transcript rather
+ * than jammed against the window controls, and what makes it glide left when
+ * the sidebar collapses (the desktop tweens this exact value; roboco's
+ * `__root.tsx` transitions the same padding).
+ */
+.titlebar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 40;
+  height: var(--rb-titlebar-height);
+  padding-top: var(--rb-titlebar-top-pad);
+  padding-left: var(--rb-titlebar-row-left);
+  padding-right: var(--rb-titlebar-edge-inset);
   display: flex;
+  flex-direction: row;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--rb-titlebar-group-gap);
+  /*
+   * NO FILL, NO BLUR, NO BORDER. The desktop's bar is literally
+   * `div().h(TITLEBAR_HEIGHT).flex_none().child(inner)` — the shell's frost
+   * and the sidebar's tone show through it unaltered, which is why the column
+   * reads as one surface from the window's top edge down.
+   *
+   * A tinted, blurred bar here re-tinted the sidebar's top 38px and left a
+   * seam across it at the titlebar's bottom edge; it also made the compositor
+   * re-sample a backdrop whose contents move on every frame of a sidebar
+   * collapse.
+   */
+  transition: padding-left var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * The window-control cluster overlays the row's left end rather than sitting
+ * in it (`render_titlebar_cluster` is mounted at the shell root on the
+ * desktop), so the row's inset is free to follow the sidebar independently.
+ */
+.titlebar-cluster {
+  position: absolute;
+  left: var(--rb-titlebar-pad);
+  top: var(--rb-titlebar-top-pad);
+  bottom: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex: none;
+  gap: var(--rb-titlebar-group-gap);
+}
+
+.titlebar-group {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--rb-titlebar-control-gap);
+}
+
+/*
+ * `window_control_button`: a 24px square with the surface-chrome 6px radius
+ * and a 14px glyph, quiet until hovered. Disabled controls hold their place
+ * at reduced opacity so the cluster never reflows.
+ */
+.window-control {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.window-control:not(:disabled):hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.window-control-active {
+  background: rgb(var(--rb-wash) / 0.11);
+  color: var(--rb-text);
+}
+
+.window-control:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/*
+ * The centred identity group — harness mark, title, `space @ device`. It is
+ * `TITLEBAR_IDENTITY_GAP` (12px) clear of the navigation cluster and shrinks
+ * before the actions do.
+ */
+.titlebar-identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
   gap: var(--rb-space-sm);
-  padding: var(--rb-space-sm) var(--rb-space-md);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.identity-brand {
   flex: none;
 }
 
-.sidebar-header {
-  height: var(--rb-header-height);
-  border-bottom: 1px solid var(--rb-border);
+.identity-title {
+  font-weight: 600;
+  color: var(--rb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.sidebar-header-actions {
+.identity-folder {
+  flex: 0 1000000 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.identity-badge {
+  flex: none;
+  height: 16px;
+  padding-inline: 4px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  background: rgb(var(--rb-ink) / 0.08);
+  color: color-mix(in srgb, var(--rb-text-muted) 85%, transparent);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/*
+ * The trailing section. The pane toggle is the fixed right-edge anchor, like
+ * the sidebar control on the left; only the band to its left reveals, so the
+ * two icons never compress into one clipped box at open.
+ */
+.titlebar-trailing {
+  flex: none;
   display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 100%;
+  /* The row's own padding now lands the edge inset; this holds the group at
+     the right edge on rows with no identity to push it there. */
+  margin-left: auto;
+}
+
+/*
+ * The pane's header strip — `tabs.rs::render_session_title_bar`'s trailing
+ * section. The desktop sizes it `(right_now - pr) - 28`: the pane's own
+ * animated width, less the titlebar's 6px right inset and the 24px toggle
+ * slot plus its gap. Reading `--rb-pane-now` here means the strip and the pane
+ * column are driven by ONE number, exactly as the desktop reads one
+ * `right_now` for both — they cannot drift apart mid-glide.
+ *
+ * It carries no padding of its own: with `box-sizing: border-box` a padded box
+ * cannot shrink below its padding, so a shut pane would leave a sliver here
+ * and shove the toggle inward. The padding lives on the inner child.
+ */
+.titlebar-pane-band {
+  position: relative;
+  height: 100%;
+  flex: none;
+  overflow: hidden;
+  width: var(--rb-pane-band);
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * Right-anchored at the width the strip has when OPEN, so it reveals from the
+ * toggle leftward and its controls keep their geometry for the glide instead
+ * of reflowing through every intermediate width (`right_panel_content_width`).
+ */
+.titlebar-pane-band-inner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
   align-items: center;
   gap: var(--rb-space-xs);
+  width: max(
+    0px,
+    calc(var(--rb-pane-open) - var(--rb-titlebar-edge-inset) - 28px)
+  );
+  /* 8 + the chip's own pad = the pane's 16px text gutter; the 4px right pad
+     is the stable gap before the fixed toggle. */
+  padding-left: var(--rb-space-sm);
+  padding-right: var(--rb-space-xs);
 }
 
-.sidebar-footer {
-  border-top: 1px solid var(--rb-border);
+.titlebar-pane-tabs {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
 }
 
-.wordmark {
-  font-weight: 600;
-  letter-spacing: 0.02em;
+/*
+ * In takeover the strip owns the whole band and the identity hides — but its
+ * width still comes from `--rb-pane-band`, which rides the pane's animated
+ * width. Forcing `auto` here snapped it to full width on the first frame while
+ * the column glided for 200ms behind it.
+ */
+.titlebar-takeover .titlebar-pane-band-inner {
+  width: var(--rb-pane-band);
+}
+
+/* ── Right-pane surface tabs ────────────────────────────────────────── */
+
+/*
+ * `render_right_tab_strip`: 24px-tall, 112px-wide chips on a 4px gap, 6px
+ * radius, 4px/8px padding, 3px inner gap. Active wears `wash(0.10)`; the
+ * rest light up at `wash(0.06)` on hover.
+ */
+.right-tab-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.right-tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.right-tab {
+  height: 24px;
+  width: 112px;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  padding-left: var(--rb-space-xs);
+  padding-right: var(--rb-space-sm);
+  border-radius: var(--rb-radius-control);
+  color: var(--rb-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
+}
+
+.right-tab:hover {
+  background: rgb(var(--rb-wash) / 0.06);
+  color: var(--rb-text);
+}
+
+.right-tab-active {
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text);
+}
+
+/*
+ * The leading slot: the surface icon normally, the close ✕ on chip hover —
+ * two stacked layers opacity-swapped, so the swap costs no width.
+ */
+.right-tab-slot {
+  position: relative;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+
+.right-tab-icon,
+.right-tab-close {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.right-tab-close {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.right-tab:hover .right-tab-icon {
+  opacity: 0;
+}
+
+.right-tab:hover .right-tab-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.right-tab-close:hover {
+  background: rgb(var(--rb-wash) / 0.12);
+}
+
+.right-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Right pane ─────────────────────────────────────────────────────── */
+
+/* Surfaces fill the pane instead of laying themselves out as routed pages. */
+.right-pane-body > .changes-page,
+.right-pane-body > .files-page,
+.right-pane-body > .preview-panel,
+.right-pane-body > .term-dock {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  border: none;
+}
+
+/* Docked as a surface, the terminal fills its host: no fixed height, no
+   bottom-dock chrome. */
+.term-dock-surface {
+  height: auto;
+  border-top: none;
+}
+
+/* In the pane the tree and the viewer stack, as they do at phone widths. */
+.right-pane-body .files-body {
+  position: relative;
+}
+
+.right-pane-body .files-tree-pane {
+  width: 100%;
+  border-right: none;
+}
+
+.right-pane-body .files-viewer-pane {
+  display: none;
+}
+
+.right-pane-body .files-page-open .files-tree-pane {
+  display: none;
+}
+
+.right-pane-body .files-page-open .files-viewer-pane {
+  display: flex;
+}
+
+
+/*
+ * A flush, left-bordered glass panel — not an inset card. As a shell column it
+ * spans the full window height, so its surface and its seam hairline continue
+ * behind the titlebar band that carries its tabs; only its body pads down past
+ * that band. Width comes from `resolvePaneWidth`, and transitions so opening,
+ * closing and takeover glide on the desktop's 200ms resize curve.
+ */
+.right-pane {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  /*
+   * `right_pane_container`: the outer column clips while its width rides the
+   * resize curve, and the inner child below holds the wider endpoint. The
+   * surface slides out from the window's edge at a fixed layout width instead
+   * of reflowing through every intermediate one. It stays in the DOM at width
+   * zero while shut — a width transition needs something to animate from.
+   */
+  overflow: hidden;
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.right-pane-inner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-bg) 40%, transparent);
+}
+
+/*
+ * In takeover the panel's left edge IS the sidebar seam, which already carries
+ * the main column's hairline — a second border there doubles up.
+ */
+.right-pane-expanded .right-pane-inner {
+  border-left: none;
+}
+
+.right-pane-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: var(--rb-titlebar-height);
+}
+
+/* ── Column resize seams ────────────────────────────────────────────── */
+
+/*
+ * `shell.rs::resize_handle`: a forgiving 20px transparent hit target centred
+ * on the seam, running from the titlebar's bottom edge to the window's so it
+ * never steals clicks from the controls above. It floats with zero layout
+ * width — a real flex child made the sidebar's gutters read as lopsided.
+ *
+ * The adjacent column's 1px border stays the divider at rest; hover adds a
+ * stronger highlight that fades toward both ends, and a drag pins it on.
+ */
+.pane-seam {
+  position: absolute;
+  top: var(--rb-titlebar-height);
+  bottom: 0;
+  width: 20px;
+  z-index: 5;
+  cursor: col-resize;
+}
+
+/*
+ * The sidebar clips its overflow, so its seam is a child of the shell parked
+ * over the column's right edge; the pane's seam rides its own left edge.
+ */
+.pane-seam-sidebar {
+  left: calc(var(--rb-sidebar-now) - 10px);
+  transition: left var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.pane-seam-right {
+  right: calc(var(--rb-pane-now) - 10px);
+  transition: right var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.pane-seam-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 10px;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--rb-border-strong) 50%,
+    transparent 100%
+  );
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.pane-seam:hover .pane-seam-line,
+.pane-seam-dragging .pane-seam-line {
+  opacity: 1;
+}
+
+/*
+ * Toggles glide; drags do not. While a seam is held the columns track the
+ * pointer exactly, which is what the desktop's `right_tween = None` buys.
+ */
+:root[data-rb-resizing] .sidebar,
+:root[data-rb-resizing] .right-pane,
+:root[data-rb-resizing] .pane-seam,
+:root[data-rb-resizing] .titlebar-pane-band {
+  transition: none;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+
+/*
+ * `render_sidebar` + `sidebar_tone`: the surface and its right hairline run
+ * the full window height — behind the titlebar, under where the traffic lights
+ * would be, down to the bottom edge — while the content inside starts below
+ * the bar.
+ *
+ * Collapse CLIPS: this column animates its width with the content pinned at
+ * `--rb-sidebar-content`, so rows slide out of a shrinking window instead of
+ * reflowing through it (the desktop caches its inner pane at a fixed width for
+ * exactly this reason).
+ */
+.sidebar {
+  position: relative;
+  flex: none;
+  width: var(--rb-sidebar-now);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  /* `wash(0.05)` — the neutral ink ladder, not an accent or a glass recipe. */
+  background: rgb(var(--rb-wash) / 0.05);
+  /*
+   * The seam hairline, as an inset shadow rather than a border: it paints
+   * inside the box so it costs the content no pixel, and it has nothing to
+   * paint once the column reaches zero width — so it glides away with the
+   * collapse instead of surviving it as a line at the window edge.
+   */
+  box-shadow: inset -1px 0 0 var(--rb-border);
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.sidebar-inner {
+  width: var(--rb-sidebar-content);
+  height: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The titlebar overlays the content row, so the content pads below it. */
+  padding-top: var(--rb-titlebar-height);
+  /*
+   * The desktop mounts this body `.cached()` (`render_sidebar`): GPUI paints
+   * it once at a fixed width and the collapse only moves the clip over it —
+   * the content is never re-laid-out mid-animation. Give it its own
+   * compositor layer for the same effect, or the browser re-rasterizes the
+   * whole subtree (gradient mask included) on every frame of the glide.
+   */
+  will-change: transform;
+}
+
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  /* SIDEBAR_GLASS_FADE_BAND: the scroll edge dissolves rather than cutting. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%);
 }
 
 .sidebar-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex: none;
   padding: var(--rb-space-xs) var(--rb-space-sm);
 }
 
@@ -250,16 +806,391 @@ a:focus-visible,
   color: var(--rb-danger);
 }
 
+/* ── Space filter header ────────────────────────────────────────────── */
+
+.space-filter {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  padding: var(--rb-space-sm) var(--rb-space-md) var(--rb-space-xs);
+}
+
+.space-filter-trigger {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.space-filter-trigger:hover,
+.space-filter-trigger-open {
+  background: var(--rb-hover);
+}
+
+.space-filter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.space-filter-sort {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.space-filter-sort:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+/* The chevron rotates on disclosure over `motion.chevron` — 200ms ease. */
+.chevron {
+  flex: none;
+  color: var(--rb-text-muted);
+  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
+}
+
+.chevron-open {
+  transform: rotate(180deg);
+}
+
+.space-filter-menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: var(--rb-space-sm);
+  right: var(--rb-space-sm);
+  z-index: 30;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--rb-space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--rb-radius-panel);
+  border: 1px solid var(--rb-border);
+  background: var(--rb-dialog);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+/* ── Menus (shared popover rows) ────────────────────────────────────── */
+
+@keyframes rb-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  width: 100%;
+  padding: 6px var(--rb-space-sm);
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.menu-item:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.menu-item-picked {
+  color: var(--rb-text);
+  font-weight: 500;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: var(--rb-space-xs) 0;
+  background: var(--rb-border);
+}
+
+/* ── Sidebar footer: connection line + user menu ────────────────────── */
+
+.connection-pill {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 calc(var(--rb-space-sm) + 4px) var(--rb-space-sm);
+  animation: rb-fade-in var(--rb-motion-fade-in) var(--rb-ease-ease-out-expo);
+}
+
+.connection-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+@keyframes rb-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.user-menu {
+  position: relative;
+  flex: none;
+  padding: var(--rb-space-sm);
+}
+
+.user-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: var(--rb-space-sm);
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rb-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.user-menu-trigger:hover {
+  background: color-mix(in srgb, var(--rb-hover) 80%, transparent);
+}
+
+.user-menu-trigger-open {
+  background: var(--rb-hover);
+}
+
+/* A white circle carrying the initial in near-black (user-menu.tsx). */
+.avatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--rb-text);
+  color: var(--rb-bg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-menu-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-menu-name {
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-sub {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--rb-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-card {
+  position: absolute;
+  bottom: calc(100% - var(--rb-space-xs));
+  left: var(--rb-space-sm);
+  right: var(--rb-space-sm);
+  z-index: 30;
+  padding: var(--rb-space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--rb-radius-panel);
+  border: 1px solid var(--rb-border);
+  background: var(--rb-dialog);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+/* ── Activity glyphs (loaders.rs) ───────────────────────────────────── */
+
+/*
+ * `gspin_opacity` with GSPIN_DIM = 0.1, over GRADIENT_SPIN's 750ms: full,
+ * a linear fall to dim across the first 45%, a hold to 92%, then a fast
+ * return. Per-cell phase is a negative animation delay.
+ */
+@keyframes rb-gspin {
+  0% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.1;
+  }
+  92% {
+    opacity: 0.1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.glyph-spinner,
+.matrix-spinner {
+  display: inline-flex;
+  flex-direction: column;
+  gap: calc(var(--rb-cell) / 2);
+  flex: none;
+}
+
+.glyph-spinner-row,
+.matrix-spinner-row {
+  display: flex;
+  flex-direction: row;
+  gap: calc(var(--rb-cell) / 2);
+}
+
+.glyph-spinner-cell {
+  width: var(--rb-cell);
+  height: var(--rb-cell);
+  border-radius: 50%;
+  background: currentColor;
+  animation: rb-gspin 750ms linear infinite;
+}
+
+/* The three rows carry the accent's glyph roles (`GlyphPalette::rows`). */
+.glyph-spinner-row[data-row="0"],
+.matrix-spinner-row[data-row="0"] {
+  color: var(--rb-glyph-light);
+}
+
+.glyph-spinner-row[data-row="1"],
+.matrix-spinner-row[data-row="1"] {
+  color: var(--rb-glyph-mid);
+}
+
+.glyph-spinner-row[data-row="2"],
+.matrix-spinner-row[data-row="2"] {
+  color: var(--rb-glyph-deep);
+}
+
+/* The grayscale variant, for surfaces where an accent would pull focus. */
+.glyph-spinner-mono .glyph-spinner-row {
+  color: currentColor;
+}
+
+/* The connection line's spinner is the mono glyph at cell 2. */
+.mono-spinner {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--rb-text-muted);
+  animation: rb-gspin 750ms linear infinite;
+}
+
+/* ── Main column ────────────────────────────────────────────────────── */
+
+/*
+ * The conversation column — `shell.rs`'s `card`: flex-1, min-width 0, so the
+ * two outer columns' explicit widths decide what is left for it. Flush and
+ * unbordered (the transcript sits directly on the shell frost).
+ *
+ * The seam hairline lives on the SIDEBAR, not here. It used to be this
+ * column's `border-left`, dropped by a `.shell-sidebar-collapsed` rule — but
+ * that rule fires on the first frame of a 200ms collapse, so the hairline
+ * blinked out while the sidebar was still full width (and snapped back at the
+ * window edge on expand, sweeping right as the column grew). Both read as a
+ * flash. Riding the sidebar's own edge, it simply glides away with it, which
+ * is what `sidebar_tone`'s `border_r_1` does on the desktop.
+ */
 .main {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex: 1;
   min-width: 0;
   min-height: 0;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  padding-top: var(--rb-titlebar-height);
 }
 
-.topbar {
-  display: none;
+/*
+ * The width the conversation is LAID OUT at, which is not the width of the
+ * column it sits in. Across a takeover the shell pins it to the wider of the
+ * two endpoints, so the transcript is revealed or covered by the moving clip
+ * instead of re-wrapping through every intermediate width.
+ */
+.main-inner {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-pane-gliding .main-inner {
+  width: var(--rb-main-stable);
+  flex: none;
+}
+
+/*
+ * Takeover: the pane's width is the whole window minus the sidebar, so flex
+ * squeezes this column to nothing on its own. The clip has to outlast the
+ * takeover flag itself — dropping it on the first frame of a collapse spills a
+ * full-width transcript over the pane for the rest of the glide.
+ */
+.shell-pane-takeover .main,
+.shell-pane-gliding .main {
+  overflow: hidden;
 }
 
 .conn {
@@ -320,6 +1251,12 @@ a:focus-visible,
   gap: 2px;
 }
 
+/*
+ * One chat card — `shell.rs::render_chat_row`. Three lines on a 2px internal
+ * gap, 8px radius, 8px/6px padding; the row hover fades the wash and the
+ * title brighten together over `motion.hoverFade`. No selection ring: the
+ * wash alone marks the active row.
+ */
 .chat-row {
   display: flex;
   flex-direction: column;
@@ -327,68 +1264,122 @@ a:focus-visible,
   padding: 6px var(--rb-space-sm);
   border-radius: 8px;
   text-decoration: none;
-  color: var(--rb-text);
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
   cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .chat-row:hover {
   background: var(--rb-hover);
+  color: var(--rb-text);
 }
 
-.chat-row-active {
-  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
-}
-
+/*
+ * `glass_selected_bg` — the selected wash. A selected row must NOT drift
+ * toward the hover wash: in light mode the hover sits below the near-opaque
+ * selected fill, which visibly dimmed the active row under the pointer.
+ */
+.chat-row-active,
 .chat-row-active:hover {
-  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  background: rgb(var(--rb-wash) / 0.11);
+  color: var(--rb-text);
 }
 
 .chat-row-line {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--rb-space-sm);
   font-size: 11px;
   line-height: 14px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
-.chat-row-project {
+.chat-row-folder {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--rb-text-faint);
 }
 
+/*
+ * The corner is pinned to line 1's 14px text height, so the taller Archive
+ * pill overflows vertically instead of growing the row — the swap must not
+ * shift the card's content.
+ */
 .chat-row-corner {
+  flex: none;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.chat-row-status {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.status-working {
+  color: var(--rb-activity);
+}
+
+.status-awaitingInput {
+  color: var(--rb-accent);
+}
+
+.status-errored {
+  color: var(--rb-danger);
+}
+
+.status-completed {
+  color: var(--rb-success);
+}
+
+/*
+ * The Archive pill's padding bleeds into the row's so its TEXT right-aligns
+ * exactly where the status word sat: 4px of the row's 8px padding is left,
+ * matching the 4px of air above the 18px pill on the 14px line.
+ */
+.chat-row-archive {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding-inline: 4px;
+  margin-right: -4px;
+  border-radius: 5px;
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.chat-row-archive:hover {
+  background: rgb(var(--rb-wash) / 0.18);
+}
+
+/* Line 2: the harness mark belongs directly with the title. */
+.chat-row-title-line {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.chat-row-brand {
   flex: none;
-  font-size: 11px;
-}
-
-.corner-idle {
-  color: var(--rb-text-faint);
-}
-
-.corner-working {
-  color: color-mix(in srgb, var(--rb-activity) 70%, var(--rb-text));
-}
-
-.corner-awaitingInput {
-  color: color-mix(in srgb, var(--rb-accent) 75%, var(--rb-text));
-}
-
-.corner-errored {
-  color: color-mix(in srgb, var(--rb-danger) 80%, var(--rb-text));
-}
-
-.corner-completed {
-  color: color-mix(in srgb, var(--rb-success) 85%, var(--rb-text));
+  color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
+  opacity: 0.8;
 }
 
 .chat-row-title {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   line-height: 17px;
   overflow: hidden;
@@ -396,11 +1387,19 @@ a:focus-visible,
   white-space: nowrap;
 }
 
+/* Line 3 is structural, not reserved whitespace. */
+.chat-row-meta {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
 .chat-row-branch {
+  min-width: 0;
   font-size: 11px;
   line-height: 14px;
-  color: var(--rb-text-faint);
-  font-family: "Geist Mono", ui-monospace, monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -408,43 +1407,24 @@ a:focus-visible,
 
 /* ── Chat page (main panel) ─────────────────────────────────────────── */
 
+/*
+ * The chat route fills the conversation column. Its sibling — the right pane —
+ * is a shell column now, so nothing here lays out beside it.
+ */
 .chat-page {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
 
-.chat-header {
-  flex: none;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--rb-space-md);
-  padding: var(--rb-space-sm) var(--rb-space-lg);
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.chat-header-title {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
+.chat-column {
+  flex: 1;
   min-width: 0;
-}
-
-.chat-header-title h1 {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-header-branch {
-  color: var(--rb-text-faint);
-  font-size: 12px;
-  font-family: "Geist Mono", ui-monospace, monospace;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat-transcript {
@@ -482,13 +1462,6 @@ a:focus-visible,
     border-top: 1px solid var(--rb-border);
     max-height: 50vh;
   }
-}
-
-.chat-header-side {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  flex: none;
 }
 
 /* ── Composer + pickers ─────────────────────────────────────────────── */
@@ -634,42 +1607,88 @@ a:focus-visible,
   -webkit-backdrop-filter: blur(16px);
 }
 
+/*
+ * The composer pill — `composer.rs`.
+ *
+ * One 26px-radius surface (COMPOSER_RADIUS) with a 1px hairline, centred in a
+ * 768px column (`max-w-3xl`, COMPOSER_MAX_WIDTH) and floating over the
+ * transcript rather than sitting on a bar of its own. Its bottom edge is
+ * stationary: growth moves the TOP edge, so the controls pin to the bottom
+ * and only the text glides with the reveal.
+ */
 .composer {
   flex: none;
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--rb-space-xs);
-  padding: var(--rb-space-sm) var(--rb-space-md) var(--rb-space-md);
-  background: var(--rb-shell);
-  border-top: 1px solid var(--rb-border);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  border-radius: 26px;
 }
 
-.composer-input-wrap {
+.composer-input-wrap,
+.composer-actions,
+.composer-attachments {
+  /* Children share the pill; the pill itself is drawn on `.composer > *`. */
   position: relative;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-input);
-  transition: height var(--rb-motion-collapse) var(--rb-ease-ease-out),
-    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
-  animation: composer-flip var(--rb-motion-collapse) var(--rb-ease-ease-out);
 }
 
+.composer > .composer-input-wrap {
+  border-top-left-radius: 26px;
+  border-top-right-radius: 26px;
+}
+
+.composer {
+  position: relative;
+}
+
+/* The pill body, drawn behind every child. */
+.composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 26px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-input) 82%, transparent);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  pointer-events: none;
+  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.composer-working::before {
+  border-color: color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
+}
+
+.composer-editing::before {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent-wash);
+}
+
+/*
+ * Expanded: `pt-4 pb-1` (TEXTAREA_PAD_V = 20) on a box clamped between 76
+ * and 260 by the auto-grow effect. Compact collapses to one 22.75px line
+ * (INPUT_LINE_HEIGHT) inside `py-3`.
+ */
 .composer-input {
   display: block;
   width: 100%;
-  min-height: 49px;
-  max-height: 308px;
-  padding: 12px 14px;
+  min-height: 47px;
+  max-height: 260px;
+  padding: 12px 16px;
   border: none;
   background: transparent;
   color: var(--rb-text);
   font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
   font-size: 14px;
-  line-height: 22px;
+  line-height: 22.75px;
   resize: none;
   outline: none;
+}
+
+.composer-expanded .composer-input {
+  padding: 16px 16px 4px;
 }
 
 .composer-input:disabled {
@@ -678,86 +1697,207 @@ a:focus-visible,
 }
 
 .composer-input::placeholder {
-  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  color: var(--rb-text-faint);
 }
 
-.composer-working .composer-input-wrap {
-  border-color: color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
-}
-
-.composer-editing .composer-input-wrap {
-  border-color: var(--rb-accent);
-  background: var(--rb-accent-wash);
-}
-
-.composer-footer {
+/*
+ * The actions row: pickers and the paperclip form one utility group
+ * (ACTION_UTILITY_GAP = 4), with the larger structural ACTION_PRIMARY_GAP
+ * before Send. `pl-3 pr-3 pt-1 pb-2.5` — ACTIONS_ROW_HEIGHT = 46.
+ */
+.composer-actions {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  justify-content: space-between;
   gap: var(--rb-space-sm);
-  min-height: 36px;
+  padding: 4px 12px 10px;
 }
+
+.composer-utility {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--rb-space-xs);
+}
+
+.composer-compact .composer-actions {
+  padding: 0 8px 0 4px;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  height: 47px;
+}
+
+.composer-compact .composer-utility {
+  flex: none;
+}
+
+.composer-compact .composer-input {
+  padding-right: 200px;
+}
+
+.composer-attach {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.composer-attach:not(:disabled):hover {
+  background: rgb(var(--rb-ink) / 0.1);
+}
+
+.composer-attach:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The paperclip's painted bounds sit left of centre in its 24px viewbox. */
+.composer-attach svg {
+  position: relative;
+  left: 1px;
+}
+
+/* ── Run identity chip ──────────────────────────────────────────────── */
 
 .composer-pickers {
   position: relative;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--rb-space-xs);
+}
+
+/*
+ * The ghost pill (`trigger_chip`, after roboco's composer/styles.tsx `pill`):
+ * `h-8 rounded-lg px-2.5 gap-1.5 text-[12px] font-medium`, 16px icon, no
+ * border and no caret — the actions row stays quiet. The wash and the text
+ * brighten ride the same 150ms blend.
+ */
+.identity-chip {
+  height: 32px;
+  max-width: 248px;
   min-width: 0;
-  flex: 1;
-}
-
-.composer-pickers-row {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.composer-pickers-row::-webkit-scrollbar {
-  display: none;
-}
-
-.picker-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
-  color: var(--rb-text-muted);
+  padding-inline: 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
-  white-space: nowrap;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.picker-chip:hover {
+.identity-chip:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.identity-chip-open {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.identity-chip-brand {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.identity-chip-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The effort half of the combined chip: muted, no icon — one button, two
+ * tones. It brightens only when something departs from its default, and
+ * under row pressure it yields FIRST so the model name truncates last.
+ */
+.identity-chip-suffix {
+  flex: 1000 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.identity-chip-suffix-active {
+  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
+}
+
+.identity-tabs {
+  position: absolute;
+  bottom: calc(100% + 324px);
+  right: 0;
+  z-index: 26;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: var(--rb-dialog);
+}
+
+.identity-tab {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.identity-tab:hover {
   background: var(--rb-hover);
 }
 
-.picker-chip-open {
-  border-color: var(--rb-accent);
-  background: var(--rb-accent-wash);
-  color: var(--rb-accent);
+.identity-tab-selected {
+  background: rgb(var(--rb-wash) / 0.11);
+  color: var(--rb-text);
 }
 
-.picker-chip-locked {
-  opacity: 0.7;
+.identity-tab-locked {
+  opacity: 0.6;
 }
 
-.picker-chip-label {
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-  font-size: 11px;
-}
-
-.picker-chip-value {
+.identity-tab-label {
+  font-size: 10px;
   font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.identity-tab-value {
+  font-size: 11px;
+  font-weight: 500;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .picker-popover {
@@ -832,7 +1972,8 @@ a:focus-visible,
 }
 
 .picker-row-selected {
-  color: var(--rb-accent);
+  color: var(--rb-text);
+  font-weight: 500;
 }
 
 .picker-row-label {
@@ -853,21 +1994,41 @@ a:focus-visible,
   left: 0;
 }
 
+/*
+ * `render_send_button`: a 28px filled circle — the up-arrow to send or queue,
+ * a dark rounded square on the same light circle to stop. Blocked sends dim
+ * to 0.35 rather than changing color.
+ */
 .composer-send {
+  width: 28px;
+  height: 28px;
   flex: none;
-  height: 30px;
-  padding: 0 14px;
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--rb-text);
+  color: var(--rb-bg);
+  cursor: pointer;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.composer-send-stop {
-  background: var(--rb-danger);
-  color: var(--rb-on-solid);
+.composer-send:not(:disabled):hover {
+  opacity: 0.85;
 }
 
-.composer-send-stop:not(:disabled):hover {
-  background: color-mix(in srgb, var(--rb-danger) 88%, var(--rb-accent-strong));
-  color: var(--rb-on-accent);
+.composer-send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.composer-stop-square {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--rb-bg);
 }
 
 @keyframes picker-in {
@@ -891,16 +2052,9 @@ a:focus-visible,
 }
 
 @media (max-width: 768px) {
-  .composer {
-    padding: var(--rb-space-xs) var(--rb-space-sm) var(--rb-space-sm);
-  }
-
+  /* iOS zooms any field under 16px on focus. */
   .composer-input {
     font-size: 16px;
-  }
-
-  .composer-pickers-row {
-    flex-wrap: nowrap;
   }
 }
 
@@ -1190,6 +2344,8 @@ a:focus-visible,
 }
 
 /* ── Terminal dock ──────────────────────────────────────────────────── */
+
+.term-dock {
   position: relative;
   flex: none;
   display: flex;
@@ -1960,21 +3116,69 @@ button.files-row-active:hover {
 /* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
 
 @media (max-width: 768px) {
+  /*
+   * The sidebar leaves the flow for a drawer, so the row becomes a stack: the
+   * conversation on top, the pane beneath it. Neither outer column has a width
+   * worth dragging at this size, so both seams retire.
+   */
   .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr;
+    flex-direction: column;
   }
 
-  .topbar {
-    flex: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--rb-space-sm);
-    height: var(--rb-header-height);
-    padding: 0 var(--rb-space-sm);
-    background: var(--rb-shell);
-    border-bottom: 1px solid var(--rb-border);
+  /* The drawer draws its own edge, so the column's inset seam retires. */
+  .sidebar {
+    box-shadow: none;
+  }
+
+  .sidebar-inner {
+    width: 100%;
+  }
+
+  .pane-seam-sidebar,
+  .pane-seam-right {
+    display: none;
+  }
+
+  /*
+   * Stacked, so there is no width to clip or glide: the pane takes a row and
+   * its inner child goes back into normal flow.
+   */
+  .right-pane {
+    width: auto !important;
+    flex: 1;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .right-pane[aria-hidden="true"] {
+    display: none;
+  }
+
+  .right-pane-inner {
+    position: static;
+    width: 100% !important;
+    border-left: none;
+    border-top: 1px solid var(--rb-border);
+  }
+
+  .right-pane-body {
+    padding-top: 0;
+  }
+
+  /* Takeover on a phone is just "the pane, full bleed". */
+  .shell-pane-takeover .main {
+    display: none;
+  }
+
+  /* The pill is edge-to-edge on desktop only; a phone needs its gutters. */
+  .composer,
+  .composer-footer {
+    width: calc(100% - 2 * var(--rb-space-sm));
+  }
+
+  /* The identity's folder line is the first thing to go when width runs out. */
+  .identity-folder {
+    display: none;
   }
 
   .sidebar {
@@ -2078,14 +3282,110 @@ button.files-row-active:hover {
   min-width: 0;
 }
 
+/*
+ * `TRANSCRIPT_FADE_BAND` — the gradient that fades the transcript into the
+ * panel background at its bottom edge. It sits above the status strip, so
+ * settled content never lands inside the band when scrolled to the bottom.
+ */
 .transcript-fade {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: var(--rb-status-strip-height);
   height: var(--rb-transcript-fade-band);
   background: linear-gradient(to bottom, transparent, var(--rb-bg));
   pointer-events: none;
+}
+
+/*
+ * `STATUS_STRIP_HEIGHT` — reserved under the content outlet whether or not
+ * anything occupies it, so the composer never shifts when the working
+ * indicator appears.
+ */
+.status-strip {
+  flex: none;
+  height: var(--rb-status-strip-height);
+}
+
+/*
+ * `render_footer` — the session footer under the composer. Its 24px height
+ * (SESSION_FOOTER_HEIGHT) is what the usage indicator and the change-request
+ * badge need inside equal 8px gutters; workspace identity leads, occupancy
+ * trails.
+ */
+.composer-footer {
+  flex: none;
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  padding: 0 10px var(--rb-space-sm);
+}
+
+.footer-spring {
+  flex: 1;
+  min-width: 0;
+}
+
+.footer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 20px;
+  padding-inline: 6px;
+  border-radius: var(--rb-radius-control);
+  color: var(--rb-text-faint);
+  font-size: 11px;
+}
+
+.footer-chip-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+/* `context_usage.rs`: a 16px ring, 5px from its label, in an h-24 px-6 slot. */
+.context-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding-inline: 6px;
+  border-radius: var(--rb-radius-control);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.context-usage:hover {
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.context-usage[data-tone="none"] {
+  color: var(--rb-text-faint);
+}
+
+.context-usage[data-tone="warning"] {
+  color: var(--rb-warning);
+}
+
+.context-usage[data-tone="danger"] {
+  color: var(--rb-danger);
+}
+
+.context-usage-track {
+  stroke: color-mix(in srgb, var(--rb-text-faint) 25%, transparent);
+}
+
+.context-usage-arc {
+  stroke: currentColor;
 }
 
 .jump-bottom {
@@ -3941,9 +5241,9 @@ html[data-surface="frosted"] .modal-card {
 }
 
 .changes-scope-chip-active {
-  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
+  background: rgb(var(--rb-wash) / 0.11);
   color: var(--rb-text);
-  border-color: color-mix(in srgb, var(--rb-accent) 40%, var(--rb-border));
+  border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
 }
 
 .changes-base {
@@ -4018,8 +5318,8 @@ html[data-surface="frosted"] .modal-card {
 }
 
 .changes-tool-active {
-  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
-  border-color: color-mix(in srgb, var(--rb-accent) 40%, var(--rb-border));
+  background: rgb(var(--rb-wash) / 0.11);
+  border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
   color: var(--rb-text);
 }
 

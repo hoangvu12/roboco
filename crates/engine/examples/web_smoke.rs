@@ -22,7 +22,7 @@ async fn main() {
     )
     .await
     .unwrap();
-    seed_smoke_chat(core.rpc_service()).await;
+    seed_smoke_chat(core.rpc_service(), dir.path()).await;
     let code = PairingStore::open(dir.path())
         .unwrap()
         .create_code("browser smoke", 3600)
@@ -38,7 +38,7 @@ async fn main() {
     }
 }
 
-async fn seed_smoke_chat(service: Arc<dyn RpcService>) {
+async fn seed_smoke_chat(service: Arc<dyn RpcService>, cwd: &std::path::Path) {
     let device = match service
         .handle(roboco_rpc::methods::LOCAL_DEVICE, serde_json::json!({}))
         .await
@@ -50,6 +50,10 @@ async fn seed_smoke_chat(service: Arc<dyn RpcService>) {
     for params in [
         serde_json::json!({"op": "createChat", "chatId": "smoke-chat", "deviceId": device}),
         serde_json::json!({"op": "renameChat", "chatId": "smoke-chat", "title": "Browser smoke chat"}),
+        // A working directory is what makes the chat runnable: without one the
+        // composer refuses to send, so the harness never replies and the
+        // transcript stays empty — no use as a visual-parity harness.
+        serde_json::json!({"op": "setChatCwd", "chatId": "smoke-chat", "cwd": cwd.to_string_lossy()}),
         serde_json::json!({"op": "setChatActivity", "chatId": "smoke-chat", "lastMessageAt": now_ms() - 5 * 60_000, "createdAt": now_ms() - 3_600_000}),
     ] {
         service

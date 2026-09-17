@@ -26,6 +26,13 @@ interface AttachmentStripProps {
   readonly onStage: (attachments: readonly StagedAttachment[]) => void;
   readonly onRemove: (id: string) => void;
   readonly onError: (message: string) => void;
+  /**
+   * Filled with the strip's own picker opener so the composer's paperclip —
+   * which lives in the actions cluster, as on the desktop — can drive it.
+   * When set, the strip drops its inline Attach button: two attach
+   * affordances in one pill is one more than the desktop has.
+   */
+  readonly pickerRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 /** Stage `File` objects picked up from a picker / drop / paste event. */
@@ -37,6 +44,7 @@ export function AttachmentStrip({
   onStage,
   onRemove,
   onError,
+  pickerRef,
 }: AttachmentStripProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -132,6 +140,16 @@ export function AttachmentStrip({
     fileInputRef.current?.click();
   }, [disabled]);
 
+  useEffect(() => {
+    if (pickerRef === undefined) {
+      return;
+    }
+    pickerRef.current = openPicker;
+    return () => {
+      pickerRef.current = null;
+    };
+  }, [pickerRef, openPicker]);
+
   const onPaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
       if (disabled === true) {
@@ -188,17 +206,19 @@ export function AttachmentStrip({
         </div>
       )}
       <div className="composer-attachments-row">
-        <button
-          type="button"
-          className="composer-attach-button"
-          onClick={openPicker}
-          disabled={disabled === true}
-          title="Attach images (or drop files here)"
-          aria-label="Attach images"
-        >
-          <span aria-hidden>📎</span>
-          <span>Attach</span>
-        </button>
+        {pickerRef === undefined && (
+          <button
+            type="button"
+            className="composer-attach-button"
+            onClick={openPicker}
+            disabled={disabled === true}
+            title="Attach images (or drop files here)"
+            aria-label="Attach images"
+          >
+            <span aria-hidden>📎</span>
+            <span>Attach</span>
+          </button>
+        )}
         {hasStaged && (
           <div className="composer-attachments-strip">
             {staged.map((att) => (

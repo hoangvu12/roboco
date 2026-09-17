@@ -19,7 +19,8 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@roboco/icons": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

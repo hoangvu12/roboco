@@ -6,7 +6,13 @@
  * execution paths — the same trick the desktop uses for its menu actions.
  */
 
-export type ShortcutEvent = "new-chat";
+/**
+ * `"open-engines"` opens the engine drawer. It is a shortcut rather than a
+ * prop because the drawer's open flag lives in `AppShell` while its trigger
+ * lives in the sidebar's user menu — the desktop reaches Devices the same
+ * way, from the user menu rather than the titlebar.
+ */
+export type ShortcutEvent = "new-chat" | "open-engines";
 
 const listeners = new Map<ShortcutEvent, Set<() => void>>();
 

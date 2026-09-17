@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { HarnessDescriptor, Model, ReasoningLevel, SandboxLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
+import { traitsActive, traitsSummary } from "../lib/traits-summary";
 import {
   PickerPopover,
   harnessPickerItems,
@@ -10,12 +12,19 @@ import {
 } from "./picker-popover";
 
 /**
- * The chip row at the foot of the composer: harness, model, reasoning, and
- * sandbox pickers. Each chip opens a `PickerPopover` anchored above. The
- * harness chip dims once the chat has a persisted `ChatConfig` (the desktop
- * locks it: `crates/ui/src/pickers.rs HarnessModelPicker`). Reasoning and
- * sandbox options are gated on the picked harness/model/reasoning so an
- * unrelated harness's ladders don't appear.
+ * The composer's run identity — the desktop's `Pickers::render` cluster.
+ *
+ * ONE chip carries the whole run identity: the harness's brand mark, the model
+ * name, and then the joined traits summary ("Medium", "High · 1M · Fast",
+ * "Agent · Balance") as the chip's muted second tone. The run's configuration
+ * reads without opening anything, and the suffix brightens only when something
+ * departs from its default. No suffix when the model has neither a ladder nor
+ * options.
+ *
+ * Opening the chip reveals the harness, model, reasoning, and sandbox lists in
+ * one stack (the desktop's tabbed `render_harness_model_popover`). The harness
+ * list dims once the chat has a persisted `ChatConfig` — the desktop locks it
+ * (`pickers.rs HarnessModelPicker`).
  */
 
 const SANDBOX_LEVELS: readonly SandboxLevel[] = ["read-only", "workspace-write", "danger-full-access"];
@@ -66,9 +75,13 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const sandboxItems = stringPickerItems(SANDBOX_LEVELS);
 
   const harnessLabel = harnesses.find((h) => h.id === draft.harness)?.name ?? draft.harness;
-  const modelLabel = models.find((m) => m.id === draft.model)?.label ?? draft.model ?? "Model";
+  const pickedModel = models.find((m) => m.id === draft.model);
+  const modelLabel = pickedModel?.label ?? draft.model ?? "Model";
   const reasoningLabel = draft.reasoning ?? "Reasoning";
   const sandboxLabel = draft.sandbox;
+  const brand = harnessBrandIcon(draft.harness);
+  const suffix = traitsSummary(pickedModel, draft.reasoning, draft.modelOptions);
+  const suffixActive = traitsActive(pickedModel, draft.reasoning, draft.modelOptions);
 
   function pick(update: DraftConfigUpdate, next: OpenPicker = null): void {
     onChange(update);
@@ -77,33 +90,35 @@ export function ComposerPickers(props: ComposerPickersProps) {
 
   return (
     <div className="composer-pickers" ref={containerRef}>
-      <div className="composer-pickers-row">
-        <PickerChip
-          label="Harness"
-          value={harnessLabel}
-          dim={harnessLocked}
-          open={open === "harness"}
-          onToggle={() => setOpen((current) => (current === "harness" ? null : "harness"))}
+      <button
+        type="button"
+        className={`identity-chip ${open !== null ? "identity-chip-open" : ""}`}
+        onClick={() => setOpen((current) => (current === null ? "model" : null))}
+        aria-haspopup="menu"
+        aria-expanded={open !== null}
+        title={`${harnessLabel} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
+      >
+        <Icon
+          name={brand.name}
+          size={16}
+          className="identity-chip-brand"
+          style={brand.tint === null ? undefined : { color: brand.tint }}
         />
-        <PickerChip
-          label="Model"
-          value={modelLabel}
-          open={open === "model"}
-          onToggle={() => setOpen((current) => (current === "model" ? null : "model"))}
-        />
-        <PickerChip
-          label="Reasoning"
-          value={reasoningLabel}
-          open={open === "reasoning"}
-          onToggle={() => setOpen((current) => (current === "reasoning" ? null : "reasoning"))}
-        />
-        <PickerChip
-          label="Sandbox"
-          value={sandboxLabel}
-          open={open === "sandbox"}
-          onToggle={() => setOpen((current) => (current === "sandbox" ? null : "sandbox"))}
-        />
-      </div>
+        <span className="identity-chip-model">{modelLabel}</span>
+        {suffix !== null && (
+          <span className={`identity-chip-suffix ${suffixActive ? "identity-chip-suffix-active" : ""}`}>
+            {suffix}
+          </span>
+        )}
+      </button>
+      {open !== null && (
+        <div className="identity-tabs" role="tablist">
+          <IdentityTab id="harness" open={open} setOpen={setOpen} label="Harness" value={harnessLabel} dim={harnessLocked} />
+          <IdentityTab id="model" open={open} setOpen={setOpen} label="Model" value={modelLabel} />
+          <IdentityTab id="reasoning" open={open} setOpen={setOpen} label="Effort" value={reasoningLabel} />
+          <IdentityTab id="sandbox" open={open} setOpen={setOpen} label="Sandbox" value={sandboxLabel} />
+        </div>
+      )}
       {open === "harness" && (
         <PickerPopover
           items={harnessItems}
@@ -172,17 +187,37 @@ export function ComposerPickers(props: ComposerPickersProps) {
   );
 }
 
-function PickerChip({ label, value, dim, open, onToggle }: { label: string; value: string; dim?: boolean; open: boolean; onToggle: () => void }) {
+/**
+ * One tab of the opened identity popover. The desktop's popover is tabbed
+ * across harness and model with the traits ladder beside them; the same four
+ * facets live here as a single row of quiet tabs above whichever list is open.
+ */
+function IdentityTab({
+  id,
+  open,
+  setOpen,
+  label,
+  value,
+  dim,
+}: {
+  id: Exclude<OpenPicker, null>;
+  open: OpenPicker;
+  setOpen: (next: OpenPicker) => void;
+  label: string;
+  value: string;
+  dim?: boolean;
+}) {
+  const selected = open === id;
   return (
     <button
       type="button"
-      className={`picker-chip ${open ? "picker-chip-open" : ""} ${dim === true ? "picker-chip-locked" : ""}`}
-      onClick={onToggle}
-      aria-haspopup="listbox"
-      aria-expanded={open}
+      role="tab"
+      aria-selected={selected}
+      className={`identity-tab ${selected ? "identity-tab-selected" : ""} ${dim === true ? "identity-tab-locked" : ""}`}
+      onClick={() => setOpen(id)}
     >
-      <span className="picker-chip-label">{label}</span>
-      <span className="picker-chip-value">{value}</span>
+      <span className="identity-tab-label">{label}</span>
+      <span className="identity-tab-value">{value}</span>
     </button>
   );
 }

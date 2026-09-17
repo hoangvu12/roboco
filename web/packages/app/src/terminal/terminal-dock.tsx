@@ -16,32 +16,44 @@ import { TAB_WIDTH, dropIndex, slideOffset } from "./tabs";
  * State lives in the `TerminalStore` above the route outlet, so navigating
  * between chats detaches the dock without closing the PTYs.
  */
-export function TerminalDock({ store, chatId }: { store: TerminalStore; chatId: string }) {
+export function TerminalDock({
+  store,
+  chatId,
+  docked = false,
+}: {
+  store: TerminalStore;
+  chatId: string;
+  /**
+   * Rendered as the right pane's Terminal surface rather than as a bottom
+   * dock: it fills its host, so it drops the height drag and the fixed
+   * height. The desktop's terminal is a pane surface too — the bottom dock is
+   * the web's phone-width form.
+   */
+  docked?: boolean;
+}) {
   useSyncExternalStore(store.subscribe, store.getVersion);
   const chat = store.stateFor(chatId);
 
-  // mod-j toggles the panel (desktop: Cmd+J on macOS, Ctrl+J elsewhere).
-  // Capture phase: the focused terminal's textarea would otherwise eat the
-  // chord and send LF to the shell.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "j") {
-        event.preventDefault();
-        event.stopPropagation();
-        store.toggle(chatId);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [store, chatId]);
+  // Mod+J is bound by the chat page, above the pane: this component only
+  // mounts while its own tab is active, so a binding here could not reveal it.
 
   if (chat === undefined || !chat.open) {
     return null;
   }
-  return <DockBody store={store} chatId={chatId} chat={chat} />;
+  return <DockBody store={store} chatId={chatId} chat={chat} docked={docked} />;
 }
 
-function DockBody({ store, chatId, chat }: { store: TerminalStore; chatId: string; chat: ChatTerminals }) {
+function DockBody({
+  store,
+  chatId,
+  chat,
+  docked,
+}: {
+  store: TerminalStore;
+  chatId: string;
+  chat: ChatTerminals;
+  docked: boolean;
+}) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the active emulator fitted to the body: drag-resizes, window
@@ -75,8 +87,12 @@ function DockBody({ store, chatId, chat }: { store: TerminalStore; chatId: strin
   };
 
   return (
-    <section className="term-dock" style={{ height: chat.height }} aria-label="Terminal">
-      <div className="term-dock-handle" onPointerDown={startHeightDrag} />
+    <section
+      className={`term-dock ${docked ? "term-dock-surface" : ""}`}
+      style={docked ? undefined : { height: chat.height }}
+      aria-label="Terminal"
+    >
+      {!docked && <div className="term-dock-handle" onPointerDown={startHeightDrag} />}
       <TabBar store={store} chatId={chatId} chat={chat} />
       <div className="term-body" ref={bodyRef}>
         {chat.tabs.map((tab, ix) => (

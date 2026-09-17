@@ -104,6 +104,23 @@ export class TerminalStore {
     this.#bump();
   }
 
+  /**
+   * Show the terminal without toggling it off — what selecting the pane's
+   * Terminal tab does. Like `toggle`, opening an empty chat spawns its first
+   * tab (desktop `ensure_tab`).
+   */
+  open(chatId: string): void {
+    const chat = this.#chat(chatId);
+    if (chat.open) {
+      return;
+    }
+    chat.open = true;
+    if (chat.tabs.length === 0) {
+      this.#addTab(chatId, chat);
+    }
+    this.#bump();
+  }
+
   setHeight(chatId: string, height: number, viewportH: number): void {
     const chat = this.#chat(chatId);
     const clamped = clampTerminalHeight(height, viewportH);

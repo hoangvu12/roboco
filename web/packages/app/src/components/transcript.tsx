@@ -11,7 +11,7 @@ import {
 } from "react";
 import type { EngineClient } from "@roboco/engine-client";
 import { methods } from "@roboco/engine-client";
-import type { FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
+import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import { TranscriptStore } from "../state/transcript-store";
 import { MarkdownCache, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
@@ -50,10 +50,18 @@ export function TranscriptView({
   client,
   docId,
   deviceId,
+  onContextUsage,
 }: {
   client: EngineClient;
   docId: string;
   deviceId: string | null;
+  /**
+   * Replicated context occupancy, published as it changes. The composer's
+   * footer draws it (the desktop's `render_footer`), but this store owns the
+   * only subscription that carries it — a second watch for one number would
+   * be a second live stream per open chat.
+   */
+  onContextUsage?: (usage: ContextUsage | null) => void;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -77,6 +85,7 @@ export function TranscriptView({
       store={store}
       client={client}
       deviceId={deviceId}
+      onContextUsage={onContextUsage}
     />
   );
 }
@@ -85,14 +94,21 @@ function TranscriptSurface({
   store,
   client,
   deviceId,
+  onContextUsage,
 }: {
   store: TranscriptStore;
   client: EngineClient;
   deviceId: string | null;
+  onContextUsage?: (usage: ContextUsage | null) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+
+  const usage = snapshot.contextUsage;
+  useEffect(() => {
+    onContextUsage?.(usage);
+  }, [usage, onContextUsage]);
 
   const parseCacheRef = useRef<MarkdownCache | null>(null);
   if (parseCacheRef.current === null) {
@@ -410,6 +426,13 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, d
         {!loaded && error === null && <p className="chat-transcript-empty">Loading…</p>}
       </div>
       <div className="transcript-fade" aria-hidden />
+      {/*
+        The reserved status strip under the content outlet
+        (`layout::STATUS_STRIP_HEIGHT`): the desktop keeps it whether or not
+        anything occupies it, so the composer never shifts when the working
+        indicator appears.
+      */}
+      <div className="status-strip" />
       {showJump && (
         <button
           type="button"

@@ -28,10 +28,79 @@ import type { ChangeRequestSummary } from "@roboco/proto";
  * keeps the desktop's gutter + marker columns and lets lines wrap on narrow
  * screens instead of horizontal-scrolling the entire file.
  */
+/**
+ * The routed page: URL-bound scope/base, with the back link to the chat.
+ * Kept so `/chat/$id/changes` links stay valid; the pane hosts the same body
+ * through `ChangesSurface`.
+ */
 export function ChangesPage() {
   const { chatId } = useParams({ from: changesRoute.id });
   const search = useSearch({ from: changesRoute.id });
   const navigate = useNavigate();
+  const scope = (search.scope === "branch" || search.scope === "turn" ? search.scope : "workingTree") as DiffScope;
+  return (
+    <ChangesBody
+      chatId={chatId}
+      scope={scope}
+      requestedBase={search.base ?? null}
+      standalone
+      onScopeChange={(next) => {
+        void navigate({
+          to: "/chat/$chatId/changes",
+          params: { chatId },
+          search: { scope: next, base: next === "branch" ? search.base ?? "" : "" },
+        });
+      }}
+      onBaseChange={(next) => {
+        void navigate({
+          to: "/chat/$chatId/changes",
+          params: { chatId },
+          search: { scope: "branch", base: next },
+        });
+      }}
+    />
+  );
+}
+
+/**
+ * The right pane's Changes surface. The pane is chat-scoped chrome with no
+ * URL of its own, so scope and base live in local state here rather than in
+ * search params.
+ */
+export function ChangesSurface({ chatId }: { chatId: string }) {
+  const [scope, setScope] = useState<DiffScope>("workingTree");
+  const [base, setBase] = useState<string | null>(null);
+  return (
+    <ChangesBody
+      chatId={chatId}
+      scope={scope}
+      requestedBase={base}
+      standalone={false}
+      onScopeChange={(next) => {
+        setScope(next);
+        if (next !== "branch") {
+          setBase(null);
+        }
+      }}
+      onBaseChange={(next) => {
+        setScope("branch");
+        setBase(next);
+      }}
+    />
+  );
+}
+
+interface ChangesBodyProps {
+  readonly chatId: string;
+  readonly scope: DiffScope;
+  readonly requestedBase: string | null;
+  /** The routed page draws a back link and a heading; the pane does not. */
+  readonly standalone: boolean;
+  readonly onScopeChange: (next: DiffScope) => void;
+  readonly onBaseChange: (next: string) => void;
+}
+
+function ChangesBody({ chatId, scope, requestedBase, standalone, onScopeChange, onBaseChange }: ChangesBodyProps) {
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const snapshot = useWatchSnapshot(session);
@@ -44,9 +113,6 @@ export function ChangesPage() {
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
-
-  const scope = (search.scope === "branch" || search.scope === "turn" ? search.scope : "workingTree") as DiffScope;
-  const requestedBase = search.base ?? null;
 
   const [store, setStore] = useState<ChangesStore | null>(null);
   useEffect(() => {
@@ -159,22 +225,6 @@ export function ChangesPage() {
     });
   };
 
-  const onScopeChange = (next: DiffScope): void => {
-    void navigate({
-      to: "/chat/$chatId/changes",
-      params: { chatId },
-      search: { scope: next, base: next === "branch" ? requestedBase ?? "" : "" },
-    });
-  };
-
-  const onBaseChange = (next: string): void => {
-    void navigate({
-      to: "/chat/$chatId/changes",
-      params: { chatId },
-      search: { scope: "branch", base: next },
-    });
-  };
-
   const fileCount = resolvedDiff?.files.length ?? 0;
   const additions = resolvedDiff?.additions ?? 0;
   const deletions = resolvedDiff?.deletions ?? 0;
@@ -211,14 +261,16 @@ export function ChangesPage() {
   const crUnsupported = crSnap !== null && !crSnap.supported;
 
   return (
-    <div className="changes-page">
+    <div className={`changes-page ${standalone ? "" : "changes-page-surface"}`}>
       <header className="changes-header">
-        <div className="changes-header-titles">
-          <Link to="/chat/$chatId" params={{ chatId }} className="changes-back">
-            ‹ {title}
-          </Link>
-          <h1>Changes</h1>
-        </div>
+        {standalone && (
+          <div className="changes-header-titles">
+            <Link to="/chat/$chatId" params={{ chatId }} className="changes-back">
+              ‹ {title}
+            </Link>
+            <h1>Changes</h1>
+          </div>
+        )}
         <nav className="changes-scope" aria-label="Diff scope">
           {(Object.keys(DIFF_SCOPE_LABELS) as DiffScope[]).map((option) => (
             <button

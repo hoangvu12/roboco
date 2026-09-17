@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
-import { chatPageRow, type ChatIndicator } from "../lib/view";
-import { StatusDot } from "../components/status-dot";
+import { useTitlebar } from "../state/chrome";
+import { emitShortcut } from "../state/shortcuts";
+import { chatPageRow, type ChatRow } from "../lib/view";
 import { TranscriptView } from "../components/transcript";
-import { PreviewPanel } from "../components/preview-panel";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
-import { useTerminalStore } from "../terminal/store";
-import { TerminalDock } from "../terminal/terminal-dock";
+import { ComposerFooter } from "../components/composer-footer";
+import { rightPaneStore } from "../state/right-pane";
 import { chatRoute } from "../router";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { ChangeRequestBadge } from "../components/change-request-badge";
@@ -17,7 +18,7 @@ import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import type { QueuedMessage } from "@roboco/proto";
-import type { ChangeRequestSummary } from "@roboco/proto";
+import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 
 /**
  * One chat's main panel: title, live status, the streaming transcript
@@ -38,10 +39,27 @@ export function ChatPage() {
   const snapshot = useWatchSnapshot(session);
   const status = session === null ? null : session.client.status;
   const now = useNow(10_000);
-  const terminalStore = useTerminalStore();
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const navigate = useNavigate();
+
+  // Mod+J reveals the Terminal surface (desktop: Cmd+J on macOS, Ctrl+J
+  // elsewhere). Capture phase: a focused terminal's textarea would otherwise
+  // eat the chord and send LF to the shell. It lives here rather than in the
+  // dock, which only mounts while its own tab is active.
   useEffect(() => {
-    setPreviewOpen(false);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        event.stopPropagation();
+        rightPaneStore.show(chatId, "terminal");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [chatId]);
+  // Occupancy arrives on the transcript's watch; the composer footer draws it.
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  useEffect(() => {
+    setContextUsage(null);
   }, [chatId]);
 
   // Lazily fetch the harness catalog once per chat page open so the
@@ -173,24 +191,32 @@ export function ChatPage() {
     })();
   }, [queueStore, editingRow]);
 
+  const row =
+    snapshot === null || !snapshot.chats.loaded
+      ? undefined
+      : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows);
+
+  // The titlebar is the shell's; the route fills its identity and its ONE
+  // trailing control — the right pane's toggle (the desktop's
+  // `toggle-changes`). Panel surfaces are tabs in that pane, never buttons in
+  // the bar. Hooks run unconditionally; the early returns below come after.
+  // The titlebar is the shell's; this route fills only its identity. The right
+  // pane, its toggle, its surface tabs and its expand control are all shell
+  // chrome — see `state/chrome.ts` for why they must not travel through here.
+  // Note `pane` is deliberately NOT a dep: this effect clears the store on
+  // every dep change, and a toggle rebuilding the chrome is what used to tear
+  // the pane column down mid-animation.
+  useTitlebar(
+    () => ({
+      identity: row === undefined ? null : <ChatIdentity row={row} crSummary={crSummary} />,
+      onNewSession: () => emitShortcut("new-chat"),
+    }),
+    [chatId, row?.chat.id, row?.chat.title, row?.status, row?.folder, row?.harness, crSummary],
+  );
+
   if (snapshot === null || !snapshot.chats.loaded) {
-    return (
-      <div className="chat-page">
-        <ChatHeader
-          title="…"
-          status="idle"
-          branch={null}
-          archived={false}
-          previewOpen={false}
-          onTogglePreview={null}
-          onToggleTerminal={null}
-          crSummary={null}
-          chatId={chatId}
-        />
-      </div>
-    );
+    return <div className="chat-page" />;
   }
-  const row = chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now);
   if (row === undefined) {
     return (
       <div className="empty-state">
@@ -203,114 +229,82 @@ export function ChatPage() {
   }
   return (
     <div className="chat-page">
-      <ChatHeader
-        title={row.chat.title ?? "New session"}
-        status={row.status}
-        branch={row.branch}
-        archived={row.chat.archived}
-        previewOpen={previewOpen}
-        onTogglePreview={() => setPreviewOpen((open) => !open)}
-        onToggleTerminal={() => terminalStore.toggle(chatId)}
-        crSummary={crSummary}
-        chatId={chatId}
-      />
-      <div className="chat-body">
-        {session === null ? (
-          <div className="chat-transcript">
-            <p className="chat-transcript-empty">No engine connected.</p>
-          </div>
-        ) : (
-          <TranscriptView client={session.client} docId={chatId} deviceId={deviceId} />
-        )}
-        {previewOpen && <PreviewPanel chatId={chatId} onClose={() => setPreviewOpen(false)} />}
-      </div>
-      {queueStore !== null && deviceId !== null ? (
-        <QueueStoreProvider value={queueStore}>
-          <QueuePanel
-            editorDeviceId={deviceId}
-            onEditRow={onEditRow}
-            editingRowId={editingRow?.id ?? null}
-          />
-          {session !== null && (
-            <Composer
-              session={session}
-              chat={row.chat}
-              catalog={session.catalog}
-              editingMessage={editingRow}
-              onEditFinish={onEditFinish}
+      {/*
+        The conversation column: the transcript, the queue, the composer and
+        the session footer. Its sibling — the right pane, carrying whichever
+        surface its tabs select — is a SHELL column mounted by `AppShell`, as
+        on the desktop; this page only names the chat that owns it.
+      */}
+      <div className="chat-column">
+        <div className="chat-body">
+          {session === null ? (
+            <div className="chat-transcript">
+              <p className="chat-transcript-empty">No engine connected.</p>
+            </div>
+          ) : (
+            <TranscriptView
+              client={session.client}
+              docId={chatId}
+              deviceId={deviceId}
+              onContextUsage={setContextUsage}
             />
           )}
-        </QueueStoreProvider>
-      ) : (
-        session !== null && <Composer session={session} chat={row.chat} catalog={session.catalog} />
-      )}
-      {editingRow !== null && (
-        <div className="chat-edit-toolbar">
-          <button type="button" className="btn btn-ghost" onClick={onEditCancel}>
-            Cancel edit
-          </button>
         </div>
-      )}
-      <TerminalDock store={terminalStore} chatId={chatId} />
+        {queueStore !== null && deviceId !== null ? (
+          <QueueStoreProvider value={queueStore}>
+            <QueuePanel
+              editorDeviceId={deviceId}
+              onEditRow={onEditRow}
+              editingRowId={editingRow?.id ?? null}
+            />
+            {session !== null && (
+              <Composer
+                session={session}
+                chat={row.chat}
+                catalog={session.catalog}
+                editingMessage={editingRow}
+                onEditFinish={onEditFinish}
+              />
+            )}
+          </QueueStoreProvider>
+        ) : (
+          session !== null && <Composer session={session} chat={row.chat} catalog={session.catalog} />
+        )}
+        <ComposerFooter branch={row.branch} crSummary={crSummary} contextUsage={contextUsage} />
+        {editingRow !== null && (
+          <div className="chat-edit-toolbar">
+            <button type="button" className="btn btn-ghost" onClick={onEditCancel}>
+              Cancel edit
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function ChatHeader({
-  title,
-  status,
-  branch,
-  archived,
-  previewOpen,
-  onTogglePreview,
-  onToggleTerminal,
-  crSummary,
-  chatId,
-}: {
-  title: string;
-  status: ChatIndicator;
-  branch: string | null;
-  archived: boolean;
-  previewOpen: boolean;
-  onTogglePreview: (() => void) | null;
-  onToggleTerminal: (() => void) | null;
-  crSummary: ChangeRequestSummary | null;
-  chatId: string;
-}) {
+/**
+ * The titlebar's centred identity — the desktop's transcript identity group:
+ * the harness's brand mark, the chat title, and the `space @ device` line in
+ * the muted subline tone, with the archived and change-request badges
+ * trailing. It is a drag region on the desktop; here it is just chrome.
+ */
+function ChatIdentity({ row, crSummary }: { row: ChatRow; crSummary: ChangeRequestSummary | null }) {
+  const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   return (
-    <header className="chat-header">
-      <div className="chat-header-title">
-        <StatusDot status={status} />
-        <h1>{title}</h1>
-        {archived && <span className="chat-header-badge">Archived</span>}
-        {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
-      </div>
-      <div className="chat-header-side">
-        {branch !== null && <div className="chat-header-branch">{branch}</div>}
-        <Link
-          to="/chat/$chatId/changes"
-          params={{ chatId }}
-          className="btn btn-ghost"
-          activeProps={{ className: "btn btn-ghost btn-active" }}
-        >
-          Changes
-        </Link>
-        {onTogglePreview !== null && (
-          <button
-            type="button"
-            className={`btn btn-ghost ${previewOpen ? "btn-active" : ""}`}
-            aria-pressed={previewOpen}
-            onClick={onTogglePreview}
-          >
-            Preview
-          </button>
-        )}
-        {onToggleTerminal !== null && (
-          <button type="button" className="btn btn-ghost" title="Toggle terminal (Ctrl+J)" onClick={onToggleTerminal}>
-            Terminal
-          </button>
-        )}
-      </div>
-    </header>
+    <>
+      {brand !== null && (
+        <Icon
+          name={brand.name}
+          size={14}
+          className="identity-brand"
+          style={brand.tint === null ? undefined : { color: brand.tint }}
+        />
+      )}
+      <span className="identity-title">{row.chat.title ?? "New session"}</span>
+      <span className="identity-folder">{row.folder}</span>
+      {row.chat.archived && <span className="identity-badge">Archived</span>}
+      {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
+    </>
   );
 }

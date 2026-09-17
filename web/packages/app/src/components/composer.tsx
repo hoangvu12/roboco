@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@roboco/icons";
 import type { Chat, HarnessDescriptor, Model } from "@roboco/proto";
 import type { EngineSession } from "../state/engine-session";
 import { useWatchSnapshot } from "../state/hooks";
@@ -54,6 +55,9 @@ interface ComposerProps {
 export function Composer({ session, chat, catalog, onSwitchChat, editingMessage, onEditFinish }: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The paperclip lives in the actions cluster (composer.rs), so the strip
+  // hands its picker up here rather than drawing its own attach button.
+  const attachRef = useRef<(() => void) | null>(null);
   const lastChatIdRef = useRef(chat.id);
 
   // Live status: a working session = a live run in progress.
@@ -460,6 +464,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
         onStage={onStage}
         onRemove={onRemove}
         onError={onStageError}
+        pickerRef={attachRef}
       />
       <div className="composer-input-wrap" style={{ animationDuration: `${FLIP_DURATION_MS}ms` }}>
         <textarea
@@ -467,7 +472,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
           className="composer-input"
           rows={1}
           value={text}
-          placeholder={isWorking ? "Steer the live run… (Mod+Enter to send)" : "Message the harness…"}
+          placeholder={isWorking ? "Steer the live run…" : "Do anything…"}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           spellCheck={false}
@@ -477,23 +482,48 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
           style={{ height: `${heightPx}px` }}
         />
       </div>
-      <div className="composer-footer">
-        <ComposerPickers
-          draft={draft}
-          harnesses={harnesses.rows}
-          models={models.rows}
-          harnessError={harnesses.loaded ? harnesses.error : null}
-          modelsError={models.loaded ? models.error : null}
-          harnessLocked={isHarnessLocked(chat)}
-          onChange={updateDraft}
-          onRetryHarnesses={() => void catalog.loadHarnesses()}
-          onRetryModels={() => void catalog.loadModels(draft.harness)}
-        />
+      {/*
+        The actions row — composer.rs `render`'s cluster: the pickers and the
+        paperclip form one utility group (ACTION_UTILITY_GAP), with the larger
+        structural ACTION_PRIMARY_GAP before Send. The whole cluster is
+        end-anchored so the model chip's right edge lines up with the attach
+        button above it.
+      */}
+      <div className="composer-actions">
+        <div className="composer-utility">
+          <ComposerPickers
+            draft={draft}
+            harnesses={harnesses.rows}
+            models={models.rows}
+            harnessError={harnesses.loaded ? harnesses.error : null}
+            modelsError={models.loaded ? models.error : null}
+            harnessLocked={isHarnessLocked(chat)}
+            onChange={updateDraft}
+            onRetryHarnesses={() => void catalog.loadHarnesses()}
+            onRetryModels={() => void catalog.loadModels(draft.harness)}
+          />
+          <button
+            type="button"
+            className="composer-attach"
+            aria-label="Attach files"
+            title="Attach files"
+            disabled={!composerReady}
+            onClick={() => attachRef.current?.()}
+          >
+            <Icon name="paperclip" size={16} />
+          </button>
+        </div>
+        {/*
+          A 28px filled circle — up-arrow to send or queue, a dark rounded
+          square on the same light circle to stop (composer.rs
+          `render_send_button`, after roboco's composer-actions.tsx).
+        */}
         <button
           type="button"
-          className={`composer-send btn-solid ${sendVariant === "stop" ? "composer-send-stop" : ""}`}
+          className={`composer-send ${sendVariant === "stop" ? "composer-send-stop" : ""}`}
           onClick={() => void submit()}
           disabled={sendDisabled}
+          aria-label={sendLabel}
           title={
             isWorking && text.length === 0 && staged.length === 0
               ? "Interrupt the live run"
@@ -502,7 +532,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
                 : "Send (Mod+Enter)"
           }
         >
-          {busy ? "…" : sendLabel}
+          {sendVariant === "stop" ? <span className="composer-stop-square" /> : <Icon name="arrowUp" size={14} />}
         </button>
       </div>
     </div>

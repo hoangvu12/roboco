@@ -15,11 +15,12 @@ import { healedSpaceFilter, spacesSorted } from "../lib/view";
  * project-less on the connected engine's own device — the desktop's
  * canvas-target resolution (state.rs effective_device_id).
  *
- * The button also subscribes to the `new-chat` shortcut event so the
- * app-shell keyboard layer (Cmd/Ctrl+N) can drive the same flow without
- * DOM querying.
+ * Headless. The desktop's titlebar is the single owner of the new-session
+ * action in both sidebar states (`render_titlebar_cluster`), so this mounts
+ * no control of its own — it subscribes to the `new-chat` shortcut event that
+ * both the titlebar `+` and the app-shell keyboard layer (Cmd/Ctrl+N) emit.
  */
-export function NewChatButton() {
+export function NewChatListener() {
   const session = useEngineSession();
   const snapshot = useWatchSnapshot(session);
   const status = useEngineStatus(session);
@@ -27,10 +28,7 @@ export function NewChatButton() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
 
-  if (session === null) {
-    return null;
-  }
-  const connected = status?.state === "connected";
+  const connected = session !== null && status?.state === "connected";
 
   async function create(): Promise<void> {
     if (busy || session === null) {
@@ -74,15 +72,5 @@ export function NewChatButton() {
     // the latest session/snapshot/sidebar.
   }, [connected, session, snapshot, sidebar.spaceFilter, sidebar.lastSpaceId]);
 
-  return (
-    <button
-      type="button"
-      className="btn btn-ghost new-chat"
-      disabled={busy || !connected}
-      onClick={() => void create()}
-      title="New chat (Ctrl/⌘+N)"
-    >
-      {busy ? "Creating…" : "New chat"}
-    </button>
-  );
+  return null;
 }

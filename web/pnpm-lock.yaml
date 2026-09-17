@@ -13,6 +13,9 @@ importers:
       '@roboco/engine-client':
         specifier: workspace:*
         version: link:../engine-client
+      '@roboco/icons':
+        specifier: workspace:*
+        version: link:../icons
       '@roboco/proto':
         specifier: workspace:*
         version: link:../proto
@@ -78,6 +81,19 @@ importers:
       ws:
         specifier: ^8.18.0
         version: 8.21.3
+
+  packages/icons:
+    dependencies:
+      react:
+        specifier: ^19.2.0
+        version: 19.3.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.5
+        version: 19.3.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
 
   packages/proto:
     devDependencies:

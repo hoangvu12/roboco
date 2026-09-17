@@ -19,21 +19,63 @@ import { filesRoute } from "../router";
  * file link is shareable within the origin. At phone widths the panes
  * stack: opening a file swaps the tree for the viewer, "‹ Files" returns.
  */
+/**
+ * The routed page: selection lives in the URL (`?space=`/`?path=`) so a file
+ * link is shareable within the origin. Kept so `/files` links stay valid; the
+ * right pane hosts the same body through `FilesSurface`.
+ */
 export function FilesPage() {
+  const search = useSearch({ from: filesRoute.id });
+  const navigate = useNavigate();
+  return (
+    <FilesBody
+      requestedSpace={search.space ?? null}
+      path={search.path ?? null}
+      onOpen={(space, path) =>
+        void navigate({ to: "/files", search: { space: space ?? undefined, ...(path === null ? {} : { path }) } })
+      }
+    />
+  );
+}
+
+/**
+ * The right pane's Files surface. The pane is chat-scoped chrome with no URL
+ * of its own, so the space and the open path live in local state here.
+ */
+export function FilesSurface() {
+  const [space, setSpace] = useState<string | null>(null);
+  const [path, setPath] = useState<string | null>(null);
+  return (
+    <FilesBody
+      requestedSpace={space}
+      path={path}
+      onOpen={(nextSpace, nextPath) => {
+        setSpace(nextSpace);
+        setPath(nextPath);
+      }}
+    />
+  );
+}
+
+interface FilesBodyProps {
+  readonly requestedSpace: string | null;
+  readonly path: string | null;
+  /** `path === null` closes the viewer and returns to the tree. */
+  readonly onOpen: (space: string | null, path: string | null) => void;
+}
+
+function FilesBody({ requestedSpace, path, onOpen }: FilesBodyProps) {
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const snapshot = useWatchSnapshot(session);
-  const search = useSearch({ from: filesRoute.id });
-  const navigate = useNavigate();
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
   const spaces = snapshot?.spaces.rows ?? [];
   const owned = spaces.filter((space) => deviceId !== null && space.deviceId === deviceId);
   const spaceId =
-    search.space !== undefined && owned.some((space) => space.id === search.space)
-      ? search.space
+    requestedSpace !== null && owned.some((space) => space.id === requestedSpace)
+      ? requestedSpace
       : (owned[0]?.id ?? null);
-  const path = search.path ?? null;
 
   const client = useMemo(
     () => (session !== null && spaceId !== null ? new WorkspaceFilesClient(session.client, { spaceId }) : null),
@@ -80,12 +122,8 @@ export function FilesPage() {
     };
   }, [client, path]);
 
-  const openPath = (next: string) => {
-    void navigate({ to: "/files", search: { space: spaceId ?? undefined, path: next } });
-  };
-  const closePath = () => {
-    void navigate({ to: "/files", search: { space: spaceId ?? undefined } });
-  };
+  const openPath = (next: string) => onOpen(spaceId, next);
+  const closePath = () => onOpen(spaceId, null);
 
   if (snapshot === null) {
     return (
@@ -118,7 +156,7 @@ export function FilesPage() {
         <SpacePicker
           spaces={owned}
           spaceId={spaceId}
-          onChange={(next) => void navigate({ to: "/files", search: { space: next } })}
+          onChange={(next) => onOpen(next, null)}
         />
       </header>
       <div className="files-body">

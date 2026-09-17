@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
@@ -46,7 +47,7 @@ export function ArchivedSection() {
       <button type="button" className="archived-header" onClick={toggle} aria-expanded={open}>
         <span className="archived-label">{open ? "Archived" : `Archived (${rows.length})`}</span>
         <span className="archived-rule" />
-        <span className={`archived-chevron ${open ? "archived-chevron-open" : ""}`}>▸</span>
+        <Icon name="altArrowDown" size={14} className={`chevron ${open ? "chevron-open" : ""}`} />
       </button>
       {open && (
         <ul className="archived-list">
@@ -68,6 +69,10 @@ export function ArchivedSection() {
 
 function ArchivedRow({ row }: { row: ArchivedRowData }) {
   const session = useEngineSession();
+  // The one-line shelf gives its larger mark a little more separation than the
+  // active cards do (SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE / _TITLE_GAP).
+  const harness = row.chat.config?.harness ?? null;
+  const brand = harness === null ? null : harnessBrandIcon(harness);
 
   function unarchive(): void {
     if (session === null) {
@@ -82,11 +87,20 @@ function ArchivedRow({ row }: { row: ArchivedRowData }) {
   return (
     <li className="arch-row-item">
       <Link to="/chat/$chatId" params={{ chatId: row.chat.id }} className="arch-row">
+        {brand !== null && (
+          <Icon
+            name={brand.name}
+            size={14}
+            className="arch-row-brand"
+            style={brand.tint === null ? undefined : { color: brand.tint }}
+          />
+        )}
         <span className="arch-row-title">{row.title}</span>
         <span className="arch-row-time">{row.timeAgo}</span>
       </Link>
       <span className="arch-row-action">
         <button type="button" className="arch-row-unarchive" onClick={unarchive}>
+          <Icon name="archiveUpMinimalistic" size={11} />
           Unarchive
         </button>
       </span>

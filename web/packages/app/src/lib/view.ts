@@ -1,4 +1,4 @@
-import type { Chat, Space } from "@roboco/proto";
+import type { Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 
 /**
@@ -22,6 +22,14 @@ export interface ChatRow {
   readonly status: ChatIndicator;
   /** Line 1 left — the space's display name, or the cwd label, or "~". */
   readonly project: string;
+  /**
+   * Line 1 left as the desktop writes it: `"project @ device"`, or bare
+   * `project` when the device is unknown (shell/spaces.rs render_active_rows
+   * — an unknown device contributes no fragment, same as the archived list).
+   */
+  readonly folder: string;
+  /** Line 2's brand mark — the chat's configured harness, when it has one. */
+  readonly harness: string | null;
   /** Line 3 — the stamped branch, when present. */
   readonly branch: string | null;
   /** The corner's relative time, shown while idle. */
@@ -162,15 +170,17 @@ export function chatListRows(
   spaces: readonly Space[],
   statuses: readonly ChatStatus[],
   now: number,
+  devices: readonly Device[] = [],
 ): ChatRow[] {
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
   const rows: ChatRow[] = [];
   for (const chat of chats) {
     if (chat.archived) {
       continue;
     }
-    const row = toChatRow(chat, spaceById, statusByChat, now);
+    const row = toChatRow(chat, spaceById, statusByChat, now, deviceById);
     if (row !== null) {
       rows.push(row);
     }
@@ -189,6 +199,7 @@ export function chatPageRow(
   spaces: readonly Space[],
   statuses: readonly ChatStatus[],
   now: number,
+  devices: readonly Device[] = [],
 ): ChatRow | undefined {
   const chat = chats.find((candidate) => candidate.id === chatId);
   if (chat === undefined) {
@@ -196,7 +207,8 @@ export function chatPageRow(
   }
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
-  return toChatRow(chat, spaceById, statusByChat, now) ?? undefined;
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
+  return toChatRow(chat, spaceById, statusByChat, now, deviceById) ?? undefined;
 }
 
 function toChatRow(
@@ -204,6 +216,7 @@ function toChatRow(
   spaceById: ReadonlyMap<string, Space>,
   statusByChat: ReadonlyMap<string, ChatStatus>,
   now: number,
+  deviceById: ReadonlyMap<string, Device> = new Map(),
 ): ChatRow | null {
   const space =
     chat.spaceId !== null && chat.spaceId !== undefined ? spaceById.get(chat.spaceId) : undefined;
@@ -211,10 +224,14 @@ function toChatRow(
     return null;
   }
   const branch = chat.branch !== null && chat.branch !== undefined && chat.branch.trim().length > 0 ? chat.branch : null;
+  const project = space !== undefined ? spaceDisplayName(space) : projectLabel(chat.cwd) ?? "~";
+  const device = deviceById.get(chat.deviceId);
   return {
     chat,
     status: displayStatus(chat, statusByChat.get(chat.id), now),
-    project: space !== undefined ? spaceDisplayName(space) : projectLabel(chat.cwd) ?? "~",
+    project,
+    folder: device !== undefined ? `${project} @ ${device.name}` : project,
+    harness: chat.config?.harness ?? null,
     branch,
     timeAgo: timeAgo(recencyKey(chat), now),
   };
