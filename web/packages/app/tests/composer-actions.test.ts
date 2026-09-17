@@ -69,7 +69,7 @@ describe("buildChatConfig", () => {
 
 describe("buildRunRequest", () => {
   it("fills every field the engine requires for a Run", () => {
-    const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj", "msg-1");
+    const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj");
     expect(request.prompt).toBe("hi");
     expect(request.harness).toBe("claude-code");
     expect(request.model).toBe("claude-3-5-sonnet");
@@ -81,7 +81,7 @@ describe("buildRunRequest", () => {
   });
 
   it("preserves the picked harness on the wire", () => {
-    const request = buildRunRequest({ ...DRAFT, harness: "codex" }, "hi", "/tmp", "m");
+    const request = buildRunRequest({ ...DRAFT, harness: "codex" }, "hi", "/tmp");
     expect(request.harness).toBe("codex");
   });
 });

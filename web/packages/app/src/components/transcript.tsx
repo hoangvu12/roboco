@@ -12,7 +12,14 @@ import {
 import type { EngineClient } from "@roboco/engine-client";
 import { methods } from "@roboco/engine-client";
 import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
-import { TranscriptStore } from "../state/transcript-store";
+import {
+  echoStore,
+  pendingSendStatus,
+  TranscriptStore,
+  type PendingSend,
+} from "../state/transcript-store";
+import { useNow } from "../state/hooks";
+import { withAttachments } from "../lib/attachments";
 import { MarkdownCache, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   formatTimestamp,
@@ -51,6 +58,7 @@ export function TranscriptView({
   docId,
   deviceId,
   onContextUsage,
+  onRetrySend,
 }: {
   client: EngineClient;
   docId: string;
@@ -62,6 +70,8 @@ export function TranscriptView({
    * be a second live stream per open chat.
    */
   onContextUsage?: (usage: ContextUsage | null) => void;
+  /** Re-send an echo the grace window declared undelivered (§2.3's retry). */
+  onRetrySend?: (send: PendingSend) => void;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -84,6 +94,7 @@ export function TranscriptView({
       client={client}
       deviceId={deviceId}
       onContextUsage={onContextUsage}
+      onRetrySend={onRetrySend}
     />
   );
 }
@@ -93,11 +104,13 @@ function TranscriptSurface({
   client,
   deviceId,
   onContextUsage,
+  onRetrySend,
 }: {
   store: TranscriptStore;
   client: EngineClient;
   deviceId: string | null;
   onContextUsage?: (usage: ContextUsage | null) => void;
+  onRetrySend?: (send: PendingSend) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
@@ -138,17 +151,94 @@ function TranscriptSurface({
     return out;
   }, [snapshot.entries]);
 
+  // The optimistic echo overlay (`AppState.echoes`). Each still-unconfirmed
+  // send renders as an ORDINARY user bubble at the end of the list — the
+  // position the real row will take the moment the host writes it back — so
+  // the confirmation is a silent swap rather than a visible hand-off. Never a
+  // section of its own.
+  const docId = store.docId;
+  const subscribeEchoes = useCallback((listener: () => void) => echoStore.subscribe(listener), []);
+  const echoSnapshot = useCallback(() => echoStore.forChat(docId), [docId]);
+  const pendingSends = useSyncExternalStore(subscribeEchoes, echoSnapshot);
+  // The grace window is the only thing that changes without an event, so the
+  // overlay needs a clock of its own to flip pending → undelivered.
+  const now = useNow(ECHO_TICK_MS);
+
+  const allRows = useMemo(() => {
+    if (pendingSends.length === 0) {
+      return rows;
+    }
+    const markdown = parseCacheRef.current!;
+    // Belt-and-braces against a duplicated bubble: the ack rides the same
+    // frame that adds the real row, but the two live in different stores, so
+    // never render an echo for an id the doc already carries.
+    const confirmed = new Set(snapshot.entries.map((entry) => entry.id));
+    const echoRows: TranscriptRow[] = [];
+    for (const send of pendingSends) {
+      if (confirmed.has(send.messageId)) {
+        continue;
+      }
+      const built = rowsForEntry(echoEntry(send, deviceId), {
+        pending: true,
+        parse: (key, text, live) => markdown.parse(key, text, live),
+      });
+      const row = built[0];
+      if (row === undefined || row.rowKind.kind !== "user") {
+        continue;
+      }
+      const undelivered = pendingSendStatus(send, now) === "undelivered";
+      echoRows.push({
+        ...row,
+        // Keep the diff key sensitive to the status flip so the row repaints.
+        version: row.version * 2 + (undelivered ? 1 : 0),
+        rowKind: { ...row.rowKind, undelivered },
+      });
+    }
+    return echoRows.length === 0 ? rows : [...rows, ...echoRows];
+  }, [rows, snapshot.entries, pendingSends, deviceId, now]);
+
   return (
     <TranscriptScroller
-      rows={rows}
+      rows={allRows}
       streaming={snapshot.streaming}
       loaded={snapshot.loaded}
       error={snapshot.error}
       onRetry={() => store.resubscribe()}
       client={client}
       deviceId={deviceId}
+      onRetryRow={(messageId) => {
+        const send = pendingSends.find((entry) => entry.messageId === messageId);
+        if (send !== undefined) {
+          onRetrySend?.(send);
+        }
+      }}
     />
   );
+}
+
+/** How often the echo overlay re-checks the grace window. */
+const ECHO_TICK_MS = 10_000;
+
+/**
+ * A pending send dressed as the transcript entry the host will eventually
+ * write — same id (that is the whole dedupe contract), same author, same
+ * attachment-refs trailer — so the row model builds an ordinary user bubble
+ * from it and the confirmed row replaces it with no visual change.
+ */
+function echoEntry(send: PendingSend, deviceId: string | null): SessionMessageEntry {
+  return {
+    id: send.messageId,
+    role: "user",
+    parts: [
+      {
+        kind: "text",
+        id: `${send.messageId}#echo`,
+        text: withAttachments(send.text, send.attachmentPaths),
+      },
+    ],
+    createdAt: send.startedAtMs,
+    deviceId: deviceId ?? "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +253,8 @@ interface ScrollerProps {
   readonly onRetry: () => void;
   readonly client: EngineClient;
   readonly deviceId: string | null;
+  /** Retry an undelivered echo, by its message id (= the row's entry id). */
+  readonly onRetryRow: (messageId: string) => void;
 }
 
 /** Capture the first visible row + its pixel offset — the escape anchor. */
@@ -207,7 +299,16 @@ function estimateRowHeight(row: TranscriptRow): number {
   }
 }
 
-function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, deviceId }: ScrollerProps) {
+function TranscriptScroller({
+  rows,
+  streaming,
+  loaded,
+  error,
+  onRetry,
+  client,
+  deviceId,
+  onRetryRow,
+}: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const anchorRef = useRef<{ id: string; offset: number } | null>(null);
@@ -413,6 +514,7 @@ function TranscriptScroller({ rows, streaming, loaded, error, onRetry, client, d
                   onOpenSubagent={openSubagent}
                   client={client}
                   deviceId={deviceId}
+                  onRetryRow={onRetryRow}
                 />
               </RowShell>
             );
@@ -489,6 +591,7 @@ function RowContent({
   onOpenSubagent,
   client,
   deviceId,
+  onRetryRow,
 }: {
   row: TranscriptRow;
   streaming: boolean;
@@ -496,6 +599,7 @@ function RowContent({
   onOpenSubagent: (doc: string) => void;
   client: EngineClient;
   deviceId: string | null;
+  onRetryRow: (messageId: string) => void;
 }) {
   const kind = row.rowKind;
   return (
@@ -504,9 +608,12 @@ function RowContent({
         <UserRow
           text={kind.text}
           pending={kind.pending}
+          undelivered={kind.undelivered === true}
           attachments={kind.attachments}
           client={client}
           deviceId={deviceId}
+          // An echo row's id IS the client-minted message id.
+          onRetry={() => onRetryRow(row.entryId)}
         />
       )}
       {kind.kind === "markdown" && <MarkdownRow row={row} />}
@@ -558,15 +665,19 @@ function RowMeta({ row, visible }: { row: TranscriptRow; visible: boolean }) {
 function UserRow({
   text,
   pending,
+  undelivered = false,
   attachments,
   client,
   deviceId,
+  onRetry,
 }: {
   text: string;
   pending: boolean;
+  undelivered?: boolean;
   attachments: readonly import("../lib/attachments").UserImageAttachment[];
   client: EngineClient;
   deviceId: string | null;
+  onRetry?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   // Image-only sends show no bubble (desktop parity); the thumbnail strip
@@ -578,16 +689,28 @@ function UserRow({
   const clamped = collapsible && !expanded;
   return (
     <div className="row-user">
-      <div className={`user-content ${pending ? "user-bubble-pending" : ""}`}>
+      {/*
+        Past the grace window the echo stops being quiet: the bubble goes back
+        to full opacity and says so, with the retry beside it (`send_undelivered`).
+      */}
+      <div className={`user-content ${pending && !undelivered ? "user-bubble-pending" : ""}`}>
         <UserAttachments client={client} deviceId={deviceId} attachments={attachments} />
         {text.trim().length > 0 && (
-          <div className={`user-bubble ${pending ? "user-bubble-pending" : ""}`}>
+          <div className={`user-bubble ${pending && !undelivered ? "user-bubble-pending" : ""}`}>
             <div className={`user-text ${clamped ? "user-text-clamped" : ""}`}>{text}</div>
             {collapsible === true && (
               <button type="button" className="user-expand" onClick={() => setExpanded((value) => !value)}>
                 {expanded ? "▴ Show less" : "▾ Show more"}
               </button>
             )}
+          </div>
+        )}
+        {undelivered && (
+          <div className="user-undelivered" role="status">
+            <span className="user-undelivered-label">Not delivered</span>
+            <button type="button" className="user-undelivered-retry" onClick={onRetry}>
+              Retry
+            </button>
           </div>
         )}
       </div>

@@ -678,6 +678,13 @@ export type TranscriptRowKind =
       readonly text: string;
       /** Optimistic echo not yet confirmed by a doc frame. */
       readonly pending: boolean;
+      /**
+       * A pending echo past `UNDELIVERED_GRACE_MS` with nothing confirming it
+       * (`send_undelivered`) — the bubble carries an explicit
+       * "Not delivered — retry" affordance. Only ever set on echo rows; a real
+       * doc row is delivered by definition.
+       */
+      readonly undelivered?: boolean;
       /** Attachment refs parsed out of the message's refs trailer
        *  (composer/use-attachments.ts `withAttachments`). The transcript
        *  renders a thumbnail strip above the bubble when non-empty. */
