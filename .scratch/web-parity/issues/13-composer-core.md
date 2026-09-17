@@ -1373,4 +1373,19 @@ From `04-composer.md` §5, verbatim, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+### Research addendum (2026-09-17)
+
+Deep-dive notes: `.scratch/web-parity/research-2026-09-17/hero-context-meter.md`
+(Part 2). Two requirements the ticket states nowhere, both required for
+desktop parity of the §2.15 context-meter card:
+
+- **Tooltip trigger delay** — the desktop shows the card after a **500 ms
+  hover** (gpui `DEFAULT_TOOLTIP_SHOW_DELAY`, zui `div.rs:49`). The web
+  must match ~500 ms, not the browser's native title timing.
+- **Remove the native `title=`** — the current stand-in at
+  `context-usage.tsx:35` must be explicitly deleted when the card lands,
+  or both tooltips show at once.
+
+Also explicit: MENU_BLUR is **44** (frost.rs:23), not the pill's 16, and the
+open card live-updates by observing usage state (context_usage.rs:71-77) — a
+store subscription inside the open tooltip, not a re-mount.

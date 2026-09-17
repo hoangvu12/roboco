@@ -799,4 +799,22 @@ import only; Link/Reveal/Reload explicitly out per §5).
 
 ## Comments
 
-(empty; appended during implementation)
+### Research addendum (2026-09-17)
+
+Two amendments from the post-wave-1 research
+(`.scratch/web-parity/research-2026-09-17/pane-settings-issues.md` §2.3, §4):
+
+- **Frosted is removed on the web (product decision, 2026-09-17).** This
+  ticket's §2.7 specs the desktop Glass row verbatim; do NOT port the
+  Frosted choice. `resolveSurfaceTreatment` is forced opaque
+  (`lib/appearance-store.ts`), a persisted `frosted` heals to `opaque` in
+  `state/ui-settings.ts`, and the five `html[data-surface="frosted"]` CSS
+  groups are deleted. Update §2.7 and the §5 gap table accordingly so wave 4
+  does not re-add it. Landed ahead of this ticket on `web-parity/wave-1`.
+- **Missing file-table row**: the sidebar swap this ticket specs (§1
+  "replaces the sidebar") is implemented in `app-shell.tsx` ~534-538 —
+  `AppShell` owns the `<aside class="sidebar">` column and mounts
+  `SidebarBody`; the ticket's "Web files to touch" table lists only
+  `settings-layout.tsx`, which currently renders the nav inside the main
+  column. Whoever picks this up must branch in `app-shell.tsx` (render the
+  settings nav inside `.sidebar-inner` on `/settings/*`) or hoist it.

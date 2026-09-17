@@ -753,4 +753,27 @@ From `04-composer.md` §5 and `01-shell-chrome.md`, verbatim, filtered.
 
 ## Comments
 
-(empty; appended during implementation)
+### Research addendum (2026-09-17)
+
+Deep-dive notes: `.scratch/web-parity/research-2026-09-17/hero-context-meter.md`
+(Parts 1 and 3). Four gaps the spec leaves open, all verified against source:
+
+- **Hero typing animation**: the hero pill auto-grows with the 180 ms
+  `COLLAPSE`/`EASE_OUT` height morph as the user types multi-line drafts
+  (composer.rs:7548-7562 — only *mode flips* are suppressed on the hero,
+  composer.rs:7300), and the background cutout mask must track the animating
+  pill bounds every frame (mask.rs:49-58, same-frame `SurfaceBounds`). The
+  ticket's acceptance (b) reads as a static height.
+- **No composer entrance animation exists on the desktop**: the only hero
+  entrance is the artwork's 120 ms readiness fade. `motion::settle_down`
+  (motion.rs:339-350), documented as the intended
+  logo+selectors+composer fade, is dead code with no call sites — do not
+  port it or invent a fade.
+- **The hero hosts the composer-column chrome too**: failure notice,
+  queue-degraded caption, and the queue tray render on the new-thread canvas
+  (composer.rs:7347-7469); needs a cross-ticket composition note with 13.
+- **Send-transition trigger chain**: `ComposerEvent::NewThreadTransitionStarted`
+  emitted on the new-chat send → `select_chat` commits → shell notified →
+  dock ticks (composer.rs:6249-6258; shell.rs:1289-1295), with the arming
+  guards `!reduced_motion && last_rendered_height > 0` and
+  `expanded_mode = returning_to_new_thread` at composer.rs:5826-5875.
