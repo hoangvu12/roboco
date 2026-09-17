@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Icon, type IconName } from "@roboco/icons";
+import { Icon } from "@roboco/icons";
 import { methods } from "@roboco/engine-client";
 import type { ChangeRequestSummary, ContextUsage, Device, RepoRef, Space } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
-import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
+import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberTarget } from "../lib/composer-draft";
 import { ContextUsageIndicator } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
-import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
-import { SearchInputFrame } from "./popover/menu";
-import { MenuRowNav } from "./popover/menu-row";
-import { ErrorRow, SkeletonRows } from "./popover/skeleton";
+import { FooterChip, FooterLabel } from "./ui/Chip";
+import { PickerSearchField, useCursorList } from "./ui/CursorList";
+import { MenuRowNav } from "./ui/MenuRows";
+import { PickerCard } from "./ui/PickerCard";
+import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 
 /**
  * The session footer under the composer — the desktop's `workspace_footer_row`
@@ -30,10 +31,10 @@ import { ErrorRow, SkeletonRows } from "./popover/skeleton";
  * trailing cluster (change-request badge + usage indicator) belongs to both
  * variants; the row's geometry is ticket 13's.
  *
- * Each chip's popover rides `RbPopover` + `RbPopoverTrigger` (the trigger's
- * `trigger-press` reason replaces the old noteTriggerPress dance; pressing
- * another chip dismisses the first popover and opens that chip's own — the
- * four-chip switching behavior). All four register the
+ * Each chip's card is one `PickerCard` over the base `RbPopover` layer (the
+ * trigger's `trigger-press` reason replaces the old noteTriggerPress dance;
+ * pressing another chip dismisses the first popover and opens that chip's
+ * own — the four-chip switching behavior). All four register the
  * `composer-pickers` overlayKeyboard source while open, keeping session-nav
  * shortcuts quiet under any of them — the desktop's
  * `composer.pickers().is_open()` covers the footer pickers too
@@ -144,57 +145,6 @@ const EMPTY_DEVICES: readonly Device[] = [];
 const EMPTY_SPACES: readonly Space[] = [];
 
 // ---------------------------------------------------------------------------
-// FooterChip / FooterLabel (pickers.rs:2341-2422)
-// ---------------------------------------------------------------------------
-
-interface FooterChipProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  readonly id: string;
-  readonly icon: IconName;
-  readonly label: string;
-  readonly open: boolean;
-  readonly offline?: boolean;
-  readonly title: string;
-}
-
-/**
- * The small ghost dropdown chip: 20px tall, 6px radius, 12px medium; the wash
- * is quiet until hovered, open holding the hover fill (snapped, no fade).
- * The offline device chip overrides its text to `warning @ 0.8`.
- *
- * Rendered through `RbPopoverTrigger`'s `render` prop, which merges the
- * trigger's toggling/ARIA props onto this element — so the extra props
- * spread onto the button.
- */
-export function FooterChip(props: FooterChipProps) {
-  const { id, icon, label, open, offline, title, className, ...rest } = props;
-  return (
-    <button
-      type="button"
-      id={id}
-      className={`footer-menu-chip ${open ? "footer-menu-chip-open" : ""} ${
-        offline === true ? "footer-menu-chip-offline" : ""
-      } ${className ?? ""}`}
-      title={title}
-      {...rest}
-    >
-      <Icon name={icon} size={12} className="footer-menu-chip-icon" />
-      <span className="footer-menu-chip-label">{label}</span>
-      <Icon name="altArrowDown" size={12} className="footer-menu-chip-caret" />
-    </button>
-  );
-}
-
-/** `FooterLabel` — the read-only committed variant: no chevron, no background, no hover. */
-export function FooterLabel({ icon, label }: { icon: IconName; label: string }) {
-  return (
-    <span className="footer-menu-label" title={label}>
-      <Icon name={icon} size={12} className="footer-menu-label-icon" />
-      <span className="footer-menu-label-text">{label}</span>
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // The device popover (pickers.rs:1928-2006) — width 224
 // ---------------------------------------------------------------------------
 
@@ -210,7 +160,6 @@ function DeviceChip({
   readonly now: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   // Device order: this device first, then by lowercased name, then by id.
   const rows = useMemo(() => {
@@ -229,40 +178,34 @@ function DeviceChip({
   const offline = effectiveDevice !== null && !deviceOnline(effectiveDevice, now);
 
   return (
-    <>
-      <RbPopoverTrigger
-        handle={popoverHandle}
-        render={
-          <FooterChip
-            id="picker-device"
-            icon="monitor"
-            label={label}
-            open={open}
-            offline={offline}
-            title={label}
-          />
-        }
-      />
-      <RbPopover
-        handle={popoverHandle}
-        open={open}
-        onOpenChange={setOpen}
-        placement="anchorAbove"
-        role="dialog"
-        ariaLabel="Devices"
-        style={{ width: 224 }}
-        overlaySource="composer-pickers"
-      >
-        <DeviceCard
+    <PickerCard
+      open={open}
+      onOpenChange={setOpen}
+      placement="anchorAbove"
+      role="dialog"
+      ariaLabel="Devices"
+      width={224}
+      overlaySource="composer-pickers"
+      trigger={
+        <FooterChip
+          id="picker-device"
+          icon="monitor"
+          label={label}
           open={open}
-          onClose={() => setOpen(false)}
-          rows={rows}
-          ownDeviceId={ownDeviceId}
-          effectiveDeviceId={effectiveDevice?.id ?? null}
-          now={now}
+          offline={offline}
+          title={label}
         />
-      </RbPopover>
-    </>
+      }
+    >
+      <DeviceCard
+        open={open}
+        onClose={() => setOpen(false)}
+        rows={rows}
+        ownDeviceId={ownDeviceId}
+        effectiveDeviceId={effectiveDevice?.id ?? null}
+        now={now}
+      />
+    </PickerCard>
   );
 }
 
@@ -282,8 +225,27 @@ function DeviceCard({
   readonly now: number;
 }) {
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const names = rows.map((device) => device.name);
+  const filtered = filterIndices(query, names).map((ix) => rows[ix]!);
+
+  function pick(device: Device): void {
+    const snapshot = composerDefaults.getSnapshot();
+    rememberTarget(device.id, snapshot.project, snapshot.noProject);
+    onClose();
+  }
+
+  const { cursor, setCursor, onKeyDown } = useCursorList({
+    enabled: open,
+    count: filtered.length,
+    onActivate: (ix) => {
+      const device = filtered[ix];
+      if (device !== undefined) {
+        pick(device);
+      }
+    },
+  });
 
   useEffect(() => {
     if (open) {
@@ -296,51 +258,18 @@ function DeviceCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const names = rows.map((device) => device.name);
-  const filtered = filterIndices(query, names).map((ix) => rows[ix]!);
-
-  function pick(device: Device): void {
-    const snapshot = composerDefaults.getSnapshot();
-    rememberTarget(device.id, snapshot.project, snapshot.noProject);
-    onClose();
-  }
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      setCursor((current) => menuStep(current, filtered.length, key === "down" ? 1 : -1) ?? 0);
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      const device = filtered[cursor];
-      if (device !== undefined) {
-        pick(device);
-      }
-    }
-  };
-
   return (
     <div className="picker-key-frame" onKeyDown={onKeyDown}>
-      <SearchInputFrame>
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setCursor(0);
-          }}
-          placeholder="Search devices…"
-          spellCheck={false}
-          autoComplete="off"
-          aria-label="Search devices"
-        />
-      </SearchInputFrame>
+      <PickerSearchField
+        inputRef={inputRef}
+        value={query}
+        onQuery={(value) => {
+          setQuery(value);
+          setCursor(0);
+        }}
+        placeholder="Search devices…"
+        ariaLabel="Search devices"
+      />
       {filtered.length === 0 ? (
         <div className="picker-empty-note">No devices match.</div>
       ) : (
@@ -376,30 +305,23 @@ function ProjectChip({
   readonly currentSpaceId: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   const pickedSpace = currentSpaceId === null ? null : spaces.find((space) => space.id === currentSpaceId) ?? null;
   const label = pickedSpace === null ? "All projects" : spaceDisplayName(pickedSpace);
 
   return (
-    <>
-      <RbPopoverTrigger
-        handle={popoverHandle}
-        render={<FooterChip id="picker-project" icon="folder" label={label} open={open} title={label} />}
-      />
-      <RbPopover
-        handle={popoverHandle}
-        open={open}
-        onOpenChange={setOpen}
-        placement="anchorAboveEnd"
-        role="dialog"
-        ariaLabel="Project"
-        style={{ width: 280 }}
-        overlaySource="composer-pickers"
-      >
-        <ProjectCard open={open} onClose={() => setOpen(false)} spaces={spaces} currentSpaceId={currentSpaceId} />
-      </RbPopover>
-    </>
+    <PickerCard
+      open={open}
+      onOpenChange={setOpen}
+      placement="anchorAboveEnd"
+      role="dialog"
+      ariaLabel="Project"
+      width={280}
+      overlaySource="composer-pickers"
+      trigger={<FooterChip id="picker-project" icon="folder" label={label} open={open} title={label} />}
+    >
+      <ProjectCard open={open} onClose={() => setOpen(false)} spaces={spaces} currentSpaceId={currentSpaceId} />
+    </PickerCard>
   );
 }
 
@@ -415,23 +337,7 @@ function ProjectCard({
   readonly currentSpaceId: string | null;
 }) {
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      // Space → the current space's index; the trailing "opt-out" row when
-      // the draft has no project; NO_ACTIVE_ROW means 0 on the first Down.
-      const target =
-        currentSpaceId === null
-          ? spaces.length
-          : spaces.findIndex((space) => space.id === currentSpaceId);
-      setCursor(target < 0 ? 0 : target);
-      inputRef.current?.focus();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   const labels = spaces.map((space) => spaceDisplayName(space));
   const filtered = filterIndices(query, labels).map((ix) => spaces[ix]!);
@@ -448,44 +354,46 @@ function ProjectCard({
     onClose();
   }
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      // Spaces + the trailing "Don't work in a project" row (§2.5).
-      setCursor((current) => menuStep(current, filtered.length + 1, key === "down" ? 1 : -1) ?? 0);
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      if (cursor < filtered.length) {
-        pickSpace(filtered[cursor]!);
-      } else if (cursor === filtered.length) {
+  const { cursor, setCursor, onKeyDown } = useCursorList({
+    enabled: open,
+    // Spaces + the trailing "Don't work in a project" row (§2.5).
+    count: filtered.length + 1,
+    onActivate: (ix) => {
+      if (ix < filtered.length) {
+        pickSpace(filtered[ix]!);
+      } else {
         pickNoProject();
       }
+    },
+  });
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      // Space → the current space's index; the trailing "opt-out" row when
+      // the draft has no project; NO_ACTIVE_ROW means 0 on the first Down.
+      const target =
+        currentSpaceId === null
+          ? spaces.length
+          : spaces.findIndex((space) => space.id === currentSpaceId);
+      setCursor(target < 0 ? 0 : target);
+      inputRef.current?.focus();
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
     <div className="picker-key-frame" onKeyDown={onKeyDown}>
-      <SearchInputFrame>
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setCursor(0);
-          }}
-          placeholder="Search projects…"
-          spellCheck={false}
-          autoComplete="off"
-          aria-label="Search projects"
-        />
-      </SearchInputFrame>
+      <PickerSearchField
+        inputRef={inputRef}
+        value={query}
+        onQuery={(value) => {
+          setQuery(value);
+          setCursor(0);
+        }}
+        placeholder="Search projects…"
+        ariaLabel="Search projects"
+      />
       {filtered.length === 0 ? (
         <div className="picker-empty-note">
           {query.trim().length > 0 ? "No projects match." : "No projects on this device."}
@@ -547,7 +455,6 @@ function CheckoutChip({
   readonly onPick: (kind: CheckoutKind) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   // `checkout_label` (pickers.rs:1280-1304): "New worktree" |
   // "Current worktree" when the picked ref has an existing worktree, else
@@ -556,35 +463,29 @@ function CheckoutChip({
     checkout === "newWorktree" ? "New worktree" : pickedRefHasWorktree ? "Current worktree" : "Current checkout";
 
   return (
-    <>
-      <RbPopoverTrigger
-        handle={popoverHandle}
-        render={
-          <FooterChip
-            id="picker-checkout"
-            icon={checkout === "newWorktree" || pickedRefHasWorktree ? "folderWithFiles" : "folder"}
-            label={label}
-            open={open}
-            title={label}
-          />
-        }
-      />
-      <RbPopover
-        handle={popoverHandle}
-        open={open}
-        onOpenChange={setOpen}
-        placement="anchorAbove"
-        role="dialog"
-        ariaLabel="Checkout kind"
-        style={{ width: 224 }}
-        overlaySource="composer-pickers"
-        // No search input here — the card never moved focus on open, and the
-        // default would land it on the first row; `false` keeps focus put.
-        initialFocus={false}
-      >
-        <CheckoutCard open={open} onClose={() => setOpen(false)} checkout={checkout} onPick={onPick} />
-      </RbPopover>
-    </>
+    <PickerCard
+      open={open}
+      onOpenChange={setOpen}
+      placement="anchorAbove"
+      role="dialog"
+      ariaLabel="Checkout kind"
+      width={224}
+      overlaySource="composer-pickers"
+      // No search input here — the card never moved focus on open, and the
+      // default would land it on the first row; `false` keeps focus put.
+      initialFocus={false}
+      trigger={
+        <FooterChip
+          id="picker-checkout"
+          icon={checkout === "newWorktree" || pickedRefHasWorktree ? "folderWithFiles" : "folder"}
+          label={label}
+          open={open}
+          title={label}
+        />
+      }
+    >
+      <CheckoutCard open={open} onClose={() => setOpen(false)} checkout={checkout} onPick={onPick} />
+    </PickerCard>
   );
 }
 
@@ -599,38 +500,28 @@ function CheckoutCard({
   readonly checkout: CheckoutKind;
   readonly onPick: (kind: CheckoutKind) => void;
 }) {
-  const [cursor, setCursor] = useState<CheckoutKind>(checkout);
-
   function pick(kind: CheckoutKind): void {
     onPick(kind);
     onClose();
   }
 
   // Enter picks the highlighted kind; ↑/↓ walk the two rows (toggle step 5:
-  // Checkout anchors on 0 or 1).
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      setCursor((current) => (current === "local" ? "newWorktree" : "local"));
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      pick(cursor);
-    }
-  };
+  // Checkout anchors on 0 or 1 — index 0 is `local`, and the cursor starts
+  // on the committed kind's row).
+  const { cursor, setCursor, onKeyDown } = useCursorList({
+    enabled: open,
+    count: 2,
+    initial: checkout === "local" ? 0 : 1,
+    onActivate: (ix) => pick(ix === 0 ? "local" : "newWorktree"),
+  });
 
   return (
     <div className="picker-list picker-list-plain" onKeyDown={onKeyDown}>
       <MenuRowNav
         fadeKey="local"
-        highlighted={cursor === "local" && checkout !== "local"}
+        highlighted={cursor === 0 && checkout !== "local"}
         selected={checkout === "local"}
-        onMouseEnter={() => setCursor("local")}
+        onMouseEnter={() => setCursor(0)}
         onClick={() => pick("local")}
       >
         <Icon name="folder" size={14} className="picker-row-icon-muted" />
@@ -638,9 +529,9 @@ function CheckoutCard({
       </MenuRowNav>
       <MenuRowNav
         fadeKey="newWorktree"
-        highlighted={cursor === "newWorktree" && checkout !== "newWorktree"}
+        highlighted={cursor === 1 && checkout !== "newWorktree"}
         selected={checkout === "newWorktree"}
-        onMouseEnter={() => setCursor("newWorktree")}
+        onMouseEnter={() => setCursor(1)}
         onClick={() => pick("newWorktree")}
       >
         <Icon name="folderWithFiles" size={14} className="picker-row-icon-muted" />
@@ -682,7 +573,6 @@ function RefChip({
   readonly onRefs: (rows: readonly RepoRef[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
   const [refs, setRefs] = useState<RefsState>({ rows: [], loading: false, error: null });
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -768,34 +658,28 @@ function RefChip({
   }
 
   return (
-    <>
-      <RbPopoverTrigger
-        handle={popoverHandle}
-        render={<FooterChip id="picker-branch" icon="gitBranch" label={label} open={open} title={label} />}
-      />
-      <RbPopover
-        handle={popoverHandle}
+    <PickerCard
+      open={open}
+      onOpenChange={setOpen}
+      placement="anchorAbove"
+      role="dialog"
+      ariaLabel="Ref"
+      width={320}
+      overlaySource="composer-pickers"
+      trigger={<FooterChip id="picker-branch" icon="gitBranch" label={label} open={open} title={label} />}
+    >
+      <BranchCard
         open={open}
-        onOpenChange={setOpen}
-        placement="anchorAbove"
-        role="dialog"
-        ariaLabel="Ref"
-        style={{ width: 320 }}
-        overlaySource="composer-pickers"
-      >
-        <BranchCard
-          open={open}
-          onClose={() => setOpen(false)}
-          refs={refs}
-          repoPath={repoPath}
-          switching={switching}
-          switchError={switchError}
-          picked={picked}
-          onRetry={() => void loadRefs(true)}
-          onPick={(row) => void pickRef(row)}
-        />
-      </RbPopover>
-    </>
+        onClose={() => setOpen(false)}
+        refs={refs}
+        repoPath={repoPath}
+        switching={switching}
+        switchError={switchError}
+        picked={picked}
+        onRetry={() => void loadRefs(true)}
+        onPick={(row) => void pickRef(row)}
+      />
+    </PickerCard>
   );
 }
 
@@ -821,7 +705,6 @@ function BranchCard({
   readonly onPick: (row: RepoRef) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -831,6 +714,26 @@ function BranchCard({
   }, [refs.rows, query]);
 
   const count = Math.min(refs.rows.length, MAX_REF_ROWS);
+
+  const { cursor, setCursor, onKeyDown } = useCursorList({
+    enabled: open,
+    count,
+    onActivate: (ix) => {
+      const row = filtered[ix];
+      if (row !== undefined) {
+        onPick(row);
+      }
+    },
+  });
+
+  // The walk spans the CAPPED row count while the rendered list is the
+  // FILTERED one, so this card keeps its own scroll effect — keyed on the
+  // rendered length, not the walk count (the hook's `listRef` effect
+  // assumes the two are equal, as they are on every other surface).
+  useEffect(() => {
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-ref-index="${cursor}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+  }, [cursor, filtered.length]);
 
   useEffect(() => {
     if (open) {
@@ -843,47 +746,18 @@ function BranchCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!open) {
-      return;
-    }
-    const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-    if (key === "down" || key === "up") {
-      event.preventDefault();
-      setCursor((current) => menuStep(current, count, key === "down" ? 1 : -1) ?? 0);
-      return;
-    }
-    if (key === "enter" || key === "mod-enter") {
-      event.preventDefault();
-      const row = filtered[cursor];
-      if (row !== undefined) {
-        onPick(row);
-      }
-    }
-  };
-
-  useEffect(() => {
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-ref-index="${cursor}"]`);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [cursor, filtered.length]);
-
   return (
     <div className="picker-key-frame" onKeyDown={onKeyDown}>
-      <SearchInputFrame>
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setCursor(0);
-          }}
-          placeholder="Search refs…"
-          spellCheck={false}
-          autoComplete="off"
-          aria-label="Search refs"
-        />
-      </SearchInputFrame>
+      <PickerSearchField
+        inputRef={inputRef}
+        value={query}
+        onQuery={(value) => {
+          setQuery(value);
+          setCursor(0);
+        }}
+        placeholder="Search refs…"
+        ariaLabel="Search refs"
+      />
       {repoPath === null ? (
         <div className="picker-empty-note">No project selected</div>
       ) : refs.loading ? (

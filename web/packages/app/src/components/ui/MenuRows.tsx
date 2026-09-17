@@ -1,10 +1,18 @@
 /**
- * `MenuRow` / `MenuRowNav` — ports of `popover.rs:713-765`. One shared row
- * recipe at the desktop's metrics (gap 10, px 8, py 6, radius 8, 13px): the
- * selected state applies the card selection wash instantly (no transition),
- * the rest state fades its wash and text over `HOVER_FADE`, and the keyboard
- * highlight reads identically to selected (both use `card_selected_bg()` —
- * the shipped behavior, not the doc comment's two-tone intent).
+ * `MenuRow` / `MenuRowNav` / `MenuHeading` / `MenuSeparator` /
+ * `MenuSection` — the row vocabulary of every floating card, ports of
+ * `popover.rs`'s element builders: `menu_row` (`:713-746`), the keyboard
+ * `menu_row_nav` variant (`:752-765`), `menu_heading` (`:771-795`),
+ * `menu_separator` (`:799-803`), and the bordered trailing
+ * `menu_section` (`:961-970`).
+ *
+ * One shared row recipe at the desktop's metrics (gap 10, px 8, py 6,
+ * radius 8, 13px): the selected state applies the card selection wash
+ * instantly (no transition), the rest state fades its wash and text over
+ * `HOVER_FADE`, and the keyboard highlight reads identically to selected
+ * (both use `card_selected_bg()` — the shipped behavior, not the doc
+ * comment's two-tone intent). Geometry lives in `styles/app.css` next to
+ * each class.
  */
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
@@ -62,4 +70,24 @@ export function MenuRowNav(props: MenuRowNavProps) {
       {children}
     </button>
   );
+}
+
+/** `menu_heading` (`popover.rs:771-795`) — small uppercase section head.
+ * The tracking is real CSS `letter-spacing`; the desktop's hair-space
+ * workaround is deliberately not ported (it would break copy/paste). */
+export function MenuHeading(props: { children: ReactNode }) {
+  return <div className="menu-heading">{props.children}</div>;
+}
+
+/** `menu_separator` (`popover.rs:799-803`) — the full-bleed hairline: the
+ * negative inline margin cancels the card's 4px inset so it runs edge to
+ * edge. */
+export function MenuSeparator() {
+  return <div className="menu-separator" role="separator" />;
+}
+
+/** `menu_section` (`popover.rs:961-970`) — a bordered trailing section; its
+ * top hairline runs edge-to-edge of the card's inset (no negative margin). */
+export function MenuSection(props: { children?: ReactNode }) {
+  return <div className="menu-section">{props.children}</div>;
 }

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
-import { classifyKey, menuStep } from "../lib/picker-search";
 import {
   applyDraftUpdate,
   composerDefaults,
@@ -19,11 +18,13 @@ import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } fro
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform } from "../state/shortcuts";
-import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
-import { KbdHint, MenuHeading, MenuSeparator } from "./popover/menu";
-import { MenuRowNav } from "./popover/menu-row";
-import { MenuScrollbar } from "./popover/scrollbar";
-import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./popover/skeleton";
+import { openChipClass } from "./ui/Chip";
+import { useCursorList } from "./ui/CursorList";
+import { KbdHint } from "./ui/KeyHint";
+import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { PickerCard } from "./ui/PickerCard";
+import { MenuScrollbar } from "./ui/Scrollbar";
+import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./ui/Skeleton";
 import { GlyphSpinner } from "./glyph-spinner";
 
 /**
@@ -74,8 +75,6 @@ export interface ComposerPickersProps {
 export function ComposerPickers(props: ComposerPickersProps) {
   const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget } = props;
   const [open, setOpen] = useState(false);
-  // Detached-trigger handle — the Trigger renders as a sibling of the Root.
-  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -214,49 +213,51 @@ export function ComposerPickers(props: ComposerPickersProps) {
 
   return (
     <div className="composer-pickers">
-      <RbPopoverTrigger
-        handle={popoverHandle}
-        id="picker-model"
-        className={`identity-chip ${open ? "identity-chip-open" : ""}`}
-        title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
-      >
-        {noAgents ? (
-          <Icon name="terminal" size={16} className="identity-chip-brand identity-chip-brand-muted" />
-        ) : iconLoading ? (
-          <GlyphSpinner size={16} mono className="identity-chip-brand" />
-        ) : (
-          <Icon
-            name={brand.name}
-            size={16}
-            className="identity-chip-brand"
-            style={brand.tint === null ? undefined : { color: brand.tint }}
-          />
-        )}
-        {labelLoading ? (
-          <SkeletonBar width={56} />
-        ) : (
-          <span className="identity-chip-model">{noAgents ? "No agents available" : modelLabel}</span>
-        )}
-        {suffix !== null && !noAgents && (
-          <span className={`identity-chip-suffix ${suffixActive ? "identity-chip-suffix-active" : ""}`}>
-            {suffix}
-          </span>
-        )}
-      </RbPopoverTrigger>
-      {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
-          chip's, opening upward with a 6px gap, clamped 8px inside. */}
-      <RbPopover
-        handle={popoverHandle}
+      <PickerCard
         open={open}
         onOpenChange={setOpen}
         placement="anchorAboveEnd"
         cardClassName="popover-card popover-card-flush identity-card"
         role="dialog"
         ariaLabel="Run identity"
-        style={{ width: 304, maxHeight: 640 }}
+        width={304}
+        style={{ maxHeight: 640 }}
         overlaySource="composer-pickers"
         escapeFocusTarget={escapeFocusTarget}
+        trigger={
+          <button
+            type="button"
+            id="picker-model"
+            className={openChipClass("identity-chip", open)}
+            title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
+          >
+            {noAgents ? (
+              <Icon name="terminal" size={16} className="identity-chip-brand identity-chip-brand-muted" />
+            ) : iconLoading ? (
+              <GlyphSpinner size={16} mono className="identity-chip-brand" />
+            ) : (
+              <Icon
+                name={brand.name}
+                size={16}
+                className="identity-chip-brand"
+                style={brand.tint === null ? undefined : { color: brand.tint }}
+              />
+            )}
+            {labelLoading ? (
+              <SkeletonBar width={56} />
+            ) : (
+              <span className="identity-chip-model">{noAgents ? "No agents available" : modelLabel}</span>
+            )}
+            {suffix !== null && !noAgents && (
+              <span className={`identity-chip-suffix ${suffixActive ? "identity-chip-suffix-active" : ""}`}>
+                {suffix}
+              </span>
+            )}
+          </button>
+        }
       >
+        {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
+            chip's, opening upward with a 6px gap, clamped 8px inside. */}
         <IdentityCard
           open={open}
           harnesses={harnesses}
@@ -283,7 +284,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
             toggleModelFavorite(harness, model.id, model.label);
           }}
         />
-      </RbPopover>
+      </PickerCard>
     </div>
   );
 }
@@ -397,7 +398,6 @@ function IdentityCard(props: IdentityCardProps) {
     !locked && favorites.length > 0 ? "favorites" : "harness",
   );
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -431,8 +431,34 @@ function IdentityCard(props: IdentityCardProps) {
     return index < 0 ? 0 : index;
   }, [rows, selectedModel, effectiveHarness, rail, isFavorite]);
 
+  const activateRow = (index: number): void => {
+    const row = rows[index];
+    if (row === undefined) {
+      return;
+    }
+    onPickModel(row.harness, row.model);
+  };
+
+  // The cursor keyboard model (`useCursorList`) — the walk, Enter, and the
+  // scrollIntoView-on-cursor, all composed. Key handling rides a
+  // capture-phase window listener while the card is open — the desktop
+  // mounts it on the card so keys bubble from the focused search input,
+  // but the takeover states have no input to focus, so a card-scoped
+  // handler would never see the keys there. "any" context, per §2.5's
+  // table. Escape is NOT handled here: Base UI's dismiss pipeline owns
+  // it, which is what records the `escape-key` reason `PickerCard`'s
+  // finalFocus decision reads (the composer focus return).
+  const { cursor, setCursor, onKeyDown: walkKeys } = useCursorList({
+    enabled: open,
+    count: rows.length,
+    onActivate: activateRow,
+    listRef,
+    rowAttribute: "model-index",
+  });
+
   // Anchoring: on open (and after a star reorder), the cursor sits on the
   // selected row so exactly one row reads highlighted (pickers.rs toggle 5).
+  // setCursor is the hook's setter — stable like useState's own.
   const anchorCursor = useCallback(
     (index: number): void => {
       setCursor(index);
@@ -445,6 +471,7 @@ function IdentityCard(props: IdentityCardProps) {
         row?.scrollIntoView({ block: "nearest" });
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -479,21 +506,6 @@ function IdentityCard(props: IdentityCardProps) {
     }
   };
 
-  const activateRow = (index: number): void => {
-    const row = rows[index];
-    if (row === undefined) {
-      return;
-    }
-    onPickModel(row.harness, row.model);
-  };
-
-  // Key handling rides a capture-phase window listener while the card is
-  // open — the desktop mounts it on the card so keys bubble from the
-  // focused search input, but the takeover states have no input to focus,
-  // so a card-scoped handler would never see the keys there. "any" context,
-  // per §2.5's table. Escape is NOT handled here: Base UI's dismiss
-  // pipeline owns it, which is what records the `escape-key` reason the
-  // RbPopover's finalFocus decision reads (the composer focus return).
   useEffect(() => {
     if (!opened) {
       return;
@@ -514,37 +526,20 @@ function IdentityCard(props: IdentityCardProps) {
         activateRow(Number(event.key) - 1);
         return;
       }
-      const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
-      switch (key) {
-        case "down":
-        case "up":
-          event.preventDefault();
-          setCursor((current) => menuStep(current, rows.length, key === "down" ? 1 : -1) ?? 0);
-          return;
-        case "enter":
-        case "mod-enter":
-          event.preventDefault();
-          activateRow(cursor);
-          return;
-        default:
-          return;
-      }
+      walkKeys(event);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
     };
-    // rows/cursor are read through refs of the latest render: re-arm on
-    // every open only; the handler closure would otherwise go stale. The
-    // rows.length/cursor deps re-arm cheaply on list changes instead.
+    // walkKeys reads the render's cursor/rows and is re-created every
+    // render: re-arm on the same triggers as before the hook (open, the
+    // list length, the cursor) so the captured walkKeys is always the one
+    // from the render those last changed — the closure would otherwise go
+    // stale. walkKeys itself is deliberately NOT a dep (it is a new
+    // reference per render; listing it would re-arm on every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, rows.length, cursor, open]);
-
-  // Scroll the highlighted row into view as the cursor moves.
-  useEffect(() => {
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-model-index="${cursor}"]`);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [cursor, rows.length]);
 
   const rowHeight = rail === "favorites" ? ROW_HEIGHT_FAVORITE : ROW_HEIGHT_COMPACT;
   const viewport = LIST_HEIGHT - 12; // the band's 6px padding-block, both sides

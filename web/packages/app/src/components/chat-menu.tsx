@@ -8,9 +8,8 @@ import { sidebarNotice } from "../state/notice";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
 import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
-import { RbDialog } from "./base/dialog";
-import { MenuSeparator, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./popover/menu";
-import { MenuRow } from "./popover/menu-row";
+import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
+import { MenuRow, MenuSeparator } from "./ui/MenuRows";
 
 /**
  * The chat row's management surface — the desktop's `ChatMenuState`
@@ -264,16 +263,7 @@ function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <RbDialog
-      open
-      onOpenChange={(next) => {
-        if (!next) {
-          onClose();
-        }
-      }}
-      ariaLabel="Rename session"
-      initialFocus={inputRef}
-    >
+    <Dialog ariaLabel="Rename session" onClose={onClose} initialFocus={inputRef}>
       <DialogCard>
         <DialogTitle>Rename session</DialogTitle>
         <form
@@ -302,7 +292,7 @@ function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (
           </div>
         </form>
       </DialogCard>
-    </RbDialog>
+    </Dialog>
   );
 }
 
@@ -326,15 +316,7 @@ function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: (
   }
 
   return (
-    <RbDialog
-      open
-      onOpenChange={(next) => {
-        if (!next) {
-          onClose();
-        }
-      }}
-      ariaLabel="Delete session?"
-    >
+    <Dialog ariaLabel="Delete session?" onClose={onClose}>
       <DialogCard>
         <DialogTitle>Delete session?</DialogTitle>
         <DialogBody>{`\u201C${title}\u201D will be permanently deleted. This can\u2019t be undone.`}</DialogBody>
@@ -343,6 +325,6 @@ function DeleteChatDialog({ chat, onDelete, onClose }: { chat: Chat; onDelete: (
           <BtnDanger onClick={confirm}>Delete</BtnDanger>
         </div>
       </DialogCard>
-    </RbDialog>
+    </Dialog>
   );
 }

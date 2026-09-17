@@ -17,9 +17,9 @@ import {
 import { addSpaceStore, useAddSpaceSnapshot, type AddSpaceFlow } from "../state/add-space";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { RbDialogGlass } from "./base/dialog";
-import { KeyHint, KeyHintPair, KeyHintText } from "./popover/menu";
-import { MenuRowNav } from "./popover/menu-row";
-import { ErrorRow, SkeletonRows } from "./popover/skeleton";
+import { KeyHint, KeyHintPair, KeyHintText } from "./ui/KeyHint";
+import { MenuRowNav } from "./ui/MenuRows";
+import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 
 /**
  * The add-space palette — the ⌘K-style "New project" surface, port of the
