@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generator": "roboco-theme-export",
   "families": [
     {
@@ -16,6 +16,7 @@
             "background": "#ffffff",
             "shell": "#f3f3f5",
             "raised": "#ededf0",
+            "raisedHover": "#dedede",
             "card": "#ffffff",
             "dialog": "#fefefe",
             "overlay": "#ffffff",
@@ -26,9 +27,11 @@
             "text": "#303035",
             "textMuted": "#62626a",
             "textFaint": "#797981",
+            "textDim": "#636363",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#dc2626",
+            "dangerStrong": "#be1022",
             "dangerMuted": "#ac292a",
             "warning": "#a16207",
             "warningMuted": "#855613",
@@ -109,7 +112,7 @@
             "url": "https://github.com/zeronsh/comet",
             "revision": "d138049",
             "license": "MIT",
-            "assetHash": "sha256:732a4dbbddd4ce760221e403cf10c22824f202f9cd5386cb2a8d6385d1b0c1f4"
+            "assetHash": "sha256:b939f30d54a286f00186d9c49b0d958cca5caaa3e83563bf0ebea23a9c366668"
           }
         },
         {
@@ -122,6 +125,7 @@
             "background": "#060606",
             "shell": "#0d0d0d",
             "raised": "#343438",
+            "raisedHover": "#2b2b2b",
             "card": "#0e0e0e",
             "dialog": "#151516",
             "overlay": "#1b1b1c",
@@ -132,9 +136,11 @@
             "text": "#e8e8ea",
             "textMuted": "#a9a9ae",
             "textFaint": "#85858a",
+            "textDim": "#989898",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#f87171",
+            "dangerStrong": "#c74b47",
             "dangerMuted": "#f49293",
             "warning": "#facc15",
             "warningMuted": "#f6d34a",
@@ -215,7 +221,7 @@
             "url": "https://github.com/zeronsh/comet",
             "revision": "d138049",
             "license": "MIT",
-            "assetHash": "sha256:fe3d6655b2a5e3454d376e2d232fb1b8c369c31c2391029f34670f6b5547bec8"
+            "assetHash": "sha256:a6bd1a31e810b7ed84d451debf201f4897754b7e85a9614e6e79042beab60e7c"
           }
         }
       ]
@@ -234,6 +240,7 @@
             "background": "#ffffff",
             "shell": "#f3f3f3",
             "raised": "#e8e8e8",
+            "raisedHover": "#e8e8e8",
             "card": "#ffffff",
             "dialog": "#fefefe",
             "overlay": "#ffffff",
@@ -244,9 +251,11 @@
             "text": "#1f1f1f",
             "textMuted": "#616161",
             "textFaint": "#767676",
+            "textDim": "#616161",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#a1260d",
+            "dangerStrong": "#a1260d",
             "dangerMuted": "#7d2412",
             "warning": "#895503",
             "warningMuted": "#6f480a",
@@ -327,7 +336,7 @@
             "url": "https://github.com/microsoft/vscode",
             "revision": "e33d147d4c0fa65ce17cb73ec9d798f064b4bf1f",
             "license": "MIT",
-            "assetHash": "sha256:32f32ccb9224138a81e61d9cb81ec41593030c1d82730fb9c2fdf2ee0e46f5c1"
+            "assetHash": "sha256:218064b8b7860b6992c953483fde1d4ee081db285d3742a7e38cb588f57ca363"
           }
         },
         {
@@ -340,6 +349,7 @@
             "background": "#1e1e1e",
             "shell": "#181818",
             "raised": "#2a2d2e",
+            "raisedHover": "#2a2d2e",
             "card": "#252526",
             "dialog": "#262627",
             "overlay": "#272829",
@@ -350,9 +360,11 @@
             "text": "#d4d4d4",
             "textMuted": "#a8a8a8",
             "textFaint": "#858585",
+            "textDim": "#a8a8a8",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#f48771",
+            "dangerStrong": "#f48771",
             "dangerMuted": "#eb9d8d",
             "warning": "#cca700",
             "warningMuted": "#ceb235",
@@ -433,7 +445,7 @@
             "url": "https://github.com/microsoft/vscode",
             "revision": "e33d147d4c0fa65ce17cb73ec9d798f064b4bf1f",
             "license": "MIT",
-            "assetHash": "sha256:8dcedbe94fe55edf5b0a86a9de0a581503f524a5e33e17844c1e57947f8cf32f"
+            "assetHash": "sha256:a2dacdc1a15a194acc2f01601674ae6d8172332d43a1ddb1f8bd28bbf8aa340c"
           }
         }
       ]
@@ -452,6 +464,7 @@
             "background": "#eff1f5",
             "shell": "#e6e9ef",
             "raised": "#dce0e8",
+            "raisedHover": "#dce0e8",
             "card": "#f7f8fa",
             "dialog": "#f6f7f9",
             "overlay": "#f6f8fa",
@@ -462,9 +475,11 @@
             "text": "#4c4f69",
             "textMuted": "#5c5f77",
             "textFaint": "#6c6f85",
+            "textDim": "#5c5f77",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#d20f39",
+            "dangerStrong": "#d20f39",
             "dangerMuted": "#ac2146",
             "warning": "#df8e1d",
             "warningMuted": "#ba7e30",
@@ -545,7 +560,7 @@
             "url": "https://github.com/catppuccin/vscode",
             "revision": "befc9e6fc41980f4241408f7049755d47c06ff45",
             "license": "MIT",
-            "assetHash": "sha256:bf96048a5097b880e28672b3d0d6822eaf643bfee60aea56e7cfc2b0579f95d2"
+            "assetHash": "sha256:58949b1c7496942bc037170bfd568095220550388eb8a0123190374556fc9c9d"
           }
         },
         {
@@ -558,6 +573,7 @@
             "background": "#1e1e2e",
             "shell": "#181825",
             "raised": "#313244",
+            "raisedHover": "#313244",
             "card": "#242436",
             "dialog": "#262739",
             "overlay": "#28293b",
@@ -568,9 +584,11 @@
             "text": "#cdd6f4",
             "textMuted": "#a6adc8",
             "textFaint": "#9399b2",
+            "textDim": "#a6adc8",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#f38ba8",
+            "dangerStrong": "#f38ba8",
             "dangerMuted": "#e8a0bd",
             "warning": "#f9e2af",
             "warningMuted": "#eedfc0",
@@ -651,7 +669,7 @@
             "url": "https://github.com/catppuccin/vscode",
             "revision": "befc9e6fc41980f4241408f7049755d47c06ff45",
             "license": "MIT",
-            "assetHash": "sha256:50c044fd353bb563795d759b63042a4551d870c98376f19b682819a36e6a086c"
+            "assetHash": "sha256:c3cfe3d9cb7f249f93ba34ad9e97661d61029c15338c1a2bd4a47cebfc53e306"
           }
         }
       ]
@@ -670,6 +688,7 @@
             "background": "#d5d6db",
             "shell": "#cbccd1",
             "raised": "#bfc0c6",
+            "raisedHover": "#bfc0c6",
             "card": "#e1e2e7",
             "dialog": "#e0e1e6",
             "overlay": "#e0e1e6",
@@ -680,9 +699,11 @@
             "text": "#343b59",
             "textMuted": "#485e7d",
             "textFaint": "#5a6378",
+            "textDim": "#485e7d",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#8c4351",
+            "dangerStrong": "#8c4351",
             "dangerMuted": "#734153",
             "warning": "#8f5e15",
             "warningMuted": "#785526",
@@ -763,7 +784,7 @@
             "url": "https://github.com/tokyo-night/tokyo-night-vscode-theme",
             "revision": "7c0f11eaef322f293621ca7befe462214b7ea468",
             "license": "MIT",
-            "assetHash": "sha256:7f5f1b58ae06b8b770eb5800cc5da588c92c6b09b5ddff609b9023eb691ef206"
+            "assetHash": "sha256:88798a1d26205910d09c4f51d63a6f04e5119cfe3fdc03b0541618b271f00b1a"
           }
         },
         {
@@ -776,6 +797,7 @@
             "background": "#1a1b26",
             "shell": "#16161e",
             "raised": "#292e42",
+            "raisedHover": "#292e42",
             "card": "#1f2335",
             "dialog": "#212537",
             "overlay": "#222739",
@@ -786,9 +808,11 @@
             "text": "#c0caf5",
             "textMuted": "#9aa5ce",
             "textFaint": "#7f87ad",
+            "textDim": "#9aa5ce",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#f7768e",
+            "dangerStrong": "#f7768e",
             "dangerMuted": "#e88eab",
             "warning": "#e0af68",
             "warningMuted": "#d8b68b",
@@ -869,7 +893,7 @@
             "url": "https://github.com/tokyo-night/tokyo-night-vscode-theme",
             "revision": "7c0f11eaef322f293621ca7befe462214b7ea468",
             "license": "MIT",
-            "assetHash": "sha256:be42f8708609b833c82bbc2b6a86d69654d0ac03f8224d6069da4b5e5c619219"
+            "assetHash": "sha256:21314cc4f71bed70d9ae1c855f71a450e19e195e41eeeed693ea7a78f8a7f781"
           }
         }
       ]
@@ -888,6 +912,7 @@
             "background": "#282a36",
             "shell": "#21222c",
             "raised": "#44475a",
+            "raisedHover": "#44475a",
             "card": "#2d303e",
             "dialog": "#313443",
             "overlay": "#353848",
@@ -898,9 +923,11 @@
             "text": "#f8f8f2",
             "textMuted": "#c5c8c6",
             "textFaint": "#9a9cab",
+            "textDim": "#c5c8c6",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ff5555",
+            "dangerStrong": "#ff5555",
             "dangerMuted": "#fd8381",
             "warning": "#f1fa8c",
             "warningMuted": "#f3faa6",
@@ -981,7 +1008,7 @@
             "url": "https://github.com/dracula/visual-studio-code",
             "revision": "1b9ecf4d7e0c8cc2e2e890a7a41ad1db5fff1e6c",
             "license": "MIT",
-            "assetHash": "sha256:0b58791c5d0f6c734f3d8067bb2306714ca4ad0e5486df94fbfb63e210372a21"
+            "assetHash": "sha256:8a6b5e7e9fa16074b15a29e8bd68a5032340a6eca1a7631cf603b04f62b5d806"
           }
         }
       ]
@@ -1000,6 +1027,7 @@
             "background": "#ffffff",
             "shell": "#f6f8fa",
             "raised": "#d0d7de",
+            "raisedHover": "#d0d7de",
             "card": "#ffffff",
             "dialog": "#fdfdfe",
             "overlay": "#fefefe",
@@ -1010,9 +1038,11 @@
             "text": "#1f2328",
             "textMuted": "#656d76",
             "textFaint": "#818b98",
+            "textDim": "#656d76",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#cf222e",
+            "dangerStrong": "#cf222e",
             "dangerMuted": "#9e222c",
             "warning": "#9a6700",
             "warningMuted": "#7b560a",
@@ -1093,7 +1123,7 @@
             "url": "https://github.com/primer/github-vscode-theme",
             "revision": "cd78e5e4e7bcf132a6f428ae0f32264bb1b729cf",
             "license": "MIT",
-            "assetHash": "sha256:f78346569b339d0a01f37c4eb5a15f8ea690b77734c0fd5f7f675e8dae4c9e71"
+            "assetHash": "sha256:411e4fbc2e4a65e594b31062385bc389a04c51676dfc669fe0e01dee5d3ebdf2"
           }
         },
         {
@@ -1106,6 +1136,7 @@
             "background": "#0d1117",
             "shell": "#010409",
             "raised": "#21262d",
+            "raisedHover": "#21262d",
             "card": "#161b22",
             "dialog": "#181d24",
             "overlay": "#1a1f26",
@@ -1116,9 +1147,11 @@
             "text": "#e6edf3",
             "textMuted": "#8b949e",
             "textFaint": "#6e7681",
+            "textDim": "#8b949e",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#f85149",
+            "dangerStrong": "#f85149",
             "dangerMuted": "#f37d79",
             "warning": "#d29922",
             "warningMuted": "#d7ae56",
@@ -1199,7 +1232,7 @@
             "url": "https://github.com/primer/github-vscode-theme",
             "revision": "cd78e5e4e7bcf132a6f428ae0f32264bb1b729cf",
             "license": "MIT",
-            "assetHash": "sha256:a7039627345ee3936259bab4c096a7d05e6dd2d8f43cc82dbb1403c13d768578"
+            "assetHash": "sha256:58340b58e260a9e443f1628a2da542edfbb1d2162532f4e1303d81bd2dffab35"
           }
         }
       ]
@@ -1218,6 +1251,7 @@
             "background": "#fcfcfc",
             "shell": "#f8f9fa",
             "raised": "#e6e9ed",
+            "raisedHover": "#e6e9ed",
             "card": "#fafafa",
             "dialog": "#f9f9f9",
             "overlay": "#fafafa",
@@ -1228,9 +1262,11 @@
             "text": "#5c6166",
             "textMuted": "#68727f",
             "textFaint": "#969da8",
+            "textDim": "#68727f",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#e65050",
+            "dangerStrong": "#e65050",
             "dangerMuted": "#bf5556",
             "warning": "#eba400",
             "warningMuted": "#c7931a",
@@ -1311,7 +1347,7 @@
             "url": "https://github.com/ayu-theme/vscode-ayu",
             "revision": "444ef92911cb75c3933c8003e3a7c79b6b6c914f",
             "license": "MIT",
-            "assetHash": "sha256:9f537fa821f5f3d45edd5a7c9ab5ff5691b00502f867d046a743606b36af7bae"
+            "assetHash": "sha256:b3eba386386dffdafcf0cda4ce477e977aa923d1d27efd8129ae9d83f1a5c205"
           }
         },
         {
@@ -1324,6 +1360,7 @@
             "background": "#10141c",
             "shell": "#0d1017",
             "raised": "#1b1f29",
+            "raisedHover": "#1b1f29",
             "card": "#141821",
             "dialog": "#151922",
             "overlay": "#161a24",
@@ -1334,9 +1371,11 @@
             "text": "#bfbdb6",
             "textMuted": "#8a9199",
             "textFaint": "#5a6673",
+            "textDim": "#8a9199",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#d95757",
+            "dangerStrong": "#d95757",
             "dangerMuted": "#d27472",
             "warning": "#ffb454",
             "warningMuted": "#efb66d",
@@ -1417,7 +1456,7 @@
             "url": "https://github.com/ayu-theme/vscode-ayu",
             "revision": "444ef92911cb75c3933c8003e3a7c79b6b6c914f",
             "license": "MIT",
-            "assetHash": "sha256:586d2f4dd08661344e0fabb7d72e2f871a5842dd90ee975cbc53c2ea55429cb7"
+            "assetHash": "sha256:8b1b85fd8755829472317a175ee61e149c1106ff38328fd245d42541b6006cb5"
           }
         },
         {
@@ -1430,6 +1469,7 @@
             "background": "#242936",
             "shell": "#1f2430",
             "raised": "#343d4d",
+            "raisedHover": "#343d4d",
             "card": "#282e3b",
             "dialog": "#2a313e",
             "overlay": "#2c3341",
@@ -1440,9 +1480,11 @@
             "text": "#cccac2",
             "textMuted": "#8a94a6",
             "textFaint": "#6e7c8f",
+            "textDim": "#8a94a6",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ff6666",
+            "dangerStrong": "#ff6666",
             "dangerMuted": "#f18280",
             "warning": "#ffcc66",
             "warningMuted": "#f2cc7d",
@@ -1523,7 +1565,7 @@
             "url": "https://github.com/ayu-theme/vscode-ayu",
             "revision": "444ef92911cb75c3933c8003e3a7c79b6b6c914f",
             "license": "MIT",
-            "assetHash": "sha256:4608b59ce39f8a59bad36108d92bbc359eeb292f1b064f2a5565386182530ac0"
+            "assetHash": "sha256:df1486ee5d361e522da36b1cb62393d71519b661aa04b5e5d83a21694ef0c049"
           }
         }
       ]
@@ -1542,6 +1584,7 @@
             "background": "#fbf1c7",
             "shell": "#f2e5bc",
             "raised": "#d5c4a1",
+            "raisedHover": "#d5c4a1",
             "card": "#f9f5d7",
             "dialog": "#f8f3d5",
             "overlay": "#f8f4d6",
@@ -1552,9 +1595,11 @@
             "text": "#3c3836",
             "textMuted": "#665c54",
             "textFaint": "#7c6f64",
+            "textDim": "#665c54",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#9d0006",
+            "dangerStrong": "#9d0006",
             "dangerMuted": "#821013",
             "warning": "#b57614",
             "warningMuted": "#97671d",
@@ -1635,7 +1680,7 @@
             "url": "https://github.com/jdinhify/vscode-theme-gruvbox",
             "revision": "ca3b8ad203e84a884ca33fb84b5795cf43032709",
             "license": "MIT",
-            "assetHash": "sha256:6156dcbc8183a19a3536e0f1c0bbe9540444fe11e1dc25d9235549a24d9f5e9a"
+            "assetHash": "sha256:e44b99a01a272e9c9a15028512542d6dd72ea17b55a08866f2d85d7dc14a4017"
           }
         },
         {
@@ -1648,6 +1693,7 @@
             "background": "#282828",
             "shell": "#1d2021",
             "raised": "#504945",
+            "raisedHover": "#504945",
             "card": "#32302f",
             "dialog": "#373533",
             "overlay": "#3c3936",
@@ -1658,9 +1704,11 @@
             "text": "#ebdbb2",
             "textMuted": "#bdae93",
             "textFaint": "#928374",
+            "textDim": "#bdae93",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#fb4934",
+            "dangerStrong": "#fb4934",
             "dangerMuted": "#f77257",
             "warning": "#fabd2f",
             "warningMuted": "#f6c550",
@@ -1741,7 +1789,7 @@
             "url": "https://github.com/jdinhify/vscode-theme-gruvbox",
             "revision": "ca3b8ad203e84a884ca33fb84b5795cf43032709",
             "license": "MIT",
-            "assetHash": "sha256:c2d9395b036aca0f02259efa358be21f0271084ac6e908b45b145dc371415b9c"
+            "assetHash": "sha256:307cc6241ab5997c0d5f409c0d6873cb19e3ccb320679ff1c19785604834e3ab"
           }
         }
       ]
@@ -1760,6 +1808,7 @@
             "background": "#faf4ed",
             "shell": "#f2e9e1",
             "raised": "#dfdad9",
+            "raisedHover": "#dfdad9",
             "card": "#fffaf3",
             "dialog": "#fef9f2",
             "overlay": "#fef9f2",
@@ -1770,9 +1819,11 @@
             "text": "#575279",
             "textMuted": "#6d6984",
             "textFaint": "#9893a5",
+            "textDim": "#6d6984",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#b4637a",
+            "dangerStrong": "#b4637a",
             "dangerMuted": "#9a5e7a",
             "warning": "#ea9d34",
             "warningMuted": "#c58a45",
@@ -1853,7 +1904,7 @@
             "url": "https://github.com/rose-pine/vscode",
             "revision": "d8f5ebe8e096fa833e997c07eb7685ee1677a4ba",
             "license": "MIT",
-            "assetHash": "sha256:d8e19b2c7b10e982d380c3a426b01216e1f93a4145c0822b975c93c5e690553a"
+            "assetHash": "sha256:c47a024623f4aa59842769c6a7993dac3f3b515dbd03c512797dd05d5da74bd8"
           }
         },
         {
@@ -1866,6 +1917,7 @@
             "background": "#232136",
             "shell": "#1f1d2e",
             "raised": "#393552",
+            "raisedHover": "#393552",
             "card": "#2a273f",
             "dialog": "#2d2a42",
             "overlay": "#2f2c45",
@@ -1876,9 +1928,11 @@
             "text": "#e0def4",
             "textMuted": "#908caa",
             "textFaint": "#6e6a86",
+            "textDim": "#908caa",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#eb6f92",
+            "dangerStrong": "#eb6f92",
             "dangerMuted": "#e88ead",
             "warning": "#f6c177",
             "warningMuted": "#f1c896",
@@ -1959,7 +2013,7 @@
             "url": "https://github.com/rose-pine/vscode",
             "revision": "d8f5ebe8e096fa833e997c07eb7685ee1677a4ba",
             "license": "MIT",
-            "assetHash": "sha256:dbf2c6191d8d58ad419251892fceaa4b5594a9464a18b55e5a43695fe7f682b3"
+            "assetHash": "sha256:fdd3f640d0d46086f5bd5c0700f779307113b20ce69802612015fac68d6965bd"
           }
         }
       ]
@@ -1978,6 +2032,7 @@
             "background": "#2e3440",
             "shell": "#292e39",
             "raised": "#434c5e",
+            "raisedHover": "#434c5e",
             "card": "#3b4252",
             "dialog": "#3c4454",
             "overlay": "#3e4556",
@@ -1988,9 +2043,11 @@
             "text": "#d8dee9",
             "textMuted": "#aeb6c4",
             "textFaint": "#7f899b",
+            "textDim": "#aeb6c4",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#bf616a",
+            "dangerStrong": "#bf616a",
             "dangerMuted": "#c6848e",
             "warning": "#ebcb8b",
             "warningMuted": "#e6d0a3",
@@ -2071,7 +2128,7 @@
             "url": "https://github.com/nordtheme/visual-studio-code",
             "revision": "8ead09822c02d0d49d0f764104505e5a34d3689f",
             "license": "MIT",
-            "assetHash": "sha256:c755c8df13672b5a2d05ffc953b44465977d13eb868fa01426acdb01375f169e"
+            "assetHash": "sha256:24e43838477b3d53a362b17a2e3e085fe98d3765fa3ae8d2c2bd037d589421a6"
           }
         }
       ]
@@ -2090,6 +2147,7 @@
             "background": "#282c34",
             "shell": "#21252b",
             "raised": "#2c313a",
+            "raisedHover": "#2c313a",
             "card": "#21252b",
             "dialog": "#23272e",
             "overlay": "#252930",
@@ -2100,9 +2158,11 @@
             "text": "#abb2bf",
             "textMuted": "#9da5b4",
             "textFaint": "#7f848e",
+            "textDim": "#9da5b4",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#e05561",
+            "dangerStrong": "#e05561",
             "dangerMuted": "#d16f7b",
             "warning": "#d19a66",
             "warningMuted": "#c8a07c",
@@ -2183,7 +2243,7 @@
             "url": "https://github.com/Binaryify/OneDark-Pro",
             "revision": "e6ccf638d5b69aa38cd1005edb0ee7ba7ef6fedc",
             "license": "MIT",
-            "assetHash": "sha256:60b7e57bae737b7a1d0e58e8b76d03b8313fadbdd99577f9eba94f176aaf51df"
+            "assetHash": "sha256:106d79fd7b31ee01e820f6eaf485184df66a840f0e8e31c1e4c5bbcc5dfe8172"
           }
         }
       ]
@@ -2202,6 +2262,7 @@
             "background": "#282c34",
             "shell": "#21252b",
             "raised": "#2c313a",
+            "raisedHover": "#2c313a",
             "card": "#21252b",
             "dialog": "#23272e",
             "overlay": "#252930",
@@ -2212,9 +2273,11 @@
             "text": "#abb2bf",
             "textMuted": "#9da5b4",
             "textFaint": "#5c6370",
+            "textDim": "#9da5b4",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#e06c75",
+            "dangerStrong": "#e06c75",
             "dangerMuted": "#d1808a",
             "warning": "#d19a66",
             "warningMuted": "#c8a07c",
@@ -2295,7 +2358,7 @@
             "url": "https://github.com/akamud/vscode-theme-onedark",
             "revision": "a8be970644982221f9b61fb1c4b3da74b4beab79",
             "license": "MIT",
-            "assetHash": "sha256:f1ae498690776ab2bce0e6ab9bc914f2a36672383d1f207639fb9a20a9234027"
+            "assetHash": "sha256:35035a084ce1b00fb98b59baa428f073d1bbc50bbb2f5bf157dbf9715281f0aa"
           }
         }
       ]
@@ -2314,6 +2377,7 @@
             "background": "#fbfbfb",
             "shell": "#f0f0f0",
             "raised": "#d3e8f8",
+            "raisedHover": "#d3e8f8",
             "card": "#ffffff",
             "dialog": "#fdfeff",
             "overlay": "#feffff",
@@ -2324,9 +2388,11 @@
             "text": "#403f53",
             "textMuted": "#66657a",
             "textFaint": "#7a8297",
+            "textDim": "#66657a",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#de3d3b",
+            "dangerStrong": "#de3d3b",
             "dangerMuted": "#b23e42",
             "warning": "#a67d00",
             "warningMuted": "#8d6e15",
@@ -2407,7 +2473,7 @@
             "url": "https://github.com/sdras/night-owl-vscode-theme",
             "revision": "cc291eba7976b20d7c66bde6883c27b902196b07",
             "license": "MIT",
-            "assetHash": "sha256:cf30ba19b6aeec55b0cc81fd4ffd45f599d6a13192fcfd6f14d454abb630140d"
+            "assetHash": "sha256:7cce60b01cab60cceb356130879626a8cf580937be60a2d66a61cc6654e7edcd"
           }
         },
         {
@@ -2420,6 +2486,7 @@
             "background": "#011627",
             "shell": "#01111d",
             "raised": "#0b253a",
+            "raisedHover": "#0b253a",
             "card": "#071d2e",
             "dialog": "#081e30",
             "overlay": "#082032",
@@ -2430,9 +2497,11 @@
             "text": "#d6deeb",
             "textMuted": "#8ca6ba",
             "textFaint": "#637777",
+            "textDim": "#8ca6ba",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ef5350",
+            "dangerStrong": "#ef5350",
             "dangerMuted": "#e87a7b",
             "warning": "#ffeb95",
             "warningMuted": "#f5e8ab",
@@ -2513,7 +2582,7 @@
             "url": "https://github.com/sdras/night-owl-vscode-theme",
             "revision": "cc291eba7976b20d7c66bde6883c27b902196b07",
             "license": "MIT",
-            "assetHash": "sha256:85ceda47c359da37985d3cff7a00f73e95175a6f4bfec8d51eec0dc66a09e179"
+            "assetHash": "sha256:12cb3cb13107b769246d4003018d65c782e2b66cf0f2535856d12d90a47ade7b"
           }
         }
       ]
@@ -2532,6 +2601,7 @@
             "background": "#ffffff",
             "shell": "#f3f3f3",
             "raised": "#e5e5e5",
+            "raisedHover": "#e5e5e5",
             "card": "#ffffff",
             "dialog": "#fefefe",
             "overlay": "#fefefe",
@@ -2542,9 +2612,11 @@
             "text": "#1857a4",
             "textMuted": "#62626a",
             "textFaint": "#66768a",
+            "textDim": "#62626a",
             "solid": "#232328",
             "onSolid": "#ffffff",
             "danger": "#de3d3b",
+            "dangerStrong": "#de3d3b",
             "dangerMuted": "#a74458",
             "warning": "#9b6a00",
             "warningMuted": "#7a6529",
@@ -2625,7 +2697,7 @@
             "url": "https://github.com/johnpapa/vscode-winteriscoming",
             "revision": "260547834cb6ac37dd5b8bb5842cc1c8d3164946",
             "license": "MIT",
-            "assetHash": "sha256:e8887d44bc11d7afd78d7994efabb20fe9d08ff655b6e49dd4195e9f08242439"
+            "assetHash": "sha256:c14fb2fa404c4a3145d38b2fd0a1ac2f479297fca3e03bd26fd5d8a8af4498a3"
           }
         },
         {
@@ -2638,6 +2710,7 @@
             "background": "#011627",
             "shell": "#01111d",
             "raised": "#0b253a",
+            "raisedHover": "#0b253a",
             "card": "#071d2e",
             "dialog": "#081e30",
             "overlay": "#082032",
@@ -2648,9 +2721,11 @@
             "text": "#d6deeb",
             "textMuted": "#8ca6ba",
             "textFaint": "#5f7e97",
+            "textDim": "#8ca6ba",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ef5350",
+            "dangerStrong": "#ef5350",
             "dangerMuted": "#e87a7b",
             "warning": "#ffca28",
             "warningMuted": "#f5cf59",
@@ -2731,7 +2806,7 @@
             "url": "https://github.com/johnpapa/vscode-winteriscoming",
             "revision": "260547834cb6ac37dd5b8bb5842cc1c8d3164946",
             "license": "MIT",
-            "assetHash": "sha256:2a69e237ba45032067a5d2b57dfb6822358027bd6acda433f59f5a241e4257b6"
+            "assetHash": "sha256:5688946564f852060e57eda06057ca0baa7d2dd51b7d605960a7dabaaf52b689"
           }
         }
       ]
@@ -2750,6 +2825,7 @@
             "background": "#292d3e",
             "shell": "#232635",
             "raised": "#34384c",
+            "raisedHover": "#34384c",
             "card": "#292d3e",
             "dialog": "#2b2f41",
             "overlay": "#2d3143",
@@ -2760,9 +2836,11 @@
             "text": "#eeffff",
             "textMuted": "#a6accd",
             "textFaint": "#697098",
+            "textDim": "#a6accd",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ff5572",
+            "dangerStrong": "#ff5572",
             "dangerMuted": "#fa8599",
             "warning": "#ffcb6b",
             "warningMuted": "#fbd890",
@@ -2843,7 +2921,7 @@
             "url": "https://github.com/whizkydee/vscode-palenight-theme",
             "revision": "6291efaace90855abe3d79025327ca41b9a3138c",
             "license": "MIT",
-            "assetHash": "sha256:c5d2b00186bb43b664ad666867d6a7cfac7dd9ac8b503d052aeedd23ebeb161d"
+            "assetHash": "sha256:887960a7fe859057c9d84dcc2e58f2abaa9b0e848f25a4423a0da7d6023ca2ec"
           }
         }
       ]
@@ -2862,6 +2940,7 @@
             "background": "#262335",
             "shell": "#241b2f",
             "raised": "#37294d",
+            "raisedHover": "#37294d",
             "card": "#2a2139",
             "dialog": "#2c223d",
             "overlay": "#2e2440",
@@ -2872,9 +2951,11 @@
             "text": "#ffffff",
             "textMuted": "#b8b5c6",
             "textFaint": "#848bbd",
+            "textDim": "#b8b5c6",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#fe4450",
+            "dangerStrong": "#fe4450",
             "dangerMuted": "#fe7881",
             "warning": "#fede5d",
             "warningMuted": "#fee686",
@@ -2955,7 +3036,7 @@
             "url": "https://github.com/robb0wen/synthwave-vscode",
             "revision": "ecfa2fe1279f7233663fa3f98a96e6756000567b",
             "license": "MIT",
-            "assetHash": "sha256:56bd648aaf3b4e58982941a3d50b5f1e2b71e3be9a9a696a293662915c5f882b"
+            "assetHash": "sha256:cd85b2ef6ffa6d669fbe1f508850e0f98c914b9ed78f6abd62789a141d2ace6e"
           }
         }
       ]
@@ -2974,6 +3055,7 @@
             "background": "#2d2b55",
             "shell": "#222244",
             "raised": "#393668",
+            "raisedHover": "#393668",
             "card": "#1e1e3f",
             "dialog": "#232246",
             "overlay": "#27264d",
@@ -2984,9 +3066,11 @@
             "text": "#ffffff",
             "textMuted": "#b8afea",
             "textFaint": "#8d84c7",
+            "textDim": "#b8afea",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ec3a37",
+            "dangerStrong": "#ec3a37",
             "dangerMuted": "#f1716f",
             "warning": "#fad000",
             "warningMuted": "#fbdc40",
@@ -3067,7 +3151,7 @@
             "url": "https://github.com/ahmadawais/shades-of-purple-vscode",
             "revision": "e8eb49f33e5db05ceba6677367b33ddb27ad821c",
             "license": "MIT with additional upstream condition; see THIRD_PARTY_NOTICES.md",
-            "assetHash": "sha256:e2b02bfab2673849be5f0084bf30dd94b3611aed34c48b6bb9423dc7925ad8df"
+            "assetHash": "sha256:67c2940750e49bd8fb7f4ae07bed8e5784d726597babb4b16f982526bf159884"
           }
         }
       ]
@@ -3086,6 +3170,7 @@
             "background": "#193549",
             "shell": "#15232d",
             "raised": "#20455e",
+            "raisedHover": "#20455e",
             "card": "#122738",
             "dialog": "#152c3f",
             "overlay": "#173145",
@@ -3096,9 +3181,11 @@
             "text": "#ffffff",
             "textMuted": "#b7c9d3",
             "textFaint": "#7da1b5",
+            "textDim": "#b7c9d3",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ff628c",
+            "dangerStrong": "#ff628c",
             "dangerMuted": "#ff8eac",
             "warning": "#ffc600",
             "warningMuted": "#ffd440",
@@ -3179,7 +3266,7 @@
             "url": "https://github.com/wesbos/cobalt2-vscode",
             "revision": "c4e9574372b85afad1682ed0fdd1ac0411c62512",
             "license": "MIT",
-            "assetHash": "sha256:ebcf76485185b83d3b3319bc8b1a8c1393dd1e1979c7b943c33457b5fde14958"
+            "assetHash": "sha256:0fe27a93cc9b6bd4dff2ef5a527b9863914e1dfefffd30abfa2277e477aeec9b"
           }
         }
       ]
@@ -3198,6 +3285,7 @@
             "background": "#23262e",
             "shell": "#1e2027",
             "raised": "#2d313b",
+            "raisedHover": "#2d313b",
             "card": "#23262e",
             "dialog": "#252830",
             "overlay": "#262a32",
@@ -3208,9 +3296,11 @@
             "text": "#d5ced9",
             "textMuted": "#a6a0aa",
             "textFaint": "#746f77",
+            "textDim": "#a6a0aa",
             "solid": "#ebebef",
             "onSolid": "#000000",
             "danger": "#ee5d43",
+            "dangerStrong": "#ee5d43",
             "dangerMuted": "#e77d6d",
             "warning": "#ff9f2e",
             "warningMuted": "#f5ab59",
@@ -3291,7 +3381,7 @@
             "url": "https://github.com/EliverLara/Andromeda",
             "revision": "d1abb48c69493000aa0133a32d594eb25e523d4f",
             "license": "MIT",
-            "assetHash": "sha256:cceb72fb94316b4e15918578c8e4387c2a49ae36c048bc32ea131cbc9617dfe5"
+            "assetHash": "sha256:331d009703c80909e4718818f4a793efd740f2aeffdb7d2c5e418db412bf1f93"
           }
         }
       ]
@@ -6369,7 +6459,13 @@
       "overlayAlphaDark": 0.5,
       "overlayAlphaLight": 0.85,
       "inputAlphaLight": 0.3,
-      "cardAlpha": 0.4
+      "cardAlpha": 0.4,
+      "selectedWashAlphaDark": 0.11,
+      "selectedWashAlphaLight": 0.06,
+      "bandAlphaDark": 0.16,
+      "bandAlphaLight": 0.045,
+      "scrimAlphaDark": 0.6,
+      "scrimAlphaLight": 0.32
     }
   },
   "motion": {
