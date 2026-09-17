@@ -7931,16 +7931,22 @@ button.files-row-active:hover {
 /*
  * The ?K-style "New project" card: a 680px palette_card with its OWN 14px
  * radius (deliberately not the generic 12px CARD_RADIUS), centered on the
- * lighter 0.35 modal_glass scrim (ticket 09's `.modal-glass-backdrop`
- * recipe). The `.modal-card` frost wrapper supplies the 44px blur and the
- * `dialog_in` entrance, so the card itself carries only the glass tint —
- * stacking two blurs would double-frost it. Exit: the whole layer fades
- * over MENU_OUT (100ms, EASE) while dead to hit-testing, then unmounts
- * (the PopupLifecycle reap).
+ * lighter 0.35 modal_glass scrim (`RbDialogGlass` — Backdrop and card are
+ * portal siblings, so the card self-centers via `.rb-dialog-card` and the
+ * frost wrapper supplies the 44px blur with the `dialog_in` entrance; the
+ * card itself carries only the glass tint — stacking two blurs would
+ * double-frost it). Exit: both siblings fade over MENU_OUT (100ms, EASE)
+ * while dead to hit-testing, then unmount — Base UI's animation-aware
+ * unmount replaces the old layer's reap timer.
  */
-.add-space-backdrop[data-rb-popup="closing"] {
+.add-space-frost {
+  border-radius: 14px;
+}
+
+.add-space-backdrop[data-closed],
+.add-space-frost[data-closed] {
   pointer-events: none;
-  /* `forwards` holds the exit's opacity 0 through the 20ms reap grace — the
+  /* `forwards` holds the exit's opacity 0 until the unmount drains — the
      same flash guard as `rb-menu-out` above (popover.rs:348-362). */
   animation: rb-add-space-exit var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
 }
@@ -8349,7 +8355,8 @@ button.files-row-active:hover {
     animation: none;
   }
 
-  .add-space-backdrop[data-rb-popup="closing"] {
+  .add-space-backdrop[data-closed],
+  .add-space-frost[data-closed] {
     animation: none;
     opacity: 0;
   }

@@ -229,11 +229,15 @@ describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
   /**
    * The fixed `mod-k` binding's toggle, against the headless store (no
    * session attached: `open()` lands on no device and fires no loads).
-   * Real-clock waits ride out the popup's 100ms exit + 20ms reap grace.
+   * The exit window now ends when the mounted palette reports Base UI's
+   * `onOpenChangeComplete(false)` — `unmounted()` here stands in for that
+   * callback (the old layer's 100ms+grace timer is gone with it).
    */
-  const reaped = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 150));
+  const reaped = (): void => {
+    addSpaceStore.unmounted();
+  };
 
-  it("a closed palette opens; a mounted one closes", async () => {
+  it("a closed palette opens; a mounted one closes", () => {
     expect(addSpaceStore.getSnapshot().status).toBe("closed");
     expect(addSpaceStore.getSnapshot().flow).toBe(null);
 
@@ -245,20 +249,20 @@ describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
     // window so the card can paint its way out).
     toggleAddSpace();
     expect(addSpaceStore.getSnapshot().status).toBe("closing");
-    await reaped();
+    reaped();
     expect(addSpaceStore.getSnapshot().status).toBe("closed");
     expect(addSpaceStore.getSnapshot().flow).toBe(null);
   });
 
-  it("the chord re-opens once the close has fully reaped", async () => {
+  it("the chord re-opens once the close has fully drained", () => {
     addSpaceStore.open();
     addSpaceStore.close();
-    await reaped();
+    reaped();
     toggleAddSpace();
     expect(addSpaceStore.getSnapshot().status).toBe("open");
     // Leave the singleton closed for whichever test runs next.
     addSpaceStore.close();
-    await reaped();
+    reaped();
     expect(addSpaceStore.getSnapshot().status).toBe("closed");
   });
 });
