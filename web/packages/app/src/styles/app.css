@@ -1376,10 +1376,15 @@ html[data-surface="frosted"] .right-pane-inner {
 
 /* ── Menus (shared popover rows) ────────────────────────────────────── */
 
+/*
+ * `motion::menu_in`: opacity 0.3→1 + a 2px settle, over MENU_IN (140ms, EASE).
+ * The web also scales 0.96→1 — the desktop drops the scale only because
+ * gpui divs have no transform at the pinned rev (popover.rs:360-371).
+ */
 @keyframes rb-menu-in {
   from {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.98);
+    opacity: 0.3;
+    transform: translateY(-2px) scale(0.96);
   }
   to {
     opacity: 1;
@@ -2577,17 +2582,20 @@ html[data-surface="frosted"] .right-pane-inner {
   color: color-mix(in srgb, var(--rb-text) 85%, transparent);
 }
 
+/*
+ * The facet tabs, now the top strip INSIDE the popover card (the card is one
+ * unit: tabs + list dismiss and animate together). Recessed band tone so the
+ * strip reads as part of the glass card, not a floating panel.
+ */
 .identity-tabs {
-  position: absolute;
-  bottom: calc(100% + 324px);
-  right: 0;
-  z-index: 26;
+  flex: none;
   display: flex;
   gap: 2px;
+  margin-bottom: 4px;
   padding: 3px;
   border-radius: 8px;
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.04);
 }
 
 .identity-tab {
@@ -2633,98 +2641,579 @@ html[data-surface="frosted"] .right-pane-inner {
   white-space: nowrap;
 }
 
-.picker-popover {
+/* ── Popover primitive (crates/ui/src/popover.rs, ticket 09) ────────── */
+
+:root {
+  /* CARD_RADIUS (popover.rs:306): floating cards round at 12, not the
+     PANEL_RADIUS (10) panels use — gap row 86. */
+  --rb-radius-card: 12px;
+}
+
+/*
+ * The portal layer (`Popup`): position comes from the anchored-menu helpers
+ * (`lib/popover-anchor.ts`). The open/close animations live on the CARD, not
+ * this layer — CSS `backdrop-filter` fades naturally with the element's own
+ * opacity but is clipped by an ancestor's, so the glass must animate itself.
+ * While closing the layer is dead to hit-testing; the occluding overlay on
+ * top re-enables pointer events so stray clicks neither hit the dying rows
+ * nor pass through to the page underneath (popover.rs:406).
+ */
+.popover-layer {
+  position: fixed;
+  z-index: 55;
+}
+
+.popover-layer[data-rb-popup="open"] .popover-card,
+.popover-layer[data-rb-popup="open"] .palette-card {
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+.popover-layer[data-rb-popup="closing"] {
+  pointer-events: none;
+}
+
+.popover-layer[data-rb-popup="closing"] .popover-card,
+.popover-layer[data-rb-popup="closing"] .palette-card {
+  animation: rb-menu-out var(--rb-motion-menu-out) var(--rb-ease-ease);
+}
+
+.popover-exit-occlude {
   position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 220px;
-  max-width: 320px;
-  max-height: 320px;
+  inset: 0;
+  pointer-events: auto;
+}
+
+/* `menu_out` (popover.rs:373-387): the reverse of rb-menu-in over
+   MENU_OUT (100ms, EASE). */
+@keyframes rb-menu-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+/*
+ * `popover_card` (popover.rs:306-325): 1px hairline(0.10) border, CARD_RADIUS
+ * (12), 4px inset, the glass overlay tint over a 44px backdrop blur
+ * (frost.rs:23), capped at 640px (pickers.rs:2738). The shadow is the
+ * documented shadow_lg() placeholder (see the ticket's Comments).
+ */
+.popover-card {
+  box-sizing: border-box;
+  max-height: 640px;
   display: flex;
   flex-direction: column;
-  padding: 6px;
-  background: var(--rb-dialog);
+  min-width: 0;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: var(--rb-radius-card);
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(44px);
+  backdrop-filter: blur(44px);
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
-  z-index: var(--rb-z-menu);
-  animation: picker-in var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+  font-size: 0.8125rem;
+  color: var(--rb-text);
 }
 
-.picker-popover-search {
-  flex: none;
-  padding: 2px;
+/* `popover_card_flush` (popover.rs:329-331) — no inset, for cards that own
+   their internal panes. */
+.popover-card-flush {
+  padding: 0;
 }
 
-.picker-popover-input {
-  height: 30px;
-  font-size: 13px;
-}
-
-.picker-popover-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 4px 0;
+/* `palette_card` (popover.rs:820-836) — the command-palette sibling:
+   explicit width (inline), caller's radius (inline), no padding. */
+.palette-card {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(44px);
+  backdrop-filter: blur(44px);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  font-size: 0.8125rem;
+  color: var(--rb-text);
 }
 
-.picker-popover-empty,
-.picker-popover-error {
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--rb-text-faint);
-}
-
-.picker-popover-error {
-  color: var(--rb-danger);
-}
-
-.picker-row {
+/*
+ * `menu_row` (popover.rs:713-746): gap 10, px 8, py 6, radius 8, 13px. The
+ * rest state fades its wash and text over HOVER_FADE (150ms EASE_TAILWIND)
+ * between wash(0.0) and card_selected_bg(); the selected wash applies
+ * instantly (no transition — popover.rs:724-727). `menu_row_nav`'s
+ * keyboard-highlight reads identically to selected (both card_selected_bg(),
+ * the shipped behavior, popover.rs:752-765).
+ */
+.menu-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--rb-space-sm);
-  padding: 6px 10px;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
   border: none;
-  border-radius: var(--rb-radius-control);
-  background: transparent;
-  color: var(--rb-text);
-  font-size: 13px;
+  border-radius: 8px;
+  background: rgb(var(--rb-wash) / 0);
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.picker-row:disabled {
+.menu-row:not(:disabled):hover {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
+}
+
+.menu-row:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.picker-row-highlight {
+.menu-row-selected,
+.menu-row-highlighted {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
+  transition: none;
+}
+
+.menu-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.menu-row-secondary {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+  text-align: right;
+}
+
+/*
+ * `menu_heading` (popover.rs:771-795): pt 6, px 8, pb 4, 10px medium,
+ * text_muted@0.6, uppercase, 0.1em tracking — real CSS letter-spacing, not
+ * the desktop's hair-space workaround (it would break copy/paste).
+ */
+.menu-heading {
+  padding: 6px 8px 4px;
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* `menu_separator` (popover.rs:799-803) — the negative inline margin cancels
+   the card's 4px inset so the hairline runs edge to edge. */
+.menu-separator {
+  flex: none;
+  height: 1px;
+  margin: 4px -4px;
+  background: rgb(var(--rb-hairline) / calc(0.07 * var(--rb-hairline-scale)));
+}
+
+/* `menu_section` (popover.rs:961-970) — the bordered trailing section; its
+   top hairline runs edge-to-edge of the card's inset (no negative margin). */
+.menu-section {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* `search_input_frame` (popover.rs:946-955) — the borderless recessed frame. */
+.search-input-frame {
+  flex: none;
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgb(var(--rb-ink) / 0.04);
+  font-size: 0.8125rem;
+}
+
+.search-input-frame input {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font: inherit;
+  outline: none;
+}
+
+.search-input-frame input::placeholder {
+  color: var(--rb-text-faint);
+}
+
+/* `key_cap` (popover.rs:841-852) — one 22px cap holding arbitrary children. */
+.key-cap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  padding-inline: 5px;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.key-cap-word {
+  font-size: 11px;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.key-cap-icon {
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.key-cap-icon > svg {
+  width: 12.5px;
+  height: 12.5px;
+}
+
+.key-cap-divider {
+  flex: none;
+  width: 1px;
+  height: 11px;
+  background: rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+}
+
+/* The footer legend row: cap + tiny verb, gap 5 (popover.rs:864-926). */
+.key-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.key-hint-label {
+  font-size: 0.65625rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
+}
+
+/* `kbd_hint` (popover.rs:929-940) — the muted accelerator chip inside rows. */
+.kbd-hint {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.05);
+  font-size: 0.625rem;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/*
+ * The scroll region contract for `MenuScrollbar`: the wrapper is the rail's
+ * containing block, the area hides its native scrollbar (the rail replaces
+ * it visually — popover.rs:1170-1397).
+ */
+.menu-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.menu-scroll-area::-webkit-scrollbar {
+  display: none;
+}
+
+/* The rail: a 10px hit strip; the thumb is absolutely positioned inside it so
+   hover expansion never reflows rows. Thumb = text_faint at 0.5, 0.68 active. */
+.menu-scrollbar-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+}
+
+.menu-scrollbar-rail-x {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+}
+
+.menu-scrollbar-rail .menu-scrollbar-thumb,
+.menu-scrollbar-rail-x .menu-scrollbar-thumb {
+  position: absolute;
+  background: color-mix(in srgb, var(--rb-text-faint) 50%, transparent);
+}
+
+.menu-scrollbar-rail .menu-scrollbar-thumb {
+  right: 2px;
+}
+
+.menu-scrollbar-rail-x .menu-scrollbar-thumb {
+  bottom: 2px;
+}
+
+.menu-scrollbar-rail.menu-scrollbar-rail-active .menu-scrollbar-thumb,
+.menu-scrollbar-rail-x.menu-scrollbar-rail-active .menu-scrollbar-thumb {
+  background: color-mix(in srgb, var(--rb-text-faint) 68%, transparent);
+}
+
+/*
+ * Skeletons (popover.rs:1080-1150) — every row pulses on the shared
+ * ROBOCO_PULSE clock (2400ms) with the 0.08 stagger applied as a negative
+ * animation delay from one module-level epoch (lib-level), so loaders
+ * mounted at different times breathe in lockstep. Ghost widths cycle the
+ * deterministic 42/58/48/66% ladder.
+ */
+@keyframes rb-skeleton-pulse {
+  0% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+.skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-block: 4px;
+}
+
+.skeleton-row {
+  height: 28px;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.04);
+  animation: rb-skeleton-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
+}
+
+.skeleton-menu-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 4px;
+}
+
+.skeleton-menu-row {
+  height: 14px;
+  border-radius: 7px;
+  background: rgb(var(--rb-ink) / 0.05);
+  animation: rb-skeleton-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
+}
+
+.skeleton-bar {
+  height: 11px;
+  border-radius: 5.5px;
+  background: rgb(var(--rb-ink) / 0.08);
+  animation: rb-skeleton-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
+}
+
+/* `error_row` (popover.rs:1154-1163) + the inline Retry affordance
+   (pickers.rs:2804-2838): px 8 py 3, radius 6, border, hover element_hover. */
+.error-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--rb-space-sm);
+  font-size: 0.75rem;
+  color: var(--rb-danger);
+}
+
+.error-row-retry {
+  align-self: flex-start;
+  padding: 3px var(--rb-space-sm);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.error-row-retry:hover {
   background: var(--rb-hover);
 }
 
-.picker-row-selected {
-  color: var(--rb-text);
-  font-weight: 500;
-}
-
-.picker-row-label {
-  font-weight: 500;
-}
-
-.picker-row-secondary {
-  font-size: 11px;
+/* Interim empty hint (the old `.picker-popover-empty` values). */
+.menu-empty {
+  padding: 10px 12px;
+  font-size: 0.75rem;
   color: var(--rb-text-faint);
-  margin-left: auto;
-  text-align: right;
-  flex: none;
 }
 
-.composer-pickers-retry {
-  position: absolute;
-  bottom: -28px;
-  left: 0;
+/* ── Dialog primitives (popover.rs:657-1076) ────────────────────────── */
+
+/*
+ * `modal`/`modal_glass` (popover.rs:657-705): the only surfaces in this
+ * family that dim the page. The scrim is scrim() — plain black at
+ * --rb-scrim-alpha (0.6 dark / 0.32 light) for modal; modal_glass scales it
+ * to scrim(0.35). The card plays `dialog_in` (180ms EASE, opacity + 2px
+ * rise — motion.rs:389-397) and carries the same 44px frost as the cards.
+ */
+.modal-backdrop,
+.modal-glass-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--rb-space-lg);
+}
+
+.modal-backdrop {
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
+}
+
+/* scrim(0.35): the light tone is 0.32 * (0.35 / 0.60) — i.e. the shared
+   scrim token scaled by the same ratio. */
+.modal-glass-backdrop {
+  background: rgb(0 0 0 / calc(var(--rb-scrim-alpha) * 0.35 / 0.6));
+}
+
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  -webkit-backdrop-filter: blur(44px);
+  backdrop-filter: blur(44px);
+  animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
+}
+
+@keyframes rb-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* `dialog_card` (popover.rs:978-990) — the centered 360px card. */
+.dialog-card {
+  box-sizing: border-box;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: 16px;
+  background: var(--rb-dialog);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  color: var(--rb-text);
+}
+
+.dialog-card-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--rb-text);
+}
+
+.dialog-card-body {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 19px;
+  color: var(--rb-text-muted);
+}
+
+/* `dialog_field` (popover.rs:1012-1023) — the text-field frame. */
+.dialog-field {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.04);
+  font-size: 0.875rem;
+}
+
+.dialog-field input {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font: inherit;
+  outline: none;
+}
+
+.dialog-field input::placeholder {
+  color: var(--rb-text-faint);
+}
+
+/* The three dialog buttons share one box: px 12 py 6 radius 8, 13px
+   (popover.rs:1028-1076). */
+.dialog-btn-ghost,
+.dialog-btn-primary,
+.dialog-btn-danger {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.dialog-btn-ghost {
+  background: rgb(var(--rb-wash) / 0);
+  color: var(--rb-text-muted);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.dialog-btn-ghost:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+  color: var(--rb-text);
+}
+
+.dialog-btn-primary,
+.dialog-btn-danger {
+  font-weight: 500;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.dialog-btn-primary {
+  background: var(--rb-text);
+  color: var(--rb-on-solid);
+}
+
+.dialog-btn-primary:hover,
+.dialog-btn-danger:hover {
+  opacity: 0.9;
+}
+
+.dialog-btn-danger {
+  background: var(--rb-danger-strong);
+  color: white;
 }
 
 /*
@@ -2764,17 +3253,6 @@ html[data-surface="frosted"] .right-pane-inner {
   background: var(--rb-bg);
 }
 
-@keyframes picker-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @media (max-width: 768px) {
   /* iOS zooms any field under 16px on focus. */
   .composer-input {
@@ -2784,9 +3262,24 @@ html[data-surface="frosted"] .right-pane-inner {
 
 @media (prefers-reduced-motion: reduce) {
   .composer-input-wrap,
-  .picker-popover {
+  .popover-layer {
     animation: none;
     transition: none;
+  }
+
+  /* The exit snaps shut instead of playing out; loaders freeze at the
+     pulse floor (phase 0). */
+  .popover-layer[data-rb-popup="closing"] .popover-card,
+  .popover-layer[data-rb-popup="closing"] .palette-card {
+    animation: none;
+    opacity: 0;
+  }
+
+  .skeleton-row,
+  .skeleton-menu-row,
+  .skeleton-bar {
+    animation: none;
+    opacity: 0.35;
   }
 }
 
