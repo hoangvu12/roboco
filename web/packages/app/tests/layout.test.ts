@@ -5,7 +5,12 @@ import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   TITLEBAR_CONTENT_START,
+  CLUSTER_BUTTONS_WIDTH,
+  TITLEBAR_ACTION_SLOT_WIDTH,
+  captionButtonsWidth,
   clampSidebarWidth,
+  clusterClearance,
+  clusterButtonsStart,
   conversationWidth,
   rightPaneMaxWidth,
   rightPaneTakeoverWidth,
@@ -13,6 +18,7 @@ import {
   sidebarTarget,
   titlebarPaneBandWidth,
   titlebarRowLeft,
+  titlebarSpacerWidth,
 } from "../src/state/layout";
 import {
   RIGHT_PANE_DEFAULT,
@@ -77,6 +83,21 @@ describe("column widths", () => {
     expect(rightPaneTakeoverWidth(1440, 0)).toBe(1440);
     expect(conversationWidth(1440, 256, rightPaneTakeoverWidth(1440, 256))).toBe(0);
   });
+
+  it("right_pane_ceiling_preserves_the_chat_floor (shell.rs:8283)", () => {
+    // The desktop's own asserted pair, on its own window sizes.
+    expect(rightPaneMaxWidth(1200, 256)).toBe(644);
+    expect(rightPaneMaxWidth(800, 256)).toBe(244);
+    expect(conversationWidth(800, 256, rightPaneMaxWidth(800, 256))).toBe(CHAT_PANEL_MIN);
+  });
+
+  it("right_pane_takeover_consumes_the_chat_column (shell.rs:8293)", () => {
+    expect(rightPaneTakeoverWidth(1200, 256)).toBe(944);
+    expect(conversationWidth(1200, 256, 944)).toBe(0);
+    // The conversation floors at zero, never negative (shell.rs:8297).
+    expect(conversationWidth(1320, 256, 520)).toBe(544);
+    expect(conversationWidth(1320, 256, 1064)).toBe(0);
+  });
 });
 
 describe("sidebar width", () => {
@@ -132,6 +153,39 @@ describe("titlebarRowLeft", () => {
     expect(row(256, { takeover: true })).toBe(248);
     // Still clears the cluster when the sidebar is collapsed.
     expect(row(0, { takeover: true })).toBe(104 - 12 + 32 - 14);
+  });
+});
+
+describe("titlebar cluster geometry", () => {
+  it("titlebar_cluster_matches_roboco_window_controls (shell.rs:8447)", () => {
+    // 24·3 controls + the 8px group gap + the 2px control gap.
+    expect(CLUSTER_BUTTONS_WIDTH).toBe(82);
+    // The `+`'s slot: the 8px group gap plus its own 24px control.
+    expect(TITLEBAR_ACTION_SLOT_WIDTH).toBe(32);
+  });
+
+  it("titlebar_spacer_selects_per_platform_and_fullscreen (shell.rs:8462)", () => {
+    // Off macOS there is no spacer at all — no phantom flex child.
+    expect(titlebarSpacerWidth(false, false, 10)).toBe(0);
+    expect(titlebarSpacerWidth(false, true, 10)).toBe(0);
+    // macOS clears its traffic lights: 88 (12 fullscreen) minus the pad.
+    expect(titlebarSpacerWidth(true, false, 10)).toBe(78);
+    expect(titlebarSpacerWidth(true, true, 10)).toBe(2);
+    // The browser owns the window: no captions to clear, cluster start flat.
+    expect(titlebarSpacerWidth(false, false, 0)).toBe(0);
+    expect(clusterButtonsStart(false, false, 0)).toBe(10);
+    expect(TITLEBAR_CONTENT_START).toBe(104);
+  });
+
+  it("cluster_clearance_clears_the_overlay_buttons (shell.rs:8508)", () => {
+    // Web: 10 + 82 + 8 − 10 = 90 — a full-bleed header starts past the
+    // cluster with room for the group gap.
+    expect(clusterClearance(false, false, 0, 10)).toBe(90);
+    // macOS: the cluster starts at 88 instead of 10.
+    expect(clusterClearance(true, false, 0, 10)).toBe(168);
+    // Linux left captions: two caption buttons push the cluster right.
+    expect(captionButtonsWidth(2)).toBe(50);
+    expect(clusterClearance(false, false, 2, 10)).toBe(142);
   });
 });
 

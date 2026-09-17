@@ -1344,3 +1344,4 @@ chat-page observer deps changed after it).
    ticket exactly; the geometry difference (what sits behind the band) is
    inherent to the web's in-flow column and should be sanity-checked
    against a real desktop capture when one is available.
+

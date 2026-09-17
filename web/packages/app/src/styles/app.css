@@ -208,6 +208,25 @@ a:focus-visible,
   --rb-titlebar-group-gap: 8px;
   --rb-titlebar-control-gap: 2px;
   --rb-titlebar-edge-inset: 6px;
+  /*
+   * The stacking ladder — the web's mapping of gpui's `deferred` priorities
+   * (menus 1, modals 2; popover.rs:629-637, 688-704). Nothing may invent a
+   * z-index outside these six tiers:
+   *   5  pane seams (in-flow chrome that floats over column edges)
+   *   40 titlebar (overlays every column)
+   *   50 drawers / sheets (the engine drawer, the phone sidebar's backdrop)
+   *   60 menus + popovers (deferred priority 1)
+   *   70 modals + dialogs (deferred priority 2)
+   *   80 the engine gate card (the app is not usable below it)
+   * The phone sidebar itself stays at 30, deliberately under the titlebar —
+   * its cluster must stay clickable to close what it opened.
+   */
+  --rb-z-seam: 5;
+  --rb-z-titlebar: 40;
+  --rb-z-drawer: 50;
+  --rb-z-menu: 60;
+  --rb-z-modal: 70;
+  --rb-z-gate: 80;
 }
 
 /*
@@ -247,7 +266,7 @@ a:focus-visible,
 .titlebar {
   position: absolute;
   inset: 0 0 auto 0;
-  z-index: 40;
+  z-index: var(--rb-z-titlebar);
   height: var(--rb-titlebar-height);
   padding-top: var(--rb-titlebar-top-pad);
   padding-left: var(--rb-titlebar-row-left);
@@ -296,8 +315,7 @@ a:focus-visible,
 
 /*
  * `window_control_button`: a 24px square with the surface-chrome 6px radius
- * and a 14px glyph, quiet until hovered. Disabled controls hold their place
- * at reduced opacity so the cluster never reflows.
+ * and a 16px glyph, quiet until hovered.
  */
 .window-control {
   width: 24px;
@@ -322,46 +340,104 @@ a:focus-visible,
 }
 
 /*
- * No pressed/active variant: `window_control_button` has one resting look and
- * one hover, whatever the control it drives is currently doing.
+ * A disabled nav button is a NON-interactive box that still holds its place
+ * (`nav_history_button`'s disabled arm, shell.rs:7530-7545): no background at
+ * all, and only the ICON dimmed to `text_muted @ 35%` — dimming the whole
+ * button would ghost a wash it never gets. `pointer-events: none` plus the
+ * native disabled semantics keep it out of the tab order.
  */
 .window-control:disabled {
-  opacity: 0.35;
+  color: color-mix(in srgb, var(--rb-text-muted) 35%, transparent);
   cursor: default;
+  pointer-events: none;
 }
 
 /*
- * The centred identity group — harness mark, title, `space @ device`. It is
- * `TITLEBAR_IDENTITY_GAP` (12px) clear of the navigation cluster and shrinks
- * before the actions do.
+ * `header_icon_button` (shell.rs:7552) — the two TRAILING controls (the pane
+ * toggle and the expand): a 28px square on the same 6px radius, transparent at
+ * rest and `wash(0.11)` on hover — the wash ladder, not `element_hover`. Like
+ * the window control it has no active/pressed variant.
+ */
+.header-icon-button {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.header-icon-button:hover {
+  background: rgb(var(--rb-wash) / 0.11);
+  color: var(--rb-text);
+}
+
+/*
+ * The new-session `+` — MOUNTED at all times, cross-faded by
+ * `titlebar_plus_alpha` on the RESIZE curve while the row's left padding rides
+ * the same curve: the desktop tweens the two as one. `visibility` transitions
+ * with the same duration so the button stays paintable through the fade-out
+ * and then drops out of interaction, matching the desktop's `alpha > 0.01`
+ * render gate.
+ */
+.titlebar-new-session {
+  flex: none;
+  transition: opacity var(--rb-motion-resize) var(--rb-ease-ease-out),
+    visibility var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.titlebar-new-session[data-alpha="0"] {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/*
+ * The identity group — harness mark, title, `folder @ device`
+ * (`tabs.rs:313-317`): min-w 0, `gap 6`. It is a plain flex child, not a
+ * spring; the `flex_1` spacer AFTER it (tabs.rs:353) is what right-anchors
+ * the trailing group, and it survives even when the identity is empty.
  */
 .titlebar-identity {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: var(--rb-space-sm);
-  font-size: 13px;
+  gap: 6px;
   overflow: hidden;
+}
+
+/* `flex_1` — the spacer that keeps the trailing group at the right edge. */
+.titlebar-fill {
+  flex: 1;
 }
 
 .identity-brand {
   flex: none;
 }
 
+/* `ui_rems(12.0)` weight MEDIUM (500), `theme.text @ 85%` (tabs.rs:333-341). */
 .identity-title {
-  font-weight: 600;
-  color: var(--rb-text);
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* `ui_rems(12.0)`, `theme.text_muted @ 50%` (tabs.rs:342-350). */
 .identity-folder {
   flex: 0 1000000 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
   white-space: nowrap;
   overflow: hidden;
@@ -666,7 +742,7 @@ a:focus-visible,
   top: var(--rb-titlebar-height);
   bottom: 0;
   width: 20px;
-  z-index: 5;
+  z-index: var(--rb-z-seam);
   cursor: col-resize;
 }
 
@@ -708,10 +784,12 @@ a:focus-visible,
 /*
  * Toggles glide; drags do not. While a seam is held the columns track the
  * pointer exactly, which is what the desktop's `right_tween = None` buys.
+ * The titlebar's row inset rides the same clock, so it joins the freeze.
  */
 :root[data-rb-resizing] .sidebar,
 :root[data-rb-resizing] .right-pane,
 :root[data-rb-resizing] .pane-seam,
+:root[data-rb-resizing] .titlebar,
 :root[data-rb-resizing] .titlebar-pane-band {
   transition: none;
 }
@@ -848,7 +926,7 @@ a:focus-visible,
   top: calc(100% - 2px);
   left: var(--rb-space-sm);
   right: var(--rb-space-sm);
-  z-index: 30;
+  z-index: var(--rb-z-menu);
   max-height: 320px;
   overflow-y: auto;
   padding: var(--rb-space-xs);
@@ -926,6 +1004,42 @@ a:focus-visible,
   white-space: nowrap;
   font-size: 11px;
   color: var(--rb-text-faint);
+}
+
+/*
+ * `render_update_strip` (shell.rs:5035-5092) — the sidebar's advisory line.
+ * One 8px outer inset and NO bottom margin (the user menu below carries its
+ * own padding); 8px/6px inner padding, 6px radius, 11px/500 type on the
+ * accent wash. Click dismisses the version. The danger tint of the desktop's
+ * failed-download arm stays in the component's type, not here.
+ */
+.update-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  margin-inline: var(--rb-space-sm);
+  padding: 6px var(--rb-space-sm);
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: var(--rb-accent-wash);
+  color: var(--rb-accent);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.update-strip:hover {
+  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+}
+
+.update-strip-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes rb-fade-in {
@@ -1011,7 +1125,7 @@ a:focus-visible,
   bottom: calc(100% - var(--rb-space-xs));
   left: var(--rb-space-sm);
   right: var(--rb-space-sm);
-  z-index: 30;
+  z-index: var(--rb-z-menu);
   padding: var(--rb-space-xs);
   display: flex;
   flex-direction: column;
@@ -1202,6 +1316,144 @@ a:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Gate, page entrance, drop veil ─────────────────────────────────── */
+
+/*
+ * `fade_in("phase-app", page)` (shell.rs:8048, motion.rs:330-337): the whole
+ * ready page enters as ONE layer — 500ms EASE_OUT_EXPO, opacity 0→1 with a
+ * 4px rise. Keyed by the gate phase in the layout, so a Failed → Ready
+ * recovery replays the entrance.
+ */
+.page-fade {
+  height: 100%;
+  animation: rb-rise-in var(--rb-motion-fade-in) var(--rb-ease-ease-out-expo);
+}
+
+/* `fade_in`'s rise half — distinct from the opacity-only `rb-fade-in`. */
+@keyframes rb-rise-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* `GatePhase::Loading` — the desktop renders ONLY the root. Nothing to see. */
+.gate-loading {
+  height: 100%;
+}
+
+/*
+ * `render_gate_card` (shell.rs:7223-7275): the engine-failure screen. The
+ * card owns the whole window at the gate tier of the ladder; the content
+ * centres over the grid backdrop and enters on the same `fade_in` the page
+ * uses (`fade_in("gate-card-failed", …)`), so gate swaps fade as one scene.
+ */
+.gate-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  z-index: var(--rb-z-gate);
+}
+
+/*
+ * The roboco `.bg-grid` port: 44px hairlines at `hairline(0.035)`, masked by
+ * a radial ellipse so the grid dissolves toward the edges. The desktop
+ * approximates this mask with four edge gradients because gpui has no
+ * `mask-image`; the web uses the real one and does NOT port the gradients.
+ */
+.grid-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+      to right,
+      rgb(var(--rb-hairline) / 0.035) 0 1px,
+      transparent 1px 44px
+    ),
+    repeating-linear-gradient(to bottom, rgb(var(--rb-hairline) / 0.035) 0 1px, transparent 1px 44px);
+  mask-image: radial-gradient(ellipse 50% 40% at 50% 50%, black, transparent);
+  -webkit-mask-image: radial-gradient(ellipse 50% 40% at 50% 50%, black, transparent);
+}
+
+.gate-card-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* `flex column; items-center; gap SPACE_MD (12)` around error + Retry. */
+.gate-card-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--rb-space-md);
+  animation: rb-rise-in var(--rb-motion-fade-in) var(--rb-ease-ease-out-expo);
+}
+
+.gate-card-error {
+  margin: 0;
+  font-size: 14px;
+  color: var(--rb-text-muted);
+}
+
+/* `#retry-engine` (shell.rs:7231-7236): bordered, glass wash on hover. */
+.gate-retry {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.gate-retry:hover {
+  background: var(--rb-hover);
+}
+
+/* Web-only: the parked pairing's escape hatch (see root-layout). */
+.gate-pair-link {
+  font-size: 13px;
+  color: var(--rb-accent);
+}
+
+/*
+ * `#attachment-drop-overlay` (shell.rs:6126-6152): the conversation column's
+ * drop veil — scrim at the band alpha, centred "Drop to attach" at 13px.
+ * Revealed only by a drag whose payload is real files (`types` carries
+ * "Files", the web peer of GPUI's concrete-TypeId match); pointer-events
+ * none so the drop itself keeps bubbling to the column. Ticket 17 owns what
+ * happens to the files.
+ */
+.attachment-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
+  color: var(--rb-text);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.attachment-drop-overlay[data-on="1"] {
+  opacity: 1;
 }
 
 /* ── Chat list ──────────────────────────────────────────────────────── */
@@ -1403,6 +1655,31 @@ a:focus-visible,
   min-height: 0;
   display: flex;
   flex-direction: row;
+}
+
+/*
+ * `render_main`'s bottom chrome stack (shell.rs:6073-6125): flex-none,
+ * relative, column. The chat page measures it live into
+ * `--rb-bottom-stack`, which the transcript's bottom fade band reads — the
+ * web peer of the desktop's paint-time canvas that sizes the EdgeFade inset.
+ */
+.bottom-stack {
+  flex: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * `#persistent-composer` (shell.rs:6103-6123): the composer column, centred
+ * like the strip above it on the 768px cap. The jump pill anchors to this
+ * box, floating 36px over it.
+ */
+.persistent-composer {
+  position: relative;
+  width: 100%;
+  max-width: 768px;
+  margin-inline: auto;
 }
 
 @media (max-width: 768px) {
@@ -1856,7 +2133,7 @@ a:focus-visible,
   padding: 6px;
   background: var(--rb-dialog);
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
-  z-index: 40;
+  z-index: var(--rb-z-menu);
   animation: picker-in var(--rb-motion-menu-in) var(--rb-ease-ease-out);
 }
 
@@ -2156,7 +2433,7 @@ a:focus-visible,
 .user-attachments-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: var(--rb-z-modal);
   background: color-mix(in srgb, var(--rb-overlay) 75%, transparent);
   display: flex;
   flex-direction: column;
@@ -2430,7 +2707,8 @@ a:focus-visible,
   align-items: flex-start;
   justify-content: center;
   padding: 10vh var(--rb-space-md) var(--rb-space-md);
-  z-index: 40;
+  /* The drawer tier of the ladder — above the titlebar it slides over. */
+  z-index: var(--rb-z-drawer);
 }
 
 .drawer {
@@ -3125,6 +3403,45 @@ button.files-row-active:hover {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  /*
+   * The scroller's edge fade — the desktop's `edge_faded` underlay, as a mask
+   * (§2.7): a 24px quadratic band at the top, zero at the scroller's top edge
+   * — which the column's 38px titlebar pad places exactly at the bar's bottom
+   * edge — and a bottom band of `max(bottom_stack - term_h - 24, 1)` (term_h
+   * is 0 until ticket 26): zero at the scroller's bottom edge, opaque at the
+   * composer pill's top. The curve is quadratic (`edge_fade.rs`):
+   * alpha = (distance / band)^2, so the stops land on 0.0625 / 0.25 / 0.5625
+   * at 25 / 50 / 75% of each band. The band width comes from
+   * `--rb-bottom-stack`, measured live by the chat page's ResizeObserver; an
+   * unset value collapses it to 1px (no fade) rather than guessing.
+   */
+  --rb-bottom-band: max(calc(var(--rb-bottom-stack, var(--rb-status-strip-height)) - var(--rb-status-strip-height)), 1px);
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0.0625) calc(var(--rb-transcript-fade-band) * 0.25),
+    rgba(0, 0, 0, 0.25) calc(var(--rb-transcript-fade-band) * 0.5),
+    rgba(0, 0, 0, 0.5625) calc(var(--rb-transcript-fade-band) * 0.75),
+    rgba(0, 0, 0, 1) var(--rb-transcript-fade-band),
+    rgba(0, 0, 0, 1) calc(100% - var(--rb-bottom-band)),
+    rgba(0, 0, 0, 0.5625) calc(100% - var(--rb-bottom-band) * 0.75),
+    rgba(0, 0, 0, 0.25) calc(100% - var(--rb-bottom-band) * 0.5),
+    rgba(0, 0, 0, 0.0625) calc(100% - var(--rb-bottom-band) * 0.25),
+    rgba(0, 0, 0, 0) 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0.0625) calc(var(--rb-transcript-fade-band) * 0.25),
+    rgba(0, 0, 0, 0.25) calc(var(--rb-transcript-fade-band) * 0.5),
+    rgba(0, 0, 0, 0.5625) calc(var(--rb-transcript-fade-band) * 0.75),
+    rgba(0, 0, 0, 1) var(--rb-transcript-fade-band),
+    rgba(0, 0, 0, 1) calc(100% - var(--rb-bottom-band)),
+    rgba(0, 0, 0, 0.5625) calc(100% - var(--rb-bottom-band) * 0.75),
+    rgba(0, 0, 0, 0.25) calc(100% - var(--rb-bottom-band) * 0.5),
+    rgba(0, 0, 0, 0.0625) calc(100% - var(--rb-bottom-band) * 0.25),
+    rgba(0, 0, 0, 0) 100%
+  );
 }
 
 .transcript-col {
@@ -3138,28 +3455,37 @@ button.files-row-active:hover {
 }
 
 /*
- * `TRANSCRIPT_FADE_BAND` — the gradient that fades the transcript into the
- * panel background at its bottom edge. It sits above the status strip, so
- * settled content never lands inside the band when scrolled to the bottom.
- */
-.transcript-fade {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: var(--rb-status-strip-height);
-  height: var(--rb-transcript-fade-band);
-  background: linear-gradient(to bottom, transparent, var(--rb-bg));
-  pointer-events: none;
-}
-
-/*
- * `STATUS_STRIP_HEIGHT` — reserved under the content outlet whether or not
- * anything occupies it, so the composer never shifts when the working
- * indicator appears.
+ * `render_status_strip` (shell.rs:6373-6443): 24px, ALWAYS reserved — the
+ * composer below never shifts, whatever the indicator becomes. Aligned with
+ * the composer column: 768px cap, centred, 24px inner gutters, 11px type.
+ * Working and AwaitingInput render nothing here (their surfaces live in the
+ * transcript and the QuestionPanel); the strip's only words are "Run failed"
+ * and "Sending…".
  */
 .status-strip {
   flex: none;
   height: var(--rb-status-strip-height);
+  width: 100%;
+  max-width: 768px;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  padding-inline: 24px;
+  font-size: 11px;
+}
+
+.status-strip-error {
+  color: var(--rb-danger);
+}
+
+.status-strip-sending {
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.status-strip-spinner {
+  flex: none;
 }
 
 /*
@@ -3243,24 +3569,91 @@ button.files-row-active:hover {
   stroke: currentColor;
 }
 
-.jump-bottom {
+/*
+ * `render_jump_to_bottom` + `jump_pill` (shell.rs:6161-6254). The anchor
+ * floats 36px ABOVE the composer, centred across the composer's width less
+ * its 10px right inset; it paints outside the transcript's fade. The anchor
+ * is transparent to the pointer and the pill opts back in, so the empty sides
+ * of the strip never block the transcript beneath.
+ */
+.jump-pill-anchor {
   position: absolute;
-  right: var(--rb-space-lg);
-  bottom: calc(var(--rb-transcript-fade-band) + 8px);
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--rb-raised);
-  border: 1px solid var(--rb-border-strong);
-  color: var(--rb-text-muted);
-  cursor: pointer;
-  line-height: 1;
-  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+  top: -36px;
+  left: 0;
+  right: 10px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
 }
 
-.jump-bottom:hover {
+/*
+ * The pill: 30px tall, fully rounded (radius 15 = half the height), hairline
+ * border, `shadow-md`, frosted — blur 16 over the floating-card tint
+ * (`frost::frosted(15, 16)`); the `@supports` fallback drops the frost and
+ * keeps the tint. It enters on `dialog_in` (180ms: opacity 0→1, top 2px→0).
+ */
+.jump-pill {
+  pointer-events: auto;
+  flex: none;
+  height: 30px;
+  border-radius: 15px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  isolation: isolate;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+  padding: 0;
+  animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .jump-pill {
+    background: var(--rb-dialog);
+  }
+}
+
+/*
+ * The hover wash is an inner full-height layer (the desktop's
+ * `hover_blend(transparent, glass_hover)`): the outer box carries the frost
+ * and tint, so the wash rides inside without thinning either.
+ */
+.jump-pill-inner {
+  height: 100%;
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 11px;
+  padding-right: 13px;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.jump-pill:hover .jump-pill-inner {
   background: var(--rb-hover);
+}
+
+.jump-pill-glyph {
+  font-size: 13px;
+  color: var(--rb-text-muted);
+}
+
+.jump-pill-label {
+  font-size: 13px;
   color: var(--rb-text);
+  white-space: nowrap;
+}
+
+@keyframes rb-dialog-in {
+  from {
+    opacity: 0;
+    translate: 0 2px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
 }
 
 @keyframes rb-fade-quick {
@@ -3950,16 +4343,21 @@ button.files-row-active:hover {
   .user-bubble {
     max-width: 88%;
   }
-
-  .jump-bottom {
-    right: var(--rb-space-md);
-  }
 }
 
+/*
+ * Reduced motion snaps every shell tween (the desktop's
+ * `motion::reduced_motion` early-return in `eval_tween`): column glides, the
+ * `+`'s opacity fade, the page and gate entrances, the jump pill's entrance
+ * and the drop veil all land at their end state with no animation. The
+ * desktop's hover_blend also collapses to an instant swap.
+ */
 @media (prefers-reduced-motion: reduce) {
   .veil-fade,
   .chip-reveal,
-  .jump-bottom {
+  .page-fade,
+  .gate-card-content,
+  .jump-pill {
     animation: none;
   }
 
@@ -3971,7 +4369,18 @@ button.files-row-active:hover {
 
   .tool-group-fold,
   .tool-group-chevron,
-  .tool-chip-chevron {
+  .tool-chip-chevron,
+  .sidebar,
+  .right-pane,
+  .pane-seam-sidebar,
+  .pane-seam-right,
+  .titlebar,
+  .titlebar-pane-band,
+  .titlebar-new-session,
+  .attachment-drop-overlay,
+  .jump-pill-inner,
+  .update-strip,
+  .gate-retry {
     transition: none;
   }
 }
@@ -4047,7 +4456,7 @@ button.files-row-active:hover {
 .menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: var(--rb-z-menu);
 }
 
 .chat-menu {
@@ -4092,7 +4501,7 @@ button.files-row-active:hover {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--rb-z-modal);
   /* scrim(): the same backdrop as .modal-backdrop under another class name. */
   background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
@@ -4803,7 +5212,7 @@ button.files-row-active:hover {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: var(--rb-z-modal);
   /* scrim(): the same literal-black backdrop as .drawer-backdrop — the desktop
      has one scrim strength, appearance-branched by alpha only. */
   background: rgb(0 0 0 / var(--rb-scrim-alpha));

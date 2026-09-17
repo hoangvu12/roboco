@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, DragEvent } from "react";
 import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
@@ -8,6 +8,12 @@ import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import { emitShortcut, onShortcut } from "../state/shortcuts";
 import { useChrome } from "../state/chrome";
+import {
+  ESCAPE_PRIORITY,
+  installEscapeLadder,
+  registerEscapeSurface,
+  resolveShellEscape,
+} from "../state/escape";
 import {
   navEntryForPath,
   navEntryPath,
@@ -18,15 +24,21 @@ import {
 } from "../state/nav-history";
 import {
   PHONE_MAX_WIDTH,
+  TITLEBAR_CONTENT_START,
   conversationWidth,
   rightPaneMaxWidth,
   sidebarLayout,
   sidebarTarget,
+  titlebarNewSessionAlpha,
   titlebarPaneBandWidth,
   titlebarRowLeft,
   useSidebarLayout,
   useViewportWidth,
 } from "../state/layout";
+import { effectiveIndicator } from "../lib/view";
+import { sendInterrupt } from "../lib/composer-actions";
+import { sidebarNotice } from "../state/notice";
+import { uiSettings } from "../state/ui-settings";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { SidebarBody } from "./sidebar-body";
 import { PaneSeam } from "./pane-seam";
@@ -195,26 +207,72 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onNewChat, onToggleSidebar]);
 
-  // Escape closes the engine drawer; the chat-menu dialogs and the
-  // picker popover already close themselves, and the terminal eats Esc
-  // for its own key bindings.
+  // The shell's Escape model — one capture-phase ladder (installed once) plus
+  // the bubble-phase interrupt (`on_key_down` → `resolve_shell_escape`). The
+  // engine drawer and the phone sidebar register as a ladder surface; the
+  // popovers and dialogs that still close on their own Escape listeners are
+  // theirs to migrate onto the ladder in their tickets.
+  useEffect(() => installEscapeLadder(), []);
   useEffect(() => {
     if (!drawerOpen && !sidebarOpen) {
       return;
     }
+    return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
+      onCloseDrawer();
+      return true;
+    });
+  }, [drawerOpen, sidebarOpen, onCloseDrawer]);
+
+  // Interrupts already in flight for a chat — the desktop's
+  // `composer.is_interrupting(chat_id)`. A second Escape while the Stop
+  // request is still on the wire resolves to Ignored instead of stacking.
+  const interruptingRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") {
+      if (event.key !== "escape") {
         return;
       }
-      if (isEditableTarget(event.target)) {
+      const route = pathname.startsWith("/settings") ? "settings" : "chat";
+      const selectedChatId = route === "chat" ? chatIdOf(pathname) : null;
+      const indicator =
+        selectedChatId === null || session === null
+          ? null
+          : effectiveIndicator(
+              session.cache.getSnapshot().statuses.rows.find((row) => row.chatId === selectedChatId),
+              Date.now(),
+            );
+      const outcome = resolveShellEscape({
+        key: event.key,
+        blockingOverlay: false,
+        escapeStopsActiveAgent: uiSettings.getSnapshot().escapeStopsActiveAgent,
+        route,
+        interrupting: selectedChatId !== null && interruptingRef.current.has(selectedChatId),
+        indicator: indicator === "none" ? null : indicator,
+        selectedChatId,
+      });
+      if (outcome.kind !== "interruptChat" || session === null) {
         return;
       }
       event.preventDefault();
-      onCloseDrawer();
+      const chatId = outcome.chatId;
+      const inFlight = new Set(interruptingRef.current);
+      inFlight.add(chatId);
+      interruptingRef.current = inFlight;
+      void sendInterrupt(session.client, chatId)
+        .catch((error) => {
+          sidebarNotice.set(
+            `Could not interrupt: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
+        .finally(() => {
+          const next = new Set(interruptingRef.current);
+          next.delete(chatId);
+          interruptingRef.current = next;
+        });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [drawerOpen, sidebarOpen, onCloseDrawer]);
+  }, [pathname, session]);
 
   const paired = fleet.engines.length > 0;
   const hasPane = paired && paneChatId !== null;
@@ -228,11 +286,22 @@ export function AppShell() {
   // every intermediate width.
   const conversationNow = conversationWidth(viewport, sidebarWidth, paneWidth);
   const conversationStable = useTakeoverStableWidth(takeover, conversationNow);
-  const rowLeft = titlebarRowLeft({
-    sidebar: sidebarWidth,
-    showsNewSession: paired,
-    takeover,
-  });
+  // `titlebar_plus_alpha`: the `+` (and its 32px row-left slot) exists only
+  // on the chat route with a chat selected — never on the blank canvas,
+  // never in Settings.
+  const isChatRoute = navEntryForPath(pathname)?.kind === "chat";
+  const plusAlpha = titlebarNewSessionAlpha(isChatRoute, paired && paneChatId !== null);
+  // The settings route's bar is a BARE strip (`render_title_bar`,
+  // shell.rs:3898-3909): no identity, no `+`, no trailing group, and its
+  // left inset is flat `title_bar_content_start()` — it does not track the
+  // sidebar, because the settings column is not the conversation column.
+  const rowLeft = isChatRoute
+    ? titlebarRowLeft({
+        sidebar: sidebarWidth,
+        showsNewSession: plusAlpha > 0,
+        takeover,
+      })
+    : TITLEBAR_CONTENT_START;
   const shellClass = [
     "shell",
     sidebar.collapsed ? "shell-sidebar-collapsed" : "",
@@ -245,6 +314,46 @@ export function AppShell() {
   ]
     .filter((part) => part.length > 0)
     .join(" ");
+
+  // ── The drop veil's drag bookkeeping ───────────────────────────────────
+  // dragenter/dragleave fire per ELEMENT boundary, so a counter (not a
+  // boolean) tracks whether the pointer is still inside the column; leaving
+  // the window entirely (relatedTarget null) resets it in one step.
+  const [dropDepth, setDropDepth] = useState(0);
+  const fileDrag = (event: DragEvent): boolean => event.dataTransfer.types.includes("Files");
+  const onDragEnter = (event: DragEvent): void => {
+    if (!fileDrag(event)) {
+      return;
+    }
+    event.preventDefault();
+    setDropDepth((depth) => depth + 1);
+  };
+  const onDragOver = (event: DragEvent): void => {
+    if (!fileDrag(event)) {
+      return;
+    }
+    // Needed for the drag to stay alive over this element.
+    event.preventDefault();
+  };
+  const onDragLeave = (event: DragEvent): void => {
+    if (!fileDrag(event)) {
+      return;
+    }
+    if (event.relatedTarget === null) {
+      setDropDepth(0);
+      return;
+    }
+    setDropDepth((depth) => Math.max(0, depth - 1));
+  };
+  const onDrop = (event: DragEvent): void => {
+    if (!fileDrag(event)) {
+      return;
+    }
+    // Ticket 17 owns what happens to the dropped files; here the drop is
+    // only swallowed so the browser does not navigate to the file.
+    event.preventDefault();
+    setDropDepth(0);
+  };
 
   return (
     <div
@@ -282,11 +391,13 @@ export function AppShell() {
         onForward={() => onNavWalk(navHistory.forward())}
         canBack={nav.canBack}
         canForward={nav.canForward}
-        onNewSession={paired ? chrome.onNewSession ?? onNewChat : null}
+        newSessionAlpha={plusAlpha}
+        // No fallback handler: the `+` exists only where the route published
+        // one (a selected chat), exactly `titlebar_plus_alpha`'s gate.
+        onNewSession={chrome.onNewSession}
         identity={chrome.identity}
         // Every pane control is shell-owned and synchronous with the store, so
-        // the toggle's active state, the strip and the column all move on the
-        // same frame.
+        // the toggle, the strip and the column all move on the same frame.
         onTogglePane={hasPane ? () => rightPaneStore.toggle(paneChatId) : null}
         paneOpen={hasPane && pane.open}
         paneExpanded={hasPane && pane.expanded}
@@ -331,13 +442,19 @@ export function AppShell() {
           transcript is revealed or covered rather than re-wrapping through
           every intermediate width.
         */}
-        <main className="main panel">
+        <main
+          className="main panel"
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
           <div className="main-inner">
             {!paired ? (
               <Welcome />
             ) : (
               <>
-                {session !== null && state.className !== "conn-connected" ? (
+                {session !== null && state.className !== "conn-connected" && !state.parked ? (
                   <div className={`banner ${state.parked ? "banner-alert" : ""}`} role="status">
                     <span className={`conn ${state.className}`}>
                       <span className={`dot ${state.dot}`} />
@@ -351,10 +468,35 @@ export function AppShell() {
                     )}
                   </div>
                 ) : null}
+                {/*
+                  A parked session is FATAL (revoked credential / engine
+                  changed): the gate card owns that case now (see
+                  root-layout), so the banner here covers the non-fatal
+                  transport states only.
+                */}
                 <Outlet />
               </>
             )}
           </div>
+          {/*
+            `#attachment-drop-overlay` — the conversation column's drop veil.
+            Revealed only by a drag whose payload is real files (GPUI matches
+            the payload's concrete TypeId; `types.includes("Files")` is the
+            web's equivalent, so resize markers and text drags can never
+            reveal it). Purely visual — pointer-events none — so the drop
+            itself keeps bubbling to this column (ticket 17 owns what happens
+            to the files).
+          */}
+          {isChatRoute && paired && (
+            <div
+              id="attachment-drop-overlay"
+              className="attachment-drop-overlay"
+              data-on={dropDepth > 0 ? "1" : "0"}
+              aria-hidden
+            >
+              Drop to attach
+            </div>
+          )}
         </main>
         {/*
           The third column. It is chat-scoped chrome, so routes without one
