@@ -103,6 +103,8 @@ interface WatchRecord {
 export class ChangeRequestStore {
   readonly #client: ChangeRequestsClient;
   readonly #log: (message: string, detail?: unknown) => void;
+  /** The paired engine's own device — targets on it omit `targetDeviceId`. */
+  #localDeviceId: string | null;
   #snapshots: Map<string, CheckoutChangeRequestStatus> = new Map();
   #unsupported: Map<string, string> = new Map();
   #providers: Map<string, string> = new Map();
@@ -113,10 +115,30 @@ export class ChangeRequestStore {
   #disposed = false;
   readonly #listeners = new Set<() => void>();
 
-  constructor(client: EngineClient | ChangeRequestsClient, options: { log?: (message: string, detail?: unknown) => void } = {}) {
+  constructor(
+    client: EngineClient | ChangeRequestsClient,
+    options: { log?: (message: string, detail?: unknown) => void; localDeviceId?: string | null } = {},
+  ) {
     this.#client = client;
     this.#log = options.log ?? (() => {});
+    this.#localDeviceId = options.localDeviceId ?? null;
     this.#snapshot = this.#takeSnapshot();
+  }
+
+  /** The paired engine's device id, when the session later learns it. */
+  setLocalDevice(deviceId: string | null): void {
+    if (this.#localDeviceId === deviceId) {
+      return;
+    }
+    this.#localDeviceId = deviceId;
+    // Re-arm every watch so its params drop (or gain) `targetDeviceId`.
+    // Snapshot first: #startWatch re-inserts the same keys, and a Map
+    // yields entries re-added mid-iteration again (an infinite loop).
+    for (const [key, record] of [...this.#watches]) {
+      record.handle.cancel();
+      this.#startWatch(key, record.target);
+    }
+    this.#commit();
   }
 
   getSnapshot(): ChangeRequestSnapshot {
@@ -216,7 +238,7 @@ export class ChangeRequestStore {
       target,
       handle: this.#client.watch<CheckoutChangeRequestStatus | { ok: unknown } | unknown>(
         methods.WATCH_CHECKOUT_CHANGE_REQUEST,
-        watchParams(target),
+        watchParams(target, this.#localDeviceId),
         {
           onItem: (item, ctx) => this.#onItem(key, target, item, ctx.generation),
           onEnd: (error) => this.#onEnd(key, target, error),
@@ -322,12 +344,21 @@ export class ChangeRequestStore {
   }
 }
 
-function watchParams(target: ChangeRequestTarget): Record<string, unknown> {
-  return {
+/**
+ * `watch_params` (change_requests.rs:238-284): the wire params for one
+ * target. `targetDeviceId` is OMITTED when the target is the local device —
+ * the engine resolves its own device without the hop, byte-for-byte desktop
+ * parity.
+ */
+export function watchParams(target: ChangeRequestTarget, localDeviceId: string | null): Record<string, unknown> {
+  const params: Record<string, unknown> = {
     cwd: target.cwd,
     branch: target.branch,
-    targetDeviceId: target.deviceId,
   };
+  if (target.deviceId !== localDeviceId) {
+    params.targetDeviceId = target.deviceId;
+  }
+  return params;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,8 +409,12 @@ export function chatChangeRequestTarget(chat: Chat): ChangeRequestTarget | null 
 export function useChatChangeRequests(
   client: EngineClient | null,
   chats: readonly Chat[],
+  localDeviceId: string | null = null,
 ): ReadonlyMap<string, ChangeRequestSummary> {
-  const store = useMemo(() => (client === null ? null : new ChangeRequestStore(client)), [client]);
+  const store = useMemo(
+    () => (client === null ? null : new ChangeRequestStore(client, { localDeviceId })),
+    [client, localDeviceId],
+  );
   useEffect(() => () => {
     store?.dispose();
   }, [store]);

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import type { IconName } from "@roboco/icons";
 import { rightPaneStore, type RightSurface } from "../state/right-pane";
-import { ChangesSurface } from "../routes/changes-page";
+import { ChangesSurface, ChangesToolbar } from "../routes/changes-page";
 import { FilesSurface } from "../routes/files-page";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { useTerminalStore } from "../terminal/store";
@@ -69,12 +69,10 @@ export function renderRightSurface(surface: RightSurface, ctx: SurfaceContext): 
 
 /**
  * `surface_chrome::toolbar` (§3.27): the 38 px border-box row a Diff surface
- * mounts above its body. Its controls — the scope dropdown, ref selector,
- * fold-all — are ticket 22's; the row itself is the host's.
+ * mounts above its body. Its controls — the scope chips, ref selector,
+ * split/wrap/fold-all — are ticket 22's `ChangesToolbar`, reading and
+ * mutating the same per-surface state store the body renders from.
  */
-function DiffToolbar() {
-  return <div className="surface-toolbar" role="toolbar" aria-label="Diff options" />;
-}
 
 /**
  * The Terminal surface. The PTY is minted HERE, by the surface mounting —
@@ -127,10 +125,8 @@ function registerDefaults(): void {
     title: titleOf("Diffs"),
     // `git-branch` when that `Changes` `is_history()`, else `list`.
     icon: (s) => (facts(s)?.isHistory === true ? "gitBranch" : "list"),
-    toolbar: () => <DiffToolbar />,
-    // The real Changes view, mounted unchanged; its own header controls move
-    // into the toolbar row in ticket 22.
-    render: (_s, ctx) => <ChangesSurface chatId={ctx.chatId} />,
+    toolbar: (s, ctx) => (s.kind === "diff" ? <ChangesToolbar chatId={ctx.chatId} surfaceId={s.id} /> : null),
+    render: (s, ctx) => (s.kind === "diff" ? <ChangesSurface chatId={ctx.chatId} surfaceId={s.id} /> : null),
   });
 
   registerRightSurface({

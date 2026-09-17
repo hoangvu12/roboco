@@ -5,6 +5,8 @@ import {
   ChangeRequestStore,
   checkoutKey,
   providerForCheckout,
+  watchParams,
+  type ChangeRequestTarget,
 } from "../src/state/change-requests-store";
 
 type WatchHandlers = {
@@ -142,5 +144,46 @@ describe("checkoutKey", () => {
   it("uses a NUL separator so deviceId and cwd cannot collide", () => {
     expect(checkoutKey("a/b", "c")).not.toBe(checkoutKey("a", "b/c"));
     expect(checkoutKey("device-1", "/repo")).toBe("device-1\u0000/repo");
+  });
+});
+
+describe("watchParams", () => {
+  const target: ChangeRequestTarget = { deviceId: "device-1", cwd: "/repo", branch: "feature/pr", checkoutId: null };
+
+  it("omits targetDeviceId when the target is the local device", () => {
+    // `watch_params` (change_requests.rs:238-284): the engine resolves its
+    // own device without the hop — byte-for-byte desktop parity.
+    expect(watchParams(target, "device-1")).toEqual({ cwd: "/repo", branch: "feature/pr" });
+  });
+
+  it("rides targetDeviceId for remote targets", () => {
+    expect(watchParams(target, "device-2")).toEqual({
+      cwd: "/repo",
+      branch: "feature/pr",
+      targetDeviceId: "device-1",
+    });
+    expect(watchParams(target, null)).toEqual({
+      cwd: "/repo",
+      branch: "feature/pr",
+      targetDeviceId: "device-1",
+    });
+  });
+
+  it("re-arms watches when the local device id changes", () => {
+    const client = new FakeClient();
+    const store = new ChangeRequestStore(client, { localDeviceId: "device-2" });
+    store.setTargets([target]);
+    expect(client.watches).toHaveLength(1);
+    expect(client.watches[0]!.params).toEqual({ cwd: "/repo", branch: "feature/pr", targetDeviceId: "device-1" });
+
+    // Same id again: no re-arm.
+    store.setLocalDevice("device-2");
+    expect(client.watches).toHaveLength(1);
+
+    // Learn the target IS the local device → the watch re-arms without
+    // targetDeviceId.
+    store.setLocalDevice("device-1");
+    expect(client.watches).toHaveLength(2);
+    expect(client.watches[1]!.params).toEqual({ cwd: "/repo", branch: "feature/pr" });
   });
 });

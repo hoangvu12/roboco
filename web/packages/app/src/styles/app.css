@@ -7194,8 +7194,14 @@ button.files-row-active:hover {
   }
 }
 
-/* ── Changes page (ticket 13) ────────────────────────────────────────── */
+/* ── Changes pane (ticket 22) ───────────────────────────────────────── */
 
+/*
+ * The Changes surface, as the right pane's Diff tab. Layout is the desktop's
+ * `render` (changes.rs:4897-4917): an optional watch-error banner, then the
+ * content — the header strip, the (web-only) CR card, and the diff list.
+ * Scope/base/layout/wrap/fold state lives in `state/changes-surface.ts`.
+ */
 .changes-page {
   flex: 1;
   min-height: 0;
@@ -7203,21 +7209,26 @@ button.files-row-active:hover {
   flex-direction: column;
 }
 
-.changes-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--rb-space-md);
-  padding: var(--rb-space-sm) var(--rb-space-md);
-  border-bottom: 1px solid var(--rb-border);
-  flex: none;
+/* The toolbar row the pane host renders above the body (surface_chrome
+   §3.27's 38px border-box row); controls mutate the shared surface store. */
+.changes-toolbar {
+  gap: var(--rb-space-xs);
+  min-width: 0;
 }
 
-/* Changes is a pane surface, not a routed page: no title row, no back link. */
+.changes-toolbar-spring,
+.changes-banner-spring {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Scope chips — the documented web deviation for the desktop's dropdown
+   (research §5): a row of toggle chips, same labels, HOVER_FADE blends. */
 .changes-scope {
   display: flex;
   align-items: center;
   gap: var(--rb-space-xs);
+  flex: none;
   flex-wrap: wrap;
 }
 
@@ -7229,8 +7240,8 @@ button.files-row-active:hover {
   border-radius: var(--rb-radius-control);
   font-size: 12px;
   cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .changes-scope-chip:hover {
@@ -7244,83 +7255,158 @@ button.files-row-active:hover {
   border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
 }
 
+/*
+ * The `{branch} → {base}` relationship (changes.rs:3886-3948): mono 11.5
+ * branch label in text_dim, a 12px faint arrow, then the native select —
+ * the sanctioned web idiom for the desktop's searchable popover.
+ */
 .changes-base {
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-xs) var(--rb-space-md);
-  border-bottom: 1px solid var(--rb-border);
+  gap: var(--rb-space-xs);
   flex: none;
+  min-width: 0;
 }
 
-.changes-base-label {
-  font-size: 13px;
-  color: var(--rb-text-muted);
+.changes-base-branch {
+  font-size: 11.5px;
+  color: var(--rb-text-dim);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changes-base-arrow {
+  flex: none;
+  display: inline-flex;
+  color: var(--rb-text-faint);
 }
 
 .changes-base-picker {
   width: auto;
-  max-width: 40vw;
-  font-size: 13px;
+  max-width: 160px;
+  height: 24px;
+  padding: 0 var(--rb-space-xs);
+  font-size: 11.5px;
+  font-family: "Geist Mono", ui-monospace, monospace;
 }
 
 .changes-base-loading {
-  font-size: 13px;
+  font-size: 11.5px;
   color: var(--rb-text-faint);
 }
 
-.changes-banner {
+/* The trailing control cluster: 24×24 icon buttons on the CONTROL contract
+   (split / wrap / fold-all). A latched toggle is a FLAT wash(0.14) with no
+   hover blend; an unlatched one blends 0 → 0.14 over HOVER_FADE
+   (changes.rs:3544-3597). */
+.changes-tools {
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-xs) var(--rb-space-md);
-  background: var(--rb-raised);
-  border-bottom: 1px solid var(--rb-border);
-  font-size: 13px;
+  gap: var(--rb-space-xs);
   flex: none;
 }
 
-.changes-banner-label {
-  flex: 1;
-  min-width: 0;
-  color: var(--rb-text-muted);
-}
-
-.changes-banner-counts {
-  color: var(--rb-text);
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-}
-
-.changes-banner-warn {
-  color: var(--rb-warning);
-  font-size: 12px;
-}
-
-.changes-banner-error {
-  background: var(--rb-danger-muted);
-  color: var(--rb-danger);
-}
-
-.changes-banner-tools {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
-}
-
 .changes-tool {
-  font-size: 12px;
-  padding: 2px 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.changes-tool:hover {
+  background: rgb(var(--rb-wash) / 0.14);
 }
 
 .changes-tool-active {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
-  border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-wash) / 0.14);
   color: var(--rb-text);
 }
 
+.changes-tool-active:hover {
+  /* Latched: the blend is neither read nor driven. */
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+/*
+ * The watch-error banner (changes.rs:4904-4916): 12px horizontal / 4px
+ * vertical pad, bottom border, 11px warning text. The stream retries itself
+ * every 2s while the last content stays visible underneath — no button.
+ */
+.changes-error-banner {
+  flex: none;
+  padding: 4px var(--rb-space-md);
+  border-bottom: 1px solid var(--rb-border);
+  font-size: 11px;
+  color: var(--rb-warning);
+}
+
+/*
+ * A scoped fetch's failure, replacing the content area (changes.rs:4807-4821):
+ * centered, 12px. Remapped messages are quiet (text_faint); an unrecognized
+ * one stays raw in the warning tone at 0.85.
+ */
+.changes-scoped-error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--rb-space-lg);
+  font-size: 12px;
+  color: var(--rb-text-faint);
+}
+
+.changes-scoped-error-warn {
+  color: color-mix(in srgb, var(--rb-warning) 85%, transparent);
+}
+
+/*
+ * The header strip (render_header_strip, changes.rs:4074-4129): 38px, 10px
+ * gap, 16px side pad, hairline(0.06) bottom — the scope label truncating,
+ * then mono 11 +N/−N in the diff colors, then the "Partial snapshot" chip
+ * (warning at 0.08 bg / 0.75 text, 10px, 6/2 pad, radius 4).
+ */
+.changes-banner {
+  flex: none;
+  height: var(--rb-titlebar-height);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 var(--rb-space-lg);
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+}
+
+.changes-banner-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.changes-banner-warn {
+  flex: none;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--rb-warning) 8%, transparent);
+  color: color-mix(in srgb, var(--rb-warning) 75%, transparent);
+}
+
+/* The CR card — a documented, intentional web-only page-level addition (no
+   desktop source); the REAL badge call sites are the sidebar row and the
+   composer footer. */
 .changes-cr-card {
   display: flex;
   align-items: center;
@@ -7347,14 +7433,20 @@ button.files-row-active:hover {
   color: var(--rb-text-muted);
 }
 
+/* Shared empty/preparing states (changes.rs:4823-4853). */
 .changes-empty {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--rb-text-faint);
-  font-size: 13px;
+  font-size: 12px;
   padding: var(--rb-space-md);
+}
+
+.changes-preparing {
+  flex-direction: column;
+  gap: var(--rb-space-sm);
 }
 
 .changes-body {
@@ -7365,12 +7457,19 @@ button.files-row-active:hover {
   overflow: hidden;
 }
 
-/* ── Diff viewer ───────────────────────────────────────────────────── */
+/* ── Diff viewer (ticket 22) ────────────────────────────────────────── */
 
+/*
+ * The virtualized scroller: vertical-only at the container level — each
+ * file's CODE PLANE scrolls horizontally on its own (the gutters, markers,
+ * and accent bars stay put), which is why `.diff-view` itself never scrolls
+ * sideways.
+ */
 .diff-view {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--rb-bg);
   font-family: "Geist Mono", ui-monospace, monospace;
   font-size: 12px;
@@ -7389,19 +7488,49 @@ button.files-row-active:hover {
   position: relative;
 }
 
+/*
+ * The file header (render_file_header, changes.rs:3348-3482): 38px, 12px
+ * side pad, 8px gap — chevron, file glyph, truncating mono 12 path in
+ * text_dim, `BIN` at 10 faint, `+N`/`−N` mono 11 in the diff colors. The
+ * sticky float is the CSS substitute for the desktop's overlay header: the
+ * browser gives the "next header pushes the sticky one out" behavior for
+ * free when the sticky element's containing block is the scroll list.
+ *
+ * Opaque (the forced web resolution): the frost tint flattens into a solid
+ * composite — an ink(0.025) plate over the pane bg. The frosted branch
+ * (blur 16) stays gated on `data-surface` for the day the policy flips.
+ */
 .diff-file-header {
   display: flex;
   align-items: center;
   gap: var(--rb-space-sm);
   padding: 0 var(--rb-space-md);
-  height: 38px;
-  background: color-mix(in srgb, var(--rb-raised) 88%, transparent);
+  height: var(--rb-titlebar-height);
+  box-sizing: border-box;
+  background:
+    linear-gradient(rgb(var(--rb-ink) / 0.025), rgb(var(--rb-ink) / 0.025)),
+    var(--rb-bg);
   border-bottom: 1px solid var(--rb-border);
   position: sticky;
   top: 0;
   z-index: 1;
+  cursor: pointer;
+}
+
+.diff-file-header:hover {
+  background:
+    linear-gradient(rgb(var(--rb-ink) / 0.05), rgb(var(--rb-ink) / 0.05)),
+    var(--rb-bg);
+}
+
+html[data-surface="frosted"] .diff-file-header {
+  background: rgb(var(--rb-ink) / 0.025);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+html[data-surface="frosted"] .diff-file-header:hover {
+  background: var(--rb-hover);
 }
 
 .diff-file-button {
@@ -7418,13 +7547,41 @@ button.files-row-active:hover {
   text-align: left;
 }
 
+/*
+ * The chevron (14×14 box, 13px glyph, text_muted @ 0.7): the glyph SWAPS
+ * (no rotation), crossfading 0.25 → 1 over the 200ms CHEVRON spec — armed
+ * only while the fold animates (the `diff-chevron-anim` class rides the
+ * store's tween window), so a row scrolling back into view never replays.
+ */
 .diff-chevron {
-  display: inline-block;
-  width: 12px;
-  text-align: center;
-  color: var(--rb-text-faint);
-  font-size: 10px;
   flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+@keyframes diff-chevron-fade {
+  from {
+    opacity: 0.25;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.diff-chevron-anim {
+  animation: diff-chevron-fade var(--rb-motion-chevron) var(--rb-ease-ease);
+}
+
+/* The file-type glyph — a placeholder `document` until ticket 24's
+   `FileIcon` lands its per-extension manifest. */
+.diff-file-icon {
+  flex: none;
+  color: var(--rb-text-muted);
 }
 
 .diff-file-path {
@@ -7434,227 +7591,395 @@ button.files-row-active:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: var(--rb-text);
+  color: var(--rb-text-dim);
 }
 
 .diff-file-rename {
   color: var(--rb-text-faint);
 }
 
-/* No status word in the header — the notice row carries new/deleted/renamed. */
-.diff-file-counts {
-  font-size: 11px;
-  color: var(--rb-text-muted);
+.diff-file-bin {
   flex: none;
-}
-
-/* No `#N` index chip — the desktop's file header has none. */
-.diff-hunk-header {
-  padding: 4px var(--rb-space-md);
-  background: var(--rb-diff-hunk);
-  color: var(--rb-text-muted);
-  font-size: 11px;
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.diff-notice {
-  padding: 4px var(--rb-space-md);
-  font-size: 12px;
+  font-size: 10px;
   color: var(--rb-text-faint);
-  background: var(--rb-raised);
-  border-bottom: 1px solid var(--rb-border);
 }
 
-.diff-line {
-  display: grid;
-  grid-template-columns: minmax(28px, max-content) minmax(28px, max-content) 24px 1fr;
+/* `+N` / `−N` — two spans, mono 11, one per diff color (changes.rs:3461-3480);
+   also the header strip's corner totals. */
+.diff-file-add {
+  flex: none;
+  font-size: 11px;
+  color: var(--rb-diff-add);
+}
+
+.diff-file-del {
+  flex: none;
+  font-size: 11px;
+  color: var(--rb-diff-delete);
+}
+
+/* One `@@ … @@` row: 28px, 16px side pad, bluish-grey wash, mono 11 faint. */
+.diff-hunk-header {
+  height: 28px;
+  box-sizing: border-box;
+  display: flex;
   align-items: center;
-  gap: 0;
-  padding: 0;
+  padding: 0 var(--rb-space-lg);
+  background: var(--rb-diff-hunk);
+  color: var(--rb-text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One notice row — the ONLY place file status is expressed: 24px, 16px side
+   pad, 11px faint. */
+.diff-notice {
+  height: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--rb-space-lg);
+  font-size: 11px;
+  color: var(--rb-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * One unified +/−/context line (diff_line_row, changes.rs:4233-4368): a
+ * 3px accent bar (0.55 on +/−), two `gutterWidth` number columns (11px,
+ * right-aligned, 8px right pad), a 28px marker column, then the code plane.
+ * Row tints are ~5.5% washes; the own-side gutter number carries its diff
+ * color at 0.9, everything else stays text_faint @ 0.8.
+ */
+.diff-line {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-height: 21px;
+  height: 21px;
   font-family: inherit;
   font-size: inherit;
   line-height: 21px;
-  min-height: 21px;
-  border-left: 3px solid transparent;
-}
-
-.diff-view-wrap .diff-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.diff-view-wrap .diff-line-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow: visible;
+  flex: none;
 }
 
 .diff-line-add {
-  background: color-mix(in srgb, var(--rb-diff-add) 14%, transparent);
-  border-left-color: var(--rb-diff-add);
+  background: color-mix(in srgb, var(--rb-diff-add) 5.5%, transparent);
 }
 
 .diff-line-del {
-  background: color-mix(in srgb, var(--rb-diff-delete) 14%, transparent);
-  border-left-color: var(--rb-diff-delete);
+  background: color-mix(in srgb, var(--rb-diff-delete) 5.5%, transparent);
 }
 
-.diff-line-context {
-  color: var(--rb-text);
+.diff-accent {
+  width: 3px;
+  flex: none;
+  align-self: stretch;
 }
 
-.diff-line-meta {
-  color: var(--rb-text-faint);
+.diff-accent-add {
+  background: color-mix(in srgb, var(--rb-diff-add) 55%, transparent);
+}
+
+.diff-accent-del {
+  background: color-mix(in srgb, var(--rb-diff-delete) 55%, transparent);
 }
 
 .diff-line-old,
 .diff-line-new {
-  display: inline-block;
-  text-align: right;
-  padding: 0 8px;
-  color: var(--rb-text-faint);
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  padding-right: var(--rb-space-sm);
   font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-faint) 80%, transparent);
   user-select: none;
+  white-space: nowrap;
 }
 
+/* The own-side gutter: the line's diff color at 0.9 (changes.rs:4261/4268). */
+.diff-line-num-own-add {
+  color: color-mix(in srgb, var(--rb-diff-add) 90%, transparent);
+}
+
+.diff-line-num-own-del {
+  color: color-mix(in srgb, var(--rb-diff-delete) 90%, transparent);
+}
+
+/* The marker column: 28px, centered, size 12 — full diff color on +/−,
+   text_faint @ 0.5 with the `·` context glyph. */
 .diff-line-marker {
-  display: inline-block;
-  text-align: center;
-  font-size: 11px;
-  color: var(--rb-text-faint);
+  width: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-faint) 50%, transparent);
   user-select: none;
 }
 
-.diff-line-text {
-  display: block;
+.diff-line-marker-add {
+  color: var(--rb-diff-add);
+}
+
+.diff-line-marker-del {
+  color: var(--rb-diff-delete);
+}
+
+/*
+ * The code plane — the only horizontally scrollable part of a row
+ * (code_text_viewport, changes.rs:4177-4228). The content's intrinsic
+ * width is the analytic estimate (columns × mono advance + paddings + the
+ * gutter compensation), so a tab-containing line widens the plane instead
+ * of clipping, and every file scrolls independently.
+ */
+.diff-code-viewport {
+  flex: 1;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.diff-code-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.diff-code-content {
+  display: inline-block;
   white-space: pre;
-  padding: 0 var(--rb-space-sm) 0 12px;
-  color: var(--rb-text);
+  font-size: 12px;
+  line-height: 21px;
+  box-sizing: border-box;
+  /* Plain text — the base code color both layouts share. */
+  color: color-mix(in srgb, var(--rb-text) 92%, transparent);
 }
 
 .diff-line-row {
   display: inline-block;
 }
 
+/*
+ * `\ No newline at end of file` and friends: a note about the row, not
+ * code — italic 10.5, faint, indented past the columns, never tinted.
+ */
+.diff-line-meta {
+  display: flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--rb-text-faint);
+  white-space: pre;
+}
+
+/*
+ * The comment-adder hook (ticket 23 renders the button; this ticket only
+ * marks the anchor): the hovered row's code plane takes the faintest ink
+ * wash — the "bare hover state" — and the slot positions at the row's
+ * gutter-column anchor.
+ */
+.diff-line-can-add:hover .diff-code-viewport {
+  background: rgb(var(--rb-ink) / 0.02);
+}
+
+.diff-adder-slot {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* Wrapped rows grow down: no fixed height, no intrinsic width, no scroll. */
+.diff-view-wrap .diff-line {
+  height: auto;
+  min-height: 21px;
+}
+
+.diff-view-wrap .diff-code-viewport {
+  overflow: hidden;
+}
+
+.diff-view-wrap .diff-code-content {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/*
+ * Split rows (split_row / split_line_cell, changes.rs:4408-4544): each half
+ * is the same accent/gutter/marker/code structure minus the second gutter,
+ * with an 18px marker, 6px code pad, and a 1px hairline(0.06) divider. A
+ * one-sided row's empty half is the flat ink(0.03) filler.
+ */
 .diff-line-split {
-  grid-template-columns: 1fr 1px 1fr;
-  border-left: none;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  min-height: 21px;
+  height: 21px;
 }
 
 .diff-split-side {
-  display: grid;
-  grid-template-columns: minmax(28px, max-content) 18px 1fr;
-  align-items: center;
-  gap: 0;
+  position: relative;
+  flex: 1 1 0;
   min-width: 0;
-  padding: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.diff-split-add {
+  background: color-mix(in srgb, var(--rb-diff-add) 5.5%, transparent);
+}
+
+.diff-split-del {
+  background: color-mix(in srgb, var(--rb-diff-delete) 5.5%, transparent);
+}
+
+.diff-split-filler {
+  background: rgb(var(--rb-ink) / 0.03);
 }
 
 .diff-split-divider {
-  background: var(--rb-border);
+  width: 1px;
+  flex: none;
+  background: rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
 }
 
-.diff-split-old .diff-line-text {
-  background: color-mix(in srgb, var(--rb-diff-delete) 8%, transparent);
+.diff-split-marker {
+  width: 18px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-faint) 50%, transparent);
+  user-select: none;
 }
 
-.diff-split-new .diff-line-text {
-  background: color-mix(in srgb, var(--rb-diff-add) 8%, transparent);
+.diff-view-wrap .diff-line-split {
+  height: auto;
 }
 
-/* ── Change-request badges ──────────────────────────────────────────── */
+/* The 8px trailing pad closing an expanded body (BODY_BOTTOM_PAD). */
+.diff-body-pad {
+  height: 8px;
+  flex: none;
+}
 
+/*
+ * The fold tween's stand-in (render_file_body_upto): one clipped,
+ * height-animated row — 180ms on the COLLAPSE curve (easeOut) — whose
+ * content is bounded to what its clip can reveal.
+ */
+.diff-folding {
+  overflow: hidden;
+  transition: height var(--rb-motion-collapse) var(--rb-ease-ease-out);
+}
+
+/* ── Change-request badges (ticket 22) ───────────────────────────────── */
+
+/*
+ * `pull_request_badge` (change_requests.rs:117-169): mono `#N` — the state
+ * word NEVER appears in the badge (the tooltip carries it). Two presets:
+ * composer (h20, gap 5, px 7, radius 6, 11px, 11px PULL_REQUEST glyph) and
+ * sidebar (h16, gap 0, px 4, radius 4, 10px, no glyph). Tone: Open →
+ * success, Merged → code text (the accent), Closed → danger; bg at 8%,
+ * hover 16%, text at 0.85, hover full.
+ */
 .cr-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 20px;
-  padding: 0 8px;
-  border-radius: var(--rb-radius-control);
+  padding: 0 7px;
+  border-radius: 6px;
   font-size: 11px;
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
   position: relative;
   flex: none;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-/* `pull_request_badge`'s Sidebar surface: h 16, gap 0, px 4, radius 4, 10px. */
+/* `pull_request_badge`'s Sidebar preset. */
 .cr-badge-sidebar {
   height: 16px;
   padding: 0 4px;
-  font-size: 10px;
   border-radius: 4px;
   gap: 0;
+  font-size: 10px;
 }
 
 .cr-badge-glyph {
-  font-size: 9px;
-  font-weight: 600;
-  opacity: 0.7;
+  flex: none;
 }
 
-.cr-badge-sidebar .cr-badge-glyph {
-  display: none;
-}
-
+/* Monospace digits: a stable tabular width as PR numbers change. */
 .cr-badge-number {
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.02em;
 }
 
-.cr-badge-state {
-  color: inherit;
-  opacity: 0.85;
-}
-
-.cr-badge-sidebar .cr-badge-state {
-  display: none;
-}
-
 .cr-badge-open {
-  background: color-mix(in srgb, var(--rb-success) 12%, transparent);
-  color: var(--rb-success);
+  background: color-mix(in srgb, var(--rb-success) 8%, transparent);
+  color: color-mix(in srgb, var(--rb-success) 85%, transparent);
 }
 
 .cr-badge-open:hover {
-  background: color-mix(in srgb, var(--rb-success) 22%, transparent);
+  background: color-mix(in srgb, var(--rb-success) 16%, transparent);
+  color: var(--rb-success);
 }
 
 .cr-badge-merged {
-  background: color-mix(in srgb, var(--rb-text) 10%, transparent);
-  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
+  color: color-mix(in srgb, var(--rb-accent) 85%, transparent);
 }
 
 .cr-badge-merged:hover {
-  background: color-mix(in srgb, var(--rb-text) 18%, transparent);
+  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  color: var(--rb-accent);
 }
 
 .cr-badge-closed {
-  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
-  color: var(--rb-danger);
+  background: color-mix(in srgb, var(--rb-danger) 8%, transparent);
+  color: color-mix(in srgb, var(--rb-danger) 85%, transparent);
 }
 
 .cr-badge-closed:hover {
-  background: color-mix(in srgb, var(--rb-danger) 22%, transparent);
+  background: color-mix(in srgb, var(--rb-danger) 16%, transparent);
+  color: var(--rb-danger);
 }
 
+/*
+ * The tooltip (ChangeRequestTooltip, change_requests.rs:69-109): max 320,
+ * 9/7 pad, gap 3, radius 6, border-strong, raised (the web's forced-opaque
+ * branch of `glass_overlay`), 350ms show delay. Line 1 — "PR #N · State",
+ * 11px medium, tone-colored; line 2 — the title, truncated, 11px muted.
+ * The CSS-hover card is the research's sanctioned native substitute.
+ */
 .cr-tooltip {
   position: absolute;
   top: 100%;
   left: 0;
   margin-top: 6px;
-  min-width: 240px;
   max-width: 320px;
   display: none;
   flex-direction: column;
   gap: 3px;
   padding: 7px 9px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--rb-dialog) 92%, transparent);
-  backdrop-filter: blur(44px);
-  -webkit-backdrop-filter: blur(44px);
+  border: 1px solid var(--rb-border-strong);
+  background: var(--rb-raised);
   font-size: 11px;
   color: var(--rb-text);
   pointer-events: none;
@@ -7662,40 +7987,45 @@ button.files-row-active:hover {
   z-index: 10;
 }
 
+html[data-surface="frosted"] .cr-tooltip {
+  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  backdrop-filter: blur(44px);
+  -webkit-backdrop-filter: blur(44px);
+}
+
 .cr-badge:hover .cr-tooltip,
-.cr-badge:focus-within .cr-tooltip {
+.cr-badge:focus-visible .cr-tooltip {
   display: flex;
+  animation: cr-tip-in var(--rb-motion-hover-fade) var(--rb-ease-ease-out) 350ms both;
+}
+
+@keyframes cr-tip-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .cr-tooltip-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   font-size: 11px;
   font-weight: 500;
+  min-width: 0;
+  white-space: nowrap;
 }
 
-.cr-tooltip-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: none;
+.cr-tooltip-line-open {
+  color: var(--rb-success);
 }
 
-.cr-tooltip-dot-open {
-  background: var(--rb-success);
+.cr-tooltip-line-merged {
+  color: var(--rb-accent);
 }
 
-.cr-tooltip-dot-merged {
-  background: var(--rb-text);
-}
-
-.cr-tooltip-dot-closed {
-  background: var(--rb-danger);
-}
-
-.cr-tooltip-label {
-  color: var(--rb-text);
+.cr-tooltip-line-closed {
+  color: var(--rb-danger);
 }
 
 .cr-tooltip-title {
@@ -7709,14 +8039,18 @@ button.files-row-active:hover {
 /* No create-PR affordance: the desktop has no create flow to mirror. */
 
 @media (max-width: 768px) {
-  .changes-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--rb-space-sm);
+  .changes-toolbar {
+    height: auto;
+    min-height: var(--rb-titlebar-height);
+    flex-wrap: wrap;
+    padding: var(--rb-space-xs) var(--rb-space-sm);
   }
 
   .changes-banner {
+    height: auto;
+    min-height: var(--rb-titlebar-height);
     flex-wrap: wrap;
+    padding: var(--rb-space-xs) var(--rb-space-sm);
   }
 
   .changes-cr-card {
@@ -7724,8 +8058,40 @@ button.files-row-active:hover {
     align-items: flex-start;
   }
 
+  /* Phones: the gutters, markers, and accent bars collapse; the code wraps
+     (the phone layer's standing behavior for diff rows). */
+  .diff-line .diff-line-old,
+  .diff-line .diff-line-new,
+  .diff-line .diff-line-marker,
+  .diff-line .diff-accent,
+  .diff-split-side .diff-line-old,
+  .diff-split-side .diff-split-marker {
+    display: none;
+  }
+
   .diff-line {
-    grid-template-columns: minmax(20px, max-content) minmax(20px, max-content) 18px 1fr;
+    height: auto;
+    min-height: 21px;
+  }
+
+  .diff-code-viewport {
+    overflow: hidden;
+  }
+
+  .diff-code-content {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .diff-line-split {
+    flex-direction: column;
+  }
+
+  .diff-line-meta {
+    padding-left: var(--rb-space-sm) !important;
   }
 }
 
@@ -7734,6 +8100,21 @@ button.files-row-active:hover {
   .changes-scope-chip,
   .changes-tool {
     transition: none;
+  }
+
+  /* The fold tween and the chevron crossfade snap instantly
+     (`cx.reduce_motion()`); the tooltip appears without its delay. */
+  .diff-folding {
+    transition: none;
+  }
+
+  .diff-chevron-anim {
+    animation: none;
+  }
+
+  .cr-badge:hover .cr-tooltip,
+  .cr-badge:focus-visible .cr-tooltip {
+    animation: none;
   }
 
   /* Every tween below returns the target instantly (`motion::reduced_motion`).
