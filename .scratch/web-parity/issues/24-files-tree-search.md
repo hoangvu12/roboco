@@ -14,7 +14,7 @@ space picked independently of which chat is open.
 **Blocked by:** 03 (Client settings store), 07 (Right pane host and
 multi-instance tabs)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/09-files-tree-editor.md` §3.1
 (header/toolbar), §3.2 (tree), §3.3 (search), §3.8 (editor context menu,
@@ -631,6 +631,147 @@ ticket 25 and given a settings-page UI by ticket 29.
 
 ## Comments
 
+### Implementation (2026-09-18, branch `wp2/24-files-tree-search`)
+
+**What landed:**
+
+- `web/packages/icons/scripts/generate-file-icons.mjs` + generated outputs —
+  copies every SVG from `crates/ui/assets/file-icons/` into
+  `web/packages/app/public/file-icons/` (354 icons), bakes the `dark/` mirror
+  with the seven `dark_icon_svg` accent lifts at generate time, and emits
+  `web/packages/icons/src/generated/file-icons-manifest.ts` (the parsed
+  manifest; unknown JSON keys — `rootFolderNames`, `hidesExplorerArrows` —
+  dropped like serde does, `rootFolder` kept documented-unused). Own
+  `--check` gate; `pnpm --filter @roboco/icons check` now runs both
+  generators' checks. Asserts the ≥350 floor.
+- `lib/file-icons.ts` — the full 6-step resolver (`resolveFileIcon` with
+  optional language/MIME hints, `resolveDirectoryIcon`,
+  `hasSpecificFileIcon`, `fileIconAssetPath`, `wellBg`), the
+  lowercase-key-normalized lookup maps, the compound-extension
+  longest-suffix-first walk, and the `less`→`brackets-sky` / `yml`→`yaml`
+  alias special cases.
+- `components/files/file-icon.tsx` — `FileIcon`, the polychrome `<img>`
+  (dark-variant path swap by appearance; `useResolvedAppearance()` added to
+  `state/appearance.ts`).
+- `lib/file-search-tree.ts` — `buildSearchTree` / `sortSearchPaths` /
+  `toggleSearchNode`: the synthetic ancestor tree keyed by path components
+  with best-score propagation, dirs-before-files, name, and path
+  tiebreaks; own-subtree-only collapse.
+- `lib/file-tree.ts` — selection (`select`/`selectNext`/`selectPrevious`
+  via `move_selection`, `selectParent`, `selectFirstChild`), the
+  toggle/remove/rebuild selection fixups, `expand` (force, no load),
+  `expandedDirectories`, `refresh` (the "Refresh now" resync),
+  `retryRoot`, `revealInTree` (ancestor listing + page-by-page apply +
+  select, error surfaced to the caller), and the snapshot's
+  `selected`/`rootLoaded`/`rootError` fields.
+- `lib/files-client.ts` — `FilesTarget` widened to the wire
+  `WorkspaceTarget` shape (`chatId | spaceId | checkoutPath`, all optional;
+  engine requires exactly one of chat/space).
+- `routes/files-page.tsx` — `FilesSurface({ chatId })` targets
+  `{ chatId }`, seeds the model from `uiSettings.filesShowAll`, and opens
+  files through `rightPaneStore.addFileSurface(chatId, path)` (ticket 07's
+  file-shaped API). `FilesBody`/`SpacePicker`/`forwardFileEvent` deleted —
+  they were the routed-page/space-scoped halves, dead since ticket 04
+  removed the route (see Deviations).
+- `components/files/file-tree-panel.tsx` — rebuilt: `surface-toolbar` +
+  `surface-input` header (magnifier, "Search files" placeholder, 11/16
+  metrics), the eye toggle with the verbatim dynamic tooltip (350ms via the
+  shared `Tooltip`), the watch-error banner with a working "Refresh now",
+  the root-error block with Retry, the blank first-load placeholder, the
+  tree (icons, 27px rows, drag-out pill ghost with
+  `application/x-roboco-workspace-path` + `text/plain` payloads), full
+  keyboard nav (arrows/left-right/enter/space, preventDefault +
+  stopPropagation + scrollIntoView), and the search results (200ms
+  debounce, grouped ancestor tree, in-place directory toggle, reveal +
+  open on Enter/click, arrows/Enter/Escape on the input, capped-results
+  banner, drag-out).
+- `styles/app.css` — the §2.1/§2.2/§2.3 classes: `.files-row` (27px, gap 4,
+  11.5px, square), neutral wash selection (0.12 focused / 0.08 unfocused /
+  0.1 search), `.files-row-ignored` opacity 0.52, `.files-chevron`
+  (instant icon swap — rotation tween deleted), `.files-row-icon`,
+  `.files-toggle-ignored(+-on)`, the watch banner, root-error block,
+  search banner/empty states, `.files-drag-ghost`, `.files-search input`;
+  removed `.files-toolbar`, `.files-space-picker`, `.files-toggle-on`,
+  `.files-body`, `.files-tree-pane`, `.files-page-open`, `.files-row-path`,
+  `.files-row-size`, `.files-chevron-open` and the dead right-pane/phone
+  viewer-swap rules.
+- Tests: `tests/file-icons.test.ts` (10), `tests/file-search-tree.test.ts`
+  (7), and 12 new cases in `tests/file-tree.test.ts` (moveSelection
+  wrap-around + selectable-only filtering, select/reject, collapse/rebuild
+  selection fixups, revealInTree success/failure, refresh, retryRoot,
+  failed-root-refresh row error).
+
+**Deviations and judgment calls:**
+
+- **The routed `/files` page no longer exists** (ticket 04 removed it), so
+  this ticket's routed-page clauses are N/A: the pane's Files surface is
+  the only host, `FilesBody`/`SpacePicker` were deleted, and the
+  "routed page still targets `{ spaceId }`" acceptance item is moot.
+- **The in-pane `FileViewer` mount went with it.** Ticket 07's host is
+  file-shaped, so opening a tree/search row mints that file's own tab
+  (`addFileSurface`) exactly as the ticket's "What to build" directs; the
+  file tab's body is ticket 07's stub until ticket 25 mounts `FileViewer`
+  there. `file-viewer.tsx`/`file-document.tsx` and their CSS are untouched
+  for ticket 25. Phone-layer viewer-swap rules (`.files-page-open`) were
+  dead after this and removed; the pane host's own surface swap covers
+  phone widths.
+- **The tab strip's `file` icon stays the monochrome `document` glyph**:
+  `RightSurfaceEntry.icon` returns an `IconName`, and the polychrome
+  file-type icon needs the surface's path — only ticket 25's file-surface
+  body knows it (comment updated in `surface-registry.tsx`).
+- **`sync_list_rows` (scroll-anchor preservation) not ported** — the
+  ticket marks it optional; `useSyncExternalStore` still re-renders the
+  full row list (no virtualization: the 210-file fixture scrolls 220 DOM
+  rows fine).
+- **`formatBytes` usage**: already absent from tree rows (ticket 04's trim
+  removed it); the helper stays exported in `lib/files.ts` for ticket 25.
+  `lib/files.ts` needed no other change.
+- **Header chrome reuses ticket 07's `.surface-toolbar`/`.surface-input`**
+  (the desktop's own `surface_chrome::toolbar`/`input`) instead of
+  re-encoding the 38px/24px/6px metrics per-surface; the input's inner
+  reset (`.surface-input input`) is added to the shared frame.
+- **The engine's listing semantics decide "hidden"**: with
+  includeIgnored=false the engine hides gitignore-ignored entries but
+  still returns dotfiles (`.env`, `.gitignore`); the smoke fixture stages
+  ignored rows via a real `.gitignore`. The client renders whatever the
+  RPC returns, matching the desktop.
+- **Chat target-change pending (`sync_target` with unsaved docs)** is not
+  ported — it only matters with dirty editors (ticket 25); a checkout
+  change mid-watch already flows through the watch resync path.
+
+**Verification:**
+
+- `pnpm -r build` green; `@roboco/app` vitest 48 files / 711 tests green;
+  `pnpm --filter @roboco/icons check` green (both generators fresh).
+- web_smoke round (fresh engine, chat-scoped pane): the pane's Files
+  surface on a chat in a staged git space lists the live tree; a file row
+  click and a search Enter both mint the file's own pane tab
+  (`addFileSurface` verified end-to-end, tabs: Files / component.test.tsx /
+  lib.rs); icons resolve live (`dark/files/react-test.svg`,
+  `dark/files/rust.svg`, `dark/folders/folder-assets.svg`); ignored rows
+  at opacity 0.52 with `filesShowAll` persisted to localStorage; keyboard
+  selection moves among selectable rows; Escape clears the search.
+- Screenshots (web halves) in `.scratch/web-parity/shots/24/`:
+  `web-01-tree-collapsed.png`, `web-02-tree-mixed-expanded.png`,
+  `web-03-tree-keyboard-selected.png`, `web-04-tree-ignored-rows.png`,
+  `web-05-search-grouped.png`, `web-06-search-capped-banner.png`,
+  `web-07-root-error-retry.png`, `web-08-watch-error-banner.png`,
+  `web-09-tree-many-expanded.png`, `web-10-boot-live-tree.png`.
+  - **Desktop halves of all pairs: skipped, documented per the runbook** —
+    no `roboco` desktop process is running and none was started (same skip
+    as tickets 09/10).
+  - **"Empty tree loading" state skipped**: the local smoke engine answers
+    the first listing in well under a frame; staging it would need an
+    artificial engine delay, and no `crates/` changes are allowed here.
+    The `Loading…`/`Empty folder` rows are covered by the model tests.
+  - **Watch-error banner staged** via the engine's protocol-level watch
+    failure (a chat with no space: the watch subscribe fails while the
+    connection stays up). Killing the engine does NOT stage it — the
+    engine-client holds the watch across reconnects (a network drop never
+    ends it, by design).
+- Boot check: after a full re-pair on a restarted smoke engine the app
+  renders with no error boundary and a live chat-scoped tree
+  (`web-10-boot-live-tree.png`).
 
 ### Shared components addendum (2026-09-18)
 
