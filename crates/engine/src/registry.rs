@@ -359,6 +359,72 @@ impl HarnessRegistry {
     }
 }
 
+/// The mock harness's scripted reply: a markdown heading, a numbered list, an
+/// `Exec` tool call + result, a second `Exec` tool call + result, a fenced
+/// `rust` code block, then `Done`. Shared by [`default_registry`] and
+/// [`smoke_registry`] so both replay byte-identical output.
+fn mock_script() -> Vec<AgentEvent> {
+    vec![
+        AgentEvent::TextDelta {
+            text: "## Streaming pipeline\n\nEvery turn flows through the same path:\n\n".into(),
+        },
+        AgentEvent::TextDelta {
+            text: "1. **Doc command** — the composer queues a durable `run` entry\n2. **Host executor** — the chat's host device marks it processed, then dispatches\n3. **Fold** — events fold into parts and diff into the Loro doc every 120ms\n\n".into(),
+        },
+        AgentEvent::ToolCall {
+            id: "mock-tool-1".into(),
+            call: roboco_proto::ToolCall::Exec {
+                command: "cargo test --workspace".into(),
+            },
+        },
+        AgentEvent::ToolResult {
+            id: "mock-tool-1".into(),
+            is_error: false,
+            output: None,
+            diff: None,
+        },
+        AgentEvent::ToolCall {
+            id: "mock-tool-2".into(),
+            call: roboco_proto::ToolCall::Exec {
+                command: "git log -5 --oneline --decorate && git merge-base HEAD origin/main"
+                    .into(),
+            },
+        },
+        AgentEvent::ToolResult {
+            id: "mock-tool-2".into(),
+            is_error: false,
+            output: None,
+            diff: None,
+        },
+        AgentEvent::TextDelta {
+            text: "The `SegmentWriter` appends into `LoroText` so the oplog stays RLE-merged:\n\n```rust\nfolded = fold_event_into_parts(&folded, &event);\nwriter.sync(&folded)?; // 120ms coalesced commits\n```\n\nSynced to every device through the session room. *Mock harness reporting in.*".into(),
+        },
+        AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        },
+    ]
+}
+
+/// A harness registry for manual browser smoke-testing: the scripted mock
+/// harness only, no lazy slots. [`default_registry`] additionally registers
+/// eight lazy CLI-discovery slots whose `installed()` probes run synchronously
+/// inside every `ListHarnesses` reply (see [`HarnessRegistry::descriptors`]) —
+/// fine on a real desktop where they're near-instant `PATH` stats, but a
+/// needless liability in a disposable fixture that must never depend on what
+/// CLIs happen to be on the machine running `web_smoke`. This registry can
+/// never leave `ListHarnesses` slow or dependent on host state, because it has
+/// nothing to probe.
+pub fn smoke_registry() -> HarnessRegistry {
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(MockHarness {
+        script: mock_script(),
+    }));
+    registry
+}
+
 /// The production registry: MockHarness (hidden from production pickers) plus a lazy
 /// `claude-code` slot resolved through `roboco_harness` on first use (subprocess
 /// discovery only happens when a run/model call actually needs it).
@@ -368,48 +434,7 @@ pub fn default_registry() -> HarnessRegistry {
     roboco_harness::shell_env::prewarm();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
-        script: vec![
-            AgentEvent::TextDelta {
-                text: "## Streaming pipeline\n\nEvery turn flows through the same path:\n\n".into(),
-            },
-            AgentEvent::TextDelta {
-                text: "1. **Doc command** — the composer queues a durable `run` entry\n2. **Host executor** — the chat's host device marks it processed, then dispatches\n3. **Fold** — events fold into parts and diff into the Loro doc every 120ms\n\n".into(),
-            },
-            AgentEvent::ToolCall {
-                id: "mock-tool-1".into(),
-                call: roboco_proto::ToolCall::Exec {
-                    command: "cargo test --workspace".into(),
-                },
-            },
-            AgentEvent::ToolResult {
-                id: "mock-tool-1".into(),
-                is_error: false,
-                output: None,
-                diff: None,
-            },
-            AgentEvent::ToolCall {
-                id: "mock-tool-2".into(),
-                call: roboco_proto::ToolCall::Exec {
-                    command: "git log -5 --oneline --decorate && git merge-base HEAD origin/main"
-                        .into(),
-                },
-            },
-            AgentEvent::ToolResult {
-                id: "mock-tool-2".into(),
-                is_error: false,
-                output: None,
-                diff: None,
-            },
-            AgentEvent::TextDelta {
-                text: "The `SegmentWriter` appends into `LoroText` so the oplog stays RLE-merged:\n\n```rust\nfolded = fold_event_into_parts(&folded, &event);\nwriter.sync(&folded)?; // 120ms coalesced commits\n```\n\nSynced to every device through the session room. *Mock harness reporting in.*".into(),
-            },
-            AgentEvent::Done {
-                status: DoneStatus::Completed,
-                result: None,
-                error: None,
-                session_id: None,
-            },
-        ],
+        script: mock_script(),
     }));
     registry.register_lazy(
         HarnessDescriptor {
@@ -639,6 +664,60 @@ mod tests {
         );
         assert!(registry.resolve(HarnessId::Mock).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The browser smoke fixture must not depend on what CLIs happen to be
+    /// installed on the machine running it, and `ListHarnesses` must never
+    /// block: a registry with zero lazy slots has nothing for `descriptors()`
+    /// to probe.
+    #[test]
+    fn smoke_registry_lists_only_the_mock_and_probes_nothing() {
+        let registry = smoke_registry();
+        let ids: Vec<HarnessId> = registry.descriptors().iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![HarnessId::Mock]);
+        assert!(registry.resolve(HarnessId::Mock).is_ok());
+        // Every other id is absent — no lazy slot to run an `installed()` probe.
+        assert!(registry.resolve(HarnessId::ClaudeCode).is_err());
+    }
+
+    /// The shared script is what every visual-parity ticket screenshots: a
+    /// markdown heading, a numbered list, two `Exec` calls with results, and a
+    /// fenced `rust` block. Both registries build their mock from this one
+    /// function, so the fixture replays what the real app's mock does.
+    #[test]
+    fn mock_script_covers_every_transcript_shape_the_fixture_screenshots() {
+        let script = mock_script();
+        let text: String = script
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("## Streaming pipeline"), "markdown heading");
+        assert!(text.contains("1. **Doc command**"), "numbered list");
+        assert!(text.contains("```rust"), "fenced rust code block");
+        let commands: Vec<&str> = script
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolCall {
+                    call: roboco_proto::ToolCall::Exec { command },
+                    ..
+                } => Some(command.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                "cargo test --workspace",
+                "git log -5 --oneline --decorate && git merge-base HEAD origin/main",
+            ]
+        );
+        assert!(matches!(script.last(), Some(AgentEvent::Done { .. })));
+        // Both builders hand this same script to their eager MockHarness.
+        assert!(smoke_registry().resolve(HarnessId::Mock).is_ok());
+        assert!(default_registry().resolve(HarnessId::Mock).is_ok());
     }
 
     #[test]
