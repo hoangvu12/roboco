@@ -10,7 +10,7 @@ import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberTarget } from "../lib/composer-draft";
 import { ContextUsageIndicator } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
-import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
 import { SearchInputFrame } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { ErrorRow, SkeletonRows } from "./popover/skeleton";
@@ -210,6 +210,7 @@ function DeviceChip({
   readonly now: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   // Device order: this device first, then by lowercased name, then by id.
   const rows = useMemo(() => {
@@ -230,6 +231,7 @@ function DeviceChip({
   return (
     <>
       <RbPopoverTrigger
+        handle={popoverHandle}
         render={
           <FooterChip
             id="picker-device"
@@ -242,6 +244,7 @@ function DeviceChip({
         }
       />
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorAbove"
@@ -373,6 +376,7 @@ function ProjectChip({
   readonly currentSpaceId: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   const pickedSpace = currentSpaceId === null ? null : spaces.find((space) => space.id === currentSpaceId) ?? null;
   const label = pickedSpace === null ? "All projects" : spaceDisplayName(pickedSpace);
@@ -380,9 +384,11 @@ function ProjectChip({
   return (
     <>
       <RbPopoverTrigger
+        handle={popoverHandle}
         render={<FooterChip id="picker-project" icon="folder" label={label} open={open} title={label} />}
       />
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorAboveEnd"
@@ -541,6 +547,7 @@ function CheckoutChip({
   readonly onPick: (kind: CheckoutKind) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   // `checkout_label` (pickers.rs:1280-1304): "New worktree" |
   // "Current worktree" when the picked ref has an existing worktree, else
@@ -551,6 +558,7 @@ function CheckoutChip({
   return (
     <>
       <RbPopoverTrigger
+        handle={popoverHandle}
         render={
           <FooterChip
             id="picker-checkout"
@@ -562,6 +570,7 @@ function CheckoutChip({
         }
       />
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorAbove"
@@ -673,6 +682,7 @@ function RefChip({
   readonly onRefs: (rows: readonly RepoRef[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
   const [refs, setRefs] = useState<RefsState>({ rows: [], loading: false, error: null });
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -760,9 +770,11 @@ function RefChip({
   return (
     <>
       <RbPopoverTrigger
+        handle={popoverHandle}
         render={<FooterChip id="picker-branch" icon="gitBranch" label={label} open={open} title={label} />}
       />
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorAbove"

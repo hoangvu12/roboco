@@ -11,7 +11,7 @@ import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, 
 import { classifyKey, filterIndices, menuStep } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
-import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
 import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
 import { RbDialog } from "./base/dialog";
 import {
@@ -57,6 +57,9 @@ export function SpaceFilter() {
   const now = useNow(30_000);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
+  // Detached-trigger handle: the Trigger renders as a sibling of the
+  // popover's Root, so Base UI needs the shared handle to bind them.
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
   // The right-click overlay: the context menu first, then whichever dialog
   // its rows open — the dialog state must outlive the menu's unmount.
   const [spaceOverlay, setSpaceOverlay] = useState<SpaceOverlay | null>(null);
@@ -179,6 +182,7 @@ export function SpaceFilter() {
     <>
       <RbPopoverTrigger
         ref={triggerRef}
+        handle={popoverHandle}
         className={`space-filter-trigger ${open ? "space-filter-trigger-open" : ""}`}
       >
         <Icon name="folder" size={16} className="space-filter-icon" />
@@ -194,6 +198,7 @@ export function SpaceFilter() {
         <Icon name="altArrowDown" size={14} className="space-filter-caret" />
       </RbPopoverTrigger>
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorBelow"
@@ -399,6 +404,7 @@ export function SidebarViewMenu() {
   const sidebar = useSidebar();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
   const [tooltip, setTooltip] = useState(false);
   const [cursor, setCursor] = useState<number | null>(null);
 
@@ -504,6 +510,7 @@ export function SidebarViewMenu() {
     <>
       <RbPopoverTrigger
         ref={buttonRef}
+        handle={popoverHandle}
         className={`space-filter-sort ${open ? "space-filter-sort-open" : ""}`}
         aria-label="Sidebar view options"
         onMouseEnter={showTooltip}
@@ -526,6 +533,7 @@ export function SidebarViewMenu() {
         )}
       </RbPopoverTrigger>
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorBelowEnd"

@@ -79,6 +79,9 @@ export type { AnchorHelperId, AnchorPlacement, VirtualAnchor };
  */
 export const RbPopoverTrigger = Popover.Trigger;
 
+/** The detached-trigger handle type (`Popover.createHandle`'s return). */
+export type RbPopoverHandle = ReturnType<typeof Popover.createHandle>;
+
 /**
  * `createRbPopoverHandle` — Base UI's `Popover.createHandle` re-exported
  * for wave-2 surfaces that want one popover shared by multiple triggers
@@ -87,6 +90,13 @@ export const RbPopoverTrigger = Popover.Trigger;
 export const createRbPopoverHandle = Popover.createHandle;
 
 export interface RbPopoverProps {
+  /**
+   * The detached-trigger handle (Base UI's detached pattern): the consumer
+   * renders the trigger as a sibling via `createRbPopoverHandle()` and passes
+   * the same handle to both the `RbPopoverTrigger` and here — a Trigger
+   * outside the Root without a handle is a Base UI invariant error.
+   */
+  readonly handle?: RbPopoverHandle;
   /** Controlled open — every parity consumer is controlled. */
   readonly open: boolean;
   /**
@@ -154,6 +164,7 @@ export function RbPopover(props: RbPopoverProps) {
 
   return (
     <Popover.Root
+      handle={props.handle}
       open={props.open}
       onOpenChange={(open, details) => {
         if (!open && shouldVetoDismissal(details.reason)) {

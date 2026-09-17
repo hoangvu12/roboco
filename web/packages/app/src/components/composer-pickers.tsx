@@ -19,7 +19,7 @@ import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } fro
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform } from "../state/shortcuts";
-import { RbPopover, RbPopoverTrigger } from "./base/popover";
+import { createRbPopoverHandle, RbPopover, RbPopoverTrigger } from "./base/popover";
 import { KbdHint, MenuHeading, MenuSeparator } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { MenuScrollbar } from "./popover/scrollbar";
@@ -74,6 +74,8 @@ export interface ComposerPickersProps {
 export function ComposerPickers(props: ComposerPickersProps) {
   const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget } = props;
   const [open, setOpen] = useState(false);
+  // Detached-trigger handle — the Trigger renders as a sibling of the Root.
+  const [popoverHandle] = useState(() => createRbPopoverHandle());
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -213,6 +215,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
   return (
     <div className="composer-pickers">
       <RbPopoverTrigger
+        handle={popoverHandle}
         id="picker-model"
         className={`identity-chip ${open ? "identity-chip-open" : ""}`}
         title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
@@ -243,6 +246,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
       {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
           chip's, opening upward with a 6px gap, clamped 8px inside. */}
       <RbPopover
+        handle={popoverHandle}
         open={open}
         onOpenChange={setOpen}
         placement="anchorAboveEnd"
