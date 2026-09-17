@@ -3170,6 +3170,43 @@ a:focus-visible,
   pointer-events: auto;
 }
 
+/*
+ * The Base UI popup contract (components/base/*, adoption blueprint §4):
+ * open/close key off the popup's own data attributes — `[data-open]` runs
+ * the entrance, `[data-closed]` the exit — and Base UI keeps the element
+ * mounted (and painting) until `getAnimations()` drains, which replaces the
+ * lifecycle's reap timer. The exit turns the card dead to hit-testing and
+ * the full-bleed `::after` occluder replaces `.popover-exit-occlude`
+ * (popover.rs:406): a dying menu's rows must not take clicks, and stray
+ * clicks must not reach the page underneath. The wrapper may rescale
+ * `--rb-motion-menu-out` (the desktop's motion speed setting); the unmount
+ * follows whatever duration results. No consumer rides these selectors
+ * until the Phase 2 popover migration; the `[data-rb-popup]` rules above
+ * keep serving the hand-rolled layer until then.
+ */
+.rb-popover-popup[data-open] {
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+.rb-popover-popup[data-closed] {
+  position: relative;
+  pointer-events: none;
+  animation: rb-menu-out var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
+}
+
+.rb-popover-popup[data-closed]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+
+/* Base UI marks instant tooltip transitions with `data-instant` (adjacent
+   tooltips in a Provider group open with no delay): no transition there. */
+.rb-tooltip-popup[data-instant] {
+  transition: none;
+}
+
 /* `menu_out` (popover.rs:373-387): the reverse of rb-menu-in over
    MENU_OUT (100ms, EASE). */
 @keyframes rb-menu-out {
@@ -3267,6 +3304,15 @@ a:focus-visible,
 
 .menu-row-selected,
 .menu-row-highlighted {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
+  transition: none;
+}
+
+/* Base UI menu items (RbMenuItem, components/base/menu.tsx): the keyboard
+   highlight wears the same card_selected_bg wash as the selected row,
+   applied instantly (popover.rs:752-765 — the shipped one-tone behavior). */
+.menu-row[data-highlighted] {
   background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
   color: var(--rb-text);
   transition: none;
@@ -3594,6 +3640,50 @@ a:focus-visible,
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
 }
 
+/*
+ * The Base UI dialog card (RbDialog, components/base/dialog.tsx): Backdrop
+ * and Popup render as portal SIBLINGS, so the card centers itself instead
+ * of riding the backdrop's flex box — fixed at the viewport center,
+ * clamped to the viewport height minus the old backdrop padding, so a tall
+ * card scrolls inside instead of clipping above the fold (the flex-overflow
+ * trap). Same z-tier as the scrim; DOM order paints the card on top (the
+ * sibling Backdrop renders first). The entrance re-keys to `[data-open]` so
+ * a close inside the 180ms window cancels the animation instead of
+ * replaying it under `[data-closed]` — Base UI unmounts once
+ * `getAnimations()` drains, and there is no exit motion to wait on: the
+ * desktop has no dialog_out, modals unmount instantly. The winning
+ * rb-dialog-in keyframes (below, the `translate`-property variant) compose
+ * with, not clobber, the centering transform.
+ */
+.rb-dialog-card {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: var(--rb-z-modal);
+  max-height: calc(100dvh - 2 * var(--rb-space-lg));
+  overflow: auto;
+  /* The desktop never paints a scrollbar on a modal card (render_rail owns
+     rails); a tall card scrolls by wheel with the OS bar hidden. */
+  scrollbar-width: none;
+  animation: none;
+}
+
+.rb-dialog-card::-webkit-scrollbar {
+  display: none;
+}
+
+.rb-dialog-card[data-open] {
+  animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The entrance snaps to its endpoint (motion.rs:118). */
+  .rb-dialog-card[data-open] {
+    animation: none;
+  }
+}
+
 @keyframes rb-dialog-in {
   from {
     opacity: 0;
@@ -3759,6 +3849,17 @@ a:focus-visible,
   .popover-layer[data-rb-popup="closing"] .popover-card,
   .popover-layer[data-rb-popup="closing"] .palette-card {
     animation: none;
+    opacity: 0;
+  }
+
+  /* The Base UI popups (components/base/*) snap the same way: entrances
+     land at the endpoint, exits sit at opacity 0 with no animation. */
+  .rb-popover-popup[data-open],
+  .rb-popover-popup[data-closed] {
+    animation: none;
+  }
+
+  .rb-popover-popup[data-closed] {
     opacity: 0;
   }
 
@@ -6763,6 +6864,16 @@ button.files-row-active:hover {
 }
 
 .toggle-on .toggle-thumb {
+  left: 16px;
+}
+
+/* The Base UI switch (RbSwitch, components/base/switch.tsx): the same
+   32×18 geometry keyed off data-checked instead of the .toggle-on class. */
+.rb-switch[data-checked] {
+  background: var(--rb-text);
+}
+
+.rb-switch[data-checked] .toggle-thumb {
   left: 16px;
 }
 

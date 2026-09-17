@@ -8,7 +8,6 @@
  */
 
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 export interface PopoverCardProps {
   readonly children?: ReactNode;
@@ -157,48 +156,14 @@ export function KbdHint(props: { children: ReactNode }) {
 
 // ---------------------------------------------------------------------------
 // Dialog primitives (popover.rs:657-1076)
+//
+// The modal shells themselves (`modal`/`modal_glass`, popover.rs:657-705)
+// moved to `components/base/dialog.tsx` as `RbDialog` (Base UI adoption,
+// blueprint Phase 1). Everything below is the card's inner chrome — pure
+// styled parts that ride inside RbDialog's popup.
 // ---------------------------------------------------------------------------
 
-export interface ModalProps {
-  readonly children: ReactNode;
-  readonly ariaLabel?: string;
-}
-
-/** `modal` (`popover.rs:657-682`) — full-window scrim at 0.6 dark /
- * 0.32 light, centring its card with the `dialog-in` entrance and a 16px
- * frost radius. The scrim swallows clicks; the caller wires dismiss. */
-export function Modal(props: ModalProps) {
-  return createPortal(
-    <div className="modal-backdrop" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="modal-card" role="dialog" aria-modal="true" aria-label={props.ariaLabel}>
-        {props.children}
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-/** `modal_glass` (`popover.rs:684-705`) — the lighter 0.35-dark scrim for
- * glass-tinted cards (the add-space palette). `cornerRadius` must match the
- * card's rounding. */
-export function ModalGlass(props: ModalProps & { cornerRadius: number }) {
-  return createPortal(
-    <div className="modal-glass-backdrop" onPointerDown={(event) => event.stopPropagation()}>
-      <div
-        className="modal-card"
-        style={{ borderRadius: `${props.cornerRadius}px` }}
-        role="dialog"
-        aria-modal="true"
-        aria-label={props.ariaLabel}
-      >
-        {props.children}
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-/** `dialog_card` (`popover.rs:978-990`) — the centered 360px card. */
+/** `dialog_card` (popover.rs:978-990) — the centered 360px card. */
 export function DialogCard(props: { children?: ReactNode }) {
   return <section className="dialog-card">{props.children}</section>;
 }
