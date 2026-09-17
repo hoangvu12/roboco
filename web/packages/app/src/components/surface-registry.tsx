@@ -110,14 +110,16 @@ function registerDefaults(): void {
     kind: "files",
     title: titleOf("Files"),
     icon: () => "folderWithFiles",
-    render: () => <FilesSurface />,
+    render: (_s, ctx) => <FilesSurface chatId={ctx.chatId} />,
   });
 
   registerRightSurface({
     kind: "file",
     title: titleOf("File"),
     detail: (s) => facts(s)?.detail ?? null,
-    // `file_icons::icon` (the file-type manifest) is ticket 24's.
+    // The tab strip's IconName slot is monochrome by design; the polychrome
+    // file-type icon (`lib/file-icons.ts`) needs the surface's path, which
+    // only ticket 25's file-surface body has.
     icon: () => "document",
     render: (_s, ctx) => <SurfaceStubBody label={`File · ${ctx.chatId}`} />,
   });

@@ -1,4 +1,4 @@
-import type { WorkspaceEntry, WorkspaceFileChanges } from "@roboco/proto";
+import type { WorkspaceDirectoryPage, WorkspaceEntry, WorkspaceFileChanges } from "@roboco/proto";
 import type { WatchHandlers } from "@roboco/engine-client";
 import type { WorkspaceFilesClient } from "./files-client";
 import { describeFilesError } from "./files-client";
@@ -38,6 +38,16 @@ export interface FileTreeSnapshot {
   readonly includeIgnored: boolean;
   /** Set while the change stream itself is degraded (desktop: watch_error). */
   readonly watchError: string | null;
+  /** The keyboard/mouse selection (desktop model.rs `selected`). */
+  readonly selected: string | null;
+  /** Desktop `tree_has_content` — the root has produced a page at least once. */
+  readonly rootLoaded: boolean;
+  /**
+   * The surface-level root error (desktop `FilesSurface::error`): set when a
+   * root load fails, shown INSTEAD of the tree while the root has never
+   * loaded (mod.rs:213-247).
+   */
+  readonly rootError: string | null;
 }
 
 /** Watch outcomes the open document cares about (watch.rs parity). */
@@ -65,6 +75,8 @@ export class FileTreeModel {
   readonly #listingChildren = new Map<string, Set<string>>();
   readonly #listeners = new Set<() => void>();
   #includeIgnored: boolean;
+  #selected: string | null = null;
+  #rootError: string | null = null;
   #generation = 0;
   #watchSequence: number | null = null;
   #watchError: string | null = null;
@@ -78,7 +90,14 @@ export class FileTreeModel {
     this.#onFileEvent = options.onFileEvent;
     this.#includeIgnored = options.includeIgnored ?? false;
     this.#nodes.set(ROOT, newNode(rootEntry()));
-    this.#snapshot = { rows: [], includeIgnored: this.#includeIgnored, watchError: null };
+    this.#snapshot = {
+      rows: [],
+      includeIgnored: this.#includeIgnored,
+      watchError: null,
+      selected: null,
+      rootLoaded: false,
+      rootError: null,
+    };
   }
 
   getSnapshot(): FileTreeSnapshot {
@@ -139,9 +158,14 @@ export class FileTreeModel {
     }
     if (this.#expanded.has(path)) {
       this.#expanded.delete(path);
+      // A collapsed directory pulls the selection out of its subtree
+      // (model.rs:307-313): onto the directory itself, or none at the root.
+      if (this.#selected !== null && isDescendant(this.#selected, path)) {
+        this.#selected = path === ROOT ? null : path;
+      }
     } else {
       this.#expanded.add(path);
-      if (node.load.kind === "unloaded" || node.stale) {
+      if (node.load.kind === "unloaded" || node.load.kind === "error" || node.stale) {
         this.#requestDirectory(path, null);
       }
     }
@@ -166,6 +190,171 @@ export class FileTreeModel {
     this.#requestDirectory(directory, node.load.cursor);
   }
 
+  /** Desktop `select` — a path that is not in the model is rejected. */
+  select(path: string): boolean {
+    if (!this.#nodes.has(path)) {
+      return false;
+    }
+    this.#selected = path;
+    this.#commit();
+    return true;
+  }
+
+  /** The current selection, or null. */
+  selected(): string | null {
+    return this.#selected;
+  }
+
+  /** Desktop `select_next` / `select_previous` (via `move_selection`). */
+  selectNext(): string | null {
+    return this.#moveSelection(1);
+  }
+
+  selectPrevious(): string | null {
+    return this.#moveSelection(-1);
+  }
+
+  /** Desktop `select_parent`: the parent path, or stay put at the root. */
+  selectParent(): string | null {
+    if (this.#selected === null) {
+      return null;
+    }
+    const parent = parentPath(this.#selected);
+    if (parent === null || parent === ROOT) {
+      return this.#selected;
+    }
+    this.#selected = parent;
+    this.#commit();
+    return parent;
+  }
+
+  /** Desktop `select_first_child`. */
+  selectFirstChild(): string | null {
+    if (this.#selected === null) {
+      return null;
+    }
+    const first = this.#nodes.get(this.#selected)?.children[0];
+    if (first === undefined) {
+      return null;
+    }
+    this.#selected = first;
+    this.#commit();
+    return first;
+  }
+
+  /** Desktop `expand` — force-expand without loading (the reveal path). */
+  expand(path: string): boolean {
+    const node = this.#nodes.get(path);
+    if (node === undefined || node.entry.kind !== "directory") {
+      return false;
+    }
+    const changed = !this.#expanded.has(path);
+    if (changed) {
+      this.#expanded.add(path);
+    }
+    return changed;
+  }
+
+  /** Desktop `expanded_directories` — for the watch-error "Refresh now". */
+  expandedDirectories(): readonly string[] {
+    return [...this.#expanded];
+  }
+
+  /**
+   * Desktop `refresh` (mod.rs:748): invalidate everything and reload the
+   * root plus every expanded, loaded directory — the "Refresh now" button's
+   * forced resync.
+   */
+  refresh(): void {
+    this.#rootError = null;
+    this.#markAllDirectoriesStale();
+    this.#reloadExpanded();
+    this.#commit();
+  }
+
+  /**
+   * Desktop `retry_root` — clear the surface error and reload the root,
+   * which is what the root-error block's Retry button does.
+   */
+  retryRoot(): void {
+    this.#rootError = null;
+    this.#requestDirectory(ROOT, null);
+    this.#commit();
+  }
+
+  /**
+   * Desktop `reveal_search_result` (search.rs:390): expand the match's
+   * ancestors — one `ListWorkspaceDirectory` per ancestor, applied page by
+   * page so the tree fills in as the reveal walks down — then select the
+   * row. Returns the engine's error message on failure, or null on success.
+   */
+  async revealInTree(path: string): Promise<string | null> {
+    const generation = this.#generation;
+    const directories: string[] = [ROOT];
+    let current = parentPath(path);
+    const ancestors: string[] = [];
+    while (current !== null && current !== ROOT) {
+      ancestors.push(current);
+      current = parentPath(current);
+    }
+    ancestors.reverse();
+    directories.push(...ancestors);
+
+    const pages: { directory: string; page: WorkspaceDirectoryPage }[] = [];
+    for (const directory of directories) {
+      try {
+        const page = await this.#client.listDirectory(directory, this.#includeIgnored);
+        if (this.#disposed || generation !== this.#generation) {
+          return null;
+        }
+        pages.push({ directory, page });
+      } catch (error: unknown) {
+        if (this.#disposed || generation !== this.#generation) {
+          return null;
+        }
+        return describeFilesError(error);
+      }
+    }
+    if (this.#disposed || generation !== this.#generation) {
+      return null;
+    }
+    for (const [index, { directory, page }] of pages.entries()) {
+      this.#applyPage(directory, page.entries, page.nextCursor ?? null, generation);
+      const ancestor = ancestors[index - 1];
+      if (ancestor !== undefined) {
+        this.#expanded.add(ancestor);
+      }
+    }
+    this.select(path);
+    return null;
+  }
+
+  /**
+   * Desktop `move_selection` (model.rs:419-442): arrow-key navigation only
+   * considers selectable rows (`entry`/`loadMore`); wraps to the last item
+   * on Up with no prior selection, the first item on Down.
+   */
+  #moveSelection(delta: number): string | null {
+    const selectable = this.#snapshot.rows.filter((row) => isSelectableRow(row)).map((row) => row.path);
+    if (selectable.length === 0) {
+      this.#selected = null;
+      this.#commit();
+      return null;
+    }
+    const current = this.#selected !== null ? selectable.indexOf(this.#selected) : -1;
+    let next: number;
+    if (current >= 0 && delta < 0) {
+      next = Math.max(0, current - 1);
+    } else if (current >= 0) {
+      next = Math.min(selectable.length - 1, current + delta);
+    } else {
+      next = delta < 0 ? selectable.length - 1 : 0;
+    }
+    this.#selected = selectable[next] ?? null;
+    this.#commit();
+    return this.#selected;
+  }
+
   /** Desktop `set_include_ignored`: flips the flag and re-lists everything. */
   setIncludeIgnored(includeIgnored: boolean): void {
     if (this.#includeIgnored === includeIgnored) {
@@ -173,6 +362,7 @@ export class FileTreeModel {
     }
     this.#includeIgnored = includeIgnored;
     this.#reset();
+    this.#rootError = null;
     this.#requestDirectory(ROOT, null);
     this.#commit();
   }
@@ -214,6 +404,11 @@ export class FileTreeModel {
       return;
     }
     node.load = { kind: "error", message, cursor };
+    // mod.rs:871-873 — a root failure also sets the surface-level error the
+    // root-error block renders.
+    if (directory === ROOT) {
+      this.#rootError = message;
+    }
     this.#commit();
   }
 
@@ -273,6 +468,10 @@ export class FileTreeModel {
     parent.load = { kind: "loaded", nextCursor };
     parent.stale = false;
     parent.hasLoaded = true;
+    if (directory === ROOT) {
+      // mod.rs:866 — any successful root page clears the surface error.
+      this.#rootError = null;
+    }
     this.#commit();
   }
 
@@ -363,6 +562,11 @@ export class FileTreeModel {
         node.children = node.children.filter((child) => child !== path);
       }
     }
+    // model.rs:394-400 — a removed row hands its selection to the parent
+    // (none at the root), so keyboard nav survives deletions.
+    if (this.#selected !== null && (this.#selected === path || isDescendant(this.#selected, path))) {
+      this.#selected = parent !== null && parent !== ROOT ? parent : null;
+    }
     this.#removeSubtree(path);
   }
 
@@ -407,16 +611,25 @@ export class FileTreeModel {
     this.#expanded.clear();
     this.#expanded.add(ROOT);
     this.#watchSequence = null;
+    this.#selected = null;
   }
 
   #commit(): void {
     if (this.#disposed) {
       return;
     }
+    const rows = this.#buildRows();
+    // model.rs:463-469 — a selection whose row vanished is dropped.
+    if (this.#selected !== null && !rows.some((row) => row.path === this.#selected)) {
+      this.#selected = null;
+    }
     this.#snapshot = {
-      rows: this.#buildRows(),
+      rows,
       includeIgnored: this.#includeIgnored,
       watchError: this.#watchError,
+      selected: this.#selected,
+      rootLoaded: this.#nodes.get(ROOT)?.hasLoaded === true,
+      rootError: this.#rootError,
     };
     for (const listener of this.#listeners) {
       listener();
@@ -481,6 +694,19 @@ export class FileTreeModel {
 /** Desktop watch.rs `sequence_needs_resync`. */
 export function sequenceNeedsResync(previous: number | null, next: number): boolean {
   return previous !== null && next !== previous + 1;
+}
+
+/** Desktop `VisibleTreeRow::selectable`: Entry and LoadMore rows. */
+function isSelectableRow(row: TreeRow): boolean {
+  return row.kind === "entry" || row.kind === "loadMore";
+}
+
+/** Desktop model.rs `is_descendant` (586-603). */
+function isDescendant(candidate: string, ancestor: string): boolean {
+  if (ancestor === ROOT) {
+    return candidate !== ROOT;
+  }
+  return candidate.startsWith(ancestor) && candidate.charAt(ancestor.length) === "/";
 }
 
 function rootEntry(): WorkspaceEntry {
