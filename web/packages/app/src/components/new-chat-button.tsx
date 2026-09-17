@@ -28,10 +28,15 @@ export function NewChatListener() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
 
-  const connected = session !== null && status?.state === "connected";
-
   async function create(): Promise<void> {
     if (busy || session === null) {
+      return;
+    }
+    if (status?.state !== "connected") {
+      // Not a dead key (gap N14): Mod+N and the titlebar `+` must never fail
+      // silently while the engine is down — post the notice the row's own
+      // archive path uses, and let a reconnect make the next press work.
+      sidebarNotice.set("Engine not connected");
       return;
     }
     const spaces = snapshot?.spaces.rows ?? [];
@@ -61,16 +66,15 @@ export function NewChatListener() {
     }
   }
 
+  // Subscribed unconditionally (gap N14): the desktop's `NewSession` always
+  // works, and a disconnected engine gets the notice above rather than a
+  // silently dead Mod+N. The closure captures the latest
+  // session/snapshot/sidebar.
   useEffect(() => {
-    if (!connected) {
-      return;
-    }
     return onShortcut("new-chat", () => {
       void create();
     });
-    // Re-subscribe when connection state changes; the closure captures
-    // the latest session/snapshot/sidebar.
-  }, [connected, session, snapshot, sidebar.spaceFilter, sidebar.lastSpaceId]);
+  }, [session, snapshot, sidebar.spaceFilter, sidebar.lastSpaceId, busy, status?.state]);
 
   return null;
 }

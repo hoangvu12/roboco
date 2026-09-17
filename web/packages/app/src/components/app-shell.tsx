@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent } from "react";
 import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
@@ -6,7 +6,15 @@ import { Icon } from "@roboco/icons";
 import { useFleet } from "../state/fleet";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
-import { emitShortcut, onShortcut } from "../state/shortcuts";
+import {
+  applyKeymap,
+  emitShortcut,
+  isMacPlatform,
+  matchKeybinding,
+  onShortcut,
+} from "../state/shortcuts";
+import { overlayOwnsKeyboard, useKeymap } from "../state/keymap";
+import { installJumpHintModifierListeners } from "../state/jump-hints";
 import { useChrome } from "../state/chrome";
 import {
   ESCAPE_PRIORITY,
@@ -56,7 +64,7 @@ import { RightTabStrip } from "./right-tab-strip";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
 import { Titlebar } from "./titlebar";
-import { TerminalProvider } from "../terminal/store";
+import { TerminalProvider, useTerminalStore } from "../terminal/store";
 
 /**
  * The app shell — the desktop's `shell.rs` chrome.
@@ -85,9 +93,13 @@ import { TerminalProvider } from "../terminal/store";
  * At phone widths the sidebar leaves the flow and becomes a drawer over the
  * content, the titlebar keeps its cluster, and the content owns the viewport.
  *
- * Global keyboard shortcuts mirror the desktop's wherever the browser allows:
- * Mod+N creates a new chat (skipped while typing), Mod+B toggles the sidebar,
- * and Escape closes the engine drawer.
+ * The global keyboard is the desktop's whole keymap (ticket 12): one
+ * capture-phase `window` listener consults the resolved keystroke → action
+ * table (capture, because a matched binding must outrank any raw key
+ * handler — a focused xterm otherwise eats Mod+J as a linefeed), applies the
+ * desktop's per-route guards, and fans the action out over the shortcut bus.
+ * Escape stays ticket 06's two-phase ladder; jump-hint modifiers are tracked
+ * by `state/jump-hints.ts`.
  */
 /** `motion::RESIZE` — the curve the columns glide on. */
 const TAKEOVER_GLIDE_MS =
@@ -195,32 +207,120 @@ export function AppShell() {
   // the whole sidebar.
   useEffect(() => onShortcut("open-engines", () => setDrawerOpen(true)), []);
 
+  // The global keymap dispatch (`apply_keymap` + the action guards,
+  // shell.rs:7768-7839): one capture-phase window listener consulting the
+  // resolved keystroke → action table. Capture, not bubble: gpui runs a
+  // matched binding BEFORE any raw `on_key_down` listener, and the one web
+  // surface where that ordering is load-bearing is a focused terminal —
+  // xterm stops propagation on the keys it handles, so a bubble-phase
+  // listener would never see Mod+J (the old chat-page listener documented
+  // the same trap).
+  const keymap = useKeymap();
+  const isMac = isMacPlatform();
+  const table = useMemo(() => applyKeymap(keymap, isMac), [keymap, isMac]);
+  const route = pathname.startsWith("/settings") ? "settings" : "chat";
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      const mod = event.metaKey || event.ctrlKey;
-      if (!mod) {
+      const binding = matchKeybinding(event, table);
+      if (binding === null) {
         return;
       }
-      if (event.altKey || event.shiftKey) {
+      // The desktop's inputs let unbound keys through and a matched binding
+      // outranks them; the distinction the web can draw is modifiers — a
+      // bare-key binding would swallow typing, so it alone is guarded while
+      // an editable element holds focus.
+      if (binding.bare && isEditableTarget(event.target)) {
         return;
       }
-      if (isEditableTarget(event.target)) {
-        return;
-      }
-      if (event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        onNewChat();
-        return;
-      }
-      if (event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        onToggleSidebar();
-        return;
+      // A matched binding is consumed even when its guards no-op the action:
+      // letting the browser default run (Mod+S's save dialog, Mod+R's
+      // reload) is not the desktop's "nothing".
+      event.preventDefault();
+      switch (binding.event) {
+        case "new-chat":
+          // Always works — `open_new_session` routes back to chat itself,
+          // so Settings is not a dead spot.
+          onNewChat();
+          return;
+        case "toggle-sidebar":
+          emitShortcut("toggle-sidebar");
+          return;
+        case "save-file":
+          if (route === "chat" && paneChatId !== null && pane.open) {
+            emitShortcut("save-file");
+          }
+          return;
+        case "toggle-changes":
+          if (route === "chat" && paneChatId !== null) {
+            emitShortcut("toggle-changes");
+          }
+          return;
+        case "toggle-terminal":
+          if (route === "chat") {
+            emitShortcut("toggle-terminal");
+          }
+          return;
+        case "next-session":
+        case "prev-session":
+        case "archive-session":
+          // Chat-scoped, and quiet under an overlay that owns the keyboard
+          // (the add-space palette or a composer picker): an unguarded jump
+          // would switch sessions UNDER the open popover.
+          if (route === "chat" && !overlayOwnsKeyboard()) {
+            emitShortcut(binding.event);
+          }
+          return;
+        case "jump-session":
+          // Ticket 10 gives the composer's model picker first refusal on
+          // the slot; until then the jump routes straight to the row, from
+          // any route.
+          if (!overlayOwnsKeyboard()) {
+            emitShortcut("jump-session", { slot: binding.slot });
+          }
+          return;
+        case "add-space-palette":
+        case "open-settings":
+          emitShortcut(binding.event);
+          return;
+        default:
+          return;
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onNewChat, onToggleSidebar]);
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [table, route, pathname, paneChatId, pane.open, onNewChat]);
+
+  // The shell-owned actions subscribe to the bus the same way the engine
+  // drawer does — the keyboard layer stays free of component imports.
+  useEffect(() => onShortcut("toggle-sidebar", () => onToggleSidebar()), [onToggleSidebar]);
+  useEffect(
+    () =>
+      onShortcut("toggle-changes", () => {
+        if (paneChatId === null) {
+          return;
+        }
+        rightPaneStore.toggle(paneChatId);
+        // `toggle_right_pane`'s focus return: closing hands focus back to a
+        // mounted target so the next shortcut can reopen it
+        // (shell.rs:7798-7807). Ticket 06/07's column has no focus handle of
+        // its own, so the composer's textarea is the mounted target.
+        if (!rightPaneStore.stateFor(paneChatId).open) {
+          document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+        }
+      }),
+    [paneChatId],
+  );
+  useEffect(
+    () =>
+      onShortcut("open-settings", () => {
+        void navigate({ to: "/settings" });
+      }),
+    [navigate],
+  );
+
+  // The modifier-hold lifecycle for the sidebar's jump chips (§2.4) — one
+  // install, capture-phase observers that never preventDefault.
+  useEffect(() => installJumpHintModifierListeners(), []);
 
   // The shell's Escape model — one capture-phase ladder (installed once) plus
   // the bubble-phase interrupt (`on_key_down` → `resolve_shell_escape`). The
@@ -455,6 +555,11 @@ export function AppShell() {
       />
       <TerminalProvider>
         {/*
+          Mod+J's execution half: the bottom dock, not the right pane (S23).
+          Inside the provider because the store is context-scoped.
+        */}
+        <TerminalShortcutBridge />
+        {/*
           `card` + `main` from `shell.rs`: the outer column is the flex
           remainder and the clip; the inner one carries the width the content
           is laid out at, pinned to the wider endpoint across a takeover so the
@@ -617,6 +722,38 @@ function isEditableTarget(target: EventTarget | null): boolean {
   }
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+/**
+ * `ToggleTerminal`'s execution half — Mod+J toggles the BOTTOM dock on the
+ * conversation column (`toggle_terminal`, shell.rs:3026-3062), never the
+ * right-pane terminal surface (gap S23; that surface is reached from the
+ * pane's `+` menu). The full focus handoff (opening cancels the composer's
+ * pending focus and focuses the terminal; closing focuses the composer) is
+ * ticket 26's, which owns the dock itself — the frame-deferred
+ * `focusActive` and the composer refocus below are its observable core.
+ */
+function TerminalShortcutBridge() {
+  const store = useTerminalStore();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  useEffect(
+    () =>
+      onShortcut("toggle-terminal", () => {
+        const chatId = chatIdOf(pathname);
+        if (chatId === null) {
+          return;
+        }
+        store.toggle(chatId);
+        if (store.stateFor(chatId)?.open === true) {
+          // The dock mounts on the next commit; the emulator focus needs it.
+          requestAnimationFrame(() => store.focusActive(chatId));
+        } else {
+          document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+        }
+      }),
+    [store, pathname],
+  );
+  return null;
 }
 
 function Welcome() {

@@ -10,7 +10,6 @@ import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
-import { rightPaneStore } from "../state/right-pane";
 import { chatRoute } from "../router";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { QueueStore } from "../state/queue-store";
@@ -44,21 +43,6 @@ export function ChatPage() {
   const now = useNow(10_000);
   const navigate = useNavigate();
 
-  // Mod+J reveals the Terminal surface (desktop: Cmd+J on macOS, Ctrl+J
-  // elsewhere). Capture phase: a focused terminal's textarea would otherwise
-  // eat the chord and send LF to the shell. It lives here rather than in the
-  // dock, which only mounts while its own tab is active.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "j") {
-        event.preventDefault();
-        event.stopPropagation();
-        rightPaneStore.revealSurface(chatId, "terminal");
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [chatId]);
   // Occupancy arrives on the transcript's watch; the composer footer draws it.
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   useEffect(() => {

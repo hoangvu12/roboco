@@ -5,6 +5,7 @@ import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
 import { classifyKey, filterAndSort, menuStep } from "../lib/picker-search";
 import { anchorAbove } from "../lib/popover-anchor";
 import { traitsActive, traitsSummary } from "../lib/traits-summary";
+import { overlayKeyboard } from "../state/keymap";
 import { PopoverCard, SearchInputFrame } from "./popover/menu";
 import { MenuRowNav } from "./popover/menu-row";
 import { MenuScrollbar } from "./popover/scrollbar";
@@ -68,6 +69,15 @@ export function ComposerPickers(props: ComposerPickersProps) {
   });
 
   const open = popup.asOpen();
+
+  // An open composer picker owns the keyboard (`overlay_owns_keyboard`,
+  // shell.rs:3681-3683): session-nav shortcuts go quiet underneath it, and
+  // the sidebar's jump chips drop. The add-space palette (ticket 11)
+  // registers itself the same way.
+  useEffect(() => {
+    overlayKeyboard.set("composer-pickers", open !== null);
+    return () => overlayKeyboard.set("composer-pickers", false);
+  }, [open]);
 
   const harnessItems = harnessPickerItems(harnesses);
   const modelItems = modelPickerItems(models);
@@ -242,8 +252,15 @@ interface PickerListProps<T extends PickerItem> {
  * The searchable list inside the card — the interim shell over the shared
  * primitives (`SearchInputFrame` + `MenuRowNav` + `MenuScrollbar` +
  * `SkeletonMenuRows`/`ErrorRow`). Ticket 10 replaces it with the per-facet
- * cards. Keyboard: ↑↓ (and Ctrl+N/Ctrl+P) wrap, Enter picks, Escape closes;
- * Tab keeps the browser's native focus move.
+ * cards.
+ *
+ * Keyboard is the desktop's `PALETTE_SEARCH_CONTEXT` policy (composer.rs:
+ * 1532-1590): the search input binds NOTHING — text editing is native, and
+ * the keys deliberately left unbound there (bare ↑↓←→, Enter, Tab, and
+ * their shifted/cmd variants) bubble to THIS frame, which owns row
+ * navigation and activation. The frame handles ↑↓ (Ctrl+N/Ctrl+P mirror
+ * them) with wrap via `menu_step`, Enter picks, Escape closes; Tab and the
+ * arrows the palette does not use pass through to the browser untouched.
  */
 function PickerList<T extends PickerItem>(props: PickerListProps<T>) {
   const { items, selectedId, placeholder, emptyHint, errorMessage, loading, onRetry, onPick, onEscape } = props;
@@ -269,9 +286,9 @@ function PickerList<T extends PickerItem>(props: PickerListProps<T>) {
     inputRef.current?.focus();
   }, []);
 
-  // Keyboard nav: ↑/↓ (Ctrl+N/Ctrl+P mirror them) wrap via `menu_step`;
-  // Enter picks the highlighted; Esc closes.
-  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+  // The frame's key handler — everything the search input lets through
+  // lands here (see the component doc above for the let-through list).
+  const onFrameKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     const key = classifyKey(event.key, event.metaKey, event.ctrlKey);
     switch (key) {
       case "down":
@@ -308,14 +325,16 @@ function PickerList<T extends PickerItem>(props: PickerListProps<T>) {
   }, [highlight, filtered.length]);
 
   return (
-    <>
+    <div
+      style={{ display: "contents" }}
+      onKeyDown={onFrameKeyDown}
+    >
       <SearchInputFrame>
         <input
           ref={inputRef}
           type="text"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={onKeyDown}
           placeholder={placeholder}
           spellCheck={false}
           autoComplete="off"
@@ -361,7 +380,7 @@ function PickerList<T extends PickerItem>(props: PickerListProps<T>) {
         </div>
         <MenuScrollbar scrollRef={listRef} />
       </div>
-    </>
+    </div>
   );
 }
 
