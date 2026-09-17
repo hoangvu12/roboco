@@ -76,8 +76,14 @@ export interface UploadCommitReply {
 export interface FetchToolBlobReply {
   text: string;
 }
-/** `PrepareSpacePath` reply: a bare string, not an object. */
-export type PrepareSpacePathReply = string;
+/** `PrepareSpacePath` reply (`crates/engine/src/space_paths.rs::SpacePath`,
+ * camelCase on the wire): the resolved absolute path, whether it exists, and
+ * whether it sits inside a git work tree. */
+export interface PrepareSpacePathReply {
+  path: string;
+  exists: boolean;
+  gitDetected: boolean;
+}
 /** `RelayCommand` reply (peer-delivery fallback outcome). */
 export interface RelayCommandReply {
   outcome: "duplicate" | "expired" | "superseded" | "executed";

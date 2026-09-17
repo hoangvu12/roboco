@@ -7,6 +7,7 @@ import { SidebarNotice } from "./sidebar-notice";
 import { AccountRow } from "./account-row";
 import { ConnectionPill } from "./connection-pill";
 import { UpdateStrip } from "./update-strip";
+import { AddSpacePalette } from "./add-space-palette";
 
 /**
  * The sidebar's column — the desktop's `render_chat_sidebar`: the space
@@ -24,6 +25,10 @@ import { UpdateStrip } from "./update-strip";
  * both sidebar states, so the `+` lives in `Titlebar` and this column only
  * lists. AppShell keys this by the active engine so menus and dialogs reset
  * on a switch.
+ *
+ * The add-space palette mounts here as a sibling (like `SidebarNotice`) —
+ * headless while closed; the spaces menu's "New project…" row (ticket 10)
+ * and the `Mod+K` binding (ticket 12) open it through `addSpaceStore`.
  */
 export function SidebarBody() {
   return (
@@ -38,6 +43,7 @@ export function SidebarBody() {
       <SidebarNotice />
       <UpdateStrip />
       <AccountRow />
+      <AddSpacePalette />
     </>
   );
 }
