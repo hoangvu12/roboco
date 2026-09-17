@@ -25,6 +25,7 @@ import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, Btn
 import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
+import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 
 /**
@@ -182,10 +183,10 @@ export function SpaceFilter() {
           <button type="button" ref={triggerRef} className={openChipClass("space-filter-trigger", open)}>
             <Icon name="folder" size={16} className="space-filter-icon" />
             <span className="space-filter-label">
-              <span className="space-filter-name">{label}</span>
+              <SidebarFadedLabel className="space-filter-name">{label}</SidebarFadedLabel>
               {deviceTag !== null && (
                 <>
-                  <span className="space-filter-tag">{deviceTag.tag}</span>
+                  <SidebarFadedLabel className="space-filter-tag">{deviceTag.tag}</SidebarFadedLabel>
                   {deviceTag.offline && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
                 </>
               )}

@@ -1438,6 +1438,37 @@ a:focus-visible,
 }
 
 /*
+ * `sidebar_faded_label` (shell.rs, upstream 01b705fe): a nowrap label that
+ * outgrows its slot fades its last band instead of an ellipsis. The mask's
+ * ramp width is --rb-label-fade-inset — 0 while the label fits, easing to
+ * one 20px band as the overflow grows (SidebarFadedLabel measures and sets
+ * it per label; `label_fade_outset` is the onset curve). Ancestor masks
+ * compose: the sidebar's vertical scroll fade above keeps fading rows
+ * INSIDE an overflowing label — the web gets gpui's nested-scope
+ * inheritance for free.
+ */
+.sidebar-label-fade {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - var(--rb-label-fade-inset, 0px)),
+    transparent 100%
+  );
+}
+
+.sidebar-label-fill {
+  flex: 1;
+}
+
+.sidebar-label-fade-inner {
+  flex: none;
+  white-space: nowrap;
+}
+
+/*
  * `#sidebar-lists`: fills the faded wrapper, scrolls alone, and lays out the
  * active list and the archived shelf in one column (px 8, pt 4).
  */
@@ -1541,8 +1572,6 @@ a:focus-visible,
 .space-filter-name {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The "@ device" tag: 10px NORMAL, muted at 45% (`spaces.rs:1063-1068`). */
@@ -1551,7 +1580,6 @@ a:focus-visible,
   font-size: 10px;
   font-weight: 400;
   color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
-  white-space: nowrap;
 }
 
 /* Disconnected GLYPH, not the word (`spaces.rs:1071-1078`). */
@@ -2463,8 +2491,6 @@ a:focus-visible,
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /*
@@ -2582,8 +2608,6 @@ a:focus-visible,
   font-size: 13px;
   line-height: 17px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Line 3 is structural, not reserved whitespace. */
@@ -2614,8 +2638,6 @@ a:focus-visible,
   font-size: 11px;
   line-height: 14px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ── Chat page (main panel) ─────────────────────────────────────────── */
@@ -9551,7 +9573,6 @@ button.files-save-pill:hover {
   font-size: 12px;
   font-weight: 500;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
-  white-space: nowrap;
 }
 
 .sidebar-disclosure-rule {
@@ -9641,8 +9662,6 @@ button.files-save-pill:hover {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 13px;
   color: color-mix(in srgb, var(--rb-text) 55%, transparent);
 }

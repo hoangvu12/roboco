@@ -26,6 +26,7 @@ import {
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { GlyphSpinner } from "./glyph-spinner";
+import { SidebarFadedLabel } from "./sidebar-faded-label";
 import {
   SidebarDisclosureBody,
   SidebarDisclosureHeader,
@@ -484,7 +485,9 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
         activeProps={{ className: "chat-row chat-row-active" }}
       >
         <div className="chat-row-line">
-          <span className="chat-row-folder">{row.folder}</span>
+          <SidebarFadedLabel className="chat-row-folder" fill>
+            {row.folder}
+          </SidebarFadedLabel>
           <span className="chat-row-corner">
             {jumpLabel !== null ? (
               <span className="chat-row-jump mono">{jumpLabel}</span>
@@ -517,14 +520,16 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
               style={brand.tint === null ? undefined : { color: brand.tint }}
             />
           )}
-          <span className="chat-row-title">{row.chat.title ?? "New session"}</span>
+          <SidebarFadedLabel className="chat-row-title" fill>
+            {row.chat.title ?? "New session"}
+          </SidebarFadedLabel>
         </div>
         {(row.branch !== null || row.changeRequest !== null) && (
           <div className="chat-row-meta">
             {row.branch !== null && (
               <>
                 <Icon name="gitBranch" size={11} />
-                <span className="chat-row-branch">{row.branch}</span>
+                <SidebarFadedLabel className="chat-row-branch">{row.branch}</SidebarFadedLabel>
               </>
             )}
             <span className="chat-row-meta-spring" />
