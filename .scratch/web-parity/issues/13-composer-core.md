@@ -1389,3 +1389,9 @@ desktop parity of the §2.15 context-meter card:
 Also explicit: MENU_BLUR is **44** (frost.rs:23), not the pill's 16, and the
 open card live-updates by observing usage state (context_usage.rs:71-77) — a
 store subscription inside the open tooltip, not a re-mount.
+
+### Shared components addendum (2026-09-18)
+
+Build on components/ui/ + components/base/ (see components/README.md)
+— do not hand-roll card shells, cursor lists, menu rows, chips, or
+tooltips.
