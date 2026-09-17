@@ -9,6 +9,14 @@ import { useEngineStatus } from "../state/hooks";
 import { emitShortcut, onShortcut } from "../state/shortcuts";
 import { useChrome } from "../state/chrome";
 import {
+  navEntryForPath,
+  navEntryPath,
+  navHistory,
+  sameNavEntry,
+  useNavHistory,
+  type NavEntry,
+} from "../state/nav-history";
+import {
   PHONE_MAX_WIDTH,
   conversationWidth,
   rightPaneMaxWidth,
@@ -83,6 +91,43 @@ export function AppShell() {
   // the column down mid-glide. The router's state is synchronous with the
   // navigation that actually changes which chat is on screen.
   const paneChatId = useRouterState({ select: (s) => chatIdOf(s.location.pathname) });
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const nav = useNavHistory();
+  // `apply_nav`'s gate: the navigation a Back/Forward click performs must not
+  // itself push, or the cursor would be dragged straight back to where it
+  // started. We record the entry we asked for and let the route effect below
+  // recognise — and swallow — exactly that one arrival.
+  const appliedNavRef = useRef<NavEntry | null>(null);
+
+  // The route-driven half of the nav model: every navigation the USER makes
+  // (a chat row, a settings item, a link) is a visit. Paths outside the model
+  // (`/pair`, `/files`) leave the stack alone.
+  useEffect(() => {
+    const entry = navEntryForPath(pathname);
+    const applied = appliedNavRef.current;
+    appliedNavRef.current = null;
+    if (entry === null) {
+      return;
+    }
+    if (applied !== null && sameNavEntry(applied, entry)) {
+      return;
+    }
+    navHistory.visit(entry);
+  }, [pathname]);
+
+  const onNavWalk = useCallback(
+    (entry: NavEntry | null) => {
+      if (entry === null) {
+        return;
+      }
+      appliedNavRef.current = entry;
+      // Raw path rather than `navigate({to})`: a `NavEntry` names a route
+      // computed at runtime (any chat id, any settings section), which the
+      // typed router's literal `to` union cannot express.
+      router.history.push(navEntryPath(entry));
+    },
+    [router],
+  );
   // The pane's own per-chat state. `""` is inert — no chat, no pane.
   const pane = useRightPane(paneChatId ?? "");
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
@@ -233,10 +278,10 @@ export function AppShell() {
     >
       <Titlebar
         onToggleSidebar={onToggleSidebar}
-        onBack={() => router.history.back()}
-        onForward={() => router.history.forward()}
-        canBack={router.history.canGoBack()}
-        canForward
+        onBack={() => onNavWalk(navHistory.back())}
+        onForward={() => onNavWalk(navHistory.forward())}
+        canBack={nav.canBack}
+        canForward={nav.canForward}
         onNewSession={paired ? chrome.onNewSession ?? onNewChat : null}
         identity={chrome.identity}
         // Every pane control is shell-owned and synchronous with the store, so

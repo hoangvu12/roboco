@@ -31,6 +31,200 @@ export interface TranscriptSnapshot {
 
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
 
+// ---------------------------------------------------------------------------
+// Optimistic echo / pending sends
+// ---------------------------------------------------------------------------
+
+/**
+ * A send the user has made that the real transcript has not confirmed yet —
+ * the desktop's `PendingSend` (`crates/ui/src/state.rs:907-909`), rendered as
+ * an echo bubble (`push_echo`/`remove_echo`, `:1111-1128`) so the message is on
+ * screen the instant it is sent rather than whenever the engine gets round to
+ * writing it back.
+ */
+export interface PendingSend {
+  readonly messageId: string;
+  readonly chatId: string;
+  readonly startedAtMs: number;
+  readonly text: string;
+  readonly attachmentPaths: readonly string[];
+}
+
+/** `state.rs`'s `UNDELIVERED_GRACE_MS` — 120s before a send is called failed. */
+export const UNDELIVERED_GRACE_MS = 120_000;
+
+export type PendingSendStatus = "pending" | "undelivered";
+
+/**
+ * `send_pending` / `send_undelivered` (`state.rs:1136-1157,1227-1239`): inside
+ * the grace window a send is merely pending — quiet, not alarming; past it,
+ * with nothing confirming it, it is explicitly undelivered and offers a retry.
+ *
+ * `degraded` is the AND-in point for a real `chat_delivery_degraded` flag.
+ * Web has no `WatchConnectivity` stream yet (research 14 §5), so it is always
+ * false today and the grace window is the only gate that matters.
+ */
+export function pendingSendStatus(
+  send: PendingSend,
+  nowMs: number,
+  degraded = false,
+): PendingSendStatus {
+  if (degraded) {
+    return "pending";
+  }
+  return nowMs - send.startedAtMs <= UNDELIVERED_GRACE_MS ? "pending" : "undelivered";
+}
+
+const NO_SENDS: readonly PendingSend[] = [];
+
+/**
+ * The app's echo overlay: chat id → the sends still awaiting confirmation.
+ *
+ * It is module-scoped rather than a `TranscriptStore` field on purpose. A
+ * `TranscriptStore` is created per open chat and disposed on every chat
+ * switch, so pending sends living inside one would vanish the moment the user
+ * looked at another chat — the desktop keeps them on `AppState`, which
+ * outlives any one transcript.
+ *
+ * EVERYTHING here is keyed by `messageId`, never by `chatId` alone: two sends
+ * can be in flight in the same chat, and one failing must not clear the other
+ * (`send_failure_cleanup_only_ends_its_own_overlay`).
+ */
+export class EchoStore {
+  #byChat = new Map<string, readonly PendingSend[]>();
+  readonly #listeners = new Set<() => void>();
+
+  /** The sends awaiting confirmation in one chat, oldest first. */
+  forChat(chatId: string): readonly PendingSend[] {
+    return this.#byChat.get(chatId) ?? NO_SENDS;
+  }
+
+  get(messageId: string): PendingSend | null {
+    for (const sends of this.#byChat.values()) {
+      const hit = sends.find((send) => send.messageId === messageId);
+      if (hit !== undefined) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  /** Show an echo for a just-sent message (`push_echo` + `begin_pending_send`). */
+  pushEcho(send: PendingSend): void {
+    const sends = this.forChat(send.chatId);
+    if (sends.some((existing) => existing.messageId === send.messageId)) {
+      return;
+    }
+    this.#byChat.set(send.chatId, [...sends, send]);
+    this.#emit();
+  }
+
+  /**
+   * Drop ONE send's echo — the ack, and the failure cleanup. Silent when the
+   * id is unknown (a doubled ack, or a send that already landed).
+   */
+  removeEcho(messageId: string): void {
+    for (const [chatId, sends] of this.#byChat) {
+      const next = sends.filter((send) => send.messageId !== messageId);
+      if (next.length === sends.length) {
+        continue;
+      }
+      if (next.length === 0) {
+        this.#byChat.delete(chatId);
+      } else {
+        this.#byChat.set(chatId, next);
+      }
+      this.#emit();
+      return;
+    }
+  }
+
+  /**
+   * `ack_pending_send_from_transcript`: the instant a message id shows up in
+   * the real doc, its echo is redundant. Purely an id match — timing, ordering
+   * and the grace window play no part.
+   */
+  ackFromFrame(chatId: string, messageIds: Iterable<string>): void {
+    const sends = this.forChat(chatId);
+    if (sends.length === 0) {
+      return;
+    }
+    const confirmed = messageIds instanceof Set ? messageIds : new Set(messageIds);
+    const next = sends.filter((send) => !confirmed.has(send.messageId));
+    if (next.length === sends.length) {
+      return;
+    }
+    if (next.length === 0) {
+      this.#byChat.delete(chatId);
+    } else {
+      this.#byChat.set(chatId, next);
+    }
+    this.#emit();
+  }
+
+  /**
+   * `retry_pending_send`: a retry is a NEW send of the same text, not a resend
+   * of the old wire message — it mints a fresh id and restarts the grace-window
+   * clock. The old pending send is swapped out in place so the bubble stays put.
+   * Returns the new `PendingSend` (the caller ships it), or null if the id is
+   * already gone (it was acked while the user was reaching for the button).
+   */
+  retry(
+    messageId: string,
+    options: { mintMessageId?: () => string; nowMs?: number } = {},
+  ): PendingSend | null {
+    const previous = this.get(messageId);
+    if (previous === null) {
+      return null;
+    }
+    const next: PendingSend = {
+      ...previous,
+      messageId: (options.mintMessageId ?? defaultMintEchoId)(),
+      startedAtMs: options.nowMs ?? Date.now(),
+    };
+    const sends = this.forChat(previous.chatId);
+    this.#byChat.set(
+      previous.chatId,
+      sends.map((send) => (send.messageId === messageId ? next : send)),
+    );
+    this.#emit();
+    return next;
+  }
+
+  /** Test seam — drops every overlay without notifying anything of substance. */
+  reset(): void {
+    this.#byChat = new Map();
+    this.#emit();
+  }
+
+  #emit(): void {
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+}
+
+function defaultMintEchoId(): string {
+  return crypto.randomUUID();
+}
+
+export const echoStore = new EchoStore();
+
+/** The message ids a frame carries — the ack key set. */
+function frameMessageIds(frame: TranscriptFrame): string[] {
+  if ("reset" in frame) {
+    return frame.reset.map((entry) => entry.id);
+  }
+  return [...frame.upsert.map((item) => item.entry.id), ...frame.append.map((item) => item.entry)];
+}
+
 /** The watch surface the store needs — `EngineClient` satisfies it. */
 export interface TranscriptClient {
   watch<T>(method: string, params: unknown, handlers: {
@@ -43,6 +237,7 @@ export class TranscriptStore {
   readonly #client: TranscriptClient;
   readonly #docId: string;
   readonly #log: (message: string, detail?: unknown) => void;
+  readonly #echoes: EchoStore;
   #entries: readonly SessionMessageEntry[] = EMPTY_ENTRIES;
   #contextUsage: ContextUsage | null = null;
   #loaded = false;
@@ -53,10 +248,15 @@ export class TranscriptStore {
   readonly #listeners = new Set<() => void>();
   #disposed = false;
 
-  constructor(client: EngineClient | TranscriptClient, docId: string, options: { log?: (message: string, detail?: unknown) => void } = {}) {
+  constructor(
+    client: EngineClient | TranscriptClient,
+    docId: string,
+    options: { log?: (message: string, detail?: unknown) => void; echoes?: EchoStore } = {},
+  ) {
     this.#client = client;
     this.#docId = docId;
     this.#log = options.log ?? (() => {});
+    this.#echoes = options.echoes ?? echoStore;
     this.#snapshot = this.#takeSnapshot();
     this.#subscribe();
   }
@@ -141,6 +341,10 @@ export class TranscriptStore {
       }
       throw error;
     }
+    // `ack_pending_send_from_transcript`: any echo whose id the host has now
+    // written back is redundant, so it goes on the same frame that confirms it
+    // — otherwise the bubble would double for a tick.
+    this.#echoes.ackFromFrame(this.#docId, frameMessageIds(frame));
     if (update.contextUsage !== undefined) {
       this.#contextUsage = update.contextUsage;
     }

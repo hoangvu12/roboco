@@ -17,7 +17,7 @@ confirms it.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/14-state-behavior.md` §3.1 (the
 `AppState` shape table, `RETRY_DELAY`), §4.3 (`send_queued`/`send_pending`/
@@ -422,4 +422,68 @@ changes for this specific constant.
 
 ## Comments
 
-(empty; appended during implementation)
+### 2026-09-17 — implemented (branch `wp1/05-state`)
+
+**Landed** (work from two interrupted sessions, verified and finished in a
+third pass)
+
+- `state/nav-history.ts`: `NavHistory` (verbatim §2.1 port: value-equality
+  dedup, forward-branch truncation, replace-without-depth), plus a
+  `NavHistoryStore` wrapper (useSyncExternalStore subscription so the
+  titlebar flags update on the frame the cursor moves), a `visit()` that
+  implements the first-selection-off-boot-canvas REPLACES rule
+  (`shell.rs:1832-1838`), and path↔entry matchers (`/`, `/chat/$id`,
+  `/settings/$section`).
+- `app-shell.tsx`: titlebar back/forward now ride `navHistory`, not
+  `router.history`; `canBack`/`canForward` from the store snapshot; the
+  walk handler performs the router navigation WITHOUT pushing (the
+  `apply_nav` gate, as a `navWalking` ref around the navigate call).
+- `lib/composer-actions.ts`: one `messageId` minted per `sendRun`, threaded
+  through the command envelope and `SendResult`. `buildRunRequest` LOST its
+  unused `messageId` parameter instead of gaining a field: verified against
+  the wire — `RunRequest` carries no id (`crates/proto/src/agent.rs:94-128`);
+  the id rides `SessionCommandPayload::Run.message_id`
+  (`crates/doc/src/commands.rs:42-46`) and is what the host writes the user
+  entry under. Keeping a dead parameter would have re-hidden the bug.
+- `state/transcript-store.ts`: echo overlay per §2.3 —
+  `UNDELIVERED_GRACE_MS = 120_000`, `pushEcho`/`removeEcho`/`ackFromFrame`
+  (chat-scoped), status `pending` → `undelivered` past the grace window,
+  `retry()` mints a fresh id and restarts the clock; acks fire from the
+  frame-apply path for both reset and delta frames. `degraded` is a
+  parameter defaulting to false, ready for a future `WatchConnectivity`.
+- `lib/chat-actions.ts`: `markChatSeen` — idempotent optimistic local stamp,
+  then fire-and-forget `Mutate markChatSeen` (never rolled back), wired in
+  `chat-page.tsx` on chat view.
+- Transcript renders echoes merged as normal user bubbles with a
+  pending/undelivered affordance; send failure cleanup and the retry handler
+  live in `chat-page.tsx` keyed strictly by `messageId`.
+
+**Tests** — `tests/nav-history.test.ts` (all six §2.1 desktop names, plus
+store/route-mapping extras) and `tests/pending-send.test.ts` (all five §2.3
+desktop names, plus ack-is-chat-scoped, double-push, acked-retry no-op,
+reset/delta frame acks, and a `sendRun` single-mint assertion).
+
+**Verification.** `pnpm -r build` green; `web/packages/app` vitest green
+(31 files, 440 tests). Live `web_smoke` run: first chat selection left Back
+disabled (boot-canvas replace rule), New session push left Back enabled with
+Forward disabled (no stale forward target), Back returned to the prior chat
+with Forward re-enabled; a sent message rendered its bubble instantly and
+was acked by the transcript frame.
+
+**Screenshots** (`.scratch/web-parity/shots/05/`, web-only per §6):
+`web-01-echo-after-send.png` (user bubble immediately after send),
+`web-02-back-on-forward-off.png` (Back enabled, Forward disabled after a
+fresh chat selection).
+
+**Merge notes** (branch predates ticket 04's merge into the PR branch):
+`sendRun` still calls `maybePersistConfig` and `navEntryForPath` still
+matches the `/chat/$id/changes` path — 04 removes the route and the call;
+the merge should take 04's side on both (the dead path alternative in the
+regex is harmless either way).
+
+**Orchestration note for later tickets on this machine:** running
+`web_smoke.exe` from an agent shell always "hangs" for two reasons — it is
+a server (never exits) AND the tool harness kills detached children when a
+command ends (Windows job object). Run it via Task Scheduler
+(`schtasks /Create … run-smoke.bat /SC ONCE` + `/Run`), poll `smoke.log`
+for `SMOKE READY`, and `taskkill /IM web_smoke.exe` + `/Delete` when done.

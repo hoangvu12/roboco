@@ -42,13 +42,18 @@ export function buildChatConfig(draft: DraftConfig): ChatConfig {
   };
 }
 
-/** Shape of a Run payload the engine accepts (the wire's `RunRequest`). */
-export function buildRunRequest(
-  draft: DraftConfig,
-  prompt: string,
-  cwd: string,
-  messageId: string,
-): RunRequest {
+/**
+ * Shape of a Run payload the engine accepts (the wire's `RunRequest`).
+ *
+ * The message id is deliberately NOT a parameter here: `RunRequest` carries no
+ * id field on the wire (`crates/proto/src/agent.rs:94-128`). The id rides the
+ * command envelope — `SessionCommandPayload::Run { request, message_id }`
+ * (`crates/doc/src/commands.rs:42-46`) — and that is the id the host writes the
+ * user entry under (`doc_host.rs:326-349`), so it is the only one worth
+ * threading. This function used to take a `messageId` it never read, which is
+ * what hid the three-ids bug in `sendRun` below.
+ */
+export function buildRunRequest(draft: DraftConfig, prompt: string, cwd: string): RunRequest {
   const request: RunRequest = {
     prompt,
     harness: draft.harness,
@@ -126,7 +131,12 @@ export async function sendRun(
   if (chatCwd === null || chatCwd.trim().length === 0) {
     throw new Error("This chat has no working directory yet");
   }
-  const messageId = options.mintMessageId ?? defaultMint;
+  // ONE id per send, minted once and stored. It is the dedupe key shared by
+  // the command envelope, the entry the host writes back, the caller's
+  // optimistic echo and any failure cleanup — three separate `messageId()`
+  // calls used to produce three unrelated uuids, so nothing downstream could
+  // ever say "this specific sent message".
+  const messageId = (options.mintMessageId ?? defaultMint)();
   await maybePersistConfig(caller, chatId, draft, options.currentConfig ?? null);
   const uploaded: readonly UploadedAttachment[] = await uploadStage(
     caller,
@@ -136,8 +146,8 @@ export async function sendRun(
   const finalPrompt = withAttachments(trimmed, uploaded.map((entry) => entry.path));
   const command = {
     kind: "run" as const,
-    request: buildRunRequest(draft, finalPrompt, chatCwd, messageId()),
-    messageId: messageId(),
+    request: buildRunRequest(draft, finalPrompt, chatCwd),
+    messageId,
   };
   const reply = (await caller.call(methods.QUEUE_COMMAND, {
     chatId,
@@ -145,7 +155,7 @@ export async function sendRun(
     transfers: uploaded.map((entry) => ({ uploadId: entry.uploadId, fileName: entry.fileName })),
   })) as { commandId: string };
   return {
-    messageId: messageId(),
+    messageId,
     commandId: reply.commandId,
     attachmentPaths: uploaded.map((entry) => entry.path),
   };

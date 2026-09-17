@@ -6,7 +6,8 @@ import { useWatchSnapshot } from "../state/hooks";
 import { PickerCatalog } from "../state/picker-catalog";
 import { sidebarNotice } from "../state/notice";
 import { draftFromChat, isHarnessLocked } from "../lib/composer-draft";
-import { describeSendError, sendInterrupt, sendRun, sendSteer, type DraftConfig, type DraftConfigUpdate } from "../lib/composer-actions";
+import { describeSendError, mintMessageId, sendInterrupt, sendRun, sendSteer, type DraftConfig, type DraftConfigUpdate } from "../lib/composer-actions";
+import { echoStore } from "../state/transcript-store";
 import { formatToMime, type StagedAttachment } from "../lib/attachments";
 import { seedAttachment } from "../state/attachment-cache";
 import { ComposerPickers } from "./composer-pickers";
@@ -307,6 +308,20 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
     }
     setBusy(true);
     setUploadProgress(staged.length > 0 ? 0 : null);
+    // The echo goes up BEFORE the wire call, not after it: the point is that
+    // the user sees their own message the instant they send it, with the
+    // config persist, the attachment upload and the QueueCommand round-trip
+    // all still ahead of it (`push_echo` + `begin_pending_send`,
+    // composer.rs:6237-6264). The id is minted here so the same one keys the
+    // echo, the command, the host's entry and the failure cleanup below.
+    const messageId = mintMessageId();
+    echoStore.pushEcho({
+      messageId,
+      chatId: chat.id,
+      startedAtMs: Date.now(),
+      text: trimmed,
+      attachmentPaths: [],
+    });
     try {
       const sendResult = await sendRun(
         session.client,
@@ -314,7 +329,7 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
         draft,
         trimmed,
         chat.cwd,
-        { currentConfig: chat.config },
+        { currentConfig: chat.config, mintMessageId: () => messageId },
         staged.length > 0
           ? {
               stagedAttachments: staged,
@@ -355,6 +370,10 @@ export function Composer({ session, chat, catalog, onSwitchChat, editingMessage,
       });
       setUploadProgress(null);
     } catch (error) {
+      // Cleanup ends THIS send's overlay and no other: a sibling send still in
+      // flight in the same chat keeps its own echo
+      // (`send_failure_cleanup_only_ends_its_own_overlay`).
+      echoStore.removeEcho(messageId);
       sidebarNotice.set(`Could not send: ${describeSendError(error)}`);
       setUploadProgress(null);
     } finally {

@@ -3455,6 +3455,37 @@ button.files-row-active:hover {
   opacity: 0.65;
 }
 
+/*
+  `send_undelivered`: past the 120s grace window the echo stops being quiet and
+  names the failure, with the retry that restarts the clock beside it. Tokens
+  only — the same danger/muted roles the rest of the shell uses.
+*/
+.user-undelivered {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.user-undelivered-label {
+  color: var(--rb-danger);
+}
+
+.user-undelivered-retry {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--rb-text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.user-undelivered-retry:hover {
+  color: var(--rb-text);
+}
+
 .user-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
