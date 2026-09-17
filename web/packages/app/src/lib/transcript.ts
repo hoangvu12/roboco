@@ -720,6 +720,60 @@ export interface RowsOptions {
   readonly parse: (key: string, text: string, live: boolean) => BlockTree;
 }
 
+// ---------------------------------------------------------------------------
+// Virtualizer window
+// ---------------------------------------------------------------------------
+
+/** The mounted row range of the virtualizer: `first`..`last`, inclusive. */
+export interface RowWindow {
+  readonly first: number;
+  readonly last: number;
+}
+
+/**
+ * The visible window over prefix-sum `positions` (row bottoms are monotonic
+ * by construction — `positions[ix] + rowHeights[ix]` is `positions[ix + 1]`):
+ * `first` is the first row whose BOTTOM crosses `top − overdraw`, `last` the
+ * last row whose TOP is at or below `top + height + overdraw` (the desktop's
+ * 320px overdraw on both ends, transcript.rs OVERDRAW_PX). One contiguous
+ * run: everything strictly above is replaced by the top spacer.
+ *
+ * When every row sits above the window (a stale `top` the scroller has not
+ * clamped yet), `first` pins to the last row so the spacer math stays inside
+ * `positions`; the next scroll event corrects the view.
+ */
+export function visibleRowWindow(
+  positions: readonly number[],
+  rowHeights: readonly number[],
+  top: number,
+  height: number,
+  overdraw: number,
+): RowWindow {
+  const count = positions.length;
+  const windowStart = top - overdraw;
+  const windowEnd = top + height + overdraw;
+  let first = count;
+  let last = -1;
+  for (let ix = 0; ix < count; ix++) {
+    const rowTop = positions[ix]!;
+    const bottom = rowTop + (rowHeights[ix] ?? 0);
+    // The first row to cross the window's start — the mounted prefix ends
+    // here. (The old `ix < first` test with `first` starting at 0 was never
+    // true, so every render mounted ALL rows from index 0 and top
+    // virtualization was dead.)
+    if (first === count && bottom >= windowStart) {
+      first = ix;
+    }
+    if (rowTop <= windowEnd) {
+      last = ix;
+    }
+  }
+  if (count > 0 && first >= count) {
+    first = count - 1;
+  }
+  return { first, last };
+}
+
 function isAgentCall(call: ToolCall): boolean {
   return isSubagentSpawn(call);
 }

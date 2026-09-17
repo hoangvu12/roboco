@@ -20,7 +20,7 @@ import {
 } from "../state/transcript-store";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
-import { MarkdownCache, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
+import { MarkdownCache, PENDING_LINK_URL, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   formatTimestamp,
   isSubagentSpawn,
@@ -30,6 +30,7 @@ import {
   toolGroupTitle,
   topGapFor,
   userMessageNeedsCollapse,
+  visibleRowWindow,
   type ToolItem,
   type TranscriptRow,
 } from "../lib/transcript";
@@ -360,10 +361,13 @@ function TranscriptScroller({
 
   // Row positions: prefix sums over measured heights (estimates until rendered).
   const positions: number[] = new Array(rows.length);
+  const rowHeights: number[] = new Array(rows.length);
   let total = 0;
   for (let ix = 0; ix < rows.length; ix++) {
     positions[ix] = total;
-    total += heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!);
+    const height = heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!);
+    rowHeights[ix] = height;
+    total += height;
   }
   rowsRef.current = rows;
   positionsRef.current = positions;
@@ -452,6 +456,26 @@ function TranscriptScroller({
     stick.setStreaming(streaming);
   }, [stick, streaming]);
 
+  // The desktop's `on_own_send` (transcript.rs:3330-3355): your own send
+  // takes viewport ownership — the just-sent prompt and its reply are what
+  // you asked for, so the view follows them even from an escaped position.
+  // The web's minimal port: a NEWLY-appended pending echo row engages the
+  // pin (glide, teleport past 2.5 viewports — `engage_pin`). The own-turn
+  // hold/reservation geometry rides the underlay port (ticket 18/06).
+  const ownSendsRef = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    let ownSend = false;
+    for (const row of rows) {
+      if (row.rowKind.kind === "user" && row.rowKind.pending && !ownSendsRef.current.has(row.id)) {
+        ownSendsRef.current.add(row.id);
+        ownSend = true;
+      }
+    }
+    if (ownSend) {
+      stick.jumpToBottom();
+    }
+  }, [rows, stick]);
+
   // Publish the jump button's state up to the chat page, which renders the
   // pill over the composer (`render_jump_to_bottom` floats outside the
   // transcript's fade, anchored above the composer stack). The cleanup hides
@@ -508,22 +532,9 @@ function TranscriptScroller({
   }
 
   // The visible window, with the desktop's 320px overdraw on both ends.
-  const windowStart = Math.max(0, view.top - OVERDRAW_PX);
-  const windowEnd = view.top + view.height + OVERDRAW_PX;
-  let first = 0;
-  let last = -1;
-  for (let ix = 0; ix < rows.length; ix++) {
-    const top = positions[ix]!;
-    const bottom = top + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
-    if (bottom >= windowStart && ix < first) {
-      first = ix;
-    }
-    if (top <= windowEnd) {
-      last = ix;
-    }
-  }
+  const { first, last } = visibleRowWindow(positions, rowHeights, view.top, view.height, OVERDRAW_PX);
   const visible = rows.slice(first, last + 1);
-  const topPad = positions[first] ?? 0;
+  const topPad = positions[first] ?? total;
   const lastRow = last >= 0 ? rows[last]! : null;
   const bottomPad =
     lastRow === null ? 0 : total - (positions[last]! + (heights.get(lastRow.id) ?? estimateRowHeight(lastRow)));
@@ -897,11 +908,19 @@ function StyledRun({ run }: { run: InlineRun }) {
     content = <s>{content}</s>;
   }
   if (style.link !== null && style.link !== undefined) {
-    content = (
-      <a className="md-link" href={style.link} target="_blank" rel="noreferrer noopener">
-        {content}
-      </a>
-    );
+    // The live path needs the settled renderer's pending-link guard
+    // (markdown.tsx InlineRunView): a half-streamed `[text](` mends to the
+    // sentinel URL, which must stay styled-but-inert — never a clickable
+    // `roboco:pending-link` anchor (render.rs:986-998).
+    if (style.link === PENDING_LINK_URL) {
+      content = <span className="md-link md-link-pending">{content}</span>;
+    } else {
+      content = (
+        <a className="md-link" href={style.link} target="_blank" rel="noreferrer noopener">
+          {content}
+        </a>
+      );
+    }
   }
   return <>{content}</>;
 }

@@ -59,6 +59,7 @@ import {
 } from "../state/right-pane";
 import { useSidebar } from "../state/sidebar";
 import { SidebarBody } from "./sidebar-body";
+import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
 import { RightTabStrip } from "./right-tab-strip";
@@ -531,9 +532,20 @@ export function AppShell() {
         }
         onToggleExpand={hasPane ? () => rightPaneStore.toggleExpanded(paneChatId) : null}
       />
+      {/*
+        `SidebarPane::render`'s route match (shell.rs:993-1008): the sidebar
+        COLUMN persists — width, seam, collapse, titlebar pad all stay — and
+        only its CONTENT swaps, the settings nav replacing the chat sidebar
+        on `/settings/*`. Keyed by engine on the chat side so menus and
+        dialogs reset on a switch; the settings nav is engine-independent.
+      */}
       <aside className="sidebar">
         <div className="sidebar-inner">
-          <SidebarBody key={fleet.active ?? "none"} />
+          {route === "settings" ? (
+            <SettingsNavBody />
+          ) : (
+            <SidebarBody key={fleet.active ?? "none"} />
+          )}
         </div>
       </aside>
       {/*

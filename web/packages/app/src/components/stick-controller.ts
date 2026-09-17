@@ -7,6 +7,7 @@ import {
   StickSpring,
   jumpVisibility,
   shouldAnchorLiveStream,
+  shouldBreakPin,
   shouldRestick,
 } from "../lib/stick-spring";
 
@@ -91,6 +92,15 @@ export class StickController {
       this.#lastTick = null;
     }
     this.#settledAt = null;
+    // Refresh the escape baseline (the desktop's own-turn stepper discipline,
+    // transcript.rs:3534-3540): only the NEXT scroll's own delta may register
+    // as user intent. Without this, content growth between two user scrolls
+    // accumulates into the second scroll's reading — a wheel DOWN toward the
+    // bottom after growth read as "scrolled away" and silently released the
+    // pin, dropping the stream below the fold. The scroll-anchoring class of
+    // phantom (the browser adjusting scrollTop when content above resizes)
+    // dies on the same baseline: its distance does not grow.
+    this.#prevDistance = this.#distance();
     this.#kick = true;
     this.#schedule();
   }
@@ -172,9 +182,11 @@ export class StickController {
       return;
     }
     if (this.#pinned) {
-      // User input moving away from the bottom breaks the pin. Content growth
-      // never lands here — it doesn't fire the scroll handler.
-      if (distance > this.#prevDistance + 1 && distance > AT_BOTTOM_PX) {
+      // User input moving away from the bottom breaks the pin
+      // (`shouldBreakPin`, transcript.rs:3182-3189). Content growth never
+      // lands here on the desktop — it doesn't fire the scroll handler — and
+      // the baseline refresh in kick() keeps that true here.
+      if (shouldBreakPin(distance, this.#prevDistance)) {
         this.#pinned = false;
         this.#spring.reset();
         this.#lastTick = null;

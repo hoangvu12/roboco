@@ -15,6 +15,7 @@ import {
   toolGroupTitle,
   topGapFor,
   userMessageNeedsCollapse,
+  visibleRowWindow,
   type TranscriptRow,
 } from "../src/lib/transcript";
 
@@ -386,5 +387,67 @@ describe("entry helpers", () => {
     // Local-time rendering: assert the shape, not a zone-specific hour.
     expect(formatTimestamp(Date.parse("2026-07-01T15:45:00"))).toMatch(/^[A-Z][a-z]{2} 1, \d{1,2}:45 [AP]M$/);
     expect(formatTimestamp(Number.NaN)).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Virtualizer window
+describe("visibleRowWindow", () => {
+  // Five 100px rows: positions 0,100,200,300,400; total 500.
+  const positions = [0, 100, 200, 300, 400];
+  const heights = [100, 100, 100, 100, 100];
+  const OVERDRAW = 320;
+
+  it("mounts every row while the whole list fits the window", () => {
+    // top 0, height 600: window [-320, 920] covers everything.
+    expect(visibleRowWindow(positions, heights, 0, 600, OVERDRAW)).toEqual({ first: 0, last: 4 });
+  });
+
+  it("skips rows entirely above the overdraw window", () => {
+    // top 500, height 200: window [180, 1020]. Row 0's bottom (100) is above
+    // 180, so first is 1 — the top spacer replaces row 0. The old dead
+    // `ix < first` condition mounted ALL rows from 0 on every render.
+    expect(visibleRowWindow(positions, heights, 500, 200, OVERDRAW)).toEqual({ first: 1, last: 4 });
+  });
+
+  it("treats a bottom exactly at the window start as crossing", () => {
+    // top 520: windowStart 200 — row 1's bottom is exactly 200, which counts
+    // as crossing (>=), so first is 1, not 2.
+    expect(visibleRowWindow(positions, heights, 520, 200, OVERDRAW)).toEqual({ first: 1, last: 4 });
+  });
+
+  it("skips rows entirely below the window plus overdraw", () => {
+    // top 0, height 10: window [-320, 330]. Row 4's top (400) is past 330,
+    // so last is 3.
+    expect(visibleRowWindow(positions, heights, 0, 10, OVERDRAW)).toEqual({ first: 0, last: 3 });
+  });
+
+  it("returns an empty window for an empty list", () => {
+    expect(visibleRowWindow([], [], 0, 600, OVERDRAW)).toEqual({ first: 0, last: -1 });
+  });
+
+  it("pins first to the last row when a stale top sits past the content", () => {
+    // A view.top the scroller has not clamped yet (content shrank): every
+    // row is above the window. first pins to the last row so the spacer
+    // math stays inside positions[]; the next scroll event corrects.
+    expect(visibleRowWindow(positions, heights, 2000, 600, OVERDRAW)).toEqual({ first: 4, last: 4 });
+  });
+
+  it("treats the first row whose bottom crosses the window start as first", () => {
+    // top 450, height 200: window [130, 970]. Row 0's bottom (100) is above
+    // 130, row 1's (200) is not — first is 1.
+    expect(visibleRowWindow(positions, heights, 450, 200, OVERDRAW)).toEqual({ first: 1, last: 4 });
+  });
+
+  it("uses per-row heights, not a uniform estimate", () => {
+    // One tall row then short rows: positions 0,300,340,380,420.
+    const uneven = [0, 300, 340, 380, 420];
+    const unevenHeights = [300, 40, 40, 40, 40];
+    // top 650, height 200: window [330, 1170]. The tall row's bottom (300)
+    // is above 330, so first is 1 — with uniform 100px rows the same window
+    // would start at 3.
+    expect(visibleRowWindow(uneven, unevenHeights, 650, 200, OVERDRAW)).toEqual({ first: 1, last: 4 });
+    const uniform = [0, 100, 200, 300, 400];
+    expect(visibleRowWindow(uniform, [100, 100, 100, 100, 100], 650, 200, OVERDRAW)).toEqual({ first: 3, last: 4 });
   });
 });

@@ -1,41 +1,16 @@
-import { Link, Outlet } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 
 /**
- * The settings route shell: a section nav beside the scrolling page outlet,
- * mirroring the desktop's settings sidebar nav (shell.rs render_settings_
- * nav) at the three sections the web client ships. Below the desktop width
- * the nav collapses to a wrapping row over the page.
+ * The settings route shell — just the scrolling section outlet. The section
+ * nav is the SIDEBAR's content on `/settings/*` (the desktop's
+ * `render_settings_nav` swap, shell.rs:993-1008 — see
+ * `components/settings-nav.tsx`); the main column carries only the pages,
+ * padded below the overlaid titlebar like every other route.
  */
 export function SettingsLayout() {
   return (
-    <div className="settings-layout">
-      <nav className="settings-nav" aria-label="Settings">
-        <span className="settings-nav-title">Settings</span>
-        <Link
-          to="/settings/remote-access"
-          className="settings-nav-link"
-          activeProps={{ className: "settings-nav-link settings-nav-active" }}
-        >
-          Remote access
-        </Link>
-        <Link
-          to="/settings/accounts"
-          className="settings-nav-link"
-          activeProps={{ className: "settings-nav-link settings-nav-active" }}
-        >
-          Accounts
-        </Link>
-        <Link
-          to="/settings/appearance"
-          className="settings-nav-link"
-          activeProps={{ className: "settings-nav-link settings-nav-active" }}
-        >
-          Appearance
-        </Link>
-      </nav>
-      <div className="settings-scroll">
-        <Outlet />
-      </div>
+    <div className="settings-scroll">
+      <Outlet />
     </div>
   );
 }

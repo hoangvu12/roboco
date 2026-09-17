@@ -122,6 +122,39 @@ describe("NavHistoryStore", () => {
     expect(ticks).toBe(3);
     stop();
   });
+
+  it("nearestChat walks back from the cursor without moving it", () => {
+    // `close_settings` (shell.rs:3281-3286) returns to the ACTIVE chat —
+    // the web stand-in is the newest chat entry at or behind the cursor.
+    const store = new NavHistoryStore();
+    expect(store.nearestChat()).toEqual(NAV_BOOT_ENTRY);
+    store.visit(A);
+    store.visit({ kind: "settings", section: "appearance" });
+    store.visit({ kind: "settings", section: "accounts" });
+    // From settings: the chat behind the cursor, and the cursor did not move.
+    expect(store.nearestChat()).toEqual(A);
+    expect(store.current()).toEqual({ kind: "settings", section: "accounts" });
+    expect(store.getSnapshot().canBack).toBe(true);
+  });
+
+  it("nearestChat ignores the forward branch the cursor walked away from", () => {
+    const store = new NavHistoryStore();
+    store.visit(A);
+    store.visit(B);
+    store.back(); // cursor on A; B sits on the forward branch
+    // The walk reads the stack without moving the cursor or truncating.
+    expect(store.nearestChat()).toEqual(A);
+    expect(store.getSnapshot().canForward).toBe(true);
+  });
+
+  it("nearestChat falls back to the boot canvas when only settings were visited", () => {
+    const store = new NavHistoryStore();
+    store.visit({ kind: "settings", section: "appearance" });
+    // The first settings visit REPLACED the boot entry, so there is no chat
+    // behind the cursor: Back lands on the blank canvas.
+    expect(store.len()).toBe(1);
+    expect(store.nearestChat()).toBeNull();
+  });
 });
 
 describe("nav route mapping", () => {

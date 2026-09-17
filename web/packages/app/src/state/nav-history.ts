@@ -83,6 +83,16 @@ export class NavHistory {
     return this.current();
   }
 
+  /** Read-only entry access for history walks; never moves the cursor. */
+  entryAt(ix: number): NavEntry {
+    return this.#entries[ix]!;
+  }
+
+  /** The cursor's index into the entry list. */
+  cursor(): number {
+    return this.#index;
+  }
+
   forward(): NavEntry | null {
     if (!this.canForward()) {
       return null;
@@ -137,6 +147,25 @@ export class NavHistoryStore {
 
   len(): number {
     return this.#history.len();
+  }
+
+  /**
+   * The most recently visited chat entry, walking back from the CURSOR
+   * without moving it — the web stand-in for the desktop's `active_chat`
+   * (the chat `close_settings` returns to, shell.rs:3281-3286). The nav
+   * stack records every chat the user actually opened, so the nearest chat
+   * entry at or behind the cursor is the cheapest faithful source; the
+   * forward branch past the cursor is history the user backed out of, not
+   * "active".
+   */
+  nearestChat(): NavEntry | null {
+    for (let ix = this.#history.cursor(); ix >= 0; ix--) {
+      const entry = this.#history.entryAt(ix);
+      if (entry.kind === "chat") {
+        return entry;
+      }
+    }
+    return null;
   }
 
   push(entry: NavEntry): void {

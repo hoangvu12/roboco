@@ -410,28 +410,28 @@ function LoginDialog({
 }) {
   const [code, setCode] = useState("");
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
+    <div className="login-dialog-backdrop" onClick={onCancel}>
       <section
-        className="modal-card panel"
+        className="login-dialog-card panel"
         role="dialog"
         aria-label={loginTitle(flow.harness)}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="modal-title">{loginTitle(flow.harness)}</h2>
+        <h2 className="login-dialog-title">{loginTitle(flow.harness)}</h2>
         {flow.kind === "starting" && (
-          <p className="settings-row-meta modal-body">Starting the login flow…</p>
+          <p className="settings-row-meta login-dialog-body">Starting the login flow…</p>
         )}
         {flow.kind === "paste-code" && (
           <>
-            <p className="settings-row-meta modal-body">
+            <p className="settings-row-meta login-dialog-body">
               A browser window opened. Sign in to the account you want to add, approve access, then paste the code
               Anthropic shows you below. Your current login is untouched until you switch.
             </p>
-            <a className="modal-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
+            <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the authorization page
             </a>
             <form
-              className="modal-form"
+              className="login-dialog-form"
               onSubmit={(event) => {
                 event.preventDefault();
                 onSubmitCode(code);
@@ -448,7 +448,7 @@ function LoginDialog({
                 autoFocus
               />
               {flow.error !== null && <p className="form-error">{flow.error}</p>}
-              <div className="modal-actions">
+              <div className="login-dialog-actions">
                 <button type="button" className="btn btn-ghost" onClick={onCancel}>
                   Cancel
                 </button>
@@ -461,22 +461,22 @@ function LoginDialog({
         )}
         {flow.kind === "browser" && (
           <>
-            <p className="settings-row-meta modal-body">
+            <p className="settings-row-meta login-dialog-body">
               {flow.harness === "cursor"
                 ? "Finish signing in to Cursor in your browser. This mints a roboco-named API key you can revoke any time from Cursor's dashboard — it is separate from `cursor-agent login`."
                 : "Finish signing in to OpenAI in your browser. The new login is captured in an isolated profile — your current session is untouched until you switch."}
             </p>
-            <a className="modal-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
+            <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the sign-in page
             </a>
             {flow.error === null ? (
-              <p className="settings-row-meta modal-poll">
+              <p className="settings-row-meta login-dialog-poll">
                 <span className="dot dot-working" /> {flow.message ?? "Waiting for the browser…"}
               </p>
             ) : (
               <p className="form-error">{flow.error}</p>
             )}
-            <div className="modal-actions">
+            <div className="login-dialog-actions">
               <button type="button" className="btn btn-ghost" onClick={onCancel}>
                 {flow.error !== null ? "Close" : "Cancel"}
               </button>
