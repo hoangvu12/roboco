@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Icon, type IconName } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
-import { useWatchSnapshot } from "../state/hooks";
+import { useFleetSnapshot } from "../state/fleet";
 import { chatPageRow } from "../lib/view";
 import { rightPaneStore } from "../state/right-pane";
 
@@ -67,9 +67,9 @@ export const SURFACE_CHOICES: readonly SurfaceChoice[] = [
  */
 export function useGitDetected(chatId: string): boolean {
   const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  const snapshot = useFleetSnapshot();
   return useMemo(() => {
-    if (snapshot === null || !snapshot.chats.loaded) {
+    if (!snapshot.chats.loaded) {
       return false;
     }
     const row = chatPageRow(

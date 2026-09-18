@@ -14,7 +14,7 @@ one connected engine" and must not break when that assumption is lifted.
 
 **Blocked by:** 05 (State fixes: nav history, send ids, optimistic echo), 08 (Sidebar)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/14-state-behavior.md` §2, §3.3, §3.4, §3.5, §4.3 (the `device_online`/`space_device_tag` rows only, for the sidebar-grouping data this ticket must supply), §5 (rows: "Multi-engine simultaneous connection", "Offline row/transcript cache", "`ScopedId` cross-engine id scheme", "Device online/presence derivation", "`space_device_tag`"), §6.
 
@@ -463,4 +463,194 @@ new registry.
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed (branch `wp2/31-fleet`):**
+
+- `engine-client/src/scoped-id.ts` — `SCOPED_ID_PREFIX`/`encodeScopedId`/
+  `parseScopedId`/`isScopedId`, the verbatim `engine:v1:` +
+  base64url-no-pad-of-`[engineKey, rawId]` scheme. Per §2.1's "simpler"
+  arm: the web scopes EVERY id uniformly (no local engine to leave
+  unscoped); an unscoped id parses as `engine: null` and the routing layer
+  resolves that against the default (active) engine, so legacy `/chat/<raw>`
+  URLs keep resolving.
+- `engine-client/src/request-routing.ts` — `wireParams(owner, method,
+  params)`: decodes the eight identity fields (plus `target.*` and
+  `Mutate`'s `id`), rejects foreign scoped ids with
+  `"Request identity belongs to another engine"`, always strips
+  `targetDeviceId`. `EngineClient` gained an optional `engineKey` option;
+  when set, `call()` and `watch()` run the boundary themselves — every
+  registry-owned client routes, and none of the ~25 existing call sites
+  changed shape.
+- `engine-client/src/registry.ts` — `EngineRegistry`: one `EngineClient`
+  (own `ReconnectBackoff`) + one `EngineWatchCache` per paired engine,
+  all supervised concurrently; `sync(configs, configurationError)` diffs
+  the supervised set against the pairing store (pair/re-pair/forget start
+  and stop supervision immediately), `forget` (teardown → flush →
+  cache delete, the desktop ordering), `shutdown` (pagehide/beforeunload),
+  `restart` (the gate's Retry — a recreate, never a redial of a parked
+  client). Entry rows persist across reconnects (frozen last-known, the
+  desktop's `EngineSnapshot` semantics — only frames overwrite rows) and
+  are re-seeded from the offline cache before the first dial.
+  `projectRegistrySnapshot()` ports `RegistrySnapshot::projected()`
+  (scope chats/spaces/devices/sessions, synthesize the "Remote engine"
+  device, null non-connected engines' `lastSeenAt`).
+- `engine-client/src/engine-cache.ts` — the `EngineCache`-equivalent:
+  `EngineCacheStore` interface, `IndexedDbEngineCache` (lazy open, no-ops
+  in non-browser runtimes, one transaction per save, tuple-keyed
+  transcripts), `MemoryEngineCache` for tests. Per-engine row-set entry +
+  per-chat transcript entry — the desktop's granularity without the
+  sha256 path hashing (IndexedDB keys are not paths). Debounced (300ms)
+  writes flow through one FIFO promise chain per engine so out-of-order
+  saves can never regress the stored rows.
+- `lib/engine-store.ts` — `FleetState.configurationError`; damaged
+  `roboco.fleet.v1` bytes are preserved untouched (the old code removed
+  them — exactly the `damaged_pairing_config…` bug), pairing refuses while
+  damaged, persisting a healthy list over damaged bytes refuses too.
+- `state/fleet.ts` — the singleton wiring: `fleetStore` (unchanged shape)
+  drives `engineRegistry.sync` through its subscription (so every existing
+  pairing call site — pair page, drawer — gains live supervision with no
+  redirection), verified identities pin back via `pinDevice`, pagehide
+  flushes. `useFleetSnapshot()` exposes the merged, projected,
+  `WatchCacheSnapshot`-shaped view (rows scoped, `loaded` = any engine
+  loaded, `capabilities` = active engine's) so every sidebar/view helper
+  (`chatListRows`, `healedSpaceFilter`, `chatPageRow`, …) operates
+  unchanged over more rows. `pairEngine`/`forgetEngine` wrappers.
+- `state/session-provider.tsx` / `state/engine-session.ts` — one session
+  alive per paired engine (the registry owns client + watch cache; the
+  session layer adds the picker catalog). `useEngineSession()` keeps its
+  contract as "the routed engine for this route": the open chat's engine
+  (scoped URL id), else the picked space's engine on the canvas (the
+  desktop `selected_target` precedence), else the active engine —
+  `useEngineSessions()` exposes the whole map for row-level routing.
+- `lib/view.ts` — `spaceDeviceTag` (moved from space-filter, now
+  offline-aware), `deviceOnline(device, now, engineStates?)` with the
+  live-engine-state override, `ChatRow.deviceOffline`,
+  `SidebarRowOptions.engineStates`.
+- Consumers switched to the merged view: chat-list (per-row archive/menu
+  actions route to the owning engine), archived-section, space-filter
+  (mutates route to the space's engine), chat-page (row lookup by scoped
+  URL id; transcript store gains the per-chat offline cache §2.3),
+  composer + composer-footer + new-thread-selectors (own device id
+  scoped), changes-page, history panes, surface-picker, account-row (the
+  ACTIVE engine's identity), app-shell banner (a parked routed engine
+  with other engines live is a banner, not a gate), root-layout (fleet
+  gate: loading until anything connects or seeds, failed only when EVERY
+  engine is off).
+- `engine-drawer.tsx` — §2.6 resolved as **option 1 (keep, repurposed)**:
+  "Switch" is gone (no single active engine to switch to), rows are
+  registry-backed (per-engine state, urgent dot, "Pair again" when
+  parked, Forget through the fleet layer), and the Add-engine form pairs
+  through `pairEngine`. Rationale below.
+- Tests: `tests/scoped-id.test.ts` + `tests/registry.test.ts` (all eight
+  required names plus `reconnectBackoffDoublesAndResetsAfterALongLivedConnection`
+  and `parkedEnginesNeverRetryUntilRepaired`), driving a scripted
+  in-memory transport that speaks the real wire protocol with dial-level
+  timing control. `engine-store.test.ts` updated to the
+  damaged-bytes-preserved contract.
+
+**§2.6 decision (documented, per the ticket's requirement to finalize):**
+option 2 (delete + redirect to Settings → Devices) is the closer parity
+fit *in the end state the ticket describes*, but ticket 29 has NOT landed
+in this branch — `/settings/devices` is a stub ("coming soon") and the
+drawer is currently the only engine-management UI besides the /pair
+route. Deleting it now would leave the app with no way to add/forget
+engines until 29 lands. Kept and repurposed (option 1); when 29 lands it
+can fold the drawer's rows into its Devices page and revisit.
+
+**Deviations and judgment calls (for a human):**
+
+- **Seed-before-dial is async-before-dial.** §2.2 says "seed …
+  synchronously before dialing any socket"; IndexedDB cannot be read
+  synchronously. Each entry awaits its cache read (typically single-digit
+  ms) and dials in the `finally`. The sidebar still paints cached rows
+  before the first live frame in practice.
+- **Health tick:** the ticket's numbers table lists a 5s health-check
+  tick, but its own "do not rebuild EngineClient" rule wins — the web
+  client re-verifies identity on every (re)connect (and parks on
+  mismatch) and has no health poll. Reused verbatim; noted rather than
+  added.
+- **`EngineClient.call()` idle-state message:** a registry client is
+  briefly idle between construction and its first dial (the cache-seed
+  window); calls in that window used to throw "Engine client is not
+  running" (idle) which surfaces as a sticky settings-page error on a
+  cold load. Idle now reads as the desktop's `EngineTarget::call` does —
+  `transport: "Engine is offline; reconnecting"`. Parked/closed keep
+  their messages. (The cold-load-into-Settings stickiness itself is
+  pre-existing behavior in that page, not touched here.)
+- **Merged error semantics:** a parked engine's ended streams used to
+  poison the whole merged collection (blanking every engine's cached
+  rows); `mergedRowSet` now surfaces an error only when no rows remain
+  at all — found live during capture.
+- **The add-space palette stays single-engine** (the routed engine's raw
+  device rows). `targetDeviceId` is now stripped at the wire per the
+  desktop rule, so folder browsing runs on the engine's host rather than
+  relaying to a non-own device row of the same engine — the desktop
+  routes those to the device's owning ENGINE, which needs a per-device
+  palette rework this ticket's file list does not include.
+- **`lib/devices.ts` (§2.5's "ticket 29 port") does not exist in this
+  branch** — 29 hasn't landed; reused `lib/view.ts`'s existing
+  `deviceOnline`/`DEVICE_ONLINE_WINDOW_SECS` (same 70s port).
+- **§2.6's audit of ticket 29's pair/forget call sites:** nothing to
+  audit — 29 is a stub here. Both pairing surfaces (pair page, drawer
+  form) now go through `pairEngine`, which the registry observes.
+- **§2.4 WatchConnectivity:** ticket 30 has not landed in this branch
+  either; there is no single-engine wiring to extend. The registry's
+  per-entry `state` is the engine-scoped connectivity signal the ticket
+  asks for.
+
+**Verification:**
+
+- `pnpm -r build` green; app vitest 67 files / 1109 tests green;
+  engine-client unit suite green (30). Registry tests drive the reconnect
+  curve with fast injected backoff (25/50/reset windows measured
+  drop→redial off the transport's dial timestamps) — the 500ms/×2/15s/10s
+  defaults remain `backoff.ts`'s, instantiated per engine.
+- Live (web_smoke, engine-served bundle, desktop width): pair → connect →
+  merged sidebar; scoped-id chat URLs (`/chat/engine:v1:…`); the
+  EngineDrawer listing per-engine states; the space-filter `@ device` tag
+  with the offline glyph; picking the offline engine's space routes the
+  canvas session to that engine (banner/pill/composer honesty); opening
+  its chat works with no switch step; a full reload with both engines
+  down renders both engines' cached rows from IndexedDB.
+- **Boot check: passed** — the final bundle renders the shell with no
+  error boundary (`.scratch/web-parity/shots/31/web-boot-check-final-bundle.png`).
+
+**Live-staging limits (documented per the assignment):**
+
+- `web_smoke` hard-codes `127.0.0.1:27699` (no port/env override) and
+  mints exactly one single-use pairing code per boot, and its
+  remote-access control never attaches a service (SetRemoteAccess stays
+  "Engine is still starting"), so a second pairing URL cannot be minted
+  at runtime. Two genuinely-live engines were therefore not stageable
+  without touching `crates/engine`; the multi-engine acceptance is
+  covered by the registry integration test, and the live captures stage
+  the second engine through the app's own persistence formats (a
+  `roboco.fleet.v1` entry + IndexedDB cache rows — the exact bytes the
+  app itself writes) pointed at a dead port.
+- The production origin is engine-served, so the engine-down reload
+  check ran on the vite dev instance (which connects directly to the
+  engine's socket).
+- Port 27699 is contended by sibling worktrees all capture-round; per
+  the runbook the port was waited for, never stolen.
+
+**Screenshots** (`.scratch/web-parity/shots/31/`):
+
+- `web-boot-check-final-bundle.png` — boot check, final bundle.
+- `web-b-multi-engine-one-offline-cached.png` — the ticket's required
+  capture: chats from 2 engines merged in one sidebar, the offline
+  engine's row rendering from cache.
+- `web-c-engine-drawer-states.png` — the drawer: one engine Connected,
+  the other Reconnecting….
+- `web-d-space-filter-offline-glyph-routed.png` — the `@ Old laptop` tag
+  with the offline glyph; picking that space routed the session to the
+  offline engine (banner + composer honesty).
+- `web-e-offline-chat-open-cross-engine.png` — the offline engine's chat
+  opened via its scoped id (transcript read-only notice).
+- `web-f-live-chat-after-cross-engine-switch.png` — switching from the
+  offline engine's chat to the live one clears the banner.
+- `web-g-offline-cache-reload-parked-and-reconnecting.png` — full reload
+  with both engines down: cached rows from both + parked/reconnecting
+  per-engine states.
+- `web-a-single-engine-connected.png` — single-engine baseline.
+- Desktop half of every pair: skipped, as in tickets 01–30 on this
+  machine (no desktop client running; the smoke fixture cannot be paired
+  by the desktop client anyway).

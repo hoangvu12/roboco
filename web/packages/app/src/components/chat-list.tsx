@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import { parseScopedId } from "@roboco/engine-client";
+import { useEngineSession, useEngineSessions } from "../state/session-provider";
+import type { EngineSession } from "../state/engine-session";
+import { engineStatesOf, fleetLocalDeviceId, useFleet, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
+import { useNow } from "../state/hooks";
 import { useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { cycleTarget, onShortcut } from "../state/shortcuts";
@@ -20,7 +23,7 @@ import {
   type ChatRow,
   type SidebarKeyed,
 } from "../lib/view";
-import { useChatChangeRequests } from "../state/change-requests-store";
+import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { GlyphSpinner } from "./glyph-spinner";
 import {
@@ -135,37 +138,44 @@ function useResortGlide(ref: React.RefObject<HTMLElement | null>, dy: number | u
 }
 
 export function ChatList() {
-  const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: every paired engine's chats under scoped ids,
+  // one flat list — the sidebar never knows which engine owns which row.
+  const snapshot = useFleetSnapshot();
+  const registry = useFleetRegistry();
+  const fleet = useFleet();
+  const sessions = useEngineSessions();
   const sidebar = useSidebar();
   const now = useNow(10_000);
   const navigate = useNavigate();
-  // The paired engine's own device is the web's "local device" — the group
-  // its chats land in under ByDevice, promoted to the top.
-  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  // The ACTIVE engine's own device is the fleet's "local device" — the
+  // group its chats land in under ByDevice, promoted to the top (scoped,
+  // to match the projected rows' device ids).
+  const localDeviceId = fleetLocalDeviceId(registry, fleet.active);
+  const engineStates = engineStatesOf(registry);
 
-  const chats = snapshot?.chats;
+  const chats = snapshot.chats;
   const filter = snapshot === null ? null : healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
   const visible =
-    chats === undefined || chats.error !== null
+    chats.error !== null
       ? []
       : filter === null
         ? chats.rows
         : chats.rows.filter((chat) => chat.spaceId !== undefined && chat.spaceId === filter);
-  const changeRequests = useChatChangeRequests(session?.client ?? null, visible, localDeviceId);
+  const changeRequests = useFleetChatChangeRequests(sessions, visible);
 
   // The device-group collapse keys — in-memory only, exactly like the
   // desktop's `sidebar_collapsed_groups` (a reload re-expands every group).
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
 
   const rows =
-    snapshot !== null && chats !== undefined && chats.error === null && chats.loaded
+    chats.error === null && chats.loaded
       ? chatListRows(visible, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows, {
           sort: sidebar.sort,
           showHarness: sidebar.showHarness,
           showBranch: sidebar.showBranch,
           showPullRequest: sidebar.showPullRequest,
           changeRequests,
+          engineStates,
         })
       : [];
 
@@ -192,8 +202,9 @@ export function ChatList() {
   // The session-nav shortcuts' execution half. The dispatcher in AppShell
   // holds the route and overlay guards; these handlers act on the live
   // order through a ref, so a snapshot tick never re-subscribes them.
-  const navRef = useRef({ order, session });
-  navRef.current = { order, session };
+  const routed = useEngineSession();
+  const navRef = useRef({ order, session: routed });
+  navRef.current = { order, session: routed };
   useEffect(() => {
     const selectedChatId = (): string | null => {
       const match = /^\/chat\/([^/]+)\/?$/.exec(window.location.pathname);
@@ -290,13 +301,13 @@ export function ChatList() {
   // first render must not register fewer hooks than the connected ones.
   const resort = useSidebarResort(keyed);
 
-  if (snapshot === null) {
+  if (fleet.engines.length === 0) {
     return <p className="sidebar-note">Pair an engine to see its chats.</p>;
   }
-  if (chats!.error !== null) {
-    return <p className="sidebar-note sidebar-note-error">{chats!.error.message}</p>;
+  if (chats.error !== null) {
+    return <p className="sidebar-note sidebar-note-error">{chats.error.message}</p>;
   }
-  if (!chats!.loaded) {
+  if (!chats.loaded) {
     return <p className="sidebar-note">Loading chats…</p>;
   }
   if (rows.length === 0) {
@@ -433,7 +444,10 @@ function DeviceGroupSection({
  * chat context menu at the pointer, exactly as the desktop does.
  */
 function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: string | null }) {
-  const session = useEngineSession();
+  // A row can live on ANY paired engine — resolve its owning session off
+  // the scoped chat id so archive/menu mutations route to the right one.
+  const sessions = useEngineSessions();
+  const owning = owningSession(sessions, row.chat.id);
   const [hovered, setHovered] = useState(false);
   const word = statusWord(row.status);
   const archived = row.chat.archived;
@@ -444,11 +458,11 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
     // The row's own click is the selector; only the corner archives.
     event.preventDefault();
     event.stopPropagation();
-    if (session === null) {
+    if (owning === null) {
       sidebarNotice.set("Engine not connected");
       return;
     }
-    setChatArchived(session.client, row.chat.id, !archived).catch((error: unknown) => {
+    setChatArchived(owning.client, row.chat.id, !archived).catch((error: unknown) => {
       sidebarNotice.set(describeMutateError(error));
     });
   }
@@ -534,6 +548,22 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
       {element}
     </>
   );
+}
+
+/**
+ * The session that owns a (scoped) chat id — the row-level router for
+ * sidebar mutations. Unscoped ids resolve to null (nothing to route to).
+ */
+function owningSession(
+  sessions: ReadonlyMap<string, EngineSession>,
+  chatId: string,
+): EngineSession | null {
+  try {
+    const engine = parseScopedId(chatId).engine;
+    return engine === null ? null : sessions.get(engine) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

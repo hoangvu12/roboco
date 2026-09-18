@@ -2,8 +2,10 @@ import { useRef, useState, type ReactElement } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon } from "@roboco/icons";
+import { parseScopedId } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
-import { useEngineSession } from "../state/session-provider";
+import { useEngineSessions } from "../state/session-provider";
+import type { EngineSession } from "../state/engine-session";
 import { sidebarNotice } from "../state/notice";
 import { reviewCommentStore } from "../state/review-comments";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
@@ -34,7 +36,10 @@ import { MenuRow, MenuSeparator } from "./ui/MenuRows";
 const CHAT_MENU_WIDTH = 216;
 
 export function useChatMenu(chat: Chat) {
-  const session = useEngineSession();
+  // The menu opens on rows from ANY engine — resolve the owning session
+  // off the scoped chat id so mutations route to the right engine.
+  const sessions = useEngineSessions();
+  const session = chatMenuSession(sessions, chat.id);
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
 
@@ -308,6 +313,22 @@ function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (
       </DialogCard>
     </Dialog>
   );
+}
+
+/**
+ * The session owning a scoped chat id — the row-level router for the menu's
+ * mutations. Unscoped ids resolve to null (nothing to route to).
+ */
+function chatMenuSession(
+  sessions: ReadonlyMap<string, EngineSession>,
+  chatId: string,
+): EngineSession | null {
+  try {
+    const engine = parseScopedId(chatId).engine;
+    return engine === null ? null : sessions.get(engine) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

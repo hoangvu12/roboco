@@ -1,5 +1,6 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
+import { parseScopedId } from "@roboco/engine-client";
 import type { SidebarOrganization, SidebarSort } from "../state/ui-settings";
 
 /**
@@ -17,13 +18,34 @@ export type { SidebarOrganization, SidebarSort };
 /** `settings/devices.rs DEVICE_ONLINE_WINDOW_SECS` — presence staleness. */
 export const DEVICE_ONLINE_WINDOW_SECS = 70;
 
+/** A registry engine's live connection state, keyed by engine key. */
+export type EnginePresence = ReadonlyMap<string, "connected" | "reconnecting" | "off">;
+
 /**
  * Presence: last-seen within the online window (future timestamps count).
  * A device row that is MISSING reads online, not offline — the desktop's
  * `state.rs::device_online` resolves unknown ids to `true` so a row that
- * has not streamed yet never renders a spurious "offline" glyph. Pure.
+ * has not streamed yet never renders a spurious "offline" glyph. A device
+ * backed by a known REGISTRY engine (a scoped id whose engine is in
+ * `engineStates`) reports that engine's live connection state instead —
+ * the supervised connection is more accurate than a heartbeat timestamp
+ * (state.rs:1382-1399). Pure.
  */
-export function deviceOnline(device: Device | undefined, now: number): boolean {
+export function deviceOnline(
+  device: Device | undefined,
+  now: number,
+  engineStates?: EnginePresence,
+): boolean {
+  if (device !== undefined && engineStates !== undefined) {
+    try {
+      const scoped = parseScopedId(device.id);
+      if (scoped.engine !== null && engineStates.has(scoped.engine)) {
+        return engineStates.get(scoped.engine) === "connected";
+      }
+    } catch {
+      // A malformed id falls through to the last-seen heuristic.
+    }
+  }
   if (device === undefined) {
     return true;
   }
@@ -36,6 +58,25 @@ export function deviceOnline(device: Device | undefined, now: number): boolean {
     return false;
   }
   return now - at <= DEVICE_ONLINE_WINDOW_SECS * 1000;
+}
+
+/**
+ * The "@ device" tag with presence (`state.rs::space_device_tag`,
+ * state.rs:1405-1411): `label = "@ {name ?? 'Unknown device'}"`,
+ * `offline = !deviceOnline(...)`. Staleness renders as a disconnected
+ * GLYPH at the call sites, never words in the tag. Pure.
+ */
+export function spaceDeviceTag(
+  space: { readonly deviceId: string },
+  devices: readonly Device[],
+  now: number,
+  engineStates?: EnginePresence,
+): { tag: string; offline: boolean } {
+  const device = devices.find((row) => row.id === space.deviceId);
+  return {
+    tag: `@ ${device?.name ?? "Unknown device"}`,
+    offline: !deviceOnline(device, now, engineStates),
+  };
 }
 
 export type ChatIndicator = "working" | "awaitingInput" | "errored" | "completed" | "idle";
@@ -65,6 +106,8 @@ export interface ChatRow {
   readonly deviceId: string;
   /** The host device's name; null when the device row is unknown. */
   readonly deviceName: string | null;
+  /** The host device's presence — drives the offline glyph (ticket 31). */
+  readonly deviceOffline: boolean;
   /** The chat's current PR summary, when one is resolved (line 3, right). */
   readonly changeRequest: ChangeRequestSummary | null;
 }
@@ -77,6 +120,8 @@ export interface SidebarRowOptions {
   readonly showPullRequest?: boolean;
   /** PR summaries per chat id, from the sidebar's change-request watches. */
   readonly changeRequests?: ReadonlyMap<string, ChangeRequestSummary>;
+  /** Registry engine connection states, for the live-presence override. */
+  readonly engineStates?: EnginePresence;
 }
 
 /** The corner's status word, mirroring the desktop (Idle shows time-ago). */
@@ -405,6 +450,7 @@ export function chatPageRow(
   statuses: readonly ChatStatus[],
   now: number,
   devices: readonly Device[] = [],
+  engineStates?: EnginePresence,
 ): ChatRow | undefined {
   const chat = chats.find((candidate) => candidate.id === chatId);
   if (chat === undefined) {
@@ -413,7 +459,7 @@ export function chatPageRow(
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
   const deviceById = new Map(devices.map((device) => [device.id, device]));
-  return toChatRow(chat, spaceById, statusByChat, now, deviceById) ?? undefined;
+  return toChatRow(chat, spaceById, statusByChat, now, deviceById, { engineStates }) ?? undefined;
 }
 
 function toChatRow(
@@ -448,6 +494,7 @@ function toChatRow(
     timeAgo: timeAgo(recencyKey(chat), now),
     deviceId: chat.deviceId,
     deviceName: device !== undefined ? device.name : null,
+    deviceOffline: !deviceOnline(device, now, options.engineStates),
     changeRequest:
       options.showPullRequest === false ? null : (options.changeRequests?.get(chat.id) ?? null),
   };

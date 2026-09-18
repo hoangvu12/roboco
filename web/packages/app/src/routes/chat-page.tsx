@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import { methods } from "@roboco/engine-client";
+import { methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
+import { useNow } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
@@ -38,7 +39,24 @@ import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
-import { echoStore, TranscriptStore } from "../state/transcript-store";
+import { echoStore, TranscriptStore, type TranscriptCache } from "../state/transcript-store";
+
+/**
+ * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
+ * resolved off the scoped URL id, backed by the fleet registry's cache.
+ */
+function transcriptCacheFor(engineKey: string, scopedChatId: string): TranscriptCache | undefined {
+  try {
+    const raw = parseScopedId(scopedChatId).rawId;
+    const cache = engineRegistry.cache;
+    return {
+      load: () => cache.loadTranscript(engineKey, raw),
+      save: (entries) => cache.saveTranscript(engineKey, raw, entries),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The conversation page — the desktop's `render_main` (shell.rs:5806-6154).
@@ -71,7 +89,12 @@ export function ConversationPage() {
   const chatId = navEntry !== null && navEntry.kind === "chat" ? navEntry.chatId : "";
   const hasSelection = chatId !== "";
   const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: the chat row lookup by its scoped URL id
+  // spans every engine; `session` above is the chat's owning engine (the
+  // routed session), so calls and watches (transcript/queue/change
+  // requests) already target the right connection.
+  const snapshot = useFleetSnapshot();
+  const registry = useFleetRegistry();
   const status = session === null ? null : session.client.status;
   const now = useNow(10_000);
   const navigate = useNavigate();
@@ -92,10 +115,9 @@ export function ConversationPage() {
   }, [session, chatId]);
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
-  const chat =
-    snapshot === null || !snapshot.chats.loaded
-      ? undefined
-      : snapshot.chats.rows.find((row) => row.id === chatId) ?? undefined;
+  const chat = !snapshot.chats.loaded
+    ? undefined
+    : snapshot.chats.rows.find((row) => row.id === chatId) ?? undefined;
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
@@ -153,7 +175,11 @@ export function ConversationPage() {
     if (session === null || chatId === "") {
       return null;
     }
-    return new TranscriptStore(session.client, chatId);
+    return new TranscriptStore(session.client, chatId, {
+      // §2.3's per-chat offline cache: last-seen entries for chats the user
+      // has actually opened, keyed `(engine, raw chat id)`.
+      cache: transcriptCacheFor(session.engine.baseUrl, chatId),
+    });
   }, [session, chatId]);
   // The LIVE store: the departing transcript (undocking back to the canvas)
   // keeps painting from the source chat's stream until the route finishes
@@ -385,9 +411,9 @@ export function ConversationPage() {
   }, [queueStore, editingRow]);
 
   const row =
-    snapshot === null || !snapshot.chats.loaded
+    !snapshot.chats.loaded
       ? undefined
-      : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows);
+      : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows, engineStatesOf(registry));
 
   // ── The dock: one retargetable clock for the route choreography ────────
   const viewport = useViewportWidth();
@@ -567,7 +593,7 @@ export function ConversationPage() {
   // The session row's `started_at` — the working trailer's timer base
   // (`session_for(chat_id).started_at` on the desktop).
   const turnStartedAt = useMemo(() => {
-    const started = snapshot?.statuses.rows.find((row) => row.chatId === chatId)?.startedAt ?? null;
+    const started = snapshot.statuses.rows.find((row) => row.chatId === chatId)?.startedAt ?? null;
     if (started === null) {
       return null;
     }
@@ -661,7 +687,7 @@ export function ConversationPage() {
     [chatId, row?.chat.id, row?.chat.title, row?.folder, row?.harness],
   );
 
-  if (snapshot === null || !snapshot.chats.loaded) {
+  if (!snapshot.chats.loaded) {
     return <div className="chat-page" />;
   }
   if (row === undefined && hasSelection) {

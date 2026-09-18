@@ -118,14 +118,24 @@ describe("EngineStore", () => {
     expect(fresh.getSnapshot().active).toBe(null);
   });
 
-  it("drops corrupted or wrong-version persisted state", () => {
+  it("preserves damaged persisted bytes and blocks pairing until repaired", async () => {
     const storage = memoryStorage();
     storage.setItem("roboco.fleet.v1", "{not json");
-    expect(new EngineStore({ storage }).getSnapshot().engines).toHaveLength(0);
-    expect(storage.getItem("roboco.fleet.v1")).toBe(null);
+    const damaged = new EngineStore({ storage, redeem: redeemWith({ [CODE_A]: "ca" }) });
+    // Ticket 31: a damaged-but-present value is NEVER overwritten with a
+    // blank one — the store reads empty, surfaces the error, and refuses
+    // pairing until the bytes are repaired.
+    expect(damaged.getSnapshot().engines).toHaveLength(0);
+    expect(damaged.getSnapshot().configurationError).not.toBe(null);
+    expect(storage.getItem("roboco.fleet.v1")).toBe("{not json");
+    await expect(damaged.redeemPairingUrl(pairUrl(HOST_A, CODE_A), "Web on Windows")).rejects.toThrow();
+    expect(storage.getItem("roboco.fleet.v1")).toBe("{not json");
+    // A wrong-version payload is damaged the same way.
     storage.setItem("roboco.fleet.v1", JSON.stringify({ version: 99, active: null, engines: [{}] }));
-    expect(new EngineStore({ storage }).getSnapshot().engines).toHaveLength(0);
-    expect(storage.getItem("roboco.fleet.v1")).toBe(null);
+    const wrongVersion = new EngineStore({ storage });
+    expect(wrongVersion.getSnapshot().engines).toHaveLength(0);
+    expect(wrongVersion.getSnapshot().configurationError).not.toBe(null);
+    expect(JSON.parse(storage.getItem("roboco.fleet.v1")!).version).toBe(99);
   });
 
   it("ignores persisted entries with a missing active engine", () => {

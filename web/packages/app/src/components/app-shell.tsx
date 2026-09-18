@@ -3,7 +3,7 @@ import type { CSSProperties, DragEvent } from "react";
 import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { useFleet } from "../state/fleet";
+import { useFleet, useFleetRegistry } from "../state/fleet";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import {
@@ -115,6 +115,7 @@ export function AppShell() {
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const state = useConnectionState(status);
+  const registry = useFleetRegistry();
   const navigate = useNavigate();
   const router = useRouter();
   const chrome = useChrome();
@@ -604,7 +605,10 @@ export function AppShell() {
               <Welcome />
             ) : (
               <>
-                {session !== null && state.className !== "conn-connected" && !state.parked ? (
+                {/* The routed engine's non-fatal transport states (and a
+                    PARKED routed engine while other engines are live — the
+                    all-parked case belongs to the gate card in root-layout). */}
+                {session !== null && state.className !== "conn-connected" && (!state.parked || !registry.engines.every((engine) => engine.state === "off")) ? (
                   <div className={`banner ${state.parked ? "banner-alert" : ""}`} role="status">
                     <span className={`conn ${state.className}`}>
                       <span className={`dot ${state.dot}`} />

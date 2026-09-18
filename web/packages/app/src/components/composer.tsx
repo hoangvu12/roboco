@@ -17,7 +17,8 @@ import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
 import { methods, RpcError } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
 import type { TranscriptStore } from "../state/transcript-store";
-import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
+import { useEngineStatus, useNow } from "../state/hooks";
+import { useFleetSnapshot } from "../state/fleet";
 import { PickerCatalog } from "../state/picker-catalog";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { effectiveIndicator } from "../lib/view";
@@ -293,7 +294,10 @@ export function Composer({
   onNewThreadLaunched,
   dockCorrectionRef,
 }: ComposerProps) {
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: the composer's per-chat status lookups read
+  // scoped rows across engines; the calls themselves go through the routed
+  // session's client (the chat's owning engine).
+  const snapshot = useFleetSnapshot();
   const engineStatus = useEngineStatus(session);
   const now = useNow(10_000);
   // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
@@ -400,7 +404,7 @@ export function Composer({
   );
 
   // Live status: the desktop's `run_live` is Working OR AwaitingInput.
-  const statusRow = snapshot?.statuses.rows.find((row) => row.chatId === chat.id);
+  const statusRow = snapshot.statuses.rows.find((row) => row.chatId === chat.id);
   const indicator = effectiveIndicator(statusRow, now);
   const runLive = indicator === "working" || indicator === "awaitingInput";
 
@@ -969,7 +973,7 @@ export function Composer({
   // The pending set releases only when the chat settles.
   useEffect(() => {
     retainLiveInterrupts(interruptingRef.current, (chatId) => {
-      const row = snapshot?.statuses.rows.find((entry) => entry.chatId === chatId);
+      const row = snapshot.statuses.rows.find((entry) => entry.chatId === chatId);
       const live = effectiveIndicator(row, now);
       return live === "working" || live === "awaitingInput";
     });

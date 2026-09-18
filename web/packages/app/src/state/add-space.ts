@@ -8,7 +8,7 @@ import type {
   PrepareSpacePathReply,
   Space,
 } from "@roboco/proto";
-import { methods } from "@roboco/engine-client";
+import { methods, encodeScopedId } from "@roboco/engine-client";
 import { classifyKey, menuStep } from "../lib/picker-search";
 import {
   addSpaceCompletion,
@@ -544,15 +544,18 @@ export class AddSpaceStore {
       .getSnapshot()
       .spaces.rows.find((row) => row.deviceId === deviceId && row.path === path);
     if (existing !== undefined) {
-      this.#land(existing.id);
+      this.#land(this.#scope(existing.id));
       return;
     }
     const spaceId = mintId();
     this.#pending = [
       ...this.#pending,
       {
-        id: spaceId,
-        deviceId,
+        // The optimistic row lives in the MERGED (scoped) sidebar view —
+        // its ids are scoped to the routed engine so the confirming watch
+        // frame replaces the twin by id (ticket 31).
+        id: this.#scope(spaceId),
+        deviceId: this.#scope(deviceId),
         path,
         name: null,
         gitDetected,
@@ -570,7 +573,7 @@ export class AddSpaceStore {
         this.#submitInFlight = false;
         // The optimistic row STAYS — the watch frame replaces it by id.
         if (this.#aliveFlow()?.identity === identity) {
-          this.#land(spaceId);
+          this.#land(this.#scope(spaceId));
         } else {
           this.#commit();
         }
@@ -773,6 +776,12 @@ export class AddSpaceStore {
 
   #session(): EngineSession | null {
     return this.#context?.session ?? null;
+  }
+
+  /** Scope an id to the routed engine — the merged sidebar's id namespace. */
+  #scope(id: string): string {
+    const session = this.#session();
+    return session === null ? id : encodeScopedId(session.engine.baseUrl, id);
   }
 
   #devices(): readonly Device[] {

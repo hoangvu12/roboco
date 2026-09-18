@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon, type IconName } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
-import { useEngineStatus, useWatchSnapshot, useNow } from "../state/hooks";
+import { useEngineStatus, useNow } from "../state/hooks";
+import { useFleet, useFleetSnapshot } from "../state/fleet";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
@@ -244,14 +245,16 @@ const NO_CHANGES: ChangesSnapshot = {
 
 function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
   const session = useEngineSession();
+  const fleet = useFleet();
+  const paired = fleet.engines.length > 0;
   const status = useEngineStatus(session);
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: the chat row lookup by its scoped id spans
+  // every engine; the diff store runs on the routed session's client.
+  const snapshot = useFleetSnapshot();
   const now = useNow(10_000);
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
-  const chat = snapshot === null
-    ? null
-    : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now)?.chat ?? null;
+  const chat = chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now)?.chat ?? null;
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
@@ -423,7 +426,7 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   const deletions = activeDiff?.deletions ?? 0;
   const baseForLabel = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
 
-  if (snapshot === null) {
+  if (session === null || !paired) {
     return (
       <div className="changes-page changes-page-surface">
         <p className="changes-empty">Pair an engine to view its changes.</p>

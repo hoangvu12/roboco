@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { useEngineSession } from "../state/session-provider";
+import { useEngineSessions } from "../state/session-provider";
 import { useFleet } from "../state/fleet";
 import { useWatchSnapshot } from "../state/hooks";
 import { emitShortcut } from "../state/shortcuts";
@@ -23,8 +23,12 @@ import { emitShortcut } from "../state/shortcuts";
  * page until ticket 28 builds the real Devices section.
  */
 export function AccountRow() {
-  const session = useEngineSession();
+  // The ACTIVE engine's session carries this row's identity — the desktop's
+  // user line is the local device, and the web's "home" engine is the one
+  // new chats land on.
+  const sessions = useEngineSessions();
   const fleet = useFleet();
+  const session = fleet.active === null ? null : sessions.get(fleet.active) ?? null;
   const snapshot = useWatchSnapshot(session);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
