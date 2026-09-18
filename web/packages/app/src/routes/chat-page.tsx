@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { methods } from "@roboco/engine-client";
+import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
@@ -18,6 +19,8 @@ import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
+import { availableQueuePrimaryAction } from "../lib/queue-row-logic";
+import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
 import { echoStore, TranscriptStore } from "../state/transcript-store";
 import type { QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
@@ -127,8 +130,20 @@ export function ChatPage() {
   // Edit state: the chat page owns which queued row (if any) is feeding
   // text into the composer. Clearing it cancels the lease (the user
   // backed out without saving); committing finishes the lease with the
-  // current composer text in place.
-  const [editingRow, setEditingRow] = useState<{ id: string; text: string } | null>(null);
+  // current composer text in place. `editFinishing` is the desktop's
+  // `queue_edit_finishing` — true while the lease-closing RPC is in flight
+  // (the row shows "Saving…" and its Save/Cancel stand down).
+  const [editingRow, setEditingRow] = useState<{
+    id: string;
+    text: string;
+    attachments: readonly string[];
+  } | null>(null);
+  const [editFinishing, setEditFinishing] = useState(false);
+
+  // The composer's `commit_queue_edit` handle (queue.rs:1430) — assigned by
+  // the Composer while a queued-row edit is open, so the queue row's inline
+  // Save and the composer's submit share the one commit path.
+  const editCommitRef = useRef<(() => void) | null>(null);
 
   // If the queue store reports the row disappeared while we were editing
   // (another device removed/sent it), drop the edit state so the composer
@@ -142,45 +157,110 @@ export function ChatPage() {
     }
   }, [editingRow, queueStore, queueStore?.getSnapshot().generation]);
 
+  // ── The 20s edit-lease heartbeat (`start_queue_edit_renewal`,
+  // queue.rs:1584-1633) ── renewed for as long as the edit is open; a
+  // "lost"/"missing" outcome clears the local edit exactly like the
+  // desktop's expiry path (the row then carries a ReviewRequired gate).
+  // A transient RPC failure is tolerated — the 60s lease fails closed on
+  // the host if every attempt misses.
+  useEffect(() => {
+    if (editingRow === null || queueStore === null) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void queueStore
+        .renewEdit()
+        .then((result) => {
+          if (result.kind === "lost" || result.kind === "missing") {
+            setEditingRow(null);
+            sidebarNotice.set("Edit protection expired; review this message before sending");
+          }
+        })
+        .catch(() => {});
+    }, 20_000);
+    return () => clearInterval(timer);
+  }, [editingRow, queueStore]);
+
   const onEditRow = useCallback((row: QueuedMessage) => {
-    setEditingRow({ id: row.id, text: row.text });
+    setEditingRow({ id: row.id, text: row.text, attachments: row.attachments ?? [] });
   }, []);
 
   const onEditFinish = useCallback(
-    (outcome: { action: "commit" | "cancel" | "releaseUnchanged"; text: string }) => {
-      if (queueStore === null || editingRow === null) {
+    (outcome: {
+      action: "commit" | "cancel" | "discard" | "releaseUnchanged";
+      text: string;
+      staged?: readonly StagedAttachment[];
+    }) => {
+      if (queueStore === null || editingRow === null || session === null) {
         return;
       }
       const store = queueStore;
       const rowId = editingRow.id;
-      setEditingRow(null);
+      setEditFinishing(true);
       void (async () => {
+        // Non-terminal outcomes keep the edit open with the user's text in
+        // the editor (`finish_queue_edit`'s failure arms, queue.rs:1550-1575).
+        let keepRow = false;
         try {
           const lease = store.getSnapshot().editLease;
           if (lease === null || lease.messageId !== rowId) {
             return;
           }
           if (outcome.action === "commit") {
-            await store.finishEdit("commit", { text: outcome.text });
+            // `finish_queue_edit("commit")`: the staged set uploads first
+            // (queue.rs:1522-1539) — the row's own attachments were staged
+            // into the composer at edit start, newly added ones are new
+            // uploads — then the commit carries text + paths.
+            const staged = outcome.staged ?? [];
+            const uploaded =
+              staged.length > 0
+                ? await uploadAttachments(session.client, staged, null)
+                : ([] as readonly { path: string }[]);
+            const body =
+              outcome.text.trim().length > 0 ? outcome.text : ATTACHMENT_ONLY_TEXT;
+            const result = await store.finishEdit("commit", {
+              text: body,
+              attachments: uploaded.map((entry) => entry.path),
+            });
+            if (result.kind === "conflict") {
+              sidebarNotice.set("This message changed on another device; your edit was kept locally");
+              keepRow = true;
+            } else if (result.kind === "missing") {
+              sidebarNotice.set("The queued message was removed; your edit was kept locally");
+              keepRow = true;
+            } else if (result.kind === "lost") {
+              sidebarNotice.set("The edit lease changed; your text is still in the editor");
+              keepRow = true;
+            }
           } else {
-            await store.finishEdit(outcome.action);
+            const result = await store.finishEdit(outcome.action);
+            if (result.kind === "conflict" || result.kind === "missing" || result.kind === "lost") {
+              sidebarNotice.set("The edit lease changed; your text is still in the editor");
+              keepRow = true;
+            }
           }
         } catch (error) {
-          sidebarNotice.set(`Could not finish edit: ${error instanceof Error ? error.message : String(error)}`);
+          sidebarNotice.set("Couldn't reach the chat host; your edit is still in the editor");
+          keepRow = true;
+        } finally {
+          setEditFinishing(false);
+          if (!keepRow) {
+            setEditingRow(null);
+          }
         }
       })();
     },
-    [queueStore, editingRow],
+    [queueStore, editingRow, session],
   );
 
   const onEditCancel = useCallback(() => {
     if (queueStore === null || editingRow === null) {
-      setEditingRow(null);
       return;
     }
     const store = queueStore;
     const rowId = editingRow.id;
     setEditingRow(null);
+    setEditFinishing(true);
     void (async () => {
       try {
         const lease = store.getSnapshot().editLease;
@@ -189,6 +269,8 @@ export function ChatPage() {
         }
       } catch (error) {
         sidebarNotice.set(`Could not cancel edit: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setEditFinishing(false);
       }
     })();
   }, [queueStore, editingRow]);
@@ -277,28 +359,31 @@ export function ChatPage() {
 
   // Mod+Enter on an empty composer activates the most recently queued row
   // (`activate_latest_queued`, queue.rs:1218-1244): Send now, interrupting
-  // the current response. A gated row makes it a no-op. The queue panel's
-  // own body is ticket 16; this is the composer's call site.
+  // the current response. An edit/review gate or a host without queue
+  // actions makes it a no-op. The web's engine-capability check stands in
+  // for the desktop's host registry until ticket 31's fleet (ticket 16
+  // defers the host routing itself).
+  const hostSupportsActions =
+    (session?.client.engineInfo?.capabilities ?? []).includes(MESSAGE_QUEUE_ACTIONS_V1);
   const activateLatestQueued = useCallback(() => {
     if (queueStore === null || editingRow !== null) {
       return;
     }
-    const rows = queueStore.getSnapshot().rows;
-    const latest = rows[rows.length - 1] ?? null;
-    if (latest === null || latest.deliveryGate != null) {
+    const latest = queueStore.getSnapshot().rows.at(-1) ?? null;
+    if (latest === null || !availableQueuePrimaryAction(latest.deliveryGate != null, hostSupportsActions)) {
       return;
     }
     void queueStore
       .sendNow(latest.id)
       .then((sent) => {
         if (!sent) {
-          sidebarNotice.set("That message was already drained by another device.");
+          sidebarNotice.set("Couldn't send that message");
         }
       })
       .catch((error: unknown) => {
-        sidebarNotice.set(`Could not send now: ${error instanceof Error ? error.message : String(error)}`);
+        sidebarNotice.set(`Couldn't send that message: ${error instanceof Error ? error.message : String(error)}`);
       });
-  }, [queueStore, editingRow]);
+  }, [queueStore, editingRow, hostSupportsActions]);
 
   /**
    * The working trailer's failed-send retry — the desktop's `retry_send`
@@ -407,14 +492,21 @@ export function ChatPage() {
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
                 onEditCancel={onEditCancel}
+                editCommitRef={editCommitRef}
                 activateLatestQueued={activateLatestQueued}
                 queueSlot={
                   queueStore !== null && deviceId !== null ? (
                     <QueueStoreProvider value={queueStore}>
                       <QueuePanel
+                        client={session.client}
                         editorDeviceId={deviceId}
                         onEditRow={onEditRow}
                         editingRowId={editingRow?.id ?? null}
+                        editFinishing={editFinishing}
+                        composerWidth={columnWidth}
+                        hostSupportsActions={hostSupportsActions}
+                        onSaveEdit={() => editCommitRef.current?.()}
+                        onEditCancel={onEditCancel}
                       />
                     </QueueStoreProvider>
                   ) : null
@@ -424,13 +516,6 @@ export function ChatPage() {
                 }
               />
               <JumpPillAnchor state={jumpState} />
-            </div>
-          )}
-          {editingRow !== null && (
-            <div className="chat-edit-toolbar">
-              <button type="button" className="btn btn-ghost" onClick={onEditCancel}>
-                Cancel edit
-              </button>
             </div>
           )}
         </div>

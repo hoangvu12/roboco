@@ -29,6 +29,7 @@ import {
   AttachmentUploadError,
   formatByName,
   formatToMime,
+  stageBytes,
   stageFile,
   uploadAttachments,
   type StagedAttachment,
@@ -88,6 +89,7 @@ import {
   beginUploadProgress,
   endUploadProgress,
   setUploadProgress,
+  getAttachmentSnapshot,
 } from "../state/attachment-cache";
 import {
   localFileLink,
@@ -215,14 +217,28 @@ interface ComposerProps {
   readonly footerSlot?: ReactNode;
   /**
    * The queued row currently being edited in this composer — `null` when
-   * the composer is free. When set, the textarea seeds with the row's text
-   * and a submit commits the row through `onEditFinish` (the lease
-   * protocol itself is ticket 16's).
+   * the composer is free. When set, the textarea seeds with the row's text,
+   * the row's attachments stage into the strip (from the attachment cache;
+   * the chat page pre-loads them before opening the edit), the pre-edit
+   * draft (text + staged) is stashed and handed back when the lease closes
+   * (`queue_edit_draft`, queue.rs:1394-1398), and a submit commits the row
+   * through `onEditFinish` (the lease protocol itself is ticket 16's).
    */
-  readonly editingMessage?: { id: string; text: string } | null;
-  readonly onEditFinish?: (outcome: { action: "commit" | "cancel" | "releaseUnchanged"; text: string }) => void;
+  readonly editingMessage?: { id: string; text: string; attachments?: readonly string[] } | null;
+  readonly onEditFinish?: (outcome: {
+    action: "commit" | "cancel" | "discard" | "releaseUnchanged";
+    text: string;
+    /** The live staged set on commit — re-uploaded by the lease closer. */
+    staged?: readonly StagedAttachment[];
+  }) => void;
   /** Escape while editing a queued row (the container binding, composer.rs:7473). */
   readonly onEditCancel?: () => void;
+  /**
+   * The queue row's inline Save handle (ticket 16): assigned the composer's
+   * `commit_queue_edit` (queue.rs:1430) while a queued-row edit is open, so
+   * the row's Save and the composer's submit share the one commit path.
+   */
+  readonly editCommitRef?: React.MutableRefObject<(() => void) | null>;
   /**
    * Mod+Enter with a truly empty composer activates the most recently
    * queued row (composer.rs:6023). The action itself lives with the queue
@@ -242,6 +258,7 @@ export function Composer({
   editingMessage,
   onEditFinish,
   onEditCancel,
+  editCommitRef,
   activateLatestQueued,
 }: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
@@ -414,10 +431,12 @@ export function Composer({
 
   // When the edit row changes (the chat page started/cancelled editing a
   // queued row), seed the textarea with the row's text so the user can type
-  // a replacement; the pre-edit draft is restored when the lease closes
-  // (composer.rs `clear_queue_edit_local`'s `queue_edit_draft` hand-back).
+  // a replacement; the pre-edit draft (text + staged attachments) is
+  // restored when the lease closes (composer.rs `clear_queue_edit_local`'s
+  // `queue_edit_draft` hand-back, queue.rs:1394-1398/1471-1476).
   const lastEditingIdRef = useRef<string | null>(null);
   const preEditTextRef = useRef<string | null>(null);
+  const preEditStagedRef = useRef<readonly StagedAttachment[] | null>(null);
   useEffect(() => {
     const id = editingMessage?.id ?? null;
     if (id === lastEditingIdRef.current) {
@@ -426,12 +445,48 @@ export function Composer({
     lastEditingIdRef.current = id;
     if (editingMessage !== null && editingMessage !== undefined) {
       preEditTextRef.current = textRef.current;
+      preEditStagedRef.current = staged;
+      // The row's own attachments take the strip while editing
+      // (`begin_queue_edit`'s loaded set, queue.rs:1399) — staged from the
+      // shared attachment cache, which the chat page pre-loads before
+      // opening the edit. A cache miss skips that one (the commit still
+      // preserves it engine-side; see ticket 16's Comments).
+      const deviceId = session.client.engineInfo?.deviceId ?? null;
+      const seeded =
+        editingMessage.attachments
+          ?.map((path) => stagedFromCache(deviceId, path))
+          .filter((att): att is StagedAttachment => att !== null) ?? [];
+      setStagedByChat((current) => {
+        const next = { ...current };
+        if (seeded.length === 0) {
+          delete next[chat.id];
+        } else {
+          next[chat.id] = seeded;
+        }
+        return next;
+      });
       setText(editingMessage.text);
-    } else if (preEditTextRef.current !== null) {
-      setText(preEditTextRef.current);
-      preEditTextRef.current = null;
+    } else {
+      if (preEditTextRef.current !== null) {
+        setText(preEditTextRef.current);
+        preEditTextRef.current = null;
+      }
+      const restore = preEditStagedRef.current;
+      if (restore !== null) {
+        preEditStagedRef.current = null;
+        setStagedByChat((current) => {
+          const next = { ...current };
+          if (restore.length === 0) {
+            delete next[chat.id];
+          } else {
+            next[chat.id] = restore;
+          }
+          return next;
+        });
+      }
     }
-  }, [editingMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingMessage, chat.id]);
 
   // Reconcile the draft with chat.config + the loaded catalog (locked once
   // persisted; sticky defaults otherwise — pickers.rs:713-796).
@@ -1852,6 +1907,35 @@ export function Composer({
   );
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
+  // `commit_queue_edit` (queue.rs:1430): save the composer into the leased
+  // row — an entirely empty composer (no text, no staged attachments)
+  // discards the row; anything else commits the trimmed text plus the live
+  // staged set through the lease. The queue row's inline Save reaches the
+  // same path through `editCommitRef` (ticket 16).
+  const commitQueueEdit = useCallback(() => {
+    const editing = editingMessage ?? null;
+    if (editing === null) {
+      return;
+    }
+    const trimmed = text.trim();
+    const empty = trimmed.length === 0 && staged.length === 0;
+    onEditFinish?.(
+      empty
+        ? { action: "discard", text: "" }
+        : { action: "commit", text: trimmed, staged },
+    );
+  }, [editingMessage, text, staged, onEditFinish]);
+
+  useEffect(() => {
+    if (editCommitRef === undefined) {
+      return;
+    }
+    editCommitRef.current = commitQueueEdit;
+    return () => {
+      editCommitRef.current = null;
+    };
+  }, [editCommitRef, commitQueueEdit]);
+
   const submit = useCallback(async () => {
     if (busy) {
       return;
@@ -1861,15 +1945,7 @@ export function Composer({
     // returns "handled").
     const editing = editingMessage ?? null;
     if (editing !== null) {
-      const trimmed = text.trim();
-      if (trimmed.length === 0) {
-        onEditFinish?.({ action: "releaseUnchanged", text: trimmed });
-        return;
-      }
-      const textChanged = trimmed !== (editing.text ?? "").trim();
-      onEditFinish?.(
-        textChanged ? { action: "commit", text: trimmed } : { action: "releaseUnchanged", text: trimmed },
-      );
+      commitQueueEdit();
       return;
     }
 
@@ -1895,7 +1971,7 @@ export function Composer({
       return;
     }
     await send(text, mode === "queue");
-  }, [busy, text, staged, runLive, editingMessage, onEditFinish, session.client, interrupt, send]);
+  }, [busy, text, staged, runLive, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
 
   // ── Key policy: completions → wizard → Enter bindings (§2.7) ───────────
   // Exactly two Enter bindings; Shift+Enter is always a native newline. While
@@ -2579,6 +2655,20 @@ export function Composer({
 }
 
 function NOOP(): void {}
+
+/** Stage a queued row's already-committed attachment from the shared cache
+ *  (`begin_queue_edit`'s loaded set, queue.rs:1300-1314). Null on a cache
+ *  miss — the bytes only live engine-side until a load. */
+function stagedFromCache(deviceId: string | null, path: string): StagedAttachment | null {
+  if (deviceId === null) {
+    return null;
+  }
+  const snapshot = getAttachmentSnapshot(deviceId, path);
+  if (snapshot.state !== "loaded" || snapshot.image === null) {
+    return null;
+  }
+  return stageBytes(snapshot.image.name, snapshot.image.bytes);
+}
 
 /** Whether two completion tokens are equal (range + query). */
 function tokensEqual(
