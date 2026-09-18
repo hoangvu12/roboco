@@ -117,3 +117,11 @@ export const LIST_BRANCHES = "ListBranches";
 export const LIST_REFS = "ListRefs";
 /** Check a repo folder out onto another ref (`crates/rpc/src/lib.rs:125`, `pickers.rs:1340`). */
 export const SWITCH_REF = "SwitchRef";
+/** The History pane's paged commit log (`{cwd, cursor, limit}` → `GitHistoryPage`). */
+export const LIST_GIT_HISTORY = "ListGitHistory";
+/** Full-repository commit search (`{cwd, query, cursor, limit}` → `GitHistoryPage`). */
+export const SEARCH_GIT_HISTORY = "SearchGitHistory";
+/** GitHub avatar blobs for commit authors (`{cwd, authors, cursor, limit}` → email → base64). */
+export const RESOLVE_GIT_AVATARS = "ResolveGitAvatars";
+/** `git fetch --all --quiet` on a repo (`{repoPath}` → `{ok: true}`). */
+export const FETCH_ALL = "FetchAll";

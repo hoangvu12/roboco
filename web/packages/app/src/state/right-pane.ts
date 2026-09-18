@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
 import { changesSurfaceStore } from "./changes-surface";
+import { disposeHistoryStore } from "./history-store";
 import { fileDocuments } from "./file-documents";
 import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
@@ -148,6 +149,16 @@ export function resolvedActive(pane: ChatPaneState): RightSurface {
 /** A diff's flavour — plain / History / a pinned commit (`changes.rs`). */
 export type DiffFlavor = "diff" | "history" | "commit";
 
+/** `diffs`' backing row: flavour, tab label, and the commit pin if any. */
+export interface DiffMeta {
+  readonly flavor: DiffFlavor;
+  readonly label: string | null;
+  /** The pinned sha (`Changes::for_commit`); commit flavour only. */
+  readonly commitSha?: string;
+  /** The pinned commit's raw subject; commit flavour only. */
+  readonly subject?: string;
+}
+
 export class RightPaneStore {
   #byChat = new Map<string, ChatPaneState>();
   #version = 0;
@@ -171,7 +182,7 @@ export class RightPaneStore {
   /** `file_surface_keys` — `${panel}\u{0}${path}` → id (one tab per path). */
   readonly #fileKeys = new Map<string, string>();
   /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
-  readonly #diffMeta = new Map<string, { flavor: DiffFlavor; label: string | null }>();
+  readonly #diffMeta = new Map<string, DiffMeta>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
   readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean }>();
 
@@ -303,7 +314,8 @@ export class RightPaneStore {
   /**
    * `add_diff_surface` / `add_history_surface` / `add_commit_diff_surface`:
    * every click opens a FRESH diff tab with its own scope selection (no
-   * dedupe — N clicks make N tabs).
+   * dedupe — N clicks make N tabs). A commit-pinned tab carries the sha +
+   * subject its surface pins (`Changes::for_commit`, never re-scooped).
    */
   addDiffSurface(chatId: string, flavor: DiffFlavor, label: string | null = null): void {
     const surface = this.#mint("diff", flavor);
@@ -315,6 +327,38 @@ export class RightPaneStore {
     }
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
     this.setActive(chatId, surface);
+  }
+
+  /**
+   * `add_commit_diff_surface` (shell.rs:2613) — a History row click: a NEW
+   * pinned commit-diff tab per click, titled with the commit's trimmed
+   * subject or its first 7 sha chars (`tab_title`, changes.rs:1725).
+   */
+  addCommitDiffSurface(
+    chatId: string,
+    commit: { sha: string; subject: string },
+  ): void {
+    const surface = this.#mint("diff", "commit");
+    if (surface.kind !== "diff") {
+      return;
+    }
+    const subject = commit.subject.trim();
+    this.#diffMeta.set(surface.id, {
+      flavor: "commit",
+      label: subject.length > 0 ? subject : commit.sha.slice(0, 7),
+      commitSha: commit.sha,
+      subject: commit.subject,
+    });
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
+    this.setActive(chatId, surface);
+  }
+
+  /**
+   * A diff surface's backing meta — flavor, scope label, and (for the
+   * commit-pinned flavour) the sha + subject the pane mounts with.
+   */
+  diffMetaOf(surfaceId: string): DiffMeta | null {
+    return this.#diffMeta.get(surfaceId) ?? null;
   }
 
   /**
@@ -403,10 +447,12 @@ export class RightPaneStore {
     // Per-kind teardown: drop the backing entity so a stale id never
     // resolves again (`diffs.remove`, `subagent_tabs.remove`, …). A diff
     // tab also drops its per-surface Changes state (scope/folds), which
-    // outlives the tab's component tree by design.
+    // outlives the tab's component tree by design — and a History tab its
+    // GitHistory store (commits/search state).
     if (surface.kind === "diff") {
       this.#diffMeta.delete(surface.id);
       changesSurfaceStore.dispose(chatId, surface.id);
+      disposeHistoryStore(chatId, surface.id);
     } else if (surface.kind === "subagent") {
       this.#subagentMeta.delete(surface.id);
     }

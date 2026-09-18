@@ -17,7 +17,7 @@ one dedicated "History" tab plus N independent pinned commit-diff tabs,
 and needs 22's `DiffScope` type (`lib/diff.ts`) to carry a `"commit"`
 value and `GetCheckoutDiff` plumbing that already accepts a `commitSha`.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/08-history.md` — full file (§1–§7,
 all rows in §5, all RPC contracts, both desktop-only lists). This ticket
@@ -884,4 +884,194 @@ request's `cursor`; `null` means nothing left to load.
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed** (branch `wp2/27-history-pane`, worktree `roboco-wt/27-history`):
+
+- `lib/git-history.ts` (new): every §3 pure function — `layoutGraph` (the
+  active-lane walk; `GraphRow`/`GraphSegment` verbatim from
+  `history.rs:85-110,638-733`), `collapseBranchRuns`,
+  `compactCommitsToVisible` (iterative + memoized — 20k-deep gaps survive),
+  `branchRefKey`, `gitHistoryMatches`/`fuzzyScore` (the engine's shared
+  matcher: sha prefix ASCII-lowercased, Unicode-lowercase fuzzy subsequence
+  with adjacency bonus), `historyTransitionRows`, `historyListSplice`
+  (`LOAD_MORE_KEY` sentinel), `resolveHistoryScrollAnchor`, the whole
+  geometry family (`naturalGeometry`/`fittedGeometry`/`compactGeometry`/
+  `laneX`/`interpolateGraphGeometry`/`responsiveGraphGeometry`/
+  `shouldUseCompactGraph`/`stabilizedGraphGeometry` — device-pixel snapping
+  dropped per §6), `hoveredGraphPath` + `segmentDistance` (Bezier polyline
+  hit-testing, SAMPLES=10), `graphColor` (CSS-string in → `hsla()` out,
+  saturation ×0.72), ref-badge sizing (`estimatedRefBadgeWidth`/
+  `refAreaWidth`/`visibleRefCount`), `formatDate`, `historyAuthorName`/
+  `historyAuthorInitial`, `decodeHistoryAvatar` (magic-byte mime sniff →
+  data URL; PNG/JPEG/GIF87a/GIF89a/WEBP, garbage → null), the column math
+  (`historyColumnWidth`/`Limits`/`resizedHistoryColumnWidths`/
+  `historyColumnDropIndex`/`reorderedHistoryColumns`/
+  `visibleHistoryColumns`/`normalizedHistoryColumnOrder`), `refDescription`,
+  and every constant (36/12/3/2/1.5/2.25/13/12/48/0.34/2/160/184/4/5/0.75/
+  5.5/0.24/0.6/80/0.45/112/5/196/70/1500/260, page size 100).
+- `state/history-store.ts` (new): `HistoryStore` — the per-(chat, History
+  tab) `GitHistory` peer (registry-shared between the toolbar and body
+  trees, like `changesSurfaceStore`): `ensureLoaded`/`refresh`/`fetchAll`
+  (repoPath; invalidates in-flight pages, reloads cursor 0)/`loadOlder`/
+  `setViewMode`/`toggleBranchRef`/`setSearchQuery` (leading-trim, sync
+  local re-filter + 70ms-debounced `SearchGitHistory`)/`copySha` (1.2s)/
+  `setAuthorDisplay` (avatar backfill); view changes animate through
+  `historyTransitionRows`' interim list and settle after 180ms COLLAPSE
+  (request-generation guards on every RPC; avatars resolve per
+  `HISTORY_PAGE_SIZE` boundary only in avatar mode).
+- `components/history/history-pane.tsx` (new): the body — banners (fetch +
+  list/search), the §2.13 state swap, the column header row (graph spacer,
+  Commit cell, optional headers in persisted order, the columns button at
+  top:2 right:3 hidden until hover/open), pointer-drag column reorder
+  (ghost pill + 2px accent drop indicator) and divider resize (6px strip,
+  dbl-click reset), `ResizeObserver`-fed responsive geometry with the
+  180ms compact morph (rAF; plain resizes snap to the 2px step; hysteresis
+  via the settled-geometry ref), the virtualized row list (fixed 36px
+  slots, overscan 6, footer 48px), scroll-anchor restore on every
+  list-epoch change, search start-at-top/restore-on-clear, and the
+  point-anchored menus.
+- `components/history/history-toolbar.tsx` (new): §2.1-§2.5 — branch title
+  (mono 11.5/14 text_dim, 160 max), `HistoryCount` (pill gated on the
+  count's own width ≥260, ahead/behind + "·"), `HistorySearchControl`
+  (collapsed 24×24 ⇄ 196px, the 200ms RESIZE width/opacity morph
+  0.45⇄1.0, GlyphSpinner cell-1.5 while search-loading, 1.5s idle dismiss,
+  blur-while-empty collapse, × clears), `HistoryFetchButton` (24px/px-8,
+  wash 0.05 busy + GlyphSpinner cell-1.75 + "Fetching…", click gated),
+  `HistoryViewButton` (accent 0.12 latched on branch-tips),
+  `history-refresh`.
+- `components/history/history-graph.tsx` (new): the SVG lane canvas — one
+  `<path>` per lane colorId, the three Bezier recipes with 0.75 overlap,
+  the compact rail (row-center to next row-center, gated off in
+  BranchTips), HEAD rings, and `useGraphPalette` (the 6 `--rb-*` role
+  tokens through `graphColor`; `--rb-activity` is the desktop's `busy`).
+  Hover-focus dimming is CSS transitions on stroke/stroke-width (150ms
+  hoverFade), not the desktop's 2-pass render.
+- `components/history/history-row.tsx` (new): §2.9 — the graph cell (node,
+  HEAD ring, 16×16 fold control revealed on cell hover/collapsed, pointer
+  hit-testing), the subject+refs cell (own ResizeObserver → `refAreaWidth`
+  → badges + `+N` overflow with description tooltip), Author (avatar
+  circle or name)/Date/Sha cells in persisted order, the "Copied" pill,
+  entering/exiting fold keyframes (180ms), row-click →
+  `addCommitDiffSurface`.
+- `components/history/history-columns-menu.tsx` (new): §2.10/§2.11 as
+  `RbPopover` + `virtualAnchorAt` cards (132/116 wide, `MenuRow` rows with
+  the ticket's gap-0/4-7/radius-6/11.5 overrides, conditional divider +
+  Reset); every choice persists immediately through ticket 03's store.
+- `state/right-pane.ts`: `addCommitDiffSurface` (a fresh pinned tab per
+  click, label = trimmed subject or 7-char sha) + `diffMetaOf` (flavor,
+  label, commitSha, subject); `closeSurface` also disposes the closed
+  History tab's `HistoryStore`.
+- `state/changes-surface.ts`: `pinCommit` — a commit tab's scope lands on
+  `"commit"` with the sha for the tab's whole life; `setScope` is a no-op
+  while pinned; the snapshot exposes `commitSha`.
+- `routes/changes-page.tsx`: `CommitDiffToolbar` — the commit tab's
+  `render_header_controls` arm (changes.rs:3646-3684): mono short-sha chip
+  (ink 0.05) + subject, split/wrap/fold-all; `ChangesSurface` pins its tab
+  and passes the sha into `ChangesStore.setScope` (the previously dead
+  `commitSha` param now fetches parent-vs-commit).
+- `components/surface-registry.tsx`: the diff entry routes by flavor —
+  history → `HistoryToolbar`/`HistoryPane`, commit →
+  `CommitDiffToolbar`/`ChangesSurface`, plain → ticket 22's pair.
+- `engine-client/methods.ts`: `LIST_GIT_HISTORY`, `SEARCH_GIT_HISTORY`,
+  `RESOLVE_GIT_AVATARS`, `FETCH_ALL` (`LIST_REFS`/`SWITCH_REF` already
+  existed — constants only, no UI wired to them, per §4's note).
+- `styles/app.css`: the `.history-*` blocks (toolbar/count/search/fetch/
+  banners/empty/loading/columns/drag-ghost/graph/rows/nodes/fold/subject/
+  refs/optional cells/footer/menus) + `.changes-commit-*` for the identity
+  chip, reduced-motion snapping, phone-width toolbar wrap, and
+  `.history-list` joined to the hidden-scrollbar family. No literal hex —
+  every tone is a `--rb-*` role or a neutral wash.
+- `lib/diff.ts`: untouched — ticket 22's `"commit"` scope confirmed present
+  (`DIFF_SCOPE_CHIPS` still excludes it: a commit tab is tab-mounted only).
+
+**Deviations / judgment calls (for a human):**
+
+- **View-mode toggle animates (ticket) vs `set_view_mode` passing
+  `false` (Rust).** `history.rs:2403` calls
+  `apply_view_change(false, …)` — no row animation for the
+  All-commits/Branch-tips toggle on the desktop — while this ticket §2.8/
+  §7 and research §3.7 both say it animates over COLLAPSE. Implemented the
+  ticket's behavior (animated); flagging the Rust line for whoever audits.
+- **Double-click reset scope:** the ticket says "resets that pair's widths
+  to defaults"; the desktop's `reset_column_widths` (history.rs:2987)
+  resets ALL widths to defaults. Ported the Rust.
+- **History is the `history` DIFF FLAVOR, not a new `RightSurface`
+  variant.** §1's note says "add the `history`/`commit` variants to
+  whatever tagged-union ticket 07 built" — 07 built flavors in the diff
+  meta (`DiffFlavor = "diff" | "history" | "commit"`, already present), and
+  ticket 22's `lib/diff.ts` comment already routes this ticket through
+  `addDiffSurface(chatId, "commit", …)`. So History = the existing picker
+  row (already shipped by 07, git-gated) + the flavor routing above; no
+  extra entry-point affordance was needed.
+- **Column drag mechanism:** §1 calls `right-tab-strip.tsx`'s reordering
+  "HTML5 dataTransfer DnD" — it is actually pointer-driven with a custom
+  ghost. The column headers reuse THAT pattern (pointer drag, 4px arm,
+  portal ghost, 2px accent drop indicator), not a new mechanism.
+- **Virtualized rows sit in fixed 36px slots** (absolute tops): entering/
+  exiting rows animate height within their slot instead of pushing
+  siblings (the desktop's `ListState` reflows). Unaffected rows re-layout
+  instantly either way; the settle + scroll-anchor restore keep the view
+  stable. Also, mid-animation rows' SVG segments paint at full slot height
+  (the desktop scales segments by live row height) — a 180ms window
+  difference.
+- **`historyListSplice` is ported + unit-tested but not on the store's
+  notify path** — the web list re-renders wholesale (fixed heights, no
+  per-row measurement to splice). The no-op change guard is the
+  `unchanged` list check in `#applyViewChange`.
+- **The column menus claim focus** (Base UI default `initialFocus`): with
+  `initialFocus={false}`, Escape fell through to the app's escape ladder
+  and closed the History TAB (found live in the browser; the desktop's
+  popovers are focus-claiming anyway). The search input's Escape blurs the
+  field.
+- **Fetch-all busy state is code-verified but visually uncapturable in the
+  fixture** — the repo has no remotes, so `git fetch --all` returns before
+  a second DOM sample can catch the spinner/disabled state.
+- **Load-more footer not browser-exercised** — the fixture has 8 commits
+  (one page, no `nextCursor`); the footer row, `loadOlder`, and the
+  search/list retry states are code paths + the pure splice tests.
+- **Comparison pill / avatars live-verifications skipped** — the fixture
+  repo has no remote (comparison null → pill absent) and no GitHub origin
+  (`ResolveGitAvatars` returns {} → initials render); both paths are
+  unit-tested (`decodeHistoryAvatar` mimes, the pill's 260px gate and
+  ahead/behind formats are in the row's code).
+- **Desktop halves of all screenshot pairs skipped** — no desktop client
+  is running (ticket 07/22 precedent; `shot.ps1` steals foreground focus).
+
+**Verification:** `pnpm -r build` green; `pnpm --filter @roboco/app test`
+1054/1054 across 63 files — `tests/git-history.test.ts` (new, 37 tests:
+every §3 name, adapted camelCase; the avatar test asserts the mime sniff
+per §3's web adaptation) + `commit_diff_surfaces_are_independent_pinned_
+tabs` (right-pane) + `commit-pinned Changes surface state` (changes-surface).
+
+Browser (web_smoke per the runbook; the fixture tempdir was turned into a
+real repo through the app's own Terminal surface — root → base → feature
+(two commits) → mainline → merge → tag v0.1.0, plus a `topic2` branch —
+and the chat's branch stamped through the engine's `Mutate` RPC
+(`setChatBranch`) from the page; nothing in the fixture or app changed to
+make it possible): boot check clean (no error boundary, reload included);
+computed-style audit — toolbar 38px/8px pad/4px gap, title 11.5/14 text_dim
+max-160, count 11px, rows 36px, subjects 12px, ref badges 16px max-112,
+author/date/sha 88/88/74, header row 24px @9.5px, stroke 1.5 → 2.25
+focused, node 6px, palette desaturated (accent → s×0.72). Behavior:
+graph 55px natural (2 lanes + merge) ⇄ 31px compact rail at a 372px pane
+(hysteresis + morph observed across both resize directions); hover lane
+focus dims the other rows (0.6) + focused lane 2.25; search expands
+(196px, input focused), filters instantly ("feature" → 3 rows, "3
+commits"), × clears + idle-collapses; view toggle swaps to the 3 branch
+tips (rail suppressed, per-row segments only) and animates 4 exiting rows
+over COLLAPSE (rAF-sampled mid-flight); branch fold hides the feature
+lane's linear interior with "Expand feature (1 hidden)"; column menu opens
+at the click point (Author/Date/SHA + Reset appears after a change; Reset
+restores; Escape closes only the menu); author right-click menu flips
+Avatar⇄Name (8 cells round-trip, persisted); a commit click opens a NEW
+pinned tab ("Merge branch feature", identity chip "6d854be" + subject,
+"2 Changed files in this commit" with the f1/f2 diffs) and a second click
+stacks another alongside; SHA pill → "Copied"; phone width 390px renders
+the pane with rows and no error boundary. Port 27699 was contended
+(~50 minutes total waiting across three windows — the 28-settings and
+26-terminal agents held it; no other worktree's process was ever killed).
+
+**Screenshots** (web halves, `.scratch/web-parity/shots/27/`):
+`web-a-history-full-graph.png` (full-width 3-lane graph, merge, ref badges
++ `+1` overflow), `web-b-history-compact-rail.png` (372px pane, rail),
+`web-c-search-expanded-filtered.png` ("feature" filter), `web-d-column-
+picker-menu.png`, `web-e-row-hover-lane-focus.png`, `web-boot-check.png`.

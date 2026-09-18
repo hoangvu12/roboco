@@ -105,6 +105,41 @@ describe("files_surface_is_single_instance_per_tab_list", () => {
   });
 });
 
+describe("commit_diff_surfaces_are_independent_pinned_tabs", () => {
+  it("each click mints a fresh tab titled with the commit's subject", () => {
+    const store = fresh();
+    store.addDiffSurface("chat-1", "history");
+    store.addCommitDiffSurface("chat-1", { sha: "896e31f0abcd", subject: "Merge branch 'feature'" });
+    store.addCommitDiffSurface("chat-1", { sha: "216321b0cdef", subject: "  " });
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toHaveLength(3);
+
+    const [history, first, second] = pane.tabs as [
+      { kind: "diff"; id: string },
+      { kind: "diff"; id: string },
+      { kind: "diff"; id: string },
+    ];
+    // The titles: the trimmed subject, else the first 7 sha chars
+    // (`tab_title`, changes.rs:1725).
+    expect(store.describe(first)?.title).toBe("Merge branch 'feature'");
+    expect(store.describe(second)?.title).toBe("216321b");
+    expect(store.describe(history)?.title).toBe("History");
+    expect(store.describe(history)?.isHistory).toBe(true);
+    expect(store.describe(first)?.isHistory).toBe(false);
+
+    // The pins the surfaces mount with (`Changes::for_commit`).
+    expect(store.diffMetaOf(first.id)).toMatchObject({ flavor: "commit", commitSha: "896e31f0abcd" });
+    expect(store.diffMetaOf(second.id)).toMatchObject({ flavor: "commit", commitSha: "216321b0cdef" });
+
+    // Closing a pinned tab drops only its own meta — the others stay; the
+    // stored pick resets and the first remaining tab (History) resolves.
+    store.closeSurface("chat-1", second);
+    expect(store.diffMetaOf(second.id)).toBeNull();
+    expect(store.diffMetaOf(first.id)?.commitSha).toBe("896e31f0abcd");
+    expect(resolvedActive(store.stateFor("chat-1"))).toEqual(history);
+  });
+});
+
 describe("file_editors_are_distinct_surface_tabs_with_stable_titles", () => {
   it("one tab per path, basename titles, ids stable across reorder and reopen", () => {
     const store = fresh();

@@ -7,7 +7,9 @@ import { rightPaneStore, type RightSurface } from "../state/right-pane";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import { TranscriptStore } from "../state/transcript-store";
-import { ChangesSurface, ChangesToolbar } from "../routes/changes-page";
+import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
+import { HistoryPane } from "./history/history-pane";
+import { HistoryToolbar } from "./history/history-toolbar";
 import { FilesSurface } from "../routes/files-page";
 import { FileSurface } from "./files/file-viewer";
 import { TerminalDock } from "../terminal/terminal-dock";
@@ -225,8 +227,29 @@ function registerDefaults(): void {
     title: titleOf("Diffs"),
     // `git-branch` when that `Changes` `is_history()`, else `list`.
     icon: (s) => (facts(s)?.isHistory === true ? "gitBranch" : "list"),
-    toolbar: (s, ctx) => (s.kind === "diff" ? <ChangesToolbar chatId={ctx.chatId} surfaceId={s.id} /> : null),
-    render: (s, ctx) => (s.kind === "diff" ? <ChangesSurface chatId={ctx.chatId} surfaceId={s.id} /> : null),
+    toolbar: (s, ctx) => {
+      if (s.kind !== "diff") {
+        return null;
+      }
+      const meta = rightPaneStore.diffMetaOf(s.id);
+      if (meta !== null && meta.flavor === "history") {
+        return <HistoryToolbar chatId={ctx.chatId} surfaceId={s.id} />;
+      }
+      if (meta !== null && meta.flavor === "commit") {
+        return <CommitDiffToolbar chatId={ctx.chatId} surfaceId={s.id} />;
+      }
+      return <ChangesToolbar chatId={ctx.chatId} surfaceId={s.id} />;
+    },
+    render: (s, ctx) => {
+      if (s.kind !== "diff") {
+        return null;
+      }
+      const meta = rightPaneStore.diffMetaOf(s.id);
+      if (meta !== null && meta.flavor === "history") {
+        return <HistoryPane chatId={ctx.chatId} surfaceId={s.id} />;
+      }
+      return <ChangesSurface chatId={ctx.chatId} surfaceId={s.id} />;
+    },
   });
 
   registerRightSurface({
