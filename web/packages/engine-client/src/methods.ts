@@ -48,6 +48,14 @@ export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 export const LIST_HARNESSES = "ListHarnesses";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
 export const LIST_MODELS = "ListModels";
+/** The composer's `/` discovery (crates/rpc/src/lib.rs:42): harness-advertised
+ *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Cached
+ *  once per harness per composer lifetime, filtered locally per keystroke. */
+export const LIST_COMMANDS = "ListCommands";
+/** The composer's `@` file-mention search (crates/rpc/src/lib.rs:131):
+ *  `{query, chatId? | spaceId?, path?, targetDeviceId?}` → `FileSearchMatch[]`.
+ *  Debounced 80ms client-side; one retry after 250ms on transport failure. */
+export const SEARCH_FILES = "SearchFiles";
 /** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
 export const QUEUE_COMMAND = "QueueCommand";
 /** Failed-send retry (crates/rpc/src/lib.rs:54): `{chatId}` — the engine

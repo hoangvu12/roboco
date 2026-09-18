@@ -18,7 +18,7 @@ import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
-import { echoStore } from "../state/transcript-store";
+import { echoStore, TranscriptStore } from "../state/transcript-store";
 import type { QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 
@@ -63,6 +63,21 @@ export function ChatPage() {
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
+
+  // The chat's ONE transcript store: the transcript view and the composer's
+  // question wizard both read it, so an open chat carries a single
+  // `WatchDocMessages` stream. Disposed on chat switch/unmount like the
+  // queue store below.
+  const transcriptStore = useMemo(() => {
+    if (session === null) {
+      return null;
+    }
+    return new TranscriptStore(session.client, chatId);
+  }, [session, chatId]);
+
+  useEffect(() => () => {
+    transcriptStore?.dispose();
+  }, [transcriptStore]);
 
   const crStore = useMemo(() => {
     if (session === null) {
@@ -358,6 +373,7 @@ export function ChatPage() {
               client={session.client}
               docId={chatId}
               deviceId={deviceId}
+              store={transcriptStore}
               onContextUsage={setContextUsage}
               onRetryDelivery={onRetryDelivery}
               onJumpChange={onJumpChange}
@@ -386,6 +402,7 @@ export function ChatPage() {
                 session={session}
                 chat={row.chat}
                 catalog={session.catalog}
+                transcript={transcriptStore}
                 availableWidth={columnWidth}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
