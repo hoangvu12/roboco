@@ -7,12 +7,13 @@ import { FileTreeModel } from "../../lib/file-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
 import { useResolvedAppearance } from "../../state/appearance";
 import { fileDocuments, type FileSurfaceEntry } from "../../state/file-documents";
+import { reviewCommentStore, useReviewComments } from "../../state/review-comments";
 import { rightPaneStore } from "../../state/right-pane";
 import { onShortcut } from "../../state/shortcuts";
 import { uiSettings, useUiSettings } from "../../state/ui-settings";
 import { useEngineSession } from "../../state/session-provider";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
-import { CodeView } from "./code-view";
+import { CodeView, type CodeReviewWiring } from "./code-view";
 import { FileIcon } from "./file-icon";
 import { FileTreePanel } from "./file-tree-panel";
 import { EditorContextMenu } from "./editor-context-menu";
@@ -430,6 +431,28 @@ function TextViewer({
 
   const showEditor = snapshot.editable && !snapshot.showMarkdown;
   const editorInputRef = useRef<HTMLTextAreaElement | null>(null);
+  // ── Ticket 23: the editor-side comments (staged per the chat's composer
+  // key; only File-sourced comments on THIS path reach the gutter —
+  // `staged_file_comments`, preview.rs:751-762). The overlay mounts only
+  // over a live editor (read-only documents get none, matching the
+  // desktop's `render_editor_comment_overlays` call site).
+  const stagedReview = useReviewComments(chatId);
+  const editorReview: CodeReviewWiring | null = showEditor
+    ? {
+      comments: stagedReview.comments.filter(
+        (comment) => comment.source.kind === "file" && comment.path === path,
+      ),
+      activeId: stagedReview.activeEditorComment,
+      draft: stagedReview.editorDraft !== null && stagedReview.editorDraft.path === path ? stagedReview.editorDraft : null,
+      onOpenDraft: (line) => reviewCommentStore.openEditorDraft(chatId, path, line),
+      onToggleActive: (id) => reviewCommentStore.toggleEditorComment(chatId, id),
+      onCardEdit: (id) => reviewCommentStore.editEditorComment(chatId, id),
+      onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
+      onDraftBody: (body) => reviewCommentStore.setEditorDraftBody(chatId, body),
+      onDraftCancel: () => reviewCommentStore.cancelEditorDraft(chatId),
+      onDraftCommit: () => reviewCommentStore.commitEditorDraft(chatId),
+    }
+    : null;
   const toolbar = (
     <ViewerToolbar
       path={path}
@@ -499,6 +522,7 @@ function TextViewer({
             wordWrap={settings.filesWordWrap}
             autoFocus={markdownFocus}
             inputRef={editorInputRef}
+            review={editorReview}
           />
         </div>
       </EditorContextMenu>

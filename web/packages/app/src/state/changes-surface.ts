@@ -2,11 +2,13 @@ import { useSyncExternalStore } from "react";
 import {
   bodyHeightWith,
   FOLD_TWEEN_WINDOW_MS,
+  type DiffDraftAnchor,
   type DiffMode,
   type DiffScope,
   type FileDiff,
   type FileFold,
 } from "../lib/diff";
+import type { ReviewComment } from "../lib/review-comments";
 import { uiSettings } from "./ui-settings";
 
 /**
@@ -84,6 +86,7 @@ function freshState(): SurfaceState {
 }
 
 const EMPTY_BRANCHES: readonly string[] = [];
+const EMPTY_COMMENTS: readonly ReviewComment[] = [];
 
 export class ChangesSurfaceStore {
   readonly #bySurface = new Map<string, SurfaceState>();
@@ -92,6 +95,14 @@ export class ChangesSurfaceStore {
   #settleTimer: ReturnType<typeof setTimeout> | null = null;
   /** The parsed files of the ACTIVE surface registration (fold heights). */
   #files: readonly FileDiff[] = [];
+  /**
+   * The active surface's staged diff comments + draft anchor (ticket 23):
+   * `bodyHeightWith` reads the live set at toggle time, so a file whose
+   * body carries comment cards folds at the height the rows actually sum
+   * to (changes.rs:2324-2329).
+   */
+  #comments: readonly ReviewComment[] = EMPTY_COMMENTS;
+  #draft: DiffDraftAnchor | null = null;
 
   getVersion = (): number => this.#version;
 
@@ -116,6 +127,16 @@ export class ChangesSurfaceStore {
   /** The viewer's current parse, registered so fold actions can measure. */
   setFiles(files: readonly FileDiff[]): void {
     this.#files = files;
+  }
+
+  /**
+   * The viewer's current staged comment set + draft anchor (ticket 23) —
+   * the fold heights' second analytic input. No notification: the rows
+   * themselves re-render through the comment store's own subscription.
+   */
+  setComments(comments: readonly ReviewComment[], draft: DiffDraftAnchor | null): void {
+    this.#comments = comments;
+    this.#draft = draft;
   }
 
   /**
@@ -193,6 +214,10 @@ export class ChangesSurfaceStore {
     if (file === undefined) {
       return;
     }
+    const fileComments = this.#comments.filter(
+      (comment) => comment.source.kind === "diff" && comment.path === path,
+    );
+    const fileDraft = this.#draft !== null && this.#draft.path === path ? this.#draft : null;
     let armed = false;
     this.#update(chatId, surfaceId, (state) => {
       const current = state.folds.get(path);
@@ -203,8 +228,8 @@ export class ChangesSurfaceStore {
         : {
           collapsed,
           epoch: (current?.epoch ?? 0) + 1,
-          from: current?.collapsed === true ? 0 : bodyHeightWith(file, state.layout),
-          to: current?.collapsed === true ? bodyHeightWith(file, state.layout) : 0,
+          from: current?.collapsed === true ? 0 : bodyHeightWith(file, state.layout, fileComments, fileDraft),
+          to: current?.collapsed === true ? bodyHeightWith(file, state.layout, fileComments, fileDraft) : 0,
           toggledAt: Date.now(),
           folding: true,
         };

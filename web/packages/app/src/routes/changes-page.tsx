@@ -5,6 +5,7 @@ import { useEngineStatus, useWatchSnapshot, useNow } from "../state/hooks";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
+import { reviewCommentStore, useReviewComments } from "../state/review-comments";
 import { chatPageRow } from "../lib/view";
 import {
   cleanMessage,
@@ -16,7 +17,8 @@ import {
   type DiffScope,
   type FileFold,
 } from "../lib/diff";
-import { DiffView, useParsedDiff } from "../components/diff-view";
+import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
+import { CommentAdder } from "../components/review-comments/comment-adder";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
@@ -280,6 +282,58 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, fo
     changesSurfaceStore.setFiles(files);
   }, [files]);
 
+  // ── Ticket 23: staged review comments for this chat ─────────────────────
+  // The staged set drives the diff's comment rows; the open draft (with its
+  // live body) interleaves after its anchor line. The comment being edited
+  // is excluded — its card row becomes the draft row (staged_comments,
+  // changes.rs:2587-2597).
+  const review = useReviewComments(chatId);
+  const diffDraft = review.diffDraft;
+  const visibleComments = useMemo(
+    () =>
+      review.comments.filter(
+        (comment) => comment.source.kind === "diff" && comment.id !== diffDraft?.editingId,
+      ),
+    [review.comments, diffDraft?.editingId],
+  );
+  // The store's own object identity keeps the row-list memo stable between
+  // unrelated re-renders.
+  const reviewDraft = diffDraft;
+  // The fold heights must include comment cards (body_height_with reads the
+  // staged set at toggle time, changes.rs:2324-2329).
+  useEffect(() => {
+    changesSurfaceStore.setComments(visibleComments, reviewDraft);
+  }, [visibleComments, reviewDraft]);
+  const reviewWiring: DiffReviewWiring = {
+    comments: visibleComments,
+    draft: reviewDraft,
+    onDraftBody: (body) => reviewCommentStore.setDiffDraftBody(chatId, body),
+    onDraftCancel: () => reviewCommentStore.cancelDiffDraft(chatId),
+    onDraftCommit: () => reviewCommentStore.commitDiffDraft(chatId),
+    onCardEdit: (id) => reviewCommentStore.editDiffComment(chatId, id),
+    onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
+  };
+  const renderAdder = useCallback(
+    (info: { readonly path: string; readonly side: "old" | "new"; readonly lineNo: number }) => {
+      // The adder needs the file's pre-rename path for the comment's anchor
+      // (open_draft → old_path_of, changes.rs:2757).
+      const oldPath = files.find((file) => file.path === info.path)?.oldPath ?? null;
+      return (
+        <CommentAdder
+          onOpen={() =>
+            reviewCommentStore.openDiffDraft(chatId, {
+              path: info.path,
+              side: info.side,
+              line: info.lineNo,
+              oldPath,
+            })
+          }
+        />
+      );
+    },
+    [chatId, files],
+  );
+
   const error = changes.error;
   // Scoped-fetch failures replace the content area; the two known engine
   // messages are remapped to friendly copy, everything else stays raw in
@@ -398,6 +452,8 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, fo
                 folds={folds}
                 onToggleFold={(path) => changesSurfaceStore.toggleFold(chatId, surfaceId, path)}
                 scrollEpoch={scrollEpoch}
+                renderAdder={renderAdder}
+                review={reviewWiring}
               />
             )}
           </div>

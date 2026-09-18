@@ -3,6 +3,7 @@ import { Icon } from "@roboco/icons";
 import {
   ACCENT_BAR_WIDTH,
   BODY_BOTTOM_PAD,
+  commentAdderLeft,
   DIFF_LINE_HEIGHT,
   estimateRowHeight,
   FILE_HEADER_HEIGHT,
@@ -16,11 +17,13 @@ import {
   NOTICE_HEIGHT,
   parseKey,
   parsePatch,
+  splitAdderLeft,
   SPLIT_CODE_PADDING_LEFT,
   splitContentWidth,
   splitPairsUpto,
   UNIFIED_CODE_PADDING_LEFT,
   unifiedContentWidth,
+  type DiffDraftAnchor,
   type DiffLine,
   type DiffMode,
   type DiffRow,
@@ -29,7 +32,10 @@ import {
   type Hunk,
   type LineKind,
 } from "../lib/diff";
+import type { ReviewComment } from "../lib/review-comments";
 import { highlightCode, splitTokenLines } from "../lib/syntax";
+import { CommentCard } from "./review-comments/comment-card";
+import { CommentDraft } from "./review-comments/comment-draft";
 
 /**
  * The diff viewer — file headers + hunks + per-line rows, virtualized at
@@ -70,6 +76,25 @@ export interface LineHoverInfo {
 
 export type LineHoverHandler = (info: LineHoverInfo | null) => void;
 
+/**
+ * Ticket 23's comment wiring: the staged set the row list interleaves
+ * comment cards from (the file's own diff-sourced slice, the comment being
+ * edited excluded by the caller), the open draft (with its live body), and
+ * the card/draft action callbacks. `null`/undefined keeps the viewer
+ * comment-free — the tool-diff mounts compose it that way.
+ */
+export interface DiffReviewWiring {
+  /** The staged diff-sourced comments for this diff, in staged order. */
+  readonly comments: readonly ReviewComment[];
+  /** The open diff-side draft: its anchor, rename context, and live body. */
+  readonly draft: (DiffDraftAnchor & { readonly body: string; readonly oldPath: string | null }) | null;
+  readonly onDraftBody: (body: string) => void;
+  readonly onDraftCancel: () => void;
+  readonly onDraftCommit: () => void;
+  readonly onCardEdit: (id: string) => void;
+  readonly onCardRemove: (id: string) => void;
+}
+
 export interface DiffViewProps {
   /** The parsed files — `useParsedDiff` on the host side. */
   readonly files: readonly FileDiff[];
@@ -87,10 +112,12 @@ export interface DiffViewProps {
   readonly onLineHover?: LineHoverHandler;
   /**
    * Ticket 23's slot: renders the adder control inside the hovered row, at
-   * the anchor the desktop computes (`commentAdderLeft`). Nothing passes it
-   * yet — the hook point is this ticket's deliverable, not the button.
+   * the anchor the desktop computes (`commentAdderLeft`). Passing it also
+   * arms the hover tracking that reveals the adder.
    */
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
+  /** Ticket 23's comment rows + actions. */
+  readonly review?: DiffReviewWiring | null;
 }
 
 /**
@@ -125,6 +152,7 @@ export function DiffView({
   scrollEpoch,
   onLineHover,
   renderAdder,
+  review,
 }: DiffViewProps) {
   const scrollRef = useRef(new FilePlaneScroll());
   const scroll = scrollRef.current;
@@ -144,6 +172,7 @@ export function DiffView({
       scroll={scroll}
       onLineHover={onLineHover}
       renderAdder={renderAdder}
+      review={review}
     />
   );
 }
@@ -157,14 +186,15 @@ interface DiffSurfaceProps {
   readonly scroll: FilePlaneScroll;
   readonly onLineHover?: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
+  readonly review?: DiffReviewWiring | null;
 }
 
-function DiffSurface({ files, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder }: DiffSurfaceProps) {
+function DiffSurface({ files, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review }: DiffSurfaceProps) {
   const emptyFolds = useRef(EMPTY_FOLDS).current;
   const foldMap = folds ?? emptyFolds;
   const rows: DiffRow[] = useMemo(
-    () => flattenFiles(files, layout, foldMap),
-    [files, layout, foldMap],
+    () => flattenFiles(files, layout, foldMap, review?.comments, review?.draft ?? null),
+    [files, layout, foldMap, review?.comments, review?.draft],
   );
 
   // The hover anchor is only tracked while a consumer renders an adder;
@@ -187,6 +217,7 @@ function DiffSurface({ files, layout, wrap, folds, onToggleFold, scroll, onLineH
       hover={renderAdder === undefined ? null : hover}
       onHover={handleHover}
       renderAdder={renderAdder}
+      review={review}
     />
   );
 }
@@ -268,9 +299,10 @@ interface ScrollerProps {
   readonly hover: LineHoverInfo | null;
   readonly onHover: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
+  readonly review?: DiffReviewWiring | null;
 }
 
-function DiffScroller({ rows, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder }: ScrollerProps) {
+function DiffScroller({ rows, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const positionsRef = useRef<readonly number[]>([]);
@@ -391,6 +423,7 @@ function DiffScroller({ rows, layout, wrap, onToggleFold, scroll, hover, onHover
                   hover={hover}
                   onHover={onHover}
                   renderAdder={renderAdder}
+                  review={review}
                 />
               </div>
             );
@@ -425,9 +458,10 @@ interface RowContentProps {
   readonly hover: LineHoverInfo | null;
   readonly onHover: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
+  readonly review?: DiffReviewWiring | null;
 }
 
-function RowContent({ row, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder }: RowContentProps) {
+function RowContent({ row, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: RowContentProps) {
   switch (row.kind) {
     case "fileHeader":
       return (
@@ -442,6 +476,33 @@ function RowContent({ row, layout, wrap, onToggleFold, scroll, hover, onHover, r
       return <HunkHeaderRow file={row.file} hunkIx={row.hunkIx} />;
     case "notice":
       return <NoticeRow file={row.file} messageIx={row.messageIx} />;
+    case "commentCard":
+      // A comment row without the wiring never lands in the list (the
+      // flattener only interleaves when comments are passed), but the
+      // guard keeps the viewer independently mountable.
+      return review === null || review === undefined ? null : (
+        <CommentCard
+          comment={row.comment}
+          onEdit={review.onCardEdit}
+          onRemove={review.onCardRemove}
+        />
+      );
+    case "commentDraft":
+      return review === null || review === undefined || review.draft === null ? null : (
+        <CommentDraft
+          // `draft_cite_path` (changes.rs:3291-3294): the header cites the
+          // same path the staged card and the prompt bullet will — the
+          // pre-rename path on the Old side. (The ticket's §2.3 says RAW
+          // path; the desktop source wins — noted in the ticket Comments.)
+          path={row.side === "old" && review.draft.oldPath !== null ? review.draft.oldPath : row.path}
+          line={row.line}
+          body={review.draft.body}
+          editing={row.editingId !== null}
+          onBody={review.onDraftBody}
+          onCancel={review.onDraftCancel}
+          onCommit={review.onDraftCommit}
+        />
+      );
     case "line":
       return (
         <LineRow
@@ -658,19 +719,12 @@ function UnifiedLineRow({
         <LineText tokens={tokens} />
       </CodePlane>
       {anchor !== null && renderAdder !== undefined && hover !== null && sameAnchor(hover, anchor) ? (
-        <span className="diff-adder-slot" style={{ left: adderSlotLeft(file, "unified") }}>
+        <span className="diff-adder-slot" style={{ left: commentAdderLeft(anchor.side, gutter) }}>
           {renderAdder!(anchor)}
         </span>
       ) : null}
     </div>
   );
-}
-
-function adderSlotLeft(file: FileDiff, plane: "unified" | "split"): number {
-  const gutter = gutterWidth(file);
-  return plane === "unified"
-    ? ACCENT_BAR_WIDTH + 2 * gutter + MARKER_WIDTH
-    : 2 * (ACCENT_BAR_WIDTH + gutter);
 }
 
 /**
@@ -791,7 +845,7 @@ function SplitHalf({
         <LineText tokens={tokens} />
       </CodePlane>
       {anchor !== null && renderAdder !== undefined && hover !== null && sameAnchor(hover, anchor) ? (
-        <span className="diff-adder-slot" style={{ left: ACCENT_BAR_WIDTH + gutter }}>
+        <span className="diff-adder-slot" style={{ left: splitAdderLeft(gutter) }}>
           {renderAdder!(anchor)}
         </span>
       ) : null}

@@ -1,15 +1,26 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
   type RefObject,
 } from "react";
+import { Icon } from "@roboco/icons";
 import { highlightCode, splitTokenLines, type SyntaxToken } from "../../lib/syntax";
 import { isMarkdownPath } from "../../lib/files";
+import {
+  EDITOR_COMMENT_DRAFT_HEIGHT,
+  editorCommentOverlayHorizontal,
+  editorCommentOverlayTop,
+  cardHeight,
+  type ReviewComment,
+} from "../../lib/review-comments";
 import { HorizontalScrollbar, MenuScrollbar } from "../ui/Scrollbar";
+import { EditorCommentCard } from "../review-comments/editor-comment-card";
+import { EditorCommentDraft } from "../review-comments/editor-comment-draft";
 
 /**
  * `CodeView` — the file viewer's text layer (crates/ui/src/files/preview.rs:
@@ -58,6 +69,30 @@ export interface CodeViewProps {
   readonly autoFocus?: boolean;
   /** The host's handle to the input layer (the context menu's target). */
   readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
+  /**
+   * Ticket 23's editor-side comments (preview.rs::render_editor_comment_
+   * overlays, :2784-3060): the File-sourced staged set for THIS path, the
+   * open card/draft, and their actions. Null on read-only documents (the
+   * desktop renders the overlay only over a live editor).
+   */
+  readonly review?: CodeReviewWiring | null;
+}
+
+/** The editor-side comment wiring `CodeView` hosts (preview.rs:2794-2893). */
+export interface CodeReviewWiring {
+  /** The File-sourced staged comments for this path. */
+  readonly comments: readonly ReviewComment[];
+  /** The open editor card's comment id (`preview.active_comment`). */
+  readonly activeId: string | null;
+  /** The open editor draft, when it belongs to this path. */
+  readonly draft: { readonly path: string; readonly line: number; readonly body: string; readonly editingId: string | null } | null;
+  readonly onOpenDraft: (line: number) => void;
+  readonly onToggleActive: (id: string) => void;
+  readonly onCardEdit: (id: string) => void;
+  readonly onCardRemove: (id: string) => void;
+  readonly onDraftBody: (body: string) => void;
+  readonly onDraftCancel: () => void;
+  readonly onDraftCommit: () => void;
 }
 
 /** The tokenizer's language hint: the file's own extension. */
@@ -70,7 +105,7 @@ function languageForPath(path: string): string | null {
   return name.slice(dot + 1).toLowerCase();
 }
 
-export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, autoFocus, inputRef }: CodeViewProps) {
+export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, autoFocus, inputRef, review }: CodeViewProps) {
   const language = useMemo(() => languageForPath(path), [path]);
   // Markdown files highlight as markdown; everything else keys off its
   // extension (`lib/syntax.ts` resolves aliases).
@@ -83,6 +118,50 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [activeLine, setActiveLine] = useState(0);
+
+  // ── Ticket 23: the editor-side comment overlay ──────────────────────────
+  // The card/draft floats at the anchor row's bottom edge, clamped into the
+  // scroll viewport (`editor_comment_overlay_top`, preview.rs:3301-3309);
+  // scrolling repositions it with the row, exactly like the desktop's
+  // window-space bounds math recomputed per render.
+  const [scrollTick, setScrollTick] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) {
+      return;
+    }
+    const onScroll = (): void => setScrollTick((tick) => tick + 1);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  const activeComment =
+    review?.activeId === null || review === null || review === undefined || review.activeId === null
+      ? null
+      : review.comments.find((comment) => comment.id === review.activeId) ?? null;
+  const overlayDraft = review !== null && review !== undefined && review.draft !== null ? review.draft : null;
+  const overlayAnchorLine = overlayDraft !== null ? overlayDraft.line : activeComment !== null ? activeComment.line : null;
+  const overlayHeight = overlayDraft !== null ? EDITOR_COMMENT_DRAFT_HEIGHT : activeComment !== null ? cardHeight(activeComment.body) : 0;
+  const [overlay, setOverlay] = useState<{ left: number; top: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller === null || overlayAnchorLine === null) {
+      setOverlay(null);
+      return;
+    }
+    const row = scroller.querySelector<HTMLElement>(`[data-line="${overlayAnchorLine}"]`);
+    if (row === null) {
+      setOverlay(null);
+      return;
+    }
+    const viewport = scroller.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const rowTop = rowRect.top - viewport.top;
+    const gutter = row.querySelector<HTMLElement>(".files-code-gutter");
+    const gutterPx = Math.min(Math.max(gutter?.getBoundingClientRect().width ?? 36, 24), 64);
+    const horizontal = editorCommentOverlayHorizontal(gutterPx, scroller.clientWidth);
+    const top = editorCommentOverlayTop(rowTop, rowRect.height, overlayHeight, scroller.clientHeight);
+    setOverlay(top === null ? null : { left: horizontal.left, top, width: horizontal.width });
+  }, [overlayAnchorLine, overlayHeight, scrollTick, lines.length, text, fontSize, wordWrap, editable, review?.activeId, overlayDraft]);
 
   // Keep the host's handle (the editor context menu's target) live.
   useEffect(() => {
@@ -161,9 +240,10 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
           {lines.map((line, index) => (
             <div
               key={index}
+              data-line={index + 1}
               className={`files-code-row${editable && index === activeLine ? " files-code-row-active" : ""}`}
             >
-              {renderGutterCell(index)}
+              {renderGutterCell(index, review)}
               <span className="files-code-line">
                 {renderTokens(line, index, tokenLines)}
               </span>
@@ -190,6 +270,35 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
           )}
         </div>
       </div>
+      {/* Ticket 23: the floating comment card/draft overlays
+          (render_editor_comment_overlays, preview.rs:2860-2893) — absolute
+          children of the code view, above the scroll layer, at the anchor
+          math's clamped left/top/width. */}
+      {review !== null && review !== undefined && overlay !== null && activeComment !== null ? (
+        <EditorCommentCard
+          comment={activeComment}
+          left={overlay.left}
+          top={overlay.top}
+          width={overlay.width}
+          onEdit={review.onCardEdit}
+          onRemove={review.onCardRemove}
+        />
+      ) : null}
+      {review !== null && review !== undefined && overlay !== null && overlayDraft !== null ? (
+        <EditorCommentDraft
+          left={overlay.left}
+          top={overlay.top}
+          width={overlay.width}
+          path={overlayDraft.path}
+          line={overlayDraft.line}
+          body={overlayDraft.body}
+          editing={overlayDraft.editingId !== null}
+          placeholder={isMarkdownPath(path) ? "Request a change…" : "Add a comment…"}
+          onBody={review.onDraftBody}
+          onCancel={review.onDraftCancel}
+          onCommit={review.onDraftCommit}
+        />
+      ) : null}
       {/* The floating rails replace the native scrollbars (popover.rs's
           scrollbar pair — the code plane's share of the 21/25 debt). */}
       <MenuScrollbar scrollRef={scrollRef} />
@@ -199,14 +308,41 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
 }
 
 /**
- * Ticket 23's seam: one gutter cell per visible row — the line number
- * today; a per-row comment affordance slots in beside it later without
- * touching the row loop above.
+ * Ticket 23's gutter cell (preview.rs:2801-2857): the line number, with the
+ * comment affordance overlaying it — a `chatRoundLine` icon on lines that
+ * carry a staged File comment (the cell gets the card plate + hover wash,
+ * click toggles the card), or a hover-revealed solid `+` (16px, 11px plus)
+ * on lines without one, click opens the draft.
  */
-function renderGutterCell(lineIndex: number): ReactNode {
+function renderGutterCell(lineIndex: number, review: CodeReviewWiring | null | undefined): ReactNode {
+  const line = lineIndex + 1;
+  const comment = review?.comments.find((candidate) => candidate.line === line);
+  const affordance =
+    comment !== undefined ? (
+      <button
+        type="button"
+        className="files-gutter-comment"
+        aria-label={`Open comment on line ${line}`}
+        onClick={() => review!.onToggleActive(comment.id)}
+      >
+        <Icon name="chatRoundLine" size={10.5} />
+      </button>
+    ) : review !== null && review !== undefined ? (
+      <button
+        type="button"
+        className="files-gutter-add"
+        aria-label={`Comment on line ${line}`}
+        onClick={() => review.onOpenDraft(line)}
+      >
+        <span className="files-gutter-add-button">
+          <Icon name="plus" size={11} />
+        </span>
+      </button>
+    ) : null;
   return (
-    <span className="files-code-gutter" aria-hidden>
-      {lineIndex + 1}
+    <span className={`files-code-gutter${comment !== undefined ? " files-code-gutter-commented" : ""}`}>
+      {affordance}
+      <span className="files-code-gutter-number">{line}</span>
     </span>
   );
 }

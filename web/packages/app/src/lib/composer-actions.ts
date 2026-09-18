@@ -4,6 +4,7 @@ import type { EngineClient } from "@roboco/engine-client";
 import { describeMutateError } from "./chat-actions";
 import type { StagedAttachment, UploadedAttachment } from "./attachments";
 import { uploadAttachments, withAttachments } from "./attachments";
+import { withComments, type ReviewComment } from "./review-comments";
 import { queueMessage as queueMessageRpc } from "./queue-actions";
 
 /**
@@ -104,10 +105,14 @@ export interface SendResult {
 /** Optional inputs for send. `stagedAttachments` is the bytes the user
  *  dropped/picked into the composer — the sender uploads them, embeds the
  *  refs in the prompt, and populates `transfers` so the chat's host device
- *  knows about them. `uploadProgress` is called per-chunk. */
+ *  knows about them. `uploadProgress` is called per-chunk.
+ *  `reviewComments` is the staged comment set, folded into the prompt as
+ *  plain text (the ONLY transport — there is no structured wire field,
+ *  composer.rs:6130-6137). */
 export interface SendAttachmentsOptions {
   readonly stagedAttachments?: readonly StagedAttachment[];
   readonly uploadProgress?: (uploadedBytes: number, totalBytes: number) => void;
+  readonly stagedReviewComments?: readonly ReviewComment[];
 }
 
 /** Mint a client-side message id (the optimistic-echo dedupe key). */
@@ -145,7 +150,8 @@ export async function sendRun(
 ): Promise<SendResult> {
   const trimmed = prompt.trim();
   const staged = attachments.stagedAttachments ?? [];
-  const hasContent = trimmed.length > 0 || staged.length > 0;
+  const comments = attachments.stagedReviewComments ?? [];
+  const hasContent = trimmed.length > 0 || staged.length > 0 || comments.length > 0;
   if (!hasContent) {
     throw new Error("Cannot send an empty message");
   }
@@ -163,7 +169,14 @@ export async function sendRun(
     staged,
     attachments.uploadProgress,
   );
-  const finalPrompt = withAttachments(trimmed, uploaded.map((entry) => entry.path));
+  // The comment block folds in BEFORE the attachment trailer (composer.rs:
+  // 6137 with_comments, then 6393 with_attachments wraps it) — the
+  // transcript strips the attachment refs first, so the comment block is
+  // still the trailing block the badge extractor matches.
+  const finalPrompt = withAttachments(
+    withComments(trimmed, comments),
+    uploaded.map((entry) => entry.path),
+  );
   const command = {
     kind: "run" as const,
     request: buildRunRequest(

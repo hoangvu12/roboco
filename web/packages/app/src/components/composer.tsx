@@ -123,9 +123,12 @@ import {
 import { ComposerPickers } from "./composer-pickers";
 import { NewThreadGitSelectors, NewThreadTargetSelectors } from "./composer/new-thread-selectors";
 import { AttachmentStrip } from "./attachments/attachment-strip";
+import { CommentsChip } from "./review-comments/comments-chip";
 import { MentionPopup } from "./composer/mention-popup";
 import { SlashPopup } from "./composer/slash-popup";
 import { ComposerWizard } from "./composer/wizard";
+import { reviewCommentStore, useReviewComments } from "../state/review-comments";
+import { commentStripHeight, withComments } from "../lib/review-comments";
 
 /**
  * The composer — the desktop's `crates/ui/src/composer.rs` ported to React:
@@ -444,6 +447,12 @@ export function Composer({
   // Staged attachments per chat id — survives a chat switch (the strip
   // moves with the chat). Empty for a chat the user has never staged on.
   const [stagedByChat, setStagedByChat] = useState<Record<string, readonly StagedAttachment[]>>({});
+  // Staged review comments ride the same per-chat keying (state.rs:688's
+  // `composer_key`) — one shared store, read here for the chip, the send
+  // fold-in, and the content gate (a staged comment alone is a legal send,
+  // composer.rs:505).
+  const stagedComments = useReviewComments(chat.id);
+  const commentCount = stagedComments.comments.length;
   // The failure notice (composer.rs:7309-7411). Chat-scoped failures
   // survive navigation and only render under their own chat.
   const [failure, setFailure] = useState<FailureNotice | null>(null);
@@ -661,6 +670,8 @@ export function Composer({
   const lastDockAmountRef = useRef<number | null>(null);
   const stagedCountRef = useRef(staged.length);
   stagedCountRef.current = staged.length;
+  const commentCountRef = useRef(commentCount);
+  commentCountRef.current = commentCount;
   const reducedMotionRef = useRef(reducedMotion);
   reducedMotionRef.current = reducedMotion;
   const availableWidthRef2 = useRef(availableWidth);
@@ -750,7 +761,11 @@ export function Composer({
     // `strip_width_hint` (composer.rs:7511): the pill's content width, in
     // both modes.
     const stripWidthHint = (availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
-    const stripH = attachmentStripHeight(stagedCountRef.current, stripWidthHint);
+    // `comment_strip_height` (composer.rs:7524): the comments chip rides the
+    // same arithmetic strip budget as the attachments.
+    const stripH =
+      attachmentStripHeight(stagedCountRef.current, stripWidthHint) +
+      commentStripHeight(commentCountRef.current);
     // `dock_height` (composer.rs:7489-7500): with a dock frame installed the
     // shared clock owns the pill's height across the route; without one the
     // mode's own height applies.
@@ -847,7 +862,7 @@ export function Composer({
     // The dock's amount moves the pill height every frame of the route
     // glide — re-run the pass per frame change, not only per text/width
     // change (the desktop recomputes per render).
-  }, [text, expanded, availableWidth, staged.length, tick, dockFrame?.amount, dockFrame?.active]);
+  }, [text, expanded, availableWidth, staged.length, commentCount, tick, dockFrame?.amount, dockFrame?.active]);
 
   // The rAF loop: keep frames coming while a morph is in flight (the
   // desktop's `window.request_animation_frame`, shell.rs `motion_active`).
@@ -1879,6 +1894,10 @@ export function Composer({
         delete next[chatId];
         return next;
       });
+      // `take_review_comments` (composer.rs:6130-6136): the comment block is
+      // staged onto the composer key the draft was opened against — for the
+      // new-chat canvas that is `""`, the pre-mint key.
+      const takenComments = reviewCommentStore.takeComments(chat.id);
       // `typed` keeps the user's own words for the failure hand-back below
       // (restoring a folded prompt would paste the trailer as literal text).
       const messageId = mintMessageId();
@@ -1929,9 +1948,12 @@ export function Composer({
         if (queue) {
           // Queue rows keep a clean body (the host rebuilds the attachment
           // transport when it promotes the row); the bytes upload first on
-          // the web's legacy blocking path.
+          // the web's legacy blocking path. The comment block DOES ride the
+          // queued text (`queue_body`, composer.rs:6559-6572) — only the
+          // attachment trailer stays out.
           const uploaded = taken.length > 0 ? await uploadAttachments(session.client, taken, onProgress) : [];
-          const body = trimmed.length > 0 ? trimmed : ATTACHMENT_ONLY_TEXT;
+          const folded = withComments(trimmed, takenComments);
+          const body = folded.length > 0 ? folded : ATTACHMENT_ONLY_TEXT;
           await queueMessage(
             session.client,
             chatId,
@@ -1946,7 +1968,9 @@ export function Composer({
             trimmed,
             chat.cwd,
             { mintMessageId: () => messageId },
-            taken.length > 0 ? { stagedAttachments: taken, uploadProgress: onProgress } : {},
+            taken.length > 0 || takenComments.length > 0
+              ? { stagedAttachments: taken, uploadProgress: onProgress, stagedReviewComments: takenComments }
+              : { stagedReviewComments: takenComments },
           );
           // Refresh the echo in place with the attachment-folded prompt so
           // its state never flickers (composer.rs:6401-6423).
@@ -1984,6 +2008,9 @@ export function Composer({
         echoStore.removeEcho(messageId);
         setText(typed);
         chatDrafts.set(chatId, typed);
+        // The taken comments stage back under the chat's key
+        // (`add_review_comment(&restore_key, …)`, composer.rs:6663-6667).
+        reviewCommentStore.restoreComments(chatId, takenComments);
         setStagedByChat((current) => {
           const fresh = current[chatId] ?? [];
           const merged = [...taken.filter((att) => !fresh.some((f) => f.id === att.id)), ...fresh];
@@ -2010,7 +2037,7 @@ export function Composer({
         setBusy(false);
       }
     },
-    [chat.id, chat.cwd, draft, session.client, staged, engineSupports, onNewThreadLaunched],
+    [chat.id, chat.cwd, draft, session.client, staged, engineSupports, onNewThreadLaunched, commentCount],
   );
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
@@ -2056,7 +2083,7 @@ export function Composer({
       return;
     }
 
-    const content = composerHasContent(text, staged.length, 0);
+    const content = composerHasContent(text, staged.length, commentCount);
     const mode = sendButtonMode(runLive, content);
     if (mode === "stop") {
       void interrupt();
@@ -2081,7 +2108,7 @@ export function Composer({
       return;
     }
     await send(text, mode === "queue");
-  }, [busy, text, staged, runLive, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
+  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
 
   // ── Key policy: completions → wizard → Enter bindings (§2.7) ───────────
   // Exactly two Enter bindings; Shift+Enter is always a native newline. While
@@ -2249,7 +2276,7 @@ export function Composer({
         // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
         // recently queued row on a truly empty composer, never Stop.
         event.preventDefault();
-        const content = composerHasContent(text, staged.length, 0);
+        const content = composerHasContent(text, staged.length, commentCount);
         if (modifiedSubmitTarget(content) === "submitContent") {
           void submit();
         } else {
@@ -2378,7 +2405,7 @@ export function Composer({
   );
 
   // ── The send button (§2.11) ─────────────────────────────────────────────
-  const hasContent = composerHasContent(text, staged.length, 0);
+  const hasContent = composerHasContent(text, staged.length, commentCount);
   const editingActive = editingMessage !== null && editingMessage !== undefined;
   const mode: "send" | "queue" | "stop" = editingActive
     ? "send"
@@ -2669,6 +2696,7 @@ export function Composer({
               }}
               onMouseDown={onPillMouseDown}
             >
+              <CommentsChip count={commentCount} />
               <AttachmentStrip
                 chatId={chat.id}
                 staged={staged}

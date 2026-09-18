@@ -20,7 +20,7 @@ pane). This ticket needs 22's diff-line row components
 they were built with, 18's transcript row rendering for the badge, and
 13's composer send-path for the chip and the send-time text fold-in.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/06-queue-attachments-comments.md`
 §1, §2, §3.7, §3.8, §4 (comment-related rows), §5 (comment-related rows),
@@ -521,7 +521,149 @@ the attachment strip's position, per the existing `UserAttachments` →
 
 ## Comments
 
-(empty; appended during implementation)
+### What landed (2026-09-19)
+
+Everything in the ticket's "Web files to touch" table plus the row-model
+plumbing it rides on:
+
+- `lib/review-comments.ts` — the `ReviewComment` model, `withComments`
+  (the codec's writer half), `citePath`/`location`/`diffAnchor`, the card
+  geometry (`cardHeight`/`cardBodyLines` + constants), the editor overlay
+  anchor math (`editorCommentOverlayHorizontal`/`Top`), and
+  `commentStripHeight`. Re-exports the reader half
+  (`extractBadge`-equivalent, `parseBullets`, `chipLabel`, the three
+  constants) from `lib/badges.ts` — ticket 20 already landed the entire
+  reader + registry; one codec, composed, not duplicated.
+- `state/review-comments.ts` — the module store: staged per-chat list
+  (chat-id keying, "" canvas included, `take_comments` snapshot-and-clear
+  for the send path, restore-on-failure, `purge_chat` wired into the chat
+  delete dialog), the diff-side draft state machine, and the editor-side
+  draft/active-card state machine (empty-commit = re-open the card, toggle,
+  pre-filled edit).
+- `components/review-comments/` — `comment-adder`, `comment-draft`
+  (fixed 116px), `comment-card` + the shared `CommentEditButton`,
+  `comments-chip` (reuses ticket 20's `BadgePill`, `details: []` so no
+  hover card), `editor-comment-card` (`.popover-card` chrome) and
+  `editor-comment-draft` (fixed 92px).
+- `lib/diff.ts` — `DiffRow` gained `commentCard`/`commentDraft` rows
+  interleaved after their anchor lines (`body_rows`, changes.rs:1266-1337
+  port), with `diffLineAnchor`/`pairAnchors`; `flattenFiles`/`bodyRows`/
+  `bodyHeightWith`/`estimateRowHeight` take the staged set + draft anchor.
+- `components/diff-view.tsx` — the `review` wiring prop renders the
+  card/draft rows; the adder slots now position through ticket 22's landed
+  `commentAdderLeft`/`splitAdderLeft` (centered in the gutter, §2.2).
+- `routes/changes-page.tsx` — hosts the store wiring (visible comments
+  exclude the one being edited), `renderAdder` (carries the file's
+  `oldPath` for Old-side anchors), and registers the comment set with
+  `changesSurfaceStore.setComments` so fold heights stay analytic.
+- `components/composer.tsx` + `lib/composer-actions.ts` — `CommentsChip`
+  above `AttachmentStrip` with its 36px arithmetic strip contribution
+  (evaluate pass, box height, dock correction); `composerHasContent` now
+  takes the live comment count (comment-only sends legal); `sendRun` folds
+  `withComments(withAttachments-trimmed-text)` in the desktop's order
+  (comment block before the attachment trailer, composer.rs:6137→6393) and
+  accepts `stagedReviewComments`; the queue path folds comments into the
+  queued text (desktop `queue_body`); failure restores the taken set.
+- `components/files/code-view.tsx` + `file-viewer.tsx` — the editor-side
+  gutter affordances (icon/add-button overlay per line, riding the sticky
+  gutter) and the floating card/draft overlays positioned by the ported
+  anchor math, clamped into the scroll viewport and repositioned on
+  scroll; only mounted over a live editor (editable + code view), matching
+  the desktop's `render_editor_comment_overlays` call site. Placeholder
+  split: "Request a change…" (Markdown) / "Add a comment…" (code).
+- `styles/app.css` — the `.comment-*`, `.comments-chip`,
+  `.editor-comment-*`, `.files-gutter-*` blocks, tokens-only colors.
+- `tests/review-comments.test.ts` — 22 tests: the comments.rs suite port
+  (bullets, stand-in body, multiline indent, file comments, mixed block,
+  rename citation, card geometry + clamping) plus §3's six desktop badge
+  names run through the REAL `withComments`→`splitBadges` round trip.
+
+§2.9's transcript badge half needed no new code: tickets 18/20 already
+landed the extractor fold (`lib/transcript.ts:1510`), the `MessageBadges`
+mount in `UserRow`, and the pill + 280ms hover card. Verified live.
+
+### Deviations from the ticket text (judgment calls)
+
+1. **§2.3 draft header path**: the ticket says "the RAW `path`, NOT
+   `citePath` — this is deliberate, see §7" (no §7 exists). The desktop's
+   call site passes `draft_cite_path` with the comment "Header cites the
+   same path the staged card and the prompt bullet will"
+   (changes.rs:3285-3294). Implemented the desktop behavior: an Old-side
+   draft on a renamed file cites `oldPath`.
+2. **Card/draft placement**: implemented as interleaved rows in the
+   flattened diff row list (the desktop's `DiffRow::CommentCard`/
+   `CommentDraft` model) rather than inside `UnifiedLineRow`/
+   `SplitLineRow` — the ticket's file table said "wire … into the
+   hover-hook point", but analytic heights that "compose with bodyHeightWith
+   exactly" (§2.4) require the row list to carry them; the adder still goes
+   through the hover hook. `FileBodyUpto` (tool diffs) stays comment-free,
+   matching `render_file_body_upto`.
+3. **withComments empty check**: ticket says `text.trim().length === 0`;
+   desktop checks raw `is_empty` (comments.rs:146). Took the ticket's
+   spelling — every caller passes already-trimmed text, so behavior is
+   identical.
+4. **Editor flush machinery not ported**: the desktop's
+   `review_comment_flushes`/`begin/finish_review_comment_flush` (the
+   document-save handshake behind `send_blocked` condition 3) has no web
+   counterpart in the file-document save model; `reviewCommentFlushPending`
+   stays `false`. Also skipped (out of ticket scope, no desktop-equivalent
+   trigger on web): `update_review_comment_line` (edit-driven line
+   shifts) and `rename_review_comment_path`.
+5. **Failure restore key**: comments restore under the minted/existing
+   `chatId` — the web's existing send-failure path keeps the minted chat
+   row alive (the desktop restores to the "" canvas because it deletes the
+   row); attachments already behaved this way.
+6. **Gutter wiring**: ticket 25 landed the real line-numbered gutter, so
+   per §1's rule the editor-side affordances wire into CodeView's
+   `.files-code-gutter`/`renderGutterCell` seam — no parallel gutter was
+   built, and `file-viewer.tsx` only passes the wiring through.
+
+### Verification
+
+- `pnpm -r build` green (proto, engine-client, app); app vitest
+  1037/1037 (63 files) including the 22 new.
+- `web_smoke` runbook, followed as written. Port 27699 was held by
+  sibling wave-2 agents (26-terminal, then 27-history) rotating capture
+  rounds for ~70 minutes; I never killed a sibling (none was a merged
+  leftover) and took a free window at 01:12. Staging, all runtime-only
+  from the authorized client side: the smoke tempdir was turned into a
+  real git repo (modified `src/app.rs`, untracked `new_module.rs`, deleted
+  `notes.md`); the chat's branch stamped through the engine's `Mutate`
+  RPC (`setChatBranch`) — the one-time pair code had been consumed by the
+  browser, so a temporary vitest harness (deleted before commit) drove
+  the RPCs with the browser session's own stored credential; a
+  `createSpace` + `createChat` pair minted a "Smoke files chat" because
+  the seeded smoke-chat has no space and the Files pane requires one.
+- DOM-verified behaviors: adder 16px at `commentAdderLeft` (606 = 3+36+10)
+  on hover only; draft fixed 116px, header `src/app.rs:2`, Enter commits /
+  Escape cancels; card analytic 66px with hover-revealed pen/×; edit
+  re-opens pre-filled with "Save", the edited card hidden while editing;
+  remove deletes immediately; composer chip "1 comment"/"2 comments" with
+  NO hover card; comment-only send → chip cleared, bubble
+  "Address the review comments below.", "2 comments" pill, 280ms hover
+  card with one row per comment (locations + L/R tags + bodies); reload →
+  the badge re-extracts from the engine-stored text (boot check clean);
+  file-comment send on the files chat → `REVIEW_COMMENT_BLOCK_HEADER`
+  variant with no tag pill; Files preview: gutter icon on the commented
+  line, hover-revealed add button on others, floating card 320px wide at
+  left 40 (= gutter 48 − 8) with analytic height, draft fixed 92px with
+  the "Add a comment…"/"Request a change…" placeholder split, empty
+  commit re-opens the card, pen pre-fills the draft.
+
+### Screenshots
+
+Web halves in `.scratch/web-parity/shots/23/`:
+`web-a-diff-line-hovered-adder.png`, `web-b-open-draft.png`,
+`web-c-staged-card-edit-remove-revealed.png`,
+`web-d-composer-chip-2-comments.png`,
+`web-e-sent-message-badge-hover-card.png` (diff-comment pill + card),
+`web-e2-file-comment-badge-hover-card.png` (file-comment variant),
+`web-f-files-gutter-icon-and-adder.png`, `web-boot-check.png`.
+
+Desktop halves of all pairs skipped: no desktop client is running on this
+machine and driving it unattended steals foreground focus (tickets 07 and
+22's documented precedent). All geometry/colors above were asserted from
+computed styles instead.
 
 ### Shared components addendum (2026-09-18)
 

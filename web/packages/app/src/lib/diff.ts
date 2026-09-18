@@ -20,6 +20,8 @@
  * the theme's `--rb-syntax-*` roles. No color is hardcoded here.
  */
 
+import { cardHeight, DRAFT_CARD_HEIGHT, type CommentSide, type ReviewComment } from "./review-comments";
+
 /** One source line on the old or new side of a patch hunk. */
 export type LineKind = "context" | "add" | "del" | "meta";
 
@@ -750,11 +752,63 @@ export type DiffRow =
   | { readonly kind: "notice"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly messageIx: number }
   | { readonly kind: "line"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly hunkIx: number; readonly lineIx: number }
   | { readonly kind: "splitLine"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly hunkIx: number; readonly pairIx: number; readonly left: number | null; readonly right: number | null }
+  /** One staged diff comment inline after its anchor line (`DiffRow::CommentCard`). */
+  | { readonly kind: "commentCard"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly comment: ReviewComment }
+  /** The open diff-side draft after its anchor line (`DiffRow::CommentDraft`). */
+  | { readonly kind: "commentDraft"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly path: string; readonly side: CommentSide; readonly line: number; readonly editingId: string | null }
   | { readonly kind: "bodyPad"; readonly id: string; readonly file: FileDiff; readonly fileIx: number }
   /** One body mid-fold-tween: a height-animated, clipped stand-in row. */
   | { readonly kind: "foldingBody"; readonly id: string; readonly file: FileDiff; readonly fileIx: number; readonly from: number; readonly to: number; readonly epoch: number };
 
-/** Capacity hint only — split pairing can only shrink the line count. */
+/**
+ * `line_anchor` (changes.rs:783-789): a deletion only exists in the
+ * pre-change file; everything else is cited against the post-change file,
+ * which is what the agent edits. Meta lines carry no anchor.
+ */
+export function diffLineAnchor(line: DiffLine): { side: CommentSide; line: number } | null {
+  if (line.kind === "meta") {
+    return null;
+  }
+  if (line.kind === "del") {
+    return line.oldNo !== null ? { side: "old", line: line.oldNo } : null;
+  }
+  return line.newNo !== null ? { side: "new", line: line.newNo } : null;
+}
+
+/**
+ * `pair_anchors` (changes.rs:768-780): a split row's two side anchors,
+ * deduped when the row is a mirrored context pair. Cards for Old-side notes
+ * still render (they are pushed by the row, not the column), so switching
+ * layouts never hides an already-staged one.
+ */
+export function pairAnchors(
+  lines: readonly DiffLine[],
+  pair: SplitPair,
+): ({ side: CommentSide; line: number } | null)[] {
+  const anchor = (ix: number | null): { side: CommentSide; line: number } | null => {
+    if (ix === null) {
+      return null;
+    }
+    const line = lines[ix];
+    return line === undefined ? null : diffLineAnchor(line);
+  };
+  const left = anchor(pair[0]);
+  const right = anchor(pair[1]);
+  return left !== null && right !== null && left.side === right.side && left.line === right.line
+    ? [left]
+    : [left, right];
+}
+
+/** The diff-side draft's anchor, as the row model carries it. */
+export interface DiffDraftAnchor {
+  readonly path: string;
+  readonly side: CommentSide;
+  readonly line: number;
+  /** The staged comment being edited — the draft row's button reads "Save". */
+  readonly editingId: string | null;
+}
+
+/** Capacity hint only — comment cards are not counted (changes.rs:1252-1257). */
 export function bodyRowCount(file: FileDiff): number {
   const lines = file.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
   return fileNotices(file).length + file.hunks.length + lines + 1;
@@ -762,11 +816,48 @@ export function bodyRowCount(file: FileDiff): number {
 
 /**
  * One expanded file's body rows: notices → hunk headers → (unified lines or
- * split pairs, each eventually followed by its comment cards — ticket 23's)
- * → trailing `BodyPad` (`body_rows`, changes.rs:1266).
+ * split pairs, each followed by its comment cards and the draft row when an
+ * anchor matches) → trailing `BodyPad` (`body_rows`, changes.rs:1266-1337).
+ * `comments` is the file's own diff-sourced staged slice, in staged order,
+ * with the comment being edited already excluded by the caller.
  */
-export function bodyRows(file: FileDiff, fileIx: number, mode: DiffMode): DiffRow[] {
+export function bodyRows(
+  file: FileDiff,
+  fileIx: number,
+  mode: DiffMode,
+  comments: readonly ReviewComment[] = [],
+  draft: DiffDraftAnchor | null = null,
+): DiffRow[] {
   const rows: DiffRow[] = [];
+  const pushCards = (anchors: readonly ({ side: CommentSide; line: number } | null)[]): void => {
+    for (const anchor of anchors) {
+      if (anchor === null) {
+        continue;
+      }
+      for (const comment of comments) {
+        const source = comment.source;
+        if (
+          source.kind === "diff" &&
+          source.side === anchor.side &&
+          comment.line === anchor.line
+        ) {
+          rows.push({ kind: "commentCard", id: rowId(fileIx, "c", comment.id), file, fileIx, comment });
+        }
+      }
+      if (draft !== null && draft.side === anchor.side && draft.line === anchor.line) {
+        rows.push({
+          kind: "commentDraft",
+          id: rowId(fileIx, "d", `${draft.side}${draft.line}`),
+          file,
+          fileIx,
+          path: draft.path,
+          side: draft.side,
+          line: draft.line,
+          editingId: draft.editingId,
+        });
+      }
+    }
+  };
   const notices = fileNotices(file);
   for (let ix = 0; ix < notices.length; ix += 1) {
     rows.push({ kind: "notice", id: rowId(fileIx, "n", ix), file, fileIx, messageIx: ix });
@@ -779,10 +870,13 @@ export function bodyRows(file: FileDiff, fileIx: number, mode: DiffMode): DiffRo
       for (let pairIx = 0; pairIx < pairs.length; pairIx += 1) {
         const [left, right] = pairs[pairIx]!;
         rows.push({ kind: "splitLine", id: rowId(fileIx, `s${hunkIx}`, pairIx), file, fileIx, hunkIx, pairIx, left, right });
+        pushCards(pairAnchors(hunk.lines, pairs[pairIx]!));
       }
     } else {
       for (let lineIx = 0; lineIx < hunk.lines.length; lineIx += 1) {
+        const line = hunk.lines[lineIx]!;
         rows.push({ kind: "line", id: rowId(fileIx, `${hunkIx}`, lineIx), file, fileIx, hunkIx, lineIx });
+        pushCards([diffLineAnchor(line)]);
       }
     }
   }
@@ -791,13 +885,13 @@ export function bodyRows(file: FileDiff, fileIx: number, mode: DiffMode): DiffRo
 }
 
 /** Analytic expanded-body height — `bodyHeightWith` for one mode. */
-export function bodyHeightWith(file: FileDiff, mode: DiffMode): number {
-  let height = fileNotices(file).length * NOTICE_HEIGHT;
-  for (const hunk of file.hunks) {
-    height += HUNK_HEADER_HEIGHT;
-    height += (mode === "split" ? splitPairs(hunk.lines).length : hunk.lines.length) * DIFF_LINE_HEIGHT;
-  }
-  return height + BODY_BOTTOM_PAD;
+export function bodyHeightWith(
+  file: FileDiff,
+  mode: DiffMode,
+  comments: readonly ReviewComment[] = [],
+  draft: DiffDraftAnchor | null = null,
+): number {
+  return bodyRows(file, 0, mode, comments, draft).reduce((sum, row) => sum + estimateRowHeight(row), 0);
 }
 
 /** `body_height(file)` — the unified analytic height. */
@@ -808,12 +902,16 @@ export function bodyHeight(file: FileDiff): number {
 /**
  * Flatten all files into the list's rows. A collapsed file contributes ONLY
  * its header; a mid-tween file contributes header + one `foldingBody`
- * stand-in (`flatten_rows`, changes.rs:1343).
+ * stand-in (`flatten_rows`, changes.rs:1343-1375). `comments` is the whole
+ * staged set (each file takes its own path's diff-sourced slice); `draft`
+ * is the diff-side draft anchor, whatever file it belongs to.
  */
 export function flattenFiles(
   files: readonly FileDiff[],
   mode: DiffMode,
   folds: ReadonlyMap<string, FileFold>,
+  comments: readonly ReviewComment[] = [],
+  draft: DiffDraftAnchor | null = null,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   for (let fileIx = 0; fileIx < files.length; fileIx += 1) {
@@ -834,12 +932,16 @@ export function flattenFiles(
     if (fold !== undefined && fold.collapsed) {
       continue;
     }
-    rows.push(...bodyRows(file, fileIx, mode));
+    const fileComments = comments.filter(
+      (comment) => comment.source.kind === "diff" && comment.path === file.path,
+    );
+    const fileDraft = draft !== null && draft.path === file.path ? draft : null;
+    rows.push(...bodyRows(file, fileIx, mode, fileComments, fileDraft));
   }
   return rows;
 }
 
-function rowId(fileIx: number, scope: string, ix: number): string {
+function rowId(fileIx: number, scope: string, ix: string | number): string {
   return `${fileIx}:${scope}:${ix}`;
 }
 
@@ -873,6 +975,11 @@ export function estimateRowHeight(row: DiffRow): number {
     case "line":
     case "splitLine":
       return DIFF_LINE_HEIGHT;
+    case "commentCard":
+      // Analytic, never measured (`DiffRow::height`, changes.rs:1234-1237).
+      return cardHeight(row.comment.body);
+    case "commentDraft":
+      return DRAFT_CARD_HEIGHT;
     case "bodyPad":
       return BODY_BOTTOM_PAD;
     case "foldingBody":
