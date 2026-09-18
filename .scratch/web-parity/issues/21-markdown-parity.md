@@ -13,7 +13,7 @@ in the theme's selection color.
 
 **Blocked by:** 02 (Foundation tokens), 18 (Transcript rows).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/03-markdown.md` §3.1–§3.15, §4, §5 (all
 rows). Cross-reference: `02-transcript.md` §5 rows 62 and 80.
@@ -741,4 +741,144 @@ transcript owns the state, this ticket owns the UI).
 
 ## Comments
 
-(empty; appended during implementation)
+Landed on `wp2/21-markdown-parity` (worktree `21-markdown`), 2026-09-18. The
+round-2 CSS pre-pass (headings, inline code, links, blockquote, table chrome,
+hr, `::selection`, code-frame radius/ink wash, strong 600, strike color, the
+14 `.tk-*` rules) and the pending-link guard in `StyledRun` were already in
+the base; this ticket landed the renderer-logic layer on top.
+
+**What landed**
+
+- `lib/links.ts` (new): `transcriptAddress`/`normalizeAddress`
+  (browser/model.rs:37-106, including the control/whitespace/backslash,
+  empty-authority and `%`-escape gates), `resolveWorkspaceFileLink`
+  (workspace_links.rs, component-wise root stripping so a POSIX target never
+  resolves under a Windows drive root), `linkPresentationTruncate` +
+  `OffsetMap` (link_presentation.rs, grapheme-boundary binary search with the
+  `'…'.len_utf8()` short-label guard), and `graphemeBreaks` (the hover card's
+  ZWSP wrap breaks).
+- `lib/markdown.ts`: `autolinkRuns`/`findUrlStart`/`bareUrlLen`
+  (parser.rs:489-576, code-point-aware boundary/trim rules) applied after the
+  mend in `materialize` and to table cells; the fence language is now the
+  VERBATIM first token of the fence info (the old lowercasing was a label
+  bug; the highlighter lowercases for its own lookup); `tableColumns` +
+  `TABLE_*` constants (render.rs:727-742).
+- `components/markdown.tsx`: the code header (28px band, 11px muted verbatim
+  label, `ink(0.02)` fill, border-bottom) with the copy button (22px, radius
+  5, COPY→CHECK icon, 10.5px "Copied" for 1200ms) and the fit/wrap toggle
+  (22×22, radius 6, WRAP_TEXT icon, ink 0.08/0.09/0.13 hover shades) bound to
+  the persisted GLOBAL `codeFencesFitContent` (default off = horizontal
+  scroll); `MarkdownLink` — every href through `transcriptAddress`, rejected
+  destinations render inert styled text (`md-link md-link-pending`),
+  workspace-resolvable destinations render as an internal button opening the
+  file's right-pane tab, validated ones as guarded anchors; the hover
+  destination card (650ms delay, bottom/start, `md-link-card`: 11/14,
+  `--rb-raised`, border-strong, `--rb-shadow-sm`, 360×160 caps); the
+  right-click menu ("Open link" / "Copy link address", 260px card) over
+  `RbContextMenu` + `MenuRow`; the `click_is_activation` guard (≤4px
+  up/down delta + empty `window.getSelection()` before an internal
+  activation; external anchors only preventDefault on a guard trip so
+  ctrl/middle-click keep browser behavior). Images: `RunsOrMedia` — a
+  paragraph/heading/cell with image runs splits into a `flex-col gap:8`
+  stack in original order, `<img src alt>` for validated http(s) or `data:`
+  sources, alt-text fallback otherwise; lists rebuilt on the desktop's
+  marker model (18px slot + 8px gap, accent ordered numbers, the real 5×5
+  accent disc, 4px item/block rhythm, the same marker at every depth);
+  `TaskCheckbox` (16×16, radius 3, accent chrome, 12px check) with the
+  `onToggle` seam; tables apply `tableColumns` minimums per column
+  (canvas-measured max-content, bold headers) over `width: 100%` auto
+  layout; `MarkdownSurface` context (workspace root + open-file hook)
+  threaded from `TranscriptView` (chat-page wires `chat.cwd` +
+  `rightPaneStore.addFileSurface`; the subagent dialog stays inert).
+- `components/transcript.tsx`: `StyledRun` deleted — `InlineRunView` is the
+  one inline renderer (veiled rows, thought details, settled blocks share
+  validation/media/guards); `LiveMarkdownRow` veils `codeBlock` rows too,
+  handing `CodeBlock` the chunk ranges (per-line `sliceTokensForVeil`).
+- `lib/veil.ts`: `sliceTokensForVeil` — the pure `slice_spans` port (token
+  cuts at chunk boundaries); `lib/syntax.ts`: the 14 missing `SyntaxRole`
+  members.
+- `tests/markdown.test.ts` (new, 56 tests): `bare_urls_autolink`,
+  `autolink_leaves_non_urls_alone`, `find_url_start`/`bare_url_len` edges,
+  the `transcript_address` reject table + normalization, `table_columns`,
+  the full `close_hanging` checklist (ported test-for-test from mend.rs),
+  the veil constants + `veilDurationMs`/`veilOpacity`/`veilEmaNext`,
+  per-line veil slicing, `resolve_workspace_file_link` (all three desktop
+  tests), `truncate`/`OffsetMap`, and parse-integration guards.
+
+**Deviations / judgment calls**
+
+- **Mermaid ships as source** (no diagram renderer, no EYE/FILE_CODE toggle):
+  Mermaid.js is ~2.5MB minified — too heavy for the engine-embedded bundle
+  for a niche path, and the ticket explicitly allows "ship the toggle-less
+  code block" with a comment. The web files-preview surface (ticket 25)
+  already made the same call. A `mermaid` fence renders as an ordinary code
+  block with its header.
+- **Task checkboxes render disabled** (opacity 0.5, no cursor) exactly like
+  the desktop TRANSCRIPT: `tasks: None` at transcript.rs:5459/5507 — the
+  interactive toggle only exists in the desktop's files preview, which owns
+  an editable document. The web transcript has no message-edit seam, so the
+  `onToggle` prop ships unwired; the acceptance bullet's "toggles" waits on
+  a future edit path (judgment call for a human: wire one or accept the
+  disabled parity state).
+- **Images render `<img>` per the ticket's contract** even though the
+  desktop transcript itself passes `media: None` (transcript.rs:5460/5508)
+  and flattens images to alt text — the media closure only runs in the files
+  preview. The ticket's §2.11/§6 demands the branch; flagging the desktop's
+  current wiring for a human. `data:` sources are allowed as-is (attachment
+  embeds); anything else must survive `transcriptAddress`.
+- **Link hover card focus**: the desktop opens instantly on keyboard focus;
+  the web card opens after the same 650ms delay on both hover and focus
+  (Base UI tooltip trigger semantics). Minor, noted.
+- **Table column sizing**: `tableColumns` is ported and tested, and the
+  minimums apply as per-column `min-width` (canvas-measured max-content,
+  bold at 700) over `width: 100%` auto layout; the browser's own
+  content-proportional auto layout stands in for the desktop's Taffy flex
+  resolution (the same algorithm per render.rs's own comment). Natural
+  widths are not forced per cell.
+- **The custom code scrollbar** stays the accepted platform difference (§2.4).
+- **`appearance-store.ts` edit from the files table: not needed** — the
+  persisted `codeFencesFitContent` (default false) already lives in
+  ticket 03's `state/ui-settings.ts`; this ticket only wired consumers.
+
+**Verification**
+
+- `pnpm -r build` (web root) green; `pnpm --filter @roboco/app test` green
+  (59 files / 951 tests, 56 of them new in `tests/markdown.test.ts`).
+- Browser (`web_smoke` @ 127.0.0.1:27699, `ROBOCO_MOCK_DELAY_MS=1200` +
+  `ROBOCO_MOCK_REPEAT=3`, ticket 18's documented pacing additions): boot
+  with no error boundary (re-checked after pairing, mid-stream, and through
+  the full interaction set); the code header renders 28px with the verbatim
+  `rust` label at 11px + copy + fit buttons (6 actions over 3 fences); the
+  fit toggle flips ALL fences to `pre-wrap`/`min-height` lines and persists
+  `codeFencesFitContent: true|false` in `roboco.ui-settings.v1`
+  round-trip, aria/tooltip swapping "Fit content" ↔ "Use horizontal
+  scrolling"; h2 at 16px/24px/600, inline code accent text on the accent
+  wash with 0px border at inherited 14px, ordered markers in the accent,
+  `strong` at 600; the streaming veil fades live (sampled in-page at 100ms:
+  fading spans with mid-animation opacities).
+
+**Screenshots** (web only, `.scratch/web-parity/shots/21/`; desktop pairs
+skipped per the ticket-18 precedent — no desktop app in this environment,
+captures pair against the standing references in `.scratch/web-client/parity/`):
+
+- (a) `web-21a-reply-settled.png` — h2 + paragraph + inline code + ordered
+  list + rust fence (the fixture's reply).
+- (b) `web-21b-code-default.png` / `web-21b-code-fit.png` — the code header
+  with language label, copy and fit toggle in both fit states.
+- (h) `web-21h-stream-veil.png` / `web-21h-stream-veil-2.png` — mid-stream
+  during the paced mock (the veil fading). Note: the mock script delivers
+  each fence inside a single TextDelta, so a code row MOUNTS fully formed
+  and seeds its veil baseline (the desktop's own attach semantics,
+  `RowVeil::seeded`) — the code-line veil path itself is exercised by the
+  `sliceTokensForVeil` unit tests and the `LiveMarkdownRow` code branch,
+  which no fixture delta can reach.
+- `web-21-final-boot.png` — the final no-error-boundary boot state.
+- **Skipped (fixture cannot produce them; crates/ changes are out of scope
+  for this ticket):** (c) link resting/hover-card/context-menu, (d) image +
+  caption, (e) blockquote, (f) unordered/task lists, (g) 4-column table.
+  The mock harness's scripted reply (registry.rs `mock_script`) contains no
+  links, images, quotes, unordered/task lists or tables, and every user
+  message replays it byte-identically. Those elements are covered by the
+  ported unit tests (`transcript_address` table, autolink, workspace links,
+  truncation) and by the CSS pre-pass values; their interactive chrome
+  (card, menu, drag guard, image split) is wired but unphotographed.

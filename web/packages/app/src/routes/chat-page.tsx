@@ -35,6 +35,7 @@ import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { availableQueuePrimaryAction } from "../lib/queue-row-logic";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
+import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore } from "../state/transcript-store";
 
 /**
@@ -124,6 +125,22 @@ export function ConversationPage() {
   // While a freshly minted chat's row is still landing, the stub stands in
   // (same id, so the composer never re-swaps its draft).
   const effectiveChat = chat ?? stubChat;
+
+  // The markdown host hooks (transcript.rs:5341-5349 `workspace_root` +
+  // `LinkOutcome::Internal`): the chat's cwd resolves agent-authored file
+  // links, and an internal click opens the file's right-pane tab.
+  const markdownSurface = useMemo<MarkdownSurface>(
+    () => ({
+      workspaceRoot: cwd,
+      openWorkspaceFile: (path) => {
+        rightPaneStore.addFileSurface(chatId, path);
+        if (!rightPaneStore.stateFor(chatId).open) {
+          rightPaneStore.toggle(chatId);
+        }
+      },
+    }),
+    [chatId, cwd],
+  );
 
   // The chat's ONE transcript store: the transcript view and the composer's
   // question wizard both read it, so an open chat carries a single
@@ -685,6 +702,7 @@ export function ConversationPage() {
               docId={chatId}
               deviceId={deviceId}
               store={transcriptForOutlet}
+              markdownSurface={markdownSurface}
               onContextUsage={setContextUsage}
               onRetryDelivery={onRetryDelivery}
               onJumpChange={onJumpChange}

@@ -26,7 +26,7 @@ import {
 } from "../state/transcript-store";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
-import { parseMarkdown, PENDING_LINK_URL, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
+import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   COPIED_CLEAR_MS,
   OWN_SEND_TOP_INSET_PX,
@@ -65,7 +65,7 @@ import { OVERDRAW_PX } from "../lib/stick-spring";
 import { VeilTracker } from "../lib/veil";
 import type { ChatIndicator } from "../lib/view";
 import type { MessageBadge } from "../lib/badges";
-import { MarkdownBlockView } from "./markdown";
+import { MarkdownBlockView, MarkdownSurfaceProvider, CodeBlock, InlineRunView, type MarkdownSurface, type VeilChunk } from "./markdown";
 import { MessageBadges } from "./badges";
 import { MessageRail } from "./message-rail";
 import { StickController } from "./stick-controller";
@@ -117,6 +117,7 @@ export function TranscriptView({
   turnStartedAt = null,
   store: sharedStore = null,
   onOpenSubagent,
+  markdownSurface = null,
 }: {
   client: EngineClient;
   docId: string;
@@ -164,6 +165,12 @@ export function TranscriptView({
    * (an unbound host can't open tabs).
    */
   onOpenSubagent?: (payload: SubagentOpen) => void;
+  /**
+   * The markdown host hooks (`RenderOptions` on the desktop): the chat's
+   * workspace root and the internal-link action. Null (default, the subagent
+   * dialog): workspace links render inert.
+   */
+  markdownSurface?: MarkdownSurface | null;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -196,6 +203,7 @@ export function TranscriptView({
       indicator={indicator}
       turnStartedAt={turnStartedAt}
       onOpenSubagent={onOpenSubagent}
+      markdownSurface={markdownSurface}
     />
   );
 }
@@ -211,6 +219,7 @@ function TranscriptSurface({
   indicator,
   turnStartedAt,
   onOpenSubagent,
+  markdownSurface,
 }: {
   store: TranscriptStore;
   client: EngineClient;
@@ -222,6 +231,7 @@ function TranscriptSurface({
   indicator: ChatIndicator | null;
   turnStartedAt: number | null;
   onOpenSubagent?: (payload: SubagentOpen) => void;
+  markdownSurface: MarkdownSurface | null;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
@@ -387,22 +397,28 @@ function TranscriptSurface({
   }, [alignTop, subagentLive, lastEntry, now, docId, pendingSends, indicator, turnStartedAt, onRetryDelivery]);
 
   return (
-    <TranscriptScroller
-      rows={allRows}
-      ticks={ticks}
-      streaming={snapshot.streaming}
-      loaded={snapshot.loaded}
-      replay={snapshot.replay}
-      error={snapshot.error}
-      client={client}
-      deviceId={deviceId}
-      docId={docId}
-      alignTop={alignTop}
-      trailer={trailerState}
-      onJumpChange={onJumpChange}
-      onOpenSubagent={onOpenSubagent}
-      toolMotion={toolMotion}
-    />
+    <MarkdownSurfaceProvider
+      value={
+        markdownSurface ?? { workspaceRoot: null, openWorkspaceFile: () => {} }
+      }
+    >
+      <TranscriptScroller
+        rows={allRows}
+        ticks={ticks}
+        streaming={snapshot.streaming}
+        loaded={snapshot.loaded}
+        replay={snapshot.replay}
+        error={snapshot.error}
+        client={client}
+        deviceId={deviceId}
+        docId={docId}
+        alignTop={alignTop}
+        trailer={trailerState}
+        onJumpChange={onJumpChange}
+        onOpenSubagent={onOpenSubagent}
+        toolMotion={toolMotion}
+      />
+    </MarkdownSurfaceProvider>
   );
 }
 
@@ -1795,26 +1811,15 @@ const MarkdownRow = memo(function MarkdownRow({ row }: { row: TranscriptRow }) {
   );
 });
 
-interface VeilChunk {
-  readonly key: string;
-  readonly start: number;
-  readonly end: number;
-  readonly durationMs: number;
-}
-
-/**
- * A streaming markdown row with the fade veil: newly appended text dissolves
- * in (opacity only — never a positional offset). Chunk ranges come from the
- * ported `VeilTracker`; attach semantics seed the baseline at mount, so a
- * virtualizer remount never replays the fade over already-visible text.
- */
+/** A streaming markdown row with the fade veil. */
 function LiveMarkdownRow({ row }: { row: TranscriptRow }) {
   const kind = row.rowKind;
   const block = kind.kind === "liveMarkdown" ? kind.tree.blocks[kind.blockIx]?.block : undefined;
-  const flat =
-    block !== undefined && (block.kind === "paragraph" || block.kind === "heading")
-      ? blockFlatText(block)
+  const veils =
+    block !== undefined && (block.kind === "paragraph" || block.kind === "heading" || block.kind === "codeBlock")
+      ? block
       : null;
+  const flat = veils === null ? null : blockFlatText(veils);
   const trackerRef = useRef<VeilTracker | null>(null);
   const [chunks, setChunks] = useState<readonly VeilChunk[]>([]);
 
@@ -1840,10 +1845,13 @@ function LiveMarkdownRow({ row }: { row: TranscriptRow }) {
     setChunks((current) => current.filter((chunk) => chunk.key !== key));
   };
 
+  const codeBlock = block.kind === "codeBlock" ? block : null;
   return (
     <div className="row-md row-md-live">
-      {flat !== null && chunks.length > 0 && (block.kind === "paragraph" || block.kind === "heading") ? (
-        <VeiledBlock block={block} chunks={chunks} onChunkEnd={dropChunk} />
+      {flat !== null && chunks.length > 0 && veils !== null && (veils.kind === "paragraph" || veils.kind === "heading") ? (
+        <VeiledBlock block={veils} chunks={chunks} onChunkEnd={dropChunk} />
+      ) : codeBlock !== null && flat !== null && chunks.length > 0 ? (
+        <CodeBlock code={codeBlock.code} language={codeBlock.language} chunks={chunks} onChunkEnd={dropChunk} />
       ) : (
         <MarkdownBlockView block={block} />
       )}
@@ -1863,7 +1871,7 @@ function VeiledBlock({
 }) {
   const pieces = splitRunsForVeil(block.runs, chunks);
   const content = pieces.map((piece, ix) => {
-    const inner = <StyledRun run={piece.run} />;
+    const inner = <InlineRunView run={piece.run} />;
     if (piece.chunk === null) {
       return <span key={`p${ix}`} className="veil-plain">{inner}</span>;
     }
@@ -1923,39 +1931,12 @@ function splitRunsForVeil(
   return out;
 }
 
-/** One styled inline run (shared by veiled rows and thought details). */
-function StyledRun({ run }: { run: InlineRun }) {
-  const style = run.style;
-  let content: ReactNode = run.text;
-  if (style.code) {
-    content = <code className="md-code">{content}</code>;
-  }
-  if (style.bold) {
-    content = <strong>{content}</strong>;
-  }
-  if (style.italic) {
-    content = <em>{content}</em>;
-  }
-  if (style.strikethrough) {
-    content = <s>{content}</s>;
-  }
-  if (style.link !== null && style.link !== undefined) {
-    // The live path needs the settled renderer's pending-link guard
-    // (markdown.tsx InlineRunView): a half-streamed `[text](` mends to the
-    // sentinel URL, which must stay styled-but-inert — never a clickable
-    // `roboco:pending-link` anchor (render.rs:986-998).
-    if (style.link === PENDING_LINK_URL) {
-      content = <span className="md-link md-link-pending">{content}</span>;
-    } else {
-      content = (
-        <a className="md-link" href={style.link} target="_blank" rel="noreferrer noopener">
-          {content}
-        </a>
-      );
-    }
-  }
-  return <>{content}</>;
-}
+/**
+ * One styled inline run — `markdown.tsx`'s `InlineRunView` IS the shared
+ * renderer now (the ticket collapsed this former `StyledRun` copy into it):
+ * veiled rows, thought details and settled blocks all validate links, render
+ * media and guard clicks identically.
+ */
 
 // ── Input and error chips (§2.9 / §2.10) ────────────────────────────────────
 
