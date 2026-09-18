@@ -18,6 +18,8 @@ import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
+import { rightPaneStore } from "../state/right-pane";
+import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore } from "../state/transcript-store";
 import type { QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
@@ -63,6 +65,22 @@ export function ChatPage() {
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
+
+  // The markdown host hooks (transcript.rs:5341-5349 `workspace_root` +
+  // `LinkOutcome::Internal`): the chat's cwd resolves agent-authored file
+  // links, and an internal click opens the file's right-pane tab.
+  const markdownSurface = useMemo<MarkdownSurface>(
+    () => ({
+      workspaceRoot: cwd,
+      openWorkspaceFile: (path) => {
+        rightPaneStore.addFileSurface(chatId, path);
+        if (!rightPaneStore.stateFor(chatId).open) {
+          rightPaneStore.toggle(chatId);
+        }
+      },
+    }),
+    [chatId, cwd],
+  );
 
   // The chat's ONE transcript store: the transcript view and the composer's
   // question wizard both read it, so an open chat carries a single
@@ -374,6 +392,7 @@ export function ChatPage() {
               docId={chatId}
               deviceId={deviceId}
               store={transcriptStore}
+              markdownSurface={markdownSurface}
               onContextUsage={setContextUsage}
               onRetryDelivery={onRetryDelivery}
               onJumpChange={onJumpChange}

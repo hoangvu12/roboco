@@ -246,7 +246,11 @@ function draftBlocks(source: string): BlockDraft[] {
         end = lines[ix]!.start + lines[ix]!.text.length;
         ix++;
       }
-      const language = fence.info.split(/\s+/)[0]?.toLowerCase() ?? "";
+      // The language label is the fence info's first token, VERBATIM — the
+      // header renders the string as typed (render.rs:1952-1954, parser.rs
+      // `info.split_whitespace().next()`); the highlighter resolves the
+      // alias case-insensitively on its own.
+      const language = fence.info.split(/\s+/)[0] ?? "";
       drafts.push({
         block: { kind: "codeBlock", language: language.length > 0 ? language : null, code: codeLines.join("\n") },
         start,
@@ -311,9 +315,9 @@ function draftBlocks(source: string): BlockDraft[] {
       drafts.push({
         block: {
           kind: "table",
-          header: header.map((cell) => parseInline(cell)),
+          header: header.map((cell) => autolinkRuns(parseInline(cell))),
           align,
-          rows: rows.map((row) => row.map((cell) => parseInline(cell))),
+          rows: rows.map((row) => row.map((cell) => autolinkRuns(parseInline(cell)))),
         },
         start,
         end,
@@ -628,6 +632,166 @@ function parseLink(src: string, open: number): { text: string; dest: string; end
 }
 
 // ---------------------------------------------------------------------------
+// Bare-URL autolinking (port of parser.rs::autolink_runs, :489-576)
+// ---------------------------------------------------------------------------
+
+/**
+ * Promote bare `http(s)://` URLs in plain runs into link runs — GFM's
+ * autolink extension. Runs already inside a link or code span pass through
+ * untouched; idempotent, so re-applying on merged output is harmless.
+ */
+export function autolinkRuns(runs: readonly InlineRun[]): InlineRun[] {
+  const out: InlineRun[] = [];
+  for (const run of runs) {
+    if ((run.style.link !== null && run.style.link !== undefined) || run.style.code) {
+      out.push(run);
+    } else {
+      pushTextAutolinked(out, run.text, run.style);
+    }
+  }
+  return out;
+}
+
+function pushTextAutolinked(runs: InlineRun[], text: string, style: InlineStyle): void {
+  let rest = text;
+  for (;;) {
+    const at = findUrlStart(rest);
+    if (at === null) {
+      break;
+    }
+    const schemeLen = rest.startsWith("https://", at) ? "https://".length : "http://".length;
+    const from = rest.slice(at);
+    const len = bareUrlLen(from);
+    if (len <= schemeLen) {
+      // A scheme with nothing after it stays text (don't re-find it).
+      pushRun(runs, rest.slice(0, at + schemeLen), style);
+      rest = from.slice(schemeLen);
+      continue;
+    }
+    pushRun(runs, rest.slice(0, at), style);
+    const url = from.slice(0, len);
+    pushRun(runs, url, { ...style, link: url });
+    rest = from.slice(len);
+  }
+  pushRun(runs, rest, style);
+}
+
+/** The full code point ending at UTF-16 index `at - 1`, for boundary tests. */
+function codePointBefore(text: string, at: number): string | undefined {
+  if (at <= 0) {
+    return undefined;
+  }
+  const prev = text.charCodeAt(at - 1);
+  if (prev >= 0xd800 && prev <= 0xdbff) {
+    return text.slice(at - 2, at);
+  }
+  return text[at - 1]!;
+}
+
+/**
+ * First viable `http(s)://` occurrence: not glued to a preceding alphanumeric
+ * (`foohttps://x` stays text, per GFM's boundary rule).
+ */
+export function findUrlStart(text: string): number | null {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf("http", from);
+    if (at < 0) {
+      return null;
+    }
+    const after = text.slice(at);
+    const isScheme = after.startsWith("http://") || after.startsWith("https://");
+    const before = codePointBefore(text, at);
+    const boundary = before === undefined || !isAlnum(before);
+    if (isScheme && boundary) {
+      return at;
+    }
+    from = at + "http".length;
+  }
+}
+
+/**
+ * Length of the bare URL at the start of `text`: run to whitespace (or a
+ * delimiter that never appears in pasted URLs), then trim the trailing
+ * punctuation GFM excludes — a closing paren only stays when an opener
+ * inside the URL balances it.
+ */
+export function bareUrlLen(text: string): number {
+  let end = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (/\s/.test(c) || c === "<" || c === ">" || c === '"' || c === "'" || c === "`") {
+      end = i;
+      break;
+    }
+  }
+  let urlEnd = end;
+  for (;;) {
+    if (urlEnd === 0) {
+      break;
+    }
+    const code = text.codePointAt(urlEnd - 1)!;
+    const size = code > 0xffff ? 2 : 1;
+    const ch = String.fromCodePoint(code);
+    let trim = false;
+    if (".,;:!?*_~".includes(ch)) {
+      trim = true;
+    } else if (ch === ")") {
+      const url = text.slice(0, urlEnd);
+      const opens = countOccurrences(url, "(");
+      const closes = countOccurrences(url, ")");
+      trim = opens < closes;
+    }
+    if (!trim) {
+      break;
+    }
+    urlEnd -= size;
+  }
+  return urlEnd;
+}
+
+function countOccurrences(text: string, needle: string): number {
+  let count = 0;
+  let at = text.indexOf(needle);
+  while (at >= 0) {
+    count++;
+    at = text.indexOf(needle, at + needle.length);
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// Table column geometry (port of render.rs::table_columns, :727-742)
+// ---------------------------------------------------------------------------
+
+/** Uniform cell padding (render.rs:50, `TABLE_CELL_PADDING`). */
+export const TABLE_CELL_PADDING = 12;
+/** Floor for a column's max-content share (`TABLE_MIN_COLUMN_CONTENT`). */
+export const TABLE_MIN_COLUMN_CONTENT = 48;
+/** Minimum rendered column width in px, padding included. */
+export const TABLE_MIN_COLUMN_WIDTH = 96;
+
+export interface TableColumns {
+  /** Content-proportional natural widths, padding included. */
+  readonly naturals: readonly number[];
+  /** The width below which a column stops shrinking. */
+  readonly minimums: readonly number[];
+  /** Sum of minimums — the width the table needs before it scrolls. */
+  readonly minTableWidth: number;
+}
+
+/**
+ * Resolve column geometry from measured per-column max-content widths
+ * (content only — padding is added here, as the source adds
+ * `2 * TABLE_CELL_PADDING`).
+ */
+export function tableColumns(contentWidths: readonly number[]): TableColumns {
+  const naturals = contentWidths.map((w) => Math.max(w, TABLE_MIN_COLUMN_CONTENT) + 2 * TABLE_CELL_PADDING);
+  const minimums = naturals.map((n) => Math.min(n, TABLE_MIN_COLUMN_WIDTH));
+  return { naturals, minimums, minTableWidth: minimums.reduce((a, b) => a + b, 0) };
+}
+
+// ---------------------------------------------------------------------------
 // Streaming mend (port of crates/ui/src/markdown/mend.rs)
 // ---------------------------------------------------------------------------
 
@@ -853,10 +1017,13 @@ function materialize(drafts: readonly BlockDraft[], mendTail: boolean): TopBlock
     }
     const tail = mendTail && ix === drafts.length - 1;
     const source = tail ? (closeHanging(draft.inline) ?? draft.inline) : draft.inline;
+    // Autolink AFTER the mend (parser.rs:407-410): a half-streamed bare URL
+    // becomes clickable mid-stream, and mended pending links (link set) are
+    // skipped by the boundary scan.
     const block: Block =
       draft.block.kind === "heading"
-        ? { kind: "heading", level: draft.block.level, runs: parseInline(source) }
-        : { kind: "paragraph", runs: parseInline(source) };
+        ? { kind: "heading", level: draft.block.level, runs: autolinkRuns(parseInline(source)) }
+        : { kind: "paragraph", runs: autolinkRuns(parseInline(source)) };
     return { block, start: draft.start, end: draft.end };
   });
 }

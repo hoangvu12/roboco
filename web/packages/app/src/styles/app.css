@@ -7397,43 +7397,92 @@ button.files-save-pill:hover {
 }
 
 /*
- * Lists (render.rs:631-655): an 18px marker slot + 8px gap = 26px effective
- * indent, ordered numbers and the disc both in the accent. The marker SHAPE
- * stays native for now — the desktop's 5x5 accent disc is the renderer's own
- * marker element (ticket 21).
+ * Lists (render.rs:552-690): the list is a flex column with a 4px item gap;
+ * each item is a row of an 18px marker slot + 8px gap + a content column
+ * (its own blocks 4px apart) — 26px effective indent, the same accent
+ * marker at every depth (the browser's disc→circle→square cycle is gone:
+ * the marker is the renderer's own 5x5 accent disc, not a glyph).
  */
 .md-list {
   margin: 0;
-  padding-left: 26px;
-}
-
-/* The desktop shows the same accent disc at every depth; the browser cycles
-   disc→circle→square, so nested unordered lists pin back to disc. */
-.md-list ul {
-  list-style-type: disc;
-}
-
-/* Item/block rhythm (render.rs:558, 664): 4px between sibling items and
-   between an item's own blocks. Task items keep their inline checkbox line
-   out of this (the span is inline; the first block after it must not be
-   pushed off the checkbox's baseline). */
-.md-list > li + li,
-.md-list li:not(.md-task) > * + * {
-  margin-top: 4px;
-}
-
-.md-task {
+  padding: 0;
   list-style: none;
-  margin-left: -18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
+.md-item {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The marker slot: ordered numbers as accent text at body scale, unordered
+   as a real 5x5 accent disc centered on the first line's cap band, tasks as
+   the 16x16 checkbox. */
+.md-marker {
+  flex: none;
+  min-width: 18px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  color: var(--rb-accent);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.md-marker-dot {
+  flex: none;
+  margin-left: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--rb-accent);
+}
+
+.md-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A nested list rides the item's content column (render.rs:664): its gap to
+   the item's other blocks is the column's 4px, the indent the marker model. */
+.md-item-body > .md-list {
+  gap: 4px;
+}
+
+/*
+ * The task checkbox (render.rs:570-627): 16x16, radius 3, accent border and
+ * fill + a 12px check on `--rb-bg` when checked. The transcript wires no
+ * toggle handler on either client (`tasks: None`, transcript.rs:5459/5507),
+ * so the parity state is disabled — opacity 0.5, default cursor.
+ */
 .md-checkbox {
-  margin-right: 6px;
-  color: var(--rb-text-faint);
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--rb-border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--rb-bg);
+  opacity: 0.5;
 }
 
 .md-checkbox-done {
-  color: var(--rb-success);
+  border-color: var(--rb-accent);
+  background: var(--rb-accent);
+}
+
+.md-checkbox-check {
+  display: flex;
 }
 
 /*
@@ -7451,15 +7500,101 @@ button.files-save-pill:hover {
 }
 
 /*
- * The code frame (render.rs:1976-1986): radius 10, `ink(0.035)` — a
- * translucent white/black overlay the page shows through, not an opaque
- * surface — and the 1px theme.border.
+ * The code frame (render.rs:1969-1990): a flex column — radius 10,
+ * `ink(0.035)` translucent fill, 1px theme.border, overflow hidden so the
+ * header band and body clip to the radius.
  */
 .md-codeblock {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   background: color-mix(in srgb, var(--rb-text) 3.5%, transparent);
   border: 1px solid var(--rb-border);
   border-radius: 10px;
+  overflow: hidden;
+}
+
+/*
+ * The header band (render.rs:1928-1966): 28px, pl 12 / pr 5, a 1px
+ * border-bottom, `ink(0.02)` fill, the verbatim fence-info label at 11px
+ * text_muted on the left and the action row (gap 2) on the right.
+ */
+.md-codehead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding-left: 12px;
+  padding-right: 5px;
+  border-bottom: 1px solid var(--rb-border);
+  background: rgb(var(--rb-ink) / 0.02);
+}
+
+.md-codehead-lang {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-muted);
+}
+
+.md-codehead-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/*
+ * Header action buttons (render.rs:1868-1880, 2075-2113): 22x22 radius-6
+ * icon buttons whose wash blends from transparent to ink(0.08) over
+ * HOVER_FADE / EASE_TAILWIND; the FIT toggle, while active, rests at
+ * ink(0.09) and hovers ink(0.13).
+ */
+.md-action {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.md-action:hover,
+.md-action:focus-visible {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+.md-action-active {
+  background: rgb(var(--rb-ink) / 0.09);
+}
+
+.md-action-active:hover,
+.md-action-active:focus-visible {
+  background: rgb(var(--rb-ink) / 0.13);
+}
+
+/* The copy button (render.rs:1881-1926): height 22, px 6, radius 5, gap 4,
+   a 12px COPY→CHECK icon, the 10.5px "Copied" label on success. */
+.md-copy {
+  width: auto;
+  padding: 0 6px;
+  gap: 4px;
+  border-radius: 5px;
+}
+
+.md-copy-label {
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
 }
 
 .md-pre {
@@ -7477,28 +7612,19 @@ button.files-save-pill:hover {
   white-space: pre;
 }
 
-.md-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  padding: 2px 8px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-card);
-  color: var(--rb-text-faint);
-  font-size: 11px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+/*
+ * Fit-content mode (render.rs:2132-2154): lines wrap (whitespace_normal)
+ * with an 18px MINIMUM height, the body stops horizontal scrolling, and the
+ * lines column fills the frame instead of keeping its own min width.
+ */
+.md-codeblock-fit .md-codeline {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  height: auto;
 }
 
-.md-codeblock:hover .md-copy,
-.md-copy:focus-visible {
-  opacity: 1;
-}
-
-.md-copy:hover {
-  color: var(--rb-text);
+.md-codeblock-fit .md-pre {
+  overflow-x: hidden;
 }
 
 /*
@@ -7518,6 +7644,105 @@ button.files-save-pill:hover {
   opacity: 0.7;
 }
 
+/* An internal (workspace file) link renders as a button that opens the
+   file's pane — same monochrome chrome, no navigation. */
+.md-link-internal {
+  border: none;
+  padding: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * The hover destination card (link_destination.rs:14-68): the raw URL in
+   11/14 text on `surface_raised` with a 1px border-strong edge and
+   `shadow_sm`, max 360x160, padded 6/4, radius 4, wrapping at the
+   zero-width-space grapheme breaks the label carries.
+ */
+.md-link-card {
+  max-width: 360px;
+  max-height: 160px;
+  overflow: hidden auto;
+  padding: 6px 4px;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: 4px;
+  background: var(--rb-raised);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--rb-text-muted);
+  box-shadow: var(--rb-shadow-sm);
+}
+
+.md-link-card-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-link-menu-icon {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * Images (render.rs:1593-1637): a paragraph mixing text and images lays out
+   as a `flex-col gap:8` stack in original order; the image itself is
+   shrink-to-fit media (`max-width: 100%`).
+ */
+.md-media {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.md-media-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/*
+ * Sole workspace-file references (render.rs:1670-1691, 1711-1793): a 20px
+   radius-4 icon well beside a paragraph whose whole content is one safe
+   workspace link; a hard-break file list stacks one well per line.
+ */
+.md-fileref {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.md-fileref-well {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.md-fileref-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.md-fileref-lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .md-table-wrap {
   overflow-x: auto;
 }
@@ -7530,6 +7755,7 @@ button.files-save-pill:hover {
  */
 .md-table {
   border-collapse: collapse;
+  width: 100%;
   font-size: 14px;
   line-height: 22px;
 }

@@ -24,7 +24,25 @@ export type SyntaxRole =
   | "punctuation"
   | "tag"
   | "attribute"
-  | "macro";
+  | "macro"
+  // The roles the desktop's `HighlightKind` (crates/syntax/src/lib.rs:60-92)
+  // carries that this tokenizer never emits: the union stays complete so a
+  // future tokenizer upgrade maps one-for-one, and every member already has
+  // its `.tk-*` CSS rule.
+  | "typeBuiltin"
+  | "constructor"
+  | "functionBuiltin"
+  | "variable"
+  | "parameter"
+  | "label"
+  | "markupHeading"
+  | "markupRaw"
+  | "markupLink"
+  | "markupReference"
+  | "markupEmphasis"
+  | "markupStrong"
+  | "embedded"
+  | "invalid";
 
 export interface SyntaxToken {
   readonly text: string;
@@ -140,16 +158,22 @@ function push(tokens: SyntaxToken[], text: string, role: SyntaxRole | null): voi
   tokens.push({ text, role });
 }
 
-/** Tokenize `code` in `language` (a fence info string; aliases resolve). */
+/**
+ * Tokenize `code` in `language` (a fence info string; aliases resolve). The
+ * label arrives verbatim from the fence, so the lookup lowercases it — the
+ * desktop's tree-sitter resolves case-insensitively the same way.
+ */
 export function highlightCode(code: string, language: string | null): SyntaxToken[] {
-  const spec = language === null ? undefined : LANGUAGES[ALIASES[language] ?? language];
-  if (language === "json") {
+  const label = language?.toLowerCase() ?? null;
+  const key = label === null ? null : (ALIASES[label] ?? label);
+  const spec = key === null ? undefined : LANGUAGES[key];
+  if (label === "json") {
     return highlightJson(code);
   }
-  if (language === "yaml" || language === "yml") {
+  if (label === "yaml" || label === "yml") {
     return highlightYaml(code);
   }
-  if (language === "html" || language === "xml" || language === "svg") {
+  if (label === "html" || label === "xml" || label === "svg") {
     return highlightMarkup(code);
   }
   if (spec === undefined) {
