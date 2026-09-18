@@ -70,9 +70,21 @@ export interface QueueClient {
   }): WatchHandle;
 }
 
-/** Begin-edit reply normalized to the lease fields the store records. */
+/**
+ * Begin-edit reply normalized to the lease fields the store records. The
+ * `acquired` arm carries the row's committed attachment paths so the caller
+ * can stage them into the composer (queue.rs::begin_queue_edit's loaded
+ * attachments, ticket 16).
+ */
 export type BeginLeaseOutcome =
-  | { kind: "acquired"; leaseId: string; text: string; baseTextHash: string; expiresAtMs: number }
+  | {
+      kind: "acquired";
+      leaseId: string;
+      text: string;
+      baseTextHash: string;
+      expiresAtMs: number;
+      attachments: readonly string[];
+    }
   | { kind: "locked"; ownerDeviceId: string; expiresAtMs: number }
   | { kind: "missing" };
 
@@ -102,6 +114,7 @@ function beginOutcome(outcome: BeginQueueEditOutcome): BeginLeaseOutcome {
         text: outcome.text,
         baseTextHash: outcome.baseTextHash,
         expiresAtMs: outcome.expiresAtMs,
+        attachments: Array.isArray(outcome.attachments) ? outcome.attachments : [],
       };
     case "locked":
       return { kind: "locked", ownerDeviceId: outcome.ownerDeviceId, expiresAtMs: outcome.expiresAtMs };

@@ -13,7 +13,7 @@ tray's geometry, motion, and copy match the desktop pixel-for-pixel.
 
 **Blocked by:** 13 (Composer core)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/06-queue-attachments-comments.md`
 §3.1, §3.2, §3.3 (context only — see §5 below), §4, §5 rows for
@@ -622,7 +622,157 @@ rule must not both fire for the same keystroke.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation notes (2026-09-18)
+
+**What landed**
+
+- `components/queue-panel.tsx`: near-total rewrite. The panel is now the
+  desktop's `queue_panel_surface` + `queue_row`: one frosted tray (16px
+  top radius, 1px border, `raised @ 92%` over a 16px blur, 18px
+  bottom pad), a 30vh edge-faded wheel-contained list, borderless 36px
+  rows (drag marker / 40×28 thumbnails + "+N" chip / one-line text +
+  attachment-summary line / trailing icon cluster), delivery-gate text
+  replacing the row body, inline Save/Cancel while editing, the
+  150ms EASE_OUT drag slide on the dragged + displaced rows, the 150ms
+  enter/exit fade (exit holds the last rows one fade window), and the
+  latest-row ⌃↵/Ctrl Enter shortcut reveal while the platform modifier
+  is held. Subscribes to the store via `useSyncExternalStore` (the old
+  1s repaint tick is gone). Tooltips ride `ui/Tooltip` with the queue's
+  350ms delay; `QueueActionTooltip` is a thin wrapper (the components
+  addendum's rule — no hand-rolled tooltip chrome).
+- `lib/queue-row-logic.ts` (new): the pure ports — `oneLine`,
+  `queueVisibleText` (trailer-hiding half; Appshot half dropped),
+  `queueAttachmentLabels`/`queueAttachmentSummary`, `availableQueuePrimaryAction`,
+  `queueLatestShortcutVisible`, `queueDropIndex` (+ `dropIndex`/`slideOffset`),
+  `queueDragOffsets`, `visibleQueueRows`, `queuePreviewLimit`,
+  `modifierSendLabel`/`modifierSendCompactLabel`.
+- `lib/queue-thumbnail-gate.ts` (new): the `preview_load_gate`
+  process-wide mutex as a promise chain; every queue-thumbnail load and
+  its retry ladder pass through it, windowed to the scrolled viewport
+  (`visibleQueueRows`).
+- `state/queue-store.ts`: `BeginLeaseOutcome.acquired` now carries the
+  reply's `attachments` paths (the ticket's RPC-plumbing half of the
+  edit-attachments gap). No other shape changes.
+- `routes/chat-page.tsx`: the 20s `renewEdit` heartbeat (a "lost"/
+  "missing" outcome clears the edit with the desktop's expiry copy),
+  `editFinishing` state (drives the row's "Saving…"), the commit path
+  uploads the staged set and passes `text` + `attachments` through
+  `finishEdit` (conflict/missing/lost keep the edit open with the
+  desktop's failure copy), the `.chat-edit-toolbar` bar removed (the
+  inline Cancel supersedes it), and the queue capability stand-in
+  (engine `MESSAGE_QUEUE_ACTIONS_V1`) gating the primary action and
+  `activate_latest_queued`.
+- `composer.tsx` (beyond the two named narrow additions — both already
+  landed by ticket 13, see Deviations): `commit_queue_edit` shared by
+  the composer's submit and the row's inline Save (exposed through the
+  `editCommitRef` handle), and the edit-seed effect now stages the
+  row's attachments from the shared cache and hands the pre-edit staged
+  set back on close (`queue_edit_draft`'s attachments half).
+- `tests/queue-row-logic.test.ts` (new): the desktop test mirrors
+  (`rows_flatten_multi_line_messages`,
+  `available_primary_action_obeys_row_and_host_gates`,
+  `queue_shortcut_only_appears…`,
+  `the_whole_panel_maps_to_a_clamped_queue_drop_slot`,
+  `drag_offsets_move_the_real_row…`,
+  `queue_preview_work_follows_the_visible_rows`,
+  `legacy_attachment_trailers_are_hidden_from_queue_text`, labels,
+  summary, preview limit, modifier labels). `queue-store.test.ts`
+  updated for the `attachments` field.
+
+**Deviations & judgment calls**
+
+- **The composer's §2.3 additions were already done.** Ticket 13 landed
+  the busy-composer `queueMessage` branch (with unconditional
+  `holdForTurnEnd: true` — `composer-actions.ts:213`), the
+  `activateLatestQueued` wiring, and the edit-lease seam. Ticket 16
+  only had to build the panel on top; the two composer edits that
+  remained were the shared `commit_queue_edit` (+ its ref handle) and
+  the edit-staging extension — one addition beyond the file table's
+  two, forced by the inline-Save spec (the row and the composer's send
+  button must share one commit path; the desktop has them in one
+  entity).
+- **`--rb-radius-panel` is 10, not the queue's 16.** The ticket's
+  PANEL_RADIUS (queue.rs:81) is the tray's own 16px; the theme's
+  generic panel token is 10px (app.css's own CARD_RADIUS comment notes
+  the mismatch). `border-radius: 16px 16px 0 0` is literal.
+- **The tray side inset was 12, not 16.** `.composer-queue-tray`
+  (ticket 13's seam) used `--rb-space-md` (12) for `mx-4`; QUEUE_SIDE_INSET
+  is 16, so the margin is now a literal 16px (measured: the panel sits
+  16px inside the pill per side, 18px tucked behind it — the geometry
+  probe in the session log).
+- **No `input_glass_bg` token exists** — the ticket's sanctioned
+  fallback `raised @ 92%` + `blur(16px)` is used; the opaque-mode
+  `shadow_lg()` is the established `--rb-shadow-popover` placeholder.
+- **`host_supports_actions` uses the engine-capability stand-in**
+  (ticket 13's `engineInfo.capabilities` pattern), not a host registry —
+  the registry is ticket 31. `targetDeviceId` routing stays unset, per
+  §5. The "Waiting for provider capabilities" tooltip is wired to it.
+- **The shortcut reveal approximates `composer_has_content`** by
+  sampling the composer's textarea + staged strip from the DOM (the
+  panel lives inside the composer's tree, but the pickers' open state
+  is not visible to it — the desktop also suppresses while pickers are
+  open; that sub-condition is approximated away).
+- **Edit-attachment staging is cache-best-effort**: the chat page
+  pre-loads the row's attachments through the shared cache before
+  opening the edit, and the composer stages what the cache holds; a
+  miss skips that one visually (the commit still re-uploads whatever
+  IS staged and preserves the row engine-side — the desktop re-uploads
+  the whole staged set on commit, which the web mirrors). The
+  desktop's `read_only` while `queue_edit_finishing` is not ported (the
+  composer stays editable during "Saving…"; the row and its buttons
+  stand down).
+- **The exit fade is a web addition**: the desktop's
+  `motion::fade_quick` is mount-only (the panel unmounts instantly when
+  the queue empties, queue.rs:315-317); the ticket asks for the exit
+  leg, so the panel holds the last rows for one 150ms window before
+  unmounting (skipped under reduced motion).
+- **`formatTime` and the "drained by another device" notice are gone**
+  — the failure copy is now the desktop's verbatim strings
+  ("Couldn't send that message", "That message had already left the
+  queue", "Couldn't remove the message", "That queued message is being
+  edited on another device", …).
+
+**Verification**
+
+- `pnpm -r build` green (typecheck + vite build).
+- `vitest run`: 910/910 (59 files) — includes the new
+  `queue-row-logic.test.ts` (14 cases) and the updated
+  `queue-store.test.ts`.
+- web_smoke + use-browser, all staged live against the mock harness
+  (`ROBOCO_MOCK_DELAY_MS=3000`, `ROBOCO_MOCK_REPEAT=4`): queueing while
+  busy stacks rows; the panel's computed geometry matches the ticket
+  (16px radius, 16px side inset, 18px overlap behind the pill, 30vh
+  list with mask + `overscroll-behavior: contain`, 36px borderless
+  rows, 40×28 thumbs, 72px→28px primary flip under 520px composer
+  width with the 4px/8px row gap switch); BEGIN edit seeds the
+  composer with text + 2 staged attachments and swaps the row to
+  inline Save/Cancel; Save commits through FINISH (the row re-delivered
+  with text + attachments intact at turn end); Cancel reverts the row;
+  the renewal heartbeat kept a lease alive past its 60s TTL (reloaded
+  and still "Editing on {device}", while an abandoned lease flipped to
+  "Needs review"); the drag slide's rAF timeline shows 0→±36px over
+  ~150ms; a Mod keydown on an empty composer flips the last row's
+  primary to "Ctrl Enter". Boot check: fresh reload renders with no
+  error boundary.
+- Screenshot pairs — web captures in
+  `.scratch/web-parity/shots/16/`: `web-01-empty-chat.png` (no tray),
+  `web-02-one-row-idle.png`, `web-03-rows-with-thumbnails.png` (row
+  with 2 thumbnails + summary line), `web-04-row-mid-edit.png`
+  (inline Save/Cancel), `web-05-editing-gate.png` ("Editing on
+  {device}"), `web-06-needs-review-gate.png` (bonus state: expired
+  lease), `web-07-row-mid-drag.png` (slide in flight; the rAF timeline
+  in the session log is the t-coverage evidence),
+  `web-08-latest-shortcut-reveal.png`, `web-09-boot-check.png`,
+  `web-10-phone-compact.png` (phone-width sanity: compact flip works,
+  no stacking). **Desktop counterparts skipped beyond
+  `desktop-01-empty.png`**: the desktop binary auto-connects to
+  whatever engine daemon is listening (`roboco.exe` attached to an
+  unrelated `zeron-windows-combined.exe` on this machine), so
+  mock-driven queue staging on the desktop would write into a live
+  engine's data; the empty-state capture was taken before any input,
+  the interactive states were not stageable safely. A human with the
+  real desktop app open can capture the remaining five states the
+  manual way.
 
 ### Shared components addendum (2026-09-18)
 

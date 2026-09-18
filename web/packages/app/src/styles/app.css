@@ -2569,142 +2569,340 @@ a:focus-visible,
 
 /* ── Composer + pickers ─────────────────────────────────────────────── */
 
-/* Queue panel: docked above the composer, rows show edit-gate chips. */
+/* ── Queue panel (ticket 16; queue.rs:223-237, 382-1085) ─────────────── */
+
+/*
+ * `queue_panel_surface` (queue.rs:223-237): ONE frosted glass surface
+ * docked directly behind the composer pill — top corners rounded at
+ * PANEL_RADIUS (16), 1px border, a translucent plate over a 16px blur,
+ * 18px of bottom padding reserved for the portion tucked behind the
+ * composer (`QUEUE_COMPOSER_OVERLAP`, composer.rs:77; visible rows sit
+ * flush with the tray edge). The 16px side inset and the −26px overlap
+ * live on `.composer-queue-tray` (the slot seam, composer.rs:7459-7467).
+ * No `input_glass_bg` token exists yet — `raised @ 92%` over the blur is
+ * the ticket's sanctioned fallback; `shadow_lg()` (opaque surface mode)
+ * is the shared `--rb-shadow-popover` placeholder. Enter fades over
+ * FADE_QUICK (150ms EASE); the exit leg rides the `[data-open]`
+ * transition before the panel unmounts.
+ */
 .queue-panel {
   flex: none;
   display: flex;
   flex-direction: column;
-  padding: var(--rb-space-xs) var(--rb-space-md) 0;
-  background: var(--rb-shell);
-  border-top: 1px solid var(--rb-border);
+  /* PANEL_RADIUS = 16 (queue.rs:81) — the queue tray's own radius, not the
+     generic 10px `--rb-radius-panel` panels use. */
+  border-radius: 16px 16px 0 0;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 92%, transparent);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  padding-bottom: 18px;
+  box-shadow: var(--rb-shadow-popover);
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+  transition: opacity var(--rb-motion-fade-quick) var(--rb-ease-ease);
 }
 
+.queue-panel[data-open="false"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/*
+ * `queue_rows` (queue.rs:238-260): the scrollable row list — 30% of the
+ * VIEWPORT height (`window.viewport_size().height * 0.3`), edge-faded top
+ * and bottom over TRANSCRIPT_FADE_BAND, with contained overscroll so wheel
+ * events never bleed into the transcript underneath
+ * (`queue_wheel_does_not_scroll_the_transcript_even_at_its_boundaries`,
+ * queue.rs:2004).
+ */
 .queue-panel-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-bottom: var(--rb-space-xs);
+  max-height: 30vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--rb-transcript-fade-band),
+    black calc(100% - var(--rb-transcript-fade-band)),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--rb-transcript-fade-band),
+    black calc(100% - var(--rb-transcript-fade-band)),
+    transparent 100%
+  );
 }
 
+/*
+ * `queue_row` (queue.rs:498-631): NOT a card — borderless and transparent
+ * at idle, 36px tall, flush rows (ROW_GAP 0), 8px side pad, 8px radius.
+ * The internal flex gap is 8, or 4 under the narrow composer
+ * (`queue_preview_limit() == 1`, queue.rs:508-512). The paint-only `top`
+ * offset carries the drag slide (TAB_SLIDE: 150ms EASE_OUT, queue.rs:650-
+ * 656) — siblings never reflow.
+ */
 .queue-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: var(--rb-space-sm);
-  min-height: 36px;
-  padding: 4px 10px;
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
-  font-size: 12.5px;
-  line-height: 1.4;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: default;
+  transition: top var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
 }
 
-.queue-row:hover {
-  background: var(--rb-hover);
+.queue-row[data-compact="true"] {
+  gap: 4px;
 }
 
-/* `hold_for_turn_end` is engine-side only — the desktop's row never marks it. */
-.queue-row-locked {
-  border-color: color-mix(in srgb, var(--rb-danger) 50%, var(--rb-border));
-  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+/* Hover wash only when not editing/removing (queue.rs:513-518). */
+.queue-row:not([data-editing="true"]):not([data-removing="true"]):hover {
+  background: rgb(var(--rb-ink) / 0.04);
 }
 
-.queue-row-review {
-  border-color: color-mix(in srgb, var(--rb-danger) 70%, var(--rb-border));
-  background: color-mix(in srgb, var(--rb-danger) 18%, transparent);
+.queue-row[data-editing="true"] {
+  background: rgb(var(--rb-ink) / 0.06);
 }
 
-.queue-row-editing {
-  border-color: var(--rb-accent);
-  background: var(--rb-accent-wash);
+.queue-row[data-removing="true"] {
+  opacity: 0.55;
 }
 
-.queue-row-drop-top {
-  border-top-color: var(--rb-accent);
-  box-shadow: 0 -1px 0 var(--rb-accent);
+/* The drag marker (queue.rs:481-498): 14×22, rounded 4, the drag-handle
+   glyph at 13px in text_muted @ 50%; 0.35 + arrow cursor when
+   interaction-blocked. Editing swaps it for a bare 14px spacer that keeps
+   the text column aligned (queue.rs:607). */
+.queue-row-marker {
+  flex: none;
+  width: 14px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
+.queue-row-marker[data-blocked="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.queue-row-marker-spacer {
+  flex: none;
+  width: 14px;
+}
+
+/* The text column (queue.rs:561-575): one truncated 12.5px/16px line at
+   `text @ 0.9`, plus the 11px/13px attachment summary in text_muted when
+   the row is not image-only. */
 .queue-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.queue-row-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--rb-text);
+  font-size: 12.5px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
 }
 
-.queue-row-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-}
-
-.queue-row-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: var(--rb-radius-control);
-  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
-  color: var(--rb-accent);
-  font-size: 10.5px;
-  font-weight: 500;
-}
-
-.queue-row-chip-locked {
-  background: color-mix(in srgb, var(--rb-danger) 22%, transparent);
-  color: var(--rb-danger);
-}
-
-.queue-row-chip-review {
-  background: var(--rb-danger);
-  color: var(--rb-on-solid);
-}
-
-.queue-row-chip-editing {
-  background: var(--rb-accent);
-  color: var(--rb-on-accent);
-}
-
-.queue-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-}
-
-.queue-row-action {
-  height: 24px;
-  padding: 0 8px;
-  font-size: 11.5px;
-}
-
-.queue-row-remove {
-  width: 24px;
-  padding: 0;
-  font-size: 14px;
+.queue-row-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 13px;
   color: var(--rb-text-muted);
 }
 
-.queue-row-remove:not(:disabled):hover {
-  color: var(--rb-danger);
+.queue-row-editing-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--rb-text-muted);
 }
 
-.chat-edit-toolbar {
+/* The 40×28 attachment preview (`queue_thumbnail`, queue.rs:841-874):
+   1px hairline(0.1) frame, `ink(0.035)` plate, inner 38×26 cover-fit
+   image; hover/focus ring the frame with the accent. */
+.queue-thumb {
   flex: none;
+  width: 40px;
+  height: 28px;
+  padding: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding: var(--rb-space-xs) var(--rb-space-md);
-  background: var(--rb-shell);
-  border-top: 1px solid var(--rb-border);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.035);
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.queue-thumb:hover,
+.queue-thumb:focus-visible {
+  border-color: var(--rb-accent);
+  outline: none;
+}
+
+.queue-thumb-img {
+  display: block;
+  width: 38px;
+  height: 26px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+/* The "+N more" overflow chip (queue.rs:584-602): 28×28, radius 5,
+   `ink(0.06)` plate, 11px muted text. */
+.queue-row-overflow {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.06);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+}
+
+/* The trailing action cluster (queue.rs:606-631): Save → Cancel while
+   editing, Discard → Edit → primary otherwise, 3px apart. */
+.queue-row-actions {
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+/* A trailing glyph button (`queue_action`, queue.rs:908-959): 28×28,
+   radius 5, opacity 0.72 idle → 1.0 + `ink(0.07)` wash on hover, the icon
+   in text_muted @ 0.8 brightening to text; disabled → arrow cursor +
+   opacity 0.45 (still hoverable — the tooltip carries the label);
+   focus-visible rings with the accent. */
+.queue-row-action {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  opacity: 0.72;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+  cursor: pointer;
+}
+
+.queue-row-action:hover {
+  opacity: 1;
+  background: rgb(var(--rb-ink) / 0.07);
+  color: var(--rb-text);
+}
+
+.queue-row-action:focus-visible {
+  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
+  color: var(--rb-accent);
+  outline: none;
+}
+
+.queue-row-action[data-enabled="false"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.queue-row-action[data-enabled="false"]:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+}
+
+/* Send now — the single primary action (`queue_primary_action_button`,
+   queue.rs:979-1033): 28px icon-only under the narrow composer
+   (`queue_preview_limit() == 1`), else 72px icon+label, height 28, radius
+   5, 11.5px label in text_muted; hover brightens + washes; disabled dims
+   to 0.45; focus-visible rings with the accent. */
+.queue-row-primary {
+  flex: none;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.queue-row-primary[data-compact="true"] {
+  width: 28px;
+}
+
+.queue-row-primary[data-compact="false"] {
+  width: 72px;
+}
+
+.queue-row-primary:hover {
+  background: rgb(var(--rb-ink) / 0.07);
+  color: var(--rb-text);
+}
+
+.queue-row-primary:focus-visible {
+  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
+  color: var(--rb-accent);
+  outline: none;
+}
+
+.queue-row-primary[data-enabled="false"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/*
+ * The action tooltip (`QueueActionTooltip`, queue.rs:54-72): 8×5 padding,
+ * 6px radius, 1px border, `surface_overlay` plate, 10.5px text_muted —
+ * over the shared `.rb-tooltip-popup` with the queue family's 350ms show
+ * delay.
+ */
+.queue-action-tooltip {
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--rb-border);
+  background: var(--rb-overlay);
+  font-size: 10.5px;
+  line-height: 14px;
+  color: var(--rb-text-muted);
+  white-space: nowrap;
 }
 
 /*
@@ -2862,15 +3060,17 @@ a:focus-visible,
 }
 
 /*
- * The queue tray slot (composer.rs:7456-7468): `mx-4`, and a −26px bottom
- * margin that cancels the column's 8px gap and tucks the tray 18px behind
- * the pill painted after it (QUEUE_COMPOSER_OVERLAP). The fade is
- * `motion::fade_quick` (150ms EASE, opacity only).
+ * The queue tray slot (composer.rs:7456-7468): `mx-4` — QUEUE_SIDE_INSET
+ * (16, composer.rs:74; `--rb-space-md` is 12, so the literal it is) — and
+ * a −26px bottom margin that cancels the column's 8px gap and tucks the
+ * tray 18px behind the pill painted after it
+ * (QUEUE_COMPOSER_OVERLAP). The fade is `motion::fade_quick` (150ms EASE,
+ * opacity only).
  */
 .composer-queue-tray {
-  margin: 0 var(--rb-space-md);
+  margin: 0 16px;
   margin-bottom: calc(-1 * (var(--rb-space-sm) + 18px));
-  animation: rb-fade-quick 150ms var(--rb-ease-ease);
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
 }
 
 @keyframes rb-fade-quick {
@@ -4717,6 +4917,18 @@ a:focus-visible,
   .composer-queue-tray,
   .composer-queue-notice {
     animation: none;
+  }
+
+  /* The queue panel snaps: the enter fade and exit hold are skipped
+     (JS reads the same flag) and the row slide snaps to its target
+     (queue.rs:650-656). */
+  .queue-panel {
+    animation: none;
+    transition: none;
+  }
+
+  .queue-row {
+    transition: none;
   }
 
   /* The Base UI popups (components/base/*) snap the same way: entrances
@@ -10154,37 +10366,11 @@ html[data-surface="frosted"] .cr-tooltip {
 /* ── Phone polish — queue rows, terminal dock, topbar, banner ───────── */
 
 @media (max-width: 768px) {
-  /* The queue row's grid (text / meta / actions) gets too cramped for
-     four buttons on phones; stack the actions beneath the row and shrink
-     labels to iconography. */
-  .queue-row {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      "text meta"
-      "actions actions";
-    row-gap: 6px;
-  }
-
-  .queue-row-text {
-    grid-area: text;
-    min-width: 0;
-  }
-
-  .queue-row-meta {
-    grid-area: meta;
-  }
-
-  .queue-row-actions {
-    grid-area: actions;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .queue-row-action {
-    height: 28px;
-    padding: 0 8px;
-    font-size: 11px;
-  }
+  /* Queue rows at phone widths: the composer's column is below the 520px
+     `queue_preview_limit` threshold, so rows are already compact (4px
+     gap, one 40×28 thumbnail, icon-only primary) and the 36px flex row
+     with truncated text fits on one line — the old grid overrides
+     targeted the pre-ticket-16 row shape. */
 
   /* Topbar: shrink paddings, drop the wordmark to keep buttons readable. */
   .topbar {

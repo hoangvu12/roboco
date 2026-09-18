@@ -1,89 +1,251 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+  type DragEvent as ReactDragEvent,
+} from "react";
+import type { EngineClient } from "@roboco/engine-client";
+import { Icon, type IconName } from "@roboco/icons";
 import type { QueuedMessage } from "@roboco/proto";
-import { useQueueStore } from "../state/queue-store-context";
-import { sidebarNotice } from "../state/notice";
+import { ATTACHMENT_ONLY_TEXT, bytesToImageDataUrl } from "../lib/attachments";
 import { describeQueueError, mintEditorInstanceId } from "../lib/queue-actions";
+import {
+  availableQueuePrimaryAction,
+  modifierSendCompactLabel,
+  modifierSendLabel,
+  oneLine,
+  queueAttachmentLabels,
+  queueAttachmentSummary,
+  queueDragOffsets,
+  queueDropIndex,
+  queueLatestShortcutVisible,
+  queuePreviewLimit,
+  queueVisibleText,
+  visibleQueueRows,
+} from "../lib/queue-row-logic";
+import { withQueuePreviewGate } from "../lib/queue-thumbnail-gate";
+import { getAttachmentSnapshot, loadAttachment, useAttachmentImage } from "../state/attachment-cache";
+import { sidebarNotice } from "../state/notice";
+import { isMacPlatform } from "../state/shortcuts";
+import { useQueueStore } from "../state/queue-store-context";
+import { Tooltip } from "./ui/Tooltip";
+import { Lightbox } from "./lightbox";
 
 /**
- * The message-queue panel — web peer of `crates/ui/src/queue.rs`. Docked
- * directly above the composer; each row exposes Send now / Edit / Remove
- * actions and shows delivery-gate state (Editing on another device;
- * Review required after an expired lease). Editing moves the
- * row's text into the composer (the chat page handles the lease lifecycle
- * and feeds the committed text back into the row).
+ * The message-queue panel — the web peer of `crates/ui/src/queue.rs`
+ * (`queue_panel_surface` :223, `queue_row` :382). A frosted tray docked
+ * directly behind the composer pill: top-rounded glass, a 30vh edge-faded
+ * row list with contained wheel scrolling, and borderless rows (36px,
+ * flush) whose only chrome is a hover wash. Each row shows a drag marker,
+ * up to `queue_preview_limit()` 40×28 attachment thumbnails, the
+ * one-line text (replaced by the delivery-gate string when gated), and a
+ * trailing cluster of icon buttons — Discard, Edit, and ONE primary
+ * action, Send now (spec decision 3: no Steer-now anywhere; no Hold chip —
+ * `holdForTurnEnd` is engine-internal).
  *
- * Reorder is drag-by-row: a row drops at the gap between two siblings or
- * at the panel edges. The desktop's invisible-drag with a 150ms slide is
- * approximated with an instant `MoveQueuedMessage` — the host is the
- * single source of truth and re-renders the rows on the next snapshot.
+ * Editing a row acquires the host's 60s lease, moves the row's text and
+ * attachments into the composer (the chat page owns the lease lifecycle
+ * and the 20s renewal heartbeat), and swaps the row's children to an
+ * inline Save/Cancel pair. Drag reorders through `MOVE_QUEUED_MESSAGE`
+ * with the 150ms EASE_OUT slide (`queue_drag_offsets`) on the dragged row
+ * and every displaced row.
  */
 
 interface QueuePanelProps {
+  /** The engine client — queue-thumbnail and edit-staging loads. */
+  readonly client: EngineClient;
   /** The host's verified device id — used as the edit-lease owner. */
   readonly editorDeviceId: string;
-  /** Open the composer for editing this row's text. */
+  /** Open the composer for editing this row (text + attachments seeded). */
   readonly onEditRow: (message: QueuedMessage) => void;
   /** The currently-edited row id (the composer is feeding text into it). */
   readonly editingRowId: string | null;
+  /** True while the lease-closing RPC is in flight — the row says "Saving…". */
+  readonly editFinishing: boolean;
+  /** The composer's measured column width — drives `queuePreviewLimit`. */
+  readonly composerWidth: number | null;
+  /**
+   * The host's `MESSAGE_QUEUE_ACTIONS_V1` support (the engine-capability
+   * stand-in for the desktop's host registry until ticket 31's fleet).
+   */
+  readonly hostSupportsActions: boolean;
+  /** The row's inline Save — the composer's `commit_queue_edit` path. */
+  readonly onSaveEdit: () => void;
+  /** Cancel the open edit (Escape / the row's inline Cancel / pre-action). */
+  readonly onEditCancel: () => void;
 }
 
-const ROW_HEIGHT_PX = 36;
-const ROW_GAP_PX = 4;
-const MAX_VISIBLE_ROWS = 5;
+/** `motion::FADE_QUICK` (150ms) — the JS mirror of `--rb-motion-fade-quick`. */
+const FADE_QUICK_MS = 150;
 
-export function QueuePanel({ editorDeviceId, onEditRow, editingRowId }: QueuePanelProps) {
+export function QueuePanel({
+  client,
+  editorDeviceId,
+  onEditRow,
+  editingRowId,
+  editFinishing,
+  composerWidth,
+  hostSupportsActions,
+  onSaveEdit,
+  onEditCancel,
+}: QueuePanelProps) {
   const store = useQueueStore();
-  const snapshot = store.getSnapshot();
+  const snapshot = useSyncExternalStore(
+    useCallback((listener: () => void) => store.subscribe(listener), [store]),
+    useCallback(() => store.getSnapshot(), [store]),
+  );
   const rows = snapshot.rows;
+  const reducedMotion = usePrefersReducedMotion();
   const busy = useRef(false);
-  const [, force] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Tick the panel so lease countdowns and stale-gate notices repaint.
-  useEffect(() => {
-    if (rows.length === 0 && snapshot.editLease === null) {
+  // ── Row-removal bookkeeping (`queue_removing`, queue.rs:1128) ──────────
+  // Optimistically marked here; the row leaves when the watch echoes the
+  // host's splice.
+  const [removing, setRemoving] = useState<ReadonlySet<string>>(() => new Set());
+
+  // ── The exit fade (`motion::fade_quick`, composer.rs:7459-7467) ────────
+  // The desktop's fade is mount-only (the panel unmounts instantly when
+  // the queue empties); the ticket asks for the exit leg too — hold the
+  // last rows for one 150ms fade window, then unmount. Reduced motion
+  // skips the hold entirely.
+  const [exitRows, setExitRows] = useState<readonly QueuedMessage[] | null>(null);
+  const prevRowsRef = useRef<readonly QueuedMessage[] | null>(null);
+  useLayoutEffect(() => {
+    const previous = prevRowsRef.current;
+    prevRowsRef.current = rows;
+    if (rows.length > 0) {
+      if (exitRows !== null) {
+        setExitRows(null);
+      }
       return;
     }
-    const timer = setInterval(() => force((value) => value + 1), 1000);
-    return () => clearInterval(timer);
-  }, [rows.length, snapshot.editLease]);
+    if (exitRows !== null || previous === null || previous.length === 0) {
+      return;
+    }
+    if (reducedMotion) {
+      return;
+    }
+    setExitRows(previous);
+    const timer = setTimeout(() => setExitRows(null), FADE_QUICK_MS);
+    return () => clearTimeout(timer);
+  }, [rows, exitRows, reducedMotion]);
 
-  const editingByOther = useCallback(
-    (row: QueuedMessage): boolean => {
-      const gate = row.deliveryGate ?? null;
-      if (gate === null || gate.kind !== "editing") {
-        return false;
-      }
-      if (gate.ownerDeviceId === editorDeviceId && snapshot.editLease?.messageId === row.id) {
-        return false;
-      }
-      return gate.expiresAtMs > Date.now();
-    },
-    [editorDeviceId, snapshot.editLease],
-  );
+  const renderRows = rows.length > 0 ? rows : exitRows ?? EMPTY_ROWS;
+  const fading = rows.length === 0 && exitRows !== null;
 
-  const reviewRequired = useCallback((row: QueuedMessage): boolean => {
-    const gate = row.deliveryGate ?? null;
-    return gate !== null && gate.kind === "reviewRequired";
+  // ── The row-list viewport (30vh, edge-faded, wheel-contained) ───────────
+  const [listScroll, setListScroll] = useState({ top: 0, height: 0 });
+  const remeasure = useCallback(() => {
+    const el = listRef.current;
+    if (el === null) {
+      return;
+    }
+    setListScroll((current) => {
+      const top = el.scrollTop;
+      const height = el.clientHeight;
+      return current.top === top && current.height === height ? current : { top, height };
+    });
   }, []);
+  useLayoutEffect(() => {
+    remeasure();
+  }, [remeasure, renderRows.length]);
+  // gpui's scroll offset runs negative downward; `scrollTop` is positive.
+  const [visibleFirst, visibleLast] = visibleQueueRows(-listScroll.top, listScroll.height, renderRows.length);
 
-  const onSendNow = useCallback(
-    async (row: QueuedMessage) => {
-      if (busy.current) {
+  // ── The drag state machine (`queue_drag` + `update_queue_drag_over`) ───
+  // `from` is set by the source row's dragstart (the payload's `from`);
+  // `over` recomputes on every dragover through `queue_drop_index`; the
+  // rows paint at their `queue_drag_offsets` targets and the CSS transition
+  // tweens them (150ms EASE_OUT, snapping under reduced motion). `dragend`
+  // fires even without a drop, so a pointer released outside the panel
+  // never leaves a stale gap (`cancel_queue_drag`).
+  const [drag, setDrag] = useState<{ from: number; over: number; prevOver: number } | null>(null);
+  const dragRef = useRef(drag);
+  dragRef.current = drag;
+
+  const onRowDragStart = useCallback((from: number) => {
+    setDrag({ from, over: from, prevOver: from });
+  }, []);
+  const onRowDragEnd = useCallback(() => {
+    setDrag(null);
+  }, []);
+  const onPanelDragOver = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      const current = dragRef.current;
+      if (current === null) {
         return;
       }
-      busy.current = true;
-      try {
-        const sent = await store.sendNow(row.id);
-        if (!sent) {
-          sidebarNotice.set("That message was already drained by another device.");
-        }
-      } catch (error) {
-        sidebarNotice.set(`Could not send now: ${describeQueueError(error)}`);
-      } finally {
-        busy.current = false;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const el = listRef.current;
+      if (el === null) {
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const panelY = event.clientY - rect.top + el.scrollTop;
+      const over = queueDropIndex(panelY, renderRows.length);
+      if (over !== current.over) {
+        setDrag({ from: current.from, over, prevOver: current.over });
       }
     },
-    [store],
+    [renderRows.length],
+  );
+  const onPanelDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      const current = dragRef.current;
+      if (current === null) {
+        return;
+      }
+      event.preventDefault();
+      setDrag(null);
+      const from = current.from;
+      const to = current.over;
+      const id = renderRows[from]?.id;
+      if (id === undefined || from === to) {
+        return;
+      }
+      void store
+        .move(id, to)
+        .then((changed) => {
+          if (!changed) {
+            sidebarNotice.set("Couldn't reorder the queue");
+            store.resubscribe();
+          }
+        })
+        .catch(() => {
+          sidebarNotice.set("Couldn't reorder the queue");
+          store.resubscribe();
+        });
+    },
+    [renderRows, store],
+  );
+
+  // ── Row actions ─────────────────────────────────────────────────────────
+
+  const onSendNow = useCallback(
+    (row: QueuedMessage) => {
+      if (editingRowId === row.id) {
+        onEditCancel();
+      }
+      void store
+        .sendNow(row.id)
+        .then((sent) => {
+          if (!sent) {
+            sidebarNotice.set("Couldn't send that message");
+          }
+        })
+        .catch(() => {
+          sidebarNotice.set("Couldn't send that message");
+        });
+    },
+    [store, editingRowId, onEditCancel],
   );
 
   const onEdit = useCallback(
@@ -96,108 +258,264 @@ export function QueuePanel({ editorDeviceId, onEditRow, editingRowId }: QueuePan
         const instanceId = mintEditorInstanceId();
         const outcome = await store.beginEdit(row.id, instanceId);
         if (outcome.kind === "locked") {
-          sidebarNotice.set(`Editing on another device until ${formatTime(outcome.expiresAtMs)}.`);
+          sidebarNotice.set("That queued message is being edited on another device");
           return;
         }
         if (outcome.kind === "missing") {
-          sidebarNotice.set("That message is no longer queued.");
+          sidebarNotice.set("That queued message is no longer available");
           return;
         }
-        onEditRow({ ...row, text: outcome.text });
-      } catch (error) {
-        sidebarNotice.set(`Could not edit: ${describeQueueError(error)}`);
+        // Pre-load the row's attachments so the composer's strip stages
+        // them from the shared cache (`begin_queue_edit`'s loaded set,
+        // queue.rs:1300-1314). A failed load skips that one — the commit
+        // still preserves it engine-side.
+        await Promise.all(
+          outcome.attachments.map((path) =>
+            loadAttachment(client, editorDeviceId, path).catch(() => {}),
+          ),
+        );
+        let seedText = queueVisibleText(outcome.text, outcome.attachments);
+        if (outcome.attachments.length > 0 && seedText === ATTACHMENT_ONLY_TEXT) {
+          seedText = "";
+        }
+        onEditRow({ ...row, text: seedText, attachments: [...outcome.attachments] });
+      } catch {
+        sidebarNotice.set("Connect to the chat host to edit this message");
       } finally {
         busy.current = false;
       }
     },
-    [onEditRow, store],
+    [store, client, editorDeviceId, onEditRow],
   );
 
   const onRemove = useCallback(
-    async (row: QueuedMessage) => {
-      if (busy.current) {
+    (row: QueuedMessage) => {
+      if (removing.has(row.id)) {
         return;
       }
-      busy.current = true;
-      try {
-        await store.remove(row.id);
-      } catch (error) {
-        sidebarNotice.set(`Could not remove: ${describeQueueError(error)}`);
-      } finally {
-        busy.current = false;
+      if (editingRowId === row.id) {
+        onEditCancel();
       }
+      setRemoving((current) => new Set(current).add(row.id));
+      void store
+        .remove(row.id)
+        .then((removed) => {
+          if (!removed) {
+            sidebarNotice.set("That message had already left the queue");
+            store.resubscribe();
+          }
+        })
+        .catch(() => {
+          sidebarNotice.set("Couldn't remove the message");
+          store.resubscribe();
+        })
+        .finally(() => {
+          setRemoving((current) => {
+            const next = new Set(current);
+            next.delete(row.id);
+            return next;
+          });
+        });
     },
-    [store],
+    [store, removing, editingRowId, onEditCancel],
   );
 
-  const onDrop = useCallback(
-    async (fromId: string, toIndex: number) => {
-      if (busy.current) {
-        return;
+  // ── The latest-row shortcut reveal (`queue_shortcut_revealed`) ──────────
+  // The desktop reveals the ⌘↵/⌃↵ cap while the platform modifier is held
+  // AND the composer is empty AND no queued-row edit is open (the pickers'
+  // open state lives inside the composer and is not visible here — a
+  // documented approximation, see the ticket's Comments). The composer's
+  // emptiness is sampled from the DOM: the panel is mounted inside the
+  // composer's own tree.
+  const [revealShortcut, setRevealShortcut] = useState(false);
+  const composerIsEmpty = useCallback(() => {
+    const composer = rootRef.current?.closest(".composer");
+    if (!(composer instanceof HTMLElement)) {
+      return false;
+    }
+    const input = composer.querySelector<HTMLTextAreaElement>("textarea.composer-input");
+    if (input === null || input.value.length > 0) {
+      return false;
+    }
+    return composer.querySelector(".composer-attachments-strip") === null;
+  }, []);
+  useEffect(() => {
+    const modHeld = (event: KeyboardEvent): boolean =>
+      event.key === "Meta" || event.key === "Control";
+    const sample = (held: boolean): void => {
+      setRevealShortcut(held && composerIsEmpty() && editingRowId === null);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (modHeld(event) || event.metaKey || event.ctrlKey) {
+        sample(true);
       }
-      busy.current = true;
-      try {
-        await store.move(fromId, toIndex);
-      } catch (error) {
-        sidebarNotice.set(`Could not reorder: ${describeQueueError(error)}`);
-      } finally {
-        busy.current = false;
-      }
-    },
-    [store],
-  );
+    };
+    const onKeyUp = (event: KeyboardEvent): void => {
+      sample(modHeld(event) ? false : event.metaKey || event.ctrlKey);
+    };
+    const onBlur = (): void => setRevealShortcut(false);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [composerIsEmpty, editingRowId]);
 
-  if (rows.length === 0 && snapshot.editLease === null) {
+  const previewLimit = queuePreviewLimit(composerWidth);
+
+  if (renderRows.length === 0) {
     return null;
   }
 
-  const scrollable = rows.length > MAX_VISIBLE_ROWS;
-  const maxHeight = scrollable ? `${ROW_HEIGHT_PX * MAX_VISIBLE_ROWS + ROW_GAP_PX * (MAX_VISIBLE_ROWS - 1)}px` : undefined;
+  const count = renderRows.length;
+  const dragNow = drag;
 
   return (
-    <div className="queue-panel" role="list" aria-label="Queued messages">
-      <div className="queue-panel-list" style={maxHeight !== undefined ? { maxHeight, overflowY: "auto" } : undefined}>
-        {rows.map((row) => (
-          <QueueRow
-            key={row.id}
-            row={row}
-            lockedByOther={editingByOther(row)}
-            reviewRequired={reviewRequired(row)}
-            isLocalEditing={editingRowId === row.id}
-            onSendNow={() => void onSendNow(row)}
-            onEdit={() => void onEdit(row)}
-            onRemove={() => void onRemove(row)}
-            onDrop={(toIndex) => void onDrop(row.id, toIndex)}
-          />
-        ))}
+    <div
+      ref={rootRef}
+      className="queue-panel"
+      role="list"
+      aria-label="Queued messages"
+      data-open={fading ? "false" : "true"}
+      onDragOver={onPanelDragOver}
+      onDrop={onPanelDrop}
+    >
+      <div className="queue-panel-list" ref={listRef} onScroll={remeasure}>
+        {renderRows.map((row, ix) => {
+          const offset =
+            dragNow === null
+              ? 0
+              : queueDragOffsets(ix, dragNow.from, dragNow.prevOver, dragNow.over)[1];
+          return (
+            <QueueRow
+              key={row.id}
+              row={row}
+              index={ix}
+              count={count}
+              client={client}
+              deviceId={editorDeviceId}
+              previewLimit={previewLimit}
+              beingEdited={editingRowId === row.id}
+              beingRemoved={removing.has(row.id)}
+              editFinishing={editFinishing}
+              hostSupportsActions={hostSupportsActions}
+              revealShortcut={revealShortcut}
+              offset={offset}
+              thumbnailVisible={ix >= visibleFirst && ix < visibleLast}
+              onSendNow={onSendNow}
+              onEdit={onEdit}
+              onRemove={onRemove}
+              onSaveEdit={onSaveEdit}
+              onCancelEdit={onEditCancel}
+              onDragStartRow={onRowDragStart}
+              onDragEndRow={onRowDragEnd}
+            />
+          );
+        })}
       </div>
     </div>
   );
 }
 
+const EMPTY_ROWS: readonly QueuedMessage[] = [];
+
 interface QueueRowProps {
   readonly row: QueuedMessage;
-  readonly lockedByOther: boolean;
-  readonly reviewRequired: boolean;
-  readonly isLocalEditing: boolean;
-  readonly onSendNow: () => void;
-  readonly onEdit: () => void;
-  readonly onRemove: () => void;
-  readonly onDrop: (toIndex: number) => void;
+  readonly index: number;
+  readonly count: number;
+  readonly client: EngineClient;
+  readonly deviceId: string;
+  readonly previewLimit: number;
+  readonly beingEdited: boolean;
+  readonly beingRemoved: boolean;
+  readonly editFinishing: boolean;
+  readonly hostSupportsActions: boolean;
+  readonly revealShortcut: boolean;
+  /** The drag-slide target offset in px (`queue_drag_offsets`). */
+  readonly offset: number;
+  /** Whether this row is inside the scrolled viewport (thumbnail windowing). */
+  readonly thumbnailVisible: boolean;
+  readonly onSendNow: (row: QueuedMessage) => void;
+  readonly onEdit: (row: QueuedMessage) => void;
+  readonly onRemove: (row: QueuedMessage) => void;
+  readonly onSaveEdit: () => void;
+  readonly onCancelEdit: () => void;
+  readonly onDragStartRow: (index: number) => void;
+  readonly onDragEndRow: () => void;
 }
 
+/**
+ * One queued message (`queue_row`, queue.rs:382): a quiet drag marker, the
+ * text (or the delivery-gate string), and a trailing cluster with exactly
+ * one primary action. The row is NOT a card — borderless and transparent
+ * at idle; only hover/editing/removing states paint a wash or fade. The
+ * entire row (not just the marker) is the drag hitbox.
+ */
 function QueueRow(props: QueueRowProps) {
-  const { row, lockedByOther, reviewRequired, isLocalEditing, onSendNow, onEdit, onRemove, onDrop } = props;
-  const [dragOver, setDragOver] = useState<number | null>(null);
-  const singleLineText = useMemo(() => collapseWhitespace(row.text), [row.text]);
-  const hasAttachments = (row.attachments?.length ?? 0) > 0;
-  const summary = hasAttachments && row.text.trim().length === 0 ? "See the attached image(s)." : singleLineText;
+  const {
+    row,
+    index,
+    count,
+    client,
+    deviceId,
+    previewLimit,
+    beingEdited,
+    beingRemoved,
+    editFinishing,
+    hostSupportsActions,
+    revealShortcut,
+    offset,
+    thumbnailVisible,
+    onSendNow,
+    onEdit,
+    onRemove,
+    onSaveEdit,
+    onCancelEdit,
+    onDragStartRow,
+    onDragEndRow,
+  } = props;
 
-  const draggable = !lockedByOther && !isLocalEditing;
+  const gate = row.deliveryGate ?? null;
+  const deliveryBlocked = gate !== null;
+  const interactionBlocked = deliveryBlocked || beingRemoved;
+  const draggable = !beingEdited && !interactionBlocked;
+  const resolvedPrimary = availableQueuePrimaryAction(interactionBlocked, hostSupportsActions);
+
+  const text = useMemo(() => {
+    if (gate !== null && !beingEdited) {
+      return gate.kind === "editing" ? `Editing on ${gate.ownerDeviceId}` : "Needs review";
+    }
+    return oneLine(queueVisibleText(row.text, row.attachments ?? []));
+  }, [gate, beingEdited, row.text, row.attachments]);
+
+  const attachments = row.attachments ?? [];
+  const labels = useMemo(() => queueAttachmentLabels(attachments), [attachments]);
+  const summary = queueAttachmentSummary(labels);
+  const onlyImages = text === ATTACHMENT_ONLY_TEXT;
+  const title = onlyImages ? summary : text;
+
+  const dragMarker = (
+    <div
+      className="queue-row-marker"
+      data-blocked={draggable ? undefined : "true"}
+      aria-hidden="true"
+    >
+      <Icon name="queueDragHandle" size={13} />
+    </div>
+  );
+
   return (
     <div
-      className={`queue-row ${lockedByOther ? "queue-row-locked" : ""} ${reviewRequired ? "queue-row-review" : ""} ${isLocalEditing ? "queue-row-editing" : ""} ${dragOver === 0 ? "queue-row-drop-top" : ""}`}
+      className="queue-row"
       role="listitem"
+      data-queue-id={row.id}
+      data-compact={previewLimit === 1 ? "true" : "false"}
+      data-editing={beingEdited ? "true" : undefined}
+      data-removing={beingRemoved ? "true" : undefined}
+      style={{ top: `${offset}px` }}
       draggable={draggable}
       onDragStart={(event) => {
         if (!draggable) {
@@ -206,93 +524,287 @@ function QueueRow(props: QueueRowProps) {
         }
         event.dataTransfer.setData("application/x-roboco-queue-id", row.id);
         event.dataTransfer.effectAllowed = "move";
+        onDragStartRow(index);
       }}
-      onDragOver={(event) => {
-        if (!draggable) {
-          return;
-        }
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        const half = rect.top + rect.height / 2;
-        setDragOver(event.clientY < half ? 0 : 1);
-      }}
-      onDragLeave={() => setDragOver(null)}
-      onDrop={(event) => {
-        event.preventDefault();
-        const sourceId = event.dataTransfer.getData("application/x-roboco-queue-id");
-        const target = dragOver ?? 0;
-        setDragOver(null);
-        if (sourceId.length === 0 || sourceId === row.id) {
-          return;
-        }
-        const allRows = event.currentTarget.parentElement?.querySelectorAll("[data-queue-id]") ?? null;
-        const siblings = allRows !== null ? Array.from(allRows) : [];
-        const myIndex = siblings.findIndex((node) => (node as HTMLElement).dataset["queueId"] === row.id);
-        if (myIndex < 0) {
-          return;
-        }
-        const toIndex = target === 0 ? myIndex : myIndex + 1;
-        onDrop(toIndex);
-      }}
-      data-queue-id={row.id}
+      onDragEnd={() => onDragEndRow()}
     >
-      <div className="queue-row-text" title={row.text}>
-        {summary}
-      </div>
-      <div className="queue-row-meta">
-        {/*
-          `hold_for_turn_end` is engine-side only — it gates auto-drain and the
-          desktop's row never shows it. It stays on the data model, unrendered.
-        */}
-        {lockedByOther && <span className="queue-row-chip queue-row-chip-locked">Editing</span>}
-        {reviewRequired && <span className="queue-row-chip queue-row-chip-review">Review</span>}
-        {isLocalEditing && <span className="queue-row-chip queue-row-chip-editing">Editing here</span>}
-      </div>
-      <div className="queue-row-actions">
-        <button
-          type="button"
-          className="btn btn-ghost queue-row-action"
-          onClick={onSendNow}
-          disabled={lockedByOther || reviewRequired}
-          title="Send now (interrupt)"
-        >
-          Send now
-        </button>
-        <button
-          type="button"
-          className="btn btn-ghost queue-row-action"
-          onClick={onEdit}
-          disabled={lockedByOther}
-          title="Edit (acquires an edit lease)"
-        >
-          Edit
-        </button>
-        <button
-          type="button"
-          className="btn btn-ghost queue-row-action queue-row-remove"
-          onClick={onRemove}
-          disabled={lockedByOther}
-          title="Remove from queue"
-          aria-label="Remove from queue"
-        >
-          ×
-        </button>
-      </div>
+      {beingEdited ? (
+        <>
+          {/* The marker's 14px spacer keeps text alignment while the drag
+              glyph stands down (queue.rs:607). */}
+          <div className="queue-row-marker-spacer" aria-hidden="true" />
+          <div className="queue-row-editing-text">
+            {editFinishing ? "Saving…" : "Editing in composer"}
+          </div>
+          <div className="queue-row-actions">
+            <QueueActionButton
+              label="Save to queue"
+              glyph="queueCheck"
+              enabled={!editFinishing}
+              onClick={onSaveEdit}
+            />
+            <QueueActionButton
+              label="Cancel"
+              glyph="queueClose"
+              enabled={!editFinishing}
+              onClick={onCancelEdit}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          {dragMarker}
+          {attachments.slice(0, previewLimit).map((path, ix) => (
+            <QueueThumbnail
+              key={path}
+              client={client}
+              deviceId={deviceId}
+              path={path}
+              visible={thumbnailVisible}
+            />
+          ))}
+          {attachments.length > previewLimit ? (
+            <div
+              className="queue-row-overflow"
+              aria-label={`${attachments.length - previewLimit} more attachments; edit message to view all`}
+            >
+              +{attachments.length - previewLimit}
+            </div>
+          ) : null}
+          <div className="queue-row-text">
+            <div className="queue-row-title" title={title}>
+              {title}
+            </div>
+            {labels.length > 0 && !onlyImages ? (
+              <div className="queue-row-summary" title={summary}>
+                {summary}
+              </div>
+            ) : null}
+          </div>
+          <div className="queue-row-actions">
+            <QueueActionButton
+              label={beingRemoved ? "Removing…" : "Remove"}
+              glyph="trashBinMinimalistic"
+              enabled={!beingRemoved}
+              onClick={() => onRemove(row)}
+            />
+            <QueueActionButton
+              label="Edit"
+              glyph="pen"
+              enabled={!beingRemoved}
+              onClick={() => void onEdit(row)}
+            />
+            <QueuePrimaryButton
+              enabled={resolvedPrimary !== null && !beingRemoved}
+              tooltip={resolvedPrimary !== null ? "Send now (interrupt)" : "Waiting for provider capabilities"}
+              showShortcut={queueLatestShortcutVisible(
+                index,
+                count,
+                revealShortcut,
+                resolvedPrimary !== null && !beingRemoved,
+              )}
+              compact={previewLimit === 1}
+              onClick={() => onSendNow(row)}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-/** Whitespace-collapsed single line (proto view::single_line). */
-function collapseWhitespace(text: string): string {
-  return text
-    .split(/\s+/)
-    .filter((part) => part.length > 0)
-    .join(" ");
+/**
+ * The row's small 40×28 attachment preview (`queue_thumbnail`,
+ * queue.rs:841-874): 1px hairline frame, `ink(0.035)` plate, inner 38×26
+ * cover-fit image. Loads go through the SAME cache the transcript uses,
+ * throttled by the process-wide preview gate (queue.rs:262-265) and
+ * windowed to the scrolled viewport (`visible_queue_rows`). Click opens
+ * the full preview in the lightbox (queue.rs:827-840).
+ */
+function QueueThumbnail({
+  client,
+  deviceId,
+  path,
+  visible,
+}: {
+  readonly client: EngineClient;
+  readonly deviceId: string;
+  readonly path: string;
+  readonly visible: boolean;
+}) {
+  const snapshot = useAttachmentImage(deviceId, path);
+  const [preview, setPreview] = useState<{ name: string; src: string } | null>(null);
+  const loaded = snapshot.state === "loaded" && snapshot.image !== null;
+
+  useEffect(() => {
+    if (!visible || snapshot.state !== "loading") {
+      return;
+    }
+    void withQueuePreviewGate(() => loadAttachment(client, deviceId, path));
+  }, [visible, snapshot.state, client, deviceId, path]);
+
+  // The cache's backoff countdown elapses without a re-render — this row
+  // owns its own re-attempt, still under the gate.
+  const retryIn = snapshot.state === "error" ? snapshot.retryIn : 0;
+  useEffect(() => {
+    if (!visible || retryIn <= 0) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void withQueuePreviewGate(() => loadAttachment(client, deviceId, path));
+    }, retryIn);
+    return () => clearTimeout(timer);
+  }, [visible, retryIn, client, deviceId, path]);
+
+  return (
+    <button
+      type="button"
+      className="queue-thumb"
+      data-state={snapshot.state}
+      aria-label={loaded ? `Preview ${snapshot.image?.name ?? path}` : "Open attachment preview"}
+      onClick={() => {
+        const image = getAttachmentSnapshot(deviceId, path).image;
+        if (image !== null) {
+          setPreview({ name: image.name, src: bytesToImageDataUrl(image.mime, image.bytes) });
+        }
+      }}
+    >
+      {loaded && snapshot.image !== null ? (
+        <img
+          className="queue-thumb-img"
+          src={bytesToImageDataUrl(snapshot.image.mime, snapshot.image.bytes)}
+          alt=""
+          draggable={false}
+        />
+      ) : (
+        <Icon name="queuePaperclip" size={14} className="queue-thumb-placeholder" />
+      )}
+      {preview !== null && (
+        <Lightbox name={preview.name} src={preview.src} onClose={() => setPreview(null)} />
+      )}
+    </button>
+  );
 }
 
-function formatTime(epochMs: number): string {
-  const date = new Date(epochMs);
-  const hours = date.getHours().toString().padStart(2, "0");
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  return `${hours}:${minutes}`;
+/**
+ * A trailing glyph button (`queue_action`, queue.rs:908-959): 28×28, radius
+ * 5, opacity 0.72 idle → 1.0 + `ink(0.07)` wash on hover; disabled → arrow
+ * cursor + opacity 0.45 (still hoverable — the tooltip carries the label).
+ */
+function QueueActionButton({
+  label,
+  glyph,
+  enabled,
+  onClick,
+}: {
+  readonly label: string;
+  readonly glyph: IconName;
+  readonly enabled: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <QueueActionTooltip
+      label={label}
+      trigger={
+        <button
+          type="button"
+          className="queue-row-action"
+          data-enabled={enabled ? "true" : "false"}
+          aria-label={label}
+          aria-disabled={enabled ? undefined : "true"}
+          onClick={() => {
+            if (enabled) {
+              onClick();
+            }
+          }}
+        >
+          <Icon name={glyph} size={13} />
+        </button>
+      }
+    />
+  );
+}
+
+/**
+ * Send now — the row's single primary action
+ * (`queue_primary_action_button`, queue.rs:979-1033): 28px icon-only under
+ * the narrow composer, 72px icon+label otherwise, 11.5px label. While the
+ * modifier is held on an empty composer, the LAST row's button shows the
+ * shortcut cap instead of the icon/label.
+ */
+function QueuePrimaryButton({
+  enabled,
+  tooltip,
+  showShortcut,
+  compact,
+  onClick,
+}: {
+  readonly enabled: boolean;
+  readonly tooltip: string;
+  readonly showShortcut: boolean;
+  readonly compact: boolean;
+  readonly onClick: () => void;
+}) {
+  const isMac = isMacPlatform();
+  return (
+    <QueueActionTooltip
+      label={tooltip}
+      trigger={
+        <button
+          type="button"
+          className="queue-row-primary"
+          data-compact={compact ? "true" : "false"}
+          data-enabled={enabled ? "true" : "false"}
+          data-shortcut={showShortcut ? "true" : "false"}
+          aria-label={tooltip}
+          aria-disabled={enabled ? undefined : "true"}
+          onClick={() => {
+            if (enabled) {
+              onClick();
+            }
+          }}
+        >
+          {showShortcut ? (
+            compact ? modifierSendCompactLabel(isMac) : modifierSendLabel(isMac)
+          ) : compact ? (
+            <Icon name="queueSend" size={13} />
+          ) : (
+            "Send now"
+          )}
+        </button>
+      }
+    />
+  );
+}
+
+/**
+ * The action tooltip (`QueueActionTooltip`, queue.rs:54-72): 8×5 padding,
+ * 6px radius, 1px border, `surface_overlay` plate, 10.5px muted text —
+ * over the shared `Tooltip` primitive with the queue family's 350ms show
+ * delay (queue.rs:933).
+ */
+function QueueActionTooltip({
+  label,
+  trigger,
+}: {
+  readonly label: string;
+  readonly trigger: ReactElement;
+}) {
+  return <Tooltip label={label} delay={350} popupClassName="queue-action-tooltip" trigger={trigger} />;
+}
+
+/** `prefers-reduced-motion` as live state (the row slides snap under it). */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = (): void => setReduced(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return reduced;
 }
