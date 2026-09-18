@@ -16,7 +16,7 @@ does today, just with the desktop's exact geometry, motion and copy.
 
 **Blocked by:** 02 (Foundation tokens), 03 (Client settings store)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/12-settings-shell-appearance.md` §2, §3.0–§3.30, §4, §5 (all rows); `../../web-client/research/01-shell-chrome.md` §3.15.
 
@@ -824,3 +824,131 @@ Two amendments from the post-wave-1 research
 Build on components/ui/ + components/base/ (see components/README.md)
 — do not hand-roll card shells, cursor lists, menu rows, chips, or
 tooltips.
+
+### Landed (2026-09-19, wp2/28-settings-shell @ e4a863b7)
+
+**What landed**
+
+- Settings nav: all 9 web rows in `SettingsSection::ALL` order (Appshots
+  excluded) with the Harnesses→"Agents"/Agents→"Accounts" crossover, icons
+  per §2.1, on the wave-1 pull-forward's `components/settings-nav.tsx`
+  (`SettingsNavBody` in `app-shell.tsx`'s sidebar swap — the addendum's
+  implementation point; `settings-layout.tsx` was already outlet-only and
+  needed no edit). Back row, 11px/0.6 caption, neutral selected wash and
+  sidebar-width tracking were already correct from the pull-forward.
+- Appearance page, full §2.4 order minus Glass: "Appearance" field label →
+  3 mode cards with live 148px/6px theme miniatures (System = split halves,
+  live re-derivation from the current variant pair) → Light/Dark theme
+  rows with the custom 218×34 `PickerCard` popover (260px menu, palette
+  swatches, check on active, mutually exclusive) → Accent row with
+  30×34 chips + bottom bar and the ThemeDefault 3-bar glyph → New-thread
+  background row (choose/replace/remove, `createImageBitmap` decode
+  validation, IndexedDB-managed blob, live-applied through the ticket-15
+  hero's resolver) → conditional Background-effect pills → error strip →
+  Theme library (header row, IMPORTED group, entry rows, import + review
+  dialogs with scene preview and report panel) → Interface font/size
+  block → library warning line.
+- Interface font/size pickers on `base/select.tsx`'s `RbSelect` (the
+  wrapper's doc names these two as its intended consumers), fixed-system-
+  font frame, 3 families + all 7 sizes, committing through ticket 03's
+  store; typography applied live by `applyTypographyToDocument`.
+- `lib/theme-library.ts`: snapshot-only custom library (parse → validate →
+  fill-from-builtin with fallback report lines → install/rekey/duplicate/
+  remove), persisted under `roboco.theme-library.v1` (localStorage — the
+  desktop's `theme-library.json` sibling), merged into the registry
+  overlay (`findVariantAnywhere`/`variantsForAppearanceAll`) so imported
+  variants appear in both selectors, validate at boot, and survive
+  reload. `@roboco/theme`'s `accentForVariant` gained a runtime
+  `AccentRoles::derive` fallback (a byte-faithful port) for variants the
+  precomputed artifact does not know — without it a custom variant + a
+  preset accent would throw on apply.
+- Motion: nav/cards/choices/swatches/triggers get `HOVER_FADE`
+  transitions; the popover family's `MENU_IN/OUT` covers the theme menus;
+  the Select menus get `rb-menu-in/out` + a reduced-motion snap.
+- Tests: `font_keyboard_navigation_stops_at_edges_and_skips_unavailable`,
+  `sourceNameFallsBackToCustomTheme`,
+  `slugCollapsesNonAlphanumericRunsAndNeverEmpty`,
+  `backgroundInstallRejectsUndecodableImage`,
+  `backgroundRemoveClearsFieldAndRetiresResource` in
+  `appearance-store.test.ts`; the library pipeline in
+  `theme-library.test.ts` (13 tests).
+
+**Deviations and judgment calls (for a human)**
+
+1. **Frosted/Glass row removed** per the research addendum: the page
+   offers NO surface picker; §2.7/§2.4's Glass row is dropped,
+   `resolveSurfaceTreatment` stays forced opaque. One leftover to
+   review: the background row's second meta fragment ("Softened
+   automatically on frosted themes.") was kept verbatim per §2.8's table
+   but is inert copy on a client that can never frost — trim or keep?
+2. **Theme import accepts native Roboco-family JSON, not VS Code
+   packages.** The desktop's `theme_library::compile` rides ~1600 lines
+   of vscode token mapping that were not ported; the web dialog parses
+   `{ name, variants: [...] }` (the `ThemeFamily` serde shape, i.e. the
+   desktop's editable-file format), filling un-authored roles from the
+   builtin base and reporting the fills. VS Code `.vsix`/theme-JSON
+   import would be its own ticket.
+3. **"Duplicate" (not "Duplicate as editable")**: there is no editable
+   file to reveal/reload in a browser, so duplicate is
+   `duplicate_as_snapshot` — matching the acceptance's "Review/Duplicate/
+   Remove/Unlink" list; Unlink never renders (no linked sources exist).
+   Library header meta reads "Import custom themes." (desktop: "Import or
+   link custom themes." — the link clause dropped).
+4. **Theme-family menus are pointer rows** (`menu_row`, no cursor — the
+   desktop's own selector rows have no keyboard walk) on `PickerCard`.
+   The 400ms just-dismissed guard is structurally covered by Base UI's
+   `trigger-press` semantics (a press that found the popup open leaves it
+   closed; a press on the other trigger switches menus) — not ported as
+   a literal timer.
+5. **Font/size keyboard**: `RbSelect` gives Base UI Select's
+   Up/Down/Home/End/Enter/Escape/typeahead; the desktop's Left/Right
+   stepping is not literally bound. The pure `step_font` port
+   (clamped, `delta.signum()`) is unit-tested as §3 requires.
+6. **Interface font size scales the rem-baseline text only.** The family
+   applies live via `--rb-font-sans`; the size sets `--rb-ui-size`
+   (body's 14px baseline = size × 0.875), but the web's CSS is
+   predominantly px-typed, so explicitly-sized text does not scale the
+   way the desktop's rem-based interface does. Wholesale px→rem
+   conversion of app.css is a follow-up ticket of its own.
+7. **Background effects**: None is exact; Scanlines is a real masked
+   overlay; Dither/ASCII/Halftone ship as CSS-filter stand-ins (§2.8's
+   sanctioned scope cut) — a pixel-accurate canvas port of
+   `new_thread_background_effects.rs` remains open.
+8. **`settingsIndexRoute` still redirects to `/settings/remote-access`**
+   with a TODO(28) comment — Devices is ticket 29's; the six ticket-29
+   sections render a stub page ("This settings section is coming soon.")
+   so the 9-row nav links real routes; ticket 29 swaps the components.
+9. `sourceName`/`slug` live in `lib/theme-library.ts` (not
+   appearance-store.ts as the file table sketched) — they are import-flow
+   helpers; tests still live alongside appearance-store's per §6.
+10. The theme-library byte cap is 4 MiB (desktop: 16 MiB) to fit
+    `localStorage` quotas; entry/variant caps stay 256/1024.
+
+**Verification**
+
+- `pnpm -r build` (web/) green; app vitest 1035/1035 green.
+- Live smoke round on the embedded bundle (`web_smoke`, port 27699):
+  boot check green (no error boundary, fresh pairing); the full flow
+  exercised — background install (validated, persisted through
+  IndexedDB, survives reload) + SVG rejection shows the verbatim error
+  strip and keeps the previous image; theme import (2-variant family)
+  → detected rows → details scene preview + report → install → IMPORTED
+  group → Review dialog → Duplicate → Remove; imported variant selected
+  in the Dark menu and applied live (`--rb-bg` = the imported variant's
+  background, persists through reload); mode cards switch Light/Dark/
+  System live; font (Geist Mono) and size (18 px) pickers commit and
+  apply live. Geometry asserted in-page: 9 nav rows, 11px caption,
+  218×34 selector trigger, 260px menu, 148px option-card frames,
+  30×34 swatches, 220/128px triggers, 512px/20px subtitle.
+- Screenshot pairs: **web halves captured, desktop halves skipped**
+  (the wave-1 convention — tickets 26/27 also shipped web-only; desktop
+  references live in the research files). Paths:
+  `.scratch/web-parity/shots/28/web-00-boot-check.png`,
+  `web-a-settings-nav.png`, `web-b-appearance-top.png`,
+  `web-c-accent-background.png`, `web-d-background-effects.png`,
+  `web-e-import-dialog.png`, `web-f-review-dialog.png` (review dialog,
+  extra), `web-g-custom-theme-live.png` (imported theme applied, extra).
+  At 1440×900 the whole page fits one viewport, so (b)/(c) overlap.
+- Known gap: the new-thread hero painting the installed background was
+  not itself screenshotted (the settings row's resolvable-thumb check
+  rides the same resolver the hero uses).

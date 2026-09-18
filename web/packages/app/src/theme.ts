@@ -1,6 +1,5 @@
 import {
   applyThemeVariant,
-  findVariant,
   layout,
   layoutCssVars,
   motionCssVars,
@@ -8,11 +7,14 @@ import {
 } from "@roboco/theme";
 import {
   DEFAULT_APPEARANCE,
+  effectiveUiFontFamily,
+  fontFamilyStack,
   resolveAppearance,
   resolveSurfaceTreatment,
   resolveVariantId,
   type AppearancePreferences,
 } from "./lib/appearance-store";
+import { findVariantAnywhere } from "./lib/theme-library";
 
 /**
  * Install the appearance preferences on the document root: the resolved
@@ -30,7 +32,9 @@ export function applyAppearanceToDocument(
 ): void {
   const appearance = resolveAppearance(preferences.mode, system);
   const variantId = resolveVariantId(preferences, appearance);
-  const variant = findVariant(variantId) ?? findVariant(DEFAULT_APPEARANCE.darkVariant);
+  // The registry union: an installed custom-library variant resolves here
+  // too, so a stored selection survives the reload it was persisted for.
+  const variant = findVariantAnywhere(variantId) ?? findVariantAnywhere(DEFAULT_APPEARANCE.darkVariant);
   if (variant === undefined) {
     throw new Error(`Unknown theme variant: ${variantId}`);
   }
@@ -70,6 +74,23 @@ export function applyAppearanceToDocument(
   }
   root.dataset.surface = resolveSurfaceTreatment();
   root.style.colorScheme = variant.appearance;
+}
+
+/**
+ * The interface typography (typography.rs:189-318): the chosen family on
+ * `--rb-font-sans` (the variable `body` consumes) and the chosen size on
+ * `--rb-ui-size` (the baseline text scales with it — 14px designed at the
+ * 16px default, `ui_rems(14)` at a root of `size`). Called on boot and on
+ * every settings write; the font-picker block itself stays on
+ * `--rb-font-sans-fixed` so the control never renders in a font it just
+ * broke.
+ */
+export function applyTypographyToDocument(
+  typography: { readonly uiFontFamily: string; readonly uiFontSize: number },
+  root: HTMLElement = document.documentElement,
+): void {
+  root.style.setProperty("--rb-font-sans", fontFamilyStack(effectiveUiFontFamily(typography.uiFontFamily)));
+  root.style.setProperty("--rb-ui-size", String(typography.uiFontSize));
 }
 
 /**

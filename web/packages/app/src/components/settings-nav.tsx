@@ -1,5 +1,5 @@
 import { Link, useRouter } from "@tanstack/react-router";
-import { Icon } from "@roboco/icons";
+import { Icon, type IconName } from "@roboco/icons";
 import { navEntryPath, navHistory } from "../state/nav-history";
 
 /**
@@ -10,17 +10,26 @@ import { navEntryPath, navHistory } from "../state/nav-history";
  * pad and owns neither a width nor a border of its own; the shell's seam
  * keeps it resizable and collapsible exactly like the chat sidebar.
  *
- * The full 9-row nav (Devices, Agents, Files, Notifications, Shortcuts,
- * Archived) stays ticket 28's — this pull-forward renders the three sections
- * the web router actually defines and routes to them.
+ * All 9 web-relevant sections render in `SettingsSection::ALL` order
+ * (Appshots is desktop/Linux-only and permanently absent on web); the
+ * label/variant crossover is verbatim — `Harnesses` shows as "Agents",
+ * `Agents` shows as "Accounts" (shell.rs:402-429). Sections whose pages ship
+ * in ticket 29 (Devices, Agents, Files, Notifications, Shortcuts, Archived)
+ * link to their eventual routes, which carry stub pages until then.
  */
 
-/** The sections the router defines, in desktop nav order. */
-const SECTIONS = [
+/** The web's `SettingsSection::ALL` minus Appshots (shell.rs:386-431). */
+const SECTIONS: readonly { to: string; label: string; icon: IconName }[] = [
+  { to: "/settings/devices", label: "Devices", icon: "monitor" },
   { to: "/settings/remote-access", label: "Remote access", icon: "keyMinimalistic" },
+  { to: "/settings/harnesses", label: "Agents", icon: "widget" },
   { to: "/settings/accounts", label: "Accounts", icon: "keyMinimalistic" },
   { to: "/settings/appearance", label: "Appearance", icon: "tuning" },
-] as const;
+  { to: "/settings/files", label: "Files", icon: "folder" },
+  { to: "/settings/notifications", label: "Notifications", icon: "bell" },
+  { to: "/settings/shortcuts", label: "Shortcuts", icon: "keyboard" },
+  { to: "/settings/archived", label: "Archived sessions", icon: "archiveMinimalistic" },
+];
 
 export function SettingsNavBody() {
   const router = useRouter();

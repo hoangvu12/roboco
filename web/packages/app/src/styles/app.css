@@ -19,8 +19,12 @@ body {
   margin: 0;
   background: var(--rb-bg);
   color: var(--rb-text);
-  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
-  font-size: 14px;
+  /* The interface typography (typography.rs): the family is the settings
+     store's choice, installed by applyTypographyToDocument; the size scales
+     the 14px baseline text designed at the 16px default (ui_rems(14) at a
+     root of the chosen size). Explicitly-sized text keeps its px. */
+  font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  font-size: calc(var(--rb-ui-size, 16) * 0.875px);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -2541,6 +2545,44 @@ a:focus-visible,
 
 .new-thread-hero-art--cutout {
   opacity: 1;
+}
+
+/*
+ * The background effects (ticket 28 §2.8, settings.rs
+ * NewThreadBackgroundEffect): the desktop rasterizes true transforms
+ * (dither/ASCII/halftone pixels, scanline rows). Web scope cut: `none` is
+ * exact, scanlines is a real overlay (the pronounced display-line texture,
+ * painted INSIDE the masked art passes so the composer's cutout hole stays
+ * clear), and dither/ascii/halftone ship as CSS-filter stand-ins evoking
+ * the palette/dot/character reduction — flagged in the ticket's Comments
+ * as the follow-up a canvas port owes.
+ */
+.new-thread-hero[data-effect="scanlines"] .new-thread-hero-hole::after,
+.new-thread-hero[data-effect="scanlines"] .new-thread-hero-art--reveal::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.16) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.new-thread-hero[data-effect="dither"] .new-thread-hero-art,
+.new-thread-hero[data-effect="dither"] .new-thread-hero-hole {
+  filter: contrast(1.4) saturate(0.7);
+}
+
+.new-thread-hero[data-effect="halftone"] .new-thread-hero-art,
+.new-thread-hero[data-effect="halftone"] .new-thread-hero-hole {
+  filter: contrast(1.25) brightness(1.05) grayscale(0.25);
+}
+
+.new-thread-hero[data-effect="ascii"] .new-thread-hero-art,
+.new-thread-hero[data-effect="ascii"] .new-thread-hero-hole {
+  filter: grayscale(1) contrast(1.6) brightness(1.1);
 }
 
 /*
@@ -9332,6 +9374,8 @@ button.files-save-pill:hover {
   color: var(--rb-text-muted);
   text-decoration: none;
   font-size: 13px;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .settings-nav-link:hover {
@@ -9416,7 +9460,17 @@ button.files-save-pill:hover {
   margin: 4px 0 0;
   font-size: 13px;
   color: var(--rb-text-muted);
-  max-width: 34rem;
+  /* Appearance.rs:2488-2489 — the subtitle's own clamp, 512px / 20px. */
+  max-width: 512px;
+  line-height: 20px;
+}
+
+/* `field_label` (widgets.rs:65-71): 13px Medium — the group caption over a
+   control, not a page headline. */
+.settings-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rb-text);
 }
 
 .settings-section-header {
@@ -9504,12 +9558,6 @@ button.files-save-pill:hover {
   word-break: break-all;
   white-space: normal;
   font-size: 12px;
-}
-
-.settings-select {
-  width: auto;
-  min-width: 12rem;
-  flex: none;
 }
 
 .settings-provider {
@@ -9747,37 +9795,158 @@ button.files-save-pill:hover {
   }
 }
 
-/* Option cards (appearance mode) and choice pills (surface). */
-.settings-option-row {
-  margin-top: 24px;
+/* Appearance-mode option cards (widgets.rs option_card_row/option_card,
+   appearance.rs:2491-2499): the block is mt 32, label over a gap-12 column;
+   the row itself is items_start gap 16. */
+.settings-mode-block {
+  margin-top: 32px;
   display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
+.settings-option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  width: 100%;
+}
+
+/*
+ * `option_card` (widgets.rs:109-139): one card = flex 1 column of preview
+ * frame + caption. There is deliberately no outer card or ring — the
+ * preview IS the control; its 148px frame carries the 6px radius and the
+ * accent/border edge, and the preview artwork rounds its own corners to
+ * the same radius inside (widgets.rs:71-76's self-rounding rule).
+ */
 .option-card {
   flex: 1;
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
-  color: var(--rb-text-muted);
-  font-size: 13px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: none;
   cursor: pointer;
-  text-align: center;
+  font-family: inherit;
 }
 
-.option-card:hover {
-  background: var(--rb-hover);
+.option-card-frame {
+  display: block;
+  width: 100%;
+  height: 148px;
+  border-radius: 6px;
+  border: 1px solid var(--rb-border);
+  overflow: hidden;
+  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.option-card-selected,
-.option-card-selected:hover {
+.option-card-caption {
+  font-size: 13px;
+  color: var(--rb-text-muted);
+  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.option-card-selected .option-card-frame {
   border-color: var(--rb-accent);
-  background: var(--rb-accent-wash);
-  color: var(--rb-accent);
-  font-weight: 500;
 }
 
+.option-card-selected .option-card-caption {
+  font-weight: 500;
+  color: var(--rb-accent);
+}
+
+/* `miniature` (appearance.rs:624-676): the live theme preview — a 44px
+   "sidebar" of 5px bars over the variant's surface, a bordered "content"
+   pane over its background; bars are the variant's text at 22% (line) and
+   34% (strong), set inline from the previewed variant's colors. */
+.miniature {
+  width: 100%;
+  height: 100%;
+  display: flex;
+}
+
+.miniature-all {
+  border-radius: 6px;
+}
+
+.miniature-left {
+  border-radius: 6px 0 0 6px;
+}
+
+.miniature-right {
+  border-radius: 0 6px 6px 0;
+}
+
+.miniature-split {
+  width: 100%;
+  height: 100%;
+  display: flex;
+}
+
+.miniature-half {
+  width: 50%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.miniature-sidebar {
+  width: 44px;
+  height: 100%;
+  flex: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px 8px 0;
+}
+
+.miniature-bar {
+  display: block;
+  flex: none;
+  height: 5px;
+  border-radius: 3px;
+}
+
+.miniature-content {
+  flex: 1;
+  min-width: 0;
+  margin: 8px 8px 8px 0;
+  border: 1px solid;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+}
+
+/* `palette_preview` (appearance.rs:734-747): the 30×18 surface/bg/accent
+   strip that identifies a variant in menus and import rows. */
+.palette-preview {
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid var(--rb-border);
+  overflow: hidden;
+  display: flex;
+}
+
+.palette-preview-third {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+/*
+ * Choice pills (`surface_choice`, appearance.rs:544-574 — retained by the
+ * background-effect row after the Glass row's removal): h 30, px 10,
+ * radius 7, 11.5px. The effect variant (`background_effect_choice`,
+ * appearance.rs:584-622) is h 28, px 9, 11px.
+ */
 .choice-row {
   flex: none;
   display: flex;
@@ -9793,11 +9962,15 @@ button.files-save-pill:hover {
   background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
   color: var(--rb-text-muted);
   font-size: 11.5px;
+  font-family: inherit;
   cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .choice:hover {
-  background: var(--rb-hover);
+  background: var(--rb-raised-hover);
 }
 
 .choice-selected,
@@ -9808,26 +9981,889 @@ button.files-save-pill:hover {
   font-weight: 500;
 }
 
-/* Accent swatches. */
+.choice-effect {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+/* The effect row's trailing cluster (appearance.rs:2257-2263): wrapped,
+   right-aligned, capped at 430px. */
+.settings-effect-choices {
+  flex: none;
+  margin-left: 10px;
+  max-width: 430px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/*
+ * `accent_swatch` (appearance.rs:931-1001): 30×34 with a 4px bottom pad and
+ * a 2px selection bar (the bar's color is the swatch's own accent, set
+ * inline per choice); the 30×30 chip is p 2, radius 8, border-strong when
+ * selected. Theme default renders the 3-bar glyph sample over the wash;
+ * presets a flat rounded square.
+ */
 .swatch-row {
   flex: none;
+  margin-left: 10px;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1px solid var(--rb-border-strong);
+.accent-swatch {
+  flex: none;
+  width: 30px;
+  height: 34px;
+  padding: 0 0 4px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
   cursor: pointer;
-  padding: 0;
+  display: flex;
 }
 
-.swatch-selected {
-  outline: 2px solid var(--rb-accent);
-  outline-offset: 2px;
+.accent-swatch-chip {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 42%, transparent);
+  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.accent-swatch-selected .accent-swatch-chip {
+  border-color: var(--rb-border-strong);
+}
+
+.accent-sample-glyph {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.accent-sample-glyph span:nth-child(1) {
+  width: 4px;
+  height: 13px;
+  border-radius: 2px;
+}
+
+.accent-sample-glyph span:nth-child(2) {
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+.accent-sample-glyph span:nth-child(3) {
+  width: 4px;
+  height: 11px;
+  border-radius: 2px;
+}
+
+.accent-sample-flat {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+}
+
+/* The row's trailing action cluster (`flex_none ml(10) gap(6)`) and the
+   library rows' tighter gap(2) (appearance.rs:2091-2095, 1894-1900). */
+.settings-row-actions {
+  flex: none;
+  margin-left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.library-entry-actions {
+  gap: 2px;
+}
+
+/*
+ * `row_tile` (widgets.rs:237-253): the 36×10px identity tile around a 16px
+ * muted icon; `ink(0.03)` is the neutral wash, never an accent tint.
+ */
+.row-tile {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--rb-border);
+  background: rgb(var(--rb-ink) / 0.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.row-tile-icon {
+  color: var(--rb-text-muted);
+}
+
+/* `meta_line`'s fragment joiner (widgets.rs:269-293): the dot at 30%. */
+.settings-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+.settings-meta-dot {
+  color: color-mix(in srgb, var(--rb-text-muted) 30%, transparent);
+}
+
+/* `compact_action` (appearance.rs:749-767): the 28px quiet ghost button. */
+.compact-action {
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 34%, transparent);
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.compact-action:hover {
+  background: var(--rb-raised-hover);
+  color: var(--rb-text);
+}
+
+.compact-action-danger {
+  color: var(--rb-danger);
+}
+
+.compact-action-danger:hover {
+  color: var(--rb-danger);
+}
+
+/* The background row's 36px thumb (appearance.rs:2136-2155): hairline(0.10)
+   frame, 34px image at radius 9, cover-fit. */
+.background-tile {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  display: flex;
+}
+
+.background-tile-img {
+  width: 34px;
+  height: 34px;
+  margin: 1px;
+  border-radius: 9px;
+  object-fit: cover;
+}
+
+/* The error strip's row wrapper (appearance.rs:2275-2283). */
+.settings-row-error {
+  padding: 10px 20px;
+  border-top: 1px solid var(--rb-border);
+}
+
+/* The inline (icon + copy) error strip shape (widgets.rs:374-399). */
+.error-strip-inline {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.error-strip-icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* Theme library groups (appearance.rs:1938-1971). */
+.library-group-header {
+  padding: 12px 16px 4px;
+  border-top: 1px solid var(--rb-border);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--rb-text-faint);
+}
+
+.library-entry-status {
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The library-level warning line (appearance.rs:2555-2563). */
+.library-warning {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--rb-warning);
+}
+
+/*
+ * The theme-family selector (appearance.rs:1055-1119): a 218×34 trigger —
+ * palette swatch, truncating 12.5px Medium name, SORT_VERTICAL caret at
+ * 0.9/0.45 by open state; border-strong + raised 0.75 open, border +
+ * raised 0.42 closed, raised-hover on hover.
+ */
+.theme-select-trigger {
+  flex: none;
+  position: relative;
+  width: 218px;
+  height: 34px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 42%, transparent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.theme-select-trigger:hover {
+  background: var(--rb-raised-hover);
+}
+
+.theme-select-trigger-open,
+.theme-select-trigger-open:hover {
+  border-color: var(--rb-border-strong);
+  background: color-mix(in srgb, var(--rb-raised) 75%, transparent);
+}
+
+.theme-select-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+  text-align: left;
+}
+
+.theme-select-caret {
+  flex: none;
+  color: var(--rb-text-muted);
+  opacity: 0.45;
+}
+
+.theme-select-trigger-open .theme-select-caret {
+  opacity: 0.9;
+}
+
+/* The menu (appearance.rs:1121-1191): 260px, gap 2, heading + rows of
+   palette swatch + name + a trailing CHECK in the accent when active. */
+.theme-select-menu {
+  gap: 2px;
+}
+
+.theme-select-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-select-check {
+  flex: none;
+  color: var(--rb-accent);
+}
+
+/*
+ * The interface font/size pickers (appearance.rs:2295-2474): the block runs
+ * in the FIXED system font (never the chosen interface font), mt 36, gap
+ * 10; the row is label + 12px description left, the two dropdowns right.
+ */
+.settings-font-block {
+  margin-top: 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: var(--rb-font-sans-fixed);
+}
+
+.settings-font-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.settings-font-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-font-description {
+  margin: 0;
+  max-width: 520px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--rb-text-muted);
+}
+
+.settings-font-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The dropdown triggers (appearance.rs:2327-2347, 2397-2417): 220/128×36,
+   px 11, radius 9, border-strong open; ink(0.025) fill. */
+.settings-select-trigger {
+  width: 220px;
+  height: 36px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid var(--rb-border);
+  background: rgb(var(--rb-ink) / 0.025);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--rb-text);
+  font-family: inherit;
+  font-size: 13px;
+  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-select-trigger[data-popup-open] {
+  border-color: var(--rb-border-strong);
+}
+
+.size-trigger {
+  width: 128px;
+}
+
+.settings-select-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.settings-select-caret {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/* The dropdown menus (appearance.rs:2295-2312): the popover-card recipe at
+   the trigger's width, gap 2; the font menu caps and scrolls at 320px.
+   Rows: menu_row geometry (gap 10, px 8, py 6, radius 8, 13px) + the 18px
+   trailing check slot. */
+.settings-select-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.font-menu {
+  width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.size-menu {
+  width: 128px;
+}
+
+.settings-select-menu[data-open] {
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+.settings-select-menu[data-closed] {
+  animation: rb-menu-out var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
+}
+
+.settings-select-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-select-item:hover,
+.settings-select-item[data-highlighted] {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
+}
+
+.settings-select-item[data-selected] {
+  color: var(--rb-text);
+}
+
+.settings-select-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-check {
+  flex: none;
+  width: 18px;
+  display: flex;
+  justify-content: center;
+  color: var(--rb-accent);
+}
+
+/* The import/review dialogs (appearance.rs:1593-1664, 1709-1758): the
+   desktop's dialog_card at its own geometry — 600px/660px wide, hairline
+   (0.08) frame reused by the row separators and the footer's top edge. */
+.import-dialog-card,
+.review-dialog-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  border-radius: 16px;
+  background: var(--rb-dialog);
+  overflow: hidden;
+}
+
+.import-dialog-card {
+  width: 600px;
+  max-width: calc(100vw - 32px);
+  max-height: 760px;
+}
+
+.review-dialog-card {
+  width: 660px;
+  max-width: calc(100vw - 32px);
+  max-height: 720px;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.import-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px 16px;
+}
+
+.import-dialog-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.import-dialog-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--rb-text);
+}
+
+.import-dialog-body {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--rb-text-muted);
+}
+
+.import-dialog-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 28%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.import-dialog-close:hover {
+  background: var(--rb-raised-hover);
+}
+
+.import-dialog-close-icon {
+  color: var(--rb-text-muted);
+}
+
+.import-dialog-main {
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 0 20px 18px;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-section-label {
+  margin-bottom: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--rb-text-muted);
+}
+
+.import-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-source-field {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.04);
+  font-size: 13px;
+  color: var(--rb-text);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-browse {
+  flex: none;
+  height: 36px;
+  padding: 0 12px;
+}
+
+/* The "Keep it up to date" section, snapshot-only (appearance.rs:1271-1286):
+   the mode card's label row + indented description, without the radio. */
+.import-mode-block {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-mode-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.import-mode-description {
+  margin: 4px 0 0 23px;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 68%, transparent);
+}
+
+.import-info-line {
+  margin: 14px 0 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--rb-text-muted) 72%, transparent);
+}
+
+.import-info-icon {
+  flex: none;
+  margin-top: 1px;
+}
+
+.import-detected-header {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.import-detected-header .import-section-label {
+  margin-bottom: 0;
+}
+
+.import-detected-count {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+.import-variant-row {
+  margin-top: 8px;
+  padding: 11px;
+  border-radius: 10px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 22%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+
+.import-variant-row-selected {
+  border-color: color-mix(in srgb, var(--rb-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--rb-accent-wash) 42%, transparent);
+}
+
+.import-variant-row-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.import-variant-select {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--rb-border-strong);
+  background: var(--rb-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.import-variant-select-on {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent);
+  color: var(--rb-on-accent);
+}
+
+.import-variant-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.import-variant-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.import-variant-appearance {
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+.import-variant-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  display: flex;
+  flex-direction: column;
+}
+
+.import-failure-strip {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rb-warning) 8%, transparent);
+  font-size: 11px;
+  color: var(--rb-warning);
+}
+
+.import-error-strip {
+  margin: 12px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rb-danger) 8%, transparent);
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--rb-danger);
+}
+
+.import-error-icon {
+  flex: none;
+}
+
+.import-dialog-footer {
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: color-mix(in srgb, var(--rb-raised) 18%, transparent);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.import-footer-cancel {
+  height: 34px;
+  padding: 0 13px;
+}
+
+.import-footer-primary {
+  height: 34px;
+  padding: 0 14px;
+}
+
+.import-footer-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/*
+ * `import_scene_preview` (appearance.rs:775-856): the 3-pane mock editor —
+ * 152px miniature, code pane (fake line + the 8-slot ANSI strip in the
+ * candidate's syntax/terminal colors), 84px diff pane with the 0.35-alpha
+ * diff bars.
+ */
+.import-scene-preview {
+  width: 100%;
+  height: 86px;
+  display: flex;
+  gap: 8px;
+}
+
+.scene-miniature {
+  width: 152px;
+  flex: none;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+}
+
+.scene-code {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scene-code-line {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px;
+  display: block;
+  white-space: pre;
+}
+
+.scene-ansi {
+  margin-top: auto;
+  height: 12px;
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+}
+
+.scene-ansi-slot {
+  flex: 1;
+  height: 100%;
+}
+
+.scene-diff {
+  width: 84px;
+  flex: none;
+  height: 100%;
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scene-diff-bar {
+  display: block;
+  height: 12px;
+  border-radius: 3px;
+}
+
+/* `report_panel` (appearance.rs:858-929): the scrollable mapping log. */
+.report-panel {
+  margin-top: 8px;
+  width: 100%;
+  max-height: 168px;
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-raised) 35%, transparent);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--rb-text-muted);
+}
+
+.report-summary {
+  color: var(--rb-text);
+}
+
+.report-line {
+  margin-top: 4px;
+}
+
+/* The review dialog's per-variant stack (appearance.rs:1721-1741). */
+.review-dialog-body {
+  margin-top: 6px;
+}
+
+.review-variant {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-variant-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.review-dialog-footer {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Ticket 28's menu motion honors reduced motion the same way the shared
+   popover family does: the entrance/exit snap. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-select-menu[data-open],
+  .settings-select-menu[data-closed] {
+    animation: none;
+  }
 }
 
 /* The login dialog (modal) — its OWN classes, never `.modal-backdrop`/

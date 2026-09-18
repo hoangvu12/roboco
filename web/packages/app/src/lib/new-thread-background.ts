@@ -19,6 +19,9 @@
  * darkening it.
  */
 
+import type { UiSettingsStore } from "../state/ui-settings";
+import { idbBackgroundBlobStore, type BackgroundBlobStore } from "./background-blob-store";
+
 // ---------------------------------------------------------------------------
 // Constants (shell.rs:694-699, mask.rs:8)
 // ---------------------------------------------------------------------------
@@ -224,12 +227,13 @@ export const DEFAULT_NEW_THREAD_BACKGROUND_URL = "/backgrounds/default-new-threa
 
 /**
  * A background is only "available" when one is installed AND its file still
- * exists (shell.rs:5848-5859 resolves setting-path or default). The web has
- * no managed copy: `newThreadComposerBackground` cannot be installed until
- * ticket 28 builds the picker, so a stored path is resolved by decoding it —
- * `createImageBitmap` accepts only what actually decodes, which is the
- * decode-by-sniffing contract (SVG is allowed as an ATTACHMENT but must be
- * rejected as a background; `createImageBitmap` rejects SVG blobs).
+ * exists (shell.rs:5848-5859 resolves setting-path or default). The web's
+ * managed copy lives in IndexedDB (`lib/background-blob-store.ts`); the
+ * setting's `path` names it as `idb:new-thread-composer-background`, and an
+ * entry only counts when it actually decodes — `createImageBitmap` accepts
+ * only what really decodes, which is the decode-by-sniffing contract (SVG is
+ * allowed as an ATTACHMENT but must be rejected as a background;
+ * `createImageBitmap` rejects SVG blobs).
  */
 export async function decodeBackgroundBlob(blob: Blob): Promise<boolean> {
   try {
@@ -240,20 +244,109 @@ export async function decodeBackgroundBlob(blob: Blob): Promise<boolean> {
   }
 }
 
-/** Resolve the artwork to paint: the setting's path if it decodes, else the bundled default. */
+/**
+ * Resolve the artwork to paint: the setting's managed blob if it decodes,
+ * else the bundled default. A `path` that is not the managed key is fetched
+ * as a URL (a same-session object URL from a pre-managed install) so legacy
+ * stored paths keep resolving until they are replaced.
+ */
 export async function resolveNewThreadBackground(
   setting: { readonly path: string; readonly name: string } | null,
   defaultUrl: string = DEFAULT_NEW_THREAD_BACKGROUND_URL,
+  blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
 ): Promise<string> {
-  if (setting !== null) {
+  const installed = await resolveInstalledBackground(setting, blobs);
+  return installed ?? defaultUrl;
+}
+
+/**
+ * The installed background's URL, or null when nothing is installed or the
+ * stored entry no longer decodes — the Appearance row's "Image unavailable"
+ * state and the effect row's gate.
+ */
+export async function resolveInstalledBackground(
+  setting: { readonly path: string; readonly name: string } | null,
+  blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
+): Promise<string | null> {
+  if (setting === null) {
+    return null;
+  }
+  if (setting.path === NEW_THREAD_BACKGROUND_IDB_PATH) {
     try {
-      const response = await fetch(setting.path);
-      if (response.ok && (await decodeBackgroundBlob(await response.blob()))) {
-        return setting.path;
-      }
+      return await blobs.url();
     } catch {
-      // Not installed (or unreachable) — fall through to the default.
+      return null;
     }
   }
-  return defaultUrl;
+  try {
+    const response = await fetch(setting.path);
+    if (response.ok && (await decodeBackgroundBlob(await response.blob()))) {
+      return setting.path;
+    }
+  } catch {
+    // Not installed (or unreachable) — the caller falls back.
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Install / remove (settings.rs:305-386)
+// ---------------------------------------------------------------------------
+
+/** settings.rs:309-313 — the decode rejection's copy, verbatim. */
+export const BACKGROUND_UNSUPPORTED_MESSAGE =
+  "This background image is unsupported or damaged. Choose a valid image such as PNG or JPEG.";
+/** settings.rs:332/344 — the persistence failure's copy, verbatim. */
+export const BACKGROUND_SAVE_MESSAGE = "Unable to save the image. Check folder permissions and try again.";
+/** settings.rs:371 — the removal failure's copy, verbatim. */
+export const BACKGROUND_REMOVE_MESSAGE = "Unable to remove the image. Check folder permissions and try again.";
+
+/** The settings field's `path` while the managed IndexedDB copy backs it. */
+export const NEW_THREAD_BACKGROUND_IDB_PATH = "idb:new-thread-composer-background";
+
+/** The stores an install/remove touches; injectable for tests. */
+export interface BackgroundDeps {
+  readonly settings: UiSettingsStore;
+  readonly blobs: BackgroundBlobStore;
+}
+
+/**
+ * `install_new_thread_composer_background` (settings.rs:305-362): reject a
+ * file that does not decode (never persist the candidate), stage the managed
+ * copy, then flip the setting — and on any staging failure leave the
+ * previous background exactly as it was. The web's staging IS the blob put,
+ * so the desktop's save-then-retire ordering collapses to: decode → put →
+ * point (the settings write itself is atomic in `UiSettingsStore`).
+ */
+export async function installNewThreadBackground(file: File, deps: BackgroundDeps): Promise<string | null> {
+  if (!(await decodeBackgroundBlob(file))) {
+    return BACKGROUND_UNSUPPORTED_MESSAGE;
+  }
+  try {
+    await deps.blobs.put(file);
+  } catch {
+    return BACKGROUND_SAVE_MESSAGE;
+  }
+  deps.settings.updateImmediate({
+    newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: file.name },
+  });
+  return null;
+}
+
+/**
+ * `remove_new_thread_composer_background` (settings.rs:364-386): clear the
+ * field first, retire the managed blob after — a failed retirement leaves a
+ * stray invisible blob, never a setting pointing at a deleted image.
+ */
+export async function removeNewThreadBackground(deps: BackgroundDeps): Promise<string | null> {
+  if (deps.settings.getSnapshot().newThreadComposerBackground === null) {
+    return null;
+  }
+  deps.settings.updateImmediate({ newThreadComposerBackground: null });
+  try {
+    await deps.blobs.delete();
+  } catch {
+    return BACKGROUND_REMOVE_MESSAGE;
+  }
+  return null;
 }

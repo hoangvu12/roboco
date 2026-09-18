@@ -5,13 +5,25 @@ import {
   accentSwatchColor,
   AppearanceStore,
   DEFAULT_APPEARANCE,
+  effectiveUiFontFamily,
   resolveAppearance,
   resolveSurfaceTreatment,
   resolveVariantId,
+  stepFont,
   SURFACE_PREFERENCES,
   surfaceHelper,
   variantChoices,
 } from "../src/lib/appearance-store";
+import { sourceName, slug } from "../src/lib/theme-library";
+import {
+  BACKGROUND_UNSUPPORTED_MESSAGE,
+  installNewThreadBackground,
+  NEW_THREAD_BACKGROUND_IDB_PATH,
+  removeNewThreadBackground,
+  resolveInstalledBackground,
+} from "../src/lib/new-thread-background";
+import { memoryBackgroundBlobStore } from "../src/lib/background-blob-store";
+import { UiSettingsStore } from "../src/state/ui-settings";
 import type { StorageLike } from "../src/lib/engine-store";
 
 function memoryStorage(): StorageLike & { dump(): Map<string, string> } {
@@ -194,5 +206,111 @@ describe("helper copy and swatches", () => {
     expect(accentSwatchColor("themeDefault", dark)).toBe(dark.accent.primary);
     expect(accentSwatchColor("pink", dark)).toBe("#f472b6");
     expect(accentSwatchColor("pink", light)).toBe("#be185d");
+  });
+});
+
+describe("interface font (ticket 28)", () => {
+  it("font_keyboard_navigation_stops_at_edges_and_skips_unavailable", () => {
+    // The desktop's step_font clamps at both ends — stepping past the first
+    // or last available choice is a no-op, never a wrap.
+    expect(stepFont("geist", -1)).toBe("geist");
+    expect(stepFont("geist", -3)).toBe("geist");
+    expect(stepFont("system", 1)).toBe("system");
+    expect(stepFont("system", 4)).toBe("system");
+    expect(stepFont("geist", 1)).toBe("geistMono");
+    expect(stepFont("geistMono", -1)).toBe("geist");
+    expect(stepFont("geistMono", 1)).toBe("system");
+    // A delta's magnitude collapses to one step (delta.signum()).
+    expect(stepFont("geist", 2)).toBe("geistMono");
+    // Zero and unknown values stay put.
+    expect(stepFont("geist", 0)).toBe("geist");
+    expect(stepFont("geistMono", 0)).toBe("geistMono");
+  });
+
+  it("resolves an installed-family request to the first available choice", () => {
+    // resolve_effective's web form: no OS probe, so `installed:*` resolves
+    // to Geist — and the error strip ("This font could not be loaded…")
+    // is the surface that reports it.
+    expect(effectiveUiFontFamily("geist")).toBe("geist");
+    expect(effectiveUiFontFamily("geistMono")).toBe("geistMono");
+    expect(effectiveUiFontFamily("system")).toBe("system");
+    expect(effectiveUiFontFamily("installed:Inter")).toBe("geist");
+    expect(effectiveUiFontFamily("inter")).toBe("geist");
+  });
+});
+
+describe("theme import names (appearance.rs:404-460)", () => {
+  it("sourceNameFallsBackToCustomTheme", () => {
+    expect(sourceName("sunset-theme.json")).toBe("sunset-theme");
+    expect(sourceName("My Theme.tar.gz")).toBe("My Theme.tar");
+    expect(sourceName("no-extension")).toBe("no-extension");
+    // A bare ".hidden" name keeps its leading dot (Rust file_stem).
+    expect(sourceName(".hidden")).toBe(".hidden");
+    // The package.json-parent-dir branch is dead on the web (a file input
+    // gives a bare name); the stem is what remains.
+    expect(sourceName("package.json")).toBe("package");
+    expect(sourceName("")).toBe("Custom theme");
+  });
+
+  it("slugCollapsesNonAlphanumericRunsAndNeverEmpty", () => {
+    expect(slug("My Cool Theme!")).toBe("my-cool-theme");
+    expect(slug("  --Roboco--  ")).toBe("roboco");
+    expect(slug("Tokyo Night 2")).toBe("tokyo-night-2");
+    // Leading separators never produce a leading dash; interior runs
+    // collapse to one.
+    expect(slug("-abc")).toBe("abc");
+    expect(slug("a!!b??c")).toBe("a-b-c");
+    // Non-ASCII letters are separators, not slugs.
+    expect(slug("Ünicode Ünicode")).toBe("nicode-nicode");
+    expect(slug("!!!")).toBe("theme");
+    expect(slug("")).toBe("theme");
+  });
+});
+
+describe("new-thread background install/remove (settings.rs:305-386)", () => {
+  it("backgroundInstallRejectsUndecodableImage", async () => {
+    const settings = new UiSettingsStore({ storage: memoryStorage() });
+    const blobs = memoryBackgroundBlobStore();
+    // An SVG decodes as an attachment but never as a background — the
+    // candidate is rejected before anything is staged.
+    const file = new File(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], "bad.svg", {
+      type: "image/svg+xml",
+    });
+    const error = await installNewThreadBackground(file, { settings, blobs });
+    expect(error).toBe(BACKGROUND_UNSUPPORTED_MESSAGE);
+    expect(settings.getSnapshot().newThreadComposerBackground).toBe(null);
+    expect(blobs.snapshot()).toBe(null);
+  });
+
+  it("backgroundRemoveClearsFieldAndRetiresResource", async () => {
+    const settings = new UiSettingsStore({ storage: memoryStorage() });
+    const blobs = memoryBackgroundBlobStore();
+    settings.updateImmediate({
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+    });
+    await blobs.put(new Blob(["bytes"], { type: "image/png" }));
+    expect(await blobs.url()).not.toBe(null);
+
+    const error = await removeNewThreadBackground({ settings, blobs });
+    expect(error).toBe(null);
+    expect(settings.getSnapshot().newThreadComposerBackground).toBe(null);
+    expect(blobs.snapshot()).toBe(null);
+    expect(await blobs.url()).toBe(null);
+    // Removing again is a no-op success (settings.rs:368-370).
+    expect(await removeNewThreadBackground({ settings, blobs })).toBe(null);
+  });
+
+  it("resolves an installed background only while its resource lives", async () => {
+    const settings = new UiSettingsStore({ storage: memoryStorage() });
+    const blobs = memoryBackgroundBlobStore();
+    settings.updateImmediate({
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+    });
+    // Nothing staged yet: the row reads "Image unavailable", not the default.
+    expect(await resolveInstalledBackground(settings.getSnapshot().newThreadComposerBackground, blobs)).toBe(null);
+    await blobs.put(new Blob(["bytes"], { type: "image/png" }));
+    expect(await resolveInstalledBackground(settings.getSnapshot().newThreadComposerBackground, blobs)).not.toBe(null);
+    // Not installed at all resolves null too.
+    expect(await resolveInstalledBackground(null, blobs)).toBe(null);
   });
 });

@@ -174,7 +174,7 @@ export function NewThreadBackground({
     <div
       className="new-thread-hero"
       ref={heroRef}
-      data-effect={effect === "none" ? "none" : "none-as-none"}
+      data-effect={effect}
       style={{ width: `${heroWidth}px`, height: `${height}px`, opacity: heroOpacity }}
       aria-hidden="true"
     >
