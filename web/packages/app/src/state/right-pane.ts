@@ -5,6 +5,22 @@ import { fileDocuments } from "./file-documents";
 import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
 /**
+ * The pane's embedded terminal host — `terminal/store.tsx`'s
+ * `paneTerminalStore`, injected at boot by the surface registry rather than
+ * imported (that module pulls xterm.js, which the node-environment tests
+ * must not load). `open_tab_for_selected` / `close_tab_by_key` /
+ * `tab_summaries` are the desktop peers (panel.rs:482-510).
+ */
+export interface PaneTerminalSource {
+  /** Create a tab with the caller's key (the surface id); false = no host. */
+  openTabFor(chatId: string, key: string): boolean;
+  /** Close the tab (kills the PTY) — the surface ✕ / middle-click. */
+  closeTab(chatId: string, key: string): void;
+  /** The tab's display title, or null when the tab is gone. */
+  tabTitle(chatId: string, key: string): string | null;
+}
+
+/**
  * The right pane's surface model and per-chat panel flags — the desktop's
  * `RightSurface` / `SessionPanels` (`shell.rs:457-532`, `:1901-1922`).
  *
@@ -89,15 +105,17 @@ export interface SurfaceFacts {
 /**
  * `shell.rs::right_surface_rows`: walk the stored order, describing each tab
  * from its backing entity; entries whose entity is gone are skipped. `null`
- * from `describe` is the "gone" signal.
+ * from `describe` is the "gone" signal. The chat id rides along because a
+ * terminal's live tab title is per-chat panel state.
  */
 export function rightSurfaceRows(
   tabs: readonly RightSurface[],
-  describe: (surface: RightSurface) => SurfaceFacts | null,
+  describe: (surface: RightSurface, chatId: string) => SurfaceFacts | null,
+  chatId: string,
 ): { surface: RightSurface; facts: SurfaceFacts }[] {
   const rows: { surface: RightSurface; facts: SurfaceFacts }[] = [];
   for (const surface of tabs) {
-    const facts = describe(surface);
+    const facts = describe(surface, chatId);
     if (facts !== null) {
       rows.push({ surface, facts });
     }
@@ -159,6 +177,14 @@ export class RightPaneStore {
    */
   readonly #closeRequests = new Set<string>();
 
+  /**
+   * The pane's embedded terminal host (`Shell::right_terminal`). Injected by
+   * the surface registry at boot; tests pass a fake so xterm never loads in
+   * the node environment. Null until wired — terminal surfaces mint nothing
+   * without a host (the desktop's `if let Some(tab)` guard).
+   */
+  #terminals: PaneTerminalSource | null = null;
+
   // Backing entities, keyed by surface id — the desktop's `file_surfaces`,
   // `diffs` and `subagent_tabs` maps. Ids are monotonic and never reused, so
   // a tab's title is stable for its whole life.
@@ -174,6 +200,15 @@ export class RightPaneStore {
   readonly #diffMeta = new Map<string, { flavor: DiffFlavor; label: string | null }>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
   readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean }>();
+
+  constructor(terminals: PaneTerminalSource | null = null) {
+    this.#terminals = terminals;
+  }
+
+  /** Boot wiring: hand the pane its embedded terminal host. */
+  setTerminalSource(terminals: PaneTerminalSource): void {
+    this.#terminals = terminals;
+  }
 
   getVersion = (): number => this.#version;
 
@@ -318,18 +353,19 @@ export class RightPaneStore {
   }
 
   /**
-   * The picker's Terminal card / `+` row. The desktop mints a fresh embedded
-   * terminal tab per click; the web's dock carries its own tab bar, so the
-   * pane keeps ONE Terminal tab addressing the shared panel (ticket 26 gives
-   * the dock `select_tab_by_key` and restores per-tab surfaces).
+   * The picker's Terminal card / `+` row: every click opens a FRESH embedded
+   * terminal tab (`add_terminal_surface`, shell.rs:2634-2650) — the surface
+   * id IS the terminal tab's key, so the pane chip addresses its own PTY
+   * (`Terminal(tab)` surfaces, one per instance).
    */
   addTerminalSurface(chatId: string): void {
-    const existing = this.stateFor(chatId).tabs.find((tab) => tab.kind === "terminal");
-    if (existing !== undefined) {
-      this.setActive(chatId, existing);
+    if (this.#terminals === null) {
       return;
     }
     const surface = this.#mint("terminal", null);
+    if (surface.kind === "terminal" && !this.#terminals.openTabFor(chatId, surface.id)) {
+      return;
+    }
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
     this.setActive(chatId, surface);
   }
@@ -409,8 +445,11 @@ export class RightPaneStore {
       changesSurfaceStore.dispose(chatId, surface.id);
     } else if (surface.kind === "subagent") {
       this.#subagentMeta.delete(surface.id);
+    } else if (surface.kind === "terminal") {
+      // `close_right_surface`'s Terminal branch: the panel closes THAT tab
+      // (killing the PTY, `close_tab_by_key`, shell.rs:2832-2835).
+      this.#terminals?.closeTab(chatId, surface.id);
     }
-    // Terminal keeps its entity — the dock owns the PTY lifecycle.
   }
 
   /** `complete_file_close` (shell.rs:2992): the close finally happens. */
@@ -505,9 +544,9 @@ export class RightPaneStore {
    * The live backing row for a surface, or `null` when the entity is gone —
    * `right_surface_rows`' skip signal. Titles are contextual (gap R18):
    * a file's basename, a diff's scope label or pinned commit subject, a
-   * subagent's name.
+   * terminal's own tab title, a subagent's name.
    */
-  describe(surface: RightSurface): SurfaceFacts | null {
+  describe(surface: RightSurface, chatId: string | null = null): SurfaceFacts | null {
     switch (surface.kind) {
       case "picker":
         return { title: "Picker", detail: null, isHistory: false, isDirty: false };
@@ -539,9 +578,16 @@ export class RightPaneStore {
           isDirty: false,
         };
       }
-      case "terminal":
-        // The terminal tab's own title is ticket 26's dock concern.
-        return { title: "Terminal", detail: null, isHistory: false, isDirty: false };
+      case "terminal": {
+        // `right_surface_rows`: the terminal tab's own title — the live
+        // OSC/shell-basename label from the embedded panel's
+        // `tab_summaries`; a gone tab means the row disappears.
+        const title = chatId === null ? null : (this.#terminals?.tabTitle(chatId, surface.id) ?? null);
+        if (title === null) {
+          return null;
+        }
+        return { title, detail: null, isHistory: false, isDirty: false };
+      }
       case "subagent": {
         const meta = this.#subagentMeta.get(surface.id);
         if (meta === undefined) {
@@ -554,7 +600,7 @@ export class RightPaneStore {
 
   /** `right_surface_rows` over a chat's stored order. */
   surfaceRows(chatId: string): { surface: RightSurface; facts: SurfaceFacts }[] {
-    return rightSurfaceRows(this.stateFor(chatId).tabs, (surface) => this.describe(surface));
+    return rightSurfaceRows(this.stateFor(chatId).tabs, (surface, chat) => this.describe(surface, chat), chatId);
   }
 
   /**

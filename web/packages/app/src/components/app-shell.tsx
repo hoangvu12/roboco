@@ -67,7 +67,7 @@ import { RightTabStrip } from "./right-tab-strip";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
 import { Titlebar } from "./titlebar";
-import { TerminalProvider, useTerminalStore } from "../terminal/store";
+import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
 
 /**
  * The app shell — the desktop's `shell.rs` chrome.
@@ -756,16 +756,15 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * `ToggleTerminal`'s execution half — Mod+J toggles the BOTTOM dock on the
+ * `ToggleTerminal`'s execution half — Mod+J toggles the BOTTOM drawer on the
  * conversation column (`toggle_terminal`, shell.rs:3026-3062), never the
  * right-pane terminal surface (gap S23; that surface is reached from the
- * pane's `+` menu). The full focus handoff (opening cancels the composer's
- * pending focus and focuses the terminal; closing focuses the composer) is
- * ticket 26's, which owns the dock itself — the frame-deferred
- * `focusActive` and the composer refocus below are its observable core.
+ * pane's `+` menu). Opening claims focus exactly once — the dock's own
+ * mount effect (§2.8's frame-deferred `focusActive`); closing hands focus
+ * back to the composer, which the dock's open-watch also does (the bridge
+ * keeps it for the case the drawer was already unmounted).
  */
 function TerminalShortcutBridge() {
-  const store = useTerminalStore();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   useEffect(
     () =>
@@ -774,15 +773,12 @@ function TerminalShortcutBridge() {
         if (chatId === null) {
           return;
         }
-        store.toggle(chatId);
-        if (store.stateFor(chatId)?.open === true) {
-          // The dock mounts on the next commit; the emulator focus needs it.
-          requestAnimationFrame(() => store.focusActive(chatId));
-        } else {
+        drawerTerminalStore.toggle(chatId);
+        if (drawerTerminalStore.stateFor(chatId)?.open !== true) {
           document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
         }
       }),
-    [store, pathname],
+    [pathname],
   );
   return null;
 }

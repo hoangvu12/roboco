@@ -15,7 +15,7 @@ a resize drag.
 **Blocked by:** 03 (Client settings store), 07 (Right pane host and
 multi-instance tabs)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/11-terminal-preview.md` §2, §3
 (all subsections), §4, §5 (rows quoted below); the dev-server preview
@@ -520,4 +520,157 @@ selection palette plumbing, and the right-pane chip geometry (`CHIP_W`
 - [ ] No new literal hex/px where a `--rb-*` token exists.
 
 ## Comments
+
+### Implementation (2026-09-19, branch `wp2/26-terminal`)
+
+**What landed:**
+
+- **Two independent hosts** (`terminal/store.tsx`): `TerminalStore` gained a
+  `drawer | embedded` mode and is instantiated twice as module singletons —
+  `drawerTerminalStore` (`Shell::terminal`) and `paneTerminalStore`
+  (`Shell::right_terminal`) — never sharing PTYs or tab sets.
+  `TerminalProvider` binds the engine session to both and re-themes both on
+  variant change; the React context (`useTerminalStore`) was removed (the
+  store was already read through `useSyncExternalStore`; the context only
+  handed the object over). Tab keys are now strings — the pane's surface ids
+  ARE terminal tab keys.
+- **The drawer is real** (`terminal/terminal-dock.tsx` `DrawerDock` +
+  `routes/chat-page.tsx`): mounted as the last child of the chat column's
+  bottom stack (below the composer, `render_main`'s
+  `render_terminal_container` slot, shell.rs:6124). Animated OUTER container
+  + fixed-height INNER child (the clip-don't-squeeze trick) with the 200ms
+  `evalWidthTween` rAF loop on toggle and 1:1 pointer tracking while
+  dragging; reduced motion snaps. 10px hitbox handle with the 1px
+  highlight line and the exact state table (rest 0 / hover fade / active
+  solid / constrained forced back to 0); double-click resets to 280. The
+  height persists through `uiSettings.terminalHeight` — initial value from
+  the store, debounced 400ms write on drag (`updateDebounced` =
+  `schedule_save`).
+- **Per-instance pane terminal surfaces**: `RightPaneStore.addTerminalSurface`
+  mints a FRESH embedded terminal tab per click (desktop
+  `add_terminal_surface`, shell.rs:2634-2650); the pane chip ✕ / middle-click
+  closes THAT tab (`close_tab_by_key`), and `describe` reads the tab's live
+  OSC/shell-basename title (null = gone = row skipped, the desktop's
+  `tab_summaries` peer). The embedded host is handed over through a small
+  `PaneTerminalSource` seam injected by `surface-registry.tsx` at boot (so
+  `state/right-pane.ts` stays free of the xterm import in the node test
+  environment), with the pane store's version bumps fanning into
+  `rightPaneStore.notify()`. The dock's own tab bar is hidden entirely when
+  `docked` (`render_right_pane`'s embedded shape), and the surface's id is
+  selected through `select_tab_by_key` in a layout effect.
+- **Tab bar parity** (`terminal-dock.tsx` + `app.css`): `icons::TERMINAL`
+  16px glyph in every tab chip (alpha 0.6/0.8), real `plus` (16px) and
+  `altArrowDown` (13px) glyphs replacing the literal `+`/`×` text, `close`
+  12px in the tab close button; new-tab/collapse buttons 28×28 r8 (were
+  24×24 r6); bar border-bottom is `hairline(0.07)`; active tab bg
+  `rgb(var(--rb-ink) / 0.08)`; exited tab = whole-chip `opacity: 0.55`
+  (replacing the invented 6px dot); the dragged chip follows the pointer
+  styled as the ghost (raised bg, border-strong, 0.85). The exit tab title
+  keeps the live OSC title, matching the desktop's `display_title`.
+- **Emulator** (`store.tsx` + `theme.ts`): `scrollback: 10_000`;
+  `cursorInactiveStyle: "outline"` (the desktop's unfocused outline cursor);
+  ligatures forced off in CSS; the cursor now reads `--rb-cursor`
+  (`theme.cursor`, distinct from `terminal.foreground`) with
+  `cursorAccent: foreground` so the block reads as an overlay, not an
+  inversion.
+- **Scrollbar overlay** (§2.5): @xterm/xterm 6.0.0 ships a VS Code-style DOM
+  scrollbar (`xterm-scrollable-element`) that is already a hover-revealed
+  fading overlay — the "always-visible OS default" of the research is gone
+  by construction. Themed through the xterm `ITheme`
+  (`scrollbarSlider*` = `--rb-text-faint` at 0.52), geometry via CSS
+  `!important` overrides of the widget's inline sizing: 10px rail at a 2px
+  right inset, 3px thumb widening to 4.5px on its own hover, 1.5px radius.
+- **Focus once** (§2.8): the focus effect's deps are
+  `[store, chatId, chat.active]` — a height-drag no longer re-claims focus;
+  the close handoff lands on the drawer terminal's UNMOUNT (DockBody
+  cleanup): xterm's own keyup handler re-grabs focus after any chord that
+  closed the drawer, which ate the at-flip `composer.focus()` — the unmount
+  handoff fires after it and restores the composer (`shell.rs:3049`).
+- **Copy/paste policy** (§2.6): explicit `attachCustomKeyEventHandler` per
+  tab — paste chord (Cmd+V mac / Ctrl+Shift+V elsewhere) reads the
+  clipboard, sanitizes + wraps through the ported `pasteBytes`
+  (`paste_bytes`, view.rs:309-319, unit-tested as
+  `paste wraps when bracketed`) and queues it through the 12ms coalescer;
+  copy chord copies only when a selection exists and swallows only then;
+  `metaKey` chords (Cmd on macOS, Super elsewhere — GPUI's
+  `Modifiers::platform`) are refused so app shortcuts reach the shell
+  keymap; already-prevented events fall through.
+- **Mod+J** binds the DRAWER through ticket 12's `toggle-terminal` catalog
+  entry (`TerminalShortcutBridge` now drives `drawerTerminalStore`;
+  `state/shortcuts.ts` itself needed no edit — ticket 12 had already
+  registered `ToggleTerminal`/`mod-j`, verified).
+- `terminal/session.ts`: unchanged — §2.7 confirmed as already matching
+  (open/subscribe/afterSeq resume/backoff/coalescing/resize debounce/exit
+  trailer all read against the desktop; the controller tests cover them).
+- Tests: `right-pane.test.ts` — the fresh store takes a fake
+  `PaneTerminalSource` (keeps xterm out of the node environment), plus new
+  `terminal_surfaces_are_per_instance` and no-host no-op cases;
+  `terminal.test.ts` — theme signature updated (cursor + scrollbar
+  assertions) and the `pasteBytes` test. 1018 tests green.
+
+**Deviations / findings:**
+
+- **Double-click reset persistence**: the ticket said "persists immediately",
+  but the cited source (shell.rs:6329) routes it through `schedule_save` —
+  the same 400ms debounced write as a drag. Implemented per the source.
+- **§2.6 open question, resolved against the pinned @xterm/xterm 6.0.0**:
+  the core's keydown path (`evaluateKeyboardEvent`) never touches the
+  clipboard — plain Ctrl+C maps to `\x03` (verified live: cmd aborted the
+  line on Ctrl+C; Ctrl+Shift+C with no selection fell through without
+  reaching the shell), and on non-mac NOTHING in xterm itself handles
+  Ctrl+Shift+C/V. Divergence was real (silent swallow, no copy/paste), so
+  the explicit handler above was added, per the ticket's fallback rule.
+  Clipboard read/write may prompt for permission in some browsers; failures
+  no-op gracefully.
+- **Cursor translucency**: xterm 6's DOM renderer flattens the theme color's
+  alpha against the terminal background (computed `rgb(98,98,99)` =
+  `#e8e8ea66` over `#090909`) — the role is correct
+  (`--rb-cursor`/text-faint for the scrollbar), and the visual result over
+  the background is the same; the desktop's under-glyph compositing is not
+  achievable with this renderer (the ticket's sanctioned closest analog).
+- **Drag ghost**: the real chip follows the pointer with ghost styling
+  rather than an invisible spacer + separate cursor-follower — same visual
+  result, one less portal.
+- **`set_resize_suspended`** (the pane's glide guard) is not ported: the
+  pane's inner holds the content width through a glide, so the grid never
+  reflows mid-glide; the resize RPC already debounces.
+- **Empty state** ("Select a chat to open a terminal") is unreachable on
+  web — the drawer mounts only on a chat route and Mod+J no-ops on the
+  canvas; skipped as the research marked it low priority.
+- **Transcript clearance**: the drawer joins the measured bottom stack, so
+  the fade band and clearance track the live (animating) height per frame
+  rather than reserving the destination footprint like the desktop. No pump
+  observed; flagging for ticket 18's owner if a mid-tween flicker ever shows.
+- The tab strip's INVENTED horizontal scroll was already removed by ticket
+  04; verified gone (plain overflow, like the desktop).
+
+**Verification:**
+
+- `pnpm -r build` green; `@roboco/app` vitest 62 files / 1018 tests green.
+- web_smoke round on Windows with real ConPTY `cmd.exe` PTYs: Mod+J opens
+  the drawer (280px, one tab auto-spawned, focus claimed once by the
+  terminal); a second tab via `+`, the first exited via `exit` (chip dimmed
+  0.55, `[process exited 0]` trailer, title = the live OSC path); resize
+  drag 280→250 with handle `data-state="active"` and the focused composer
+  KEEPING focus through the whole drag (the focus-once acceptance); the
+  height persisted to `localStorage.roboco.ui-settings.v1.terminalHeight`;
+  double-click reset to 280. Pane: picker Terminal row + the strip's `+`
+  menu minted two per-instance terminal chips (live cmd titles, no internal
+  bar, chip click switches PTYs), drawer (2 hosts) and pane (2 hosts)
+  coexist as independent hosts; closing the drawer left the pane untouched.
+  Scrollbar: hover-revealed (`visible`, opacity 1, proportional 98px thumb
+  over 300 lines of scrollback), 10px rail / 3px thumb / 2px inset; the
+  unfocused cursor swaps to `xterm-cursor-outline`; phone-width (375px)
+  boot renders with no error boundary.
+- Screenshots (web halves) in `.scratch/web-parity/shots/26/`:
+  `web-00-boot-check.png`, `web-01-drawer-two-tabs.png`,
+  `web-02-pane-terminal-chip-strip.png`,
+  `web-03-drawer-resize-highlight.png`,
+  `web-04-focused-terminal-cursor.png`,
+  `web-05-scrollbar-hover-reveal.png` (the auto-hide fade window is shorter
+  than a capture round-trip — the revealed state is evidenced by the DOM
+  reads above), `web-06-phone-layer-boot.png`.
+  - **Desktop halves of all pairs: skipped, documented per the runbook** —
+    no `roboco` desktop process is running and none was started (same skip
+    as tickets 09/10/24).
 

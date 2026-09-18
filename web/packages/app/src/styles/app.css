@@ -5251,8 +5251,15 @@ a:focus-visible,
   align-self: flex-end;
 }
 
-/* ── Terminal dock ──────────────────────────────────────────────────── */
+/* ── Terminal dock (render_terminal_container / render_tab_bar) ─────── */
 
+/*
+ * The panel base: a terminal-toned column. The drawer rides an animated
+ * OUTER container (`.term-dock-drawer`, height written per frame) that clips
+ * a fixed-height INNER child (`.term-dock-inner`) — the same
+ * clip-don't-squeeze trick the side panes use, so nothing reflows
+ * mid-transition; the handle floats over the inner's top edge.
+ */
 .term-dock {
   position: relative;
   flex: none;
@@ -5260,28 +5267,73 @@ a:focus-visible,
   flex-direction: column;
   min-height: 0;
   background: var(--rb-term-bg);
+}
+
+.term-dock-drawer {
+  overflow: hidden;
   border-top: 1px solid var(--rb-border);
 }
 
-/* The top-edge drag handle: resize the dock (160 px … 55 % viewport). */
+.term-dock-inner {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--rb-term-bg);
+}
+
+/*
+ * The top-edge drag handle (shell.rs:6293-6343): a 10px hitbox floating over
+ * the panel's top edge, carrying a 1px highlight line. Rest = opacity 0;
+ * hover fades it in; an active drag pins it solid; a drag pinned AT a clamp
+ * limit ("constrained") forces it back out — the desktop's exact state
+ * table. Double-click resets the height to the 280px default.
+ */
 .term-dock-handle {
   position: absolute;
-  top: -2px;
+  top: 0;
   left: 0;
   right: 0;
-  height: 6px;
+  height: 10px;
   cursor: row-resize;
   z-index: 5;
+}
+
+.term-dock-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--rb-border-strong);
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.term-dock-handle:hover::before {
+  opacity: 1;
+}
+
+.term-dock-handle[data-state="active"]::before {
+  opacity: 1;
+  transition: none;
+}
+
+.term-dock-handle[data-state="constrained"]::before {
+  opacity: 0;
+  transition: none;
 }
 
 .term-tabbar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--rb-space-xs);
+  gap: 4px;
   height: 40px;
   padding: 0 6px 0 8px;
-  border-bottom: 1px solid var(--rb-border);
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.07 * var(--rb-hairline-scale)));
 }
 
 /* `render_tab_bar` is a plain flex row: with enough tabs it simply overflows. */
@@ -5315,14 +5367,37 @@ a:focus-visible,
 }
 
 .term-tab-active {
-  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  background: rgb(var(--rb-ink) / 0.08);
   color: var(--rb-text);
 }
 
+/* An exited PTY dims the whole chip (panel.rs:1550's `opacity(0.55)`). */
+.term-tab[data-exited] {
+  opacity: 0.55;
+}
+
+/*
+ * The dragged chip IS the ghost: raised surface, strong border, 0.85 —
+ * desktop `TabGhost` (panel.rs:337-354) carried a separate cursor-follower,
+ * but the transform-following chip in its vacated slot is the same picture.
+ */
 .term-tab-dragging {
   transition: none;
   z-index: 2;
   position: relative;
+  background: var(--rb-raised);
+  border: 1px solid var(--rb-border-strong);
+  opacity: 0.85;
+  color: var(--rb-text);
+}
+
+.term-tab-icon {
+  flex: none;
+  opacity: 0.6;
+}
+
+.term-tab-active .term-tab-icon {
+  opacity: 0.8;
 }
 
 .term-tab-title {
@@ -5333,14 +5408,6 @@ a:focus-visible,
   white-space: nowrap;
 }
 
-.term-tab-exited {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--rb-text-faint);
-}
-
 .term-tab-close {
   flex: none;
   display: inline-flex;
@@ -5348,10 +5415,11 @@ a:focus-visible,
   justify-content: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--rb-text-muted);
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
   cursor: pointer;
   visibility: hidden;
 }
@@ -5361,27 +5429,36 @@ a:focus-visible,
 }
 
 .term-tab-close:hover {
-  background: color-mix(in srgb, var(--rb-text) 9%, transparent);
+  background: rgb(var(--rb-ink) / 0.09);
 }
 
+/*
+ * The `+` and the collapse chevron (panel.rs:1586-1641): 28×28, radius 8 —
+ * PLUS at 16px/0.6, ALT_ARROW_DOWN at 13px/0.55. The chevron rides after
+ * the strip's flex-1, pinned right — the drawer-only "hide terminal".
+ */
 .term-tab-add {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  color: var(--rb-text-muted);
-  font-size: 14px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
   cursor: pointer;
 }
 
+.term-tab-collapse {
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
+}
+
 .term-tab-add:hover {
-  background: var(--rb-hover);
-  color: var(--rb-text);
+  background: rgb(var(--rb-ink) / 0.05);
+  color: var(--rb-text-muted);
 }
 
 .term-body {
@@ -5400,14 +5477,41 @@ a:focus-visible,
 }
 
 /* 12 px grid padding, like the desktop panel; the fit addon subtracts the
-   .xterm element's own padding when measuring, so it belongs here. */
+   .xterm element's own padding when measuring, so it belongs here. Ligatures
+   stay off (view.rs:424-438): a monospace grid cannot tolerate collapsed
+   glyph runs. */
 .term-host .xterm {
   padding: 12px;
   height: 100%;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "dlig" 0;
 }
 
 .term-host .xterm-viewport {
   background: var(--rb-term-bg) !important;
+}
+
+/*
+ * The scrollbar overlay (§2.5, panel.rs::render_scrollbar): xterm 6's DOM
+ * scrollbar is already a hover-revealed fading overlay; the geometry rides
+ * here — a 10px hit rail at a 2px right inset, a 3px thumb widening to
+ * 4.5px on its own hover, rounded. The thumb's color is themed through the
+ * xterm theme (text-faint at 52%). The !importants override the widget's
+ * inline sizing.
+ */
+.term-host .xterm .xterm-scrollable-element > .scrollbar {
+  width: 10px !important;
+  right: 2px !important;
+}
+
+.term-host .xterm .xterm-scrollable-element > .scrollbar > .slider {
+  width: 3px !important;
+  border-radius: 1.5px !important;
+}
+
+.term-host .xterm .xterm-scrollable-element > .scrollbar > .slider:hover,
+.term-host .xterm .xterm-scrollable-element > .scrollbar > .slider.active {
+  width: 4.5px !important;
 }
 
 /* ── Empty states, pairing page ─────────────────────────────────────── */
@@ -10907,8 +11011,8 @@ html[data-surface="frosted"] .cr-tooltip {
     padding: 0;
   }
 
-  /* Terminal dock: keep the drag handle easy to grab, raise the
-     default height so phones aren't squeezed. */
+  /* Terminal dock: keep the drag handle easy to grab on phones (the handle
+     spans the inner's top edge; -4px centers a taller grab zone on it). */
   .term-dock-handle {
     height: 8px;
     top: -4px;

@@ -12,6 +12,7 @@ import {
   dropIndex,
   encodeBase64,
   exitMessage,
+  pasteBytes,
   reorderTabs,
   shellTitle,
   slideOffset,
@@ -117,6 +118,17 @@ describe("base64 wire encoding", () => {
   });
 });
 
+describe("pasteBytes (desktop paste_bytes, view.rs:309-319)", () => {
+  it("paste wraps when bracketed", () => {
+    // Wraps in the bracketed-paste markers iff the mode is on…
+    expect(pasteBytes("ls\r\n", true)).toBe("\x1b[200~ls\r\n\x1b[201~");
+    expect(pasteBytes("ls\r\n", false)).toBe("ls\r\n");
+    // …and strips an injected end-marker from the pasted text first.
+    expect(pasteBytes("a\x1b[201~b", true)).toBe("\x1b[200~ab\x1b[201~");
+    expect(pasteBytes("a\x1b[201~b", false)).toBe("ab");
+  });
+});
+
 describe("xtermThemeFromPalette", () => {
   it("maps the theme's terminal roles onto xterm's ANSI slots", () => {
     const ansi = Array.from({ length: 16 }, (_, i) => `#0000${i.toString(16).padStart(2, "0")}`);
@@ -126,7 +138,7 @@ describe("xtermThemeFromPalette", () => {
       selection: "#303030",
       ansi,
     };
-    const theme = xtermThemeFromPalette(palette);
+    const theme = xtermThemeFromPalette(palette, "#e8e8ea66");
     expect(theme.background).toBe("#101010");
     expect(theme.foreground).toBe("#e0e0e0");
     expect(theme.selectionBackground).toBe("#303030");
@@ -135,9 +147,14 @@ describe("xtermThemeFromPalette", () => {
     expect(theme.white).toBe(ansi[7]);
     expect(theme.brightBlack).toBe(ansi[8]);
     expect(theme.brightWhite).toBe(ansi[15]);
-    // Block cursor inverts the palette (desktop emulator paint).
-    expect(theme.cursor).toBe("#e0e0e0");
-    expect(theme.cursorAccent).toBe("#101010");
+    // The cursor is its own translucent role (`--rb-cursor`); the glyph
+    // under it repaints in the normal foreground (cursorAccent), so the
+    // block reads as an overlay, not an inversion (view.rs:548-550).
+    expect(theme.cursor).toBe("#e8e8ea66");
+    expect(theme.cursorAccent).toBe("#e0e0e0");
+    // The scrollbar thumb defaults to a dim terminal foreground when no UI
+    // role was read (currentTerminalTheme passes text-faint itself).
+    expect(theme.scrollbarSliderBackground).toBe("#e0e0e085");
   });
 });
 
