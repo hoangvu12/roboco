@@ -11529,7 +11529,8 @@ html[data-surface="frosted"] .cr-tooltip {
 .diff-view,
 .add-space-list,
 .add-space-rail,
-.queue-panel-list {
+.queue-panel-list,
+.history-list {
   scrollbar-width: none;
 }
 
@@ -11547,7 +11548,8 @@ html[data-surface="frosted"] .cr-tooltip {
 .diff-view::-webkit-scrollbar,
 .add-space-list::-webkit-scrollbar,
 .add-space-rail::-webkit-scrollbar,
-.queue-panel-list::-webkit-scrollbar {
+.queue-panel-list::-webkit-scrollbar,
+.history-list::-webkit-scrollbar {
   display: none;
 }
 
@@ -11896,4 +11898,897 @@ html[data-surface="frosted"] .cr-tooltip {
 
 .files-gutter-add:hover .files-gutter-add-button {
   opacity: 1;
+}
+
+/* ── History pane (ticket 27, history.rs) ───────────────────────────── */
+
+/*
+ * The History tab's chrome and body: the toolbar row rides .surface-toolbar
+ * (38px, borders, 4px gap, 8px inset). All values below are transcribed
+ * from the ticket's tables (history.rs:36-69 and the component specs); no
+ * color is literal — every tone is a --rb-* role or a neutral wash.
+ */
+
+.history-toolbar {
+  gap: var(--rb-space-xs);
+  min-width: 0;
+}
+
+/* history-surface-title: mono 11.5/14, text_dim, max 160, truncated. */
+.history-title {
+  flex: none;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  line-height: 14px;
+  color: var(--rb-text-dim);
+}
+
+/* GitHistoryCount: flex-1, label 11/14 text_muted, pill gated ≥260px. */
+.history-count {
+  height: 100%;
+  min-width: 0;
+  flex: 1 1 0%;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  gap: 10px;
+}
+
+.history-count-label {
+  flex: none;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--rb-text-muted);
+  white-space: nowrap;
+}
+
+.history-count-pill {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.history-count-ahead {
+  font-size: 10.5px;
+  line-height: 13px;
+  color: color-mix(in srgb, var(--rb-accent) 88%, transparent);
+}
+
+.history-count-dot {
+  font-size: 10px;
+  color: var(--rb-text-faint);
+}
+
+.history-count-behind {
+  font-size: 10.5px;
+  line-height: 13px;
+  color: color-mix(in srgb, var(--rb-warning) 82%, transparent);
+}
+
+/* The trailing control group (CONTROL_GAP 4). */
+.history-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+}
+
+/* A 24×24 icon button on the CONTROL contract (header_button). */
+.history-tool {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-tool:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+/* The view toggle latched on branch-tips: accent wash + accent glyph. */
+.history-tool-active {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  color: var(--rb-accent);
+}
+
+.history-tool-active:hover {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+}
+
+/* GitHistorySearchControl: the 24×24 collapsed icon ⇄ the 196px field, on
+   the 200ms RESIZE width/opacity morph (0.45 ⇄ 1.0). */
+.history-search {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  opacity: 0.45;
+  border-radius: var(--rb-radius-control);
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out),
+    opacity var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.history-search-open {
+  width: 196px;
+  min-width: 80px;
+  flex-shrink: 1;
+  opacity: 1;
+  gap: 6px;
+  padding: 0 2px 0 var(--rb-space-sm);
+  background: rgb(var(--rb-ink) / 0.035);
+}
+
+.history-search-trigger {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-search-open .history-search-trigger {
+  display: none;
+}
+
+.history-search-trigger:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+.history-search-status {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-faint);
+}
+
+.history-search-input {
+  flex: 1 1 0%;
+  min-width: 0;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 11px;
+  line-height: 14px;
+  padding: 0;
+}
+
+.history-search-input:focus {
+  outline: none;
+}
+
+.history-search-input::placeholder {
+  color: var(--rb-text-faint);
+}
+
+.history-search-close {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3.5px;
+  background: transparent;
+  color: var(--rb-text-faint);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-search-close:hover {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+/* GitHistoryFetchButton: 24 tall, px 8, wash(0.05) while fetching. */
+.history-fetch {
+  height: 24px;
+  padding: 0 var(--rb-space-sm);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-fetch-icon {
+  color: color-mix(in srgb, var(--rb-text-muted) 75%, transparent);
+}
+
+.history-fetch:not(:disabled):hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+.history-fetch-busy,
+.history-fetch-busy:hover {
+  background: rgb(var(--rb-wash) / 0.05);
+  color: var(--rb-text-faint);
+  cursor: default;
+}
+
+/* The pane body column. */
+.history-pane {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* The fetch/search error banners (history.rs:4325-4366). */
+.history-banner {
+  flex: none;
+  height: 28px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--rb-space-sm);
+  border-bottom: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
+  background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
+  font-size: 11px;
+  color: var(--rb-danger-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Top-level empty/loading states (history.rs:4245-4319). */
+.history-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--rb-space-lg);
+  font-size: 12px;
+  color: var(--rb-text-faint);
+  text-align: center;
+}
+
+.history-empty-warn {
+  color: var(--rb-warning);
+}
+
+.history-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rb-space-sm);
+  font-size: 12px;
+  color: var(--rb-text-faint);
+}
+
+/* The column header row (history.rs:4436-4495): 24px, hairline bottom,
+   9.5px faint labels. */
+.history-columns {
+  flex: none;
+  height: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  position: relative;
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+  font-size: 9.5px;
+  color: var(--rb-text-faint);
+}
+
+.history-columns-spacer {
+  flex: none;
+}
+
+.history-columns-commit {
+  flex: 1 1 0%;
+  min-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-optional-columns {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.history-column-header {
+  position: relative;
+  height: 100%;
+  flex-shrink: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.history-column-header-author {
+  justify-content: center;
+}
+
+.history-column-header-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The 6px invisible resize strip centered on the divider. */
+.history-column-resize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-column-resize:hover {
+  background: color-mix(in srgb, var(--rb-border-strong) 70%, transparent);
+}
+
+/* The 2px accent drop indicator on the landing side. */
+.history-column-drop {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: var(--rb-radius-control);
+  background: var(--rb-accent);
+}
+
+.history-column-drop-after {
+  right: 0;
+}
+
+.history-column-drop:not(.history-column-drop-after) {
+  left: 0;
+}
+
+/* The columns button: 20×20 at top 2 right 3, hidden until hover/open. */
+.history-columns-button {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-columns:hover .history-columns-button,
+.history-columns-menu-open .history-columns-button,
+.history-columns-button:focus-visible {
+  opacity: 1;
+}
+
+.history-columns-button:hover {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+/* The drag ghost pill (HistoryColumnGhost): fixed, follows the pointer. */
+.history-column-ghost {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  z-index: 60;
+  padding: 2px 8px;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: var(--rb-radius-control);
+  background: var(--rb-raised);
+  box-shadow: var(--rb-shadow-menu);
+  font-size: 10.5px;
+  color: var(--rb-text);
+  opacity: 0.9;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* The row list: the only vertically scrolling element. */
+.history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+
+.history-list-content {
+  position: relative;
+}
+
+/* The SVG lane canvas: behind the rows, hit-tested through their cells. */
+.history-graph {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.history-graph-line {
+  fill: none;
+  transition: stroke var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    stroke-width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+/* One row's fixed slot (virtualized list windowing). */
+.history-row-slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 36px;
+}
+
+.history-footer-slot {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The commit row (history.rs:4059): 36px, pointer, ink(0.025) hover, the
+   focused lane's ink(0.018) wash. */
+.history-row {
+  width: 100%;
+  height: 36px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  font-size: 11px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-row:hover {
+  background: rgb(var(--rb-ink) / 0.025);
+}
+
+.history-row-focused {
+  background: rgb(var(--rb-ink) / 0.018);
+}
+
+.history-row-focused:hover {
+  background: rgb(var(--rb-ink) / 0.025);
+}
+
+/* Another lane's focus dims this row's content (ROW_UNFOCUSED_OPACITY). */
+.history-row-dim {
+  opacity: 0.6;
+}
+
+/* Row enter/exit fold (COLLAPSE 180ms, easeOut). */
+@keyframes history-row-in {
+  from {
+    height: 0;
+    opacity: 0.35;
+  }
+
+  to {
+    height: 36px;
+    opacity: 1;
+  }
+}
+
+@keyframes history-row-out {
+  from {
+    height: 36px;
+    opacity: 1;
+  }
+
+  to {
+    height: 0;
+    opacity: 0.35;
+  }
+}
+
+.history-row-entering {
+  animation: history-row-in var(--rb-motion-collapse) var(--rb-ease-ease-out);
+}
+
+.history-row-exiting {
+  animation: history-row-out var(--rb-motion-collapse) var(--rb-ease-ease-out);
+}
+
+/* The row's graph cell: the node, its HEAD ring, the fold control. */
+.history-graph-cell {
+  flex: none;
+  height: 36px;
+  position: relative;
+  touch-action: none;
+}
+
+.history-node {
+  position: absolute;
+  border-radius: 50%;
+  transition: width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    height var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-node-dim {
+  opacity: 0.24;
+}
+
+.history-node-ring {
+  position: absolute;
+  border: 1px solid;
+  border-radius: 50%;
+  background: var(--rb-bg);
+  transition: width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    height var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+/* The branch fold control: 16×16, just right of the node. */
+.history-fold {
+  position: absolute;
+  top: 10px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--rb-bg) 96%, transparent);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-graph-cell:hover .history-fold,
+.history-fold-collapsed {
+  opacity: 1;
+}
+
+/* The subject + refs cell: flex-1, min 80, its own ref area. */
+.history-subject {
+  flex: 1 1 0%;
+  min-width: 80px;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: var(--rb-space-sm);
+}
+
+.history-subject-text {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--rb-text);
+}
+
+.history-refs {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.history-ref {
+  flex: none;
+  height: 16px;
+  max-width: 112px;
+  box-sizing: border-box;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 4px;
+  font-size: 10px;
+  overflow: hidden;
+}
+
+.history-ref-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-ref-overflow {
+  flex: none;
+  font-size: 10px;
+  color: var(--rb-text-faint);
+}
+
+/* The optional cells group. */
+.history-optional-cells {
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.history-author {
+  height: 100%;
+  flex-shrink: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.history-author-name {
+  justify-content: flex-start;
+  padding-right: var(--rb-space-sm);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-avatar {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.12 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-wash) / 0.08);
+}
+
+.history-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.history-avatar-initial {
+  width: 100%;
+  text-align: center;
+  font-size: 9px;
+  line-height: 18px;
+  position: relative;
+  top: 0.5px;
+  color: var(--rb-text-faint);
+}
+
+.history-date {
+  height: 100%;
+  flex-shrink: 1;
+  display: flex;
+  align-items: center;
+  padding-right: var(--rb-space-sm);
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-sha {
+  height: 100%;
+  flex-shrink: 1;
+  display: flex;
+  align-items: center;
+  padding-right: 6px;
+  overflow: hidden;
+}
+
+.history-sha-pill {
+  width: 100%;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0;
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-sha-pill:hover {
+  background: rgb(var(--rb-ink) / 0.07);
+}
+
+.history-sha-copied {
+  color: var(--rb-accent);
+}
+
+/* The Load-more / loading / retry footer (history.rs:3936-3986). */
+.history-footer {
+  height: 28px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--rb-border) 85%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--rb-raised) 72%, transparent);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.history-footer-icon {
+  flex: none;
+  color: var(--rb-text-faint);
+}
+
+.history-footer:not(:disabled):hover {
+  background: var(--rb-hover);
+  border-color: color-mix(in srgb, var(--rb-border-strong) 75%, transparent);
+  color: var(--rb-text);
+}
+
+.history-footer-pending,
+.history-footer-pending:hover {
+  cursor: default;
+  color: var(--rb-text-faint);
+}
+
+/* The column / author menus: popover_card + the ticket's row overrides. */
+.history-menu-inner {
+  padding: 3px;
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-menu .menu-row {
+  gap: 0;
+  padding: 4px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+
+.history-menu-check {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+}
+
+.history-menu-label {
+  min-width: 0;
+}
+
+.history-menu-reset .history-menu-label {
+  color: var(--rb-text-muted);
+}
+
+/* The ref-badges tooltip content: one mono line per description. */
+.history-ref-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The commit-diff tab's identity chip (changes.rs:3646-3684). */
+.changes-commit-sha {
+  flex: none;
+  height: 24px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.05);
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+}
+
+.changes-commit-subject {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--rb-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-search {
+    transition: none;
+  }
+
+  .history-row,
+  .history-node,
+  .history-node-ring,
+  .history-fold,
+  .history-graph-line,
+  .history-column-resize,
+  .history-columns-button,
+  .history-sha-pill,
+  .history-footer,
+  .history-tool,
+  .history-fetch,
+  .history-column-ghost {
+    transition: none;
+  }
+
+  .history-row-entering,
+  .history-row-exiting {
+    animation: none;
+  }
+}
+
+@media (max-width: 768px) {
+  /* The phone layer keeps working: the toolbar wraps instead of clipping. */
+  .history-toolbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--rb-titlebar-height);
+  }
+
+  .history-title {
+    max-width: 120px;
+  }
 }

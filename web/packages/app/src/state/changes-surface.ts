@@ -52,6 +52,11 @@ export interface ChangesSurfaceSnapshot {
    */
   readonly branch: string | null;
   readonly branches: readonly string[];
+  /**
+   * The pinned commit sha (commit flavour only, `Changes::for_commit`) —
+   * the surface's scope never moves off it.
+   */
+  readonly commitSha: string | null;
 }
 
 function reducedMotion(): boolean {
@@ -69,6 +74,7 @@ interface SurfaceState {
   scrollEpoch: number;
   branch: string | null;
   branches: readonly string[];
+  commitSha: string | null;
 }
 
 function freshState(): SurfaceState {
@@ -82,6 +88,7 @@ function freshState(): SurfaceState {
     scrollEpoch: 0,
     branch: null,
     branches: EMPTY_BRANCHES,
+    commitSha: null,
   };
 }
 
@@ -154,6 +161,10 @@ export class ChangesSurfaceStore {
 
   setScope(chatId: string, surfaceId: string, scope: DiffScope): void {
     this.#update(chatId, surfaceId, (state) => {
+      if (state.commitSha !== null) {
+        // A commit-pinned pane never offers its scope back (for_commit).
+        return null;
+      }
       if (state.scope === scope) {
         return null;
       }
@@ -164,6 +175,26 @@ export class ChangesSurfaceStore {
         // previously picked base for the return trip (desktop parity: the
         // store's base_ref survives scope switches, only the fetch changes).
         baseRef: scope === "branch" ? state.baseRef : null,
+        scrollEpoch: state.scrollEpoch + 1,
+      };
+    });
+  }
+
+  /**
+   * Pin a commit-diff tab to its sha (`Changes::for_commit`): the scope
+   * becomes `commit` for the surface's whole life — there is no scope chip
+   * to move it back.
+   */
+  pinCommit(chatId: string, surfaceId: string, sha: string): void {
+    this.#update(chatId, surfaceId, (state) => {
+      if (state.commitSha === sha) {
+        return null;
+      }
+      return {
+        ...state,
+        scope: "commit",
+        baseRef: null,
+        commitSha: sha,
         scrollEpoch: state.scrollEpoch + 1,
       };
     });

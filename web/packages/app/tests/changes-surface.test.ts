@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { ChangesSurface, ChangesToolbar } from "../src/routes/changes-page";
+import { ChangesSurfaceStore } from "../src/state/changes-surface";
 
 /**
  * A render-path smoke for the Changes surface: the smoke ENGINE fixture has
@@ -26,3 +27,28 @@ describe("Changes surface render smoke", () => {
     expect(html).toContain("Pair an engine to view its changes.");
   });
 });
+
+/**
+ * A commit-pinned tab (`Changes::for_commit`, ticket 27's click target): the
+ * scope lands on `commit` with the pinned sha and never moves off it — there
+ * is no scope chip to take it back.
+ */
+describe("commit-pinned Changes surface state", () => {
+  it("pins the commit scope and ignores later scope switches", () => {
+    const store = new ChangesSurfaceStore();
+    store.pinCommit("c1", "d27", "896e31f0abcd");
+    const pinned = store.snapshotFor("c1", "d27");
+    expect(pinned.scope).toBe("commit");
+    expect(pinned.commitSha).toBe("896e31f0abcd");
+
+    store.setScope("c1", "d27", "branch");
+    store.setScope("c1", "d27", "workingTree");
+    const after = store.snapshotFor("c1", "d27");
+    expect(after.scope).toBe("commit");
+    expect(after.commitSha).toBe("896e31f0abcd");
+
+    store.dispose("c1", "d27");
+    expect(store.snapshotFor("c1", "d27").scope).toBe("workingTree");
+  });
+});
+

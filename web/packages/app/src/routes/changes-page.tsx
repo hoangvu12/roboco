@@ -6,6 +6,7 @@ import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
 import { reviewCommentStore, useReviewComments } from "../state/review-comments";
+import { rightPaneStore } from "../state/right-pane";
 import { chatPageRow } from "../lib/view";
 import {
   cleanMessage,
@@ -48,17 +49,76 @@ import type { ChangeRequestSummary } from "@roboco/proto";
 
 export function ChangesSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const surface = useChangesSurface(chatId, surfaceId);
+  // A commit-pinned tab (`Changes::for_commit`) mounts with its sha; the
+  // scope never moves off it for the tab's whole life.
+  const meta = rightPaneStore.diffMetaOf(surfaceId);
+  const pinnedSha = meta !== null && meta.flavor === "commit" ? meta.commitSha ?? null : null;
+  useEffect(() => {
+    if (pinnedSha !== null) {
+      changesSurfaceStore.pinCommit(chatId, surfaceId, pinnedSha);
+    }
+  }, [chatId, surfaceId, pinnedSha]);
   return (
     <ChangesBody
       chatId={chatId}
       surfaceId={surfaceId}
       scope={surface.scope}
       requestedBase={surface.baseRef}
+      commitSha={surface.commitSha}
       layout={surface.layout}
       wrap={surface.wrap}
       folds={surface.folds}
       scrollEpoch={surface.scrollEpoch}
     />
+  );
+}
+
+/**
+ * A commit-pinned tab's toolbar row (`render_header_controls`' commit arm,
+ * changes.rs:3646-3684): a fixed identity chip — mono short sha + the
+ * subject — instead of the scope dropdown; split/wrap/fold-all trail. The
+ * pin never changes, so there is nothing to pick.
+ */
+export function CommitDiffToolbar({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
+  const surface = useChangesSurface(chatId, surfaceId);
+  const meta = rightPaneStore.diffMetaOf(surfaceId);
+  const sha = meta?.commitSha ?? "";
+  const subject = meta?.subject ?? "";
+  return (
+    <div className="surface-toolbar changes-toolbar" role="toolbar" aria-label="Commit diff">
+      <span className="changes-commit-sha mono" title={sha}>
+        {sha.slice(0, 7)}
+      </span>
+      <span className="changes-commit-subject">{subject}</span>
+      <span className="changes-toolbar-spring" />
+      <div className="changes-tools">
+        <HeaderToggle
+          id="changes-split"
+          icon="splitColumns"
+          label="Split view"
+          active={surface.layout === "split"}
+          onClick={() => changesSurfaceStore.toggleLayout(chatId, surfaceId)}
+        />
+        <Tooltip label="Wrap long lines" delay={TOOLTIP_VIEW_OPTIONS_MS}
+          trigger={
+            <HeaderToggle
+              id="changes-wrap"
+              icon="wrapText"
+              label="Wrap long lines"
+              active={surface.wrap}
+              onClick={() => changesSurfaceStore.toggleWrap(chatId, surfaceId)}
+            />
+          }
+        />
+        <HeaderToggle
+          id="changes-fold-all"
+          icon="foldVertical"
+          label="Collapse all files"
+          active={false}
+          onClick={() => changesSurfaceStore.toggleCollapseAll(chatId, surfaceId)}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -163,6 +223,7 @@ interface ChangesBodyProps {
   readonly surfaceId: string;
   readonly scope: DiffScope;
   readonly requestedBase: string | null;
+  readonly commitSha: string | null;
   readonly layout: "unified" | "split";
   readonly wrap: boolean;
   readonly folds: ReadonlyMap<string, FileFold>;
@@ -181,7 +242,7 @@ const NO_CHANGES: ChangesSnapshot = {
   generation: 0,
 };
 
-function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
+function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const snapshot = useWatchSnapshot(session);
@@ -267,8 +328,9 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, fo
       return;
     }
     const base = scope === "branch" ? requestedBase : null;
-    store.setScope(scope, base);
-  }, [store, scope, requestedBase]);
+    const sha = scope === "commit" ? commitSha : null;
+    store.setScope(scope, base, sha);
+  }, [store, scope, requestedBase, commitSha]);
 
   const activeDiff = useMemo(() => {
     if (scope === "workingTree") {
@@ -452,7 +514,7 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, fo
                 folds={folds}
                 onToggleFold={(path) => changesSurfaceStore.toggleFold(chatId, surfaceId, path)}
                 scrollEpoch={scrollEpoch}
-                renderAdder={renderAdder}
+                renderAdder={scope === "commit" ? undefined : renderAdder}
                 review={reviewWiring}
               />
             )}
