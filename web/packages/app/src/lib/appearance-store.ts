@@ -1,25 +1,32 @@
 import {
   accentPresets,
-  findVariant,
-  themeVariants,
   type AccentPresetId,
   type Appearance,
   type SurfaceTreatment,
   type ThemeVariant,
 } from "@roboco/theme";
 import type { StorageLike } from "./engine-store";
+import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
+import { findVariantAnywhere, variantsForAppearanceAll } from "./theme-library";
 
 /**
  * Appearance preferences — the web peer of the desktop's device-local
  * appearance settings (crates/ui/src/appearance.rs + settings/appearance.rs):
  * an appearance mode, an independent light/dark theme variant pair, an accent
- * selection, and a surface preference. They live in browser storage scoped to
- * the serving origin ("These settings stay in this browser") and apply live —
- * every mutation re-installs the theme on the document root.
+ * selection, and a surface preference. They live in the consolidated
+ * `state/ui-settings.ts` store (`appearance`, `themeSelection.light`/`.dark`,
+ * `accent`, `surface`), browser-scoped to the serving origin ("These settings
+ * stay in this browser") and applied live — every mutation re-installs the
+ * theme on the document root.
  *
- * Web scope cuts vs desktop (spec §Theme scope): builtin variants only, no
- * custom theme library, no interface font/size pickers, no new-thread
- * background.
+ * What stays here is the part settings storage cannot know: a variant id is
+ * only valid for the appearance it was authored for, so the pair is validated
+ * against the theme registry on the way out of the store, not on the way in.
+ *
+ * The interface font/size pickers, the new-thread background rows and the
+ * custom theme library (ticket 28) read/write the settings store directly;
+ * the library itself lives in `lib/theme-library.ts` and its variants merge
+ * into this module's registry overlay.
  */
 
 /** The persisted mode choice; `system` follows `prefers-color-scheme`. */
@@ -28,8 +35,13 @@ export type AppearanceMode = "system" | "light" | "dark";
 /** Accent selection: the variant's authored accent, or one of the 7 presets. */
 export type AccentSelection = "themeDefault" | AccentPresetId;
 
-/** Surface policy resolved against the variant's recommended treatment. */
-export type SurfacePreference = "themeDefault" | "frosted" | "opaque";
+/**
+ * Surface policy. Deliberate web deviation from the desktop (which offers
+ * Theme default / Frosted / Opaque, settings/appearance.rs:522-527): the
+ * frosted choice is removed by product decision and the resolution is forced
+ * opaque — see `resolveSurfaceTreatment`.
+ */
+export type SurfacePreference = "themeDefault" | "opaque";
 
 export interface AppearancePreferences {
   readonly mode: AppearanceMode;
@@ -51,13 +63,7 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
 };
 
 export const APPEARANCE_MODES: readonly AppearanceMode[] = ["system", "light", "dark"];
-export const SURFACE_PREFERENCES: readonly SurfacePreference[] = ["themeDefault", "frosted", "opaque"];
-
-interface PersistedPreferences extends AppearancePreferences {
-  readonly version: 1;
-}
-
-const STORAGE_KEY = "roboco.appearance.v1";
+export const SURFACE_PREFERENCES: readonly SurfacePreference[] = ["themeDefault", "opaque"];
 
 /** The user's choice combined with the OS state (appearance.rs `resolve`). */
 export function resolveAppearance(mode: AppearanceMode, system: Appearance): Appearance {
@@ -77,27 +83,26 @@ export function resolveVariantId(preferences: AppearancePreferences, appearance:
 }
 
 /**
- * The surface treatment in effect: the explicit choice, or the theme
- * author's recommendation when "themeDefault" (SurfacePreference::resolve).
+ * The surface treatment in effect. A product decision (2026-09-17): the web
+ * never frosts — the treatment is forced opaque regardless of the stored
+ * preference or the theme author's recommendation (both default themes
+ * recommend frosted, so honoring "themeDefault" would leave the app frosted
+ * anyway). A deliberate deviation from the desktop's
+ * `SurfacePreference::resolve`; the one seam a future flip restores.
  */
-export function resolveSurfaceTreatment(surface: SurfacePreference, variant: ThemeVariant): SurfaceTreatment {
-  switch (surface) {
-    case "frosted":
-      return "frosted";
-    case "opaque":
-      return "opaque";
-    default:
-      return variant.recommendedSurfaceTreatment;
-  }
+export function resolveSurfaceTreatment(): SurfaceTreatment {
+  return "opaque";
 }
 
 /**
- * The selector's variant list for one appearance: only variants authored
- * for it, registry order (family by family) — the desktop's
- * `variants_for(appearance)`.
+ * The selector's variant list for one appearance: only variants authored for
+ * it, registry order (family by family) — the desktop's
+ * `variants_for(appearance)`. Installed custom-library variants merge in
+ * after the builtins (ticket 28 §2.11's registry entry), exactly like the
+ * desktop's `ThemeRegistry::active()`.
  */
 export function variantChoices(appearance: Appearance): readonly ThemeVariant[] {
-  return themeVariants.filter((variant) => variant.appearance === appearance);
+  return variantsForAppearanceAll(appearance);
 }
 
 /** Row label for an appearance mode card (AppearanceMode::label). */
@@ -117,8 +122,6 @@ export function surfaceLabel(surface: SurfacePreference): string {
   switch (surface) {
     case "themeDefault":
       return "Theme default";
-    case "frosted":
-      return "Frosted";
     case "opaque":
       return "Opaque";
   }
@@ -138,8 +141,6 @@ export function surfaceHelper(surface: SurfacePreference, resolved: SurfaceTreat
   switch (surface) {
     case "themeDefault":
       return `Uses this theme's ${resolved} default.`;
-    case "frosted":
-      return "Theme-colored glass where supported.";
     case "opaque":
       return "Solid surfaces for every theme.";
   }
@@ -157,18 +158,68 @@ export function accentSwatchColor(accent: AccentSelection, variant: ThemeVariant
   return variant.appearance === "dark" ? preset.dark : preset.light;
 }
 
-const ACCENT_IDS: readonly string[] = accentPresets.map((preset) => preset.id);
+// ---------------------------------------------------------------------------
+// Interface font (typography.rs:13-77, web scope: the 3 fixed choices)
+// ---------------------------------------------------------------------------
 
-function isAppearanceMode(value: unknown): value is AppearanceMode {
-  return value === "system" || value === "light" || value === "dark";
+/** The fixed web catalog — no OS font probe (ticket 28 §2.9 / §5). */
+export type UiFontChoice = "geist" | "geistMono" | "system";
+
+export const UI_FONT_CHOICES: readonly UiFontChoice[] = ["geist", "geistMono", "system"];
+
+/**
+ * `resolve_effective` (typography.rs:295-299), web form: an `installed:*`
+ * request has no availability probe to satisfy, so it resolves to the first
+ * available choice (Geist) — the desktop's fallback when a requested family
+ * is not installed on the device.
+ */
+export function effectiveUiFontFamily(requested: string): UiFontChoice {
+  if (requested === "geistMono" || requested === "system") {
+    return requested;
+  }
+  return "geist";
 }
 
-function isAccentSelection(value: unknown): value is AccentSelection {
-  return value === "themeDefault" || (typeof value === "string" && ACCENT_IDS.includes(value));
+/** `UiFontFamily::label`. */
+export function fontFamilyLabel(family: UiFontChoice): string {
+  switch (family) {
+    case "geist":
+      return "Geist";
+    case "geistMono":
+      return "Geist Mono";
+    case "system":
+      return "System UI";
+  }
 }
 
-function isSurfacePreference(value: unknown): value is SurfacePreference {
-  return value === "themeDefault" || value === "frosted" || value === "opaque";
+/** The CSS stack a choice installs on `--rb-font-sans`. */
+export function fontFamilyStack(family: UiFontChoice): string {
+  switch (family) {
+    case "geist":
+      return '"Geist", ui-sans-serif, system-ui, sans-serif';
+    case "geistMono":
+      return '"Geist Mono", ui-monospace, monospace';
+    case "system":
+      return "system-ui, ui-sans-serif, sans-serif";
+  }
+}
+
+/**
+ * `step_font` (appearance.rs:462-480), degenerate web form: a clamped index
+ * step over the 3 always-available choices — stepping past either end is a
+ * no-op. (The desktop's availability-skipping walk has nothing to skip: no
+ * OS font probe exists on the web, all choices are always available.)
+ */
+export function stepFont(current: UiFontChoice, delta: number): UiFontChoice {
+  const currentIx = UI_FONT_CHOICES.indexOf(current);
+  if (currentIx < 0 || delta === 0) {
+    return current;
+  }
+  const next = currentIx + Math.sign(delta);
+  if (next < 0 || next >= UI_FONT_CHOICES.length) {
+    return current;
+  }
+  return UI_FONT_CHOICES[next]!;
 }
 
 /** A variant id is only valid for the appearance it was authored for. */
@@ -176,19 +227,30 @@ function variantForAppearance(id: unknown, appearance: Appearance): string | nul
   if (typeof id !== "string") {
     return null;
   }
-  const variant = findVariant(id);
+  const variant = findVariantAnywhere(id);
   return variant !== undefined && variant.appearance === appearance ? variant.id : null;
 }
 
+export interface AppearanceStoreOptions {
+  /** The settings store to read through; defaults to the app's singleton. */
+  readonly settings?: UiSettingsStore;
+  /** Convenience for tests: a settings store over this storage. */
+  readonly storage?: StorageLike;
+}
+
 export class AppearanceStore {
-  readonly #storage: StorageLike;
-  #preferences: AppearancePreferences = DEFAULT_APPEARANCE;
+  readonly #settings: UiSettingsStore;
+  #preferences: AppearancePreferences;
   readonly #listeners = new Set<() => void>();
 
-  constructor(options: { storage?: StorageLike } = {}) {
-    this.#storage =
-      options.storage ?? (globalThis as { localStorage?: StorageLike }).localStorage ?? memoryStorage();
-    this.#load();
+  constructor(options: AppearanceStoreOptions = {}) {
+    this.#settings =
+      options.settings ??
+      (options.storage === undefined ? uiSettings : new UiSettingsStore({ storage: options.storage }));
+    this.#preferences = project(this.#settings.getSnapshot());
+    this.#settings.subscribe(() => {
+      this.#apply(project(this.#settings.getSnapshot()));
+    });
   }
 
   getSnapshot(): AppearancePreferences {
@@ -224,6 +286,21 @@ export class AppearanceStore {
 
   #update(patch: Partial<AppearancePreferences>): void {
     const next: AppearancePreferences = { ...this.#preferences, ...patch };
+    // Appearance is a discrete choice, never a drag — write it straight
+    // through. Re-projecting afterwards keeps the validated view authoritative.
+    this.#settings.update(
+      {
+        appearance: next.mode,
+        themeSelection: { light: next.lightVariant, dark: next.darkVariant },
+        accent: next.accent,
+        surface: next.surface,
+      },
+      "immediate",
+    );
+    this.#apply(project(this.#settings.getSnapshot()));
+  }
+
+  #apply(next: AppearancePreferences): void {
     if (
       next.mode === this.#preferences.mode &&
       next.lightVariant === this.#preferences.lightVariant &&
@@ -234,47 +311,26 @@ export class AppearanceStore {
       return;
     }
     this.#preferences = next;
-    this.#persist();
     for (const listener of this.#listeners) {
       listener();
     }
   }
-
-  #load(): void {
-    const raw = this.#storage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw) as Partial<PersistedPreferences>;
-      if (parsed.version !== 1) {
-        throw new Error("unknown version");
-      }
-      const lightVariant = variantForAppearance(parsed.lightVariant, "light") ?? DEFAULT_APPEARANCE.lightVariant;
-      const darkVariant = variantForAppearance(parsed.darkVariant, "dark") ?? DEFAULT_APPEARANCE.darkVariant;
-      this.#preferences = {
-        mode: isAppearanceMode(parsed.mode) ? parsed.mode : DEFAULT_APPEARANCE.mode,
-        lightVariant,
-        darkVariant,
-        accent: isAccentSelection(parsed.accent) ? parsed.accent : DEFAULT_APPEARANCE.accent,
-        surface: isSurfacePreference(parsed.surface) ? parsed.surface : DEFAULT_APPEARANCE.surface,
-      };
-    } catch {
-      this.#storage.removeItem(STORAGE_KEY);
-    }
-  }
-
-  #persist(): void {
-    const persisted: PersistedPreferences = { version: 1, ...this.#preferences };
-    this.#storage.setItem(STORAGE_KEY, JSON.stringify(persisted));
-  }
 }
 
-function memoryStorage(): StorageLike {
-  const map = new Map<string, string>();
+/**
+ * The settings snapshot's appearance slice, with each variant id checked
+ * against the registry it has to come from — a hand-edited or stale id (a
+ * removed theme, a dark variant stored as the light one) falls back to that
+ * side's default without disturbing the other.
+ */
+function project(settings: UiSettings): AppearancePreferences {
   return {
-    getItem: (key) => (map.has(key) ? map.get(key)! : null),
-    setItem: (key, value) => void map.set(key, value),
-    removeItem: (key) => void map.delete(key),
+    mode: settings.appearance,
+    lightVariant:
+      variantForAppearance(settings.themeSelection.light, "light") ?? DEFAULT_APPEARANCE.lightVariant,
+    darkVariant:
+      variantForAppearance(settings.themeSelection.dark, "dark") ?? DEFAULT_APPEARANCE.darkVariant,
+    accent: settings.accent,
+    surface: settings.surface,
   };
 }

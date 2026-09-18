@@ -92,6 +92,19 @@ export function exitMessage(code: number): string {
   return `\r\n\x1b[90m[process exited ${code}]\x1b[0m\r\n`;
 }
 
+/**
+ * Wrap pasted text for the PTY (desktop `paste_bytes`, view.rs:309-319):
+ * bracketed-paste aware, and strips the one control sequence a paste could
+ * inject (the end-marker) before anything is sent.
+ */
+export function pasteBytes(text: string, bracketed: boolean): string {
+  const sanitized = text.replaceAll("\x1b[201~", "");
+  if (bracketed) {
+    return `\x1b[200~${sanitized}\x1b[201~`;
+  }
+  return sanitized;
+}
+
 /** Tab title from the session's shell path ("/bin/zsh" → "zsh"). */
 export function shellTitle(shell: string): string {
   const name = (shell.split(/[/\\]/).pop() ?? shell).trim();

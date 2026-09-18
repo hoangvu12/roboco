@@ -9,7 +9,9 @@ export function useEngineStatus(session: EngineSession | null): EngineStatus | n
     [session],
   );
   const getSnapshot = useCallback(() => session?.client.status ?? null, [session]);
-  return useSyncExternalStore(subscribe, getSnapshot);
+  // The third arg is the server-render snapshot — same reader, so the
+  // surface trees can renderToString (the smoke suite's mount check).
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /** The watch cache snapshot of a session, null before a session exists. */
@@ -19,7 +21,7 @@ export function useWatchSnapshot(session: EngineSession | null): WatchCacheSnaps
     [session],
   );
   const getSnapshot = useCallback(() => session?.cache.getSnapshot() ?? null, [session]);
-  return useSyncExternalStore(subscribe, getSnapshot);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /**

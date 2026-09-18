@@ -50,9 +50,34 @@ export {
 export {
   EngineWatchCache,
   type ChatStatus,
+  type ConnectivitySlot,
   type RowSet,
   type WatchCacheOptions,
   type WatchCacheSnapshot,
   type WatchCollection,
 } from "./watch-cache";
+export {
+  SCOPED_ID_PREFIX,
+  encodeScopedId,
+  isScopedId,
+  parseScopedId,
+  type ScopedId,
+} from "./scoped-id";
+export { wireParams } from "./request-routing";
+export {
+  EngineRegistry,
+  projectRegistrySnapshot,
+  type EngineConnectionState,
+  type EngineEntrySnapshot,
+  type EngineRegistryOptions,
+  type EngineRegistrySnapshot,
+  type ProjectedSnapshot,
+  type RegistryEngineConfig,
+} from "./registry";
+export {
+  IndexedDbEngineCache,
+  MemoryEngineCache,
+  type CachedRows,
+  type EngineCacheStore,
+} from "./engine-cache";
 export * as methods from "./methods";

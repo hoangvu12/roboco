@@ -1,7 +1,7 @@
 import type { WorkspaceFileText, WorkspaceReadOnlyReason } from "@roboco/proto";
 import type { WorkspaceFilesClient } from "./files-client";
 import { describeFilesError } from "./files-client";
-import { fileReadOnlyReason, writableEncoding, writableLineEnding } from "./files";
+import { fileReadOnlyReason, isMarkdownPath, writableEncoding, writableLineEnding } from "./files";
 
 /**
  * One open workspace file: load, edit, save, and the desktop's write-outcome
@@ -31,7 +31,16 @@ export interface FileDocumentSnapshot {
   readonly editable: boolean;
   /** Edits exist that the engine has not acknowledged. */
   readonly dirty: boolean;
+  /** Markdown documents: render the preview (`show_markdown`, document.rs). */
+  readonly showMarkdown: boolean;
 }
+
+/**
+ * `FilesCloseDisposition` (mod.rs:152) — what a close request resolved to.
+ * "allow" closes now; "pending" waits for in-flight autosaves to land;
+ * "blocked" shows the Retry/Keep Open/Discard banner.
+ */
+export type CloseDisposition = "allow" | "pending" | "blocked";
 
 interface PendingSave {
   readonly revision: number;
@@ -55,10 +64,18 @@ export class FileDocument {
   #pendingSave: PendingSave | null = null;
   #snapshot: FileDocumentSnapshot;
   #disposed = false;
+  #showMarkdown: boolean;
+  #autosaveEnabled = false;
+  #autosaveDelayMs: number;
+  #autosavePaused = false;
+  #autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(client: WorkspaceFilesClient, path: string) {
+  constructor(client: WorkspaceFilesClient, path: string, options: { autosaveDelayMs?: number } = {}) {
     this.#client = client;
     this.path = path;
+    // document.rs `FileDocument::loading` — markdown starts in preview mode.
+    this.#showMarkdown = isMarkdownPath(path);
+    this.#autosaveDelayMs = options.autosaveDelayMs ?? 900;
     this.#snapshot = this.#takeSnapshot();
   }
 
@@ -76,6 +93,7 @@ export class FileDocument {
   dispose(): void {
     this.#disposed = true;
     this.#generation += 1;
+    this.#clearAutosaveTimer();
     this.#listeners.clear();
   }
 
@@ -84,6 +102,7 @@ export class FileDocument {
     const generation = ++this.#generation;
     this.#phase = { kind: "loading" };
     this.#pendingSave = null;
+    this.#clearAutosaveTimer();
     this.#commit();
     void this.#client
       .readFile(this.path)
@@ -110,6 +129,17 @@ export class FileDocument {
     if (this.#phase.kind === "saveFailed") {
       this.#phase = { kind: "ready" };
     }
+    this.#commit();
+    // desktop on_editor_change → schedule_autosave: idle edits earn a save.
+    this.#scheduleAutosave();
+  }
+
+  /** `show_markdown` — the markdown/code presentation toggle. */
+  setShowMarkdown(show: boolean): void {
+    if (this.#showMarkdown === show) {
+      return;
+    }
+    this.#showMarkdown = show;
     this.#commit();
   }
 
@@ -141,6 +171,7 @@ export class FileDocument {
         if (this.#pendingSave?.revision !== pending.revision) {
           return;
         }
+        this.#clearAutosaveTimer();
         if (outcome.status === "written") {
           this.#savedHash = outcome.file.contentHash;
           this.#savedRevision = pending.revision;
@@ -156,6 +187,7 @@ export class FileDocument {
         if (this.#pendingSave?.revision !== pending.revision) {
           return;
         }
+        this.#clearAutosaveTimer();
         this.#pendingSave = null;
         this.#phase = { kind: "saveFailed", message: describeFilesError(error) };
         this.#commit();
@@ -168,6 +200,122 @@ export class FileDocument {
    */
   reloadFromDisk(): void {
     this.load();
+  }
+
+  /**
+   * `keep_external_edits` (preview.rs:2043): dismiss the changed-on-disk
+   * banner by converting `externallyModified` into `conflict` — the buffer
+   * stays, and a later save stays blocked until an explicit reload.
+   */
+  keepEditing(): void {
+    if (this.#phase.kind === "externallyModified") {
+      this.#clearAutosaveTimer();
+      this.#phase = { kind: "conflict", diskHash: this.#phase.diskHash };
+      this.#commit();
+    }
+  }
+
+  /** Desktop `discard_changes` (document.rs:300): resolve dirty state. */
+  discardChanges(): void {
+    this.#clearAutosaveTimer();
+    this.#pendingSave = null;
+    this.#savedRevision = this.#revision;
+    this.#commit();
+  }
+
+  /**
+   * `prepare_close` (preview.rs:1629) for one document: clean ⇒ allow;
+   * a dirty doc that can autosave saves now and pends; a dirty doc stuck
+   * in a phase that cannot autosave blocks (Retry/Keep Open/Discard).
+   */
+  prepareClose(): CloseDisposition {
+    if (!this.isDirty()) {
+      return "allow";
+    }
+    if (this.blocksLifecycleClose()) {
+      return "blocked";
+    }
+    if (this.canAutosave()) {
+      this.save();
+    }
+    return "pending";
+  }
+
+  /** `document_blocks_lifecycle` (preview.rs:506). */
+  blocksLifecycleClose(): boolean {
+    return (
+      this.isDirty() &&
+      (this.#phase.kind === "saveFailed" ||
+        this.#phase.kind === "conflict" ||
+        this.#phase.kind === "externallyModified" ||
+        this.#phase.kind === "deletedOnDisk")
+    );
+  }
+
+  /** Desktop `can_autosave` (document.rs:182). */
+  canAutosave(): boolean {
+    return this.canSave() && this.#phase.kind === "ready";
+  }
+
+  /**
+   * `set_autosave_enabled` / `set_autosave_delay_ms` (preview.rs:342-366):
+   * reconfigure, drop any pending timer, and re-arm a capable document.
+   */
+  configureAutosave(enabled: boolean, delayMs: number): void {
+    this.#autosaveEnabled = enabled;
+    this.#autosaveDelayMs = delayMs;
+    this.#clearAutosaveTimer();
+    this.#scheduleAutosave();
+  }
+
+  /**
+   * `autosave_paused_for_reload`: a pending destructive-reload confirmation
+   * holds autosave back so it cannot race the user's choice; canceling the
+   * confirmation re-arms a capable document (preview.rs:2028-2040).
+   */
+  setAutosavePaused(paused: boolean): void {
+    this.#autosavePaused = paused;
+    if (paused) {
+      this.#clearAutosaveTimer();
+    } else {
+      this.#scheduleAutosave();
+    }
+  }
+
+  /** `has_unsaved_changes` for this document. */
+  hasUnsavedChanges(): boolean {
+    return this.isDirty();
+  }
+
+  #scheduleAutosave(): void {
+    if (this.#disposed || !this.#autosaveEnabled || this.#autosavePaused || !this.canAutosave()) {
+      return;
+    }
+    this.#clearAutosaveTimer();
+    const revision = this.#revision;
+    const generation = this.#generation;
+    this.#autosaveTimer = setTimeout(() => {
+      this.#autosaveTimer = null;
+      // desktop: still enabled, unpaused, same generation and revision, and
+      // still capable — every edit reschedules, so a stale timer never fires.
+      if (
+        !this.#disposed &&
+        this.#autosaveEnabled &&
+        !this.#autosavePaused &&
+        this.#generation === generation &&
+        this.#revision === revision &&
+        this.canAutosave()
+      ) {
+        this.save();
+      }
+    }, this.#autosaveDelayMs);
+  }
+
+  #clearAutosaveTimer(): void {
+    if (this.#autosaveTimer !== null) {
+      clearTimeout(this.#autosaveTimer);
+      this.#autosaveTimer = null;
+    }
   }
 
   /**
@@ -192,6 +340,8 @@ export class FileDocument {
         }
         if (this.isDirty()) {
           if (this.#phase.kind === "ready" || this.#phase.kind === "saveFailed") {
+            // desktop mark_external: the pending autosave is dropped.
+            this.#clearAutosaveTimer();
             this.#phase = { kind: "externallyModified", diskHash };
             this.#commit();
           }
@@ -210,6 +360,8 @@ export class FileDocument {
       return;
     }
     this.#pendingSave = null;
+    // desktop mark_deleted: autosave and any save in flight stop.
+    this.#clearAutosaveTimer();
     this.#phase = { kind: "deletedOnDisk" };
     this.#commit();
   }
@@ -274,6 +426,7 @@ export class FileDocument {
       file: this.#file,
       editable: this.isEditable(),
       dirty: this.isDirty(),
+      showMarkdown: this.#showMarkdown,
     };
   }
 

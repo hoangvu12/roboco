@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import type { Chat, Device, SessionStatus, Space } from "@roboco/proto";
+import type { Chat, Connectivity, ConnectivityState, Device, SessionStatus, Space } from "@roboco/proto";
 import { EngineClient, type EngineStatus } from "../src/client";
-import { WATCH_CHATS, WATCH_DEVICES, WATCH_SESSIONS, WATCH_SPACES } from "../src/methods";
+import { WATCH_CHATS, WATCH_CONNECTIVITY, WATCH_DEVICES, WATCH_SESSIONS, WATCH_SPACES } from "../src/methods";
 import { EngineWatchCache, type ChatStatus, type WatchCacheSnapshot } from "../src/watch-cache";
 import { FakeEngine } from "./helpers/fake-engine";
 import { delay, statusWhen, trackedFactory, waitUntil } from "./helpers/ws";
@@ -66,6 +66,13 @@ const fakeStatus = (chatId: string, status: SessionStatus = "working"): ChatStat
   startedAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:01Z",
   lastCompletedTurn: null,
+});
+
+const fakeConnectivity = (state: ConnectivityState): Connectivity => ({
+  state,
+  retryAtMs: 0,
+  lastFailure: null,
+  chats: [],
 });
 
 interface EngineRows {
@@ -290,6 +297,89 @@ describe("the watch cache against a scripted fake engine", () => {
     expect(swapped.statuses.rows.map((row) => row.chatId)).toEqual(["chat-a"]);
   });
 
+  test("the connectivity stream fills the single-value slot and is identity-stable while unchanged", async () => {
+    const fake = new FakeEngine();
+    const rows: EngineRows = {
+      chats: [fakeChat("chat-a")],
+      spaces: [fakeSpace("space-a")],
+      devices: [fakeDevice("device-a")],
+      statuses: [fakeStatus("chat-a")],
+    };
+    scriptStreams(fake, rows);
+    fake.streams[WATCH_CONNECTIVITY] = (reply) => reply.item(fakeConnectivity("connected"));
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    const { client } = newClient(fake);
+    const cache = new EngineWatchCache(client);
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+    await waitUntil(() => cache.getSnapshot().connectivity.loaded, 2_000, "connectivity frame arrives");
+
+    const before = cache.getSnapshot();
+    expect(before.connectivity.value?.state).toBe("connected");
+    expect(before.connectivity.error).toBeNull();
+
+    let notifications = 0;
+    const unsubscribe = cache.subscribe(() => {
+      notifications += 1;
+    });
+
+    // An unchanged frame re-delivered: no new slot identity, no notification.
+    fake.connections[0]!.pushItem(WATCH_CONNECTIVITY, fakeConnectivity("connected"));
+    await delay(120);
+    expect(cache.getSnapshot().connectivity).toBe(before.connectivity);
+    expect(notifications).toBe(0);
+
+    // A degradation swaps the slot identity exactly once.
+    fake.connections[0]!.pushItem(WATCH_CONNECTIVITY, fakeConnectivity("offline"));
+    await waitUntil(() => notifications === 1, 2_000, "one connectivity change notification");
+    const degraded = cache.getSnapshot();
+    expect(degraded.connectivity).not.toBe(before.connectivity);
+    expect(degraded.connectivity.value?.state).toBe("offline");
+    expect(degraded.chats).toBe(before.chats);
+    unsubscribe();
+  });
+
+  test("a generation swap resets the connectivity slot until the stream re-delivers", async () => {
+    const fake = new FakeEngine();
+    const rows: EngineRows = {
+      chats: [fakeChat("chat-a")],
+      spaces: [fakeSpace("space-a")],
+      devices: [fakeDevice("device-a")],
+      statuses: [fakeStatus("chat-a")],
+    };
+    scriptStreams(fake, rows);
+    // The server-side truth, resubscription delivering the current value.
+    let truth: Connectivity = fakeConnectivity("connected");
+    fake.streams[WATCH_CONNECTIVITY] = (reply) => reply.item(truth);
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    const { client } = newClient(fake);
+    const cache = new EngineWatchCache(client);
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+    await waitUntil(() => cache.getSnapshot().connectivity.loaded, 2_000, "connectivity frame arrives");
+    expect(cache.getSnapshot().connectivity.value?.state).toBe("connected");
+
+    // The engine degrades while the client is offline.
+    truth = fakeConnectivity("offline");
+    fake.connections[0]!.socket.terminate();
+    await statusWhen(client, (status) => status.state === "reconnecting");
+    // Frozen reads keep the last-known value while offline.
+    expect(cache.getSnapshot().connectivity.value?.state).toBe("connected");
+    expect(cache.getSnapshot().connectivity.loaded).toBe(true);
+
+    await statusWhen(client, (status) => status.state === "connected" && status.generation === 2);
+    // The swap reset the slot: unloaded (the connectivity-observed reset),
+    // no stale value from generation 1.
+    const swapped = cache.getSnapshot();
+    expect(swapped.connectivity.loaded).toBe(false);
+    expect(swapped.connectivity.value).toBeNull();
+
+    await waitUntil(() => cache.getSnapshot().connectivity.loaded, 2_000, "connectivity resubscribed");
+    expect(cache.getSnapshot().connectivity.value?.state).toBe("offline");
+  });
+
   test("a stream the engine cannot serve degrades that collection without crashing the rest", async () => {
     const fake = new FakeEngine();
     fake.streams[WATCH_CHATS] = (reply) => reply.item([fakeChat("chat-a")]);
@@ -312,6 +402,10 @@ describe("the watch cache against a scripted fake engine", () => {
     expect(snapshot.spaces.loaded).toBe(false);
     expect(snapshot.statuses.error?.kind).toBe("unknown-method");
     expect(snapshot.statuses.error?.method).toBe(WATCH_SESSIONS);
+    expect(snapshot.connectivity.error?.kind).toBe("unknown-method");
+    expect(snapshot.connectivity.error?.method).toBe(WATCH_CONNECTIVITY);
+    expect(snapshot.connectivity.loaded).toBe(false);
+    expect(snapshot.connectivity.value).toBeNull();
 
     expect(cache.getSnapshot()).toBe(snapshot);
     expect(cache.getSnapshot()).toBe(snapshot);

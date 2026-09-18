@@ -1,7 +1,12 @@
-import type { ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
+import type { ConnectivityState, ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
-import { applyTranscriptFrame, TranscriptDesync } from "../lib/transcript";
+import {
+  PendingQueuedTurns,
+  SavedViewportCache,
+  applyTranscriptFrame,
+  TranscriptDesync,
+} from "../lib/transcript";
 
 /**
  * One chat's live transcript — the store behind the transcript view. Subscribes
@@ -13,6 +18,13 @@ import { applyTranscriptFrame, TranscriptDesync } from "../lib/transcript";
  * Same React-binding contract as the watch cache: `getSnapshot()` is
  * identity-stable until an actual change, `subscribe` fires once per change.
  */
+
+/**
+ * `TranscriptReplayState` (transcript.rs:2426): a saved viewport is restored
+ * only after a populated replay — an `empty` replay is authoritative (the
+ * chat really has no messages) and `pending` is neither.
+ */
+export type TranscriptReplayState = "pending" | "empty" | "populated";
 
 export interface TranscriptSnapshot {
   /** The transcript entries in document order (immutable, identity-preserving). */
@@ -27,9 +39,256 @@ export interface TranscriptSnapshot {
   readonly error: string | null;
   /** The connection generation these rows belong to. */
   readonly generation: number;
+  /** Where the replay stands (`TranscriptReplayState`). */
+  readonly replay: TranscriptReplayState;
 }
 
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
+
+// ---------------------------------------------------------------------------
+// Optimistic echo / pending sends
+// ---------------------------------------------------------------------------
+
+/**
+ * A send the user has made that the real transcript has not confirmed yet —
+ * the desktop's `PendingSend` (`crates/ui/src/state.rs:907-909`), rendered as
+ * an echo bubble (`push_echo`/`remove_echo`, `:1111-1128`) so the message is on
+ * screen the instant it is sent rather than whenever the engine gets round to
+ * writing it back.
+ */
+export interface PendingSend {
+  readonly messageId: string;
+  readonly chatId: string;
+  readonly startedAtMs: number;
+  readonly text: string;
+  readonly attachmentPaths: readonly string[];
+}
+
+/** `state.rs`'s `UNDELIVERED_GRACE_MS` — 120s before a send is called failed. */
+export const UNDELIVERED_GRACE_MS = 120_000;
+
+export type PendingSendStatus = "pending" | "undelivered";
+
+/**
+ * `chat_delivery_degraded`'s web arm (state.rs:877-902), deliberately
+ * minimal: the routed engine's `WatchConnectivity` posture decides —
+ * Offline/Reconnecting degrade delivery, Connected and Disabled do not
+ * (the desktop's `Disabled => false` early return), and an unobserved
+ * slot (null) does not either. The desktop's per-chat room map and
+ * device-presence arms stay unported: one engine's own stream is the only
+ * delivery path the web client holds, and the chat page threads this
+ * value from the session's watch cache (ticket 30's per-engine slot;
+ * ticket 31's routing picks the chat's engine).
+ */
+export function chatDeliveryDegraded(state: ConnectivityState | null | undefined): boolean {
+  return state === "offline" || state === "reconnecting";
+}
+
+/**
+ * `send_pending` / `send_undelivered` (`state.rs:1136-1157,1227-1239`): inside
+ * the grace window a send is merely pending — quiet, not alarming; past it,
+ * with nothing confirming it, it is explicitly undelivered and offers a retry.
+ *
+ * `degraded` is the AND-in point for `chat_delivery_degraded` (above):
+ * degraded delivery keeps the send pending however long it has waited —
+ * the honest state is "Queued", never a false "Not delivered" during an
+ * outage the engine itself has already reported.
+ */
+export function pendingSendStatus(
+  send: PendingSend,
+  nowMs: number,
+  degraded = false,
+): PendingSendStatus {
+  if (degraded) {
+    return "pending";
+  }
+  return nowMs - send.startedAtMs <= UNDELIVERED_GRACE_MS ? "pending" : "undelivered";
+}
+
+const NO_SENDS: readonly PendingSend[] = [];
+
+/**
+ * The app's echo overlay: chat id → the sends still awaiting confirmation.
+ *
+ * It is module-scoped rather than a `TranscriptStore` field on purpose. A
+ * `TranscriptStore` is created per open chat and disposed on every chat
+ * switch, so pending sends living inside one would vanish the moment the user
+ * looked at another chat — the desktop keeps them on `AppState`, which
+ * outlives any one transcript.
+ *
+ * EVERYTHING here is keyed by `messageId`, never by `chatId` alone: two sends
+ * can be in flight in the same chat, and one failing must not clear the other
+ * (`send_failure_cleanup_only_ends_its_own_overlay`).
+ */
+export class EchoStore {
+  #byChat = new Map<string, readonly PendingSend[]>();
+  readonly #listeners = new Set<() => void>();
+
+  /** The sends awaiting confirmation in one chat, oldest first. */
+  forChat(chatId: string): readonly PendingSend[] {
+    return this.#byChat.get(chatId) ?? NO_SENDS;
+  }
+
+  get(messageId: string): PendingSend | null {
+    for (const sends of this.#byChat.values()) {
+      const hit = sends.find((send) => send.messageId === messageId);
+      if (hit !== undefined) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  /** Show an echo for a just-sent message (`push_echo` + `begin_pending_send`). */
+  pushEcho(send: PendingSend): void {
+    const sends = this.forChat(send.chatId);
+    if (sends.some((existing) => existing.messageId === send.messageId)) {
+      return;
+    }
+    this.#byChat.set(send.chatId, [...sends, send]);
+    this.#emit();
+  }
+
+  /**
+   * Drop ONE send's echo — the ack, and the failure cleanup. Silent when the
+   * id is unknown (a doubled ack, or a send that already landed).
+   */
+  removeEcho(messageId: string): void {
+    for (const [chatId, sends] of this.#byChat) {
+      const next = sends.filter((send) => send.messageId !== messageId);
+      if (next.length === sends.length) {
+        continue;
+      }
+      if (next.length === 0) {
+        this.#byChat.delete(chatId);
+      } else {
+        this.#byChat.set(chatId, next);
+      }
+      this.#emit();
+      return;
+    }
+  }
+
+  /**
+   * `ack_pending_send_from_transcript`: the instant a message id shows up in
+   * the real doc, its echo is redundant. Purely an id match — timing, ordering
+   * and the grace window play no part.
+   */
+  ackFromFrame(chatId: string, messageIds: Iterable<string>): void {
+    const sends = this.forChat(chatId);
+    if (sends.length === 0) {
+      return;
+    }
+    const confirmed = messageIds instanceof Set ? messageIds : new Set(messageIds);
+    const next = sends.filter((send) => !confirmed.has(send.messageId));
+    if (next.length === sends.length) {
+      return;
+    }
+    if (next.length === 0) {
+      this.#byChat.delete(chatId);
+    } else {
+      this.#byChat.set(chatId, next);
+    }
+    this.#emit();
+  }
+
+  /**
+   * `retry_pending_send`: a retry is a NEW send of the same text, not a resend
+   * of the old wire message — it mints a fresh id and restarts the grace-window
+   * clock. The old pending send is swapped out in place so the bubble stays put.
+   * Returns the new `PendingSend` (the caller ships it), or null if the id is
+   * already gone (it was acked while the user was reaching for the button).
+   */
+  retry(
+    messageId: string,
+    options: { mintMessageId?: () => string; nowMs?: number } = {},
+  ): PendingSend | null {
+    const previous = this.get(messageId);
+    if (previous === null) {
+      return null;
+    }
+    const next: PendingSend = {
+      ...previous,
+      messageId: (options.mintMessageId ?? defaultMintEchoId)(),
+      startedAtMs: options.nowMs ?? Date.now(),
+    };
+    const sends = this.forChat(previous.chatId);
+    this.#byChat.set(
+      previous.chatId,
+      sends.map((send) => (send.messageId === messageId ? next : send)),
+    );
+    this.#emit();
+    return next;
+  }
+
+  /**
+   * `retry_pending_send` (state.rs:1235), the trailer-retry half: restart the
+   * grace clock for EVERY pending send in the chat — same message ids, so the
+   * overlay returns to its Sending phase while the engine's re-delivery runs.
+   * (The durable re-issue itself is the `RETRY_DELIVERY` RPC the caller
+   * fires; this never mints new ids.)
+   */
+  restartGrace(chatId: string, nowMs: number): void {
+    const sends = this.forChat(chatId);
+    if (sends.length === 0) {
+      return;
+    }
+    this.#byChat.set(
+      chatId,
+      sends.map((send) => ({ ...send, startedAtMs: nowMs })),
+    );
+    this.#emit();
+  }
+
+  /** Test seam — drops every overlay without notifying anything of substance. */
+  reset(): void {
+    this.#byChat = new Map();
+    this.#emit();
+  }
+
+  #emit(): void {
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+}
+
+function defaultMintEchoId(): string {
+  return crypto.randomUUID();
+}
+
+export const echoStore = new EchoStore();
+
+/**
+ * Per-chat viewport memory (transcript.rs:2401 `saved_viewports`), module
+ * scoped like the echo store: a `TranscriptStore` is created per open chat
+ * and disposed on every switch, so the viewports must outlive them.
+ */
+export const savedViewportCache = new SavedViewportCache();
+
+/**
+ * Locally-authored queue rows whose stable ids have not appeared in the
+ * transcript yet (transcript.rs:2307) — module scoped for the same reason as
+ * the viewport cache. The web composer has no queue-send path yet, so nothing
+ * registers today; the class ships tested for the composer ticket that adds
+ * one.
+ */
+export const pendingQueuedTurns = new PendingQueuedTurns();
+
+/** The message ids a frame carries — the ack key set. */
+function frameMessageIds(frame: TranscriptFrame): string[] {
+  if ("reset" in frame) {
+    return frame.reset.map((entry) => entry.id);
+  }
+  return [...frame.upsert.map((item) => item.entry.id), ...frame.append.map((item) => item.entry)];
+}
 
 /** The watch surface the store needs — `EngineClient` satisfies it. */
 export interface TranscriptClient {
@@ -39,26 +298,77 @@ export interface TranscriptClient {
   }): WatchHandle;
 }
 
+/**
+ * The offline transcript cache (§2.3, ticket 31): last-seen entries for
+ * chats the user has actually opened, seeded before the live stream's
+ * first frame and re-saved (debounced) as frames land. One entry per
+ * `(engine, chat)` — the desktop's `chat-<sha256>.json` granularity.
+ */
+export interface TranscriptCache {
+  load(): Promise<readonly SessionMessageEntry[] | null>;
+  save(entries: readonly SessionMessageEntry[]): Promise<void>;
+}
+
+/** Debounce window for cache writes — a burst of frames is one save. */
+const CACHE_SAVE_DEBOUNCE_MS = 300;
+
 export class TranscriptStore {
   readonly #client: TranscriptClient;
   readonly #docId: string;
   readonly #log: (message: string, detail?: unknown) => void;
+  readonly #echoes: EchoStore;
+  readonly #cache: TranscriptCache | undefined;
+  #saveTimer: ReturnType<typeof setTimeout> | undefined;
   #entries: readonly SessionMessageEntry[] = EMPTY_ENTRIES;
   #contextUsage: ContextUsage | null = null;
   #loaded = false;
   #error: string | null = null;
   #generation = 0;
+  #replay: TranscriptReplayState = "pending";
   #snapshot: TranscriptSnapshot;
   #handle: WatchHandle | null = null;
   readonly #listeners = new Set<() => void>();
   #disposed = false;
 
-  constructor(client: EngineClient | TranscriptClient, docId: string, options: { log?: (message: string, detail?: unknown) => void } = {}) {
+  constructor(
+    client: EngineClient | TranscriptClient,
+    docId: string,
+    options: {
+      log?: (message: string, detail?: unknown) => void;
+      echoes?: EchoStore;
+      /**
+       * `Transcript::for_doc(follow)`: false mounts the store WITHOUT the
+       * live watch — a frozen subagent snapshot's shape. The host seeds the
+       * snapshot through `seedEntries` and falls back to the live doc watch
+       * with `resubscribe()` when the blob fetch fails.
+       */
+      follow?: boolean;
+      /** The offline cache — seeded pre-frame, saved debounced per frame. */
+      cache?: TranscriptCache;
+    } = {},
+  ) {
     this.#client = client;
     this.#docId = docId;
     this.#log = options.log ?? (() => {});
+    this.#echoes = options.echoes ?? echoStore;
+    this.#cache = options.cache;
     this.#snapshot = this.#takeSnapshot();
-    this.#subscribe();
+    if (this.#cache !== undefined) {
+      // Seed the last-seen entries while the live stream is still arriving;
+      // the first live frame's reset replaces them wholesale.
+      void this.#cache
+        .load()
+        .then((entries) => {
+          if (this.#disposed || this.#loaded || entries === null) {
+            return;
+          }
+          this.seedEntries(entries);
+        })
+        .catch(() => {});
+    }
+    if (options.follow !== false) {
+      this.#subscribe();
+    }
   }
 
   /** The doc this store watches (a chat id, or a subagent doc id). */
@@ -92,7 +402,24 @@ export class TranscriptStore {
     this.#contextUsage = null;
     this.#loaded = false;
     this.#error = null;
+    this.#replay = "pending";
     this.#subscribe();
+    this.#commit();
+  }
+
+  /**
+   * `set_subagent_snapshot` (state.rs, shell.rs:2778): seed a frozen
+   * subagent's snapshot entries as the store's whole transcript — loaded,
+   * settled, no watch. Only meaningful on a `follow: false` store.
+   */
+  seedEntries(entries: readonly SessionMessageEntry[]): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#entries = [...entries];
+    this.#loaded = true;
+    this.#error = null;
+    this.#replay = "populated";
     this.#commit();
   }
 
@@ -101,6 +428,10 @@ export class TranscriptStore {
       return;
     }
     this.#disposed = true;
+    if (this.#saveTimer !== undefined) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = undefined;
+    }
     this.#handle?.cancel();
     this.#handle = null;
     this.#listeners.clear();
@@ -125,6 +456,7 @@ export class TranscriptStore {
       this.#entries = EMPTY_ENTRIES;
       this.#loaded = false;
       this.#error = null;
+      this.#replay = "pending";
     }
     const frame = asFrame(update);
     if (frame === null) {
@@ -141,10 +473,21 @@ export class TranscriptStore {
       }
       throw error;
     }
+    // `ack_pending_send_from_transcript`: any echo whose id the host has now
+    // written back is redundant, so it goes on the same frame that confirms it
+    // — otherwise the bubble would double for a tick.
+    this.#echoes.ackFromFrame(this.#docId, frameMessageIds(frame));
     if (update.contextUsage !== undefined) {
       this.#contextUsage = update.contextUsage;
     }
     this.#loaded = true;
+    // The replay state: a reset decides authoritatively (empty vs populated);
+    // any delta means real rows exist.
+    if ("reset" in frame) {
+      this.#replay = frame.reset.length === 0 ? "empty" : "populated";
+    } else {
+      this.#replay = "populated";
+    }
     this.#commit();
   }
 
@@ -165,14 +508,30 @@ export class TranscriptStore {
       streaming: last?.status === "streaming",
       error: this.#error,
       generation: this.#generation,
+      replay: this.#replay,
     };
   }
 
   #commit(): void {
     this.#snapshot = this.#takeSnapshot();
+    this.#scheduleCacheSave();
     for (const listener of this.#listeners) {
       listener();
     }
+  }
+
+  /** Debounced cache write — only for stores that actually loaded rows. */
+  #scheduleCacheSave(): void {
+    if (this.#cache === undefined || this.#saveTimer !== undefined || !this.#loaded) {
+      return;
+    }
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = undefined;
+      if (this.#disposed || this.#cache === undefined || !this.#loaded) {
+        return;
+      }
+      void this.#cache.save(this.#entries).catch(() => {});
+    }, CACHE_SAVE_DEBOUNCE_MS);
   }
 }
 

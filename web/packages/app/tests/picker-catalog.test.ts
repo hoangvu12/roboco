@@ -13,6 +13,19 @@ class FakeClient {
   harnesses: HarnessDescriptor[] = [];
   models: Model[] = [];
   nextError: Error | null = null;
+  readonly #statusListeners = new Set<(status: { state: string }) => void>();
+
+  onStatus(listener: (status: { state: string }) => void): () => void {
+    this.#statusListeners.add(listener);
+    return () => this.#statusListeners.delete(listener);
+  }
+
+  /** Test seam: the engine finished dialing. */
+  emitConnected(): void {
+    for (const listener of this.#statusListeners) {
+      listener({ state: "connected" });
+    }
+  }
 
   async call<T>(method: string, params?: unknown): Promise<T> {
     this.calls.push({ method, params });
@@ -107,5 +120,71 @@ describe("PickerCatalog", () => {
     expect(catalog.getHarnesses().loaded).toBe(false);
     await catalog.loadHarnesses();
     expect(client.calls.filter((call) => call.method === "ListHarnesses")).toHaveLength(2);
+  });
+
+  it("a forced refresh reloads a loaded slot without clearing its rows", async () => {
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    await catalog.loadHarnesses();
+    const stale = catalog.getHarnesses().rows;
+    // The forced load fires a second call while the old rows stay visible…
+    const refresh = catalog.loadHarnesses({ force: true });
+    expect(client.calls.filter((call) => call.method === "ListHarnesses")).toHaveLength(2);
+    expect(catalog.getHarnesses().rows).toBe(stale);
+    await refresh;
+    // …and the fresh catalog replaces them.
+    expect(catalog.getHarnesses().loaded).toBe(true);
+  });
+
+  it("rides targetDeviceId when the catalog targets another device", async () => {
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    catalog.setTargetDevice("remote-device");
+    await catalog.loadHarnesses();
+    const call = client.calls.find((entry) => entry.method === "ListHarnesses");
+    expect(call?.params).toEqual({ targetDeviceId: "remote-device" });
+  });
+
+  it("setTargetDevice invalidates and re-kicks the harness catalog", async () => {
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    await catalog.loadHarnesses();
+    catalog.setTargetDevice("remote-device");
+    expect(catalog.getHarnesses().loaded).toBe(false);
+    const calls = client.calls.filter((entry) => entry.method === "ListHarnesses");
+    expect(calls).toHaveLength(2);
+    expect((calls[1]!.params as { targetDeviceId?: string }).targetDeviceId).toBe("remote-device");
+  });
+
+  it("an offline call retries once the engine connects (the reload race)", async () => {
+    // A page-load call races the websocket dial and fails immediately.
+    client.nextError = new RpcError("transport", "Engine is offline; reconnecting");
+    await catalog.loadHarnesses();
+    expect(catalog.getHarnesses().error).toBe("Engine is offline; reconnecting");
+    expect(catalog.getHarnesses().loaded).toBe(false);
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    client.emitConnected();
+    // The connected status re-kicked the errored slot.
+    await Promise.resolve();
+    for (let attempt = 0; attempt < 10 && !catalog.getHarnesses().loaded; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(catalog.getHarnesses().loaded).toBe(true);
+    expect(catalog.getHarnesses().rows).toHaveLength(1);
+  });
+
+  it("normalizes model rows as they land", async () => {
+    client.models = [{ id: "titan[1m]", label: "Titan (1M context)", reasoningLevels: [], options: [] }];
+    await catalog.loadModels("codex");
+    const rows = catalog.getModels("codex").rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe("titan");
+    expect(rows[0]!.label).toBe("Titan");
+    expect(rows[0]!.options.some((option) => option.id === "contextWindow")).toBe(true);
   });
 });

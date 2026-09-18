@@ -18,54 +18,94 @@ import type {
 
 // ── RPC wrappers ────────────────────────────────────────────────────────
 // Every mutation replies with the fresh AgentAccountsSnapshot, so the page
-// repaints from one round trip.
+// repaints from one round trip. `targetDeviceId` is the device switcher's
+// passthrough (accounts.rs:259-265): null (the local device) sends nothing —
+// the calls stay direct; an explicit device rides every call the page makes.
 
-export function listAgentAccounts(client: EngineClient, forceUsage: boolean): Promise<AgentAccountsSnapshot> {
-  return client.call<AgentAccountsSnapshot>(methods.LIST_AGENT_ACCOUNTS, { forceUsage });
+function targetParams(targetDeviceId: string | null | undefined): Record<string, string> {
+  return targetDeviceId == null ? {} : { targetDeviceId };
+}
+
+export function listAgentAccounts(
+  client: EngineClient,
+  forceUsage: boolean,
+  targetDeviceId?: string | null,
+): Promise<AgentAccountsSnapshot> {
+  return client.call<AgentAccountsSnapshot>(methods.LIST_AGENT_ACCOUNTS, {
+    forceUsage,
+    ...targetParams(targetDeviceId),
+  });
 }
 
 export function activateAgentAccount(
   client: EngineClient,
   account: AgentAccount,
+  targetDeviceId?: string | null,
 ): Promise<AgentAccountsSnapshot> {
   // Tolerant param shape (desktop parity): both `id` and `accountId`.
   return client.call<AgentAccountsSnapshot>(methods.ACTIVATE_AGENT_ACCOUNT, {
     id: account.id,
     accountId: account.id,
     harness: account.harness,
+    ...targetParams(targetDeviceId),
   });
 }
 
 export function forgetAgentAccount(
   client: EngineClient,
   account: AgentAccount,
+  targetDeviceId?: string | null,
 ): Promise<AgentAccountsSnapshot> {
   return client.call<AgentAccountsSnapshot>(methods.FORGET_AGENT_ACCOUNT, {
     id: account.id,
     accountId: account.id,
     harness: account.harness,
+    ...targetParams(targetDeviceId),
   });
 }
 
-export function startAgentLogin(client: EngineClient, harness: HarnessId): Promise<AgentLoginStart> {
-  return client.call<AgentLoginStart>(methods.START_AGENT_LOGIN, { harness });
+export function startAgentLogin(
+  client: EngineClient,
+  harness: HarnessId,
+  targetDeviceId?: string | null,
+): Promise<AgentLoginStart> {
+  return client.call<AgentLoginStart>(methods.START_AGENT_LOGIN, {
+    harness,
+    ...targetParams(targetDeviceId),
+  });
 }
 
 export function completeAgentLogin(
   client: EngineClient,
   loginId: string,
   code: string,
+  targetDeviceId?: string | null,
 ): Promise<AgentAccountsSnapshot> {
-  return client.call<AgentAccountsSnapshot>(methods.COMPLETE_AGENT_LOGIN, { loginId, code });
+  return client.call<AgentAccountsSnapshot>(methods.COMPLETE_AGENT_LOGIN, {
+    loginId,
+    code,
+    ...targetParams(targetDeviceId),
+  });
 }
 
-export function pollAgentLoginOnce(client: EngineClient, loginId: string): Promise<AgentLoginPoll> {
-  return client.call<AgentLoginPoll>(methods.POLL_AGENT_LOGIN, { loginId });
+export function pollAgentLoginOnce(
+  client: EngineClient,
+  loginId: string,
+  targetDeviceId?: string | null,
+): Promise<AgentLoginPoll> {
+  return client.call<AgentLoginPoll>(methods.POLL_AGENT_LOGIN, {
+    loginId,
+    ...targetParams(targetDeviceId),
+  });
 }
 
 /** Best-effort; the desktop only debug-logs a failure. */
-export async function cancelAgentLogin(client: EngineClient, loginId: string): Promise<void> {
-  await client.call(methods.CANCEL_AGENT_LOGIN, { loginId });
+export async function cancelAgentLogin(
+  client: EngineClient,
+  loginId: string,
+  targetDeviceId?: string | null,
+): Promise<void> {
+  await client.call(methods.CANCEL_AGENT_LOGIN, { loginId, ...targetParams(targetDeviceId) });
 }
 
 // ── Usage meters ────────────────────────────────────────────────────────
@@ -86,15 +126,20 @@ export function usageLevel(fraction: number): UsageLevel {
   return "normal";
 }
 
-/** The token behind each level (usage_color): accent → warning → danger. */
+/**
+ * The token behind each level (usage_color) at the meter-fill's own opacity
+ * (accounts.rs:694-697): accent at 0.8 for Normal, warning/danger at 0.85 for
+ * Warn/Critical — crossing a threshold swaps the bar's color AND lifts its
+ * opacity a notch.
+ */
 export function usageColorVar(level: UsageLevel): string {
   switch (level) {
     case "critical":
-      return "var(--rb-danger)";
+      return "color-mix(in srgb, var(--rb-danger) 85%, transparent)";
     case "warn":
-      return "var(--rb-warning)";
+      return "color-mix(in srgb, var(--rb-warning) 85%, transparent)";
     default:
-      return "var(--rb-accent)";
+      return "color-mix(in srgb, var(--rb-accent) 80%, transparent)";
   }
 }
 
@@ -228,6 +273,7 @@ export async function pollAgentLogin(
   client: EngineClient,
   loginId: string,
   options: PollLoginOptions,
+  targetDeviceId?: string | null,
 ): Promise<AgentLoginPoll | null> {
   const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -238,7 +284,7 @@ export async function pollAgentLogin(
     }
     let poll: AgentLoginPoll;
     try {
-      poll = await pollAgentLoginOnce(client, loginId);
+      poll = await pollAgentLoginOnce(client, loginId, targetDeviceId);
     } catch (error) {
       return { status: "error", message: `Poll failed: ${error instanceof Error ? error.message : String(error)}` };
     }

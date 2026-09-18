@@ -165,7 +165,7 @@ export function RemoteAccessSettingsPage() {
                 </button>
               </div>
             ) : (
-              <p className="settings-empty">No link yet. Create one and open or paste it on the other device.</p>
+              <p className="settings-empty">No link yet. Create one and paste it on the other device under Settings → Devices.</p>
             )}
           </section>
         </>

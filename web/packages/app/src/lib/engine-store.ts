@@ -26,6 +26,14 @@ export interface StoredEngine {
 export interface FleetState {
   readonly active: string | null;
   readonly engines: readonly StoredEngine[];
+  /**
+   * Set when the persisted pairing list (`roboco.fleet.v1`) failed to
+   * parse: pairing and persisting refuse until it is repaired, and the
+   * damaged bytes are preserved untouched — never overwritten with a
+   * blank/default value (`damaged_pairing_config_preserves_local_access_
+   * and_original_bytes`, engine_registry/tests.rs:196).
+   */
+  readonly configurationError: string | null;
 }
 
 export interface StorageLike {
@@ -51,7 +59,9 @@ interface PersistedState {
 }
 
 const STORAGE_KEY = "roboco.fleet.v1";
-const EMPTY: FleetState = { active: null, engines: [] };
+const EMPTY: FleetState = { active: null, engines: [], configurationError: null };
+const CONFIGURATION_ERROR =
+  "Saved engine configuration could not be read. The stored value is preserved; pairing is unavailable until it is repaired.";
 
 function memoryStorage(): StorageLike {
   const map = new Map<string, string>();
@@ -91,6 +101,7 @@ export class EngineStore {
   readonly #now: () => number;
   readonly #redeem: RedeemFunction;
   #state: FleetState = EMPTY;
+  #configurationError: string | null = null;
   readonly #listeners = new Set<() => void>();
 
   constructor(options: EngineStoreOptions = {}) {
@@ -101,7 +112,9 @@ export class EngineStore {
   }
 
   getSnapshot(): FleetState {
-    return this.#state;
+    return this.#configurationError === null
+      ? this.#state
+      : { ...this.#state, configurationError: this.#configurationError };
   }
 
   subscribe(listener: () => void): () => void {
@@ -111,8 +124,16 @@ export class EngineStore {
     };
   }
 
-  /** Redeem a pairing URL, store the grant, and make the engine active. */
+  /**
+   * Redeem a pairing URL, store the grant, and make the engine active.
+   * Refuses while the persisted configuration is damaged — pairing stays
+   * blocked until the stored value is repaired (registry `pair()`'s
+   * `ensure!` in engine_registry.rs:478-483).
+   */
   async redeemPairingUrl(pairingUrl: string, label: string): Promise<StoredEngine> {
+    if (this.#configurationError !== null) {
+      throw new Error("Saved engine configuration needs repair before pairing");
+    }
     const parsed = parsePairingUrl(pairingUrl);
     const baseUrl = canonicalBaseUrl(parsed.baseUrl);
     const grant = await this.#redeem(baseUrl, parsed.pairCode, label);
@@ -125,7 +146,7 @@ export class EngineStore {
       deviceId: null,
     };
     const others = this.#state.engines.filter((entry) => entry.baseUrl !== baseUrl);
-    this.#setState({ active: baseUrl, engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)) });
+    this.#setState({ active: baseUrl, engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)), configurationError: null });
     return engine;
   }
 
@@ -143,7 +164,7 @@ export class EngineStore {
     }
     const active =
       this.#state.active === baseUrl ? (engines.length > 0 ? engines[0]!.baseUrl : null) : this.#state.active;
-    this.#setState({ active, engines });
+    this.#setState({ ...this.#state, active, engines });
   }
 
   /** Pin the verified engine identity for an entry (post-first-connect). */
@@ -170,7 +191,6 @@ export class EngineStore {
     if (raw === null) {
       return;
     }
-    let valid = false;
     try {
       const parsed = JSON.parse(raw) as PersistedState;
       if (parsed.version === 1 && Array.isArray(parsed.engines)) {
@@ -183,18 +203,26 @@ export class EngineStore {
             typeof entry.pairedAt === "number",
         );
         const active = typeof parsed.active === "string" && engines.some((entry) => entry.baseUrl === parsed.active) ? parsed.active : engines.length > 0 ? engines[0]!.baseUrl : null;
-        this.#state = { active, engines };
-        valid = engines.length > 0;
+        this.#state = { active, engines, configurationError: null };
+        return;
       }
+      // Wrong-shape payload: treat as damaged, preserving the bytes.
     } catch {
-      valid = false;
+      // Unparseable payload: damaged — the stored bytes stay untouched.
     }
-    if (!valid) {
-      this.#storage.removeItem(STORAGE_KEY);
-    }
+    // A damaged-but-present value is NEVER overwritten with a blank one:
+    // the store reads empty (nothing connects), pairing is refused, and
+    // the raw bytes survive for manual repair.
+    this.#state = { active: null, engines: [], configurationError: null };
+    this.#configurationError = CONFIGURATION_ERROR;
   }
 
   #persist(): void {
+    if (this.#configurationError !== null) {
+      // Persisting a healthy list over damaged bytes would silently destroy
+      // whatever the user needs to repair — refuse instead.
+      return;
+    }
     if (this.#state.engines.length === 0) {
       this.#storage.removeItem(STORAGE_KEY);
       return;
@@ -204,7 +232,11 @@ export class EngineStore {
   }
 
   #setState(state: FleetState): void {
-    if (state.active === this.#state.active && state.engines === this.#state.engines) {
+    if (
+      state.active === this.#state.active &&
+      state.engines === this.#state.engines &&
+      state.configurationError === this.#state.configurationError
+    ) {
       return;
     }
     this.#state = state;

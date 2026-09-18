@@ -68,6 +68,45 @@ export async function deleteChat(caller: MutateCaller, chatId: string): Promise<
   await caller.call(methods.MUTATE, { op: "deleteChat", chatId });
 }
 
+/**
+ * The local half of "this chat has been read" — the optimistic stamp the
+ * desktop's `mark_chat_seen` writes before it touches the wire. Keyed by chat
+ * id, epoch-ms. Module-scoped like the desktop's `AppState` field: it has to
+ * outlive whichever chat page happens to be mounted.
+ */
+const seenAt = new Map<string, number>();
+
+/** The optimistic `lastSeenAt` for a chat, or null if it has not been stamped. */
+export function chatSeenAt(chatId: string): number | null {
+  return seenAt.get(chatId) ?? null;
+}
+
+/**
+ * Mark a chat read (`state.rs`'s `mark_chat_seen`).
+ *
+ * Idempotent — a chat already stamped at or after `nowMs` is a no-op, so the
+ * repeated calls a chat page makes while it is open cost nothing. The stamp
+ * lands LOCALLY first and is never rolled back: the `Mutate` is
+ * fire-and-forget, and a dropped mutation must not make a chat the user
+ * plainly looked at flash unread again. Returns whether a mutation was sent.
+ */
+export function markChatSeen(caller: MutateCaller, chatId: string, nowMs = Date.now()): boolean {
+  const previous = seenAt.get(chatId);
+  if (previous !== undefined && previous >= nowMs) {
+    return false;
+  }
+  seenAt.set(chatId, nowMs);
+  void caller.call(methods.MUTATE, { op: "markChatSeen", chatId }).catch(() => {
+    // Fire-and-forget: the optimistic stamp stands either way.
+  });
+  return true;
+}
+
+/** Test seam — drops every optimistic seen stamp. */
+export function resetChatSeen(): void {
+  seenAt.clear();
+}
+
 /** The notice-strip text for a failed mutation (desktop shows `{err}`). */
 export function describeMutateError(error: unknown): string {
   return error instanceof Error ? error.message : "The change could not be applied.";
