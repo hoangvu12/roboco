@@ -8,6 +8,9 @@ import { DEVICE_ONLINE_WINDOW_SECS } from "./view";
  * sidebar's `deviceOnline` (`lib/view.ts`, `state.rs::device_online`) is a
  * DIFFERENT function with different None semantics (unknown rows read
  * online there, offline here) — both exist on the desktop too; do not merge.
+ * This one is named `lastSeenOnline` (the settings-page semantic: the raw
+ * last-seen window over a device row) so the two same-named desktop
+ * `device_online` functions never collide at a web call site again.
  */
 
 export { DEVICE_ONLINE_WINDOW_SECS };
@@ -23,11 +26,14 @@ export type EngineConnection = "connected" | "reconnecting" | "off";
 export type PresenceDot = "connected" | "reconnecting" | "off";
 
 /**
- * `device_online` (devices.rs:27-30): last-seen within the window, future
- * timestamps (clock skew) counting as online; a null/absent last-seen reads
- * offline. `lastSeenAt` is the wire's RFC 3339 string.
+ * `device_online` (devices.rs:27-30), web-named `lastSeenOnline` for the
+ * settings-page semantic so it never collides with `lib/view.ts`'s
+ * engine-state-aware `deviceOnline` (`state.rs::device_online`): last-seen
+ * within the window, future timestamps (clock skew) counting as online; a
+ * null/absent last-seen reads offline. `lastSeenAt` is the wire's RFC 3339
+ * string.
  */
-export function deviceOnline(lastSeenAt: string | null | undefined, now: number): boolean {
+export function lastSeenOnline(lastSeenAt: string | null | undefined, now: number): boolean {
   if (lastSeenAt === null || lastSeenAt === undefined) {
     return false;
   }

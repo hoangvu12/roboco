@@ -135,7 +135,9 @@ export const COALESCE_MS = 250;
 /**
  * `AttentionSoundGate` — coalesces attention requests delivered by
  * independent state watches (a session error and a connectivity drop in
- * one burst) into one chime.
+ * one burst) into one chime. The ONE instance every watch consults lives
+ * app-globally (`state/attention-gate.ts`), the peer of the desktop's
+ * shell field (shell.rs:1147): one gate per app, never one per engine.
  */
 export class AttentionSoundGate {
   #lastPlayed: number | null = null;
@@ -146,6 +148,11 @@ export class AttentionSoundGate {
     }
     this.#lastPlayed = now;
     return true;
+  }
+
+  /** Test seam — forget the last chime (a fresh app instance). */
+  reset(): void {
+    this.#lastPlayed = null;
   }
 }
 

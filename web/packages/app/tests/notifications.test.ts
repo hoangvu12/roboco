@@ -20,6 +20,7 @@ import {
   type SessionNotificationState,
 } from "../src/lib/notifications";
 import { parseKillSwitch, sessionSoundEnabled } from "../src/lib/sounds";
+import { appAttentionGate, resetAppAttentionGate } from "../src/state/attention-gate";
 
 const NOW = Date.parse("2026-09-16T12:00:00Z");
 
@@ -134,6 +135,18 @@ test("attentionGateCoalescesSessionAndConnectivityWatchCallbacks", () => {
   expect(gate.shouldPlay(t0)).toBe(false);
   expect(gate.shouldPlay(t0 + 200)).toBe(false);
   expect(gate.shouldPlay(t0 + 250)).toBe(true);
+});
+
+test("theAppGlobalGateCoalescesAttentionAcrossEnginesDrivers", () => {
+  // The hoisting fix (shell.rs:1147/1482: ONE gate on the shell, never one
+  // per watch): two drivers — one per engine — both earn "attention" in the
+  // same burst, and the shared instance lets only the first chime through.
+  resetAppAttentionGate();
+  const t0 = 10_000;
+  expect(appAttentionGate.shouldPlay(t0)).toBe(true);
+  expect(appAttentionGate.shouldPlay(t0)).toBe(false);
+  expect(appAttentionGate.shouldPlay(t0 + COALESCE_MS)).toBe(true);
+  resetAppAttentionGate();
 });
 
 // ---------------------------------------------------------------------------

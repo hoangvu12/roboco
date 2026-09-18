@@ -7,7 +7,7 @@ import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
-import { useNow } from "../state/hooks";
+import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
@@ -39,7 +39,7 @@ import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
-import { echoStore, TranscriptStore, type TranscriptCache } from "../state/transcript-store";
+import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
 
 /**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
@@ -98,6 +98,15 @@ export function ConversationPage() {
   const status = session === null ? null : session.client.status;
   const now = useNow(10_000);
   const navigate = useNavigate();
+
+  // The routed engine's live `WatchConnectivity` posture (ticket 30's
+  // per-engine slot in the session's watch cache) — `chat_delivery_degraded`'s
+  // web arm: while the chat's delivery path is degraded, the transcript's
+  // pending-send overlay holds "pending" (Queued), never a false "Not
+  // delivered" past the 120s grace. No new stream: the page re-renders on
+  // this engine's watch changes already (the fleet registry).
+  const sessionWatch = useWatchSnapshot(session);
+  const deliveryDegraded = chatDeliveryDegraded(sessionWatch?.connectivity.value?.state);
 
   // Occupancy arrives on the transcript's watch; the composer footer draws it.
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
@@ -737,6 +746,7 @@ export function ConversationPage() {
               indicator={row?.status ?? "idle"}
               turnStartedAt={turnStartedAt}
               onOpenSubagent={onOpenSubagent}
+              deliveryDegraded={deliveryDegraded}
             />
           ) : null}
           {/*

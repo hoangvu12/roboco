@@ -1,6 +1,11 @@
 import { useRef, useState, type ReactElement, type RefObject } from "react";
-import { ContextMenu } from "@base-ui/react/context-menu";
-import { RbContextMenu, RbContextMenuPositioner } from "../base/menu";
+import {
+  RbContextMenu,
+  RbContextMenuPopup,
+  RbContextMenuPortal,
+  RbContextMenuPositioner,
+  RbContextMenuTrigger,
+} from "../base/menu";
 import { MenuRow, MenuSeparator } from "../ui/MenuRows";
 
 /**
@@ -87,16 +92,16 @@ export function EditorContextMenu({
         }
       }}
     >
-      <ContextMenu.Trigger
+      <RbContextMenuTrigger
         render={children}
         onContextMenu={() => {
           // Availability reads the selection at open time (editor.rs:23-30).
           readAvailability();
         }}
       />
-      <ContextMenu.Portal>
+      <RbContextMenuPortal>
         <RbContextMenuPositioner>
-          <ContextMenu.Popup
+          <RbContextMenuPopup
             className="rb-popover-popup popover-card files-editor-menu"
             role="menu"
             aria-label="Editor actions"
@@ -115,9 +120,9 @@ export function EditorContextMenu({
             <MenuRow fadeKey="files-editor-context-select-all" onClick={() => run("selectAll")}>
               Select All
             </MenuRow>
-          </ContextMenu.Popup>
+          </RbContextMenuPopup>
         </RbContextMenuPositioner>
-      </ContextMenu.Portal>
+      </RbContextMenuPortal>
     </RbContextMenu>
   );
 }

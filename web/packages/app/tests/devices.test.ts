@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  deviceOnline,
+  lastSeenOnline,
   formatLastSeen,
   formatLastSeenAt,
   platformLabel,
@@ -10,19 +10,19 @@ import {
 
 const NOW = 1_800_000_000_000;
 
-describe("deviceOnline (devices.rs:27-30)", () => {
+describe("lastSeenOnline (devices.rs:27-30)", () => {
   it("deviceOnlineWithin70SecondsWindow", () => {
-    expect(deviceOnline(ago(10), NOW)).toBe(true);
-    expect(deviceOnline(ago(70), NOW)).toBe(true);
-    expect(deviceOnline(ago(71), NOW)).toBe(false);
+    expect(lastSeenOnline(ago(10), NOW)).toBe(true);
+    expect(lastSeenOnline(ago(70), NOW)).toBe(true);
+    expect(lastSeenOnline(ago(71), NOW)).toBe(false);
     // null → offline, unlike the sidebar's unknown-row-reading variant.
-    expect(deviceOnline(null, NOW)).toBe(false);
+    expect(lastSeenOnline(null, NOW)).toBe(false);
     // Clock skew (future) counts as online.
-    expect(deviceOnline(ago(-30), NOW)).toBe(true);
+    expect(lastSeenOnline(ago(-30), NOW)).toBe(true);
   });
 
   it("rejects unparseable timestamps as offline", () => {
-    expect(deviceOnline("not-a-date", NOW)).toBe(false);
+    expect(lastSeenOnline("not-a-date", NOW)).toBe(false);
   });
 });
 

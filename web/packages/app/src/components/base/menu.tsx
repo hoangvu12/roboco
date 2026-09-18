@@ -129,7 +129,7 @@ export interface RbContextMenuProps {
   readonly overlaySource?: string;
   /**
    * The ContextMenu children: the Trigger wrapper around the right-clicked
-   * content, then `RbContextMenuPositioner` + `ContextMenu.Popup` (raw —
+   * content, then `RbContextMenuPositioner` + `RbContextMenuPopup` (raw —
    * the popup needs `.rb-popover-popup` on its className for the exit
    * hooks).
    */
@@ -182,3 +182,20 @@ export function RbContextMenuPositioner(
     />
   );
 }
+
+// ---------------------------------------------------------------------------
+// Verbatim part re-exports (components/README.md rule 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw ContextMenu parts, re-exported so `@base-ui` never leaks past
+ * `base/` (README rule 5 — five pre-existing surfaces imported the
+ * namespace directly): the Trigger that adopts the right-clicked element
+ * (via its `render` prop), the Portal transport, and the Popup the
+ * consumer styles. No parity rules live on these — `RbContextMenu` and
+ * `RbContextMenuPositioner` own the contract; the popup only needs
+ * `.rb-popover-popup` on its className, which the consumer supplies.
+ */
+export const RbContextMenuTrigger = ContextMenu.Trigger;
+export const RbContextMenuPortal = ContextMenu.Portal;
+export const RbContextMenuPopup = ContextMenu.Popup;

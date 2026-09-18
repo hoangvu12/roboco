@@ -4,6 +4,7 @@ import {
   EchoStore,
   TranscriptStore,
   UNDELIVERED_GRACE_MS,
+  chatDeliveryDegraded,
   pendingSendStatus,
   type PendingSend,
   type TranscriptClient,
@@ -61,6 +62,30 @@ describe("echo overlay", () => {
     // The AND-in point for a future `chat_delivery_degraded`: degraded
     // delivery keeps the send quiet however long it has been waiting.
     expect(pendingSendStatus(send, UNDELIVERED_GRACE_MS + 1, true)).toBe("pending");
+  });
+
+  it("chatDeliveryDegraded maps the routed engine's connectivity posture (state.rs:877-891)", () => {
+    // The desktop's `Disabled => false` early return and the offline/
+    // reconnecting degradation arms; an unobserved slot stays quiet.
+    expect(chatDeliveryDegraded("offline")).toBe(true);
+    expect(chatDeliveryDegraded("reconnecting")).toBe(true);
+    expect(chatDeliveryDegraded("connected")).toBe(false);
+    expect(chatDeliveryDegraded("disabled")).toBe(false);
+    expect(chatDeliveryDegraded(null)).toBe(false);
+    expect(chatDeliveryDegraded(undefined)).toBe(false);
+  });
+
+  it("a_degraded_engine_never_fabricates_the_undelivered_state", () => {
+    // The false-"Not delivered" retry the spec finding names: an outage
+    // the engine itself reported (fake connectivity value → the web arm)
+    // holds the send pending past the grace window, and the honest state
+    // returns the moment the path heals.
+    const send = pending({ startedAtMs: 0 });
+    const at = UNDELIVERED_GRACE_MS + 1;
+    expect(pendingSendStatus(send, at, chatDeliveryDegraded("offline"))).toBe("pending");
+    expect(pendingSendStatus(send, at, chatDeliveryDegraded("reconnecting"))).toBe("pending");
+    expect(pendingSendStatus(send, at, chatDeliveryDegraded("connected"))).toBe("undelivered");
+    expect(pendingSendStatus(send, at, chatDeliveryDegraded("disabled"))).toBe("undelivered");
   });
 
   it("send_pending_acked_when_the_host_writes_the_message_back", () => {

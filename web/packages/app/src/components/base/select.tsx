@@ -14,9 +14,10 @@
  *   (fixed side, 8px window margin, never flip).
  * - **Keyboard scope:** `overlaySource` registers on the `overlayKeyboard`
  *   registry while open, same as every wrapper.
- * - The trigger/value/items parts stay raw `Select.*` imports at the
- *   consumer — they are pure styled elements with no parity rules to
- *   encode; `RbSelect` owns exactly the Root/Positioner behavior.
+ * - The trigger/portal/popup/item parts carry no parity rules of their
+ *   own, so they ship as verbatim re-exports (`RbSelectTrigger` and
+ *   friends below) — the README rule-5 import boundary without inventing
+ *   wrappers; `RbSelect` owns exactly the Root/Positioner behavior.
  */
 
 import { useState, type ComponentProps, type ReactNode } from "react";
@@ -29,8 +30,8 @@ export interface RbSelectProps<Value, Multiple extends boolean | undefined = fal
   /** Registers this name on the `overlayKeyboard` registry while open. */
   readonly overlaySource?: string;
   /**
-   * The Select children: `Select.Trigger` (with `Value`/`Icon`) plus
-   * `RbSelectPositioner` + `Select.Popup` carrying the list.
+   * The Select children: `RbSelectTrigger` (with the value/caret markup)
+   * plus `RbSelectPositioner` + `RbSelectPopup` carrying the list.
    */
   readonly children: ReactNode;
 }
@@ -76,3 +77,18 @@ export function RbSelectPositioner(
     />
   );
 }
+
+// ---------------------------------------------------------------------------
+// Verbatim part re-exports (components/README.md rule 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw Select parts, re-exported so `@base-ui` never leaks past `base/`
+ * (README rule 5): the styled Trigger, the Portal transport, the Popup
+ * list, and the option Item. Pure presentation with no parity rules to
+ * encode — `RbSelect` and `RbSelectPositioner` own the contract.
+ */
+export const RbSelectTrigger = Select.Trigger;
+export const RbSelectPortal = Select.Portal;
+export const RbSelectPopup = Select.Popup;
+export const RbSelectItem = Select.Item;

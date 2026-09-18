@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Space } from "@roboco/proto";
 import { methods, parseScopedId } from "@roboco/engine-client";
@@ -13,7 +12,13 @@ import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
-import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
+import {
+  RbContextMenu,
+  RbContextMenuPopup,
+  RbContextMenuPortal,
+  RbContextMenuPositioner,
+  RbContextMenuTrigger,
+} from "./base/menu";
 import { openChipClass } from "./ui/Chip";
 import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
@@ -568,7 +573,7 @@ function ViewMenuRows({
 /**
  * One space row of the spaces menu, wrapped so a right-click opens the
  * space context menu at the pointer (`RbContextMenu` — clamp-only
- * `menu_at` geometry, 170px card). The `ContextMenu.Trigger` adopts the
+ * `menu_at` geometry, 170px card). The `RbContextMenuTrigger` adopts the
  * `MenuRowNav` itself via `render`, so the row's DOM is unchanged.
  */
 function SpaceRowContext(props: {
@@ -595,7 +600,7 @@ function SpaceRowContext(props: {
         }
       }}
     >
-      <ContextMenu.Trigger
+      <RbContextMenuTrigger
         render={
           <MenuRowNav
             fadeKey={props.row.id}
@@ -611,9 +616,9 @@ function SpaceRowContext(props: {
           </MenuRowNav>
         }
       />
-      <ContextMenu.Portal>
+      <RbContextMenuPortal>
         <RbContextMenuPositioner>
-          <ContextMenu.Popup
+          <RbContextMenuPopup
             className="rb-popover-popup popover-card"
             role="menu"
             aria-label="Project actions"
@@ -640,9 +645,9 @@ function SpaceRowContext(props: {
               <Icon name="trashBinMinimalistic" size={16} className="spaces-menu-row-icon-danger" />
               <span className="menu-row-label">Remove…</span>
             </MenuRowNav>
-          </ContextMenu.Popup>
+          </RbContextMenuPopup>
         </RbContextMenuPositioner>
-      </ContextMenu.Portal>
+      </RbContextMenuPortal>
     </RbContextMenu>
   );
 }

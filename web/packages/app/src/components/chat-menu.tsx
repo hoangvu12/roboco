@@ -1,6 +1,5 @@
 import { useRef, useState, type ReactElement } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon } from "@roboco/icons";
 import { parseScopedId } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
@@ -10,7 +9,13 @@ import { sidebarNotice } from "../state/notice";
 import { reviewCommentStore } from "../state/review-comments";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
-import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
+import {
+  RbContextMenu,
+  RbContextMenuPopup,
+  RbContextMenuPortal,
+  RbContextMenuPositioner,
+  RbContextMenuTrigger,
+} from "./base/menu";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
 import { MenuRow, MenuSeparator } from "./ui/MenuRows";
 
@@ -61,10 +66,10 @@ export function useChatMenu(chat: Chat) {
   function menu(row: ReactElement): ReactElement {
     return (
       <RbContextMenu open={open} onOpenChange={setOpen}>
-        <ContextMenu.Trigger render={row} />
-        <ContextMenu.Portal>
+        <RbContextMenuTrigger render={row} />
+        <RbContextMenuPortal>
           <RbContextMenuPositioner>
-            <ContextMenu.Popup
+            <RbContextMenuPopup
               className="rb-popover-popup popover-card"
               role="menu"
               aria-label="Chat actions"
@@ -86,9 +91,9 @@ export function useChatMenu(chat: Chat) {
                 }}
                 onClose={() => setOpen(false)}
               />
-            </ContextMenu.Popup>
+            </RbContextMenuPopup>
           </RbContextMenuPositioner>
-        </ContextMenu.Portal>
+        </RbContextMenuPortal>
       </RbContextMenu>
     );
   }

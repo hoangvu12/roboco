@@ -8,7 +8,7 @@ import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
 import { webDeviceLabel } from "../lib/engine-store";
 import { describeRedeemError } from "../components/engine-drawer";
 import {
-  deviceOnline,
+  lastSeenOnline,
   formatLastSeenAt,
   platformGlyph,
   platformLabel,
@@ -206,7 +206,7 @@ export function DevicesSettingsPage() {
               first={ix === 0}
               isLocal={device.id === localDeviceId}
               connection={rowConnection(device.id)}
-              online={deviceOnline(device.lastSeenAt, now)}
+              online={lastSeenOnline(device.lastSeenAt, now)}
               copied={copied === device.id}
               now={now}
               forgetBaseUrl={forgetTarget(device.id)}

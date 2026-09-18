@@ -9,7 +9,6 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon } from "@roboco/icons";
 import type { Block, BlockTree, InlineRun, TableAlign } from "../lib/markdown";
 import { PENDING_LINK_URL, tableColumns } from "../lib/markdown";
@@ -20,7 +19,13 @@ import { sliceTokensForVeil } from "../lib/veil";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
 import { useResolvedAppearance } from "../state/appearance";
 import { FileIcon } from "./files/file-icon";
-import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
+import {
+  RbContextMenu,
+  RbContextMenuPopup,
+  RbContextMenuPortal,
+  RbContextMenuPositioner,
+  RbContextMenuTrigger,
+} from "./base/menu";
 import { RbTooltip, RbTooltipTrigger } from "./base/tooltip";
 import { MenuRow } from "./ui/MenuRows";
 import { Tooltip } from "./ui/Tooltip";
@@ -403,12 +408,12 @@ function LinkChrome({
       >
         <RbTooltipTrigger
           delay={LINK_CARD_DELAY_MS}
-          render={<ContextMenu.Trigger render={target} />}
+          render={<RbContextMenuTrigger render={target} />}
         />
       </RbTooltip>
-      <ContextMenu.Portal>
+      <RbContextMenuPortal>
         <RbContextMenuPositioner>
-          <ContextMenu.Popup
+          <RbContextMenuPopup
             className="rb-popover-popup popover-card"
             role="menu"
             aria-label="Link actions"
@@ -434,9 +439,9 @@ function LinkChrome({
               <Icon name="copy" size={16} className="md-link-menu-icon" />
               <span className="menu-row-label">Copy link address</span>
             </MenuRow>
-          </ContextMenu.Popup>
+          </RbContextMenuPopup>
         </RbContextMenuPositioner>
-      </ContextMenu.Portal>
+      </RbContextMenuPortal>
     </RbContextMenu>
   );
 }

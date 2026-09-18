@@ -2424,9 +2424,13 @@ export function Composer({
     });
 
   // ── The queue-degraded caption (§2.3) ───────────────────────────────────
-  // The web has no WatchConnectivity stream yet (research 14 §5); the
-  // engine's connection state stands in. It clears itself the moment the
-  // path heals.
+  // The desktop's caption gates on `chat_delivery_degraded`'s per-chat
+  // room/device arms (composer.rs:7318-7336), which the web does not port;
+  // the engine's own connection state stands in for the transport the
+  // queue rides. (The pending-send overlay's gate is the real
+  // WatchConnectivity posture now — `chatDeliveryDegraded`,
+  // state/transcript-store.ts, threaded by the chat page.) It clears
+  // itself the moment the path heals.
   const engineState = engineStatus?.state ?? "connecting";
   const queueDegraded = engineState !== "connected";
   const queueOffline = engineState !== "reconnecting";

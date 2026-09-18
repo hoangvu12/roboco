@@ -118,6 +118,7 @@ export function TranscriptView({
   store: sharedStore = null,
   onOpenSubagent,
   markdownSurface = null,
+  deliveryDegraded = false,
 }: {
   client: EngineClient;
   docId: string;
@@ -171,6 +172,15 @@ export function TranscriptView({
    * dialog): workspace links render inert.
    */
   markdownSurface?: MarkdownSurface | null;
+  /**
+   * `chat_delivery_degraded`'s web arm (state.rs:877, minimal): the routed
+   * engine's `WatchConnectivity` posture, threaded by the chat page from
+   * the session's watch cache. Degraded delivery keeps the pending-send
+   * overlay quiet ("Queued", never a false "Not delivered") however long
+   * the send has waited. False (default): the subagent pane — a doc has
+   * no pending sends.
+   */
+  deliveryDegraded?: boolean;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -204,6 +214,7 @@ export function TranscriptView({
       turnStartedAt={turnStartedAt}
       onOpenSubagent={onOpenSubagent}
       markdownSurface={markdownSurface}
+      deliveryDegraded={deliveryDegraded}
     />
   );
 }
@@ -220,6 +231,7 @@ function TranscriptSurface({
   turnStartedAt,
   onOpenSubagent,
   markdownSurface,
+  deliveryDegraded,
 }: {
   store: TranscriptStore;
   client: EngineClient;
@@ -232,6 +244,7 @@ function TranscriptSurface({
   turnStartedAt: number | null;
   onOpenSubagent?: (payload: SubagentOpen) => void;
   markdownSurface: MarkdownSurface | null;
+  deliveryDegraded: boolean;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
@@ -336,7 +349,7 @@ function TranscriptSurface({
       if (row === undefined || row.rowKind.kind !== "user") {
         continue;
       }
-      const undelivered = pendingSendStatus(send, now) === "undelivered";
+      const undelivered = pendingSendStatus(send, now, deliveryDegraded) === "undelivered";
       echoRows.push({
         ...row,
         // Keep the diff key sensitive to the status flip so the row repaints.
@@ -345,7 +358,7 @@ function TranscriptSurface({
       });
     }
     return echoRows.length === 0 ? rows : [...rows, ...echoRows];
-  }, [rows, snapshot.entries, pendingSends, deviceId, now]);
+  }, [rows, snapshot.entries, pendingSends, deviceId, now, deliveryDegraded]);
 
   // The rail's data (rail.rs:74-99): one tick per user prompt, doc order,
   // then the un-deduped optimistic echoes — matching row order.
@@ -371,21 +384,23 @@ function TranscriptSurface({
       };
     }
     // Failed-send state first: past the grace window the trailer IS the retry
-    // affordance, whatever the indicator fell back to.
-    if (pendingSends.some((send) => pendingSendStatus(send, now) === "undelivered")) {
+    // affordance, whatever the indicator fell back to. Degraded delivery
+    // (chatDeliveryDegraded, threaded by the page) holds every send pending,
+    // so an outage never fabricates this state.
+    if (pendingSends.some((send) => pendingSendStatus(send, now, deliveryDegraded) === "undelivered")) {
       return { kind: "undelivered", onRetry: onRetryDelivery ?? (() => {}) };
     }
     if (indicator !== "working") {
       return { kind: "none" };
     }
     // The send→turn bridge: "Sending…" with no timer while the session row
-    // still carries the previous turn's start. (`chat_delivery_degraded`
-    // has no web stream yet — research 14 §5 — so the queued branch stays
-    // unreachable; the component and its string ship ready for it.)
+    // still carries the previous turn's start; degraded delivery says so
+    // instead of faking progress (transcript.rs:5273-5279 — "Queued — will
+    // send automatically").
     const sendStarted =
-      pendingSends.find((send) => pendingSendStatus(send, now) === "pending")?.startedAtMs ?? null;
+      pendingSends.find((send) => pendingSendStatus(send, now, deliveryDegraded) === "pending")?.startedAtMs ?? null;
     if (sendingBridge(sendStarted, turnStartedAt)) {
-      return { kind: "sending" };
+      return deliveryDegraded ? { kind: "queued" } : { kind: "sending" };
     }
     const elapsed =
       turnStartedAt !== null ? Math.max(0, Math.floor((now - turnStartedAt) / 1000)) : 0;
@@ -394,7 +409,7 @@ function TranscriptSurface({
       word: flavourWord(flavourSeed(docId), elapsed),
       elapsed: formatElapsed(elapsed),
     };
-  }, [alignTop, subagentLive, lastEntry, now, docId, pendingSends, indicator, turnStartedAt, onRetryDelivery]);
+  }, [alignTop, subagentLive, lastEntry, now, docId, pendingSends, indicator, turnStartedAt, onRetryDelivery, deliveryDegraded]);
 
   return (
     <MarkdownSurfaceProvider

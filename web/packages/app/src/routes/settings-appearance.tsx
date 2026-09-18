@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Select } from "@base-ui/react/select";
 import {
   accentForVariant,
   accentPresets,
@@ -10,7 +9,14 @@ import { Icon } from "@roboco/icons";
 import { PickerCard } from "../components/ui/PickerCard";
 import { MenuHeading, MenuRow } from "../components/ui/MenuRows";
 import { Dialog, BtnPrimary } from "../components/ui/Dialog";
-import { RbSelect, RbSelectPositioner } from "../components/base/select";
+import {
+  RbSelect,
+  RbSelectItem,
+  RbSelectPopup,
+  RbSelectPortal,
+  RbSelectPositioner,
+  RbSelectTrigger,
+} from "../components/base/select";
 import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
 import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
@@ -500,24 +506,24 @@ function FontFamilySelect(props: {
       }}
       overlaySource="settings-font-family"
     >
-      <Select.Trigger className="settings-select-trigger font-trigger" aria-label="Interface font">
+      <RbSelectTrigger className="settings-select-trigger font-trigger" aria-label="Interface font">
         <span className="settings-select-label">{fontFamilyLabel(props.value)}</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
-      </Select.Trigger>
-      <Select.Portal>
+      </RbSelectTrigger>
+      <RbSelectPortal>
         <RbSelectPositioner>
-          <Select.Popup className="popover-card settings-select-menu font-menu">
+          <RbSelectPopup className="popover-card settings-select-menu font-menu">
             {UI_FONT_CHOICES.map((family) => (
-              <Select.Item key={family} value={family} className="settings-select-item">
+              <RbSelectItem key={family} value={family} className="settings-select-item">
                 <span className="settings-select-item-label">{fontFamilyLabel(family)}</span>
                 <span className="settings-select-check">
                   {family === props.value && <Icon name="check" size={14} />}
                 </span>
-              </Select.Item>
+              </RbSelectItem>
             ))}
-          </Select.Popup>
+          </RbSelectPopup>
         </RbSelectPositioner>
-      </Select.Portal>
+      </RbSelectPortal>
     </RbSelect>
   );
 }
@@ -536,24 +542,24 @@ function FontSizeSelect(props: {
       }}
       overlaySource="settings-font-size"
     >
-      <Select.Trigger className="settings-select-trigger size-trigger" aria-label="Interface font size">
+      <RbSelectTrigger className="settings-select-trigger size-trigger" aria-label="Interface font size">
         <span className="settings-select-label">{props.value} px</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
-      </Select.Trigger>
-      <Select.Portal>
+      </RbSelectTrigger>
+      <RbSelectPortal>
         <RbSelectPositioner>
-          <Select.Popup className="popover-card settings-select-menu size-menu">
+          <RbSelectPopup className="popover-card settings-select-menu size-menu">
             {UI_FONT_SIZES.map((size) => (
-              <Select.Item key={size} value={size} className="settings-select-item">
+              <RbSelectItem key={size} value={size} className="settings-select-item">
                 <span className="settings-select-item-label">{size} px</span>
                 <span className="settings-select-check">
                   {size === props.value && <Icon name="check" size={14} />}
                 </span>
-              </Select.Item>
+              </RbSelectItem>
             ))}
-          </Select.Popup>
+          </RbSelectPopup>
         </RbSelectPositioner>
-      </Select.Portal>
+      </RbSelectPortal>
     </RbSelect>
   );
 }

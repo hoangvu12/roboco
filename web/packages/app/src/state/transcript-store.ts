@@ -1,4 +1,4 @@
-import type { ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
+import type { ConnectivityState, ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
 import {
@@ -70,13 +70,29 @@ export const UNDELIVERED_GRACE_MS = 120_000;
 export type PendingSendStatus = "pending" | "undelivered";
 
 /**
+ * `chat_delivery_degraded`'s web arm (state.rs:877-902), deliberately
+ * minimal: the routed engine's `WatchConnectivity` posture decides —
+ * Offline/Reconnecting degrade delivery, Connected and Disabled do not
+ * (the desktop's `Disabled => false` early return), and an unobserved
+ * slot (null) does not either. The desktop's per-chat room map and
+ * device-presence arms stay unported: one engine's own stream is the only
+ * delivery path the web client holds, and the chat page threads this
+ * value from the session's watch cache (ticket 30's per-engine slot;
+ * ticket 31's routing picks the chat's engine).
+ */
+export function chatDeliveryDegraded(state: ConnectivityState | null | undefined): boolean {
+  return state === "offline" || state === "reconnecting";
+}
+
+/**
  * `send_pending` / `send_undelivered` (`state.rs:1136-1157,1227-1239`): inside
  * the grace window a send is merely pending — quiet, not alarming; past it,
  * with nothing confirming it, it is explicitly undelivered and offers a retry.
  *
- * `degraded` is the AND-in point for a real `chat_delivery_degraded` flag.
- * Web has no `WatchConnectivity` stream yet (research 14 §5), so it is always
- * false today and the grace window is the only gate that matters.
+ * `degraded` is the AND-in point for `chat_delivery_degraded` (above):
+ * degraded delivery keeps the send pending however long it has waited —
+ * the honest state is "Queued", never a false "Not delivered" during an
+ * outage the engine itself has already reported.
  */
 export function pendingSendStatus(
   send: PendingSend,

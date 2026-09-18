@@ -10,7 +10,6 @@ import { useWatchSnapshot } from "./hooks";
 import { useUiSettings } from "./ui-settings";
 import { echoStore, pendingSendStatus } from "./transcript-store";
 import {
-  AttentionSoundGate,
   ConnectivityNotificationState,
   chatBannerTexts,
   connectivityBannerTexts,
@@ -20,6 +19,7 @@ import {
   soundSince,
 } from "../lib/notifications";
 import { playSound, sessionSoundEnabled } from "../lib/sounds";
+import { appAttentionGate } from "./attention-gate";
 
 /**
  * The registry-backed session layer (ticket 31): one `EngineSession` alive
@@ -132,8 +132,11 @@ export function EngineSessionProvider({ children }: { children: ReactNode }) {
               web peer). Keyed per session so an engine switch or re-pair
               remounts it: fresh baselines (every row re-seeds silently) and a
               re-armed connectivity quiet period, the runtime-replacement
-              reset — one driver per paired engine, so fleet engines chime
-              independently. */}
+              reset. One driver per paired engine, all consulting the ONE
+              app-global attention gate (state/attention-gate.ts, the peer
+              of the desktop shell's single field, shell.rs:1147) —
+              simultaneous attention events on different engines coalesce
+              into one chime, same-engine and cross-engine alike. */}
           {[...sessions.values()].map((session) => (
             <SessionNotificationDriver key={engineSessionKey(session.engine)} session={session} />
           ))}
@@ -159,7 +162,6 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
   const navigate = useNavigate();
   const baselines = useRef(new Map<string, ReturnType<typeof sessionNotificationState>>());
   const connectivity = useRef(new ConnectivityNotificationState());
-  const attentionGate = useRef(new AttentionSoundGate());
 
   // Banner click routing (open_notified_chat, lib.rs:241-262): focus the
   // window (the browser focuses the tab) then open the chat through the
@@ -198,7 +200,7 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
       }
       if (
         sessionSoundEnabled(settings, sound) &&
-        (sound !== "attention" || attentionGate.current.shouldPlay(now))
+        (sound !== "attention" || appAttentionGate.shouldPlay(now))
       ) {
         playSound(sound);
       }
@@ -216,7 +218,7 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
       now,
     );
     if (sound !== null) {
-      if (sessionSoundEnabled(settings, sound) && attentionGate.current.shouldPlay(now)) {
+      if (sessionSoundEnabled(settings, sound) && appAttentionGate.shouldPlay(now)) {
         playSound(sound);
       }
       if (settings.notificationsEnabled && !(settings.notificationsBackgroundOnly && appFocused)) {
