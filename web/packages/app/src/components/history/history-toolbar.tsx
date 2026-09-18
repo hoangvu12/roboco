@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
 import { useEngineSession } from "../../state/session-provider";
-import { useWatchSnapshot } from "../../state/hooks";
+import { useFleetSnapshot } from "../../state/fleet";
 import { chatPageRow } from "../../lib/view";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
 import { GlyphSpinner } from "../glyph-spinner";
@@ -65,9 +65,9 @@ export function HistoryToolbar({ chatId, surfaceId }: { chatId: string; surfaceI
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   // The branch title (`chat.branch` or "HEAD") — the chat row, read-only.
-  const watch = useWatchSnapshot(session);
+  const watch = useFleetSnapshot();
   const branch =
-    watch !== null && watch.chats.loaded
+    watch.chats.loaded
       ? chatPageRow(chatId, watch.chats.rows, watch.spaces.rows, watch.statuses.rows, Date.now())?.chat.branch ?? null
       : null;
 

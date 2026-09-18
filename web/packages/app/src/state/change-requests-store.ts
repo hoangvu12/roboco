@@ -1,4 +1,5 @@
 import type { ChangeRequestSummary, Chat, CheckoutChangeRequestStatus } from "@roboco/proto";
+import { parseScopedId } from "@roboco/engine-client";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
@@ -461,6 +462,187 @@ export function useChatChangeRequests(
     }
     return summaries;
   }, [snapshot, chats]);
+}
+
+// ---------------------------------------------------------------------------
+// Fleet entry point (ticket 31): one child store per paired engine
+// ---------------------------------------------------------------------------
+
+/**
+ * Live PR summaries for a merged, cross-engine chat list — the fleet peer
+ * of `useChatChangeRequests`. Chats arrive scoped (the registry's
+ * projected rows); each chat's owning engine (parsed off its scoped id)
+ * gets its own `ChangeRequestStore` over that engine's client, and the
+ * per-chat summaries merge into one map. Watch params carry the scoped
+ * `targetDeviceId`, which the owning client's routing layer decodes and
+ * strips at the wire — the desktop's per-device routing.
+ */
+export function useFleetChatChangeRequests(
+  sessions: ReadonlyMap<string, { readonly client: ChangeRequestsClient }>,
+  chats: readonly Chat[],
+): ReadonlyMap<string, ChangeRequestSummary> {
+  const store = useMemo(() => new FleetChangeRequestsStore(), []);
+  useEffect(() => () => {
+    store.dispose();
+  }, [store]);
+  useEffect(() => {
+    store.setSessions(sessions);
+  }, [sessions]);
+  useEffect(() => {
+    store.setChats(chats);
+  }, [chats]);
+  return useSyncExternalStore(
+    useCallback((listener: () => void) => store.subscribe(listener), [store]),
+    useCallback(() => store.getSnapshot(), [store]),
+    useCallback(() => store.getSnapshot(), [store]),
+  );
+}
+
+class FleetChangeRequestsStore {
+  readonly #stores = new Map<string, ChangeRequestStore>();
+  #sessions = new Map<string, { readonly client: ChangeRequestsClient }>();
+  #chats: readonly Chat[] = [];
+  #signature = "";
+  #snapshot: ReadonlyMap<string, ChangeRequestSummary> = new Map();
+  #disposed = false;
+  readonly #listeners = new Set<() => void>();
+
+  setSessions(sessions: ReadonlyMap<string, { readonly client: ChangeRequestsClient }>): void {
+    if (this.#disposed) {
+      return;
+    }
+    let changed = false;
+    for (const [key, entry] of sessions) {
+      if (this.#sessions.get(key) === entry) {
+        continue;
+      }
+      this.#sessions.set(key, entry);
+      this.#stores.get(key)?.dispose();
+      this.#stores.delete(key);
+      const store = new ChangeRequestStore(entry.client, {
+        log: (message, detail) => console.debug("[change-requests]", message, detail),
+      });
+      store.subscribe(() => this.#commit());
+      this.#stores.set(key, store);
+      changed = true;
+    }
+    for (const [key] of [...this.#sessions]) {
+      if (!sessions.has(key)) {
+        this.#sessions.delete(key);
+        this.#stores.get(key)?.dispose();
+        this.#stores.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.#signature = "";
+      this.setChats(this.#chats);
+      this.#commit();
+    }
+  }
+
+  setChats(chats: readonly Chat[]): void {
+    if (this.#disposed) {
+      return;
+    }
+    // Group by owning engine off the scoped chat ids, then hand each
+    // engine's store its own targets (keyed by scoped device ids, unique
+    // across engines).
+    const byEngine = new Map<string, ChangeRequestTarget[]>();
+    for (const chat of chats) {
+      const target = chatChangeRequestTarget(chat);
+      if (target === null || chat.archived) {
+        continue;
+      }
+      const engine = engineKeyOfChat(chat);
+      if (engine === null) {
+        continue;
+      }
+      const list = byEngine.get(engine) ?? [];
+      list.push(target);
+      byEngine.set(engine, list);
+    }
+    const signature = [...byEngine.entries()]
+      .map(([engine, targets]) => `${engine}\u0000${targets.map(keyOf).join("\u0000")}`)
+      .sort()
+      .join("\u0001");
+    if (signature === this.#signature) {
+      return;
+    }
+    this.#signature = signature;
+    this.#chats = chats;
+    for (const [engine, targets] of byEngine) {
+      this.#stores.get(engine)?.setTargets(targets);
+    }
+    // Engines with no targets keep their old watches; clear them.
+    for (const [engine, store] of this.#stores) {
+      if (!byEngine.has(engine)) {
+        store.setTargets([]);
+      }
+    }
+    this.#commit();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  getSnapshot(): ReadonlyMap<string, ChangeRequestSummary> {
+    return this.#snapshot;
+  }
+
+  dispose(): void {
+    this.#disposed = true;
+    for (const store of this.#stores.values()) {
+      store.dispose();
+    }
+    this.#stores.clear();
+    this.#listeners.clear();
+  }
+
+  #commit(): void {
+    if (this.#disposed) {
+      return;
+    }
+    const summaries = new Map<string, ChangeRequestSummary>();
+    for (const chat of this.#chats) {
+      const target = chatChangeRequestTarget(chat);
+      if (target === null || chat.archived) {
+        continue;
+      }
+      const engine = engineKeyOfChat(chat);
+      const store = engine === null ? undefined : this.#stores.get(engine);
+      if (store === undefined) {
+        continue;
+      }
+      const summary = changeRequestForChat(store.getSnapshot().snapshots, target);
+      if (summary !== null) {
+        summaries.set(chat.id, summary);
+      }
+    }
+    if (
+      summaries.size === this.#snapshot.size &&
+      [...summaries.entries()].every(([key, value]) => this.#snapshot.get(key) === value)
+    ) {
+      return;
+    }
+    this.#snapshot = summaries;
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+}
+
+/** The engine a scoped chat id belongs to, or null when unscoped. */
+function engineKeyOfChat(chat: Chat): string | null {
+  try {
+    return parseScopedId(chat.id).engine;
+  } catch {
+    return null;
+  }
 }
 
 /**

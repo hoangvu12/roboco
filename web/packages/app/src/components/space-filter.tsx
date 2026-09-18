@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { Icon, type IconName } from "@roboco/icons";
-import type { Device, Space } from "@roboco/proto";
-import { methods } from "@roboco/engine-client";
-import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import type { Space } from "@roboco/proto";
+import { methods, parseScopedId } from "@roboco/engine-client";
+import { useEngineSessions } from "../state/session-provider";
+import type { EngineSession } from "../state/engine-session";
+import { engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
+import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
-import { deviceOnline, healedSpaceFilter, mergePendingSpaces, spaceDisplayName, spacesSorted } from "../lib/view";
+import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
@@ -42,8 +44,11 @@ import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 const SPACES_MENU_LIST_MAX_HEIGHT = 336;
 
 export function SpaceFilter() {
-  const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: every paired engine's spaces/devices under
+  // scoped ids, so the picker spans the whole fleet.
+  const snapshot = useFleetSnapshot();
+  const sessions = useEngineSessions();
+  const registry = useFleetRegistry();
   const sidebar = useSidebar();
   const now = useNow(30_000);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -51,22 +56,24 @@ export function SpaceFilter() {
   // The right-click overlay: the context menu first, then whichever dialog
   // its rows open — the dialog state must outlive the menu's unmount.
   const [spaceOverlay, setSpaceOverlay] = useState<SpaceOverlay | null>(null);
+  const engineStates = engineStatesOf(registry);
 
-  // The menu's rows: the watch cache's spaces with the add-space palette's
+  // The menu's rows: the merged spaces with the add-space palette's
   // optimistic rows folded in, merged by id (a confirmed row replaces its
   // optimistic twin), in display order.
   const pending = usePendingSpaces();
   const spaces = useMemo(() => {
-    const rows = snapshot === null ? [] : snapshot.spaces.rows;
+    const rows = snapshot.spaces.rows;
     return spacesSorted(mergePendingSpaces(rows, pending));
   }, [snapshot?.spaces.rows, pending]);
-  const devices = snapshot?.devices.rows ?? [];
-  const filter = snapshot === null ? null : healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
+  const devices = snapshot.devices.rows;
+  const filter = healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
   const picked = filter === null ? null : spaces.find((space) => space.id === filter) ?? null;
   const label = picked === null ? "All projects" : spaceDisplayName(picked);
   // The "@ device" tag rides the trigger only under a picked space, with
-  // the disconnected GLYPH — never words — when its host reads offline.
-  const deviceTag = picked === null ? null : spaceDeviceTag(picked, devices, now);
+  // the disconnected GLYPH — never words — when its host reads offline
+  // (live engine state when one is supervised, else the 70s window).
+  const deviceTag = picked === null ? null : spaceDeviceTag(picked, devices, now, engineStates);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -149,7 +156,7 @@ export function SpaceFilter() {
   // gates `render_spaces_filter` on nothing): with zero spaces the label falls
   // back to "All projects" and the menu degenerates to ["All projects",
   // "New project…"], exactly the desktop's empty-engine rows.
-  if (snapshot === null || !snapshot.spaces.loaded) {
+  if (!snapshot.spaces.loaded) {
     return null;
   }
 
@@ -173,7 +180,7 @@ export function SpaceFilter() {
               {deviceTag !== null && (
                 <>
                   <span className="space-filter-tag">{deviceTag.tag}</span>
-                  {!deviceTag.online && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
+                  {deviceTag.offline && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
                 </>
               )}
             </span>
@@ -216,7 +223,7 @@ export function SpaceFilter() {
                 </MenuRowNav>
               );
             }
-            const tag = spaceDeviceTag(row, devices, now);
+            const tag = spaceDeviceTag(row, devices, now, engineStates);
             return (
               <SpaceRowContext
                 key={row.id}
@@ -256,14 +263,14 @@ export function SpaceFilter() {
           })}
         </div>
       </PickerCard>
-      {spaceOverlay !== null && session !== null && (
+      {spaceOverlay !== null && spaceOverlaySession(sessions, spaceOverlay.space) !== null && (
         <>
           {spaceOverlay.kind === "rename" && (
             <RenameSpaceDialog
               space={spaceOverlay.space}
               onCancel={() => setSpaceOverlay(null)}
               onSubmit={(value) => {
-                runSpaceMutate(session, "renameSpace", { spaceId: spaceOverlay.space.id, name: value });
+                runSpaceMutate(spaceOverlaySession(sessions, spaceOverlay.space), "renameSpace", { spaceId: spaceOverlay.space.id, name: value });
                 setSpaceOverlay(null);
               }}
             />
@@ -277,7 +284,7 @@ export function SpaceFilter() {
               }
               onCancel={() => setSpaceOverlay(null)}
               onConfirm={() => {
-                runSpaceMutate(session, "deleteSpace", { spaceId: spaceOverlay.space.id });
+                runSpaceMutate(spaceOverlaySession(sessions, spaceOverlay.space), "deleteSpace", { spaceId: spaceOverlay.space.id });
                 setSpaceOverlay(null);
               }}
             />
@@ -296,29 +303,33 @@ type SpaceOverlay =
 
 /** The Mutate call for a space mutation, with the notice on failure. */
 function runSpaceMutate(
-  session: NonNullable<ReturnType<typeof useEngineSession>>,
+  session: EngineSession | null,
   op: "renameSpace" | "deleteSpace",
   params: Record<string, unknown>,
 ): void {
+  if (session === null) {
+    sidebarNotice.set("Engine not connected");
+    return;
+  }
   void session.client
     .call(methods.MUTATE, { op, ...params })
     .catch((error: unknown) => sidebarNotice.set(error instanceof Error ? error.message : String(error)));
 }
 
 /**
- * The picked space's host tag (`state.rs::space_device_tag`):
- * `"@ {device}"` plus its presence, a missing device row reading online.
+ * The session owning a (scoped) space id — the space mutations route to
+ * the space's engine, not the currently routed one.
  */
-function spaceDeviceTag(
-  space: { deviceId: string },
-  devices: readonly Device[],
-  now: number,
-): { tag: string; online: boolean } {
-  const device = devices.find((row) => row.id === space.deviceId);
-  return {
-    tag: `@ ${device?.name ?? "Unknown device"}`,
-    online: deviceOnline(device, now),
-  };
+function spaceOverlaySession(
+  sessions: ReadonlyMap<string, EngineSession>,
+  space: Space,
+): EngineSession | null {
+  try {
+    const engine = parseScopedId(space.id).engine;
+    return engine === null ? null : sessions.get(engine) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -565,7 +576,7 @@ function SpaceRowContext(props: {
   readonly ix: number;
   readonly highlighted: boolean;
   readonly selected: boolean;
-  readonly tag: { tag: string; online: boolean };
+  readonly tag: { tag: string; offline: boolean };
   readonly onPick: () => void;
   readonly menuOpen: boolean;
   readonly onMenuOpen: () => void;
@@ -596,7 +607,7 @@ function SpaceRowContext(props: {
             <Icon name="folder" size={15} className="spaces-menu-row-icon" />
             <span className="menu-row-label">{spaceDisplayName(props.row)}</span>
             <span className="picker-row-tag">{props.tag.tag}</span>
-            {!props.tag.online && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
+            {props.tag.offline && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
           </MenuRowNav>
         }
       />

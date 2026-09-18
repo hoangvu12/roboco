@@ -277,6 +277,7 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     timeAgo: "now",
     deviceId: entry.deviceId,
     deviceName: null,
+    deviceOffline: false,
     changeRequest: null,
   }));
 }

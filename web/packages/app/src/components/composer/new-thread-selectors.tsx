@@ -1,7 +1,9 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import type { Device, RepoRef, Space } from "@roboco/proto";
+import { encodeScopedId } from "@roboco/engine-client";
 import { useEngineSession } from "../../state/session-provider";
-import { useNow, useWatchSnapshot } from "../../state/hooks";
+import { useNow } from "../../state/hooks";
+import { useFleetSnapshot } from "../../state/fleet";
 import { composerDefaults } from "../../lib/composer-draft";
 import { spacesSorted } from "../../lib/view";
 import { useSidebar } from "../../state/sidebar";
@@ -55,7 +57,10 @@ export interface NewThreadTarget {
  */
 export function useNewThreadTarget(): NewThreadTarget {
   const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: the canvas's device/space pickers span every
+  // engine's scoped rows; the composer's calls go through the routed
+  // session (the picked space's engine, else the active engine).
+  const snapshot = useFleetSnapshot();
   const defaults = useSyncExternalStore(subscribeDefaults, getDefaults, getDefaults);
   const sidebar = useSidebar();
 
@@ -66,7 +71,12 @@ export function useNewThreadTarget(): NewThreadTarget {
     const fallback = sidebar.spaceFilter ?? sidebar.lastSpaceId;
     const projectId = defaults.noProject ? null : (defaults.project ?? fallback);
     const space = projectId === null ? null : spaces.find((row) => row.id === projectId) ?? null;
-    const own = session?.client.engineInfo?.deviceId ?? null;
+    // The routed engine's own device, SCOPED to match the merged rows.
+    const ownRawDeviceId = session?.client.engineInfo?.deviceId ?? null;
+    const own =
+      session !== null && ownRawDeviceId !== null
+        ? encodeScopedId(session.engine.baseUrl, ownRawDeviceId)
+        : null;
     const effectiveDeviceId = space?.deviceId ?? defaults.device ?? own;
     const effectiveDevice = devices.find((device) => device.id === effectiveDeviceId) ?? null;
     const targetDeviceId =
@@ -75,7 +85,15 @@ export function useNewThreadTarget(): NewThreadTarget {
     // `defaults` is a cached snapshot object; the memo keys on its identity,
     // which changes only when a pick lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot?.devices.rows, snapshot?.spaces.rows, defaults, session?.client.engineInfo?.deviceId, sidebar.spaceFilter, sidebar.lastSpaceId]);
+  }, [snapshot?.devices.rows, snapshot?.spaces.rows, defaults, ownDeviceKey(session), sidebar.spaceFilter, sidebar.lastSpaceId]);
+}
+
+/** The routed session's own (scoped) device id as a memo key. */
+function ownDeviceKey(session: ReturnType<typeof useEngineSession>): string | null {
+  const deviceId = session?.client.engineInfo?.deviceId ?? null;
+  return session !== null && deviceId !== null
+    ? encodeScopedId(session.engine.baseUrl, deviceId)
+    : null;
 }
 
 const EMPTY_DEVICES: readonly Device[] = [];

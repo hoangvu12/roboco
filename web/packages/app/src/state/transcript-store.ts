@@ -282,11 +282,27 @@ export interface TranscriptClient {
   }): WatchHandle;
 }
 
+/**
+ * The offline transcript cache (§2.3, ticket 31): last-seen entries for
+ * chats the user has actually opened, seeded before the live stream's
+ * first frame and re-saved (debounced) as frames land. One entry per
+ * `(engine, chat)` — the desktop's `chat-<sha256>.json` granularity.
+ */
+export interface TranscriptCache {
+  load(): Promise<readonly SessionMessageEntry[] | null>;
+  save(entries: readonly SessionMessageEntry[]): Promise<void>;
+}
+
+/** Debounce window for cache writes — a burst of frames is one save. */
+const CACHE_SAVE_DEBOUNCE_MS = 300;
+
 export class TranscriptStore {
   readonly #client: TranscriptClient;
   readonly #docId: string;
   readonly #log: (message: string, detail?: unknown) => void;
   readonly #echoes: EchoStore;
+  readonly #cache: TranscriptCache | undefined;
+  #saveTimer: ReturnType<typeof setTimeout> | undefined;
   #entries: readonly SessionMessageEntry[] = EMPTY_ENTRIES;
   #contextUsage: ContextUsage | null = null;
   #loaded = false;
@@ -311,13 +327,29 @@ export class TranscriptStore {
        * with `resubscribe()` when the blob fetch fails.
        */
       follow?: boolean;
+      /** The offline cache — seeded pre-frame, saved debounced per frame. */
+      cache?: TranscriptCache;
     } = {},
   ) {
     this.#client = client;
     this.#docId = docId;
     this.#log = options.log ?? (() => {});
     this.#echoes = options.echoes ?? echoStore;
+    this.#cache = options.cache;
     this.#snapshot = this.#takeSnapshot();
+    if (this.#cache !== undefined) {
+      // Seed the last-seen entries while the live stream is still arriving;
+      // the first live frame's reset replaces them wholesale.
+      void this.#cache
+        .load()
+        .then((entries) => {
+          if (this.#disposed || this.#loaded || entries === null) {
+            return;
+          }
+          this.seedEntries(entries);
+        })
+        .catch(() => {});
+    }
     if (options.follow !== false) {
       this.#subscribe();
     }
@@ -380,6 +412,10 @@ export class TranscriptStore {
       return;
     }
     this.#disposed = true;
+    if (this.#saveTimer !== undefined) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = undefined;
+    }
     this.#handle?.cancel();
     this.#handle = null;
     this.#listeners.clear();
@@ -462,9 +498,24 @@ export class TranscriptStore {
 
   #commit(): void {
     this.#snapshot = this.#takeSnapshot();
+    this.#scheduleCacheSave();
     for (const listener of this.#listeners) {
       listener();
     }
+  }
+
+  /** Debounced cache write — only for stores that actually loaded rows. */
+  #scheduleCacheSave(): void {
+    if (this.#cache === undefined || this.#saveTimer !== undefined || !this.#loaded) {
+      return;
+    }
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = undefined;
+      if (this.#disposed || this.#cache === undefined || !this.#loaded) {
+        return;
+      }
+      void this.#cache.save(this.#entries).catch(() => {});
+    }, CACHE_SAVE_DEBOUNCE_MS);
   }
 }
 

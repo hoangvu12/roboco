@@ -5,7 +5,8 @@ import { motion } from "@roboco/theme";
 import { Icon } from "@roboco/icons";
 import type { GitHistoryCommit } from "@roboco/proto";
 import { useEngineSession } from "../../state/session-provider";
-import { useEngineStatus, useWatchSnapshot } from "../../state/hooks";
+import { useEngineStatus } from "../../state/hooks";
+import { useFleetSnapshot } from "../../state/fleet";
 import { useUiSettings, uiSettings } from "../../state/ui-settings";
 import { rightPaneStore } from "../../state/right-pane";
 import { historyStoreFor, type HistorySnapshot, type HistoryStore } from "../../state/history-store";
@@ -91,7 +92,7 @@ const NOOP_SUBSCRIBE = (): (() => void) => () => {};
 export function HistoryPane({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const session = useEngineSession();
   const status = useEngineStatus(session);
-  const watch = useWatchSnapshot(session);
+  const watch = useFleetSnapshot();
   const settings = useUiSettings();
 
   const client = session?.client ?? null;
@@ -104,7 +105,7 @@ export function HistoryPane({ chatId, surfaceId }: { chatId: string; surfaceId: 
   // The chat's checkout — where the history lives.
   const deviceId = status !== null && status.state === "connected" ? status.info.deviceId : null;
   const chat =
-    watch !== null && watch.chats.loaded
+    watch.chats.loaded
       ? chatPageRow(chatId, watch.chats.rows, watch.spaces.rows, watch.statuses.rows, Date.now())?.chat ?? null
       : null;
   const cwd = chat?.cwd ?? null;

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
-import { methods } from "@roboco/engine-client";
+import { encodeScopedId, methods } from "@roboco/engine-client";
 import type { ChangeRequestSummary, ContextUsage, Device, RepoRef, Space } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import { useNow } from "../state/hooks";
+import { useFleetSnapshot } from "../state/fleet";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
@@ -69,7 +70,10 @@ export interface ComposerFooterProps {
 
 export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooterProps) {
   const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: the footer's device/space lookups read the
+  // scoped rows of every engine; the RPCs below go through the routed
+  // session's client (the chat's owning engine).
+  const snapshot = useFleetSnapshot();
   const now = useNow(30_000);
 
   const devices = snapshot?.devices.rows ?? EMPTY_DEVICES;
@@ -78,7 +82,13 @@ export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooter
     chat.spaceId === null || chat.spaceId === undefined
       ? null
       : spaces.find((row) => row.id === chat.spaceId) ?? null;
-  const ownDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  // The routed engine's own device, SCOPED — it must compare against the
+  // merged rows' scoped device ids.
+  const ownRawDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  const ownDeviceId =
+    session !== null && ownRawDeviceId !== null
+      ? encodeScopedId(session.engine.baseUrl, ownRawDeviceId)
+      : null;
   const effectiveDeviceId = space?.deviceId ?? ownDeviceId;
   const effectiveDevice = devices.find((device) => device.id === effectiveDeviceId) ?? null;
   // Catalogs and refs come from the device that RUNS the agents — the

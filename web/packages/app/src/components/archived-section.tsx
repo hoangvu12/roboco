@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Icon, harnessBrandIcon } from "@roboco/icons";import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import { Icon, harnessBrandIcon } from "@roboco/icons";
+import { parseScopedId } from "@roboco/engine-client";
+import { useEngineSessions } from "../state/session-provider";
+import type { EngineSession } from "../state/engine-session";
+import { useFleetSnapshot } from "../state/fleet";
+import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
@@ -36,18 +40,18 @@ export const SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP = 10;
  * Nothing renders when nothing is archived.
  */
 export function ArchivedSection() {
-  const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  // The MERGED fleet snapshot: archived rows from every paired engine.
+  const snapshot = useFleetSnapshot();
   const sidebar = useSidebar();
   const now = useNow(10_000);
   const [shown, setShown] = useState(INITIAL);
 
   // Hooks must run unconditionally across the empty/loading returns below:
   // the shelf mounts on a page whose first render has no snapshot at all.
-  const chats = snapshot?.chats;
-  const filter = snapshot === null ? null : healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
+  const chats = snapshot.chats;
+  const filter = healedSpaceFilter(sidebar.spaceFilter, snapshot.spaces.rows);
   const rows =
-    chats !== undefined && chats.error === null && chats.loaded
+    chats.error === null && chats.loaded
       ? archivedRows(chats.rows, filter, now, sidebar.sort)
       : [];
   const open = sidebar.archivedOpen;
@@ -62,7 +66,7 @@ export function ArchivedSection() {
     (remaining > 0 ? ARCHIVED_ROW_HEIGHT + SIDEBAR_LIST_GAP : 0);
   const { bodyRef, chevronRef, toggle } = useSidebarDisclosure("archived", open, bodyHeight);
 
-  if (session === null || snapshot === null || chats!.error !== null || !chats!.loaded) {
+  if (chats.error !== null || !chats.loaded) {
     return null;
   }
   if (rows.length === 0) {
@@ -110,7 +114,9 @@ export function ArchivedSection() {
 }
 
 function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: boolean }) {
-  const session = useEngineSession();
+  // Unarchive routes to the row's owning engine off its scoped id.
+  const sessions = useEngineSessions();
+  const session = archivedSession(sessions, row.chat.id);
   const harness = showHarness ? row.chat.config?.harness ?? null : null;
   const brand = harness === null ? null : harnessBrandIcon(harness);
   const { menu, element } = useChatMenu(row.chat);
@@ -166,4 +172,17 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
       {element}
     </li>
   );
+}
+
+/** The session owning a scoped chat id — the unarchive router. */
+function archivedSession(
+  sessions: ReadonlyMap<string, EngineSession>,
+  chatId: string,
+): EngineSession | null {
+  try {
+    const engine = parseScopedId(chatId).engine;
+    return engine === null ? null : sessions.get(engine) ?? null;
+  } catch {
+    return null;
+  }
 }

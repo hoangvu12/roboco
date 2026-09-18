@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { fleetStore } from "../state/fleet";
+import { pairEngine } from "../state/fleet";
 import { webDeviceLabel } from "../lib/engine-store";
 import { describeRedeemError } from "../components/engine-drawer";
 
@@ -10,7 +10,9 @@ type PairPhase = { kind: "idle" } | { kind: "redeeming" } | { kind: "error"; mes
  * The pairing landing: the engine's pairing link points here with the
  * token in the fragment (never sent to the engine as a URL part). The
  * token auto-redeems; a paste field covers manual pairing and the re-pair
- * flow after a revoked Session.
+ * flow after a revoked Session. Pairing goes through the fleet layer so a
+ * damaged configuration refuses here too, and the registry starts
+ * supervising the new engine immediately.
  */
 export function PairPage() {
   const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get("token"));
@@ -26,7 +28,7 @@ export function PairPage() {
     started.current = true;
     void (async () => {
       try {
-        await fleetStore.redeemPairingUrl(window.location.href, webDeviceLabel());
+        await pairEngine(window.location.href, webDeviceLabel());
         void navigate({ to: "/", replace: true });
       } catch (error) {
         setPhase({ kind: "error", message: describeRedeemError(error) });
@@ -41,7 +43,7 @@ export function PairPage() {
     }
     setPhase({ kind: "redeeming" });
     try {
-      await fleetStore.redeemPairingUrl(url.trim(), webDeviceLabel());
+      await pairEngine(url.trim(), webDeviceLabel());
       setUrl("");
       void navigate({ to: "/", replace: true });
     } catch (error) {

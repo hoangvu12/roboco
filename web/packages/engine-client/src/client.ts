@@ -8,6 +8,7 @@ import {
   type ServerFrame,
 } from "./codec";
 import { ENGINE_INFO } from "./methods";
+import { wireParams } from "./request-routing";
 import { RpcError, wireError } from "./rpc-error";
 import { browserWebSocket, type WebSocketFactory, type WsSocket, type SocketClose } from "./socket";
 
@@ -65,6 +66,15 @@ export interface EngineClientOptions {
   readonly watchAckTimeoutMs?: number;
   /** Dial timeout before an unopened socket is abandoned. */
   readonly connectTimeoutMs?: number;
+  /**
+   * The registry engine key this client routes for — set, every `call` and
+   * `watch` runs `request-routing.ts::wireParams` first: ScopedId-shaped
+   * envelope fields decode back to this engine's raw ids, ids owned by a
+   * different engine reject the request client-side (never sent over the
+   * wire), and `targetDeviceId` is stripped before the request leaves.
+   * Routing ends at the socket — no engine forwards a request on.
+   */
+  readonly engineKey?: string;
   readonly log?: (message: string, detail?: unknown) => void;
 }
 
@@ -147,6 +157,7 @@ export class EngineClient {
   readonly #longCallTimeoutMs: number;
   readonly #watchAckTimeoutMs: number;
   readonly #connectTimeoutMs: number;
+  readonly #engineKey: string | undefined;
   readonly #log: (message: string, detail?: unknown) => void;
 
   #runState: RunState = "idle";
@@ -177,6 +188,7 @@ export class EngineClient {
     this.#longCallTimeoutMs = options.longCallTimeoutMs ?? DEFAULT_LONG_CALL_TIMEOUT_MS;
     this.#watchAckTimeoutMs = options.watchAckTimeoutMs ?? DEFAULT_WATCH_ACK_TIMEOUT_MS;
     this.#connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.#engineKey = options.engineKey;
     this.#log = options.log ?? (() => {});
   }
 
@@ -214,11 +226,23 @@ export class EngineClient {
   }
 
   async call<T>(method: string, params: unknown = {}): Promise<T> {
-    if (this.#runState !== "running") {
-      throw new RpcError(this.#runState === "parked" ? "parked" : "closed", "Engine client is not running");
+    if (this.#runState === "parked") {
+      throw new RpcError("parked", "Engine client is not running");
+    }
+    if (this.#runState === "closed") {
+      throw new RpcError("closed", "Engine client is not running");
     }
     if (this.#establishedDial === null || this.#currentDial === null || this.#socket === null) {
+      // Includes the fresh-but-not-yet-dialed state: a supervised client
+      // that has not started (or is between dials) reads as offline to
+      // callers, matching the desktop's `EngineTarget::call` — a registry
+      // entry seeds its cache before the first dial, so a call can land in
+      // that window.
       throw new RpcError("transport", "Engine is offline; reconnecting");
+    }
+    if (this.#engineKey !== undefined) {
+      // A foreign scoped id throws here — the request never leaves the client.
+      wireParams(this.#engineKey, method, params);
     }
     const value = await this.#pendingCall(method, params, this.#timeoutFor(method));
     return value as T;
@@ -231,6 +255,11 @@ export class EngineClient {
    * re-verified.
    */
   watch<T>(method: string, params: unknown, handlers: WatchHandlers<T>, options: WatchOptions = {}): WatchHandle {
+    if (this.#engineKey !== undefined) {
+      // Same boundary as `call`: decode/reject/strip before the stream
+      // leaves. A foreign id throws here, synchronously to the registrant.
+      wireParams(this.#engineKey, method, params);
+    }
     const token = this.#nextWatchToken++;
     this.#watches.set(token, {
       method,
