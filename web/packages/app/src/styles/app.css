@@ -11446,3 +11446,350 @@ html[data-surface="frosted"] .cr-tooltip {
 .queue-panel-list::-webkit-scrollbar {
   display: none;
 }
+
+/* --------------- Review comments (ticket 23) --------------------------- */
+
+/*
+ * The diff line's `+` (comment_ui.rs:18-46): a 16px solid square, radius 4,
+ * an 11px plus. Lives inside the row's `.diff-adder-slot`, which is
+ * pointer-transparent � the button re-enables its own hits so the row's
+ * hover/click handling is never stolen.
+ */
+.comment-adder {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--rb-solid);
+  color: var(--rb-on-solid);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  pointer-events: auto;
+  padding: 0;
+  border: none;
+}
+
+/* The accent bar both inline surfaces share � 3px, matching the diff row's
+ * own bar so the card's edge steps in and out of the column with it
+ * (comment_ui.rs:181-183). */
+.comment-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  flex: none;
+}
+
+/*
+ * The diff-side staged card (comment_ui.rs:48-145): `ink(0.05)` plate, the
+ * 22px header (icon + mono location + hover-revealed edit/remove), and the
+ * body clipped to the ANALYTIC height (inline; `card_height`), 12/18 dim.
+ */
+.comment-card {
+  width: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.comment-card-accent {
+  background: color-mix(in srgb, var(--rb-solid) 35%, transparent);
+}
+
+.comment-card-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
+}
+
+.comment-card-header {
+  height: 22px;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.comment-card-icon {
+  flex: none;
+  color: var(--rb-text-faint);
+}
+
+.comment-card-location {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+/* The hover-revealed edit pen / remove � (comment_ui.rs:110-129, 158): 16px,
+ * radius 4, 12px icon in text_muted, opacity 0 until the ENCLOSING card is
+ * hovered � pointer-reachable only, no focus ring (desktop has no
+ * tab-index binding here). */
+.comment-card-action {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.comment-card:hover .comment-card-action {
+  opacity: 1;
+}
+
+.comment-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--rb-text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The diff-side draft (comment_ui.rs:186-287): fixed 116px (inline) so an
+ * open draft never fights the fold tween, `ink(0.08)` plate, the accent at
+ * 0.7, the location header, a 46px input, and the action row.
+ */
+.comment-draft {
+  width: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+.comment-draft-accent {
+  background: color-mix(in srgb, var(--rb-solid) 70%, transparent);
+}
+
+.comment-draft-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
+}
+
+.comment-draft-header {
+  height: 22px;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.comment-draft-icon {
+  flex: none;
+  color: var(--rb-text-faint);
+}
+
+.comment-draft-location {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.comment-draft-input {
+  height: 46px;
+  flex: none;
+  overflow: hidden;
+  resize: none;
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 12px;
+  font-family: var(--rb-font-sans-fixed);
+}
+
+/* The action row (comment_ui.rs:262-284 + `comment_action`, :289-315): 22px
+ * buttons, 11px MEDIUM, right-aligned with a 6px gap; primary is the solid
+ * plate, secondary hover-blends text_muted ? text over transparent ?
+ * element_hover on the shared HOVER_FADE. */
+.comment-actions {
+  height: 28px;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.comment-action {
+  height: 22px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  color: var(--rb-text-muted);
+  background: transparent;
+  transition:
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.comment-action:hover {
+  color: var(--rb-text);
+  background: var(--rb-hover);
+}
+
+.comment-action-primary {
+  background: var(--rb-solid);
+  color: var(--rb-on-solid);
+}
+
+.comment-action-primary:hover {
+  background: var(--rb-solid);
+  color: var(--rb-on-solid);
+}
+
+/*
+ * The composer's chip strip wrapper (render_comments_chip, composer.rs:
+ * 4615-4619): `px(16) pt(12)` around the badge pill (ticket 20's
+ * `.badge-pill`); its height is budgeted arithmetically by
+ * `commentStripHeight`.
+ */
+.comments-chip {
+  display: flex;
+  flex-direction: row;
+  flex: none;
+  padding-left: 16px;
+  padding-right: 16px;
+  padding-top: 12px;
+}
+
+/*
+ * The Files preview's floating card (preview.rs:2896-2985): the
+ * `.popover-card` chrome (radius 12, hairline 0.10, glass overlay over the
+ * 44px frost) positioned absolutely at the anchor math, `px(16) py(10)`,
+ * height `card_height` (inline).
+ */
+.editor-comment-card {
+  padding: 10px 16px;
+}
+
+.editor-comment-header {
+  height: 22px;
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * The Files preview's floating draft (preview.rs:2987-3060): fixed 92px
+ * (inline), the 48px input row (radius 7, hairline border, the input glass
+ * plate, `px(8) py(5)`), and the shared action row.
+ */
+.editor-comment-draft {
+  padding: 8px 16px;
+}
+
+.editor-comment-input {
+  height: 48px;
+  flex: none;
+  overflow: hidden;
+  resize: none;
+  border-radius: 7px;
+  border: 1px solid var(--rb-border);
+  background: var(--rb-input);
+  padding: 5px 8px;
+  color: var(--rb-text);
+  font-size: 12px;
+  font-family: var(--rb-font-sans-fixed);
+}
+
+/*
+ * The editor gutter's comment affordances (preview.rs:2801-2857): the cell
+ * overlays the line number — a `chatRoundLine` icon (10.5px, text_muted,
+ * the card plate, hover wash) on lines with a staged File comment, or a
+ * hover-revealed solid `+` on lines without one. The cell rides the
+ * gutter's sticky plate, so it stays pinned while the code scrolls.
+ */
+.files-gutter-comment {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rb-card);
+  color: var(--rb-text-muted);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.files-gutter-comment:hover {
+  background: rgb(var(--rb-wash) / 0.08);
+}
+
+.files-gutter-add {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.files-gutter-add:hover {
+  background: var(--rb-card);
+}
+
+.files-gutter-add-button {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--rb-solid);
+  color: var(--rb-on-solid);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.files-gutter-add:hover .files-gutter-add-button {
+  opacity: 1;
+}

@@ -5,6 +5,7 @@ import { Icon } from "@roboco/icons";
 import type { Chat } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { sidebarNotice } from "../state/notice";
+import { reviewCommentStore } from "../state/review-comments";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
 import { RbContextMenu, RbContextMenuPositioner } from "./base/menu";
@@ -97,7 +98,20 @@ export function useChatMenu(chat: Chat) {
         />
       )}
       {dialog === "delete" && (
-        <DeleteChatDialog chat={chat} onDelete={() => run((caller) => deleteChat(caller, chat.id))} onClose={() => setDialog(null)} />
+        <DeleteChatDialog
+          chat={chat}
+          onDelete={() =>
+            run((caller) =>
+              deleteChat(caller, chat.id).then(() => {
+                // `purge_review_comments` (state.rs:754-757, wired from
+                // composer.rs::purge_chat:4596): a deleted chat's staged
+                // comments could never be sent again.
+                reviewCommentStore.purgeChat(chat.id);
+              }),
+            )
+          }
+          onClose={() => setDialog(null)}
+        />
       )}
     </>
   );
