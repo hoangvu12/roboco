@@ -987,7 +987,6 @@ a:focus-visible,
   border-top: none;
 }
 
-
 /*
  * A flush, left-bordered glass panel — not an inset card. As a shell column it
  * spans the full window height, so its surface and its seam hairline continue
@@ -3408,6 +3407,7 @@ a:focus-visible,
 
 /* ── Run identity chip ──────────────────────────────────────────────── */
 
+
 .composer-pickers {
   position: relative;
   min-width: 0;
@@ -4692,6 +4692,7 @@ a:focus-visible,
 
 /* ── User-row attachment thumbs (transcript) ────────────────────────── */
 
+
 /*
  * `render_user_attachments` (transcript.rs:4888-4900): full-width wrap,
  * right-aligned under the user bubble, 112×80 thumbs, 8px gap. State chrome
@@ -5603,6 +5604,9 @@ button.files-row-search:hover.files-row-active {
   display: block;
 }
 
+/* ── Files viewer: the promoted editor presentation (preview.rs) ────────── */
+
+/* The pane-hosted viewer shell (the `file` surface body). */
 .files-viewer-pane {
   flex: 1;
   min-width: 0;
@@ -5618,78 +5622,292 @@ button.files-row-search:hover.files-row-active {
   flex-direction: column;
 }
 
-.files-viewer-header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  height: var(--rb-header-height);
-  padding: 0 var(--rb-space-md);
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.files-back {
-  display: none;
-}
-
-.files-breadcrumb {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12px;
-}
-
-.files-crumb-sep {
-  margin: 0 4px;
-  color: var(--rb-text-faint);
-}
-
-.files-dirty {
-  color: var(--rb-warning);
-}
-
-/* The breadcrumb toolbar carries no byte-size badge. */
-.files-banner {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  flex-wrap: wrap;
-  padding: var(--rb-space-xs) var(--rb-space-md);
-  font-size: 13px;
-  color: var(--rb-text-muted);
-  background: var(--rb-raised);
-  border-bottom: 1px solid var(--rb-border);
-}
-
-.files-banner-danger {
-  background: var(--rb-danger-muted);
-  color: var(--rb-text);
-}
-
-.files-banner-warning {
-  background: var(--rb-warning-muted);
-  color: var(--rb-text);
-}
-
-.files-banner-title {
-  font-weight: 600;
-}
-
-.files-banner-detail {
-  flex: 1;
-  min-width: 12ch;
-}
-
 .files-viewer-body {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
+
+.files-viewer-body > .files-note,
+.files-viewer-body > .files-editor-body {
+  flex: 1;
+}
+
+/* ── The split layout (§2.5: mod.rs render:317-433) ────────────────────── */
+
+.files-split {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-split-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.files-split-document {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  outline: none;
+}
+
+.files-split-sidebar {
+  flex: none;
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--rb-border);
+}
+
+.files-split-sidebar-inner {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* `render_tree_toggle`'s fixed 32px slot (CONTROL_SIZE + EDGE_INSET). */
+.files-tree-toggle-slot {
+  flex: none;
+  width: 32px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.files-tree-toggle {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+button.files-tree-toggle:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+/* The viewer toolbar row: the breadcrumb's leading content (flex 1). */
+.files-viewer-toolbar-leading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* `preview_split_handle` (preview.rs:3214-3298): a 20px hit strip on the
+   sidebar/document boundary, holding the 1px gradient divider line. */
+.files-split-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  cursor: col-resize;
+  z-index: 3;
+  touch-action: none;
+}
+
+.files-split-handle-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 9.5px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--rb-border-strong) 50%,
+    transparent 100%
+  );
+  opacity: 0;
+  transition: opacity 120ms var(--rb-ease-out);
+}
+
+.files-split-handle:hover .files-split-handle-line,
+.files-split-handle:active .files-split-handle-line {
+  opacity: 1;
+}
+
+/* ── The breadcrumb toolbar (render_breadcrumb, preview.rs:2281) ───────── */
+
+.files-breadcrumb-bar {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.files-breadcrumb-icon {
+  flex: none;
+}
+
+.files-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.files-crumb {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.files-crumb-part,
+.files-crumb-final {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.files-crumb-part {
+  color: var(--rb-text-faint);
+}
+
+.files-crumb-final {
+  color: var(--rb-text-muted);
+}
+
+.files-crumb-sep {
+  margin: 0 4px;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-text-faint) 65%, transparent);
+}
+
+/* 24×24 toolbar buttons: radius 6, hover wash(0.14) (surface_chrome). */
+.files-toolbar-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+button.files-toolbar-button:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+.files-toolbar-button-on {
+  background: rgb(var(--rb-wash) / 0.1);
+  color: var(--rb-text);
+}
+
+/* The save-status pill (preview.rs:2380-2428): h 24, px 6, radius 6. */
+.files-save-pill {
+  flex: none;
+  height: 24px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  font-size: 11px;
+  border: none;
+  background: transparent;
+  cursor: default;
+}
+
+button.files-save-pill:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+.files-save-pill-danger {
+  color: var(--rb-danger-muted);
+  cursor: pointer;
+}
+
+.files-save-pill-warning {
+  color: var(--rb-warning-muted);
+}
+
+/* ── The write-outcome banners (preview.rs:2082-2241) ──────────────────── */
+
+.files-banner {
+  flex: none;
+  min-height: 32px;
+  padding: 6px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--rb-warning) 25%, transparent);
+  background: color-mix(in srgb, var(--rb-warning) 5.5%, transparent);
+  color: var(--rb-warning-muted);
+}
+
+.files-banner-detail {
+  flex: 1;
+  min-width: 12ch;
+  white-space: normal;
+}
+
+.files-banner-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.files-banner-action {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--rb-text);
+  cursor: pointer;
+}
+
+.files-banner-action-muted {
+  color: var(--rb-text-muted);
+}
+
+.files-banner-action-danger {
+  color: var(--rb-danger-muted);
+}
+
+/* The truncated-preview strip (preview.rs:2766-2779). */
+.files-truncated-banner {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-warning) 4.5%, transparent);
+  font-size: 10px;
+  color: var(--rb-warning-muted);
+}
+
+/* ── Centered states ───────────────────────────────────────────────────── */
 
 .files-note {
   margin: auto;
@@ -5702,146 +5920,297 @@ button.files-row-search:hover.files-row-active {
   gap: var(--rb-space-sm);
 }
 
-.files-editor {
+.files-note-faint {
+  color: var(--rb-text-faint);
+}
+
+.files-note-error {
+  color: var(--rb-danger-muted);
+}
+
+/* ── The code view (render_preview_line / the editor body) ─────────────── */
+
+.files-editor-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.files-code {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: color-mix(in srgb, var(--rb-text) 93%, transparent);
+  background: transparent;
+}
+
+.files-code-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.files-code-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.files-code-content {
+  position: relative;
+  min-width: 100%;
   width: 100%;
-  resize: none;
+}
+
+.files-code:not(.files-code-wrap) .files-code-content {
+  width: max-content;
+}
+
+.files-code-row {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.files-code-wrap .files-code-row {
+  align-items: stretch;
+}
+
+/* The 48px gutter (preview.rs:3159-3171). While wrap is off the gutter
+   stays pinned at the scrollport's left edge (the desktop's editor gutter
+   sits outside the horizontal scroller) — sticky over an opaque plate so
+   the code slides under it. */
+.files-code-gutter {
+  flex: none;
+  width: 48px;
+  padding-right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--rb-border) 55%, transparent);
+  user-select: none;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--rb-bg);
+}
+
+.files-code-wrap .files-code-gutter {
+  align-items: flex-start;
+}
+
+.files-code-line {
+  display: block;
+  padding: 0 18px 0 12px;
+  white-space: pre;
+  min-width: 0;
+  flex: 1;
+}
+
+.files-code-wrap .files-code-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.files-code-row-active {
+  background: rgb(var(--rb-ink) / 0.025);
+}
+
+/* The input layer: transparent glyphs over the highlight, the caret in
+   --rb-caret, the selection wash accent at 0.22. */
+.files-code-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   border: none;
   outline: none;
-  padding: var(--rb-space-md) var(--rb-space-lg);
-  background: var(--rb-bg);
-  color: var(--rb-text);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 13px;
-  line-height: 18px;
+  resize: none;
+  overflow: hidden;
+  padding: 0 18px 0 60px;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--rb-caret);
+  font: inherit;
   tab-size: 4;
   white-space: pre;
 }
 
-.files-text-preview {
+.files-code-wrap .files-code-input {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.files-code-input::selection {
+  background: rgb(var(--rb-accent) / 0.22);
+  color: transparent;
+}
+
+/* Read-only lines stay selectable (the desktop's copyable preview). */
+.files-code:not(.files-code-editable) .files-code-line {
+  user-select: text;
+}
+
+/* ── The image viewer (image_viewer.rs) ────────────────────────────────── */
+
+.files-image-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  margin: 0;
-  padding: var(--rb-space-md) var(--rb-space-lg);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 13px;
-  line-height: 18px;
-  white-space: pre;
+  display: flex;
+  position: relative;
+  overflow: hidden;
 }
+
+.files-image-viewport {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.files-image {
+  position: absolute;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ── The markdown preview (markdown_preview.rs) ────────────────────────── */
 
 .files-markdown-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--rb-space-md) var(--rb-space-lg);
+  padding: 16px 0;
+  font-size: 13px;
 }
 
-.files-image-body {
-  align-items: center;
+.files-markdown {
+  min-width: 0;
+}
+
+.files-markdown-row {
+  display: flex;
   justify-content: center;
-  overflow: auto;
-  padding: var(--rb-space-md);
+  padding: 0 24px;
 }
 
-.files-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  margin: auto;
+.files-markdown-content {
+  width: 100%;
+  min-width: 0;
 }
 
-/* Markdown preview (the desktop's rendered markdown blocks) */
-.markdown {
-  max-width: 46rem;
-  line-height: 1.6;
-}
-
-.markdown h1,
-.markdown h2,
-.markdown h3,
-.markdown h4,
-.markdown h5,
-.markdown h6 {
-  margin: var(--rb-space-md) 0 var(--rb-space-sm);
-  line-height: 1.3;
-}
-
-.markdown h1:first-child,
-.markdown h2:first-child,
-.markdown p:first-child {
-  margin-top: 0;
-}
-
-.markdown p {
-  margin: var(--rb-space-sm) 0;
-}
-
-.markdown code {
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12.5px;
-  background: var(--rb-raised);
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-
-.markdown-code {
-  overflow-x: auto;
-  background: var(--rb-raised);
-  border: 1px solid var(--rb-border);
-  border-radius: var(--rb-radius-control);
-  padding: var(--rb-space-sm) var(--rb-space-md);
-}
-
-.markdown-code code {
-  background: transparent;
+.files-markdown-truncated {
+  margin: 0 24px 12px;
   padding: 0;
+  color: var(--rb-warning-muted);
+  font-size: 12px;
 }
 
-.markdown blockquote {
-  margin: var(--rb-space-sm) 0;
-  padding-left: var(--rb-space-md);
-  border-left: 3px solid var(--rb-border-strong);
+.files-markdown-empty {
+  margin: 0 24px;
   color: var(--rb-text-muted);
 }
 
-.markdown ul,
-.markdown ol {
+.files-markdown-media-note,
+.files-markdown-media-error {
+  display: block;
   margin: var(--rb-space-sm) 0;
-  padding-left: var(--rb-space-lg);
+  color: var(--rb-text-muted);
+  font-size: 12px;
 }
 
-.markdown table {
-  border-collapse: collapse;
+.files-markdown-media-error {
+  color: var(--rb-warning-muted);
+}
+
+.files-markdown-image-button {
+  display: block;
+  padding: 0;
   margin: var(--rb-space-sm) 0;
-}
-
-.markdown th,
-.markdown td {
-  border: 1px solid var(--rb-border);
-  padding: 4px var(--rb-space-sm);
-  text-align: left;
-}
-
-.markdown li > p {
-  margin: 0;
-}
-
-.markdown a {
-  color: var(--rb-accent);
-}
-
-.markdown-image {
-  max-width: 100%;
-}
-
-.markdown hr {
   border: none;
-  border-top: 1px solid var(--rb-border);
-  margin: var(--rb-space-md) 0;
+  background: transparent;
+  cursor: zoom-in;
 }
 
+.files-markdown-image-button img,
+.files-markdown-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.files-task {
+  margin-right: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  line-height: inherit;
+}
+
+.files-task:disabled {
+  cursor: default;
+}
+
+/* The lightbox: a scrim with the image at natural geometry. */
+.files-lightbox-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgb(var(--rb-ink) / 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.files-lightbox-card {
+  position: relative;
+  width: min(80vw, 900px);
+  height: min(80vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--rb-card);
+  border: 1px solid var(--rb-border);
+  border-radius: var(--rb-radius-panel);
+  overflow: hidden;
+}
+
+.files-lightbox-open {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: var(--rb-raised);
+  color: var(--rb-text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* ── The editor context menu (mod.rs:626) ──────────────────────────────── */
+
+.files-editor-menu .menu-row:disabled {
+  color: var(--rb-text-faint);
+  cursor: default;
+}
 /* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
 
 @media (max-width: 768px) {
@@ -7722,7 +8091,6 @@ button.files-row-search:hover.files-row-active {
   position: relative;
 }
 
-
 /*
  * ── Chat context menu (shell.rs:5433-5608, ticket 10) ─────────────────
  *
@@ -7775,7 +8143,6 @@ button.files-row-search:hover.files-row-active {
   justify-content: flex-end;
   gap: var(--rb-space-sm);
 }
-
 
 /*
  * ── Sidebar disclosures (ByDevice groups + the archived shelf) ────────
@@ -8019,14 +8386,12 @@ button.files-row-search:hover.files-row-active {
   padding: 1px 5px;
 }
 
-
 /*
  * No Preview surface. On the desktop the discovered dev-server list is the
  * empty-tab body of an embedded native Browser tab, framed by that tab's own
  * chrome (`browser/view.rs::preview_body`) — the web has no embedded browser
  * tab to host it, so there is nothing here to style.
  */
-
 
 /* ── Settings (ticket 16) ───────────────────────────────────────────── */
 
@@ -9744,7 +10109,6 @@ html[data-surface="frosted"] .cr-tooltip {
   }
 }
 
-
 /* -- Add-space palette (ticket 11, spaces.rs:2526-3274) ---------------- */
 
 /*
@@ -10213,10 +10577,9 @@ html[data-surface="frosted"] .cr-tooltip {
 .drawer,
 .files-tree,
 .files-search-results,
-.files-text-preview,
+.files-code-scroll,
 .files-markdown-scroll,
-.files-image-body,
-.markdown-code,
+
 .md-pre,
 .md-table-wrap,
 .diff-view,
@@ -10233,10 +10596,8 @@ html[data-surface="frosted"] .cr-tooltip {
 .drawer::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
 .files-search-results::-webkit-scrollbar,
-.files-text-preview::-webkit-scrollbar,
-.files-markdown-scroll::-webkit-scrollbar,
-.files-image-body::-webkit-scrollbar,
-.markdown-code::-webkit-scrollbar,
+.files-code-scroll::-webkit-scrollbar,
+
 .md-pre::-webkit-scrollbar,
 .md-table-wrap::-webkit-scrollbar,
 .diff-view::-webkit-scrollbar,

@@ -1,18 +1,34 @@
 /**
  * A small block-level markdown parser for the files preview — the web peer
  * of the desktop's pulldown-cmark markdown stack, scoped to the blocks that
- * carry workspace documents: headings (ATX + setext), fenced code, lists,
- * quotes, pipe tables, rules, and paragraphs, with inline code, emphasis,
- * strikethrough, links, and images. Not CommonMark-complete; the desktop's
- * rendered preview remains the reference.
+ * carry workspace documents: headings (ATX + setext), fenced code, lists
+ * (with task markers carrying their source offset), quotes, pipe tables,
+ * rules, and paragraphs, with inline code, emphasis, strikethrough, links,
+ * and images. Not CommonMark-complete; the desktop's rendered preview
+ * remains the reference.
  */
+
+/** `MAX_MARKDOWN_BYTES` (markdown_preview.rs) — the client-side parse clip. */
+export const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
+
+export interface TaskMarker {
+  /** Offset of the `[` in the parsed source (a single edit toggles here). */
+  readonly offset: number;
+  readonly checked: boolean;
+}
+
+export interface MdListItem {
+  readonly blocks: readonly MdBlock[];
+  /** GFM task state with the source offset the toggle writes at. */
+  readonly task: TaskMarker | null;
+}
 
 export type MdBlock =
   | { readonly kind: "heading"; readonly level: number; readonly inlines: readonly MdInline[] }
   | { readonly kind: "paragraph"; readonly inlines: readonly MdInline[] }
   | { readonly kind: "code"; readonly language: string | null; readonly text: string }
   | { readonly kind: "quote"; readonly blocks: readonly MdBlock[] }
-  | { readonly kind: "list"; readonly ordered: boolean; readonly items: readonly (readonly MdBlock[])[] }
+  | { readonly kind: "list"; readonly ordered: boolean; readonly items: readonly MdListItem[] }
   | { readonly kind: "table"; readonly header: readonly (readonly MdInline[])[], readonly rows: readonly (readonly (readonly MdInline[])[])[] }
   | { readonly kind: "rule" };
 
@@ -26,10 +42,38 @@ export type MdInline =
   | { readonly kind: "image"; readonly src: string; readonly alt: string };
 
 export function parseMarkdown(source: string): MdBlock[] {
-  return parseBlocks(source.replace(/\r\n/g, "\n").split("\n"));
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  const starts: number[] = [];
+  let at = 0;
+  for (const line of lines) {
+    starts.push(at);
+    at += line.length + 1;
+  }
+  return parseBlocks(lines, starts);
 }
 
-function parseBlocks(lines: readonly string[]): MdBlock[] {
+/**
+ * The 2 MiB client-side clip (`markdown_preview.rs` set_source): a live
+ * buffer larger than `MAX_MARKDOWN_BYTES` parses only its first
+ * `MAX_MARKDOWN_BYTES` bytes, cut at the nearest UTF-8 boundary (a code
+ * point, never inside a surrogate pair).
+ */
+export function clipMarkdownBytes(source: string): { readonly text: string; readonly truncated: boolean } {
+  let bytes = 0;
+  for (let index = 0; index < source.length; ) {
+    const codePoint = source.codePointAt(index)!;
+    const width = codePoint > 0xffff ? 2 : 1;
+    const encoded = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    if (bytes + encoded > MAX_MARKDOWN_BYTES) {
+      return { text: source.slice(0, index), truncated: true };
+    }
+    bytes += encoded;
+    index += width;
+  }
+  return { text: source, truncated: false };
+}
+
+function parseBlocks(lines: readonly string[], starts: readonly number[]): MdBlock[] {
   const blocks: MdBlock[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -72,12 +116,12 @@ function parseBlocks(lines: readonly string[]): MdBlock[] {
         quote.push(lines[index]!.replace(/^\s{0,3}>\s?/, ""));
         index += 1;
       }
-      blocks.push({ kind: "quote", blocks: parseBlocks(quote) });
+      blocks.push({ kind: "quote", blocks: parseBlocks(quote, quoteStarts(starts, index - quote.length, quote)) });
       continue;
     }
 
     if (isListItem(line)) {
-      const { blocks: list, next } = parseList(lines, index);
+      const { blocks: list, next } = parseList(lines, starts, index);
       blocks.push(list);
       index = next;
       continue;
@@ -140,6 +184,17 @@ function parseBlocks(lines: readonly string[]): MdBlock[] {
   return blocks;
 }
 
+/** The source offsets of a re-sliced child range (quotes re-number lines). */
+function quoteStarts(starts: readonly number[], first: number, body: readonly string[]): number[] {
+  const out: number[] = [];
+  let cursor = starts[first] ?? 0;
+  for (const line of body) {
+    out.push(cursor);
+    cursor += line.length + 1;
+  }
+  return out;
+}
+
 function isListItem(line: string): boolean {
   return /^(\s*)([-*+]|\d{1,9}[.)])\s+/.test(line);
 }
@@ -153,41 +208,67 @@ function listMarker(line: string): { indent: number; ordered: boolean; rest: str
   return { indent, ordered: /\d/.test(match[2]!), rest: match[3]! };
 }
 
-function parseList(lines: readonly string[], start: number): { blocks: MdBlock; next: number } {
-  const first = listMarker(lines[start]!)!;
-  const ordered = first.ordered;
-  const items: (readonly MdBlock[])[] = [];
-  let index = start;
-  let current: string[] = [];
-  let currentIndent = first.indent;
-
-  const flush = (): void => {
-    if (current.length > 0) {
-      items.push(parseBlocks(current));
-      current = [];
+/** GFM task marker at the head of a list item's first line, if any. */
+function taskMarker(rest: string, lineStart: number, line: string): TaskMarker | null {
+    const match = rest.match(/^\[([ xX])\](\s+|$)/);
+    if (match === null) {
+      return null;
     }
-  };
+    // The `[` sits at `line.length - rest.length` into the line.
+    const offset = lineStart + (line.length - rest.length);
+    return { offset, checked: match[1] !== " " };
+  }
 
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (line.trim().length === 0) {
-      break;
-    }
-    const marker = listMarker(line);
-    if (marker !== null && marker.indent <= first.indent) {
-      if (marker.ordered !== ordered || marker.indent < first.indent) {
+/** The item content with the task marker stripped (GFM renders it as the checkbox). */
+function stripTaskMarker(rest: string): string {
+    return rest.replace(/^\[([ xX])\]\s+/, "");
+  }
+
+  function parseList(lines: readonly string[], starts: readonly number[], start: number): { blocks: MdBlock; next: number } {
+    const first = listMarker(lines[start]!)!;
+    const ordered = first.ordered;
+    const items: MdListItem[] = [];
+    let index = start;
+    let current: string[] = [];
+    let currentTask: TaskMarker | null = null;
+    let currentStarts: number[] = [];
+    let currentIndent = first.indent;
+
+    const flush = (): void => {
+      if (current.length > 0) {
+        items.push({ blocks: parseBlocks(current, currentStarts), task: currentTask });
+        current = [];
+        currentStarts = [];
+        currentTask = null;
+      }
+    };
+
+    while (index < lines.length) {
+      const line = lines[index]!;
+      if (line.trim().length === 0) {
         break;
       }
-      flush();
-      current = [marker.rest];
-      currentIndent = marker.indent;
-      index += 1;
-      continue;
-    }
+      const marker = listMarker(line);
+      if (marker !== null && marker.indent <= first.indent) {
+        if (marker.ordered !== ordered || marker.indent < first.indent) {
+          break;
+        }
+        flush();
+        const task = taskMarker(marker.rest, starts[index]!, line);
+        const content = task === null ? marker.rest : stripTaskMarker(marker.rest);
+        current = [content];
+        currentStarts = [starts[index]! + (line.length - content.length)];
+        currentTask = task;
+        currentIndent = marker.indent;
+        index += 1;
+        continue;
+      }
     // Continuation: an indented line belonging to the current item.
     const indent = line.match(/^(\s*)/)![1]!.replace(/\t/g, "    ").length;
     if (indent > currentIndent) {
-      current.push(line.slice(Math.min(line.length, currentIndent + 2)));
+      const slice = line.slice(Math.min(line.length, currentIndent + 2));
+      current.push(slice);
+      currentStarts.push(starts[index]! + (line.length - slice.length));
       index += 1;
       continue;
     }
@@ -316,23 +397,127 @@ export function markdownLinkTarget(href: string): MarkdownLinkTarget {
   }
   const path = href.split("#")[0] ?? "";
   if (path.length === 0) {
-    return { kind: "text" };
+    // A bare `#anchor` still resolves — against the current document.
+    return href.startsWith("#") ? { kind: "workspace", path: href } : { kind: "text" };
   }
   return { kind: "workspace", path };
 }
 
-/** Resolve a workspace-relative markdown link against the open file's path. */
-export function resolveWorkspacePath(documentPath: string, target: string): string {
-  const segments = documentPath.split("/").slice(0, -1);
-  for (const part of target.split("/")) {
+/** A resolved workspace-relative markdown target: path plus decoded anchor. */
+export interface ResolvedMarkdownTarget {
+  readonly path: string;
+  readonly anchor: string | null;
+}
+
+/**
+ * `relative_target` (markdown_preview.rs:66-112), ported: strips a leading
+ * `roboco-file:` prefix (recursively), rejects absolute (`/`), scheme-
+ * qualified (`:`), or backslash targets, percent-decodes the path and the
+ * `#anchor`, rejects decoded paths containing `\\`, `:`, NUL, or a leading
+ * `/`, resolves `.`/`..` against the DOCUMENT'S DIRECTORY, and returns null
+ * when resolution walks above the root or empties out. An empty target
+ * (bare `#anchor`) resolves to the current document.
+ */
+export function relativeTarget(
+  document: string,
+  target: string,
+): ResolvedMarkdownTarget | null {
+  if (target.startsWith("roboco-file:")) {
+    return relativeTarget("", target.slice("roboco-file:".length));
+  }
+  if (target.startsWith("/") || target.includes(":") || target.includes("\\")) {
+    return null;
+  }
+  const hash = target.indexOf("#");
+  const rawPath = hash < 0 ? target : target.slice(0, hash);
+  const rawAnchor = hash < 0 ? null : target.slice(hash + 1);
+  const path = percentDecode(rawPath);
+  if (path === null) {
+    return null;
+  }
+  // Desktop: a failed ANCHOR decode yields no anchor, not a rejected target.
+  const anchor = rawAnchor === null ? null : percentDecode(rawAnchor);
+  if (path.includes("\\") || path.includes(":") || path.includes("\0") || path.startsWith("/")) {
+    return null;
+  }
+  if (path.length === 0) {
+    return { path: document, anchor };
+  }
+  const parts = document.split("/");
+  parts.pop();
+  for (const part of path.split("/")) {
     if (part === "" || part === ".") {
       continue;
     }
     if (part === "..") {
-      segments.pop();
+      if (parts.pop() === undefined) {
+        return null;
+      }
       continue;
     }
-    segments.push(part);
+    parts.push(part);
   }
-  return segments.join("/");
+  if (parts.length === 0) {
+    return null;
+  }
+  return { path: parts.join("/"), anchor };
+}
+
+function percentDecode(value: string): string | null {
+  try {
+    // decodeURIComponent rejects stray `%` and malformed escapes — the
+    // desktop's hand-rolled decoder returns None for the same shapes.
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `heading_anchor`/`slug` (markdown_preview.rs): lower-case, spaces → `-`;
+ * duplicates get a numeric suffix on collision. The map is computed once
+ * per parse so anchors stay stable across re-renders.
+ */
+export function buildHeadingAnchors(blocks: readonly MdBlock[]): ReadonlyMap<MdBlock, string> {
+  const anchors = new Map<MdBlock, string>();
+  const seen = new Map<string, number>();
+  const walk = (list: readonly MdBlock[]): void => {
+    for (const block of list) {
+      if (block.kind === "heading") {
+        const base = slugify(inlinesText(block.inlines));
+        const count = seen.get(base) ?? 0;
+        seen.set(base, count + 1);
+        anchors.set(block, count === 0 ? base : `${base}-${count}`);
+      } else if (block.kind === "quote") {
+        walk(block.blocks);
+      } else if (block.kind === "list") {
+        for (const item of block.items) {
+          walk(item.blocks);
+        }
+      }
+    }
+  };
+  walk(blocks);
+  return anchors;
+}
+
+/** The slug rule: lower-case, spaces → `-`. */
+export function slugify(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function inlinesText(inlines: readonly MdInline[]): string {
+  return inlines
+    .map((inline) => {
+      switch (inline.kind) {
+        case "text":
+        case "code":
+          return inline.text;
+        case "image":
+          return inline.alt;
+        default:
+          return inlinesText(inline.children);
+      }
+    })
+    .join("");
 }

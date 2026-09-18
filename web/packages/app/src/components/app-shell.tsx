@@ -54,6 +54,7 @@ import {
   RIGHT_PANE_MIN,
   panelKey,
   resolvePaneWidth,
+  resolvedActive,
   rightPaneStore,
   useRightPane,
 } from "../state/right-pane";
@@ -248,8 +249,14 @@ export function AppShell() {
           emitShortcut("toggle-sidebar");
           return;
         case "save-file":
+          // `SaveFile`'s scope: a chat route with the pane open on a
+          // Files/File surface (shell.rs:7781-7784's surface guard). Read
+          // the live pane state so a tab switch mid-listener still guards.
           if (route === "chat" && paneChatId !== null && pane.open) {
-            emitShortcut("save-file");
+            const active = resolvedActive(rightPaneStore.stateFor(paneChatId));
+            if (active.kind === "files" || active.kind === "file") {
+              emitShortcut("save-file");
+            }
           }
           return;
         case "toggle-changes":

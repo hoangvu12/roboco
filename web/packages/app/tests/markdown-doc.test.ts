@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { markdownLinkTarget, parseMarkdown, resolveWorkspacePath } from "../src/lib/markdown-doc";
+import {
+  buildHeadingAnchors,
+  clipMarkdownBytes,
+  markdownLinkTarget,
+  parseMarkdown,
+  relativeTarget,
+} from "../src/lib/markdown-doc";
 
 describe("parseMarkdown blocks", () => {
   it("parses ATX headings and paragraphs", () => {
@@ -44,19 +50,32 @@ describe("parseMarkdown blocks", () => {
         kind: "list",
         ordered: false,
         items: [
-          [{ kind: "paragraph", inlines: [{ kind: "text", text: "one" }] }],
-          [{ kind: "paragraph", inlines: [{ kind: "text", text: "two" }] }],
+          { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "one" }] }], task: null },
+          { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "two" }] }], task: null },
         ],
       },
       {
         kind: "list",
         ordered: true,
         items: [
-          [{ kind: "paragraph", inlines: [{ kind: "text", text: "first" }] }],
-          [{ kind: "paragraph", inlines: [{ kind: "text", text: "second" }] }],
+          { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "first" }] }], task: null },
+          { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "second" }] }], task: null },
         ],
       },
     ]);
+  });
+
+  it("parses task markers with their source offset", () => {
+    const source = "- [ ] open\n- [x] done";
+    const [block] = parseMarkdown(source);
+    expect(block).toEqual({
+      kind: "list",
+      ordered: false,
+      items: [
+        { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "open" }] }], task: { offset: 2, checked: false } },
+        { blocks: [{ kind: "paragraph", inlines: [{ kind: "text", text: "done" }] }], task: { offset: 13, checked: true } },
+      ],
+    });
   });
 
   it("nests indented lists", () => {
@@ -68,7 +87,7 @@ describe("parseMarkdown blocks", () => {
       return;
     }
     expect(list.items).toHaveLength(2);
-    expect(list.items[0]!.some((block) => block.kind === "list")).toBe(true);
+    expect(list.items[0]!.blocks.some((block) => block.kind === "list")).toBe(true);
   });
 
   it("parses block quotes recursively", () => {
@@ -153,9 +172,42 @@ describe("markdown link policy", () => {
     expect(markdownLinkTarget("./guide.md#install")).toEqual({ kind: "workspace", path: "./guide.md" });
   });
 
-  it("resolves workspace links against the open file", () => {
-    expect(resolveWorkspacePath("docs/guide.md", "install.md")).toBe("docs/install.md");
-    expect(resolveWorkspacePath("docs/guide.md", "../README.md")).toBe("README.md");
-    expect(resolveWorkspacePath("README.md", "docs/guide.md")).toBe("docs/guide.md");
+  it("resolves workspace links against the open file's directory", () => {
+    expect(relativeTarget("docs/guide.md", "install.md")).toEqual({ path: "docs/install.md", anchor: null });
+    expect(relativeTarget("docs/guide.md", "../README.md")).toEqual({ path: "README.md", anchor: null });
+    expect(relativeTarget("README.md", "docs/guide.md")).toEqual({ path: "docs/guide.md", anchor: null });
+  });
+
+  it("relative_target ports the desktop's rejection rules", () => {
+    // The ticket's §2.3 port cases (markdown_preview.rs:66-112).
+    expect(relativeTarget("docs/readme.md", "../a%20b.md#hello")).toEqual({ path: "a b.md", anchor: "hello" });
+    expect(relativeTarget("readme.md", "../secret")).toBeNull();
+    expect(relativeTarget("readme.md", "%2Fetc/passwd")).toBeNull();
+    expect(relativeTarget("readme.md", "https://example.com")).toBeNull();
+    expect(relativeTarget("readme.md", "#hello")).toEqual({ path: "readme.md", anchor: "hello" });
+    // The roboco-file: prefix strips recursively and resolves from the ROOT.
+    expect(relativeTarget("docs/readme.md", "roboco-file:guide.md")).toEqual({ path: "guide.md", anchor: null });
+    // A malformed escape rejects the path (decode failure).
+    expect(relativeTarget("docs/readme.md", "a%2.md")).toBeNull();
+  });
+
+  it("clips the live buffer at 2 MiB on a UTF-8 boundary", () => {
+    expect(clipMarkdownBytes("hello")).toEqual({ text: "hello", truncated: false });
+    const ascii = "a".repeat(2 * 1024 * 1024 + 10);
+    const clipped = clipMarkdownBytes(ascii);
+    expect(clipped.truncated).toBe(true);
+    expect(clipped.text.length).toBe(2 * 1024 * 1024);
+    // A surrogate pair never splits: the clip lands before the pair.
+    const prefix = "b".repeat(2 * 1024 * 1024 - 1);
+    const withPair = prefix + "😀" + "c".repeat(20);
+    const clippedPair = clipMarkdownBytes(withPair);
+    expect(clippedPair.truncated).toBe(true);
+    expect(clippedPair.text.endsWith("b")).toBe(true);
+  });
+
+  it("builds heading anchors with slugs and collision suffixes", () => {
+    const blocks = parseMarkdown("# Same Title\n\n## Same Title\n\n## Other");
+    const anchors = buildHeadingAnchors(blocks);
+    expect([...anchors.values()]).toEqual(["same-title", "same-title-1", "other"]);
   });
 });
