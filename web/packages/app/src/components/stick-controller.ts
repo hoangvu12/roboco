@@ -10,6 +10,7 @@ import {
   shouldBreakPin,
   shouldRestick,
 } from "../lib/stick-spring";
+import { GlideTimeline, GLIDE_FRAME_MS, SCROLL_GLIDE_CURVE, SCROLL_GLIDE_MS } from "../lib/rail";
 import {
   OWN_SEND_GLIDE_RETAIN,
   OWN_SEND_GLIDE_SNAP_PX,
@@ -17,15 +18,19 @@ import {
   OWN_SEND_TOP_INSET_PX,
   type OwnTurnAnchor,
 } from "../lib/transcript";
+import { cubicBezierEval } from "../state/layout";
 
 /**
  * The scroller's row geometry, read at frame time (the virtualizer keeps the
  * ref fresh per render): where the own-turn anchor row sits in content space,
- * and whether the reply's natural content has already filled the reservation.
+ * whether the reply's natural content has already filled the reservation, and
+ * the row-top prefix sums the rail glide anchors against.
  */
 export interface OwnTurnGeometry {
   readonly anchor: { readonly top: number; readonly ix: number } | null;
   readonly filled: boolean;
+  /** Row-top positions (the virtualizer's prefix sums), in scroll content space. */
+  readonly positions: readonly number[];
 }
 
 export interface StickControllerOptions {
@@ -81,6 +86,8 @@ export class StickController {
   #geometry: (() => OwnTurnGeometry) | null = null;
   #ownTurn: OwnTurnAnchor | null = null;
   #ownTurnLastTick: number | null = null;
+  /** The rail glide's 16ms timer — one glide owns the scroll-task slot. */
+  #glideTimer: number | 0 = 0;
   readonly #onJumpVisibility: (shown: boolean) => void;
   readonly #onOwnTurnChange: () => void;
   readonly #onUserInput: () => void;
@@ -130,6 +137,7 @@ export class StickController {
       cancelAnimationFrame(this.#raf);
       this.#raf = 0;
     }
+    this.#stopGlide();
   }
 
   setStreaming(streaming: boolean): void {
@@ -229,15 +237,76 @@ export class StickController {
   /**
    * `begin_scroll_navigation` (transcript.rs:3062): hand viewport ownership to
    * explicit navigation (a fold toggle, the selection auto-scroll) before it
-   * moves the list — the own-turn hold stands down, the pin drops.
+   * moves the list — the own-turn hold stands down, the pin drops, and any
+   * running rail glide yields (the desktop's one scroll-task slot).
    */
   beginScrollNavigation(): void {
+    this.#stopGlide();
     this.releaseOwnTurnHold();
     this.#pinned = false;
     this.#spring.reset();
     this.#lastTick = null;
     this.#settledAt = null;
     this.#kick = false;
+  }
+
+  /** Cancel a running glide (the scroll-task slot clears; the next
+   *  navigation owns the viewport). */
+  #stopGlide(): void {
+    if (this.#glideTimer !== 0) {
+      window.clearInterval(this.#glideTimer);
+      this.#glideTimer = 0;
+    }
+  }
+
+  /**
+   * `scroll_to_row` (rail.rs:251-408), the DOM port: glide the list so `row`
+   * sits at the viewport top over `SCROLL_GLIDE` (500ms `EASE_IN_OUT`) at a
+   * 16ms cadence, each frame consuming a [`GlideTimeline`] fraction of the
+   * CURRENT remaining distance — a height re-estimate mid-flight just
+   * re-enters the same timeline. Reduced motion jumps. The target row's top
+   * is re-read from the live geometry every frame (the virtualizer's prefix
+   * sums correct as rows measure).
+   */
+  scrollToRow(row: number): void {
+    const el = this.#el;
+    if (el === null) {
+      return;
+    }
+    this.beginScrollNavigation();
+    const target = (): number | null => {
+      const positions = this.#geometry?.().positions;
+      const top = positions?.[row];
+      return top === undefined ? null : top;
+    };
+    const first = target();
+    if (first === null) {
+      return;
+    }
+    if (this.#reduced?.matches) {
+      this.#write(first);
+      return;
+    }
+    this.#stopGlide();
+    const started = performance.now();
+    const timeline = new GlideTimeline();
+    // The desktop runs (total/16) + 90 frames, then lands exactly (rail.rs:267).
+    const frames = Math.ceil(SCROLL_GLIDE_MS / GLIDE_FRAME_MS) + 90;
+    let frame = 0;
+    this.#glideTimer = window.setInterval(() => {
+      frame++;
+      const raw = Math.min(Math.max((performance.now() - started) / SCROLL_GLIDE_MS, 0), 1);
+      const eased = cubicBezierEval(SCROLL_GLIDE_CURVE, raw);
+      const frac = timeline.step(eased);
+      const here = el.scrollTop;
+      const goal = target() ?? here;
+      if (raw >= 1 || frame >= frames) {
+        this.#stopGlide();
+        this.#write(goal);
+        return;
+      }
+      this.#write(here + frac * (goal - here));
+    }, GLIDE_FRAME_MS);
   }
 
   /** The hold stands down; the reservation (the virtualizer's floor) stays. */

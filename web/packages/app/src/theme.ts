@@ -39,6 +39,12 @@ export function applyAppearanceToDocument(
     root.style.setProperty(name, value);
   }
   root.style.setProperty("--rb-glass-card-alpha", String(layout.glass.cardAlpha));
+  // The gradient matrix spinner's fixed "sunrise" row tints (GSPIN_ROW_TINTS,
+  // proto/motion.rs:34) — the documented non-theme color exception: NOT
+  // accent-derived, identical in every variant.
+  root.style.setProperty("--rb-gspin-row-0", "#B6D3EF");
+  root.style.setProperty("--rb-gspin-row-1", "#EDB185");
+  root.style.setProperty("--rb-gspin-row-2", "#F888A0");
   const dark = variant.appearance === "dark";
   root.style.setProperty(
     "--rb-glass-overlay-alpha",

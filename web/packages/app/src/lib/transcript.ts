@@ -20,6 +20,7 @@ import { layout } from "@roboco/theme";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
 import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
+import { splitBadges, type MessageBadge } from "./badges";
 
 /** `Theme::TITLEBAR_HEIGHT` (proto/layout.rs:44) — the overlay bar's height. */
 export const TITLEBAR_HEIGHT = layout.chrome.titlebarHeight;
@@ -865,10 +866,9 @@ export type TranscriptRowKind =
       readonly mentions: readonly SentMentionSpan[];
       /**
        * Structured context the prompt folded in as text, lifted back out
-       * (`badges::split`) — ticket 20 ports the split and the pill; the
-       * call site keeps an empty list until then.
+       * (`badges::split`) — the pill's data (lib/badges.ts).
        */
-      readonly badges: readonly unknown[];
+      readonly badges: readonly MessageBadge[];
       /** Optimistic echo not yet confirmed by a doc frame. */
       readonly pending: boolean;
       /**
@@ -992,15 +992,14 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       .map((part) => part.text)
       .join("\n\n");
     const parsed = parseUserMessageImages(raw);
-    // Badges split BEFORE the mention projection so a comment body's own
-    // Markdown never lands in the bubble (ticket 20 ports `badges::split`;
-    // the call site stays with an empty list until then).
-    const badges: readonly unknown[] = [];
+    // Badges split BEFORE the mention projection, so a comment body's own
+    // Markdown never lands in the bubble (transcript.rs:1226).
+    const { text: body, badges } = splitBadges(parsed.text);
     // File mentions render as chips here too, not just in the composer. The
     // projection is pure over the text, so the raw-length row version stays
     // a valid cache/diff key.
-    const mention = sentMentionDisplay(parsed.text);
-    const text = mention?.display ?? parsed.text;
+    const mention = sentMentionDisplay(body);
+    const text = mention?.display ?? body;
     const mentions = mention?.mentions ?? [];
     const copyText = text.trim().length > 0 ? text : null;
     // `raw.length << 1 | pending` on the desktop; BigInt-free equivalent.

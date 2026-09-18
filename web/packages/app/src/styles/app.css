@@ -1689,25 +1689,168 @@ a:focus-visible,
   animation: rb-gspin 750ms linear infinite;
 }
 
-/* The three rows carry the accent's glyph roles (`GlyphPalette::rows`). */
-.glyph-spinner-row[data-row="0"],
-.matrix-spinner-row[data-row="0"] {
+/* The MINI spinner's three rows carry the accent's glyph roles
+   (`GlyphPalette::rows`) — only this spinner is accent-tinted. */
+.glyph-spinner-row[data-row="0"] {
   color: var(--rb-glyph-light);
 }
 
-.glyph-spinner-row[data-row="1"],
-.matrix-spinner-row[data-row="1"] {
+.glyph-spinner-row[data-row="1"] {
   color: var(--rb-glyph-mid);
 }
 
-.glyph-spinner-row[data-row="2"],
-.matrix-spinner-row[data-row="2"] {
+.glyph-spinner-row[data-row="2"] {
   color: var(--rb-glyph-deep);
+}
+
+/*
+ * The 3×3 matrix's three rows carry the FIXED "sunrise" gradient
+ * (`GSPIN_ROW_TINTS`, proto/motion.rs:34): cool blue, amber, pink — never
+ * accent-derived (loaders.rs:130, gradient-spin.tsx GSPIN_ROW_TINTS).
+ */
+.matrix-spinner-row[data-row="0"] {
+  color: var(--rb-gspin-row-0);
+}
+
+.matrix-spinner-row[data-row="1"] {
+  color: var(--rb-gspin-row-1);
+}
+
+.matrix-spinner-row[data-row="2"] {
+  color: var(--rb-gspin-row-2);
 }
 
 /* The grayscale variant, for surfaces where an accent would pull focus. */
 .glyph-spinner-mono .glyph-spinner-row {
   color: currentColor;
+}
+
+/*
+ * Reduced motion snaps every cell to its rest state (the desktop's
+ * `pulse_delta` returns 0, motion.rs): the gspin cell rests at full
+ * brightness (gspin_opacity(0) = 1), the pulse cells below carry their rest
+ * styles inline in their class rules.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .glyph-spinner-cell,
+  .mark-loader-cell,
+  .roboco-loader-cell {
+    animation: none;
+  }
+}
+
+/*
+ * The roboco pulse (`ROBOCO_PULSE` = 2400ms, proto/motion.rs): the cosine
+ * `pulse_opacity` 0.08→1 / `pulse_scale` 0.9→1 over each half cycle —
+ * ease-in-out between the keyframes approximates the sine shape. Per-cell
+ * stagger is an animation delay set inline (negative = leads, positive =
+ * trails). The cells' base styles ARE the rest state, so `animation: none`
+ * above snaps to dim/small.
+ */
+@keyframes rb-roboco-pulse {
+  0% {
+    opacity: 0.08;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0.08;
+    transform: scale(0.9);
+  }
+}
+
+/*
+ * `roboco_mark_loader` (loaders.rs:30-67): the full logo pixel grid — 34
+ * cells absolutely placed on the 820×940 canvas (inline geometry), each cell
+ * breathing inside its fixed slot so layout never moves.
+ */
+.mark-loader {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+
+.mark-loader-slot {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mark-loader-cell {
+  width: 100%;
+  height: 100%;
+  background: var(--rb-text);
+  /* The rest state (pulse_opacity(0) / pulse_scale(0)) as base styles, so
+     `animation: none` under reduced motion snaps to dim/small. */
+  opacity: 0.08;
+  transform: scale(0.9);
+  animation: rb-roboco-pulse 2400ms ease-in-out infinite;
+}
+
+/*
+ * `roboco_loader` (loaders.rs:74-105): the 5-cell wave — gap and slot
+ * geometry inline (cell-driven), each cell 0.15s behind the one before it.
+ */
+.roboco-loader {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.roboco-loader-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.roboco-loader-cell {
+  width: 100%;
+  height: 100%;
+  background: var(--rb-text);
+  /* The rest state, as above — the reduced-motion snap lands here. */
+  opacity: 0.08;
+  transform: scale(0.9);
+  animation: rb-roboco-pulse 2400ms ease-in-out infinite;
+}
+
+/*
+ * `upload_progress_ring` (loaders.rs:283-334): a fixed white-on-wash palette
+ * (`hsla(0,0,1,·)` — NOT theme roles; the caller dims the image behind it,
+ * which reads in both themes), with the percent centered at 9px SEMIBOLD.
+ * Ticket 17 wires it onto the sending thumbnail.
+ */
+.upload-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.upload-ring svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.upload-ring-track {
+  stroke: rgb(255 255 255 / 0.22);
+}
+
+.upload-ring-arc {
+  stroke: rgb(255 255 255 / 0.95);
+}
+
+.upload-ring-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgb(255 255 255 / 0.95);
 }
 
 /* The connection line's spinner is the mono glyph at cell 2. */
@@ -6006,6 +6149,121 @@ button.files-row-search:hover.files-row-active {
   flex: none;
 }
 
+/* ── MessageRail (rail.rs::render_rail, :411-572) ───────────────────── */
+
+/*
+ * The rail container (rail.rs:471-481): an absolute 26px column at left:16,
+ * full height, its tick stack vertically centered with 3px gaps. Transparent
+ * to the pointer except the tick hit rows — gpui's plain divs never block
+ * the list beneath.
+ */
+.message-rail {
+  position: absolute;
+  left: 16px;
+  top: 0;
+  bottom: 0;
+  width: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+/*
+ * One tick's hit row (rail.rs:540-547): a 10px slot, full column width,
+ * pointer-opted back in. NOT a containing block — the preview card positions
+ * against the rail column (the desktop's deferred mount anchors at the tick
+ * but offsets from the rail's left edge). Only hover grows the bar (to
+ * 20px); the active one just reads brighter (rail.rs:494).
+ */
+.rail-tick {
+  height: 10px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/*
+ * The bar (rail.rs:556-560): 2px tall, 12px wide, rounded 1 — 20px when
+ * hovered. `text @ 80%` when active or hovered, `ink(0.16)` otherwise
+ * (rail.rs:495-499); the width transition rides the hover-fade curve.
+ */
+.rail-tick-bar {
+  display: block;
+  height: 2px;
+  width: 12px;
+  border-radius: 1px;
+  background: rgb(var(--rb-ink) / 0.16);
+  transition: width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.rail-tick[data-hovered="1"] .rail-tick-bar {
+  width: 20px;
+}
+
+.rail-tick[data-active="1"] .rail-tick-bar,
+.rail-tick[data-hovered="1"] .rail-tick-bar {
+  background: color-mix(in srgb, var(--rb-text) 80%, transparent);
+}
+
+/*
+ * The hover preview card (rail.rs:505-539): `popover_card w(280) p(8) flex
+ * flex_col gap(6)` with the frost wrap (12 / MENU_BLUR) — anchored at the
+ * tick's LeftCenter, snapped to the window with an 8px margin. Here: an
+ * absolute card beside the rail column, vertically centered on the tick and
+ * clamped (JS), transparent to the pointer — the desktop's card vanishes the
+ * moment the pointer leaves the tick, so it is a peek, not a surface.
+ */
+.rail-preview {
+  position: absolute;
+  left: 26px;
+  width: 280px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--rb-space-sm);
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: var(--rb-radius-card);
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(44px);
+  backdrop-filter: blur(44px);
+  box-shadow: var(--rb-shadow-popover);
+  pointer-events: none;
+}
+
+/* The prompt line: 12px `text` (rail.rs:513-516), one line, truncating. */
+.rail-preview-prompt {
+  font-size: 12px;
+  color: var(--rb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The reply opening: 11px `text_muted` (rail.rs:518-525), truncating. */
+.rail-preview-reply {
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The condensed-bucket count (rail.rs:528-534): 10px muted at 70%, only when
+ * the bucket stands for more than one prompt.
+ */
+.rail-preview-count {
+  font-size: 10px;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
 /*
  * `render_footer`'s slot (composer.rs:7941-7982): the composer column's
  * last child — `w_full`, `h 24` (SESSION_FOOTER_HEIGHT), `px(10)`
@@ -6398,6 +6656,102 @@ button.files-row-search:hover.files-row-active {
   align-items: center;
   gap: 6px;
   padding-bottom: 6px;
+}
+
+/*
+ * `badges::render` (badges.rs:58-88): the pill — 24px tall, radius 8, the
+ * `ink(0.06)` plate, 12px MEDIUM muted text, 12px icon at 70%.
+ */
+.badge-pill {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding-inline: 8px;
+  border-radius: 8px;
+  background: rgb(var(--rb-ink) / 0.06);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+.badge-pill-icon {
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  flex: none;
+}
+
+/*
+ * The hover card (badges.rs:103-183): `popover_card w(320) p(6) flex flex_col
+ * gap(4)` over the `.popover-card` chrome (frosted at CARD_RADIUS /
+ * MENU_BLUR). Opens on the 280ms family hover.
+ */
+.badge-card {
+  padding: 6px;
+  gap: 4px;
+}
+
+/*
+ * One detail row (badges.rs:108-164): a 2px accent bar at 35% solid, then a
+ * column of the mono location line (10px, faint, truncating, optional L/R
+ * tag pill) over the body (12/16, text).
+ */
+.badge-card-row {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.badge-card-bar {
+  flex: none;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--rb-solid) 35%, transparent);
+}
+
+.badge-card-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.badge-card-location {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--rb-text-faint);
+}
+
+.badge-card-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-card-tag {
+  flex: none;
+  padding-inline: 4px;
+  border-radius: 3px;
+  background: rgb(var(--rb-ink) / 0.1);
+}
+
+.badge-card-body {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--rb-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* The bubble wrapper (`w_full flex justify_end`, transcript.rs:5432). */
