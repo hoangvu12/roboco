@@ -907,8 +907,14 @@ function FoldingBodyRow({ row, layout, scroll }: { row: Extract<DiffRow, { kind:
  * heights, no measurement, no virtualization: the walk stops the instant
  * the running height reaches the budget, and the split arm pairs only what
  * the clip can still reveal.
+ *
+ * Exported for ticket 19: an inline tool diff mounts this as its whole body
+ * (the desktop's `render_file_body_with_syntax` call in
+ * `transcript.rs::detail_body`), with `maxPx = Infinity` for the full
+ * stack. The trailing `BODY_BOTTOM_PAD` is the caller's (`bodyHeight`
+ * counts it; `bodyPad` renders it).
  */
-function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; maxPx: number; layout: DiffLayout; scroll: FilePlaneScroll }) {
+export function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; maxPx: number; layout: DiffLayout; scroll: FilePlaneScroll }) {
   const rows: ReactNode[] = [];
   const notices = fileNotices(file);
   let y = 0;

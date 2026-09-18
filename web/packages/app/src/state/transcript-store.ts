@@ -301,14 +301,26 @@ export class TranscriptStore {
   constructor(
     client: EngineClient | TranscriptClient,
     docId: string,
-    options: { log?: (message: string, detail?: unknown) => void; echoes?: EchoStore } = {},
+    options: {
+      log?: (message: string, detail?: unknown) => void;
+      echoes?: EchoStore;
+      /**
+       * `Transcript::for_doc(follow)`: false mounts the store WITHOUT the
+       * live watch — a frozen subagent snapshot's shape. The host seeds the
+       * snapshot through `seedEntries` and falls back to the live doc watch
+       * with `resubscribe()` when the blob fetch fails.
+       */
+      follow?: boolean;
+    } = {},
   ) {
     this.#client = client;
     this.#docId = docId;
     this.#log = options.log ?? (() => {});
     this.#echoes = options.echoes ?? echoStore;
     this.#snapshot = this.#takeSnapshot();
-    this.#subscribe();
+    if (options.follow !== false) {
+      this.#subscribe();
+    }
   }
 
   /** The doc this store watches (a chat id, or a subagent doc id). */
@@ -344,6 +356,22 @@ export class TranscriptStore {
     this.#error = null;
     this.#replay = "pending";
     this.#subscribe();
+    this.#commit();
+  }
+
+  /**
+   * `set_subagent_snapshot` (state.rs, shell.rs:2778): seed a frozen
+   * subagent's snapshot entries as the store's whole transcript — loaded,
+   * settled, no watch. Only meaningful on a `follow: false` store.
+   */
+  seedEntries(entries: readonly SessionMessageEntry[]): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#entries = [...entries];
+    this.#loaded = true;
+    this.#error = null;
+    this.#replay = "populated";
     this.#commit();
   }
 

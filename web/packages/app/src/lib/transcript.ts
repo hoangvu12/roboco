@@ -13,10 +13,13 @@ import type {
   MessagePart,
   SessionMessageEntry,
   ToolCall,
+  ToolDiff,
   ToolDiffStat,
   TranscriptFrame,
 } from "@roboco/proto";
+import type { IconName } from "@roboco/icons";
 import { layout } from "@roboco/theme";
+import { bodyHeight, truncateFileLines, type FileDiff } from "./diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
 import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
@@ -222,12 +225,126 @@ export function subagentModel(call: ToolCall): string | null {
   return null;
 }
 
+/**
+ * `is_agent_call` (transcript.rs:359) — the genus is the call itself, never
+ * the ref: docs written before the claude-driver fix carry stray
+ * `subagent_ref`s on ordinary Run chips, and honoring the ref alone turned
+ * those Runs into spawn chips that opened empty, never-created docs.
+ */
+export function isAgentCall(call: ToolCall): boolean {
+  return isSubagentSpawn(call);
+}
+
+/** `is_agent_tool` (:368) — the item's call is an agent call. */
+export function isAgentTool(item: ToolItem): boolean {
+  return isAgentCall(item.call);
+}
+
+/**
+ * `is_spawn_link` (:374) — an agent call that actually links to a spawned
+ * doc. These render as links, never accordions: their `detail`/`invocation`
+ * are suppressed and the whole chip opens the subagent's transcript.
+ */
+export function isSpawnLink(item: ToolItem): boolean {
+  return isAgentCall(item.call) && item.subagentRef !== null;
+}
+
+/**
+ * `tool_group_collapses` (:380) — ordinary tool groups fold behind a summary
+ * header; an all-agent group renders as standalone, always-open rows.
+ */
+export function toolGroupCollapses(tools: readonly ToolItem[]): boolean {
+  return tools.some((tool) => !isAgentTool(tool));
+}
+
+/**
+ * First line of `text`, trimmed, capped at `max` chars with an ellipsis
+ * (transcript.rs:7152).
+ */
+export function titleLine(text: string, max: number): string | null {
+  const line = text.split("\n").find((l) => l.trim().length > 0);
+  if (line === undefined) {
+    return null;
+  }
+  const trimmed = line.trim();
+  const chars = [...trimmed];
+  if (chars.length > max) {
+    return `${chars.slice(0, max).join("")}…`;
+  }
+  return trimmed;
+}
+
+/**
+ * Drop a leading "Agent"/"Task" genus (with its `:` and spacing) from a
+ * spawn-title candidate (transcript.rs:7164). Only a real word boundary
+ * strips — "Taskmaster" keeps its name; a bare "Agent"/"Task" strips to "".
+ */
+export function stripSpawnPrefix(text: string): string {
+  const t = text.trim();
+  for (const prefix of ["agent", "task"]) {
+    if (t.length >= prefix.length && t.slice(0, prefix.length).toLowerCase() === prefix) {
+      const rest = t.slice(prefix.length);
+      if (rest.length === 0) {
+        return "";
+      }
+      if (rest.startsWith(":") || /^\s/.test(rest)) {
+        return rest.replace(/^:+/, "").trim();
+      }
+    }
+  }
+  return t;
+}
+
+/**
+ * `subagent_tab_title` (transcript.rs:7188) — the BARE task description.
+ * Candidates in order: the tool name, then `input.description`, then
+ * `input.prompt`; each stripped of its spawn prefix and capped at 40 chars;
+ * "Subagent" only as the last resort.
+ */
+export function subagentTabTitle(call: ToolCall): string {
+  const [name, input] =
+    call.kind === "unknown"
+      ? [call.name, call.input]
+      : call.kind === "mcp"
+        ? [call.tool, call.input]
+        : [null, null];
+  if (name === null) {
+    return "Subagent";
+  }
+  const candidates: (string | null)[] = [
+    name,
+    typeof input === "object" && input !== null ? readString(input, "description") : null,
+    typeof input === "object" && input !== null ? readString(input, "prompt") : null,
+  ];
+  for (const text of candidates) {
+    if (text === null) {
+      continue;
+    }
+    const title = titleLine(stripSpawnPrefix(text), SUBAGENT_TITLE_MAX);
+    if (title !== null) {
+      return title;
+    }
+  }
+  return "Subagent";
+}
+
+function readString(input: object, key: string): string | null {
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
+}
+
 // ---------------------------------------------------------------------------
 // Tool detail payloads (transcript.rs tool_detail / call_block / thought_item)
 // ---------------------------------------------------------------------------
 
 /** Max verbatim output lines per chip before the counted tail row. */
 export const OUTPUT_DETAIL_MAX_LINES = 24;
+/**
+ * Max diff lines an inline tool-diff detail renders — the detail is one
+ * stacked element inside its transcript row, so it must stay bounded
+ * (transcript.rs:742).
+ */
+export const DIFF_DETAIL_MAX_LINES = 600;
 /** Columns at which an invocation line soft-wraps into continuation lines. */
 export const CALL_WRAP_COLS = 80;
 /** Column budget for soft-wrapping thought text into detail lines. */
@@ -237,6 +354,7 @@ export const THOUGHT_WRAP_COLS = 96;
 export type ToolDetail =
   | { readonly kind: "output"; readonly lines: readonly string[]; readonly truncatedBy: number }
   | { readonly kind: "thought"; readonly lines: readonly (readonly InlineRun[])[]; readonly truncatedBy: number }
+  | { readonly kind: "diff"; readonly file: FileDiff }
   | { readonly kind: "stats"; readonly stats: readonly ToolDiffStat[] };
 
 /** One tool invocation (or a reasoning part riding the group) inside a row. */
@@ -257,9 +375,51 @@ export interface ToolItem {
   readonly subagentRef: string | null;
   /** Subagent lifecycle, distinct from `resolved` (eager-done). */
   readonly subagentStatus: "running" | "done" | "failed" | null;
+  /** One-line live tail — LEGACY docs only; fingerprinted, never rendered. */
+  readonly subagentTail: string | null;
   /** A reasoning part riding the tool group as a chip. */
   readonly isThought: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Tool-chip geometry (transcript.rs:96-166) — analytic, so fold heights need
+// no measurement. Ordinary tools place their icon on the rail; subagents
+// retain a 30px card. Rows stack without a gap so the rail continues
+// alongside expanded output.
+// ---------------------------------------------------------------------------
+
+/** `CHIP_HEIGHT` — a standalone (non-rail) chip row. */
+export const CHIP_HEIGHT = 38;
+/** `CHIP_GAP` — rail rows stack flush. */
+export const CHIP_GAP = 0;
+/** `CHIP_CARD_HEIGHT` — the chip card's border-box height. */
+export const CHIP_CARD_HEIGHT = 30;
+/**
+ * `CHIP_HEADER_HEIGHT` — the card's inner header height (`CARD − 2`: a 30px
+ * header inside a 30px bordered card clips 2px and every glyph reads high,
+ * transcript.rs:102-106).
+ */
+export const CHIP_HEADER_HEIGHT = CHIP_CARD_HEIGHT - 2;
+/** `TOOL_TEXT_SIZE` / `TOOL_LABEL_SIZE` / `TOOL_LABEL_LINE_HEIGHT` (:117-119). */
+export const TOOL_TEXT_SIZE = 12;
+export const TOOL_LABEL_SIZE = 12;
+export const TOOL_LABEL_LINE_HEIGHT = 18;
+/** `TOOL_GROUP_HEADER_HEIGHT` — the collapsed summary line (:120). */
+export const TOOL_GROUP_HEADER_HEIGHT = 26;
+/** `TOOL_TREE_ROW_HEIGHT` — a rail (activity) chip row (:122). */
+export const TOOL_TREE_ROW_HEIGHT = 32;
+/** `OUTPUT_LINE_HEIGHT` — one output/thought detail row (:746). */
+export const OUTPUT_LINE_HEIGHT = 18;
+/** `OUTPUT_BODY_PAD` — the detail body's py(6) × 2 (:749). */
+export const OUTPUT_BODY_PAD = 12;
+/** `DETAIL_SEPARATOR` — the hairline between an open chip's blocks (:752). */
+export const DETAIL_SEPARATOR = 1;
+/** `BLOB_AFFORDANCE_HEIGHT` — the "Show full output" row (:1838). */
+export const BLOB_AFFORDANCE_HEIGHT = 24;
+/** Line cap for a FETCHED full output (a defensive ceiling, :1851). */
+export const FULL_OUTPUT_MAX_LINES = 400;
+/** `SUBAGENT_TITLE_MAX` — chars a subagent tab title keeps (:7149). */
+export const SUBAGENT_TITLE_MAX = 40;
 
 /** A reasoning part flattened into styled, wrapped detail lines. */
 export function thoughtDetail(text: string, live: boolean): ToolDetail | null {
@@ -469,10 +629,12 @@ function thoughtBlockLines(block: Block, indent: number, out: InlineRun[][]): vo
         if (out.length === mark) {
           out.push(indentRun(inner));
         }
-        // The item's first line trades its indent spaces for the marker.
+        // The item's first line trades its indent spaces for the marker —
+        // the slot-0 run is REPLACED (its remainder is the item's own inner
+        // indent, which the marker supplants; transcript.rs:599-601).
         const first = out[mark]![0];
         if (first !== undefined) {
-          out[mark]![0] = { text: `${" ".repeat(indent)}${marker}${first.text.slice(indent)}`, style: first.style };
+          out[mark]![0] = { text: `${" ".repeat(indent)}${marker}`, style: first.style };
         }
       });
       break;
@@ -528,13 +690,25 @@ function thoughtBlockLines(block: Block, indent: number, out: InlineRun[][]): vo
 }
 
 /**
- * Build a tool part's expandable detail. A diff (or its stats) wins over raw
- * output; trailing blank lines are trimmed so the block hugs its content.
+ * Build a tool part's expandable detail (transcript.rs:757). An inline diff
+ * wins (it is the more structured record of the same action) → then
+ * non-empty diff stats → then raw output, with trailing blank lines trimmed
+ * so the block hugs its content. The diff is capped at
+ * `DIFF_DETAIL_MAX_LINES` so a whole-file rewrite can't build tens of
+ * thousands of rows inside one transcript row.
  */
 export function toolDetail(
   output: string | null | undefined,
+  diff: ToolDiff | null | undefined,
   diffStats: readonly ToolDiffStat[] | null | undefined,
 ): ToolDetail | null {
+  if (diff !== null && diff !== undefined) {
+    const file = diffToFile(diff);
+    if (file.hunks.length === 0) {
+      return null;
+    }
+    return { kind: "diff", file: truncateFileLines(file, DIFF_DETAIL_MAX_LINES) };
+  }
   if (diffStats !== null && diffStats !== undefined && diffStats.length > 0) {
     return { kind: "stats", stats: diffStats };
   }
@@ -550,6 +724,353 @@ export function toolDetail(
   }
   const truncatedBy = Math.max(0, lines.length - OUTPUT_DETAIL_MAX_LINES);
   return { kind: "output", lines: lines.slice(0, OUTPUT_DETAIL_MAX_LINES), truncatedBy };
+}
+
+// ---------------------------------------------------------------------------
+// diff_to_file (transcript.rs:890) — reduce an inline ToolDiff to the changes
+// pane's FileDiff: hunks grouped with 3 context lines, dual 1-based line
+// numbers, unified-diff hunk headers, and add/del counts.
+// ---------------------------------------------------------------------------
+
+/** One line-level edit from the Myers walk, in document order. */
+interface LineOp {
+  readonly tag: "equal" | "del" | "ins";
+  readonly oldNo: number;
+  readonly newNo: number;
+}
+
+/** Lines of `text` the way Rust's `str::lines()` splits (no trailing `""`). */
+function splitLines(text: string): string[] {
+  if (text.length === 0) {
+    return [];
+  }
+  const lines = text.split("\n");
+  if (text.endsWith("\n")) {
+    lines.pop();
+  }
+  return lines;
+}
+
+/**
+ * The minimal edit script between two line lists — Myers' O(ND) greedy
+ * algorithm with a per-d V trace, backtracked to line-level ops. This is the
+ * web stand-in for `similar::TextDiff::from_lines`; the huge-input guard
+ * (a >4M-cell pairing) degrades to one whole-file hunk, matching similar's
+ * bounded behavior on pathological inputs.
+ */
+function myersLineOps(a: readonly string[], b: readonly string[]): LineOp[] {
+  const n = a.length;
+  const m = b.length;
+  const ops: LineOp[] = [];
+  if (n + m > 20_000) {
+    // Pathological input: all deletes then all inserts, one pairing.
+    for (let ix = 0; ix < n; ix += 1) {
+      ops.push({ tag: "del", oldNo: ix, newNo: -1 });
+    }
+    for (let ix = 0; ix < m; ix += 1) {
+      ops.push({ tag: "ins", oldNo: -1, newNo: ix });
+    }
+    return ops;
+  }
+  if (n === 0 && m === 0) {
+    return ops;
+  }
+  const max = n + m;
+  const offset = max;
+  // V indexed by k + offset; one snapshot per d for the backtrack. Reads
+  // clamp to 0 — the guards below keep the read indexes in-range, and a
+  // never-written cell reads as its initial 0.
+  const at = (arr: readonly number[], k: number): number => arr[k + offset] ?? 0;
+  const trace: number[][] = [];
+  let v = new Array<number>(2 * max + 1).fill(0);
+  let found = -1;
+  outer: for (let d = 0; d <= max; d += 1) {
+    trace.push([...v]);
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && at(v, k - 1) < at(v, k + 1))) {
+        x = at(v, k + 1);
+      } else {
+        x = at(v, k - 1) + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      v[k + offset] = x;
+      if (x >= n && y >= m) {
+        found = d;
+        break outer;
+      }
+    }
+  }
+  if (found < 0) {
+    return ops;
+  }
+  // Backtrack: emit line ops in REVERSE, then flip.
+  let x = n;
+  let y = m;
+  const reversed: LineOp[] = [];
+  for (let d = found; d > 0; d -= 1) {
+    const vPrev = trace[d]!;
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && at(vPrev, k - 1) < at(vPrev, k + 1))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = at(vPrev, prevK);
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      x -= 1;
+      y -= 1;
+      reversed.push({ tag: "equal", oldNo: x, newNo: y });
+    }
+    if (x === prevX) {
+      y -= 1;
+      reversed.push({ tag: "ins", oldNo: -1, newNo: y });
+    } else {
+      x -= 1;
+      reversed.push({ tag: "del", oldNo: x, newNo: -1 });
+    }
+  }
+  while (x > 0 && y > 0) {
+    x -= 1;
+    y -= 1;
+    reversed.push({ tag: "equal", oldNo: x, newNo: y });
+  }
+  ops.push(...reversed.reverse());
+  return ops;
+}
+
+/** Group line ops into hunks with `context` equal lines around the changes. */
+function groupHunks(ops: readonly LineOp[], context: number): { startIx: number; ops: LineOp[] }[] {
+  const groups: { startIx: number; ops: LineOp[] }[] = [];
+  const changeIx: number[] = [];
+  for (let ix = 0; ix < ops.length; ix += 1) {
+    if (ops[ix]!.tag !== "equal") {
+      changeIx.push(ix);
+    }
+  }
+  if (changeIx.length === 0) {
+    return groups;
+  }
+  const gapLimit = 2 * context;
+  let groupStart = Math.max(0, changeIx[0]! - context);
+  let groupEnd = Math.min(ops.length - 1, changeIx[0]! + context);
+  for (let ix = 1; ix < changeIx.length; ix += 1) {
+    const at = changeIx[ix]!;
+    if (at - groupEnd > gapLimit + 1) {
+      groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
+      groupStart = Math.max(0, at - context);
+    }
+    groupEnd = Math.min(ops.length - 1, at + context);
+  }
+  groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
+  return groups;
+}
+
+/**
+ * `diff_to_file` (transcript.rs:890) — one inline `ToolDiff` to the Changes
+ * pane's `FileDiff`, grouped with 3 context lines like
+ * `similar::TextDiff::grouped_ops(3)`. `oldText: null` means a new file
+ * (status `added`).
+ */
+export function diffToFile(diff: ToolDiff): FileDiff {
+  const oldText = diff.oldText ?? "";
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(diff.newText);
+  const ops = myersLineOps(oldLines, newLines);
+  // Each op's document-order start positions (an insert's old-side start is
+  // where it lands, a delete's new-side start where it lands) — the source
+  // of the hunk header's 0-based starts, exactly like similar's
+  // `old_range()/new_range()` starts.
+  const startOld: number[] = [];
+  const startNew: number[] = [];
+  let o = 0;
+  let nw = 0;
+  for (const op of ops) {
+    startOld.push(o);
+    startNew.push(nw);
+    if (op.tag !== "ins") {
+      o += 1;
+    }
+    if (op.tag !== "del") {
+      nw += 1;
+    }
+  }
+  const hunks: { header: string; lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] }[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let maxLine = 0;
+  for (const group of groupHunks(ops, 3)) {
+    const oldStart = startOld[group.startIx] ?? 0;
+    const newStart = startNew[group.startIx] ?? 0;
+    let oldCount = 0;
+    let newCount = 0;
+    for (const op of group.ops) {
+      if (op.tag === "equal" || op.tag === "del") {
+        oldCount += 1;
+      }
+      if (op.tag === "equal" || op.tag === "ins") {
+        newCount += 1;
+      }
+    }
+    const header = `@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`;
+    const lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] = [];
+    for (const op of group.ops) {
+      if (op.tag === "del") {
+        deletions += 1;
+      } else if (op.tag === "ins") {
+        additions += 1;
+      }
+      const oldNo = op.tag === "ins" ? null : op.oldNo + 1;
+      const newNo = op.tag === "del" ? null : op.newNo + 1;
+      maxLine = Math.max(maxLine, oldNo ?? 0, newNo ?? 0);
+      lines.push({
+        kind: op.tag === "equal" ? "context" : op.tag === "ins" ? "add" : "del",
+        oldNo,
+        newNo,
+        text: op.tag === "ins" ? newLines[op.newNo]! : oldLines[op.oldNo]!,
+      });
+    }
+    hunks.push({ header, lines });
+  }
+  return {
+    path: diff.path,
+    oldPath: null,
+    status: diff.oldText === null || diff.oldText === undefined ? "added" : "modified",
+    binary: false,
+    notices: [],
+    hunks,
+    additions,
+    deletions,
+    maxLine,
+  };
+}
+
+/**
+ * Build the upgraded detail from a fetched sidecar blob
+ * (transcript.rs:1856). Diff blobs parse the `ToolDiff` JSON through the
+ * same pipeline as inline diffs; output blobs render (near-)uncapped —
+ * fetching past the summary was the point.
+ */
+export function blobDetail(text: string, isDiff: boolean): ToolDetail | null {
+  if (isDiff) {
+    let diff: ToolDiff | null = null;
+    try {
+      diff = JSON.parse(text) as ToolDiff;
+    } catch {
+      return null;
+    }
+    if (typeof diff !== "object" || diff === null || typeof diff.newText !== "string" || typeof diff.path !== "string") {
+      return null;
+    }
+    return toolDetail(null, diff, null);
+  }
+  const lines = text.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1]!.trim().length === 0) {
+    lines.pop();
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  const truncatedBy = Math.max(0, lines.length - FULL_OUTPUT_MAX_LINES);
+  return { kind: "output", lines: lines.slice(0, FULL_OUTPUT_MAX_LINES), truncatedBy };
+}
+
+/**
+ * Compact byte size for the fetch affordance label ("812 B", "12 KB")
+ * (transcript.rs:1880) — `ceil`, never decimals.
+ */
+export function formatKb(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  return `${Math.ceil(bytes / 1024)} KB`;
+}
+
+/**
+ * The glyph for a tool call — `tool_icon_path` (transcript.rs:6656) mapped
+ * to `@roboco/icons` names.
+ */
+export function toolIconName(call: ToolCall): IconName {
+  switch (call.kind) {
+    case "exec":
+      return "terminal";
+    case "readFile":
+    case "applyPatch":
+      return "document";
+    case "writeFile":
+      return "documentAdd";
+    case "editFile":
+      return "pen";
+    case "search":
+      return "magnifer";
+    case "glob":
+      return "folderWithFiles";
+    case "webFetch":
+    case "webSearch":
+      return "global";
+    case "todo":
+      return "checklist";
+    case "mcp":
+      return isSubagentSpawn(call) ? "bot" : "widget";
+    case "unknown":
+      if (isSubagentSpawn(call) || call.name === "Wait for agents") {
+        return "bot";
+      }
+      return "widget";
+  }
+}
+
+/**
+ * `file_badge_name` (transcript.rs:6676) — compact file-action chips show
+ * only the final path component, accepting `/` AND `\` (remote tools can
+ * report Windows paths even when the UI runs elsewhere).
+ */
+export function fileBadgeName(path: string): string {
+  for (const part of path.split(/[/\\]/).reverse()) {
+    if (part.length > 0) {
+      return part;
+    }
+  }
+  return path;
+}
+
+/**
+ * Analytic expanded-chips height (transcript.rs:1803) — no measurement
+ * needed for the fold tween.
+ */
+export function chipsHeight(count: number): number {
+  if (count === 0) {
+    return 0;
+  }
+  return CHIPS_TOP_PAD + count * CHIP_HEIGHT + (count - 1) * CHIP_GAP;
+}
+
+/**
+ * Analytic height an open detail adds to its chip's card (separator + body)
+ * (transcript.rs:1814) — output/thought by line count, diff via the changes
+ * pane's own `body_height`, stats one row each.
+ */
+export function detailHeight(detail: ToolDetail): number {
+  let body: number;
+  switch (detail.kind) {
+    case "output":
+    case "thought":
+      body = (detail.lines.length + (detail.truncatedBy > 0 ? 1 : 0)) * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
+      break;
+    case "diff":
+      body = bodyHeight(detail.file);
+      break;
+    case "stats":
+      body = detail.stats.length * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
+      break;
+  }
+  return DETAIL_SEPARATOR + body;
 }
 
 /**
@@ -967,14 +1488,6 @@ export function visibleRowWindow(
   return { first, last };
 }
 
-function isAgentCall(call: ToolCall): boolean {
-  return isSubagentSpawn(call);
-}
-
-function isAgentTool(item: ToolItem): boolean {
-  return isAgentCall(item.call);
-}
-
 /**
  * Build the block rows of one (already continuation-joined) entry — a direct
  * port of `rows_for_entry`: user entries are one bubble row; assistant/system
@@ -1050,13 +1563,14 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         call: part.call,
         isError: part.isError,
         resolved: part.resolved,
-        detail: toolDetail(part.output, part.diffStats),
+        detail: toolDetail(part.output, part.diff ?? null, part.diffStats),
         invocation: callBlock(part.call),
         outputRef: part.outputRef ?? null,
         outputBytes: part.outputBytes ?? null,
         diffRef: part.diffRef ?? null,
         subagentRef: part.subagentRef ?? null,
         subagentStatus: part.subagentStatus ?? null,
+        subagentTail: part.subagentTail ?? null,
         isThought: false,
       };
       // Agent chips don't share a fold with ordinary tools: flush whenever
@@ -1087,6 +1601,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         diffRef: null,
         subagentRef: null,
         subagentStatus: null,
+        subagentTail: null,
         isThought: true,
       };
       // Thoughts join ordinary tool groups; agent groups stay pure.
@@ -1169,7 +1684,20 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
   return rows;
 }
 
-/** Content fingerprint for a tool group row (the diff key). */
+/**
+ * Content fingerprint for a tool group row (the diff key, transcript.rs
+ * :1051) — per tool: the chip label bytes, the detail string LENGTH, the
+ * packed `is_error | resolved<<1` byte, a detail tag byte (0 none, 1 Output,
+ * 2 Diff, 3 Stats, 4 Thought) plus kind-specific payload (Output: line
+ * count, truncated_by, total byte count; Thought: line count, truncated_by,
+ * then EVERY run's bytes and a packed style byte `bold | italic<<1 |
+ * code<<2 | strike<<3 | link<<4`, `\n` per line; Diff: path, additions,
+ * deletions, hunk count; Stats: each `(path, additions, deletions)`), the
+ * invocation's line bytes + truncated_by, a packed
+ * `output_ref.is_some() | diff_ref.is_some()<<1` byte, a packed
+ * `subagent_ref.is_some() | status<<1` byte, and the subagent tail bytes.
+ * Finally the `auto_open` byte.
+ */
 function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number {
   let acc = "";
   for (const tool of tools) {
@@ -1181,20 +1709,38 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
       acc += "0";
     } else if (tool.detail.kind === "output") {
       acc += `1${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines.join("").length}`;
-    } else if (tool.detail.kind === "thought") {
-      acc += `4${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines
-        .map((line) => line.map((run) => run.text).join(""))
-        .join("")
-        .length}`;
+    } else if (tool.detail.kind === "diff") {
+      const file = tool.detail.file;
+      acc += `2${file.path},${file.additions},${file.deletions},${file.hunks.length}`;
+    } else if (tool.detail.kind === "stats") {
+      acc += `3${tool.detail.stats.map((stat) => `${stat.path},${stat.additions},${stat.deletions}`).join(";")}`;
     } else {
-      acc += `5${tool.detail.stats.length}`;
+      acc += `4${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines
+        .map((line) =>
+          line
+            .map((run) => {
+              const style = run.style;
+              const packed =
+                Number(style.bold === true) |
+                (Number(style.italic === true) << 1) |
+                (Number(style.code === true) << 2) |
+                (Number(style.strikethrough === true) << 3) |
+                (Number(style.link !== null && style.link !== undefined) << 4);
+              return `${run.text}\u{1}${packed}`;
+            })
+            .join(""),
+        )
+        .join("\n")}`;
     }
     if (tool.invocation !== null && tool.invocation.kind === "output") {
-      acc += `i${tool.invocation.lines.length}`;
+      acc += `i${tool.invocation.lines.join("")},${tool.invocation.truncatedBy}`;
     }
-    acc += tool.outputRef ?? "";
-    acc += tool.subagentRef ?? "";
-    acc += tool.subagentStatus ?? "";
+    acc += String(Number(tool.outputRef !== null) | (Number(tool.diffRef !== null) << 1));
+    acc += String(
+      Number(tool.subagentRef !== null) |
+        (tool.subagentStatus === null ? 0 : tool.subagentStatus === "running" ? 1 << 1 : tool.subagentStatus === "done" ? 2 << 1 : 3 << 1),
+    );
+    acc += tool.subagentTail ?? "";
   }
   acc += String(Number(autoOpen));
   return fnv1a(acc);

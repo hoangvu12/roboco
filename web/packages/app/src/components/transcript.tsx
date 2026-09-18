@@ -37,11 +37,11 @@ import {
   USER_HOLD_DELAY_MS,
   USER_LINE_HEIGHT,
   captureSavedViewport,
+  chipsHeight,
   flavourSeed,
   flavourWord,
   formatElapsed,
   formatTimestamp,
-  isSubagentSpawn,
   ownTurnReleasedForRestore,
   parseForRow,
   resolveViewportAnchor,
@@ -49,17 +49,15 @@ import {
   selectionScrollStep,
   sendingBridge,
   SPACE_LG,
-  subagentModel,
-  toolChipContent,
-  toolGroupTitle,
+  TOOL_GROUP_HEADER_HEIGHT,
   topGapFor,
+  toolGroupCollapses,
   userMessageNeedsCollapse,
   userResizeCurve,
   userResizeDurationMs,
   visibleRowWindow,
   type SavedViewport,
   type SentMentionSpan,
-  type ToolItem,
   type TranscriptRow,
 } from "../lib/transcript";
 import { railTicks, type RailTick } from "../lib/rail";
@@ -71,7 +69,8 @@ import { MarkdownBlockView } from "./markdown";
 import { MessageBadges } from "./badges";
 import { MessageRail } from "./message-rail";
 import { StickController } from "./stick-controller";
-import { SubagentDialog } from "./subagent-dialog";
+import { ToolGroupRow, type SubagentOpen } from "./tool-group";
+import { ToolGroupMotionStore } from "../lib/tool-motion";
 import { UserAttachments } from "./attachments/user-attachments";
 import { MatrixSpinner } from "./glyph-spinner";
 import { WorkingTrailer, type WorkingTrailerState } from "./working-trailer";
@@ -117,6 +116,7 @@ export function TranscriptView({
   indicator = null,
   turnStartedAt = null,
   store: sharedStore = null,
+  onOpenSubagent,
 }: {
   client: EngineClient;
   docId: string;
@@ -141,11 +141,11 @@ export function TranscriptView({
    */
   onJumpChange?: (state: JumpButtonState) => void;
   /**
-   * The subagent override instance (`Transcript::for_doc`): aligns to the TOP,
-   * never holds an own-turn runway, owns a top-only fade gated on overflow,
-   * and reads its liveness off the doc itself. Ticket 19 mounts this in the
-   * right pane; the dialog is the current stand-in.
-   */
+    * The subagent override instance (`Transcript::for_doc`): aligns to the TOP,
+    * never holds an own-turn runway, owns a top-only fade gated on overflow,
+    * and reads its liveness off the doc itself. Ticket 19 mounts this in the
+    * right pane.
+    */
   alignTop?: boolean;
   /** The chat's live indicator (`indicator_for`) — gates the working trailer. */
   indicator?: ChatIndicator | null;
@@ -155,9 +155,15 @@ export function TranscriptView({
    * A store owned by the host (the chat page passes the ONE transcript the
    * composer's wizard also reads, so a chat carries a single
    * `WatchDocMessages` stream). Null (default): this view owns its store —
-   * the subagent dialog's shape.
+   * the subagent pane's shape.
    */
   store?: TranscriptStore | null;
+  /**
+   * A spawn chip's open (`TranscriptEvent::OpenSubagent`): the host registers
+   * the right-pane tab under the chat that owns the pane. Default: a no-op
+   * (an unbound host can't open tabs).
+   */
+  onOpenSubagent?: (payload: SubagentOpen) => void;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
@@ -189,6 +195,7 @@ export function TranscriptView({
       alignTop={alignTop}
       indicator={indicator}
       turnStartedAt={turnStartedAt}
+      onOpenSubagent={onOpenSubagent}
     />
   );
 }
@@ -203,6 +210,7 @@ function TranscriptSurface({
   alignTop,
   indicator,
   turnStartedAt,
+  onOpenSubagent,
 }: {
   store: TranscriptStore;
   client: EngineClient;
@@ -213,6 +221,7 @@ function TranscriptSurface({
   alignTop: boolean;
   indicator: ChatIndicator | null;
   turnStartedAt: number | null;
+  onOpenSubagent?: (payload: SubagentOpen) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
@@ -276,6 +285,25 @@ function TranscriptSurface({
     (lastEntry.status === "streaming" || lastEntry.role === "user");
   const trailerTicks = indicator === "working" || pendingSends.length > 0 || subagentLive;
   const now = useNow(trailerTicks ? 1000 : ECHO_TICK_MS);
+
+  // The tool groups' reveal epochs (`sync`, transcript.rs:4059-4116): rows
+  // that ARRIVE after the replay baseline stagger in; the first POPULATED
+  // frame after attach is that baseline — it clears every reveal and strips
+  // the group folds' tween clocks, so replaying history and switching chats
+  // never re-animate an existing task tree. The store is per-surface (the
+  // desktop's per-Transcript fields): a subagent tab's sync can never touch
+  // this chat's reveals.
+  const toolMotion = useMemo(() => new ToolGroupMotionStore(), [store]);
+  useEffect(() => () => toolMotion.reset(), [toolMotion]);
+  const revealBaselineRef = useRef(false);
+  useEffect(() => {
+    if (snapshot.replay === "populated" && !revealBaselineRef.current) {
+      revealBaselineRef.current = true;
+      toolMotion.sync(rows, true);
+      return;
+    }
+    toolMotion.sync(rows, false);
+  }, [rows, snapshot.replay, toolMotion]);
 
   const allRows = useMemo(() => {
     if (pendingSends.length === 0) {
@@ -372,6 +400,8 @@ function TranscriptSurface({
       alignTop={alignTop}
       trailer={trailerState}
       onJumpChange={onJumpChange}
+      onOpenSubagent={onOpenSubagent}
+      toolMotion={toolMotion}
     />
   );
 }
@@ -419,6 +449,10 @@ interface ScrollerProps {
   readonly alignTop: boolean;
   readonly trailer: WorkingTrailerState;
   readonly onJumpChange?: (state: JumpButtonState) => void;
+  /** A spawn chip's open — the host registers the right-pane tab. */
+  readonly onOpenSubagent?: (payload: SubagentOpen) => void;
+  /** The surface's tool-group motion store (folds, reveals, blob fetches). */
+  readonly toolMotion: ToolGroupMotionStore;
 }
 
 /** The user-bubble fold, lifted so virtualizer remounts never lose it. */
@@ -455,6 +489,8 @@ function TranscriptScroller({
   alignTop,
   trailer,
   onJumpChange,
+  onOpenSubagent,
+  toolMotion,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
@@ -483,7 +519,6 @@ function TranscriptScroller({
   const [view, setView] = useState({ top: 0, height: 0 });
   const [showJump, setShowJump] = useState(false);
   const [hoveredEntry, setHoveredEntry] = useState<{ rowId: string; entryId: string } | null>(null);
-  const [subagentDoc, setSubagentDoc] = useState<string | null>(null);
   const [userFolds, setUserFolds] = useState<ReadonlyMap<string, UserFoldState>>(new Map());
   const [topFade, setTopFade] = useState(false);
   const [, bumpRunway] = useState(0);
@@ -504,7 +539,7 @@ function TranscriptScroller({
   const engineStatus = useSyncExternalStore(subscribeEngineStatus, getEngineStatus, () => null);
 
   // The shell's live bottom-chrome measurement (`set_bottom_clearance`).
-  // The subagent dialog has no bottom chrome to clear, so its clearance is 0;
+  // The subagent pane has no bottom chrome to clear, so its clearance is 0;
   // at phone widths the transcript is a sibling of the stack, not an
   // underlay, so only the ordinary breathing room applies.
   const shellClearance = useBottomClearance();
@@ -1034,8 +1069,6 @@ function TranscriptScroller({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stick, collapseTick]);
 
-  const openSubagent = useCallback((doc: string) => setSubagentDoc(doc), []);
-
   /** `toggle_user_fold` (transcript.rs:4380-4440). */
   const toggleUserFold = useCallback(
     (rowId: string) => {
@@ -1174,11 +1207,12 @@ function TranscriptScroller({
             >
               <RowContent
                 row={row}
-                streaming={streaming}
                 hovered={hoveredEntry?.entryId === row.entryId}
-                onOpenSubagent={openSubagent}
+                onOpenSubagent={onOpenSubagent}
                 client={client}
                 deviceId={deviceId}
+                docId={docId}
+                toolMotion={toolMotion}
                 fold={userFolds.get(row.id) ?? null}
                 onToggleFold={toggleUserFold}
                 onMeasureText={onMeasureText}
@@ -1213,9 +1247,6 @@ function TranscriptScroller({
         that the transcript spans the column and scrolls under the chrome
         (the shell.rs:6025-6072 underlay port).
       */}
-      {subagentDoc !== null && (
-        <SubagentDialog client={client} docId={subagentDoc} deviceId={deviceId} onClose={() => setSubagentDoc(null)} />
-      )}
     </div>
   );
 }
@@ -1313,8 +1344,13 @@ function estimateRowHeight(row: TranscriptRow): number {
       }
       return 30;
     }
-    case "toolGroup":
-      return 34;
+    case "toolGroup": {
+      // The analytic first frame: a collapsed group is its 26px header; a
+      // spawn-only group is its unwrapped chips (measurement corrects an
+      // auto-opened group on mount).
+      const collapses = toolGroupCollapses(kind.tools);
+      return collapses ? TOOL_GROUP_HEADER_HEIGHT : chipsHeight(kind.tools.length);
+    }
     case "inputChip":
     case "errorChip":
       return 42;
@@ -1364,11 +1400,12 @@ function RowShell({
 
 function RowContent({
   row,
-  streaming,
   hovered,
   onOpenSubagent,
   client,
   deviceId,
+  docId,
+  toolMotion,
   fold,
   onToggleFold,
   onMeasureText,
@@ -1376,11 +1413,12 @@ function RowContent({
   reduced,
 }: {
   row: TranscriptRow;
-  streaming: boolean;
   hovered: boolean;
-  onOpenSubagent: (doc: string) => void;
+  onOpenSubagent?: (payload: SubagentOpen) => void;
   client: EngineClient;
   deviceId: string | null;
+  docId: string;
+  toolMotion: ToolGroupMotionStore;
   fold: UserFoldState | null;
   onToggleFold: (rowId: string) => void;
   onMeasureText: (rowId: string, height: number) => void;
@@ -1411,11 +1449,13 @@ function RowContent({
       {kind.kind === "markdown" && <MarkdownRow row={row} />}
       {kind.kind === "liveMarkdown" && <LiveMarkdownRow row={row} />}
       {kind.kind === "toolGroup" && (
-        <ToolGroupRowView
+        <ToolGroupRow
+          rowId={row.id}
           tools={kind.tools}
           autoOpen={kind.autoOpen}
-          streaming={streaming}
-          onOpenSubagent={onOpenSubagent}
+          chatId={docId}
+          motion={toolMotion}
+          onOpenSubagent={onOpenSubagent ?? (() => {})}
           client={client}
         />
       )}
@@ -1915,265 +1955,6 @@ function StyledRun({ run }: { run: InlineRun }) {
     }
   }
   return <>{content}</>;
-}
-
-// ── Tool groups and chips ───────────────────────────────────────────────────
-
-function ToolGroupRowView({
-  tools,
-  autoOpen,
-  streaming,
-  onOpenSubagent,
-  client,
-}: {
-  tools: readonly ToolItem[];
-  autoOpen: boolean;
-  streaming: boolean;
-  onOpenSubagent: (doc: string) => void;
-  client: EngineClient;
-}) {
-  // Spawn chips stay out of the collapsible wrap so a running subagent is
-  // visible without opening the fold; thoughts ride the ordinary fold.
-  const collapsible = tools.some((tool) => !isSubagentSpawn(tool.call));
-  const [override, setOverride] = useState<boolean | null>(null);
-  const open = override ?? autoOpen;
-  const active = autoOpen && streaming && tools.some((tool) => !tool.resolved);
-
-  if (!collapsible) {
-    return (
-      <div className="tool-group">
-        {tools.map((tool, ix) => (
-          <ToolChipView key={ix} tool={tool} animate={active} stagger={ix} onOpenSubagent={onOpenSubagent} client={client} />
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className={`tool-group ${open ? "tool-group-open" : ""}`}>
-      <button type="button" className="tool-group-header" onClick={() => setOverride(!open)}>
-        <span className={`tool-group-chevron ${open ? "tool-group-chevron-open" : ""}`} aria-hidden>
-          ▾
-        </span>
-        <span className={`tool-group-title ${active ? "tool-shimmer" : ""}`}>{toolGroupTitle(tools)}</span>
-      </button>
-      <div className="tool-group-fold">
-        <div className="tool-group-body">
-          {tools.map((tool, ix) => (
-            <ToolChipView
-              key={ix}
-              tool={tool}
-              animate={active}
-              stagger={ix}
-              onOpenSubagent={onOpenSubagent}
-              client={client}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ToolChipView({
-  tool,
-  animate,
-  stagger,
-  onOpenSubagent,
-  client,
-}: {
-  tool: ToolItem;
-  animate: boolean;
-  stagger: number;
-  onOpenSubagent: (doc: string) => void;
-  client: EngineClient;
-}) {
-  const { label, detail } = tool.isThought ? { label: "Thought process", detail: "" } : toolChipContent(tool.call);
-  const spawn = isSubagentSpawn(tool.call);
-  // A thought chip defaults open while its reasoning still streams.
-  const [override, setOverride] = useState<boolean | null>(null);
-  const open = override ?? (tool.isThought && !tool.resolved);
-  const [full, setFull] = useState<{ lines: string[]; truncatedBy: number } | "loading" | "failed" | null>(null);
-  const expandable =
-    tool.invocation !== null || tool.detail !== null || tool.outputRef !== null || tool.isThought;
-  const model = spawn ? subagentModel(tool.call) : null;
-
-  const fetchFull = (): void => {
-    if (tool.outputRef === null || full !== null) {
-      return;
-    }
-    setFull("loading");
-    client
-      .call<FetchToolBlobReply>(methods.FETCH_TOOL_BLOB, { blobRef: tool.outputRef })
-      .then((reply) => {
-        const lines = reply.text.split("\n");
-        while (lines.length > 0 && lines[lines.length - 1]!.trim().length === 0) {
-          lines.pop();
-        }
-        const truncatedBy = Math.max(0, lines.length - FULL_OUTPUT_MAX_LINES);
-        setFull({ lines: lines.slice(0, FULL_OUTPUT_MAX_LINES), truncatedBy });
-      })
-      .catch(() => setFull("failed"));
-  };
-
-  const chip = (
-    <div
-      className={[
-        "tool-chip",
-        tool.isError ? "tool-chip-error" : "",
-        spawn ? "tool-chip-agent" : "",
-        tool.isThought ? "tool-chip-thought" : "",
-        animate ? "chip-reveal" : "",
-      ].join(" ")}
-      style={animate ? { animationDelay: `${90 + stagger * 65}ms` } : undefined}
-    >
-      <div
-        className={`tool-chip-head ${expandable ? "tool-chip-head-button" : ""}`}
-        onClick={expandable ? () => setOverride(!open) : undefined}
-        role={expandable ? "button" : undefined}
-        tabIndex={expandable ? 0 : undefined}
-        onKeyDown={
-          expandable
-            ? (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setOverride(!open);
-                }
-              }
-            : undefined
-        }
-      >
-        <ToolGlyph tool={tool} />
-        <span className="tool-chip-label">{label}</span>
-        {detail.length > 0 && <span className="tool-chip-detail">{detail}</span>}
-        {/*
-           No status dot, no pending dot, no "failed" word: the desktop shows a
-           `mini_glyph_spinner` while running, a quiet chip when done, and the
-           danger tint when failed. Building that spinner/tint is ticket 19;
-           until then the chip carries no run-state indicator at all.
-        */}
-        {model !== null && <span className="tool-chip-model">{model}</span>}
-        {expandable && (
-          <span className={`tool-chip-chevron ${open ? "tool-chip-chevron-open" : ""}`} aria-hidden>
-            ▾
-          </span>
-        )}
-      </div>
-      {open && (
-        <div className="tool-chip-body">
-          {tool.invocation !== null && tool.invocation.kind === "output" && (
-            <pre className="tool-invocation">{tool.invocation.lines.join("\n")}</pre>
-          )}
-          {tool.detail !== null && tool.detail.kind === "thought" && (
-            <div className="tool-output tool-thought">
-              {tool.detail.lines.map((line, ix) => (
-                <div key={ix} className="tool-output-line">
-                  {line.map((run, runIx) => (
-                    <StyledRun key={runIx} run={run} />
-                  ))}
-                </div>
-              ))}
-              {tool.detail.truncatedBy > 0 && (
-                <div className="tool-output-line tool-output-more">. {tool.detail.truncatedBy} more lines</div>
-              )}
-            </div>
-          )}
-          {tool.detail !== null && tool.detail.kind === "output" && (
-            <pre className="tool-output">
-              {tool.detail.lines.join("\n")}
-              {tool.detail.truncatedBy > 0 ? `\n. ${tool.detail.truncatedBy} more lines` : ""}
-            </pre>
-          )}
-          {tool.detail !== null && tool.detail.kind === "stats" && (
-            <div className="tool-output tool-stats">
-              {tool.detail.stats.map((stat, ix) => (
-                <div key={ix} className="tool-stat-row">
-                  <span className="tool-stat-path">{stat.path}</span>
-                  <span className="tool-stat-add">+{stat.additions}</span>
-                  <span className="tool-stat-del">−{stat.deletions}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {full !== null && full !== "loading" && full !== "failed" && (
-            <pre className="tool-output tool-output-full">
-              {full.lines.join("\n")}
-              {full.truncatedBy > 0 ? `\n. ${full.truncatedBy} more lines` : ""}
-            </pre>
-          )}
-          {full === "loading" && <div className="tool-output-note">Loading full output…</div>}
-          {full === "failed" && <div className="tool-output-note">Could not load the full output.</div>}
-          {full === null && tool.outputRef !== null && (
-            <button type="button" className="tool-full-button" onClick={fetchFull}>
-              Show full output{tool.outputBytes !== null ? ` (${formatBytes(tool.outputBytes)})` : ""}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  if (spawn && tool.subagentRef !== null) {
-    return (
-      <div
-        className="tool-agent-link"
-        role="button"
-        tabIndex={0}
-        title="Open subagent"
-        onClick={() => onOpenSubagent(tool.subagentRef!)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onOpenSubagent(tool.subagentRef!);
-          }
-        }}
-      >
-        {chip}
-      </div>
-    );
-  }
-  return chip;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
-}
-
-/** The per-genus rail glyph (16px, currentColor). */
-function ToolGlyph({ tool }: { tool: ToolItem }) {
-  if (tool.isThought) {
-    return (
-      <span className="tool-glyph" data-glyph="thought" aria-hidden>
-        ◌
-      </span>
-    );
-  }
-  const call = tool.call;
-  const glyph = isSubagentSpawn(call)
-    ? "⧉"
-    : call.kind === "exec"
-      ? "❯"
-      : call.kind === "readFile"
-        ? "≡"
-        : call.kind === "writeFile" || call.kind === "editFile" || call.kind === "applyPatch"
-          ? "✎"
-          : call.kind === "search" || call.kind === "glob"
-            ? "⌕"
-            : call.kind === "webFetch" || call.kind === "webSearch"
-              ? "◍"
-              : call.kind === "todo"
-                ? "☑"
-                : call.kind === "mcp"
-                  ? "⬡"
-                  : "⚙";
-  return (
-    <span className="tool-glyph" data-glyph={call.kind} aria-hidden>
-      {glyph}
-    </span>
-  );
 }
 
 // ── Input and error chips (§2.9 / §2.10) ────────────────────────────────────

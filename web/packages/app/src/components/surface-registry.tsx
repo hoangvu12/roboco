@@ -1,13 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import type { FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
+import { methods } from "@roboco/engine-client";
 import type { IconName } from "@roboco/icons";
 import { rightPaneStore, type RightSurface } from "../state/right-pane";
+import { useEngineSession } from "../state/session-provider";
+import { useEngineStatus } from "../state/hooks";
+import { TranscriptStore } from "../state/transcript-store";
 import { ChangesSurface, ChangesToolbar } from "../routes/changes-page";
 import { FilesSurface } from "../routes/files-page";
 import { FileSurface } from "./files/file-viewer";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { useTerminalStore } from "../terminal/store";
-import { SurfacePicker, SurfaceStubBody } from "./surface-picker";
+import { SurfacePicker } from "./surface-picker";
+import { TranscriptView } from "./transcript";
+import type { SubagentOpen } from "./tool-group";
 
 /**
  * The right pane's surface registry — the seam between the pane HOST (this
@@ -88,6 +95,96 @@ function TerminalSurface({ chatId }: { chatId: string }) {
   return <TerminalDock store={terminalStore} chatId={chatId} docked />;
 }
 
+/**
+ * A subagent's transcript, as a right-pane tab — the desktop's
+ * `add_subagent_surface` (shell.rs:2682) + `Transcript::for_doc`. A LIVE
+ * subagent watches its doc directly; a FROZEN one (done/failed) tries the
+ * `{chatId}/{docId}` uploaded snapshot blob first and falls back to the
+ * live watch on any failure. The transcript rides the subagent override
+ * (alignTop: top-aligned, top-only fade, no rail, no own-turn runway).
+ * Spawn chips inside it open their own nested tabs through the same
+ * registrar, keyed to the pane's chat.
+ */
+function SubagentSurface({ surfaceId, chatId }: { surfaceId: string; chatId: string }) {
+  const session = useEngineSession();
+  const status = useEngineStatus(session);
+  const meta = rightPaneStore.subagentSurfaceOf(surfaceId);
+  const client = session?.client ?? null;
+  const deviceId = status !== null && status.state === "connected" ? status.info.deviceId : null;
+  const docId = meta?.docId ?? null;
+  const frozen = meta?.frozen ?? false;
+  const blobChatId = meta?.chatId ?? null;
+
+  const [store, setStore] = useState<TranscriptStore | null>(null);
+  useEffect(() => {
+    if (client === null || docId === null) {
+      return;
+    }
+    const created = new TranscriptStore(client, docId, frozen ? { follow: false } : undefined);
+    setStore(created);
+    return () => {
+      created.dispose();
+      setStore((current) => (current === created ? null : current));
+    };
+  }, [client, docId, frozen]);
+
+  // The frozen snapshot fetch — a best-effort blob read; ANY failure falls
+  // back to the live doc watch (`resubscribe` arms it).
+  useEffect(() => {
+    if (!frozen || client === null || docId === null || blobChatId === null || store === null) {
+      return;
+    }
+    let cancelled = false;
+    client
+      .call<FetchToolBlobReply>(methods.FETCH_TOOL_BLOB, { blobRef: `${blobChatId}/${docId}` })
+      .then((reply) => {
+        if (cancelled) {
+          return;
+        }
+        const entries = parseSnapshotEntries(reply.text);
+        if (entries !== null) {
+          store.seedEntries(entries);
+        } else {
+          store.resubscribe();
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          store.resubscribe();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [frozen, client, docId, blobChatId, store]);
+
+  if (client === null || store === null) {
+    return null;
+  }
+  const onOpenSubagent = (payload: SubagentOpen): void => {
+    rightPaneStore.addSubagentSurface(chatId, payload);
+  };
+  return (
+    <TranscriptView client={client} docId={store.docId} deviceId={deviceId} store={store} alignTop onOpenSubagent={onOpenSubagent} />
+  );
+}
+
+/** Parse a frozen snapshot blob — a JSON array of transcript entries. */
+function parseSnapshotEntries(text: string): SessionMessageEntry[] | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed.filter(
+      (entry): entry is SessionMessageEntry =>
+        typeof entry === "object" && entry !== null && "id" in entry && "parts" in entry,
+    );
+  } catch {
+    return null;
+  }
+}
+
 let registered = false;
 
 /** The stub + real bodies this ticket wires; later tickets re-register. */
@@ -143,8 +240,7 @@ function registerDefaults(): void {
     kind: "subagent",
     title: titleOf("Subagent"),
     icon: () => "bot",
-    // The read-only transcript + its jump pill is ticket 19's.
-    render: () => <SurfaceStubBody label="Subagent" />,
+    render: (s, ctx) => (s.kind === "subagent" ? <SubagentSurface surfaceId={s.id} chatId={ctx.chatId} /> : null),
   });
 }
 
