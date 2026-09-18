@@ -2803,6 +2803,465 @@ a:focus-visible,
   left: 1px;
 }
 
+/* ── Completions + chip mirror + wizard (ticket 14) ─────────────────── */
+
+/*
+ * The input stack: the textarea and (while mentions exist) its display
+ * mirror, one relative box so the mirror can sit exactly under the input
+ * with identical metrics.
+ */
+.composer-input-stack {
+  position: relative;
+}
+
+/*
+ * The chip mirror (§2.3's web note): an aria-hidden, pointer-events-none
+ * twin of the textarea painting the PROJECTED text — mention chips in the
+ * mono font over the code wash — plus the selection wash and the caret.
+ * The textarea's own text (and caret) go transparent while it exists; the
+ * metrics MUST match `.composer-input` exactly so wrapping aligns.
+ */
+.composer-input-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  padding: 0;
+  color: var(--rb-text);
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 22.75px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.composer-input[data-mentions="true"] {
+  color: transparent;
+  caret-color: transparent;
+}
+
+.composer-input[data-mentions="true"]::selection {
+  background: transparent;
+}
+
+.composer-input[data-mentions="true"]::placeholder {
+  color: transparent;
+}
+
+/*
+ * The projected chip: the markdown inline-code recipe (mono family, the
+ * accent's code_text) over the accent's code_wash quad, radius 5, no
+ * border. `box-decoration-break: clone` re-rounds each wrapped fragment —
+ * the wash moves wholly to the next visual row at a wrap, exactly as the
+ * desktop's per-row-segment quads paint. The vertical inset (+2 top, −4
+ * height, composer.rs:3492-3507) comes from the background-size trick: the
+ * wash paints 2px down from the line top and stops 2px short of the bottom.
+ */
+.mention-chip {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  color: var(--rb-accent);
+  border-radius: 5px;
+  background-image: linear-gradient(var(--rb-accent-wash), var(--rb-accent-wash));
+  background-repeat: no-repeat;
+  background-size: 100% calc(100% - 4px);
+  background-position: 0 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* The mirror's selection wash (the native one is suppressed — its raw
+   geometry does not match the display text). */
+.composer-input-selection {
+  background: var(--rb-selection);
+}
+
+/* The mirror's caret: a zero-width full-line box whose 1.5px paint hangs
+   right of the caret offset without shifting the text; keyed remounts keep
+   it solid while typing (CARET_BLINK_MS = 500, composer.rs:151). */
+.composer-input-caret {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 22.75px;
+  vertical-align: top;
+  box-shadow: 1.5px 0 0 var(--rb-cursor);
+  animation: rb-caret-blink 1s steps(1, end) infinite;
+}
+
+@keyframes rb-caret-blink {
+  0%,
+  49.9% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-input-caret {
+    animation: none;
+  }
+}
+
+/*
+ * `full_width_menu_above` (popover.rs:564-585): the completion frame — an
+ * absolute child of the composer surface, spanning the pill's width above
+ * it, 6px clear of the pill, entering on MENU_IN. The desktop passes
+ * `closing: None` here, so dismissal is an instant unmount.
+ */
+.composer-completion {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  padding-bottom: 6px;
+  z-index: var(--rb-z-menu);
+  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-completion {
+    animation: none;
+  }
+}
+
+.composer-completion-card {
+  width: 100%;
+}
+
+/* The scroll host (composer.rs:5306-5327): a relative wrapper so the
+   floating rail (MenuScrollbar) can hang off it, hiding the native
+   scrollbar. The list caps at 312 inside the card's 320. */
+.composer-completion-host {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.composer-completion-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 312px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.composer-completion-list::-webkit-scrollbar {
+  display: none;
+}
+
+.composer-completion-row {
+  gap: 8px;
+}
+
+.composer-completion-row-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--rb-text-muted);
+}
+
+.composer-completion-row-name {
+  flex: none;
+  font-size: 13px;
+  color: var(--rb-text);
+}
+
+.composer-completion-row-directory {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--rb-text-muted);
+}
+
+/* The empty and error notes (composer.rs:5222-5243): px 12, py 10, 12px. */
+.composer-completion-empty,
+.composer-completion-error {
+  padding: 10px 12px;
+  font-size: 0.75rem;
+}
+
+.composer-completion-empty {
+  color: var(--rb-text-muted);
+}
+
+.composer-completion-error {
+  color: var(--rb-danger-muted);
+}
+
+/* Slash rows (composer.rs:5596-5624): command glyph, `/{name}` at
+   12.5/500, the description at 12 truncated. */
+.slash-row-command {
+  color: var(--rb-text-muted);
+}
+
+.slash-row-name {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.slash-row-description {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The hovered chip's path tooltip (MentionPathTooltip, composer.rs:3369):
+ * fixed at the chip's left edge, 24px tall, 480px max, mono 11px over the
+ * raised surface with the strong border, fading in over fade_quick (150ms).
+ * The inline top/left carry the above-chip (or flush-below) anchor.
+ */
+.mention-tooltip {
+  position: fixed;
+  z-index: var(--rb-z-menu);
+  height: 24px;
+  max-width: 480px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: 5px;
+  background: var(--rb-raised);
+  color: var(--rb-text-muted);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mention-tooltip {
+    animation: none;
+  }
+}
+
+/*
+ * The question wizard (`render_wizard`, composer.rs:6988-7103): replaces
+ * the pill in place — same 26px radius, same column width, the pill's own
+ * surface recipe (the web's forced-opaque input glass) — over fade_quick.
+ */
+.wizard-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 26px;
+  border: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--rb-shadow-popover);
+  outline: none;
+  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wizard-panel {
+    animation: none;
+  }
+}
+
+.wizard-upper {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 16px 0;
+}
+
+.wizard-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+/* `tracked_upper` (popover.rs:783): the web's convention is real CSS
+   letter-spacing (the hair-space workaround would break copy/paste). */
+.wizard-header-label {
+  font-size: 0.65625rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.wizard-counter {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgb(var(--rb-ink) / 0.06);
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.wizard-question {
+  margin-top: 6px;
+  font-size: 0.9375rem;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.wizard-multiselect-hint {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+.wizard-options {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wizard-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgb(var(--rb-ink) / 0.025);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.wizard-option:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+}
+
+.wizard-option-picked,
+.wizard-option-picked:hover {
+  border-color: rgb(var(--rb-ink) / 0.16);
+  background: rgb(var(--rb-ink) / 0.09);
+  transition: none;
+}
+
+.wizard-option-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84375rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.wizard-option-picked .wizard-option-label {
+  color: var(--rb-text);
+}
+
+.wizard-option-number {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgb(var(--rb-ink) / 0.05);
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.wizard-option-picked .wizard-option-number {
+  background: rgb(var(--rb-ink) / 0.16);
+  color: var(--rb-text);
+}
+
+/*
+ * The free-text slot (composer.rs:7065-7076): a hairline over the re-parented
+ * composer input. The shared textarea keeps `.composer-input` metrics; the
+ * stack grows with the content here rather than through the pill's flip.
+ */
+.wizard-input-slot {
+  margin-top: 12px;
+  padding: 12px 4px 4px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+}
+
+.wizard-input-slot .composer-input-stack {
+  position: relative;
+}
+
+.wizard-input-slot .composer-input {
+  height: auto;
+  min-height: 22.75px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.wizard-footer {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 16px 16px;
+}
+
+/* `btn_ghost` (popover.rs:1028): quiet text, hover wash over 150ms. */
+.wizard-btn-ghost {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: rgb(var(--rb-wash) / 0);
+  color: var(--rb-text-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.wizard-btn-ghost:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+  color: var(--rb-text);
+}
+
+/* `btn_primary` (popover.rs:1049) with the wizard's px(16) override: the
+   text fill, near-black label. `!can_advance` is opacity 0.4 ONLY — the
+   click handler still fires (composer.rs:7099). */
+.wizard-btn-primary {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--rb-text);
+  color: var(--rb-on-solid);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.wizard-btn-primary:hover {
+  opacity: 0.9;
+}
+
+.wizard-btn-primary-dim {
+  opacity: 0.4;
+}
+
 /* ── Run identity chip ──────────────────────────────────────────────── */
 
 .composer-pickers {

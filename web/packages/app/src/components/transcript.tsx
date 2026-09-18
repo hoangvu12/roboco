@@ -111,6 +111,7 @@ export function TranscriptView({
   alignTop = false,
   indicator = null,
   turnStartedAt = null,
+  store: sharedStore = null,
 }: {
   client: EngineClient;
   docId: string;
@@ -145,25 +146,36 @@ export function TranscriptView({
   indicator?: ChatIndicator | null;
   /** The session row's `started_at` in epoch ms (the trailer's timer base). */
   turnStartedAt?: number | null;
+  /**
+   * A store owned by the host (the chat page passes the ONE transcript the
+   * composer's wizard also reads, so a chat carries a single
+   * `WatchDocMessages` stream). Null (default): this view owns its store —
+   * the subagent dialog's shape.
+   */
+  store?: TranscriptStore | null;
 }) {
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
+    if (sharedStore !== null) {
+      return;
+    }
     const created = new TranscriptStore(client, docId);
     setStore(created);
     return () => {
       created.dispose();
       setStore((current) => (current === created ? null : current));
     };
-  }, [client, docId]);
+  }, [client, docId, sharedStore]);
   // The desktop transcript renders NOTHING while it has no document — the
   // shell owns the empty/loading case, not this component.
-  if (store === null) {
+  const active = sharedStore ?? store;
+  if (active === null) {
     return null;
   }
   return (
     <TranscriptSurface
-      key={store.docId}
-      store={store}
+      key={active.docId}
+      store={active}
       client={client}
       deviceId={deviceId}
       onContextUsage={onContextUsage}

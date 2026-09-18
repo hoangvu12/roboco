@@ -14,7 +14,7 @@ leaving the composer.
 
 **Blocked by:** 09 (Popover primitive), 13 (Composer core).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/04-composer.md` §3.12 (key contexts,
 placeholders), §3.13, §3.16, §3.17, §3.18, §3.19, §4 (`mention_*`, `slash_*`,
@@ -783,7 +783,148 @@ rows, and the "Enter is context-dependent" row's completion half.
 
 ## Comments
 
-(empty; appended during implementation)
+### What landed (2026-09-18)
+
+All three features, web-only, no `crates/` or `apps/` changes:
+
+- **`lib/mentions.ts`** — `mentionToken`, the strict local Markdown
+  transport (`percentEncodePath`, `escapeMentionLabel`, `localFileLink`,
+  `localPathIsSafe`, `fileMentionLinks`, `droppedFileMention` — exported for
+  ticket 17's drop zone to call), `mentionDisplayLabels`, `TextProjection`
+  (raw↔display, `normalizeRange`, boundary helpers), `displayRowSegments`,
+  `sentMentionDisplay`, the tooltip phase reducers, `mentionResponseIsCurrent`,
+  `mentionErrorMessage`, and the constants. Offsets are UTF-16 code units —
+  the direct equivalent of the desktop's byte indices, since every caret
+  value comes from `selectionStart`/`selectionEnd`.
+- **`lib/slash.ts`** — `slashToken`, `slashErrorMessage`, the cache shape,
+  `refilterSlash` (local per-keystroke, prefix-before-substring), the row
+  description composer, and a tolerant reply parser.
+- **`lib/wizard.ts`** — `Wizard`, `pendingInputRequest`,
+  `inputRequestResolved`, `enterOutcome`, `escapeDismissesCompletion`,
+  `wizardEscapeGoesBack`, `messageInputContext`, the placeholders, and the
+  220ms/2s timers.
+- **`components/composer/mention-popup.tsx`** — the `full_width_menu_above`
+  frame (absolute child of `.composer-surface`, `pb 6`, `MENU_IN` entrance,
+  outside-press dismissal, focus-preserving card mouse-down) plus
+  `MentionPopup` and its four states; rows ride `ui/MenuRow`, the card is
+  `ui/PopoverCard`, the rail is `ui/Scrollbar`, skeletons `ui/Skeleton`.
+  `CompletionPopup` is exported and shared by the slash popup.
+- **`components/composer/slash-popup.tsx`** — the same frame with command
+  rows (command icon 14, `/{name}` 12.5/500, description 12 truncated).
+- **`components/composer/wizard.tsx`** — `ComposerWizard` (panel, header,
+  counter, options, free-text slot, ghost/primary footer) with
+  `on_wizard_key` on the focusable panel wrapper; `!can_advance` is opacity
+  0.4 only and the click handler still fires.
+- **`composer.tsx`** — the token machines (`on_input_edited`/`update_slash`
+  ports: 80ms debounce, one 250ms transport retry, generation-guarded
+  replies, refining keeps stale rows, dismissed-token memory), the chip
+  mirror (transparent textarea text/caret + projected display layer with
+  chip washes, selection wash, and a custom blinking caret at the display
+  offset), atomic caret enforcement (Left/Right/Backspace/Delete at chip
+  boundaries + `normalizeRange` on every selection change), the tooltip
+  (420ms phase machine, above-chip anchor with the flush-below fallback),
+  the wizard lifecycle (latch, auto-advance, finish → `QueueCommand
+  respondInput`, 2s safety net, `Answer failed:` notice), and the two
+  Enter/Escape modes. The popups mount inside `.composer-surface` and the
+  pill swaps for the wizard panel in place; the flip machinery stands down
+  while the wizard is mounted.
+- **`transcript.tsx` / `chat-page.tsx`** — the chat page now owns ONE
+  `TranscriptStore` per chat and hands it to both `TranscriptView` (new
+  optional `store` prop; the subagent dialog's own-store path is unchanged)
+  and the composer, so the wizard's latch reads the same stream the
+  transcript renders — no second `WatchDocMessages` per chat.
+- **`lib/transcript.ts`** — ticket 18 had already ported the sent-mention
+  projection privately for the transcript; the projection now lives once in
+  `lib/mentions.ts` and transcript.ts re-exports the surface it always
+  exposed. Ticket 18's tests are untouched and green. The transcript-side
+  chip rendering itself (`.user-mention`) was already ticket 18's — nothing
+  new was needed there.
+- **`engine-client/methods.ts`** — added `SEARCH_FILES` and `LIST_COMMANDS`
+  (wire names per `crates/rpc/src/lib.rs:42,131`).
+
+### Deviations & judgment calls
+
+- **The wizard textarea remounts.** The desktop re-parents the gpui entity,
+  preserving caret and undo. React cannot move a DOM node between parents
+  without remounting it, so the swap re-mounts the SAME controlled element
+  (one JSX node, one draft state, one placeholder machinery — never a second
+  input). Caret/undo do not survive the swap; undo already does not survive
+  programmatic value writes (ticket 13's accepted divergence). On open,
+  focus lands where the desktop keeps it (the input if it held focus, else
+  the panel).
+- **The mention path tooltip is a fixed div, not `ui/Tooltip`.** Its anchor
+  is chip geometry under a pointer-events-none mirror (hit-tested through
+  the transparent textarea), its lifecycle is the ported 420ms phase
+  machine, and its geometry is the ticket's spec — it cannot ride a
+  trigger-element tooltip. All pure logic (reduce/promote/contains) lives
+  in `lib/mentions.ts` as the ticket demands.
+- **The chip caret and selection wash are custom.** While mentions exist
+  the native caret/selection highlight are hidden (`color: transparent`,
+  `caret-color: transparent`, `::selection` transparent) because their
+  raw-offset geometry no longer matches the display text; the mirror paints
+  the caret (keyed remounts keep it solid while typing) and the selection
+  wash. IME compositions temporarily flip back to raw text (the mirror
+  would hide marked text) and pause the token machines.
+- **Chip wash geometry**: the +2/−4 vertical inset is painted via a
+  `background-size: 100% calc(100% - 4px)` shift inside the 5px-radius span
+  (per-fragment via `box-decoration-break: clone`, matching the desktop's
+  per-row-segment quads at wraps).
+- **Error-kind mapping**: the web client's `timeout`/`parked` kinds map to
+  "unreachable" (the desktop has no client timeout; both mean the reply
+  never came back over the transport).
+- **The wizard header's tracking** uses real CSS `letter-spacing: 0.1em`
+  (the repo's `MenuHeading` convention — the desktop's U+200A workaround
+  would break copy/paste).
+- **Offsets are UTF-16 code units** throughout the ported pure logic (see
+  the lib header); boundary checks port `is_char_boundary` as "not inside a
+  surrogate pair".
+
+### Verification
+
+- `pnpm -r build` green (web workspace).
+- `web/packages/app` vitest: **53 files / 821 tests green**, including the
+  new `tests/mentions.test.ts` (22), `tests/slash.test.ts` (10),
+  `tests/wizard.test.ts` (14) — every acceptance-named desktop test has a
+  web mirror. `tests/transcript-model.test.ts` (ticket 18's, against the
+  deduped projection) still green.
+- `web/packages/engine-client` unit suites green (codec, fake-server,
+  watch-cache). The conformance/web-smoke suites spawn Rust engines and are
+  CI-only here (they also need the machine-global port 27699, which the
+  screenshot round was holding).
+- Boot check + live exercise against `web_smoke`: app renders with no
+  error boundary before and after; the `@` search round-trip (80ms debounce
+  → results), Enter-accept, Escape-dismiss + caret-move-stays-closed +
+  edit-reopens, atomic Left (two presses crossed a 37-char link to its
+  start), atomic Backspace (one press removed a whole 46-char mention),
+  the mirror's chips/transparent raw text, the 420ms hover tooltip (24px
+  tall, above-chip anchor), and a full send + mock-harness reply all
+  verified in-DOM. Screenshots taken for the stageable states.
+
+### Screenshots (web; `shots/14/`)
+
+- `web-a-mention-popup-results.png` — (a) `@` popup with 8 real results,
+  second row selected. Staged by creating a real space + chat through the
+  app's own UI (the seeded smoke chat has no space, so its chatId-targeted
+  search cannot resolve a workspace root).
+- `web-b-mention-popup-no-matches.png` — (b) "No matching files".
+- `web-c-draft-chips-tooltip.png` — (c) draft with two mention chips
+  (both accepted through the popup), one hovered with its 24px path
+  tooltip.
+- `web-d-slash-popup.png` — (d) the slash popup on the smoke engine. The
+  mock harness advertises no commands, so this shows the verbatim
+  "This agent has no slash commands" empty state; the FILTERED-list
+  variant needs a harness with commands, which the smoke fixture cannot
+  stage without `crates/` changes (out of scope per the ticket rules).
+- `boot.png` / `web-boot-after-exercise.png` — boot checks.
+- **Skipped**: (e)/(f) wizard pages — the mock script never emits
+  `InputRequested`, and the transcript is engine-owned, so the panel
+  cannot be staged by the smoke fixture. The wizard's logic is fully
+  unit-tested (`wizard.test.ts`, `pending_input_detection`).
+- **Skipped**: desktop-side captures — same as ticket 13's precedent (no
+  desktop app running in this environment; every number was transcribed
+  from the cited `composer.rs`/`popover.rs` lines).
+
+
 
 ### Shared components addendum (2026-09-18)
 

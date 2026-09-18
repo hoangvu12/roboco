@@ -12,9 +12,11 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@roboco/icons";
-import type { Chat, HarnessDescriptor, Model } from "@roboco/proto";
+import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, Model, UserInputAnswer } from "@roboco/proto";
 import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
+import { methods, RpcError } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
+import type { TranscriptStore } from "../state/transcript-store";
 import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
 import { PickerCatalog } from "../state/picker-catalog";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
@@ -76,12 +78,43 @@ import {
   sendButtonMode,
   shouldPublishOptimisticEcho,
 } from "../lib/composer-send";
+import { menuStep } from "../lib/picker-search";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
 import { isMacPlatform } from "../state/shortcuts";
 import { seedAttachment } from "../state/attachment-cache";
+import {
+  localFileLink,
+  MENTION_TOOLTIP_DELAY_MS,
+  MENTION_TOOLTIP_HEIGHT,
+  mentionErrorMessage,
+  mentionResponseIsCurrent,
+  mentionTooltipPromote,
+  mentionTooltipReduce,
+  mentionToken,
+  TextProjection,
+  type CompletionToken,
+  type MentionTooltipPhase,
+  type MentionTooltipTarget,
+} from "../lib/mentions";
+import { parseSlashCommands, refilterSlash, slashErrorMessage, slashToken, type SlashCache } from "../lib/slash";
+import {
+  AUTO_ADVANCE_MS,
+  COMPOSER_REST_PLACEHOLDER,
+  WIZARD_SAFETY_NET_MS,
+  Wizard,
+  enterOutcome,
+  escapeDismissesCompletion,
+  inputRequestResolved,
+  pendingInputRequest,
+  wizardEscapeGoesBack,
+  wizardPlaceholder,
+} from "../lib/wizard";
 import { ComposerPickers } from "./composer-pickers";
 import { AttachmentStrip } from "./attachments/attachment-strip";
+import { MentionPopup } from "./composer/mention-popup";
+import { SlashPopup } from "./composer/slash-popup";
+import { ComposerWizard } from "./composer/wizard";
 
 /**
  * The composer — the desktop's `crates/ui/src/composer.rs` ported to React:
@@ -99,6 +132,35 @@ import { AttachmentStrip } from "./attachments/attachment-strip";
 interface FailureNotice {
   readonly message: string;
   readonly key: string | null;
+}
+
+/** `FileMentionState` (composer.rs:3944-3959) — the `@` popup's state. */
+interface MentionUiState {
+  readonly token: CompletionToken | null;
+  readonly results: readonly FileSearchMatch[];
+  readonly active: number | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+}
+
+/** `SlashState` (composer.rs:3930-3942) — the `/` popup's state. */
+interface SlashUiState {
+  readonly token: CompletionToken | null;
+  readonly filtered: readonly number[];
+  readonly active: number | null;
+  /** The harness the popup is showing commands for (the cache key). */
+  readonly harness: HarnessId | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+}
+
+/** A dismissed completion's memory (composer.rs `dismissed`): the token's
+ * range plus its full text — the caret may move within the SAME unchanged
+ * token while the popup stays closed; any edit re-enables completion. */
+interface DismissedToken {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
 }
 
 /** The animated geometry one layout pass resolves (see the evaluate pass). */
@@ -126,6 +188,13 @@ interface ComposerProps {
   readonly session: EngineSession;
   readonly chat: Chat;
   readonly catalog: PickerCatalog;
+  /**
+   * The chat's live transcript store — the SAME store the transcript view
+   * renders (one `WatchDocMessages` stream per open chat). The wizard's
+   * latch (`pending_input_request` / `input_request_resolved`) reads it;
+   * null only while the host has no session.
+   */
+  readonly transcript: TranscriptStore | null;
   /**
    * The measured conversation-column width, clamped to 768 — the desktop's
    * `set_available_width` feed. Null before the first measurement.
@@ -160,6 +229,7 @@ export function Composer({
   session,
   chat,
   catalog,
+  transcript,
   availableWidth,
   queueSlot,
   footerSlot,
@@ -195,6 +265,85 @@ export function Composer({
   // menus (composer.rs:7701-7709).
   const [pickersOpen, setPickersOpen] = useState(false);
 
+  // ── Completions + wizard (ticket 14, composer.rs 3902-3991/5884) ──────
+  // The live caret/selection, tracked through onChange/onSelect — the token
+  // machines read it exactly as the desktop's `on_input_edited` does on
+  // `Edited | CursorMoved`.
+  const [selection, setSelectionState] = useState<[number, number]>([0, 0]);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const pendingCaretRef = useRef<number | null>(null);
+  const [inputFocused, setInputFocused] = useState(false);
+  // While an IME composition is active the raw textarea text paints (the
+  // mirror would hide the marked text); the token machines pause.
+  const [composing, setComposing] = useState(false);
+  const composingRef = useRef(composing);
+  composingRef.current = composing;
+
+  const [mention, setMention] = useState<MentionUiState>({
+    token: null,
+    results: [],
+    active: null,
+    loading: false,
+    error: null,
+  });
+  const mentionRef = useRef(mention);
+  mentionRef.current = mention;
+  const mentionRequestRef = useRef(0);
+  const mentionSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mentionDismissedRef = useRef<{ start: number; end: number; text: string } | null>(null);
+
+  const [slash, setSlash] = useState<SlashUiState>({
+    token: null,
+    filtered: [],
+    active: null,
+    harness: null,
+    loading: false,
+    error: null,
+  });
+  const slashRef = useRef(slash);
+  slashRef.current = slash;
+  const slashRequestRef = useRef(0);
+  const slashDismissedRef = useRef<{ start: number; end: number; text: string } | null>(null);
+  /** `slash_cache` (composer.rs:4026): one ListCommands per harness per
+   * composer lifetime; filtering is local per keystroke. */
+  const slashCacheRef = useRef<SlashCache>(new Map());
+
+  // The wizard: one instance + a render generation (the Wizard mutates in
+  // place, like the desktop's entity); `answered_requests` and the latch's
+  // safety-net tick force re-checks of the lifecycle effect.
+  const wizardRef = useRef<Wizard | null>(null);
+  const [wizardGen, setWizardGen] = useState(-1);
+  const [answeredGen, setAnsweredGen] = useState(0);
+  const answeredRef = useRef<Set<string>>(new Set());
+  const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The mention path tooltip: the ported phase machine + its 420ms timer.
+  const [tooltipPhase, setTooltipPhaseState] = useState<MentionTooltipPhase>({ kind: "hidden" });
+  const tooltipPhaseRef = useRef(tooltipPhase);
+  tooltipPhaseRef.current = tooltipPhase;
+  const tooltipGenRef = useRef(0);
+  const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipElRef = useRef<HTMLDivElement | null>(null);
+  const mirrorRef = useRef<HTMLDivElement | null>(null);
+  const wizardPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const wizardActive = wizardGen >= 0 && wizardRef.current !== null;
+  const wizardActiveRef = useRef(wizardActive);
+  wizardActiveRef.current = wizardActive;
+
+  // The transcript snapshot the wizard's latch reads (one store per chat —
+  // the same stream the transcript view renders).
+  const transcriptSnapshot = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => (transcript === null ? () => {} : transcript.subscribe(listener)),
+      [transcript],
+    ),
+    useCallback(() => transcript?.getSnapshot() ?? null, [transcript]),
+    useCallback(() => transcript?.getSnapshot() ?? null, [transcript]),
+  );
+
   // Live status: the desktop's `run_live` is Working OR AwaitingInput.
   const statusRow = snapshot?.statuses.rows.find((row) => row.chatId === chat.id);
   const indicator = effectiveIndicator(statusRow, now);
@@ -213,6 +362,12 @@ export function Composer({
   // stays identity-stable so the ResizeObserver never re-binds).
   const textRef = useRef(text);
   textRef.current = text;
+  // The chip projection: rebuilt per text change (the zero-link fast path
+  // is `mentions.length === 0`, same as the desktop's empty projection).
+  const projection = useMemo(() => new TextProjection(text), [text]);
+  const projectionRef = useRef(projection);
+  projectionRef.current = projection;
+  const mentionsActive = projection.mentions.length > 0;
   const [draft, setDraft] = useState<DraftConfig>(() =>
     draftFromChat(chat, harnesses.rows, catalog.getModels(chat.config?.harness ?? "claude-code").rows),
   );
@@ -409,6 +564,11 @@ export function Composer({
     const el = textareaRef.current;
     const mirror = measureRef.current;
     if (el === null || mirror === null) {
+      return;
+    }
+    // While the wizard borrows the input the pill is not rendered; the flip
+    // machinery stands down and the wizard's own auto-grow owns the height.
+    if (wizardActiveRef.current) {
       return;
     }
     const nowMs = performance.now();
@@ -659,6 +819,830 @@ export function Composer({
     });
   }, [snapshot, now]);
 
+  // ── Atomic chip editing (TextProjection, composer.rs:1158-1262) ────────
+  // A programmatic edit applies text + caret through the controlled value;
+  // the caret lands after the re-render via `pendingCaretRef`.
+  const applyEdit = useCallback(
+    (start: number, end: number, replacement: string, caretAfter: number): void => {
+      const current = textRef.current;
+      setText(current.slice(0, start) + replacement + current.slice(end));
+      pendingCaretRef.current = caretAfter;
+    },
+    [],
+  );
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    const target = pendingCaretRef.current;
+    if (el === null || target === null) {
+      return;
+    }
+    pendingCaretRef.current = null;
+    el.setSelectionRange(target, target);
+    setSelectionState([target, target]);
+  }, [text]);
+
+  /** Selection normalization through `normalize_range` — the atomic caret
+   * contract enforced on every native selection change (clicks, arrows,
+   * word motion): a caret inside a chip snaps to the nearer edge, a
+   * selection overlapping a chip swallows it whole. */
+  const normalizeSelection = useCallback((): void => {
+    const el = textareaRef.current;
+    if (el === null) {
+      return;
+    }
+    const projectionNow = projectionRef.current;
+    if (projectionNow.mentions.length === 0) {
+      return;
+    }
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    const next = projectionNow.normalizeRange(start, end);
+    if (next.start !== start || next.end !== end) {
+      el.setSelectionRange(next.start, next.end, el.selectionDirection);
+    }
+  }, []);
+
+  const onInputSelect = useCallback((): void => {
+    normalizeSelection();
+    const el = textareaRef.current;
+    if (el !== null) {
+      setSelectionState([el.selectionStart ?? 0, el.selectionEnd ?? 0]);
+    }
+  }, [normalizeSelection]);
+
+  const onInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>): void => {
+    setText(event.target.value);
+    setSelectionState([event.target.selectionStart ?? 0, event.target.selectionEnd ?? 0]);
+  }, []);
+
+  // The mirror scrolls with the textarea; any scroll also invalidates the
+  // path tooltip (composer.rs's `invalidate_mention_tooltip` on scroll).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (el === null) {
+      return;
+    }
+    const onScroll = (): void => {
+      if (mirrorRef.current !== null) {
+        mirrorRef.current.scrollTop = el.scrollTop;
+      }
+      invalidateTooltip();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Completion state machines (on_input_edited / update_slash) ─────────
+
+  const setTooltipPhase = useCallback((phase: MentionTooltipPhase): void => {
+    tooltipPhaseRef.current = phase;
+    setTooltipPhaseState(phase);
+  }, []);
+
+  /** `invalidate_mention_tooltip` (composer.rs:2040): bump the generation,
+   * clear the timer, hide. Any edit, scroll, mouse-down or drag calls it. */
+  const invalidateTooltip = useCallback((): void => {
+    if (tooltipTimerRef.current !== null) {
+      clearTimeout(tooltipTimerRef.current);
+      tooltipTimerRef.current = null;
+    }
+    if (tooltipPhaseRef.current.kind !== "hidden") {
+      setTooltipPhase({ kind: "hidden" });
+    }
+  }, [setTooltipPhase]);
+
+  /** `reset_mention` (composer.rs:4996): tear the whole completion down,
+   * bumping the generation so queued RPC replies are dropped. */
+  const resetMention = useCallback(
+    (dismissed: DismissedToken | null): void => {
+      mentionRequestRef.current += 1;
+      if (mentionSearchTimerRef.current !== null) {
+        clearTimeout(mentionSearchTimerRef.current);
+        mentionSearchTimerRef.current = null;
+      }
+      mentionDismissedRef.current = dismissed;
+      invalidateTooltip();
+      setMention((current) =>
+        current.token === null && current.results.length === 0 && !current.loading && current.error === null
+          ? current
+          : { token: null, results: [], active: null, loading: false, error: null },
+      );
+    },
+    [invalidateTooltip],
+  );
+
+  /** `reset_slash` (composer.rs:5501). */
+  const resetSlash = useCallback(
+    (dismissed: DismissedToken | null): void => {
+      slashRequestRef.current += 1;
+      slashDismissedRef.current = dismissed;
+      setSlash((current) =>
+        current.token === null && current.filtered.length === 0 && !current.loading && current.error === null
+          ? current
+          : { ...current, token: null, filtered: [], active: null, loading: false, error: null },
+      );
+    },
+    [],
+  );
+
+  /** `dismiss_mention`/`dismiss_slash` (composer.rs:5161/5463): record the
+   * token (range + text) so the caret may keep moving inside it while the
+   * popup stays closed. */
+  const dismissCompletion = useCallback((): void => {
+    const slashTokenNow = slashRef.current.token;
+    if (slashTokenNow !== null) {
+      resetSlash({
+        start: slashTokenNow.start,
+        end: slashTokenNow.end,
+        text: textRef.current.slice(slashTokenNow.start, slashTokenNow.end),
+      });
+      return;
+    }
+    const mentionTokenNow = mentionRef.current.token;
+    if (mentionTokenNow !== null) {
+      resetMention({
+        start: mentionTokenNow.start,
+        end: mentionTokenNow.end,
+        text: textRef.current.slice(mentionTokenNow.start, mentionTokenNow.end),
+      });
+    }
+  }, [resetMention, resetSlash]);
+
+  /** `refilter_slash` (composer.rs:5430): the local re-rank for the open
+   * token's query. */
+  const refilterSlashFor = useCallback((query: string, harness: HarnessId): void => {
+    const commands = slashCacheRef.current.get(harness) ?? [];
+    const { filtered, active } = refilterSlash(query, commands);
+    setSlash((current) => {
+      if (
+        current.active === active &&
+        current.filtered.length === filtered.length &&
+        current.filtered.every((value, ix) => value === filtered[ix])
+      ) {
+        return current;
+      }
+      return { ...current, filtered, active };
+    });
+  }, []);
+
+  // `on_input_edited` (composer.rs:5007-5148) + `update_slash`
+  // (composer.rs:5344-5427): both token machines run per text/caret change,
+  // exactly as the desktop runs them on `Edited | CursorMoved`.
+  useEffect(() => {
+    if (composingRef.current) {
+      return;
+    }
+    if (wizardActiveRef.current) {
+      // A wizard-mounted input never completes (composer.rs:5008-5016).
+      if (mentionRef.current.token !== null) {
+        resetMention(null);
+      }
+      if (slashRef.current.token !== null) {
+        resetSlash(null);
+      }
+      return;
+    }
+    const currentText = text;
+    const caretNow = selectionRef.current[0];
+
+    // ── slash: whole-prompt prefixes only ──
+    const slashTokenNow = slashToken(currentText, caretNow);
+    const slashDismissed = slashDismissedRef.current;
+    const slashStillDismissed =
+      slashTokenNow !== null &&
+      slashDismissed !== null &&
+      slashTokenNow.start === slashDismissed.start &&
+      slashTokenNow.end === slashDismissed.end &&
+      currentText.slice(slashTokenNow.start, slashTokenNow.end) === slashDismissed.text;
+    if (slashStillDismissed) {
+      setSlash((current) => (current.token === null ? current : { ...current, token: null }));
+    } else {
+      slashDismissedRef.current = null;
+      const harness = draft.harness;
+      const harnessChanged = slashRef.current.harness !== harness;
+      const sameToken = tokensEqual(slashTokenNow, slashRef.current.token);
+      if (!slashStillDismissed && sameToken && !harnessChanged) {
+        refilterSlashFor(slashTokenNow === null ? "" : slashTokenNow.query, harness);
+      } else {
+        const cached = slashCacheRef.current.get(harness);
+        setSlash({
+          token: slashTokenNow,
+          filtered: [],
+          active: null,
+          harness,
+          loading: false,
+          error: null,
+        });
+        if (slashTokenNow === null) {
+          // closed
+        } else if (cached !== undefined) {
+          refilterSlashFor(slashTokenNow.query, harness);
+        } else {
+          // First open for this harness: ONE ListCommands, targeted like
+          // file search (the chat's host device owns the agent binary).
+          slashRequestRef.current += 1;
+          const request = slashRequestRef.current;
+          setSlash((current) => ({ ...current, loading: true }));
+          refilterSlashFor(slashTokenNow.query, harness);
+          if (session.client.state !== "connected") {
+            setSlash((current) => ({ ...current, loading: false }));
+          } else {
+            const params: Record<string, unknown> = { harness, targetDeviceId: chat.deviceId };
+            void session.client
+              .call<unknown>(methods.LIST_COMMANDS, params)
+              .then((reply) => {
+                if (slashRequestRef.current !== request) {
+                  return;
+                }
+                const commands = parseSlashCommands(reply);
+                if (commands === null) {
+                  setSlash((current) => ({ ...current, loading: false }));
+                  return;
+                }
+                slashCacheRef.current.set(harness, commands);
+                setSlash((current) => ({ ...current, loading: false }));
+                refilterSlashFor(slashTokenNow.query, harness);
+              })
+              .catch((error: unknown) => {
+                if (slashRequestRef.current !== request) {
+                  return;
+                }
+                const kind = error instanceof RpcError ? error.kind : "failed";
+                setSlash((current) => ({
+                  ...current,
+                  loading: false,
+                  error: slashErrorMessage(kind),
+                }));
+              });
+          }
+        }
+      }
+    }
+
+    // ── mention: `@` at a token boundary ──
+    const mentionTokenNow = mentionToken(currentText, caretNow);
+    const mentionDismissed = mentionDismissedRef.current;
+    const mentionStillDismissed =
+      mentionTokenNow !== null &&
+      mentionDismissed !== null &&
+      mentionTokenNow.start === mentionDismissed.start &&
+      mentionTokenNow.end === mentionDismissed.end &&
+      currentText.slice(mentionTokenNow.start, mentionTokenNow.end) === mentionDismissed.text;
+    if (mentionStillDismissed) {
+      setMention((current) => (current.token === null ? current : { ...current, token: null }));
+      return;
+    }
+    mentionDismissedRef.current = null;
+    if (tokensEqual(mentionTokenNow, mentionRef.current.token)) {
+      return;
+    }
+    mentionRequestRef.current += 1;
+    if (mentionSearchTimerRef.current !== null) {
+      clearTimeout(mentionSearchTimerRef.current);
+      mentionSearchTimerRef.current = null;
+    }
+    // Refining an already-open menu keeps the stale rows visible until the
+    // new response lands (composer.rs:5046-5056); a fresh open clears them.
+    const refining = mentionRef.current.token !== null && mentionTokenNow !== null;
+    setMention({
+      token: mentionTokenNow,
+      results: refining ? mentionRef.current.results : [],
+      active: refining ? mentionRef.current.active : null,
+      loading: mentionTokenNow !== null,
+      error: null,
+    });
+    invalidateTooltip();
+    if (mentionTokenNow === null) {
+      return;
+    }
+    const request = mentionRequestRef.current;
+    const query = mentionTokenNow.query;
+    const chatId = chat.id;
+    const deviceId = chat.deviceId;
+    // A short debounce prevents one full workspace walk per keystroke
+    // (composer.rs:5101-5106); the generation check below drops replies
+    // whose query has since changed.
+    mentionSearchTimerRef.current = setTimeout(() => {
+      mentionSearchTimerRef.current = null;
+      void (async () => {
+        const params = { query, chatId, targetDeviceId: deviceId };
+        let reply: unknown;
+        let failure: RpcError | null = null;
+        try {
+          reply = await session.client.call<unknown>(methods.SEARCH_FILES, params);
+        } catch (error) {
+          // One retry rides out a cold relay dial to the host device
+          // (composer.rs:5110-5118).
+          if (
+            error instanceof RpcError &&
+            (error.kind === "transport" || error.kind === "closed")
+          ) {
+            await delay(250);
+            if (mentionRequestRef.current !== request) {
+              return;
+            }
+            try {
+              reply = await session.client.call<unknown>(methods.SEARCH_FILES, params);
+            } catch (retryError) {
+              failure = retryError instanceof RpcError ? retryError : new RpcError("failed", String(retryError));
+            }
+          } else {
+            failure = error instanceof RpcError ? error : new RpcError("failed", String(error));
+          }
+        }
+        if (
+          !mentionResponseIsCurrent(
+            { request: mentionRequestRef.current, token: mentionRef.current.token },
+            request,
+          )
+        ) {
+          return;
+        }
+        if (failure !== null) {
+          setMention({
+            token: mentionRef.current.token,
+            results: [],
+            active: null,
+            loading: false,
+            error: mentionErrorMessage(failure.kind),
+          });
+          return;
+        }
+        const results = parseFileMatches(reply);
+        if (results === null) {
+          setMention((current) => ({ ...current, loading: false }));
+          return;
+        }
+        setMention({
+          token: mentionRef.current.token,
+          results,
+          active: results.length > 0 ? 0 : null,
+          loading: false,
+          error: null,
+        });
+      })();
+    }, 80);
+    // text/selection drive the machines; the harness dep keeps the slash
+    // cache keyed when the draft's harness changes. The debounce timer is
+    // cleared explicitly on token change/reset/unmount — NOT via a cleanup,
+    // so an unchanged token's in-flight search survives caret moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, selection, draft.harness, chat.id, chat.deviceId, session.client]);
+
+  // The desktop force-closes both popups on every render while the wizard is
+  // active or the input is not focused (composer.rs:7176-7185).
+  useEffect(() => {
+    if (wizardActive || !inputFocused) {
+      if (mentionRef.current.token !== null) {
+        resetMention(null);
+      }
+      if (slashRef.current.token !== null) {
+        resetSlash(null);
+      }
+    }
+  }, [wizardActive, inputFocused, resetMention, resetSlash]);
+
+  // ── Completion actions ─────────────────────────────────────────────────
+
+  /** `accept_mention` (composer.rs:5173): replace the token range with the
+   * strict local Markdown link, caret after the trailing separator. */
+  const acceptMention = useCallback(
+    (ix: number): void => {
+      const token = mentionRef.current.token;
+      if (token === null) {
+        return;
+      }
+      const result = mentionRef.current.results[ix];
+      if (result === undefined) {
+        return;
+      }
+      const link = localFileLink(result.path, result.isDir);
+      const currentText = textRef.current;
+      const existing = separatorAfter(currentText, token.end);
+      const inserted = existing !== null ? link : `${link} `;
+      const caretAfter = token.start + inserted.length + (existing?.length ?? 0);
+      applyEdit(token.start, token.end, inserted, caretAfter);
+      resetMention(null);
+    },
+    [applyEdit, resetMention],
+  );
+
+  /** `accept_slash` (composer.rs:5475): plain `/name` text — no link, no
+   * chip projection. */
+  const acceptSlash = useCallback(
+    (rowIx: number): void => {
+      const token = slashRef.current.token;
+      if (token === null) {
+        return;
+      }
+      const state = slashRef.current;
+      const commandIx = state.filtered[rowIx];
+      const command =
+        commandIx === undefined || state.harness === null
+          ? undefined
+          : slashCacheRef.current.get(state.harness)?.[commandIx];
+      if (command === undefined) {
+        return;
+      }
+      const replacement = `/${command.name}`;
+      const currentText = textRef.current;
+      const existing = separatorAfter(currentText, token.end);
+      const inserted = existing !== null ? replacement : `${replacement} `;
+      const caretAfter = token.start + inserted.length + (existing?.length ?? 0);
+      applyEdit(token.start, token.end, inserted, caretAfter);
+      resetSlash(null);
+    },
+    [applyEdit, resetSlash],
+  );
+
+  const acceptCompletion = useCallback(
+    (ix?: number): void => {
+      const slashTokenNow = slashRef.current.token;
+      if (slashTokenNow !== null) {
+        acceptSlash(ix ?? slashRef.current.active ?? 0);
+        return;
+      }
+      acceptMention(ix ?? mentionRef.current.active ?? 0);
+    },
+    [acceptMention, acceptSlash],
+  );
+
+  /** `move_mention`/`move_slash` (composer.rs:5150/5452): the shared
+   * `popover::menu_step` walk; the cursor row scrolls into view. */
+  const moveCompletion = useCallback((delta: number): void => {
+    if (slashRef.current.token !== null) {
+      const count = slashRef.current.filtered.length;
+      setSlash((current) => ({ ...current, active: menuStep(current.active, count, delta) }));
+      return;
+    }
+    const count = mentionRef.current.results.length;
+    setMention((current) => ({ ...current, active: menuStep(current.active, count, delta) }));
+  }, []);
+
+  // ── The mention path tooltip (composer.rs:2046-2161) ────────────────────
+
+  /** `start_mention_tooltip_wait` (composer.rs:2057). */
+  const startTooltipWait = useCallback(
+    (target: MentionTooltipTarget): void => {
+      tooltipGenRef.current += 1;
+      const generation = tooltipGenRef.current;
+      if (tooltipTimerRef.current !== null) {
+        clearTimeout(tooltipTimerRef.current);
+      }
+      setTooltipPhase({ kind: "waiting", target, generation });
+      tooltipTimerRef.current = setTimeout(() => {
+        tooltipTimerRef.current = null;
+        const live = projectionRef.current.mentions.some(
+          (chip) =>
+            chip.link.start === target.start &&
+            chip.link.end === target.end &&
+            mentionTargetPath(chip) === target.path,
+        );
+        const next = mentionTooltipPromote(tooltipPhaseRef.current, generation, live);
+        if (next !== tooltipPhaseRef.current) {
+          setTooltipPhase(next);
+        }
+      }, MENTION_TOOLTIP_DELAY_MS);
+    },
+    [setTooltipPhase],
+  );
+
+  /** Hit-test the pointer against the mirror's chip spans (the mirror sits
+   * under the pointer-transparent textarea, so this is manual). */
+  const chipAt = useCallback((x: number, y: number): MentionTooltipTarget | null => {
+    const mirror = mirrorRef.current;
+    if (mirror === null) {
+      return null;
+    }
+    for (const chip of Array.from(mirror.querySelectorAll<HTMLElement>("[data-chip-index]"))) {
+      for (const rect of Array.from(chip.getClientRects())) {
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+          const ix = Number(chip.dataset["chipIndex"]);
+          const projected = projectionRef.current.mentions[ix];
+          if (projected !== undefined) {
+            return {
+              start: projected.link.start,
+              end: projected.link.end,
+              path: mentionTargetPath(projected),
+            };
+          }
+        }
+      }
+    }
+    return null;
+  }, []);
+
+  // `on_mention_pointer_move` (composer.rs:2087) + the window-level
+  // visibility check (`check_mention_tooltip_visibility`, composer.rs:2142):
+  // jitter over the same chip cannot restart the delay or flicker the
+  // tooltip; the pointer inside the tooltip while visible keeps it; a drag
+  // invalidates.
+  useEffect(() => {
+    if (!mentionsActive) {
+      return;
+    }
+    const onPointerMove = (event: PointerEvent): void => {
+      if (event.buttons !== 0) {
+        invalidateTooltip();
+        return;
+      }
+      const target = chipAt(event.clientX, event.clientY);
+      const tooltipRect = tooltipElRef.current?.getBoundingClientRect() ?? null;
+      const inPopup =
+        tooltipRect !== null &&
+        event.clientX >= tooltipRect.left &&
+        event.clientX <= tooltipRect.right &&
+        event.clientY >= tooltipRect.top &&
+        event.clientY <= tooltipRect.bottom;
+      const next = mentionTooltipReduce(
+        tooltipPhaseRef.current,
+        target,
+        inPopup,
+        tooltipGenRef.current + 1,
+      );
+      if (next === tooltipPhaseRef.current) {
+        return;
+      }
+      if (next.kind === "waiting") {
+        startTooltipWait(next.target);
+      } else {
+        if (tooltipTimerRef.current !== null) {
+          clearTimeout(tooltipTimerRef.current);
+          tooltipTimerRef.current = null;
+        }
+        setTooltipPhase(next);
+      }
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    return () => window.removeEventListener("pointermove", onPointerMove);
+  }, [mentionsActive, chipAt, invalidateTooltip, startTooltipWait, setTooltipPhase]);
+
+  // Any edit or mouse-down invalidates (composer.rs:2034-2044).
+  useEffect(() => {
+    if (mentionsActive) {
+      invalidateTooltip();
+    }
+  }, [text, mentionsActive, invalidateTooltip]);
+  useEffect(() => {
+    if (!mentionsActive) {
+      return;
+    }
+    const onPointerDown = (): void => invalidateTooltip();
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [mentionsActive, invalidateTooltip]);
+
+  // The tooltip's anchor + live chip bounds, recomputed per phase change.
+  const tooltipAnchor = useMemo(() => {
+    if (tooltipPhase.kind !== "visible") {
+      return null;
+    }
+    const mirror = mirrorRef.current;
+    if (mirror === null) {
+      return null;
+    }
+    for (const chip of Array.from(mirror.querySelectorAll<HTMLElement>("[data-chip-index]"))) {
+      const ix = Number(chip.dataset["chipIndex"]);
+      const projected = projectionRef.current.mentions[ix];
+      if (
+        projected === undefined ||
+        projected.link.start !== tooltipPhase.target.start ||
+        projected.link.end !== tooltipPhase.target.end ||
+        mentionTargetPath(projected) !== tooltipPhase.target.path
+      ) {
+        continue;
+      }
+      const rect = Array.from(chip.getClientRects())[0];
+      if (rect === undefined) {
+        continue;
+      }
+      // GPUI positions the popup at anchor + 1px: above when there is room
+      // (chip.top − 24 − 1), else flush below so the pointer can enter it.
+      const above = rect.top - MENTION_TOOLTIP_HEIGHT - 1;
+      const top = above >= 0 ? above : rect.bottom - 1;
+      return { top, left: rect.left, path: tooltipPhase.target.path };
+    }
+    return null;
+    // The anchor derives from live DOM geometry; the mirror + phase drive it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tooltipPhase, projection, inputFocused, selection, text, mentionsActive]);
+
+  // ── The question wizard (composer.rs:5884-6861) ─────────────────────────
+
+  const setWizard = useCallback((wizard: Wizard | null): void => {
+    wizardRef.current = wizard;
+    setWizardGen(wizard === null ? -1 : 0);
+  }, []);
+
+  const clearAdvanceTimer = useCallback((): void => {
+    if (advanceTimerRef.current !== null) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+  }, []);
+
+  /** `wizard_finish` (composer.rs:6801): queue `RespondInput` on the action
+   * path (never the send path), retire the panel, and arm the 2s safety
+   * net against a host that rejects the command. */
+  const wizardFinish = useCallback(
+    (answers: readonly UserInputAnswer[]): void => {
+      const wizard = wizardRef.current;
+      if (wizard === null) {
+        return;
+      }
+      const requestId = wizard.requestId;
+      setWizard(null);
+      clearAdvanceTimer();
+      answeredRef.current.add(requestId);
+      setText("");
+      chatDrafts.clear(chat.id);
+      if (safetyTimerRef.current !== null) {
+        clearTimeout(safetyTimerRef.current);
+      }
+      const params = {
+        chatId: chat.id,
+        command: { kind: "respondInput", requestId, answers: [...answers] },
+        transfers: [],
+      };
+      void session.client
+        .call(methods.QUEUE_COMMAND, params)
+        .then(() => {
+          // Safety net (composer.rs:6843-6858): the command queued, but the
+          // host may still reject it. If the same request is still the live
+          // pending input once it has had time to resolve, the answer
+          // demonstrably didn't take — un-hide the panel.
+          safetyTimerRef.current = setTimeout(() => {
+            safetyTimerRef.current = null;
+            const entries = transcript?.getSnapshot().entries ?? [];
+            const pending = pendingInputRequest(entries);
+            if (pending?.requestId === requestId && answeredRef.current.delete(requestId)) {
+              setAnsweredGen((value) => value + 1);
+            }
+          }, WIZARD_SAFETY_NET_MS);
+        })
+        .catch((error: unknown) => {
+          // The answer never left this device — put the panel back.
+          answeredRef.current.delete(requestId);
+          setAnsweredGen((value) => value + 1);
+          setFailure({
+            message: `Answer failed: ${error instanceof Error ? error.message : String(error)}`,
+            key: chat.id,
+          });
+        });
+    },
+    [chat.id, clearAdvanceTimer, session.client, setWizard, transcript],
+  );
+
+  /** `wizard_advance` (composer.rs:6779): page on, clearing the shared
+   * free-text input for the next page. */
+  const wizardAdvance = useCallback((): void => {
+    const wizard = wizardRef.current;
+    if (wizard === null) {
+      return;
+    }
+    const step = wizard.advance();
+    if (step.kind === "done") {
+      wizardFinish(step.answers);
+      return;
+    }
+    setWizardGen((value) => value + 1);
+    setText("");
+  }, [wizardFinish]);
+
+  /** `schedule_auto_advance` (composer.rs:6769). */
+  const scheduleAutoAdvance = useCallback((): void => {
+    clearAdvanceTimer();
+    advanceTimerRef.current = setTimeout(() => {
+      advanceTimerRef.current = null;
+      wizardAdvance();
+    }, AUTO_ADVANCE_MS);
+  }, [clearAdvanceTimer, wizardAdvance]);
+
+  /** `wizard_select` (composer.rs:6750): the placeholder follows the pick. */
+  const wizardSelect = useCallback(
+    (ix: number): void => {
+      const wizard = wizardRef.current;
+      if (wizard === null) {
+        return;
+      }
+      const step = wizard.select(ix);
+      setWizardGen((value) => value + 1);
+      if (step.kind === "autoAdvance") {
+        scheduleAutoAdvance();
+      }
+    },
+    [scheduleAutoAdvance],
+  );
+
+  const wizardBack = useCallback((): void => {
+    const wizard = wizardRef.current;
+    if (wizard === null) {
+      return;
+    }
+    wizard.back();
+    setWizardGen((value) => value + 1);
+  }, []);
+
+  /** Enter in the borrowed input: the typed text becomes the page's answer,
+   * then the page advances (composer.rs:5984-5992). */
+  const wizardSubmitFromInput = useCallback((): void => {
+    const wizard = wizardRef.current;
+    if (wizard === null) {
+      return;
+    }
+    wizard.setTyped(textRef.current.trim());
+    wizardAdvance();
+  }, [wizardAdvance]);
+
+  // `on_state_changed`'s question lifecycle (composer.rs:5879-5928): open on
+  // a fresh unresolved request, latch until it resolves or a newer
+  // assistant entry supersedes it — never on run death. A pending question
+  // must not take over an active queue edit.
+  useEffect(() => {
+    if (editingMessage !== null && editingMessage !== undefined) {
+      return;
+    }
+    const entries = transcriptSnapshot?.entries ?? [];
+    const pending = pendingInputRequest(entries);
+    const answered = answeredRef.current;
+    if (pending !== null && !answered.has(pending.requestId)) {
+      const current = wizardRef.current;
+      if (current === null || current.requestId !== pending.requestId) {
+        resetMention(null);
+        resetSlash(null);
+        clearAdvanceTimer();
+        setWizard(new Wizard(pending.requestId, [...pending.questions]));
+      }
+      return;
+    }
+    const wizard = wizardRef.current;
+    if (wizard !== null) {
+      const released =
+        inputRequestResolved(entries, wizard.requestId) ||
+        (entries.length > 0 && !answered.has(wizard.requestId));
+      if (released) {
+        setWizard(null);
+        clearAdvanceTimer();
+      }
+    }
+  }, [transcriptSnapshot, editingMessage, answeredGen, wizardGen, resetMention, resetSlash, clearAdvanceTimer, setWizard]);
+
+  // The borrowed input's placeholder pair (composer.rs:5896-5898, 6751-6760,
+  // 6810) — restored to "Do anything…" the moment the panel unmounts.
+  const placeholder =
+    wizardActive && wizardRef.current !== null
+      ? wizardPlaceholder(wizardRef.current.pageHasPick())
+      : COMPOSER_REST_PLACEHOLDER;
+
+  // While the wizard is mounted the flip machinery stands down (the pill is
+  // not rendered); the wizard's own auto-grow owns the input's height,
+  // capped at five lines.
+  useEffect(() => {
+    if (!wizardActive || textareaRef.current === null) {
+      return;
+    }
+    const el = textareaRef.current;
+    el.style.height = "auto";
+    const capped = Math.min(Math.max(el.scrollHeight, 22.75), 120);
+    el.style.height = `${capped}px`;
+    el.style.overflowY = el.scrollHeight > 120 ? "auto" : "hidden";
+  }, [wizardActive, text, placeholder]);
+
+  // When the wizard opens, focus lands where the desktop keeps it: the
+  // input if it held focus through the swap, else the panel (digits select
+  // while the input is unfocused).
+  useEffect(() => {
+    if (!wizardActive) {
+      return;
+    }
+    if (inputFocused) {
+      textareaRef.current?.focus();
+    } else {
+      wizardPanelRef.current?.focus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizardActive]);
+
+  // Pending timers never outlive the composer.
+  useEffect(
+    () => () => {
+      if (advanceTimerRef.current !== null) {
+        clearTimeout(advanceTimerRef.current);
+      }
+      if (safetyTimerRef.current !== null) {
+        clearTimeout(safetyTimerRef.current);
+      }
+      if (tooltipTimerRef.current !== null) {
+        clearTimeout(tooltipTimerRef.current);
+      }
+      if (mentionSearchTimerRef.current !== null) {
+        clearTimeout(mentionSearchTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const applyDraft = useCallback((next: DraftConfig) => {
     setDraft(next);
   }, []);
@@ -880,44 +1864,236 @@ export function Composer({
     await send(text, mode === "queue");
   }, [busy, text, staged, runLive, editingMessage, onEditFinish, session.client, interrupt, send]);
 
-  // ── Enter policy (`message_enter_bindings`, composer.rs:1347-1390) ─────
-  // Exactly two bindings; Shift+Enter is always a native newline. While an
-  // IME composition is active, Enter is never a submit.
+  // ── Key policy: completions → wizard → Enter bindings (§2.7) ───────────
+  // Exactly two Enter bindings; Shift+Enter is always a native newline. While
+  // an IME composition is active, Enter is never a submit.
   const modifierCombo = platformModifierCombo(isMacPlatform());
   const bindings = useMemo(
     () => messageEnterBindings(sendBehavior, modifierCombo),
     [sendBehavior, modifierCombo],
   );
+
+  /** The atomic-motion keys a chip projection intercepts (Left/Right/
+   * Backspace/Delete at a chip boundary — one press steps over or removes
+   * the whole mention, composer.rs:2345-2383). Returns true when consumed. */
+  const handleAtomicMotion = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    const projectionNow = projectionRef.current;
+    if (projectionNow.mentions.length === 0) {
+      return false;
+    }
+    const el = textareaRef.current;
+    if (el === null) {
+      return false;
+    }
+    const bare = !event.metaKey && !event.ctrlKey && !event.altKey;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    const collapsed = start === end;
+    switch (event.key) {
+      case "ArrowLeft": {
+        if (!bare || !collapsed) {
+          return false;
+        }
+        const boundary = projectionNow.previousBoundary(start);
+        if (boundary === null) {
+          return false;
+        }
+        event.preventDefault();
+        el.setSelectionRange(boundary, boundary);
+        setSelectionState([boundary, boundary]);
+        return true;
+      }
+      case "ArrowRight": {
+        if (!bare || !collapsed) {
+          return false;
+        }
+        const boundary = projectionNow.nextBoundary(start);
+        if (boundary === null) {
+          return false;
+        }
+        event.preventDefault();
+        el.setSelectionRange(boundary, boundary);
+        setSelectionState([boundary, boundary]);
+        return true;
+      }
+      case "Backspace": {
+        if (!bare) {
+          return false;
+        }
+        if (collapsed) {
+          const boundary = projectionNow.previousBoundary(start);
+          if (boundary !== null) {
+            event.preventDefault();
+            applyEdit(boundary, start, "", boundary);
+            return true;
+          }
+        }
+        return false;
+      }
+      case "Delete": {
+        if (!bare) {
+          return false;
+        }
+        if (collapsed) {
+          const boundary = projectionNow.nextBoundary(start);
+          if (boundary !== null) {
+            event.preventDefault();
+            applyEdit(start, boundary, "", start);
+            return true;
+          }
+        }
+        return false;
+      }
+      default:
+        return false;
+    }
+  };
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) {
       return;
     }
-    if (event.key !== "Enter") {
+    const slashOpen = slashRef.current.token !== null;
+    const completionOpen = slashOpen || mentionRef.current.token !== null;
+    const completionHasSelection = slashOpen
+      ? slashRef.current.active !== null
+      : mentionRef.current.active !== null;
+
+    // 1. Escape: a completion open always dismisses and stops here
+    // (`escape_dismisses_completion`, composer.rs:2651).
+    if (event.key === "Escape") {
+      if (escapeDismissesCompletion(event.key, completionOpen)) {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissCompletion();
+        return;
+      }
+      if (wizardActiveRef.current) {
+        // The borrowed input swallows Escape; it pages back only when the
+        // input is empty (wizard_escape_goes_back with inputFocused=true).
+        event.preventDefault();
+        event.stopPropagation();
+        if (wizardEscapeGoesBack(event.key, true, textRef.current.length === 0)) {
+          wizardBack();
+        }
+        return;
+      }
+      // A queue edit's cancel rides the shell's escape ladder (ticket 13);
+      // anything else bubbles.
       return;
     }
-    const mod = event.metaKey || event.ctrlKey;
-    const bareEnter = !mod && !event.altKey && !event.shiftKey;
-    if (mod && !event.altKey) {
-      // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
-      // recently queued row on a truly empty composer, never Stop.
+
+    // 2. Tab accepts a selected completion (`MentionTab`, composer.rs:2642).
+    if (event.key === "Tab" && completionOpen && completionHasSelection) {
       event.preventDefault();
-      const content = composerHasContent(text, staged.length, 0);
-      if (modifiedSubmitTarget(content) === "submitContent") {
+      event.stopPropagation();
+      acceptCompletion();
+      return;
+    }
+
+    // 3. Arrows walk the open completion's rows (composer.rs:2385-2403).
+    if ((event.key === "ArrowUp" || event.key === "ArrowDown") && completionOpen && completionHasSelection) {
+      event.preventDefault();
+      event.stopPropagation();
+      moveCompletion(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+
+    if (event.key === "Enter") {
+      // 4. `enter_outcome` (composer.rs:1407): a live completion selection
+      // always wins over submit or newline.
+      if (enterOutcome(completionOpen && completionHasSelection, "submit") === "acceptCompletion") {
+        event.preventDefault();
+        event.stopPropagation();
+        acceptCompletion();
+        return;
+      }
+      // 5. The wizard borrows the input's context (`"Composer"`): bare
+      // Enter always submits the page; ModifiedSubmit is dropped; Shift+Enter
+      // stays a native newline.
+      if (wizardActiveRef.current) {
+        if (event.metaKey || event.ctrlKey) {
+          event.preventDefault();
+          return;
+        }
+        if (!event.shiftKey && !event.altKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          wizardSubmitFromInput();
+        }
+        return;
+      }
+      // 6. The `ComposerSendBehavior` policy (ticket 13).
+      const mod = event.metaKey || event.ctrlKey;
+      const bareEnter = !mod && !event.altKey && !event.shiftKey;
+      if (mod && !event.altKey) {
+        // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
+        // recently queued row on a truly empty composer, never Stop.
+        event.preventDefault();
+        const content = composerHasContent(text, staged.length, 0);
+        if (modifiedSubmitTarget(content) === "submitContent") {
+          void submit();
+        } else {
+          activateLatestQueued?.();
+        }
+        return;
+      }
+      if (
+        bareEnter &&
+        bindings.some((binding) => binding.keystroke === "enter" && binding.action === "submit")
+      ) {
+        event.preventDefault();
         void submit();
-      } else {
-        activateLatestQueued?.();
+      }
+      // Everything else — Shift+Enter, Alt+Enter, bare Enter under
+      // "modEnter" — is a newline, native.
+      return;
+    }
+
+    // 7. Atomic chip motion (only when the projection has chips).
+    if (handleAtomicMotion(event)) {
+      return;
+    }
+  };
+
+  // ── `on_wizard_key` (composer.rs:6863-6894) on the panel wrapper ────────
+  // Keys bubbling out of the free-text input must not double-handle: digits
+  // select only while the input is unfocused or empty, Enter advances only
+  // when the input is unfocused (its own Submit policy owns the focused
+  // case), Escape pages back — swallowed either way.
+  const onWizardKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const inputFocusedNow = document.activeElement === textareaRef.current;
+    const inputEmpty = textRef.current.length === 0;
+    const modified = event.metaKey || event.ctrlKey || event.altKey;
+    if (/^[1-9]$/.test(event.key)) {
+      // A BARE digit picks an option; with a modifier the keystroke belongs
+      // to an app shortcut (⌘1..⌘9 jump to sidebar rows) — never consumed.
+      if (modified) {
+        return;
+      }
+      if (!inputFocusedNow || inputEmpty) {
+        // Consumed as a selection: the digit is not also typed.
+        event.preventDefault();
+        event.stopPropagation();
+        wizardSelect(Number(event.key) - 1);
       }
       return;
     }
-    if (
-      bareEnter &&
-      bindings.some((binding) => binding.keystroke === "enter" && binding.action === "submit")
-    ) {
-      event.preventDefault();
-      void submit();
+    if (event.key === "Enter") {
+      if (!inputFocusedNow) {
+        event.preventDefault();
+        event.stopPropagation();
+        wizardAdvance();
+      }
+      return;
     }
-    // Everything else — Shift+Enter, Alt+Enter, bare Enter under
-    // "modEnter" — is a newline, native.
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (wizardEscapeGoesBack("escape", inputFocusedNow, inputEmpty)) {
+        wizardBack();
+      }
+    }
   };
 
   // Escape while editing a queued row cancels the edit (the container
@@ -1077,11 +2253,117 @@ export function Composer({
 
   const sendAriaLabel = mode === "stop" ? "Stop" : mode === "queue" ? "Queue" : "Send";
 
+  // ── The chip mirror (§2.3's web note) ───────────────────────────────────
+  // A textarea cannot wash a sub-range: while the draft carries mentions the
+  // textarea's own text is transparent (caret included — its raw-offset
+  // geometry no longer matches the display text), and this mirror under it
+  // paints the projected text — chips in the mono font over the code wash —
+  // plus the selection wash and the caret at its display offset.
+  const [selStart, selEnd] = selection;
+  const caretDisplay = selStart === selEnd && inputFocused ? projection.rawToDisplay(selStart) : null;
+  const selectionDisplay =
+    selStart !== selEnd
+      ? { start: projection.rawToDisplay(selStart), end: projection.rawToDisplay(selEnd) }
+      : null;
+
+  const mirrorNodes = useMemo(() => {
+    if (!mentionsActive) {
+      return null;
+    }
+    const chips = projection.mentions;
+    const cuts = new Set<number>([0, projection.display.length]);
+    for (const chip of chips) {
+      cuts.add(chip.start);
+      cuts.add(chip.end);
+    }
+    if (selectionDisplay !== null) {
+      cuts.add(selectionDisplay.start);
+      cuts.add(selectionDisplay.end);
+    }
+    if (caretDisplay !== null) {
+      cuts.add(caretDisplay);
+    }
+    const points = [...cuts].sort((a, b) => a - b);
+    const nodes: ReactNode[] = [];
+    for (let ix = 0; ix < points.length - 1; ix += 1) {
+      const from = points[ix]!;
+      const to = points[ix + 1]!;
+      if (caretDisplay === from) {
+        nodes.push(<span key={`caret-${from}`} className="composer-input-caret" />);
+      }
+      if (from === to) {
+        continue;
+      }
+      const chipIx = chips.findIndex((candidate) => candidate.start <= from && to <= candidate.end);
+      const selected =
+        selectionDisplay !== null &&
+        selectionDisplay.start <= from &&
+        to <= selectionDisplay.end;
+      const textPart = projection.display.slice(from, to);
+      const classes = [
+        chipIx >= 0 ? "mention-chip" : "",
+        selected ? "composer-input-selection" : "",
+      ]
+        .filter((name) => name.length > 0)
+        .join(" ");
+      nodes.push(
+        <span key={`seg-${from}`} className={classes} data-chip-index={chipIx >= 0 ? chipIx : undefined}>
+          {textPart}
+        </span>,
+      );
+    }
+    if (caretDisplay === projection.display.length) {
+      nodes.push(<span key="caret-end" className="composer-input-caret" />);
+    }
+    return nodes;
+  }, [projection, mentionsActive, selectionDisplay, caretDisplay]);
+
+  // Keep the mirror's scroll glued to the textarea's (it mounts/unmounts
+  // with the mentions).
+  useLayoutEffect(() => {
+    if (mirrorRef.current !== null && textareaRef.current !== null) {
+      mirrorRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  }, [mirrorNodes]);
+
+  // The shared input: the SAME textarea element in the pill and in the
+  // wizard's free-text slot (one JSX node, one draft state — never a second
+  // input).
+  const inputStack = (
+    <div className="composer-input-stack">
+      <textarea
+        ref={textareaRef}
+        className="composer-input"
+        rows={1}
+        value={text}
+        placeholder={placeholder}
+        onChange={onInputChange}
+        onSelect={onInputSelect}
+        onKeyDown={onKeyDown}
+        onPaste={onPaste}
+        onFocus={() => setInputFocused(true)}
+        onBlur={() => setInputFocused(false)}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={() => setComposing(false)}
+        spellCheck={false}
+        autoComplete="off"
+        aria-label={placeholder}
+        data-mentions={mentionsActive && !composing ? "true" : "false"}
+      />
+      {mirrorNodes !== null && !composing && (
+        <div className="composer-input-mirror" ref={mirrorRef} aria-hidden="true">
+          {mirrorNodes}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={`composer ${expanded ? "composer-expanded" : "composer-compact"}`}
       data-working={runLive ? "true" : undefined}
       data-editing={editingActive ? "true" : undefined}
+      data-wizard={wizardActive ? "true" : undefined}
     >
       {failureVisible !== null && (
         <div
@@ -1108,104 +2390,156 @@ export function Composer({
         <div className="composer-queue-tray">{queueSlot}</div>
       )}
       <div className="composer-surface" id="composer-surface">
-        {/*
-          The pill. ONE DOM shape for both modes (the textarea never
-          remounts — the caret survives the flip); the compact row and the
-          expanded column are the same tree re-laid-out by `[data-mode]`
-          CSS, with the animated numbers inline.
-        */}
-        <div
-          className="composer-pill"
-          data-mode={expanded ? "expanded" : "compact"}
-          style={{ height: `${layout.pillHeight}px` }}
-          onMouseDown={onPillMouseDown}
-        >
-          <AttachmentStrip
-            chatId={chat.id}
-            staged={staged}
-            uploadProgress={uploadProgress}
-            onStage={onStage}
-            onRemove={onRemove}
-            onError={onStageError}
-            pickerRef={attachRef}
+        {wizardActive && wizardRef.current !== null ? (
+          <ComposerWizard
+            wizard={wizardRef.current}
+            typedEmpty={text.length === 0}
+            inputSlot={inputStack}
+            onSelect={wizardSelect}
+            onAdvance={wizardAdvance}
+            onBack={wizardBack}
+            onKeyDown={onWizardKeyDown}
+            panelRef={wizardPanelRef}
           />
-          <div className="composer-body">
+        ) : (
+          <>
+            {/*
+              The pill. ONE DOM shape for both modes; the compact row and the
+              expanded column are the same tree re-laid-out by `[data-mode]`
+              CSS, with the animated numbers inline.
+            */}
             <div
-              className="composer-input-box"
-              style={
-                expanded
-                  ? { height: `${layout.boxHeight}px`, paddingTop: `${layout.textPad}px` }
-                  : { top: `${-layout.textGlide}px` }
-              }
+              className="composer-pill"
+              data-mode={expanded ? "expanded" : "compact"}
+              style={{ height: `${layout.pillHeight}px` }}
+              onMouseDown={onPillMouseDown}
             >
-              <textarea
-                ref={textareaRef}
-                className="composer-input"
-                rows={1}
-                value={text}
-                placeholder="Do anything…"
-                onChange={(event) => setText(event.target.value)}
-                onKeyDown={onKeyDown}
-                onPaste={onPaste}
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="Do anything…"
+              <AttachmentStrip
+                chatId={chat.id}
+                staged={staged}
+                uploadProgress={uploadProgress}
+                onStage={onStage}
+                onRemove={onRemove}
+                onError={onStageError}
+                pickerRef={attachRef}
               />
-            </div>
-            <div
-              className="composer-actions"
-              style={
-                expanded
-                  ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
-                  : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
-              }
-            >
-              <div className="composer-utility">
-                <ComposerPickers
-                  catalog={catalog}
-                  draft={draft}
-                  chatConfig={chat.config}
-                  onDraft={applyDraft}
-                  onPersist={persistDraft}
-                  escapeFocusTarget={() => textareaRef.current}
-                  onOpenChange={setPickersOpen}
-                />
-                <button type="button" className="composer-attach" aria-label="Attach" onClick={onAttachClick}>
-                  <Icon name="paperclip" size={16} />
-                </button>
+              <div className="composer-body">
+                <div
+                  className="composer-input-box"
+                  style={
+                    expanded
+                      ? { height: `${layout.boxHeight}px`, paddingTop: `${layout.textPad}px` }
+                      : { top: `${-layout.textGlide}px` }
+                  }
+                >
+                  {inputStack}
+                </div>
+                <div
+                  className="composer-actions"
+                  style={
+                    expanded
+                      ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+                      : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+                  }
+                >
+                  <div className="composer-utility">
+                    <ComposerPickers
+                      catalog={catalog}
+                      draft={draft}
+                      chatConfig={chat.config}
+                      onDraft={applyDraft}
+                      onPersist={persistDraft}
+                      escapeFocusTarget={() => textareaRef.current}
+                      onOpenChange={setPickersOpen}
+                    />
+                    <button type="button" className="composer-attach" aria-label="Attach" onClick={onAttachClick}>
+                      <Icon name="paperclip" size={16} />
+                    </button>
+                  </div>
+                  {/*
+                    A 28px filled circle — up-arrow to send or queue, a dark
+                    rounded square on the same light circle to stop
+                    (`render_send_button`, composer.rs:7106). No label, no
+                    tooltip; blocked sends dim to 0.35 with no click handler;
+                    Stop is never blocked.
+                  */}
+                  <button
+                    type="button"
+                    className={`composer-send ${mode === "stop" ? "composer-send-stop" : ""}`}
+                    onClick={() => (mode === "stop" ? void interrupt() : void submit())}
+                    disabled={blocked}
+                    aria-label={sendAriaLabel}
+                  >
+                    {mode === "stop" ? (
+                      <span className="composer-stop-square" />
+                    ) : (
+                      <Icon name="arrowUp" size={14} />
+                    )}
+                  </button>
+                </div>
               </div>
               {/*
-                A 28px filled circle — up-arrow to send or queue, a dark
-                rounded square on the same light circle to stop
-                (`render_send_button`, composer.rs:7106). No label, no
-                tooltip; blocked sends dim to 0.35 with no click handler;
-                Stop is never blocked.
+                The text-width mirror: `white-space: pre` +
+                `width: max-content` make its offsetWidth the unwrapped
+                widest-line width. The font stack MUST match
+                `.composer-input` so the number matches what the textarea
+                wraps at.
               */}
-              <button
-                type="button"
-                className={`composer-send ${mode === "stop" ? "composer-send-stop" : ""}`}
-                onClick={() => (mode === "stop" ? void interrupt() : void submit())}
-                disabled={blocked}
-                aria-label={sendAriaLabel}
-              >
-                {mode === "stop" ? (
-                  <span className="composer-stop-square" />
-                ) : (
-                  <Icon name="arrowUp" size={14} />
-                )}
-              </button>
+              <div ref={measureRef} className="composer-input-measure" aria-hidden="true">
+                {text}
+              </div>
             </div>
+            {/*
+              The two completion popups — mutually exclusive by token shape
+              (`/` at offset 0 vs `@` at a token boundary), so at most one
+              is ever mounted. Absolutely positioned children of the
+              composer surface, spanning the pill's width above it.
+            */}
+            {mention.token !== null && (
+              <MentionPopup
+                token={mention.token}
+                results={mention.results}
+                active={mention.active}
+                loading={mention.loading}
+                error={mention.error}
+                onAccept={(ix) => {
+                  setMention((current) => (current.active === ix ? current : { ...current, active: ix }));
+                  acceptMention(ix);
+                }}
+                onDismiss={dismissCompletion}
+                onCardMouseDown={() => textareaRef.current?.focus()}
+              />
+            )}
+            {slash.token !== null && (
+              <SlashPopup
+                token={slash.token}
+                commands={slash.harness !== null ? slashCacheRef.current.get(slash.harness) ?? [] : []}
+                filtered={slash.filtered}
+                active={slash.active}
+                loading={slash.loading}
+                error={slash.error}
+                onAccept={(rowIx) => {
+                  setSlash((current) => (current.active === rowIx ? current : { ...current, active: rowIx }));
+                  acceptSlash(rowIx);
+                }}
+                onDismiss={dismissCompletion}
+                onCardMouseDown={() => textareaRef.current?.focus()}
+              />
+            )}
+          </>
+        )}
+        {/* The hovered chip's path tooltip (§2.3): 24px tall, 480px max, mono
+            11px, above the chip (flush below when there is no room). */}
+        {tooltipAnchor !== null && (
+          <div
+            className="mention-tooltip"
+            ref={tooltipElRef}
+            style={{ top: `${tooltipAnchor.top}px`, left: `${tooltipAnchor.left}px` }}
+            role="tooltip"
+          >
+            {tooltipAnchor.path}
           </div>
-          {/*
-            The text-width mirror: `white-space: pre` + `width: max-content`
-            make its offsetWidth the unwrapped widest-line width. The font
-            stack MUST match `.composer-input` so the number matches what
-            the textarea wraps at.
-          */}
-          <div ref={measureRef} className="composer-input-measure" aria-hidden="true">
-            {text}
-          </div>
-        </div>
+        )}
       </div>
       {footerSlot}
     </div>
@@ -1213,6 +2547,61 @@ export function Composer({
 }
 
 function NOOP(): void {}
+
+/** Whether two completion tokens are equal (range + query). */
+function tokensEqual(
+  a: CompletionToken | null,
+  b: CompletionToken | null,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a === null || b === null) {
+    return false;
+  }
+  return a.start === b.start && a.end === b.end && a.query === b.query;
+}
+
+/** The non-newline whitespace following a token, if any (`replace_mention`'s
+ * existing-separator rule, composer.rs:1893-1895). */
+function separatorAfter(text: string, at: number): string | null {
+  if (at >= text.length) {
+    return null;
+  }
+  const ch = text[at];
+  return ch !== undefined && ch !== "\n" && ch !== "\r" && /\s/.test(ch) ? ch : null;
+}
+
+/** The tooltip identity's path form: the full workspace-relative path, with
+ * a trailing `/` for directories (composer.rs:3486-3491). */
+function mentionTargetPath(chip: { link: { path: string; isDir: boolean } }): string {
+  return `${chip.link.path}${chip.link.isDir ? "/" : ""}`;
+}
+
+/** Decode a `SearchFiles` reply, tolerating a malformed payload. */
+function parseFileMatches(reply: unknown): readonly FileSearchMatch[] | null {
+  if (!Array.isArray(reply)) {
+    return null;
+  }
+  const matches: FileSearchMatch[] = [];
+  for (const entry of reply) {
+    if (typeof entry !== "object" || entry === null) {
+      return null;
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.path !== "string" || typeof candidate.isDir !== "boolean") {
+      return null;
+    }
+    matches.push({ path: candidate.path, isDir: candidate.isDir });
+  }
+  return matches;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 /** The seeded model's ladder for the draft-seeding effect (`trait_ladder`). */
 function ladderFor(models: readonly Model[], modelId: string): readonly Model["reasoningLevels"][number][] {
