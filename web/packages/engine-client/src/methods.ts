@@ -12,6 +12,9 @@ export const WATCH_SPACES = "WatchSpaces";
 export const WATCH_DEVICES = "WatchDevices";
 export const WATCH_SESSIONS = "WatchSessions";
 export const WATCH_QUEUE = "WatchQueue";
+/** Live edge-connectivity posture (crates/engine/src/rpc.rs:1098): one
+ *  `Connectivity` object per engine, re-sent whole on every change. */
+export const WATCH_CONNECTIVITY = "WatchConnectivity";
 /** The chat doc's transcript stream: full `reset` first, then delta frames. */
 export const WATCH_DOC_MESSAGES = "WatchDocMessages";
 /** Fetch a tool sidecar blob (`{blobRef}` → `{text}`) - full output/diff text. */

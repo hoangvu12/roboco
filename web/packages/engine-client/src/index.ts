@@ -50,6 +50,7 @@ export {
 export {
   EngineWatchCache,
   type ChatStatus,
+  type ConnectivitySlot,
   type RowSet,
   type WatchCacheOptions,
   type WatchCacheSnapshot,
