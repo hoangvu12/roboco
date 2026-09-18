@@ -1983,11 +1983,12 @@ a:focus-visible,
 
 /*
  * `#attachment-drop-overlay` (shell.rs:6126-6152): the conversation column's
- * drop veil — scrim at the band alpha, centred "Drop to attach" at 13px.
- * Revealed only by a drag whose payload is real files (`types` carries
- * "Files", the web peer of GPUI's concrete-TypeId match); pointer-events
- * none so the drop itself keeps bubbling to the column. Ticket 17 owns what
- * happens to the files.
+ * drop veil — `theme.scrim().opacity(0.4 / 0.6)`: black at 0.4 in dark, at
+ * 0.32·(2/3) in light (the scrim token carries the base alpha), centred
+ * "Drop to attach" at 13px. Revealed only by a drag whose payload is real
+ * files (`types` carries "Files", the web peer of GPUI's concrete-TypeId
+ * match); pointer-events none so the drop itself keeps bubbling to the
+ * column. Ticket 17 owns what happens to the files.
  */
 .attachment-drop-overlay {
   position: absolute;
@@ -1996,7 +1997,7 @@ a:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
+  background: rgb(0 0 0 / calc(var(--rb-scrim-alpha) * 2 / 3));
   color: var(--rb-text);
   font-size: 13px;
   opacity: 0;
@@ -4436,21 +4437,42 @@ a:focus-visible,
     animation: none;
     opacity: 0.35;
   }
+
+  /* The attachment thumbs snap the same way: the loading skeleton holds its
+     resting opacity, the sending scrim holds its base alpha. */
+  .user-attachments-thumb[data-state="loading"] {
+    animation: none;
+    opacity: 0.35;
+  }
+
+  .user-attachments-thumb-sending {
+    animation: none;
+    background: rgb(0 0 0 / 0.38);
+  }
 }
 
-/* ── Attachments (composer strip + drop zone + transcript thumbs) ──── */
+/* ── Attachments (composer strip + drop veil + transcript thumbs) ──── */
+
+:root {
+  /* `shadow_sm` (gpui's Tailwind port, styles.rs), spelled once as a local
+     convenience for the staged strip's remove button — not a theme catalog
+     token. */
+  --rb-shadow-sm: 0 1px 3px rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+}
 
 /*
- * The staged strip above the input, in the pill in BOTH modes. Its wrap
- * height math is `attachmentStripHeight` (ticket 13); the strip's own
- * rendering is ticket 17's.
+ * The staged strip above the input, in the pill in BOTH modes
+ * (`render_attachment_strip`, composer.rs:4636-4727). The wrapper hosts the
+ * hidden picker input, the wrapper-level paste listener, and the chat-column
+ * dropzone wiring; the strip itself is a wrap grid of bare 56px thumbnails —
+ * no filenames, no attach button (the paperclip in the actions cluster is
+ * the one affordance), no progress bar (upload progress renders in the
+ * transcript as a ring on the optimistic echo). The wrap height math is
+ * `attachmentStripHeight` (lib/attachments.ts).
  */
 .composer-attachments {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-xs);
-  padding: 12px 0 0;
+  display: block;
 }
 
 .composer-attachments-input {
@@ -4461,52 +4483,46 @@ a:focus-visible,
   pointer-events: none;
 }
 
-/*
- * No drop veil here (that is the shell's `#chat-dropzone`) and no inline
- * attach button — the composer has exactly one attach affordance, the
- * paperclip in its actions cluster.
- */
-.composer-attachments-row {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
-  min-height: 0;
-}
-
 .composer-attachments-strip {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 0;
 }
 
-.composer-attachments-strip::-webkit-scrollbar {
-  display: none;
-}
-
+/* One staged thumbnail (composer.rs:4654-4723): the 56px frame (click opens
+   the lightbox) + the hover-revealed remove button over its corner. */
 .composer-staged-row {
   position: relative;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
   flex: none;
-  width: 56px;
 }
 
 .composer-staged-thumb {
+  display: block;
   width: 56px;
   height: 56px;
-  object-fit: cover;
+  padding: 0;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.10 * var(--rb-hairline-scale)));
   border-radius: 8px;
-  border: 1px solid var(--rb-border);
-  background: var(--rb-input);
-  display: block;
+  overflow: hidden;
+  cursor: pointer;
 }
 
+/* Explicit 54px dims (56 − the 1px borders) with the img's own 7px radius:
+   the frame's rounding clips rectangularly, and a percent height would let
+   a tall photo grow past the frame (composer.rs:4675-4689). */
+.composer-staged-thumb-img {
+  display: block;
+  width: 54px;
+  height: 54px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+/* Hover-revealed remove (composer.rs:4695-4723): an 18px circle floating
+   over the thumbnail's corner — bg theme.bg, shadow_sm, NO border, the
+   closeCircle glyph at 14px text_muted; opacity 0 until the row is
+   hovered. */
 .composer-staged-remove {
   position: absolute;
   top: -6px;
@@ -4517,114 +4533,191 @@ a:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border: none;
   border-radius: 50%;
-  border: 1px solid var(--rb-border-strong);
-  background: var(--rb-raised);
-  color: var(--rb-text);
-  font-size: 12px;
-  line-height: 1;
+  background: var(--rb-bg);
+  color: var(--rb-text-muted);
+  box-shadow: var(--rb-shadow-sm);
+  opacity: 0;
   cursor: pointer;
 }
 
-.composer-staged-remove:hover {
-  background: var(--rb-hover);
+.composer-staged-row:hover .composer-staged-remove,
+.composer-staged-remove:focus-visible {
+  opacity: 1;
 }
-
-/*
- * No filename caption under a thumb, and no upload progress bar in the strip:
- * the desktop's strip is thumbs only, and upload progress is published into
- * `AppState.begin_upload_progress` and drawn elsewhere.
- */
 
 /* ── User-row attachment thumbs (transcript) ────────────────────────── */
 
+/*
+ * `render_user_attachments` (transcript.rs:4888-4900): full-width wrap,
+ * right-aligned under the user bubble, 112×80 thumbs, 8px gap. State chrome
+ * rides `[data-state]` — loaded (solid hairline), loading (pulsing
+ * skeleton on the ROBOCO_PULSE wave), error (the dashed "missing" thumb).
+ */
 .user-attachments {
+  width: 100%;
+  min-width: 0;
+  flex: none;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 6px;
-  max-width: 100%;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 4px 6px;
 }
 
 .user-attachments-thumb {
+  position: relative;
   flex: none;
-  width: 88px;
-  height: 64px;
+  width: 112px;
+  height: 80px;
   padding: 0;
-  border: 1px solid var(--rb-border);
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.11 * var(--rb-hairline-scale)));
   border-radius: 8px;
-  background: var(--rb-input);
+  background: rgb(var(--rb-ink) / 0.035);
   overflow: hidden;
-  cursor: zoom-in;
-  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
 }
 
-.user-attachments-thumb:hover {
-  border-color: var(--rb-accent);
+.user-attachments-thumb[data-state="loaded"] {
+  cursor: pointer;
 }
 
+.user-attachments-thumb[data-state="loading"] {
+  border-color: rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.055);
+  cursor: default;
+  /* `opacity(0.35 + 0.4 · pulse_wave(ROBOCO_PULSE))` — the 2400ms wave. */
+  animation: rb-skeleton-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
+}
+
+.user-attachments-thumb[data-state="error"] {
+  border-style: dashed;
+  border-color: rgb(var(--rb-hairline) / calc(0.14 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.025);
+  cursor: default;
+}
+
+/* Explicit 110×78 dims (112 − the borders) with the img's own 7px radius —
+   same rationale as the staged strip (transcript.rs:5102-5117). */
 .user-attachments-thumb-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
   display: block;
+  width: 110px;
+  height: 78px;
+  border-radius: 7px;
+  object-fit: cover;
 }
 
-.user-attachments-thumb-skeleton {
-  width: 100%;
-  height: 100%;
-  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
-  animation: skeleton-pulse 1.6s var(--rb-ease-ease-in-out) infinite;
-}
-
-.user-attachments-thumb-fail {
-  width: 100%;
-  height: 100%;
+/*
+ * The sending overlay (transcript.rs:5118-5149): a dark scrim pulsing on
+ * the ROBOCO_PULSE wave (`0.38 + 0.05·pulse`) over the loaded image, with
+ * the upload-progress ring or the glyph spinner centered.
+ */
+.user-attachments-thumb-sending {
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  color: var(--rb-danger);
-  font-size: 11px;
-  padding: 4px;
+  animation: rb-att-sending-scrim var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
 }
 
-.user-attachments-thumb-fail-label {
-  font-size: 9.5px;
-  color: var(--rb-text-faint);
+@keyframes rb-att-sending-scrim {
+  0% {
+    background: rgb(0 0 0 / 0.38);
+  }
+  50% {
+    background: rgb(0 0 0 / 0.43);
+  }
+  100% {
+    background: rgb(0 0 0 / 0.38);
+  }
 }
 
-.user-attachments-lightbox {
+/*
+ * `upload_progress_ring` (loaders.rs:283-333): a 34px ring, 2.5px stroke, a
+ * faint white track plus a bright arc growing clockwise from 12 o'clock, the
+ * percent centered. Fixed white-on-dim palette — the scrim behind it makes
+ * it read in both themes.
+ */
+.upload-progress-ring {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-progress-ring-svg {
+  position: absolute;
+  inset: 0;
+}
+
+.upload-progress-ring-track {
+  stroke: rgb(255 255 255 / 0.22);
+}
+
+.upload-progress-ring-arc {
+  stroke: rgb(255 255 255 / 0.95);
+}
+
+.upload-progress-ring-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgb(255 255 255 / 0.95);
+}
+
+/* ── The shared attachment lightbox (attachments.rs::lightbox_with_size
+ *    over image_viewer.rs) ──────────────────────────────────────────── */
+
+/*
+ * Full-viewport scrim (`popover::scrim_alpha(0.7)` — black at 0.7 in dark,
+ * at 0.32·(0.7/0.6) in light), column-centered with a 12px gap: the 90%w ×
+ * 85%h image viewport, then the filename. No entrance animation, like the
+ * desktop's deferred layer. The frame takes focus so Escape reaches it
+ * before any shell surface.
+ */
+.lightbox {
   position: fixed;
   inset: 0;
   z-index: var(--rb-z-modal);
-  background: color-mix(in srgb, var(--rb-overlay) 75%, transparent);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: var(--rb-space-md);
-  cursor: zoom-out;
-  animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
+  gap: 12px;
+  background: rgb(0 0 0 / calc(var(--rb-scrim-alpha) * 0.7 / 0.6));
+  outline: none;
+  user-select: none;
+  touch-action: none;
+  cursor: default;
 }
 
-.user-attachments-lightbox-img {
-  max-width: 90vw;
-  max-height: 85vh;
+.lightbox-image-box {
+  position: relative;
+  width: 90%;
+  height: 85%;
+  overflow: hidden;
+}
+
+.lightbox-image {
+  position: absolute;
   object-fit: contain;
-  border-radius: var(--rb-radius-control);
-  background: var(--rb-input);
 }
 
-.user-attachments-lightbox-name {
-  font-size: 12px;
-  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
-  max-width: 90vw;
+.lightbox-loading {
+  color: rgb(var(--rb-ink) / 0.6);
+}
+
+.lightbox-name {
+  max-width: 90%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11px;
+  color: rgb(var(--rb-ink) / 0.45);
 }
 
 .row-user .user-content {
@@ -4632,11 +4725,6 @@ a:focus-visible,
   flex-direction: column;
   align-items: flex-end;
   width: 100%;
-}
-
-.row-user .user-attachments {
-  margin-bottom: 0;
-  justify-content: flex-end;
 }
 
 .row-user .user-bubble {

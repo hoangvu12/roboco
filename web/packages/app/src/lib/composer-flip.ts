@@ -25,6 +25,7 @@
  */
 
 import { motion } from "@roboco/theme";
+import { STRIP_PAD_TOP } from "./attachments";
 
 // ---------------------------------------------------------------------------
 // Geometry constants (composer.rs:46-115) — transcribed verbatim
@@ -91,13 +92,10 @@ export const ACTION_PRIMARY_GAP = 8;
 /// the height morph.
 export const HEIGHT_RETARGET_EPSILON = 0.5;
 
-// Attachment strip metrics (composer.rs:288-291) — the pill height depends on
-// the strip's wrap math, so the height function lives here (the strip's own
-// rendering is ticket 17).
-export const STRIP_THUMB = 56;
-export const STRIP_GAP = 8;
-export const STRIP_PAD_TOP = 12;
-export const STRIP_PAD_X = 16;
+// Attachment strip metrics (composer.rs:288-296) moved to `lib/attachments.ts`
+// with the strip's own rendering (ticket 17); re-exported so the composer and
+// this module's historical importers keep one address.
+export { attachmentStripHeight } from "./attachments";
 
 /// `badges::BADGE_HEIGHT` (badges.rs:58) — the comments chip's row height.
 export const BADGE_HEIGHT = 24;
@@ -319,22 +317,6 @@ export function inputDragScrollDelta(
   }
   const magnitude = Math.min(Math.max(Math.abs(distance) * 0.2, 1.0), lineHeight);
   return Math.sign(distance) * magnitude;
-}
-
-/**
- * `attachment_strip_height` (composer.rs:296): the wrap strip's height for
- * `count` staged thumbnails at an `innerWidth` pill content width. Mirrors
- * flex-wrap: as many 56px thumbs per row as fit with 8px gaps inside the 16px
- * side insets.
- */
-export function attachmentStripHeight(count: number, innerWidth: number): number {
-  if (count === 0) {
-    return 0;
-  }
-  const usable = Math.max(innerWidth - 2 * STRIP_PAD_X, STRIP_THUMB);
-  const perRow = Math.max(Math.floor((usable + STRIP_GAP) / (STRIP_THUMB + STRIP_GAP)), 1);
-  const rows = Math.ceil(count / perRow);
-  return STRIP_PAD_TOP + rows * STRIP_THUMB + (rows - 1) * STRIP_GAP;
 }
 
 /** `comment_strip_height` (composer.rs:306): 0 or 12 + 24. */
