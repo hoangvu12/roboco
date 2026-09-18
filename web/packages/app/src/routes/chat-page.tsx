@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { methods } from "@roboco/engine-client";
+import type { Chat, QueuedMessage } from "@roboco/proto";
+import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
@@ -11,32 +13,55 @@ import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
-import { bottomClearance } from "../state/layout";
-import { chatRoute } from "../router";
+import { useNewThreadTarget } from "../components/composer/new-thread-selectors";
+import { NewThreadCanvas } from "./index-page";
+import { bottomClearance, PHONE_MAX_WIDTH, sidebarTarget, useSidebarLayout, useViewportWidth } from "../state/layout";
+import { navEntryForPath } from "../state/nav-history";
+import {
+  bottomStackMeasurementMatches,
+  dockFrameEquals,
+  dockFrameSettled,
+  DockState,
+  type DockFrame,
+} from "../lib/composer-dock";
+import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { QueueStore } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { echoStore, TranscriptStore } from "../state/transcript-store";
-import type { QueuedMessage } from "@roboco/proto";
-import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 
 /**
- * One chat's main panel: title, live status, the streaming transcript
- * (`../components/transcript.tsx`), the on-demand preview pane (right-dock
- * on wide viewports, stacked on phones), the queue panel above the composer
- * (ticket 09), the composer (docks at phone widths), and the terminal dock
- * (Ctrl+J). Archived chats stay open and say so in the header.
+ * The conversation page — the desktop's `render_main` (shell.rs:5806-6154).
  *
- * Queue store lifecycle mirrors the change-request store: one QueueStore
- * per open chat, memoized on chatId, disposed on unmount or chat switch.
- * The store owns the per-chat `WatchQueue` subscription and the local
- * edit-lease state; the page forwards edits from the panel into the
- * composer and the lease releases back into the store.
+ * BOTH conversation routes render THIS component (`/` and `/chat/$chatId`,
+ * see `router.tsx`): TanStack's `Match` memoizes the component element on
+ * `route.options.component`, so the same `ConversationPage` reference on
+ * both routes keeps ONE fiber alive across the route boundary — the web
+ * peer of the desktop's "one composer entity, re-anchored in prepaint,
+ * never remounted". The caret, the selection, the draft and the popup state
+ * all travel with the pixels. The page re-renders on navigation through its
+ * own router-state subscription; the chat id comes from the pathname
+ * (`""` = the new-thread canvas, the boot route).
+ *
+ * The blank canvas is the hero + the SAME persistent composer vertically
+ * re-anchored: the composer's wrapper sits in the bottom chrome stack (its
+ * layout slot), and the dock (`lib/composer-dock.ts`, the port of
+ * `composer_dock.rs`) glides it to `(viewportHeight − height)·0.5 + 8` via a
+ * transform, anchoring by the TOP of the surface. One retargetable clock
+ * owns everything: the glide (0.420/470 s critically damped), the pill
+ * height (`dockHeight`), the four staged chrome channels, the hero's
+ * `dissolve`, the 0.320 s panel handoff, and the width glide that snaps
+ * inside the handoff's invisible interval. Reduced motion — and the phone
+ * layer (≤ 768px, out of scope) — snap everything.
  */
-export function ChatPage() {
-  const { chatId } = useParams({ from: chatRoute.id });
+export function ConversationPage() {
+  // `chatId === ""` is the new-thread canvas; anything else names a chat.
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navEntry = navEntryForPath(pathname);
+  const chatId = navEntry !== null && navEntry.kind === "chat" ? navEntry.chatId : "";
+  const hasSelection = chatId !== "";
   const session = useEngineSession();
   const snapshot = useWatchSnapshot(session);
   const status = session === null ? null : session.client.status;
@@ -59,25 +84,79 @@ export function ChatPage() {
   }, [session, chatId]);
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
-  const chat = snapshot === null ? null : snapshot.chats.rows.find((row) => row.id === chatId) ?? null;
+  const chat =
+    snapshot === null || !snapshot.chats.loaded
+      ? undefined
+      : snapshot.chats.rows.find((row) => row.id === chatId) ?? undefined;
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
 
+  // ── The canvas target + the stub chat (the new-thread route) ───────────
+  // The canvas has no chat row; the composer still needs a `Chat`-shaped
+  // target — the remembered device/project picks resolved through
+  // `effective_device_id` (state.rs:1314-1320). The stub's id is the DRAFT
+  // key `""` (the desktop's `current_key` for the new-thread canvas), so
+  // the canvas draft survives every round trip.
+  const target = useNewThreadTarget();
+  const stubChat = useMemo<Chat>(
+    () => ({
+      id: chatId,
+      deviceId: target.effectiveDeviceId ?? "",
+      title: null,
+      archived: false,
+      cwd: target.space?.path ?? null,
+      branch: null,
+      checkoutId: null,
+      config: null,
+      lastMessagePreview: null,
+      lastMessageAt: null,
+      createdAt: new Date(0).toISOString(),
+      spaceId: target.space?.id ?? null,
+    }),
+    [chatId, target.effectiveDeviceId, target.space?.id, target.space?.path],
+  );
+  // While a freshly minted chat's row is still landing, the stub stands in
+  // (same id, so the composer never re-swaps its draft).
+  const effectiveChat = chat ?? stubChat;
+
   // The chat's ONE transcript store: the transcript view and the composer's
   // question wizard both read it, so an open chat carries a single
-  // `WatchDocMessages` stream. Disposed on chat switch/unmount like the
-  // queue store below.
+  // `WatchDocMessages` stream. The canvas has none; a DEPARTING transcript
+  // (undocking back to the canvas) keeps the source store until the route
+  // finishes its exit (`finish_route_exit`, shell.rs:5901-5904).
   const transcriptStore = useMemo(() => {
-    if (session === null) {
+    if (session === null || chatId === "") {
       return null;
     }
     return new TranscriptStore(session.client, chatId);
   }, [session, chatId]);
+  // The LIVE store: the departing transcript (undocking back to the canvas)
+  // keeps painting from the source chat's stream until the route finishes
+  // its exit (`finish_route_exit`, shell.rs:5901-5904). `dispose` is
+  // idempotent, so the exit and a later replacement can both call it.
+  const storeRef = useRef<TranscriptStore | null>(null);
+  const previousStoreRef = useRef<TranscriptStore | null>(null);
+  if (transcriptStore !== null) {
+    storeRef.current = transcriptStore;
+  }
+  // A chat switch replaces the stream: the old chat's store is disposed once
+  // the new one has committed.
+  useEffect(() => {
+    if (transcriptStore === null) {
+      return;
+    }
+    const previous = previousStoreRef.current;
+    if (previous !== null && previous !== transcriptStore) {
+      previous.dispose();
+    }
+    previousStoreRef.current = transcriptStore;
+  }, [transcriptStore]);
 
   useEffect(() => () => {
-    transcriptStore?.dispose();
-  }, [transcriptStore]);
+    storeRef.current?.dispose();
+    storeRef.current = null;
+  }, []);
 
   const crStore = useMemo(() => {
     if (session === null) {
@@ -114,7 +193,7 @@ export function ChatPage() {
   // Queue store: one per chat. Disposed on chat switch so a fresh
   // subscription lands immediately.
   const queueStore = useMemo(() => {
-    if (session === null || deviceId === null) {
+    if (session === null || deviceId === null || chatId === "") {
       return null;
     }
     return new QueueStore(session.client, chatId, { editorDeviceId: deviceId });
@@ -198,44 +277,163 @@ export function ChatPage() {
       ? undefined
       : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows);
 
+  // ── The dock: one retargetable clock for the route choreography ────────
+  const viewport = useViewportWidth();
+  const viewportHeight = useViewportHeight();
+  const sidebar = useSidebarLayout();
+  const sidebarNow = sidebarTarget(sidebar);
+  const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = () => setReducedMotion(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  const phone = viewport <= PHONE_MAX_WIDTH;
+  // The phone layer (out of scope, spec decision 5) keeps the composer in
+  // its slot: the dock snaps and never re-anchors.
+  const dockReduced = reducedMotion || phone;
+
+  const dockRef = useRef(new DockState());
+  const [dockFrame, setDockFrameState] = useState<DockFrame>(() => dockFrameSettled(false));
+  const [dockPump, setDockPump] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const prepaintMovingRef = useRef(false);
+  const dockTickedRef = useRef(false);
+
   // ── Bottom chrome stack bookkeeping ─────────────────────────────────────
-  // `bottom_stack` measured live (the desktop's paint-time canvas): the
-  // height feeds BOTH the transcript's bottom fade band through a custom
-  // property on the column AND the last row's clearance pad through
-  // `state/layout.ts`'s store, so the fade and the pad track the composer's
-  // compact↔expanded flip together. The same observer also feeds the
-  // composer the conversation-column WIDTH (clamped to 768 inside it) —
-  // `set_available_width`'s stable reflow feed.
+  // `bottom_stack` measured live (the desktop's paint-time canvas) PLUS
+  // `dock_clearance_correction` — the shell reserves the DESTINATION
+  // footprint, never the animated height, so the transcript's bottom fade
+  // band and clearance pad never pump mid-route. The same measurement
+  // records `bottom_stack_has_composer` for `transcript_geometry_ready`
+  // (shell.rs:837): one frame of disagreement hides the transcript so it
+  // never flashes under unmeasured chrome.
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
   const bottomStackRef = useRef<HTMLDivElement | null>(null);
   const [columnWidth, setColumnWidth] = useState<number | null>(null);
+  const dockCorrectionRef = useRef(0);
+  const [measuredHasComposer, setMeasuredHasComposer] = useState(false);
+  const expectedHasComposer = session !== null && hasSelection;
+  const transcriptGeometryReady = bottomStackMeasurementMatches(measuredHasComposer, expectedHasComposer);
+
   useEffect(() => {
-    const stack = bottomStackRef.current;
     const column = chatColumnRef.current;
-    if (stack === null || column === null || typeof ResizeObserver === "undefined") {
+    if (column === null || typeof ResizeObserver === "undefined") {
       return;
     }
-    const publish = (): void => {
-      const height = stack.getBoundingClientRect().height;
-      column.style.setProperty("--rb-bottom-stack", `${height}px`);
-      bottomClearance.set(height);
-    };
     const observer = new ResizeObserver(() => {
-      publish();
       setColumnWidth(column.getBoundingClientRect().width);
     });
-    observer.observe(stack);
     observer.observe(column);
-    // `set_bottom_clearance`'s discipline (transcript.rs:2940): publish once
-    // at attach too, not only on change.
-    publish();
+    setColumnWidth(column.getBoundingClientRect().width);
     return () => observer.disconnect();
-    // `row` gates the main return: the first render(s) take the loading
-    // early-return, where the refs are null and the effect above bailed — so
-    // the observer must re-arm once the row lands and the tree with the refs
-    // actually mounts.
+    // The early returns above gate the refs; re-arm once the tree lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, row?.chat.id]);
+  }, [chatId, row?.chat.id, session]);
+
+  // The dock's per-commit pass: observe the column's horizontal frame,
+  // re-anchor the composer's wrapper, publish the stack measurement. ROUTE
+  // CHANGES tick the clock immediately (the frame flips so the pump below
+  // can start); steady-state frames advance ONLY on the pump's animation
+  // frames — ticking per commit would spin the layout-effect/setState pair
+  // synchronously and freeze the glide. A layout effect so the transform
+  // lands in the same commit as the frame — the web peer of
+  // prepaint-before-paint.
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const nowMs = performance.now();
+    // `observe_pane`: the handoff arms when the DOCKED flag flips while the
+    // conversation column's width differs — ordinary resizing and
+    // same-column navigation never fade.
+    dock.observePane(hasSelection, columnWidth ?? 0, !dockReduced, nowMs);
+    // The clock initializes on the first pass (the desktop's first tick
+    // snaps the settled hero state and stamps `last_frame`), then only
+    // route changes tick here — steady frames advance on the pump.
+    if (dock.frame.docked !== hasSelection || !dockTickedRef.current) {
+      dockTickedRef.current = true;
+      const next = dock.tick(hasSelection, dockReduced, nowMs);
+      setDockFrameState((prev) => (dockFrameEquals(prev, next) ? prev : next));
+    }
+
+    const wrapper = wrapperRef.current;
+    const stack = bottomStackRef.current;
+    if (wrapper !== null && stack !== null && !phone) {
+      const stackRect = stack.getBoundingClientRect();
+      // The wrapper's NATURAL slot (transform excluded — offsets are layout
+      // values): the desktop's prepaint reads the layout bounds.
+      const bounds = {
+        left: stackRect.left + wrapper.offsetLeft,
+        top: stackRect.top + wrapper.offsetTop,
+        height: wrapper.offsetHeight,
+      };
+      const { dx, dy, moving } = dock.prepaint(bounds, viewportHeight, dockReduced, nowMs);
+      wrapper.style.transform = `translate(${dx}px, ${dy}px)`;
+      prepaintMovingRef.current = moving;
+    } else if (wrapper !== null) {
+      wrapper.style.transform = "";
+      prepaintMovingRef.current = false;
+    }
+
+    const column = chatColumnRef.current;
+    if (stack !== null && column !== null) {
+      const height = stack.getBoundingClientRect().height + dockCorrectionRef.current;
+      column.style.setProperty("--rb-bottom-stack", `${height}px`);
+      bottomClearance.set(height);
+      setMeasuredHasComposer(session !== null && hasSelection);
+    }
+  });
+
+  // The frame pump: one tick per ANIMATION FRAME while anything is in
+  // flight (the desktop's `request_animation_frame` in prepaint/tick). The
+  // setState lands in the rAF callback, so the tick's dt is the real frame
+  // gap and the re-render's layout effect re-anchors without ticking again.
+  useEffect(() => {
+    if (!dockFrame.active && !prepaintMovingRef.current) {
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const next = dockRef.current.tick(hasSelection, dockReduced, performance.now());
+      setDockFrameState((prev) => (dockFrameEquals(prev, next) ? prev : next));
+      setDockPump((value) => value + 1);
+    });
+    return () => cancelAnimationFrame(raf);
+    // `hasSelection` rides along so a mid-glide reversal retargets the next
+    // frame's tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dockFrame.active, dockPump, hasSelection]);
+
+  // The composer's own width: glides on the dock's clock (snapping inside
+  // the handoff's invisible interval), clamped to the 768px cap — the
+  // desktop's `layout_width(main_content_width.min(COMPOSER_MAX_WIDTH))`,
+  // fed back through `set_available_width` so the pill re-wraps mid-glide.
+  // `layoutWidth` with a ~0 dt is a no-op, so render-path calls are safe.
+  const composerWidthTarget = Math.min(Math.max(columnWidth ?? COMPOSER_MAX_WIDTH, 0), COMPOSER_MAX_WIDTH);
+  const composerWidth = dockRef.current.layoutWidth(composerWidthTarget, dockReduced, performance.now());
+
+  // The hero: full conversation canvas (`viewport − sidebar_now`, never
+  // rescaled by the right pane), mounted while `!has_selection` or the dock
+  // is still dissolving one away, outside the transcript's edge fade.
+  const heroVisible = (!hasSelection || dockFrame.active) && !phone;
+  const heroWidth = Math.max(viewport - sidebarNow, 0);
+
+  // The transcript outlet: selected chat → transcript; nothing selected →
+  // the centered new-thread composition. A DEPARTING transcript (undocking)
+  // keeps its pixels as visual history, fixed at the source column width
+  // and occluded so it is not an interaction surface.
+  const departing = !hasSelection && dockFrame.visuals.transcript > 0;
+  // `finish_route_exit`: once the route is blank and the exit finished,
+  // release the retained store.
+  useEffect(() => {
+    if (!hasSelection && !departing && storeRef.current !== null) {
+      storeRef.current.dispose();
+      storeRef.current = null;
+    }
+  }, [hasSelection, departing]);
+  const transcriptForOutlet = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+  const transcriptOpacity = departing || transcriptGeometryReady ? dockFrame.visuals.transcript : 0;
+  const transcriptRise = 8 * (1 - dockFrame.visuals.transcript);
 
   // The jump pill's state, published by the transcript surface. The pill
   // itself renders over the composer (see `JumpPillAnchor`).
@@ -269,7 +467,7 @@ export function ChatPage() {
   // first and stands whatever the mutation does, so a dropped `Mutate` never
   // makes a chat the user plainly looked at flash unread again.
   useEffect(() => {
-    if (session === null) {
+    if (session === null || chatId === "") {
       return;
     }
     markChatSeen(session.client, chatId);
@@ -309,7 +507,7 @@ export function ChatPage() {
    * user-entry pre-write dedupes by id, so no bubble doubles.
    */
   const onRetryDelivery = useCallback(() => {
-    if (session === null || session.client.state !== "connected") {
+    if (session === null || session.client.state !== "connected" || chatId === "") {
       return;
     }
     echoStore.restartGrace(chatId, Date.now());
@@ -321,6 +519,16 @@ export function ChatPage() {
         );
       });
   }, [session, chatId]);
+
+  // `NewThreadTransitionStarted`'s host half: the minted chat exists, the
+  // route observation (this navigation) drives the dock —
+  // `select_chat`'s commit (shell.rs:1289-1295 just notifies).
+  const onNewThreadLaunched = useCallback(
+    (mintedId: string) => {
+      void navigate({ to: "/chat/$chatId", params: { chatId: mintedId } });
+    },
+    [navigate],
+  );
 
   // The titlebar is the shell's; the route fills its identity and the `+`'s
   // handler. The right pane, its toggle, its surface tabs and its expand
@@ -341,7 +549,7 @@ export function ChatPage() {
   if (snapshot === null || !snapshot.chats.loaded) {
     return <div className="chat-page" />;
   }
-  if (row === undefined) {
+  if (row === undefined && hasSelection) {
     return (
       <div className="empty-state">
         <p>That chat is not in this engine's list.</p>
@@ -354,60 +562,79 @@ export function ChatPage() {
   return (
     <div className="chat-page">
       {/*
-        The conversation column: the transcript, then the bottom chrome stack
-        (`render_main`'s flex-none bottom section): the reserved status strip,
-        the queue panel, the composer — with the jump pill floating over the
-        composer — and the session footer. Its sibling — the right pane,
-        carrying whichever surface its tabs select — is a SHELL column mounted
-        by `AppShell`, as on the desktop; this page only names the chat that
-        owns it.
+        The conversation column: the hero, the transcript underlay, the
+        spacer, the bottom chrome stack — `render_main`'s `#chat-dropzone`
+        children in order. The hero is FIRST and deliberately outside the
+        transcript's edge-fade scope (it paints under the overlaid
+        titlebar).
       */}
       <div className="chat-column" ref={chatColumnRef}>
-        <div className="chat-body">
-          {session === null ? (
-            <div className="empty-state">
-              <p>No engine connected.</p>
-            </div>
-          ) : (
+        {heroVisible && (
+          <NewThreadCanvas
+            viewportHeight={viewportHeight}
+            heroWidth={heroWidth}
+            dissolve={dockFrame.visuals.dissolve}
+          />
+        )}
+        <div
+          className="chat-body"
+          style={{
+            opacity: transcriptOpacity,
+            transform: `translateY(${transcriptRise}px)`,
+          }}
+        >
+          {transcriptForOutlet !== null && session !== null ? (
             <TranscriptView
               client={session.client}
               docId={chatId}
               deviceId={deviceId}
-              store={transcriptStore}
+              store={transcriptForOutlet}
               onContextUsage={setContextUsage}
               onRetryDelivery={onRetryDelivery}
               onJumpChange={onJumpChange}
-              indicator={row.status}
+              indicator={row?.status ?? "idle"}
               turnStartedAt={turnStartedAt}
             />
-          )}
+          ) : null}
+          {/*
+            A departing transcript is visual history, not an active
+            interaction surface bound to the newly blank route
+            (shell.rs:5925-5927).
+          */}
+          {departing && <div className="departing-veil" aria-hidden="true" />}
         </div>
         {/*
-          The bottom chrome stack. The ResizeObserver measures its height into
-          `--rb-bottom-stack` on the column, which the transcript's bottom
-          fade band reads — the web peer of the desktop's paint-time canvas
-          that measures `bottom_stack` for the EdgeFade inset.
-
-          The composer owns its centred 768px COLUMN (composer.rs:7347-7355):
-          the queue tray and the session footer are its children (tucked
-          behind / slotted under the pill), not siblings of it. The queue
-          panel's element is handed in as a slot so the QueueStore context
-          stays the chat page's.
+          The bottom chrome stack (`render_main`'s flex-none bottom section):
+          the reserved status strip (both routes — the canvas shows the idle
+          indicator), the persistent composer — one entity, its wrapper in
+          this slot, re-anchored by the dock — with the jump pill floating
+          over it, and the queue edit toolbar.
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
-          <StatusStrip status={row.status} sending={sending} />
+          <StatusStrip status={row?.status ?? "idle"} sending={sending} />
           {session !== null && (
-            <div className="persistent-composer">
+            <div
+              className="persistent-composer"
+              id="persistent-composer"
+              ref={wrapperRef}
+              style={{
+                width: `${composerWidth}px`,
+                opacity: `${dockRef.current.opacity()}`,
+              }}
+            >
               <Composer
                 session={session}
-                chat={row.chat}
+                chat={effectiveChat}
                 catalog={session.catalog}
-                transcript={transcriptStore}
-                availableWidth={columnWidth}
+                transcript={transcriptForOutlet}
+                availableWidth={composerWidth}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
                 onEditCancel={onEditCancel}
                 activateLatestQueued={activateLatestQueued}
+                dockFrame={dockFrame}
+                onNewThreadLaunched={onNewThreadLaunched}
+                dockCorrectionRef={dockCorrectionRef}
                 queueSlot={
                   queueStore !== null && deviceId !== null ? (
                     <QueueStoreProvider value={queueStore}>
@@ -420,10 +647,10 @@ export function ChatPage() {
                   ) : null
                 }
                 footerSlot={
-                  <ComposerFooter chat={row.chat} crSummary={crSummary} contextUsage={contextUsage} />
+                  <ComposerFooter chat={effectiveChat} crSummary={crSummary} contextUsage={contextUsage} />
                 }
               />
-              <JumpPillAnchor state={jumpState} />
+              {hasSelection && <JumpPillAnchor state={jumpState} />}
             </div>
           )}
           {editingRow !== null && (
@@ -437,6 +664,24 @@ export function ChatPage() {
       </div>
     </div>
   );
+}
+
+/** The window's inner height — the dock anchors the hero in viewport space. */
+function useViewportHeight(): number {
+  const [height, setHeight] = useState(() =>
+    typeof window === "undefined" ? 800 : window.innerHeight,
+  );
+  useEffect(() => {
+    const onResize = () => setHeight(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return height;
+}
+
+/** `prefers-reduced-motion` at first paint. */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 /**

@@ -2460,13 +2460,105 @@ a:focus-visible,
 /*
  * `#persistent-composer` (shell.rs:6103-6123): the composer column, centred
  * like the strip above it on the 768px cap. The jump pill anchors to this
- * box, floating 36px over it.
+ * box, floating 36px over it. Ticket 15: the width GLIDES on the dock's
+ * clock (inline, clamped to 768 by the host) and the wrapper is re-anchored
+ * by a transform — the child stays in this layout slot on both routes, only
+ * its painted origin moves (`DockedComposer::prepaint`).
  */
 .persistent-composer {
   position: relative;
-  width: 100%;
   max-width: 768px;
   margin-inline: auto;
+  will-change: transform;
+}
+
+/*
+ * The new-thread background hero (shell.rs:857-914): absolute, top-left of
+ * the conversation column, `overflow: hidden`, pointer-transparent (it is
+ * shell chrome painted under the overlaid titlebar, never an interaction
+ * surface). Width/height/opacity ride inline styles: the full conversation
+ * canvas even while the right pane clips it — navigation must never
+ * rescale the artwork.
+ */
+.new-thread-hero {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/*
+ * The artwork readiness fade (new_thread_background_effects.rs:11-32): a
+ * 120 ms smoothstep on image-id change (`cubic-bezier(0.45, 0, 0.55, 1)`),
+ * starting at 0 and flipping to 1 two frames after the keyed mount; the
+ * same artwork never remounts, so it never re-fades. Reduced motion snaps
+ * to 1 with no transition.
+ */
+.new-thread-hero-readiness {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 120ms cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+.new-thread-hero-readiness[data-ready="true"] {
+  opacity: 1;
+}
+
+.new-thread-hero-readiness[data-reduced="true"] {
+  transition: none;
+}
+
+/*
+ * The two stacked passes (new_thread_background_mask.rs): both paint the
+ * same cover-fit image (`background-size: cover` + `50% 50%` == the fit
+ * steps — centred crop, `corner_radii` 0, no grayscale). The reveal pass
+ * runs at CUTOUT_REVEAL_OPACITY (0.5) with only the shared bottom fade; the
+ * cutout pass at 1 additionally clears the feathered hole (its mask is a
+ * separate mask on the child that carries the image — element masks
+ * multiply, so the two compose).
+ */
+.new-thread-hero-art {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: 50% 50%;
+  background-repeat: no-repeat;
+}
+
+.new-thread-hero-art--reveal {
+  opacity: 0.5;
+}
+
+.new-thread-hero-art--cutout {
+  opacity: 1;
+}
+
+/*
+ * The cutout hole: white with a blurred black rounded rect at the
+ * composer's live box (radius 26 + the 8px hard-transparency clearance,
+ * feathered over clamp(0.52·heroHeight, 120, 280)), regenerated every frame
+ * from the measured `#composer-surface` — the JS writes the mask-image
+ * inline; this class only carries the artwork itself.
+ */
+.new-thread-hero-hole {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: 50% 50%;
+  background-repeat: no-repeat;
+}
+
+/*
+ * A departing transcript is visual history (shell.rs:5925-5927): an
+ * absolute occluding veil over the retained pixels so the blanking route
+ * underneath stays the interaction surface.
+ */
+.departing-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 
 @media (max-width: 768px) {
@@ -2631,6 +2723,70 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--rb-space-sm);
+  /* `container.relative()` (composer.rs:7347): the floating new-thread
+     selector row anchors to the column's box. */
+  position: relative;
+}
+
+/*
+ * The floating new-thread selector row (composer.rs:7898-7913): absolute so
+ * the selectors never change the composer's height — 20px tall
+ * (NEW_THREAD_SELECTOR_ROW_HEIGHT), 28px above the column's top,
+ * `left/right` SPACE_LG + 10 = 26, right-justified, opacity from the dock's
+ * `selectors` channel (inline). Its children are the device + project chips
+ * (pickers.rs:2426-2498).
+ */
+.dock-target-selectors {
+  position: absolute;
+  top: -28px;
+  left: 26px;
+  right: 26px;
+  height: 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+/* `render_new_thread_target_selectors`: a flex-none row, gap 4. */
+.new-thread-target-selectors {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+/*
+ * The footer slot (composer.rs:7936-7985, SESSION_FOOTER_HEIGHT 24): a
+ * relative 24px box whose two absolutely-inset layers never overlap —
+ * Layer A is the new-thread git selectors (checkout + ref chips, `px` 10),
+ * Layer B the session footer row. The negative bottom margin cancels the
+ * column's 8px gap so the slot adds no spacing of its own.
+ */
+.composer-footer-slot {
+  flex: none;
+  width: 100%;
+  height: 24px;
+  position: relative;
+  margin-bottom: calc(-1 * var(--rb-space-sm));
+}
+
+.composer-footer-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+}
+
+.composer-footer-layer-a {
+  padding: 0 10px;
+}
+
+/* `render_new_thread_git_selectors`: a w_full min_w_0 flex row, gap 4. */
+.new-thread-git-selectors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
 }
 
 /*
@@ -6275,6 +6431,17 @@ button.files-save-pill:hover {
     width: calc(100% - 2 * var(--rb-space-sm));
   }
 
+  /* The new-thread hero and its floating selector row are desktop-width
+     chrome (spec decision 5): the phone canvas keeps the composer in its
+     slot, no artwork, no re-anchoring. */
+  .new-thread-hero {
+    display: none;
+  }
+
+  .dock-target-selectors {
+    display: none;
+  }
+
   /* The identity's folder line is the first thing to go when width runs out. */
   .identity-folder {
     display: none;
@@ -6649,7 +6816,6 @@ button.files-save-pill:hover {
   align-items: center;
   gap: var(--rb-space-xs);
   padding: 0 10px;
-  margin-bottom: calc(-1 * var(--rb-space-sm));
 }
 
 .footer-spring {

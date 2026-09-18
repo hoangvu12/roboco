@@ -17,19 +17,27 @@ import { PickerCard } from "./ui/PickerCard";
 import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 
 /**
- * The session footer under the composer — the desktop's `workspace_footer_row`
- * (`pickers.rs:2341-2422`, SESSION_FOOTER_HEIGHT 24).
+ * The session footer row — the desktop's `workspace_footer_row`
+ * (`pickers.rs:2341-2422`, SESSION_FOOTER_HEIGHT 24). Ticket 15 slots this
+ * row into the 24px footer slot's LAYER B: the new-thread canvas's Layer A
+ * (checkout + ref chips for the run target) lives in
+ * `./composer/new-thread-selectors.tsx`, and the composer renders the slot
+ * with the two absolutely-inset layers cross-faded by the dock's
+ * `selectors`/`footer` channels — never both mounted at once
+ * (`route_chrome_opacities` guarantees one is exactly 0).
  *
- * While a chat has neither a persisted `ChatConfig` nor a stamped branch (the
- * web's closest analogue of the desktop's draft canvas — ticket 15's
- * new-thread route re-homes the device/project pair), the row carries the
- * four draft chips: device and project (the run target, writing the
- * remembered defaults) and checkout kind + ref (the git target, `SwitchRef`
- * executing against the space folder for a plain non-current ref). Once the
- * chat is committed, the same slots become read-only `FooterLabel`s: a git
- * ref is fixed at creation, so the desktop never offers a picker there. The
- * trailing cluster (change-request badge + usage indicator) belongs to both
- * variants; the row's geometry is ticket 13's.
+ * While a chat has neither a persisted `ChatConfig` nor a stamped branch
+ * (the web's closest analogue of the desktop's draft canvas), the row
+ * carries the four draft chips: device and project (the run target, writing
+ * the remembered defaults) and checkout kind + ref (the git target,
+ * `SwitchRef` executing against the space folder for a plain non-current
+ * ref). Once the chat is committed, the same slots become read-only
+ * `FooterLabel`s: a git ref is fixed at creation, so the desktop never
+ * offers a picker there. The trailing cluster (change-request badge + usage
+ * indicator) belongs to both variants; the row's geometry is ticket 13's.
+ *
+ * The four chip components are exported: the new-thread selector rows mount
+ * the SAME chips (ticket 10 owns their cards; the rows only place them).
  *
  * Each chip's card is one `PickerCard` over the base `RbPopover` layer (the
  * trigger's `trigger-press` reason replaces the old noteTriggerPress dance;
@@ -44,7 +52,8 @@ import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 /** `MAX_REF_ROWS` (pickers.rs) — the ref list's cap, surfaced as "Showing X of Y". */
 const MAX_REF_ROWS = 300;
 
-type CheckoutKind = "local" | "newWorktree";
+/** The checkout-kind pair shared by the footer's draft row and the canvas's git selectors. */
+export type CheckoutKind = "local" | "newWorktree";
 
 export interface ComposerFooterProps {
   readonly chat: {
@@ -102,6 +111,11 @@ export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooter
 
   return (
     <div className={`composer-footer ${committed ? "" : "composer-footer-draft"}`}>
+      {/*
+        Layer B's row (the 24px slot wrapper itself is the composer's — see
+        composer.tsx; this element is the absolutely-inset session layer's
+        content).
+      */}
       {committed ? (
         gitDetected ? (
           <>
@@ -162,17 +176,22 @@ const EMPTY_SPACES: readonly Space[] = [];
 // The device popover (pickers.rs:1928-2006) — width 224
 // ---------------------------------------------------------------------------
 
-function DeviceChip({
-  devices,
-  effectiveDevice,
-  ownDeviceId,
-  now,
-}: {
+export interface DeviceChipProps {
   readonly devices: readonly Device[];
   readonly effectiveDevice: Device | null;
   readonly ownDeviceId: string | null;
   readonly now: number;
-}) {
+  /** The label with no device row — "Select device" in the footer, "This device" on the canvas (pickers.rs:2426). */
+  readonly fallbackLabel?: string;
+}
+
+export function DeviceChip({
+  devices,
+  effectiveDevice,
+  ownDeviceId,
+  now,
+  fallbackLabel = "Select device",
+}: DeviceChipProps) {
   const [open, setOpen] = useState(false);
 
   // Device order: this device first, then by lowercased name, then by id.
@@ -188,7 +207,7 @@ function DeviceChip({
     });
   }, [devices, ownDeviceId]);
 
-  const label = effectiveDevice?.name ?? "Select device";
+  const label = effectiveDevice?.name ?? fallbackLabel;
   const offline = effectiveDevice !== null && !deviceOnline(effectiveDevice, now);
 
   return (
@@ -311,17 +330,18 @@ function DeviceCard({
 // The project popover (pickers.rs:2012-2124) — width 280
 // ---------------------------------------------------------------------------
 
-function ProjectChip({
-  spaces,
-  currentSpaceId,
-}: {
+export interface ProjectChipProps {
   readonly spaces: readonly Space[];
   readonly currentSpaceId: string | null;
-}) {
+  /** The label with no project — "All projects" in the footer, "No project" on the canvas (pickers.rs:2453). */
+  readonly fallbackLabel?: string;
+}
+
+export function ProjectChip({ spaces, currentSpaceId, fallbackLabel = "All projects" }: ProjectChipProps) {
   const [open, setOpen] = useState(false);
 
   const pickedSpace = currentSpaceId === null ? null : spaces.find((space) => space.id === currentSpaceId) ?? null;
-  const label = pickedSpace === null ? "All projects" : spaceDisplayName(pickedSpace);
+  const label = pickedSpace === null ? fallbackLabel : spaceDisplayName(pickedSpace);
 
   return (
     <PickerCard
@@ -459,15 +479,13 @@ function ProjectCard({
 // The checkout-kind popover (pickers.rs:3073-3131) — width 224, two rows
 // ---------------------------------------------------------------------------
 
-function CheckoutChip({
-  checkout,
-  pickedRefHasWorktree,
-  onPick,
-}: {
+export interface CheckoutChipProps {
   readonly checkout: CheckoutKind;
   readonly pickedRefHasWorktree: boolean;
   readonly onPick: (kind: CheckoutKind) => void;
-}) {
+}
+
+export function CheckoutChip({ checkout, pickedRefHasWorktree, onPick }: CheckoutChipProps) {
   const [open, setOpen] = useState(false);
 
   // `checkout_label` (pickers.rs:1280-1304): "New worktree" |
@@ -565,17 +583,7 @@ interface RefsState {
   readonly error: string | null;
 }
 
-function RefChip({
-  session,
-  repoPath,
-  currentBranch,
-  draftBranch,
-  checkout,
-  targetDeviceId,
-  canPick,
-  onPick,
-  onRefs,
-}: {
+export interface RefChipProps {
   readonly session: ReturnType<typeof useEngineSession>;
   readonly repoPath: string | null;
   readonly currentBranch: string | null;
@@ -585,7 +593,19 @@ function RefChip({
   readonly canPick: boolean;
   readonly onPick: (name: string) => void;
   readonly onRefs: (rows: readonly RepoRef[]) => void;
-}) {
+}
+
+export function RefChip({
+  session,
+  repoPath,
+  currentBranch,
+  draftBranch,
+  checkout,
+  targetDeviceId,
+  canPick,
+  onPick,
+  onRefs,
+}: RefChipProps) {
   const [open, setOpen] = useState(false);
   const [refs, setRefs] = useState<RefsState>({ rows: [], loading: false, error: null });
   const [switching, setSwitching] = useState<string | null>(null);
