@@ -167,7 +167,7 @@ describe("files_surface_is_single_instance_per_tab_list", () => {
 
 describe("commit_diff_surfaces_are_independent_pinned_tabs", () => {
   it("each click mints a fresh tab titled with the commit's subject", () => {
-    const store = fresh();
+    const store = fresh().store;
     store.addDiffSurface("chat-1", "history");
     store.addCommitDiffSurface("chat-1", { sha: "896e31f0abcd", subject: "Merge branch 'feature'" });
     store.addCommitDiffSurface("chat-1", { sha: "216321b0cdef", subject: "  " });
