@@ -14,7 +14,7 @@ and the handoff into a live chat is one continuous motion.
 
 **Blocked by:** 10 (Pickers and menus), 13 (Composer core).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/04-composer.md` Â§3.5, Â§3.6, Â§3.7 (the
 `new_chat` branch), Â§3.20 (Layer A), Â§3.23, Â§4 (`route_chrome_opacities`,
@@ -783,3 +783,44 @@ Deep-dive notes: `.scratch/web-parity/research-2026-09-17/hero-context-meter.md`
 Build on components/ui/ + components/base/ (see components/README.md)
 â€” do not hand-roll card shells, cursor lists, menu rows, chips, or
 tooltips.
+
+### Implementer (2026-09-18)
+
+What landed:
+
+- `lib/composer-dock.ts` — the full `composer_dock.rs` + `panel_handoff.rs` port: `Glide` (12.0/0.420/0.470/0.0005/0.005), `stage`, `DockFrame`, `DockVisuals` (both direction-specific window tables + `return_from_panel`), `PanelHandoff` (0.320 s fade-through, reversal-preserving, disable-reset), `DockState` (`tick`, `prepaint` with the top-anchored hero position and the 12/8 px travel, `layoutWidth` with the p=0.22 snap, `transcriptWidth`), plus `routeChromeOpacities`, `dockHeight`, `dockClearanceCorrection`, `bottomStackMeasurementMatches`, and `newThreadTransitionMorph` (`FlipMorph::new_thread_transition`, whose pure timeline the test pins; with the shell's dock frame always installed the shared clock owns the height, as on the desktop where `set_dock_frame` kills the composer's own morphs).
+- `lib/new-thread-background.ts` + `components/new-thread-background.tsx` — the hero: `newThreadBackgroundHeight/Opacity`, `heroMaskGeometry` (the two-pass mask table ported field for field), `heroCutoutHole`, `cutoutMaskDataUri`, `BOTTOM_FADE_GRADIENT`, `Readiness` (120 ms, 0.5 at 60 ms), `resolveNewThreadBackground` (the decode contract: `createImageBitmap`, SVG rejected, bundled default at `/backgrounds/default-new-thread-background.png`). The cutout mask is regenerated from the measured `#composer-surface` every commit (rAF-scheduled so it consumes the same frame's dock transform) and on surface resize (the 180 ms typing morph grows the hole live).
+- `components/composer/new-thread-selectors.tsx` — `NewThreadTargetSelectors` (the floating device+project chips with the "This device"/"No project" fallbacks) and `NewThreadGitSelectors` (Layer A's checkout+ref chips, nothing without git), both reusing ticket 10's chips (exported from `composer-footer.tsx`). The canvas target resolves `composerDefaults` with the sidebar's space pick as the fallback — the desktop's shared `selected_space` (state.rs:1283-1320).
+- `components/composer.tsx` — the `new_chat` branch (always expanded, mode flips never commit, auto-grow still morphs), `dockHeight`-driven pill height with `set_dock_frame`'s morph kill, the radius `26 - 4·dockAmount` inline, the floating selector row, the 24 px footer slot with the never-both-mounted Layer A/Layer B crossfade, the canvas-send mint (`createChat` ? `waitForChatRow` ? `onNewThreadLaunched` ? send, the `NewThreadTransitionStarted` chain), and `newChatNoAgents` wired into `sendBlocked`.
+- `routes/chat-page.tsx` — `ConversationPage`, rendered by BOTH routes (see deviations): the dock host (per-commit prepaint + a rAF-gated frame pump), the hero mount, the transcript outlet with the rise/opacity + `transcript_geometry_ready` + the departing veil and `finish_route_exit`, the bottom-stack measurement + `dockClearanceCorrection`, the canvas stub chat (id `""` = the draft key), and all of the former ChatPage's per-chat stores.
+- `components/new-chat-button.tsx` — Mod+N and the titlebar `+` now navigate to `/` (the desktop's `open_new_session`); the canvas is the real new-chat route, so the upfront-mint workaround is gone.
+- `state/appearance.ts` — `useNewThreadBackground()` reading `newThreadComposerBackground` + `newThreadBackgroundEffect` off the ticket-03 store.
+- CSS: `.new-thread-hero` (+ readiness/art/hole), `.dock-target-selectors`, `.composer-footer-slot` + layers, `.new-thread-target/git-selectors`, `.persistent-composer` (inline gliding width + transform), `.departing-veil`; phone media query hides the hero and the floating row (decision 5).
+- Tests: `tests/composer-dock.test.ts` (21) + `tests/new-thread-background.test.ts` (11) — every desktop test in the ticket's list except the not-ported `measured_dock_retargets_without_a_first_frame_jump` (per the ticket).
+
+Deviations / judgment calls for a human:
+
+1. **One component on both routes instead of an app-shell hoist.** The ticket's table says app-shell.tsx mounts the composer; instead `router.tsx` renders the SAME `ConversationPage` reference for `/` and `/chat/$chatId`. TanStack's `Match` memoizes the route element on `route.options.component`, so the shared reference keeps one fiber (and one DOM tree — verified live: the `#composer-surface` element identity survives navigation) while the page re-renders through its router-state subscription. Same observable contract — one composer, never remounted — without moving ChatPage's per-chat stores into the shell.
+2. **The dock advances one tick per animation frame** via a rAF pump (route changes tick immediately to flip the frame). Ticking per React commit spins the layout-effect/setState pair synchronously and freezes the glide — the pump is the web peer of the desktop's `request_animation_frame`. Verified live: the glide runs 0?1 over ~480 ms at display frame rate with the transform tracking every frame.
+3. **Pre-existing, worth a look: the first navigation after pairing remounts the app.** The engine session's `pinDevice` rewrites the fleet entry ? the session provider recreates the client ? the status blips "connecting" ? `RootLayout`'s `page-fade` (keyed on phase) remounts the whole Outlet, killing the first transition ~40 % in. Nothing in ticket 15 causes it (pre-15, no component spanned the routes to notice); later navigations glide cleanly. A fix belongs to the shell/session owner, not this ticket.
+4. **Non-`none` background effects render as `none`** (dither/ascii/halftone/scanlines) — no faithful raster exists client-side and the engine serves no pre-rendered variants; the ticket allows exactly this fallback. The setting is read, healed and threaded through; only the rasterization is deferred (ticket 28's Appearance picker can pair an engine-served variant with it).
+5. **The cutout's feather is a Gaussian approximation** of the shader's smoothstep ramp (SVG `feGaussianBlur` s = feather/2.56 over the hole rect expanded by the 8 px clearance, corner radius 26+8) — the ticket's own CSS mapping blesses this. The reveal pass keeps only the shared bottom fade, exactly as the mask table specifies.
+6. **The web is forced opaque** (the defrost decision), so `newThreadBackgroundOpacity`'s 0.84 frosted branch can never engage here; the function is ported and unit-tested all the same.
+7. **The footer slot's crossfade lives in composer.tsx** (the slot + Layer A) with `composer-footer.tsx` re-rooted as Layer B's row and exporting its chips — a minor file-ownership shift from the table's "composer-footer.tsx owns Layer A/Layer B"; the data flow (Layer A needs only composer-side state, Layer B the page's chat data) made this the clean split.
+
+Verification:
+
+- `pnpm -r build` green; `web/packages/app` vitest 926 passed (32 new).
+- web_smoke boot check: the app renders the canvas with the hero + centered composer, no error boundary, live cutout mask (verified geometry: hero h = 0.72·vh, surface anchored at (vh-h)·0.5+8 by the wrapper top, selector row at -28, radius 26 ? 22 docked, pill height via `dockHeight`, 4-line draft ? 159 px pill with the row tracking to -28 above it).
+- The glide: measured frame-by-frame via a DOM log — amount 0.056 ? 1.000 over ~480 ms at 12 ms/frame, transform -377 ? 0 continuously, hero dissolving, radius animating. Captures taken with the page visible (rAF stalls on hidden tabs — bring the tab to front before transition captures).
+- The canvas SEND is blocked on the smoke engine by design (`newChatNoAgents`: the mock harness catalog reports no agents — the desktop's condition 4). The (d)/(e) transition captures therefore use a chat-row navigation, which drives the identical dock choreography (the desktop's transition is the route change; the first send is only its trigger).
+
+Screenshots (`.scratch/web-parity/shots/15/`, desktop pairs from `.scratch/web-client/parity/desktop-02-newchat.png` etc.):
+
+- (a) `desktop-02-newchat.png` / `web-02a-canvas.png` — the fresh desktop capture (NOT byte-identical to desktop-01; hash differs) and the web canvas, hero + centered composer, default artwork.
+- (b) `desktop-02b-draft.png` / `web-02b-draft.png` — four-line draft, 159 px pill, cutout grown, selector row tracking.
+- (c) web only: `web-02c-git.png` — a git space (the roboco worktree added through the palette), checkout + ref chips in Layer A. Desktop (c) SKIPPED: the desktop data dir's spaces have no git-detected target I could select reliably through blind clicks, and creating one through the desktop palette blind was too fragile; the web pair shows the state.
+- (d) `web-02d-mid.png` — mid-flight (~250 ms of 420): hero dissolving, composer between canvas and dock with the draft text visible, bottom band still empty. Desktop (d) SKIPPED: timing a 420 ms window through SendKeys + shot.ps1 is not feasible.
+- (e) `desktop-02e-after-send.png` / `web-02e-after.png` — established chat: radius 22, session footer visible, hero gone.
+
+Side effect of the desktop captures: the accidental chat "first line of a draft+" in the user's real desktop data dir (an early SendKeys mishap — harmless draft chat, deletable).

@@ -1,8 +1,7 @@
 import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 import { RootLayout } from "./routes/root-layout";
 import { AppShell } from "./components/app-shell";
-import { IndexPage } from "./routes/index-page";
-import { ChatPage } from "./routes/chat-page";
+import { ConversationPage } from "./routes/chat-page";
 import { PairPage } from "./routes/pair-page";
 import { SettingsLayout } from "./components/settings-layout";
 import { RemoteAccessSettingsPage } from "./routes/settings-remote-access";
@@ -11,8 +10,16 @@ import { AppearanceSettingsPage } from "./routes/settings-appearance";
 
 const rootRoute = createRootRoute({ component: RootLayout });
 const shellRoute = createRoute({ getParentRoute: () => rootRoute, id: "shell", component: AppShell });
-const indexRoute = createRoute({ getParentRoute: () => shellRoute, path: "/", component: IndexPage });
-const chatRoute = createRoute({ getParentRoute: () => shellRoute, path: "/chat/$chatId", component: ChatPage });
+/*
+ * BOTH conversation routes render the SAME component reference
+ * (`ConversationPage`, ticket 15): TanStack's `Match` memoizes the route
+ * element on `route.options.component`, so the shared reference keeps ONE
+ * fiber alive across the `/` ↔ `/chat/$chatId` boundary — the composer is
+ * one persistent entity, re-anchored by the dock, never remounted. The
+ * page re-renders on navigation through its router-state subscription.
+ */
+const indexRoute = createRoute({ getParentRoute: () => shellRoute, path: "/", component: ConversationPage });
+const chatRoute = createRoute({ getParentRoute: () => shellRoute, path: "/chat/$chatId", component: ConversationPage });
 // Changes and Files have no routes: they are right-pane surfaces on the
 // desktop, and a route for either took the chat off `/chat/$chatId`, which is
 // the only path that owns a pane — the column, its tabs and its toggle all

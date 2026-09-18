@@ -80,6 +80,8 @@ import {
   shouldPublishOptimisticEcho,
 } from "../lib/composer-send";
 import { menuStep } from "../lib/picker-search";
+import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
+import { createChat, waitForChatRow } from "../lib/chat-actions";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
 import { isMacPlatform } from "../state/shortcuts";
@@ -117,6 +119,7 @@ import {
   wizardPlaceholder,
 } from "../lib/wizard";
 import { ComposerPickers } from "./composer-pickers";
+import { NewThreadGitSelectors, NewThreadTargetSelectors } from "./composer/new-thread-selectors";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { MentionPopup } from "./composer/mention-popup";
 import { SlashPopup } from "./composer/slash-popup";
@@ -229,6 +232,29 @@ interface ComposerProps {
    * store (ticket 16); this ticket wires the call site only.
    */
   readonly activateLatestQueued?: () => void;
+  /**
+   * The shell's dock frame (ticket 15, `composer_dock.rs::DockFrame`):
+   * while present, the dock's shared clock owns the pill's height
+   * (`dock_height(amount)`) and both morphs stand down (`set_dock_frame`
+   * kills them, composer.rs:4140-4149); the frame's `selectors`/`footer`
+   * channels drive the new-thread chrome crossfade. Null when the host
+   * mounts the composer without a dock (the pre-15 chat page).
+   */
+  readonly dockFrame?: DockFrame | null;
+  /**
+   * `ComposerEvent::NewThreadTransitionStarted`'s web half: the first send
+   * off the new-thread canvas mints the chat and the host navigates to it
+   * (the desktop's `select_chat` commit) — the route observation then drives
+   * the dock. Called once the row exists, BEFORE the send leaves.
+   */
+  readonly onNewThreadLaunched?: (chatId: string) => void;
+  /**
+   * Where the composer publishes `dock_clearance_correction`
+   * (composer.rs:7583) each layout pass — the shell's bottom-stack
+   * measurement adds it so the transcript's clearance reserves the
+   * DESTINATION footprint and never pumps mid-route.
+   */
+  readonly dockCorrectionRef?: { current: number };
 }
 
 export function Composer({
@@ -243,6 +269,9 @@ export function Composer({
   onEditFinish,
   onEditCancel,
   activateLatestQueued,
+  dockFrame = null,
+  onNewThreadLaunched,
+  dockCorrectionRef,
 }: ComposerProps) {
   const snapshot = useWatchSnapshot(session);
   const engineStatus = useEngineStatus(session);
@@ -384,6 +413,17 @@ export function Composer({
   );
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  // ── Ticket 15: the new-thread canvas branch ─────────────────────────────
+  // `new_chat = selected_chat.is_none()` (composer.rs:7286) — the web's
+  // canvas chat is the "" stub, so `expanded = expanded_mode || new_chat`
+  // (composer.rs:7488): the canvas ALWAYS renders expanded regardless of the
+  // flip state, and a mode flip there never commits (7284-7300 — auto-grow
+  // still morphs; only the compact↔expanded flip is suppressed).
+  const newChat = chat.id === "";
+  // Route coordination must not force an established thread into the
+  // two-row layout: `dock_height`'s session side reads the composer's OWN
+  // expanded state, never the forced one.
+  const sessionExpanded = expanded;
   // Staged attachments per chat id — survives a chat switch (the strip
   // moves with the chat). Empty for a chat the user has never staged on.
   const [stagedByChat, setStagedByChat] = useState<Record<string, readonly StagedAttachment[]>>({});
@@ -555,6 +595,15 @@ export function Composer({
   const evaluateRef = useRef<() => void>(NOOP);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
+  // The dock frame + the canvas flags, read through refs so the evaluate
+  // pass stays identity-stable (the ResizeObserver never re-binds).
+  const dockFrameRef = useRef<DockFrame | null>(dockFrame);
+  dockFrameRef.current = dockFrame;
+  const newChatRef = useRef(newChat);
+  newChatRef.current = newChat;
+  const sessionExpandedRef = useRef(sessionExpanded);
+  sessionExpandedRef.current = sessionExpanded;
+  const lastDockAmountRef = useRef<number | null>(null);
   const stagedCountRef = useRef(staged.length);
   stagedCountRef.current = staged.length;
   const reducedMotionRef = useRef(reducedMotion);
@@ -632,8 +681,11 @@ export function Composer({
           : compactCapacityRef.current
         : Number.POSITIVE_INFINITY;
     const nextMode = composerFlip(expandedRef.current, textWidth, capacity, hasNewline, resizing);
-    const committed = nextMode !== expandedRef.current && measured;
-    const mode = committed ? nextMode : expandedRef.current;
+    // A mode flip on the new-thread canvas is never committed (composer.rs:7284-7300):
+    // the canvas is always expanded, so the compact↔expanded flip machinery
+    // stands down there — auto-grow (the height morph below) still runs.
+    const committed = !newChatRef.current && nextMode !== expandedRef.current && measured;
+    const mode = newChatRef.current ? true : committed ? nextMode : expandedRef.current;
     if (committed) {
       flipEpochRef.current = epoch;
       expandedAnchorRef.current = 0;
@@ -644,7 +696,17 @@ export function Composer({
     // both modes.
     const stripWidthHint = (availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
     const stripH = attachmentStripHeight(stagedCountRef.current, stripWidthHint);
-    const baseHeight = mode ? composerTotalHeight(contentHeight) : COMPACT_TOTAL_HEIGHT;
+    // `dock_height` (composer.rs:7489-7500): with a dock frame installed the
+    // shared clock owns the pill's height across the route; without one the
+    // mode's own height applies.
+    const frame = dockFrameRef.current;
+    const dockAmount = frame !== null ? Math.min(Math.max(frame.amount, 0), 1) : 0;
+    const baseHeight =
+      frame !== null
+        ? dockHeight(dockAmount, contentHeight, sessionExpandedRef.current)
+        : mode
+          ? composerTotalHeight(contentHeight)
+          : COMPACT_TOTAL_HEIGHT;
     const target = baseHeight + stripH;
     const routeSnap = routeSnapUntilRef.current !== null && nowMs < routeSnapUntilRef.current;
     // Two morphs, as on the desktop: the HEIGHT morph animates the pill
@@ -666,6 +728,16 @@ export function Composer({
       reducedMotionRef.current,
       routeSnap,
     );
+    // `set_dock_frame` (composer.rs:4140-4149): an ACTIVE frame kills both
+    // morphs (the shared clock owns the height), and any change in the
+    // frame's `amount` sets `dock_height_changed`, which suppresses both
+    // morphs for that frame. Settled at the destination, typing flips keep
+    // their local clock.
+    if (frame !== null && (frame.active || frame.amount !== lastDockAmountRef.current)) {
+      heightMorphRef.current = null;
+      flipMorphRef.current = null;
+    }
+    lastDockAmountRef.current = frame !== null ? frame.amount : null;
     lastTargetRef.current = target;
     const heightMorph = heightMorphRef.current;
     const pillHeight = heightMorph !== null ? flipMorphHeight(heightMorph, target, nowMs) : target;
@@ -673,6 +745,15 @@ export function Composer({
     const morphT =
       flipMorph !== null && !flipMorphDone(flipMorph, nowMs) ? flipMorphProgress(flipMorph, nowMs) : 1;
     lastRenderedRef.current = pillHeight;
+    // `dock_clearance_correction` (composer.rs:7583-7589): the shell reserves
+    // the DESTINATION footprint (docked?1:0), never the animated height, so
+    // the transcript's clearance does not pump during the route change.
+    if (dockCorrectionRef !== undefined) {
+      dockCorrectionRef.current =
+        frame !== null
+          ? dockHeight(frame.docked ? 1 : 0, contentHeight, sessionExpandedRef.current) + stripH - pillHeight
+          : 0;
+    }
     // The expanded textarea box follows the animated pill height; the
     // textarea itself fills the box less its paddings (composer.rs:7606).
     const boxHeight = Math.max(pillHeight - stripH - PILL_BORDER_V - ACTIONS_ROW_HEIGHT, 0);
@@ -708,7 +789,10 @@ export function Composer({
 
   useLayoutEffect(() => {
     evaluateRef.current();
-  }, [text, expanded, availableWidth, staged.length, tick]);
+    // The dock's amount moves the pill height every frame of the route
+    // glide — re-run the pass per frame change, not only per text/width
+    // change (the desktop recomputes per render).
+  }, [text, expanded, availableWidth, staged.length, tick, dockFrame?.amount, dockFrame?.active]);
 
   // The rAF loop: keep frames coming while a morph is in flight (the
   // desktop's `window.request_animation_frame`, shell.rs `motion_active`).
@@ -1709,12 +1793,35 @@ export function Composer({
         setFailure({ message: "This chat has no working directory yet — pick a space first.", key: chat.id });
         return;
       }
+      // New-chat mode mints the chat id on first send (shell.rs:5897-5899,
+      // composer.rs:6249-6258): create the row, wait for it to land, and
+      // hand the host the navigation BEFORE the wire call — the route
+      // observation then drives the dock, exactly the
+      // `NewThreadTransitionStarted` → `select_chat` chain.
+      let chatId = chat.id;
+      if (chatId === "") {
+        if (session.client.state !== "connected") {
+          setFailure({ message: "Send failed: Engine not connected", key: null });
+          return;
+        }
+        try {
+          chatId = await createChat(
+            session.client,
+            chat.spaceId != null ? { spaceId: chat.spaceId } : { deviceId: chat.deviceId },
+          );
+          await waitForChatRow(session.cache, chatId);
+        } catch (error) {
+          setFailure({ message: `Send failed: ${describeSendError(error)}`, key: null });
+          return;
+        }
+        onNewThreadLaunched?.(chatId);
+      }
       // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
       // instant you hit send; a failure hands the files back by id.
       const taken = staged;
       setStagedByChat((current) => {
         const next = { ...current };
-        delete next[chat.id];
+        delete next[chatId];
         return next;
       });
       // `typed` keeps the user's own words for the failure hand-back below
@@ -1744,14 +1851,14 @@ export function Composer({
       if (shouldPublishOptimisticEcho(queue)) {
         echoStore.pushEcho({
           messageId,
-          chatId: chat.id,
+          chatId,
           startedAtMs: Date.now(),
           text: trimmed,
           attachmentPaths: pendingPaths,
         });
       }
       setText("");
-      chatDrafts.clear(chat.id);
+      chatDrafts.clear(chatId);
       setFailure(null);
       setBusy(true);
       // Whole-send upload accounting (`begin_upload_progress`): the percent
@@ -1772,14 +1879,14 @@ export function Composer({
           const body = trimmed.length > 0 ? trimmed : ATTACHMENT_ONLY_TEXT;
           await queueMessage(
             session.client,
-            chat.id,
+            chatId,
             body,
             uploaded.map((entry) => entry.path),
           );
         } else {
           const sendResult = await sendRun(
             session.client,
-            chat.id,
+            chatId,
             draft,
             trimmed,
             chat.cwd,
@@ -1792,7 +1899,7 @@ export function Composer({
             echoStore.removeEcho(messageId);
             echoStore.pushEcho({
               messageId,
-              chatId: chat.id,
+              chatId,
               startedAtMs: Date.now(),
               text: sendResult.finalPrompt,
               attachmentPaths: [...sendResult.attachmentPaths],
@@ -1821,15 +1928,15 @@ export function Composer({
         // during the send survives).
         echoStore.removeEcho(messageId);
         setText(typed);
-        chatDrafts.set(chat.id, typed);
+        chatDrafts.set(chatId, typed);
         setStagedByChat((current) => {
-          const fresh = current[chat.id] ?? [];
+          const fresh = current[chatId] ?? [];
           const merged = [...taken.filter((att) => !fresh.some((f) => f.id === att.id)), ...fresh];
           const next = { ...current };
           if (merged.length === 0) {
-            delete next[chat.id];
+            delete next[chatId];
           } else {
-            next[chat.id] = merged;
+            next[chatId] = merged;
           }
           return next;
         });
@@ -1839,7 +1946,7 @@ export function Composer({
           message: error instanceof AttachmentUploadError
             ? error.message
             : `Send failed: ${describeSendError(error)}`,
-          key: chat.id,
+          key: chatId,
         });
       } finally {
         if (taken.length > 0) {
@@ -1848,7 +1955,7 @@ export function Composer({
         setBusy(false);
       }
     },
-    [chat.id, chat.cwd, draft, session.client, staged, engineSupports],
+    [chat.id, chat.cwd, draft, session.client, staged, engineSupports, onNewThreadLaunched],
   );
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
@@ -1887,7 +1994,10 @@ export function Composer({
         queueEditFinishing: busy,
         requestTargetDisconnected: session.client.state !== "connected",
         reviewCommentFlushPending: false,
-        newChatNoAgents: false,
+        // Condition 4 (composer.rs:5958-5962): the new-chat canvas with a
+        // LOADED catalog that reports no agents — offline/loading must not
+        // block.
+        newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
       })
     ) {
       // A blocked send is a no-op — no failure, no wire call
@@ -2203,7 +2313,7 @@ export function Composer({
       queueEditFinishing: busy,
       requestTargetDisconnected: session.client.state !== "connected",
       reviewCommentFlushPending: false,
-      newChatNoAgents: false,
+      newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
     });
 
   // ── The queue-degraded caption (§2.3) ───────────────────────────────────
@@ -2391,9 +2501,26 @@ export function Composer({
     </div>
   );
 
+  // ── Ticket 15 render pieces ─────────────────────────────────────────────
+  // `expanded = expanded_mode || new_chat` (composer.rs:7488): the rendered
+  // mode is the canvas-forced one.
+  const expandedRender = expanded || newChat;
+  // The route chrome crossfade (`route_chrome_opacities`, composer.rs:88):
+  // with a dock frame the `selectors`/`footer` channels are the pair; the
+  // two never overlap, so the new-thread selector row and the session
+  // footer are never BOTH mounted — the hidden one is unmounted (not just
+  // hidden) so its popover triggers cannot be found twice.
+  const chrome =
+    dockFrame !== null
+      ? { newThread: dockFrame.visuals.selectors, session: dockFrame.visuals.footer }
+      : routeChromeOpacities(newChat ? 1 : 0);
+  // `surface_radius = COMPOSER_RADIUS − 4 × dock_amount` (composer.rs:7603):
+  // 26 at the hero, 22 docked — the frost blur's mask follows the radius.
+  const surfaceRadius = dockFrame !== null ? 26 - 4 * Math.min(Math.max(dockFrame.amount, 0), 1) : null;
+
   return (
     <div
-      className={`composer ${expanded ? "composer-expanded" : "composer-compact"}`}
+      className={`composer ${expandedRender ? "composer-expanded" : "composer-compact"}`}
       data-working={runLive ? "true" : undefined}
       data-editing={editingActive ? "true" : undefined}
       data-wizard={wizardActive ? "true" : undefined}
@@ -2422,6 +2549,22 @@ export function Composer({
       {queueSlot !== undefined && queueSlot !== null && (
         <div className="composer-queue-tray">{queueSlot}</div>
       )}
+      {/*
+        The floating new-thread selector row (composer.rs:7898-7913): the
+        container is relative and the row absolute so the selectors never
+        change the composer's height — 20px tall, 28px above the surface's
+        top, `left/right` 26 from the column's edges, right-justified. The
+        chips themselves are ticket 10's.
+      */}
+      {chrome.newThread > 0 && (
+        <div
+          className="dock-target-selectors"
+          id="dock-target-selectors"
+          style={{ opacity: `${chrome.newThread}` }}
+        >
+          <NewThreadTargetSelectors />
+        </div>
+      )}
       <div className="composer-surface" id="composer-surface">
         {wizardActive && wizardRef.current !== null ? (
           <ComposerWizard
@@ -2443,8 +2586,11 @@ export function Composer({
             */}
             <div
               className="composer-pill"
-              data-mode={expanded ? "expanded" : "compact"}
-              style={{ height: `${layout.pillHeight}px` }}
+              data-mode={expandedRender ? "expanded" : "compact"}
+              style={{
+                height: `${layout.pillHeight}px`,
+                ...(surfaceRadius !== null ? { borderRadius: `${surfaceRadius.toFixed(2)}px` } : {}),
+              }}
               onMouseDown={onPillMouseDown}
             >
               <AttachmentStrip
@@ -2459,7 +2605,7 @@ export function Composer({
                 <div
                   className="composer-input-box"
                   style={
-                    expanded
+                    expandedRender
                       ? { height: `${layout.boxHeight}px`, paddingTop: `${layout.textPad}px` }
                       : { top: `${-layout.textGlide}px` }
                   }
@@ -2469,7 +2615,7 @@ export function Composer({
                 <div
                   className="composer-actions"
                   style={
-                    expanded
+                    expandedRender
                       ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
                       : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
                   }
@@ -2573,7 +2719,35 @@ export function Composer({
           </div>
         )}
       </div>
-      {footerSlot}
+      {/*
+        The 24px footer slot (composer.rs:7936-7985, SESSION_FOOTER_HEIGHT):
+        two absolutely-inset layers that never overlap — Layer A is the
+        new-thread git selectors (checkout + ref chips for the run target,
+        `px` 10), Layer B the session footer row. `route_chrome_opacities`
+        guarantees one is exactly 0, so the zero one is UNMOUNTED (its
+        popover triggers cannot be found twice). Non-Git canvas targets
+        collapse the slot to nothing (bottom_slot = session_chrome there).
+      */}
+      {(chrome.newThread > 0 || chrome.session > 0) && footerSlot !== undefined && (
+        <div className="composer-footer-slot">
+          {chrome.newThread > 0 && (
+            <div
+              className="composer-footer-layer composer-footer-layer-a"
+              style={{ opacity: `${chrome.newThread}` }}
+            >
+              <NewThreadGitSelectors />
+            </div>
+          )}
+          {chrome.session > 0 && (
+            <div
+              className="composer-footer-layer composer-footer-layer-b"
+              style={{ opacity: `${chrome.session}` }}
+            >
+              {footerSlot}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
