@@ -13,9 +13,8 @@ import { navEntryPath, navHistory } from "../state/nav-history";
  * All 9 web-relevant sections render in `SettingsSection::ALL` order
  * (Appshots is desktop/Linux-only and permanently absent on web); the
  * label/variant crossover is verbatim — `Harnesses` shows as "Agents",
- * `Agents` shows as "Accounts" (shell.rs:402-429). Sections whose pages ship
- * in ticket 29 (Devices, Agents, Files, Notifications, Shortcuts, Archived)
- * link to their eventual routes, which carry stub pages until then.
+ * `Agents` shows as "Accounts" (shell.rs:402-429). Every row links a real
+ * page (tickets 28 + 29).
  */
 
 /** The web's `SettingsSection::ALL` minus Appshots (shell.rs:386-431). */

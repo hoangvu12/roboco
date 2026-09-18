@@ -13,7 +13,7 @@ import {
   matchKeybinding,
   onShortcut,
 } from "../state/shortcuts";
-import { overlayOwnsKeyboard, useKeymap } from "../state/keymap";
+import { overlayOwnsKeyboard, useKeymap, keystrokesIntercepted } from "../state/keymap";
 import { toggleAddSpace } from "../state/add-space";
 import { installJumpHintModifierListeners } from "../state/jump-hints";
 import { useChrome } from "../state/chrome";
@@ -224,6 +224,12 @@ export function AppShell() {
   const route = pathname.startsWith("/settings") ? "settings" : "chat";
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      // The shortcuts recorder's `cx.intercept_keystrokes` equivalent: while
+      // it owns the keyboard, a matched binding is recorded/refused by the
+      // recorder instead of running its action (shortcuts.rs:127-140).
+      if (keystrokesIntercepted()) {
+        return;
+      }
       const binding = matchKeybinding(event, table);
       if (binding === null) {
         return;

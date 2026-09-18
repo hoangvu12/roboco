@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
 import type { PairedSession, RemoteAccessSnapshot } from "@roboco/proto";
+import { formatLastSeen } from "../src/lib/devices";
 import {
   createPairingLink,
-  formatLastSeen,
   getRemoteAccess,
   revokePairingSession,
   sessionRows,

@@ -46,6 +46,13 @@ export const LIST_DRIVES = "ListDrives";
 export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 /** Harness catalog for the pickers (one row per harness). */
 export const LIST_HARNESSES = "ListHarnesses";
+/** Settings → Agents: flip one harness's enablement; the reply is the
+ *  device's fresh `ListHarnesses` catalog (a raced toggle self-corrects). */
+export const SET_HARNESS_ENABLED = "SetHarnessEnabled";
+/** Settings → Agents session-title pickers (per-device `harness-prefs.json`).
+ *  `SetTitleSettings`'s params ARE the settings; both reply with the stored pair. */
+export const GET_TITLE_SETTINGS = "GetTitleSettings";
+export const SET_TITLE_SETTINGS = "SetTitleSettings";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
 export const LIST_MODELS = "ListModels";
 /** The composer's `/` discovery (crates/rpc/src/lib.rs:42): harness-advertised

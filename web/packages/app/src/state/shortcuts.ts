@@ -19,6 +19,8 @@
 
 import { defaultKeymap, JUMP_DEFAULTS, JUMP_SLOTS, type KeymapConfig } from "./ui-settings";
 
+export type { KeymapConfig };
+
 export { JUMP_DEFAULTS, JUMP_SLOTS };
 
 // ---------------------------------------------------------------------------
@@ -171,7 +173,7 @@ export function defaultComboOn(id: ShortcutId, isMac: boolean): string {
 }
 
 /** `KeymapConfig::get` — the stored combo for an id ("" when unbound). */
-function keymapGet(config: KeymapConfig, id: ShortcutId): string {
+export function keymapGet(config: KeymapConfig, id: ShortcutId): string {
   if (typeof id === "object") {
     return config.jumpSession[id.jumpSession] ?? "";
   }
