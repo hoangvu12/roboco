@@ -35,6 +35,8 @@ import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { availableQueuePrimaryAction } from "../lib/queue-row-logic";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
+import { TerminalDock } from "../terminal/terminal-dock";
+import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore } from "../state/transcript-store";
 
@@ -723,7 +725,12 @@ export function ConversationPage() {
           the reserved status strip (both routes — the canvas shows the idle
           indicator), the persistent composer — one entity, its wrapper in
           this slot, re-anchored by the dock — with the jump pill floating
-          over it, and the queue edit toolbar.
+          over it, the queue edit toolbar, and the terminal drawer LAST
+          (`render_terminal_container`, shell.rs:6124 — the dock sits below
+          the composer at the column's bottom). The drawer measures into the
+          stack like every sibling, so the transcript's bottom clearance and
+          fade band track it; its own store is the DRAWER's — the pane's
+          Terminal surfaces ride a separate, independent host.
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
           <StatusStrip status={row?.status ?? "idle"} sending={sending} />
@@ -775,6 +782,7 @@ export function ConversationPage() {
               {hasSelection && <JumpPillAnchor state={jumpState} />}
             </div>
           )}
+          <TerminalDock store={drawerTerminalStore} chatId={chatId} />
         </div>
       </div>
     </div>

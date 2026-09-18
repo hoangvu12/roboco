@@ -6,6 +6,7 @@ import {
   resolvedActive,
   surfaceKey,
   workspaceFileTitle,
+  type PaneTerminalSource,
   type RightSurface,
 } from "../src/state/right-pane";
 import { dropIndex, slideOffset } from "../src/components/right-tab-strip";
@@ -16,8 +17,37 @@ import { dropIndex, slideOffset } from "../src/components/right-tab-strip";
  * a fresh store so the per-chat maps never leak between cases.
  */
 
-function fresh(): RightPaneStore {
-  return new RightPaneStore();
+/**
+ * The pane's embedded terminal host, faked: xterm must not load in the node
+ * environment, and a fake keeps the terminal tab entities chat-local and
+ * inspectable. Titles follow the desktop's `tab_summaries` (the OSC/shell
+ * label, "Terminal N" fallback — here "term" prefixed by the key).
+ */
+class FakePaneTerminal implements PaneTerminalSource {
+  readonly openTabs: string[] = [];
+  closed: string[] = [];
+
+  openTabFor(chatId: string, key: string): boolean {
+    void chatId;
+    this.openTabs.push(key);
+    return true;
+  }
+
+  closeTab(chatId: string, key: string): void {
+    void chatId;
+    this.closed.push(key);
+    this.openTabs.splice(this.openTabs.indexOf(key), 1);
+  }
+
+  tabTitle(chatId: string, key: string): string | null {
+    void chatId;
+    return this.openTabs.includes(key) ? `term-${key}` : null;
+  }
+}
+
+function fresh(): { store: RightPaneStore; terminals: FakePaneTerminal } {
+  const terminals = new FakePaneTerminal();
+  return { store: new RightPaneStore(terminals), terminals };
 }
 
 describe("panel keys", () => {
@@ -32,7 +62,7 @@ describe("panel keys", () => {
 
 describe("session_panels_default_closed_per_chat", () => {
   it("starts every chat closed, unexpanded, on the picker, with no tabs", () => {
-    const store = fresh();
+    const { store } = fresh();
     for (const chatId of ["chat-1", "chat-2"]) {
       const pane = store.stateFor(chatId);
       expect(pane.open).toBe(false);
@@ -46,7 +76,7 @@ describe("session_panels_default_closed_per_chat", () => {
 
 describe("session_panels_flags_are_chat_scoped", () => {
   it("opening one chat's pane leaves every other chat closed", () => {
-    const store = fresh();
+    const { store } = fresh();
     store.toggle("chat-1");
     expect(store.stateFor("chat-1").open).toBe(true);
     expect(store.stateFor("chat-2").open).toBe(false);
@@ -55,7 +85,7 @@ describe("session_panels_flags_are_chat_scoped", () => {
 
 describe("session_panels_both_flags_coexist_per_chat", () => {
   it("open and expanded ride together on one chat without crossing chats", () => {
-    const store = fresh();
+    const { store } = fresh();
     store.toggle("chat-1");
     store.toggleExpanded("chat-1");
     const pane = store.stateFor("chat-1");
@@ -74,10 +104,10 @@ describe("session_panels_both_flags_coexist_per_chat", () => {
 
 describe("session_panels_update_tracks_right_surfaces", () => {
   it("resolvedActive follows the live tab list and falls back to the picker", () => {
-    const store = fresh();
+    const { store } = fresh();
     store.addFilesSurface("chat-1");
     store.addTerminalSurface("chat-1");
-    // Terminal is single-instance in the pane but still a tab.
+    // The surface id IS the embedded terminal tab's key.
     expect(resolvedActive(store.stateFor("chat-1"))).toEqual({ kind: "terminal", id: "t1" });
 
     // The stored pick goes stale when its tab closes — never render a dead
@@ -93,9 +123,39 @@ describe("session_panels_update_tracks_right_surfaces", () => {
   });
 });
 
+describe("terminal_surfaces_are_per_instance (add_terminal_surface, shell.rs:2634-2650)", () => {
+  it("every click opens a FRESH embedded terminal tab addressing its own PTY", () => {
+    const { store, terminals } = fresh();
+    store.addTerminalSurface("chat-1");
+    store.addTerminalSurface("chat-1");
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([{ kind: "terminal", id: "t1" }, { kind: "terminal", id: "t2" }]);
+    expect(terminals.openTabs).toEqual(["t1", "t2"]);
+    expect(resolvedActive(pane)).toEqual({ kind: "terminal", id: "t2" });
+
+    // The chip title is the terminal tab's own live label, and closing the
+    // surface closes THAT tab (close_tab_by_key) — the sibling stays.
+    expect(store.describe({ kind: "terminal", id: "t1" }, "chat-1")?.title).toBe("term-t1");
+    store.closeSurface("chat-1", { kind: "terminal", id: "t1" });
+    expect(terminals.closed).toEqual(["t1"]);
+    expect(store.describe({ kind: "terminal", id: "t1" }, "chat-1")).toBeNull();
+    expect(resolvedActive(store.stateFor("chat-1"))).toEqual({ kind: "terminal", id: "t2" });
+
+    // A tab that vanished under the pane (its entity gone) disappears from
+    // the rows entirely — right_surface_rows' skip signal.
+    expect(store.surfaceRows("chat-1")).toHaveLength(1);
+  });
+
+  it("without a terminal host wired, the mint is a no-op", () => {
+    const store = new RightPaneStore(null);
+    store.addTerminalSurface("chat-1");
+    expect(store.stateFor("chat-1").tabs).toEqual([]);
+  });
+});
+
 describe("files_surface_is_single_instance_per_tab_list", () => {
   it("repeat opens focus the one Files tab instead of adding a second", () => {
-    const store = fresh();
+    const { store } = fresh();
     store.addFilesSurface("chat-1");
     store.addDiffSurface("chat-1", "diff");
     store.addFilesSurface("chat-1");
@@ -107,7 +167,7 @@ describe("files_surface_is_single_instance_per_tab_list", () => {
 
 describe("file_editors_are_distinct_surface_tabs_with_stable_titles", () => {
   it("one tab per path, basename titles, ids stable across reorder and reopen", () => {
-    const store = fresh();
+    const { store } = fresh();
     store.addFileSurface("chat-1", "src/lib/shell.rs");
     store.addFileSurface("chat-1", "web/packages/app/src/main.tsx");
     let pane = store.stateFor("chat-1");

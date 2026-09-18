@@ -11,7 +11,7 @@ import { ChangesSurface, ChangesToolbar } from "../routes/changes-page";
 import { FilesSurface } from "../routes/files-page";
 import { FileSurface } from "./files/file-viewer";
 import { TerminalDock } from "../terminal/terminal-dock";
-import { useTerminalStore } from "../terminal/store";
+import { paneTerminalStore } from "../terminal/store";
 import { SurfacePicker } from "./surface-picker";
 import { TranscriptView } from "./transcript";
 import type { SubagentOpen } from "./tool-group";
@@ -55,13 +55,26 @@ export function surfaceEntry(kind: RightSurface["kind"]): RightSurfaceEntry | un
   return entries.get(kind);
 }
 
+/*
+ * Boot wiring: the pane's terminal host is injected here rather than imported
+ * by `state/right-pane.ts` (that module must stay loadable in the node test
+ * environment, and xterm must not come with it). The pane store's version
+ * bumps — a shell's OSC title changing, a tab exiting — re-render the pane's
+ * chips through the right-pane store's notify, the desktop's TitleChanged
+ * fan-out's peer.
+ */
+rightPaneStore.setTerminalSource(paneTerminalStore);
+paneTerminalStore.subscribe(() => {
+  rightPaneStore.notify();
+});
+
 /** The backing facts for a surface, straight from the entity maps. */
-function facts(surface: RightSurface) {
-  return rightPaneStore.describe(surface);
+function facts(surface: RightSurface, ctx: SurfaceContext) {
+  return rightPaneStore.describe(surface, ctx.chatId);
 }
 
-function titleOf(fallback: string): (s: RightSurface) => string {
-  return (s) => facts(s)?.title ?? fallback;
+function titleOf(fallback: string): (s: RightSurface, ctx: SurfaceContext) => string {
+  return (s, ctx) => facts(s, ctx)?.title ?? fallback;
 }
 
 /**
@@ -69,7 +82,7 @@ function titleOf(fallback: string): (s: RightSurface) => string {
  * whose backing entity is gone renders the picker (`… else the picker`).
  */
 export function renderRightSurface(surface: RightSurface, ctx: SurfaceContext): ReactNode {
-  if (surface.kind !== "picker" && facts(surface) === null) {
+  if (surface.kind !== "picker" && facts(surface, ctx) === null) {
     return <SurfacePicker chatId={ctx.chatId} />;
   }
   return entries.get(surface.kind)?.render(surface, ctx) ?? null;
@@ -83,16 +96,13 @@ export function renderRightSurface(surface: RightSurface, ctx: SurfaceContext): 
  */
 
 /**
- * The Terminal surface. The PTY is minted HERE, by the surface mounting —
- * not by an effect beside the pane (gap B2): a surface with no live panel
- * can no longer open one.
+ * The Terminal surface — the pane's embedded panel (`RightSurface::Terminal`
+ * rendering the shared `right_terminal` panel with `select_tab_by_key`).
+ * Each surface chip addresses ONE terminal tab: the id is the tab's key,
+ * minted together by `addTerminalSurface`/`openTabFor`.
  */
-function TerminalSurface({ chatId }: { chatId: string }) {
-  const terminalStore = useTerminalStore();
-  useEffect(() => {
-    terminalStore.open(chatId);
-  }, [terminalStore, chatId]);
-  return <TerminalDock store={terminalStore} chatId={chatId} docked />;
+function TerminalSurface({ surfaceId, chatId }: { surfaceId: string; chatId: string }) {
+  return <TerminalDock store={paneTerminalStore} chatId={chatId} docked tabKey={surfaceId} />;
 }
 
 /**
@@ -212,7 +222,7 @@ function registerDefaults(): void {
   registerRightSurface({
     kind: "file",
     title: titleOf("File"),
-    detail: (s) => facts(s)?.detail ?? null,
+    detail: (s, ctx) => facts(s, ctx)?.detail ?? null,
     // The tab strip's IconName slot is monochrome by design; the
     // polychrome file-type icon lives in the surface's breadcrumb toolbar
     // (`FileIcon`, ticket 24's manifest).
@@ -224,7 +234,7 @@ function registerDefaults(): void {
     kind: "diff",
     title: titleOf("Diffs"),
     // `git-branch` when that `Changes` `is_history()`, else `list`.
-    icon: (s) => (facts(s)?.isHistory === true ? "gitBranch" : "list"),
+    icon: (s, ctx) => (facts(s, ctx)?.isHistory === true ? "gitBranch" : "list"),
     toolbar: (s, ctx) => (s.kind === "diff" ? <ChangesToolbar chatId={ctx.chatId} surfaceId={s.id} /> : null),
     render: (s, ctx) => (s.kind === "diff" ? <ChangesSurface chatId={ctx.chatId} surfaceId={s.id} /> : null),
   });
@@ -233,7 +243,7 @@ function registerDefaults(): void {
     kind: "terminal",
     title: titleOf("Terminal"),
     icon: () => "terminal",
-    render: (_s, ctx) => <TerminalSurface chatId={ctx.chatId} />,
+    render: (s, ctx) => (s.kind === "terminal" ? <TerminalSurface surfaceId={s.id} chatId={ctx.chatId} /> : null),
   });
 
   registerRightSurface({
