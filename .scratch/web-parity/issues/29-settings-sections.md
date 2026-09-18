@@ -13,7 +13,7 @@ now links to real pages for all 9 web-relevant sections instead of 3.
 
 **Blocked by:** 03 (Client settings store), 12 (Keyboard), 28 (Settings shell and Appearance)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/13-settings-sections.md` §2, §3.0–§3.11, §4, §5 (all rows); `../../web-client/research/12-settings-shell-appearance.md` §3.0 (`UiSettings` model, for persistence shape reference).
 
@@ -759,7 +759,208 @@ just the current space's).
 
 ## Comments
 
-(empty; appended during implementation)
+### What landed (2026-09-19, wp2/29-settings-sections)
+
+- **Devices** (`routes/settings-devices.tsx`, `lib/devices.ts`): the pairing
+  box (reuses `fleetStore.redeemPairingUrl` + `webDeviceLabel` — no second
+  pairing path), one `settings-row` per registry device with the platform
+  tile's corner presence dot (emerald+glow / amber / ink-22, `border 2px
+  var(--rb-card)` ring), the meta-line fragment order (platform · v{version}
+  · connection word · "Last seen {…}" · "Added {…}" · the mono id chip), the
+  1.5s click-to-copy "Copied" flip, the Rename dialog with BOTH desktop
+  quirks (scrim swallows clicks, no Escape handler — only Cancel / Rename /
+  Enter close; empty-after-trim submits close the dialog silently with no
+  RPC), and `Mutate {op: "renameDevice"}` writes. "This device" badge on
+  the local row. `formatLastSeen` moved from `lib/remote-access.ts` into
+  `lib/devices.ts` (shared by both pages); `platformLabel`, `shortId`,
+  `deviceOnline`, `presenceDot`, `formatLastSeenAt` (ISO variant) added.
+- **Agents** (`routes/settings-agents.tsx`, `lib/harnesses.ts`): harness
+  rows over `visibleHarnesses` (re-exported from `lib/model-rows.ts` —
+  ticket 10 already landed the pure functions; no duplication), the
+  last-enabled/installed interactivity rule, the two not-installed hints at
+  `warning_muted.opacity(0.9)`, the 4-row skeleton, error+Retry, the
+  per-device session-titles card with both inline pickers (Automatic
+  fallbacks, `supportsTitles` filter, SetTitleSettings round trip +
+  ListModels reload), and `bumpHarnessCatalog(session)` — the
+  `pickers::bump_harness_catalog` port as a stale-while-revalidate
+  `catalog.loadHarnesses({force: true})` poke. Blurb/CLI tables verbatim.
+- **Files** (`routes/settings-files.tsx`): the five rows with the
+  autosave-gated delay row, pill rows (28px/7px radius/11.5px, accent-70
+  border + 11% wash active, wash-2.5% inactive, wash-8% hover), integer
+  font labels dropping the decimal; every write immediate through ticket
+  03's store. Desktop's odd separator rule preserved (first four rows
+  borderless, only "Show all files" carries the top border).
+- **Notifications** (`routes/settings-notifications.tsx`): the six rows in
+  fixed order, masters always interactive on `RbSwitch` (Base UI), the
+  inert twin for dependent rows (same 32×18 switch, `role="switch"`, the
+  "Unavailable while its parent setting is off" aria-description, no
+  handlers), 0.55 row dimming, full-set persistence per flip.
+- **Shortcuts** (`routes/settings-shortcuts.tsx`, `lib/shortcuts-editor.ts`,
+  `state/keymap.ts`): the five group cards (Appshots skipped), 18 rows,
+  `render_row`'s chip (96px min, mono, recording inversion to
+  text-on-solid with "Press keys…"), per-row Reset, Restore defaults
+  (0.35/inert), the send-behavior segmented control + reset icon, the
+  escape-behavior toggle, and the helper line's three states. The recorder:
+  `setKeystrokeIntercept` (a `cx.intercept_keystrokes` registry —
+  `app-shell.tsx`'s binding dispatch declines while it is held) + one
+  capture-phase window listener that preventDefaults/stopPropagations
+  every keystroke + blur cancel on the focused recorder span. Escape
+  cancels; bare modifiers stay recording (DOM "Meta"/"OS" normalized to
+  the grammar's "cmd"); reserved-check then conflict-check then commit.
+  `keymapGet` exported from `state/shortcuts.ts`; `keymapStore` patches
+  persist + re-apply live (the shell's `useKeymap` table rebuilds).
+- **Archived** (`routes/settings-archived.tsx`, `lib/archived.ts`): the
+  full-page list on `lib/view.ts`'s `archivedRows` with `spaceFilter=null`
+  (every archived chat, not the shelf's scope) plus the page-only content
+  ("Untitled session" fallback, device · location meta via the
+  `chat_location` port, 11px time-ago), the hover-reveal Unarchive pill
+  (CSS `:hover` — the desktop's `self.hovered` group-hover equivalent) with
+  the busy state's forced-0.4 reveal, and `setChatArchived` writes.
+- **Accounts**: the 220px `DeviceSwitcher` (built once in
+  `components/ui/DeviceSwitcher.tsx` per §2.2.1, on `PickerCard` +
+  `MenuRow`s — §2.2's "duplicate it" parenthetical was superseded by
+  §2.2.1's "build this once and reuse"), `targetDeviceId` threaded through
+  every `lib/accounts.ts` wrapper (null = local, no passthrough),
+  `set_target_device`'s drop-and-reload, and the §2.6 literal fixes:
+  Refresh as a 12.5px ghost action with a 16px icon dimming to 0.5, the
+  usage-fill 0.8/0.85 opacities (`usageColorVar` now color-mixes), the
+  usage-fallback line (11.5px/60% + mt-6), the desktop-geometry skeleton
+  row (avatar ghost, 176×13 email line capped 60%, two meter ghosts
+  48×9/56–230×5/64×9, 64×21 badge, row-2 0.6 dim), the login link without
+  the underline (the Rust ports text-color only), the login error at
+  `danger_muted.opacity(0.9)`, the wait line at 12.5px/70%.
+- **Remote access**: the empty-link copy now reads "…under Settings →
+  Devices." No countdown, no QR (per §2.5).
+- **Router/nav**: all six stub routes swapped for real components
+  (`settings-stub.tsx` deleted — nothing was meant to survive), `/settings`
+  redirects to `/settings/devices`, and the user menu's Settings row
+  (`account-row.tsx`) lands on Devices (the desktop's `OpenSettings`
+  target; the file's own comment said it was temporary until this ticket).
+- `engine-client/src/methods.ts`: added `SET_HARNESS_ENABLED`,
+  `GET_TITLE_SETTINGS`, `SET_TITLE_SETTINGS` (`LIST_HARNESSES` and
+  `LIST_MODELS` already existed — the ticket's "confirmed by grep" note
+  predated ticket 10).
+
+### Deviations and judgment calls (for a human)
+
+1. **Web mapping of the Devices page's multi-engine concepts.** The
+   desktop's rows mix "devices that paired with this engine" with
+   engine-registry connection state. On the web, WatchDevices publishes
+   exactly the engine's own device row (engine-local registry, ADR 0004),
+   so: the local row = `engineInfo.deviceId` (presence = the live client
+   status), a row matching a parked fleet engine renders engine-backed-off
+   and carries Forget (`fleetStore.remove`), every other row falls back to
+   the last-seen window. In practice the smoke engine shows one row.
+2. **The title pickers render inline choice lists, not popovers** — that
+   is what the desktop does (`harnesses.rs:358-382` appends a
+   `max_h(240)` scroll list inside the titles card); §2.2's "ghost-action
+   trigger opening a scrollable choice list" reads the same way once you
+   check the Rust.
+3. **The recorder's intercept needed one `app-shell.tsx` edit** beyond the
+   ticket's file table: the shell's binding dispatch is a capture-phase
+   window listener registered at mount, so a later-registered capture
+   listener can never preempt it. The `setKeystrokeIntercept` registry
+   (read live per event) is the minimal equivalent of
+   `cx.intercept_keystrokes`; verified live — Ctrl+N during recording
+   neither fires New session nor navigates, exactly the desktop's
+   `recorder_refuses_bound_actions_before_they_can_run` test.
+4. **`DeviceSwitcher` lives in `components/ui/`** (data+callbacks in, DOM
+   out) rather than being duplicated per page — §2.2.1 says build once and
+   reuse; §2.2's parenthetical said duplicate. I followed the dedicated
+   section.
+5. **`lib/harnesses.ts` re-exports** `descriptorEnabled`/
+   `visibleHarnesses`/`offeredHarnesses` from `lib/model-rows.ts` instead
+   of re-implementing them (ticket 10 landed them for the pickers). The
+   ticket-named API surface exists; one source of truth.
+6. **The Files separator quirk** (only the last row bordered) is ported
+   verbatim from `files.rs:146-300` — it looks like a desktop bug but is
+   parity.
+7. **`customized` on the Shortcuts page** compares the serialized keymap
+   (`JSON.stringify`) — `defaultKeymap()` mints a fresh object, so a
+   reference compare (my first draft) is always true. The desktop uses
+   derived `PartialEq`.
+8. **Class-name collision found in the smoke round**: my first draft
+   reused `files-row` for the Files settings rows — that class is the
+   Files pane's 27px tree row, which flattened the settings rows. Renamed
+   to `settings-files-row/-nosep/-pills`. Audited every other new class
+   name against the existing sheet — no other collisions.
+9. **`use-browser`'s index/coordinate clicks silently no-op on some
+   elements** (Base UI switches, the unarchive pill) while DOM `.click()`
+   and full synthetic mouse sequences work — a tool quirk, not a page bug;
+   the acceptance behaviors were all exercised via real event dispatch.
+   The archived hover screenshot needed a REAL cursor move (PowerShell
+   `Cursor.Position`) because synthetic events never set CSS `:hover`.
+
+### Verification
+
+- `pnpm -r build` (web/) green — typecheck for all 5 packages.
+- `@roboco/app` vitest 1130/1130 green (9 new suites/cases:
+  `deviceOnlineWithin70SecondsWindow`, `presenceDotFallsBackWhenNoEngineKey`,
+  `formatLastSeenBucketsMatchRoboco`, `platformLabelMapsKnownPlatforms`,
+  `shortIdTruncatesLongIds` in `tests/devices.test.ts`;
+  `descriptorEnabledDefaultsToInstalledExceptMock`,
+  `mockHarnessHiddenUnlessOnlyOption` + copy tables + RPC param shapes in
+  `tests/harnesses.test.ts`; `conflictOwnerFindsFirstMatchingBinding`,
+  `modEnterAlwaysReserved` + record outcomes + notice wording in
+  `tests/shortcuts-editor.test.ts`; the archived derivation in
+  `tests/archived.test.ts`; `remote-access-view.test.ts` re-pointed at
+  `lib/devices`). `@roboco/engine-client` vitest 41/41 green.
+- Live smoke round on the embedded bundle (port 27699): boot check green
+  (no error boundary, fresh pairing); `/settings` → `/settings/devices`
+  redirect; 9-row nav; Devices (presence dot + "This device" + "Added 1m
+  ago" + id chip copy/revert + rename round trip incl. the
+  silent-empty-swallow quirk + a real rename persisting);
+  Agents (Mock row visible-since-alone, toggle refusal surfaces the
+  engine guard error verbatim, title pickers open/commit-path, device
+  switcher trigger + 220px menu with the "You" tag); Files (delay row
+  appears with the autosave toggle, pill clicks persist
+  delay/font/word-wrap/show-all through reload); Notifications (master off
+  dims rows 2-4 with the aria-description; full-set persists); Shortcuts
+  (recording, Escape cancel, valid rebind + per-row Reset, reserved
+  mod-enter refusal, conflict refusal naming the owner with the keymap
+  untouched, intercept blocks bound actions, send-behavior + reset,
+  escape toggle, Restore defaults); Archived (2 rows staged over the wire,
+  device · location meta, hover-revealed pill, unarchive removes the
+  row); Accounts (device switcher + targetDeviceId plumbing compiles and
+  opens; retarget itself cannot stage — see below).
+
+### Screenshot pairs
+
+Web halves captured to `.scratch/web-parity/shots/29/` (the wave-1
+convention — desktop halves skipped; desktop references live in research
+13): `web-00-boot-check.png`, `web-a-devices.png`,
+`web-a2-devices-id-copied.png`, `web-a3-devices-rename-dialog.png`,
+`web-b-agents.png`, `web-b2-agents-title-picker.png`,
+`web-b3-agents-refused-toggle.png` (extra), `web-c-files.png`,
+`web-d-shortcuts-recording.png`, `web-d2-shortcuts-send-behavior.png`
+(extra), `web-d3-shortcuts-page-top.png` (extra),
+`web-e-archived-hover.png`, `web-e-archived-page.png` (extra, full page),
+`web-e2-archived-unarchive-busy.png` (extra — shot raced the RPC; the
+busy pill may have already completed), `web-e-shortcuts-conflict-refused.png`,
+`web-f-notifications-master-off.png`,
+`web-g-accounts-device-switcher.png` (extra), `web-g2-accounts-page.png`
+(extra).
+
+Staging skips (all engine-side, not web gaps):
+
+- **(a) "2+ rows, one online one offline"** — the engine-local registry
+  publishes exactly its own device row (ADR 0004); a second device row
+  cannot be staged against the smoke engine. The single row carries the
+  online presence, meta line, badge, and id chip; the offline dot is
+  unit-tested.
+- **(b) "one harness toggled off and its not-installed hint"** — the smoke
+  registry is Mock-only and Mock is installed, and the last-enabled rule
+  (plus the engine's own guard) keeps the only harness on. The refused
+  toggle's error strip (`web-b3`) shows the guard path instead; the
+  hint wording is unit-tested.
+- **Remote access empty-link copy** — `web_smoke`'s `EngineCore::
+  assemble_with_profile` never calls `remote_access.initialize`, so the
+  toggle always answers "Engine is still starting" and the pairing-link
+  section cannot render. The string change is code-verified (one-line
+  diff, `settings-remote-access.tsx`).
+- **Accounts retarget** — only one device exists in the smoke registry, so
+  the switcher has no non-local row to pick. The param threading is
+  unit-tested (`targetDeviceId` rides every call only when set).
 
 ### Shared components addendum (2026-09-18)
 

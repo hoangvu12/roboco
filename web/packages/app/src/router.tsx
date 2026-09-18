@@ -7,7 +7,12 @@ import { SettingsLayout } from "./components/settings-layout";
 import { RemoteAccessSettingsPage } from "./routes/settings-remote-access";
 import { AccountsSettingsPage } from "./routes/settings-accounts";
 import { AppearanceSettingsPage } from "./routes/settings-appearance";
-import { SettingsStubPage } from "./routes/settings-stub";
+import { DevicesSettingsPage } from "./routes/settings-devices";
+import { AgentsSettingsPage } from "./routes/settings-agents";
+import { FilesSettingsPage } from "./routes/settings-files";
+import { NotificationsSettingsPage } from "./routes/settings-notifications";
+import { ShortcutsSettingsPage } from "./routes/settings-shortcuts";
+import { ArchivedSettingsPage } from "./routes/settings-archived";
 
 const rootRoute = createRootRoute({ component: RootLayout });
 const shellRoute = createRoute({ getParentRoute: () => rootRoute, id: "shell", component: AppShell });
@@ -32,10 +37,9 @@ const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
   beforeLoad: () => {
-    // TODO(28): the desktop lands on Devices (SettingsSection::ALL's first
-    // row); Devices' page is ticket 29's, so the redirect stays on the first
-    // section that exists until that lands, then moves to /settings/devices.
-    throw redirect({ to: "/settings/remote-access" });
+    // The desktop's `OpenSettings`/user-menu always lands on Devices
+    // (SettingsSection::ALL's first row, shell.rs:3268/5294/7792).
+    throw redirect({ to: "/settings/devices" });
   },
 });
 const remoteAccessRoute = createRoute({
@@ -53,18 +57,18 @@ const appearanceRoute = createRoute({
   path: "/appearance",
   component: AppearanceSettingsPage,
 });
-// Ticket 29's sections: the nav links them (ticket 28's 9-row contract), so
-// the routes exist with stub pages until their real components land.
-const devicesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/devices", component: SettingsStubPage });
-const harnessesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/harnesses", component: SettingsStubPage });
-const filesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/files", component: SettingsStubPage });
+// Ticket 29's sections — the harnesses path keeps its route segment (the
+// desktop enum variant) while the nav and page carry the "Agents" label.
+const devicesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/devices", component: DevicesSettingsPage });
+const harnessesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/harnesses", component: AgentsSettingsPage });
+const filesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/files", component: FilesSettingsPage });
 const notificationsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/notifications",
-  component: SettingsStubPage,
+  component: NotificationsSettingsPage,
 });
-const shortcutsRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/shortcuts", component: SettingsStubPage });
-const archivedRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/archived", component: SettingsStubPage });
+const shortcutsRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/shortcuts", component: ShortcutsSettingsPage });
+const archivedRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/archived", component: ArchivedSettingsPage });
 
 const routeTree = rootRoute.addChildren([
   pairRoute,

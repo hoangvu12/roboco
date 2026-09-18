@@ -19,8 +19,7 @@ import { emitShortcut } from "../state/shortcuts";
  * web-only Engines row (the pairing entry point — the desktop has no
  * per-device identity concept here, and the user menu is where its one
  * settings entry lives), then the single "Settings" row, which lands on the
- * Devices section (`SettingsSection::Devices`) — the web's remote-access
- * page until ticket 28 builds the real Devices section.
+ * Devices section (`SettingsSection::Devices`), the desktop's landing row.
  */
 export function AccountRow() {
   const session = useEngineSession();
@@ -65,7 +64,7 @@ export function AccountRow() {
 
   function goSettings(): void {
     setOpen(false);
-    void navigate({ to: "/settings/remote-access" });
+    void navigate({ to: "/settings/devices" });
   }
 
   return (

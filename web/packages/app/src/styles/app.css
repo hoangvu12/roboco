@@ -11017,9 +11017,10 @@ button.files-save-pill:hover {
   white-space: nowrap;
 }
 
+/* accounts.rs:939-948 — the hover lifts the color only; the desktop's Rust
+   ports no underline. */
 .login-dialog-link:hover {
   color: var(--rb-text);
-  text-decoration: underline;
 }
 
 .login-dialog-form {
@@ -11041,6 +11042,915 @@ button.files-save-pill:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* accounts.rs:1073-1074 — 12.5px at text_muted/70. */
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+/* accounts.rs:929 (reused at :995/:1086) — the login dialog's inline errors
+   read danger_muted/90, softer than the form-wide danger. */
+.login-dialog-error {
+  margin: 0;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+}
+
+/* ── Settings sections (ticket 29) ─────────────────────────────────── */
+
+/* Header action cluster (accounts.rs:1412-1441): page_header + flex_1 +
+   Refresh + device switcher, 10px between the trailing controls. */
+.settings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* `ghost_action` (widgets.rs:351-363): flex row, gap 6, radius 8, px 10
+   py 6, 12px, muted, borderless — the caller's own hover (ghost_hover:
+   bg ink/6 + text). */
+.settings-ghost-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.settings-ghost-action:hover {
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+  color: var(--rb-text);
+}
+
+/* The Refresh action (accounts.rs:1420-1439): 12.5px text + 16px icon,
+   dimmed to 0.5 while a refresh is in flight. */
+.settings-refresh {
+  font-size: 12.5px;
+}
+
+.settings-refresh-busy {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-refresh-busy:hover {
+  background: transparent;
+  color: var(--rb-text-muted);
+}
+
+/* The usage-unavailable fallback line (accounts.rs:884-895): 11.5px at
+   text_muted/60 where the meter list would sit. */
+.account-usage-fallback {
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* Ghost account rows (accounts.rs:1114-1193) — same geometry as the real
+   row: avatar, 176×13 email line (capped at 60%), two meter ghosts
+   (48×9 label, 56–230×5 track, 64×9 percent), 64×21 badge. */
+.skeleton-account-row {
+  padding: 14px 20px;
+}
+
+.skeleton-account-row + .skeleton-account-row {
+  border-top: 1px solid var(--rb-border);
+}
+
+.skeleton-account-row-dim {
+  opacity: 0.6;
+}
+
+.skeleton-account-inner {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  animation: skeleton-pulse 1.6s var(--rb-ease-ease-in-out) infinite;
+}
+
+.skeleton-avatar {
+  flex: none;
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+}
+
+.skeleton-account-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.skeleton-ghost {
+  flex: none;
+  display: block;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+}
+
+.skeleton-email-line {
+  width: 176px;
+  max-width: 60%;
+  height: 13px;
+}
+
+.skeleton-meters {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.skeleton-meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skeleton-meter-label {
+  width: 48px;
+  height: 9px;
+}
+
+.skeleton-meter-track {
+  flex: 1;
+  min-width: 56px;
+  max-width: 230px;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+}
+
+.skeleton-meter-percent {
+  width: 64px;
+  height: 9px;
+}
+
+.skeleton-badge {
+  width: 64px;
+  height: 21px;
+  border-radius: 999px;
+}
+
+/* Dependent-row dimming (notifications.rs / harnesses.rs): the row itself
+   dims to 0.55 while its master is off / its CLI is missing. */
+.settings-row-dim {
+  opacity: 0.55;
+}
+
+/* The inert switch twin (notifications.rs `toggle(..., interactive=false)`):
+   the same 32×18 switch with no handlers, no focus, no cursor. */
+.rb-switch-inert {
+  cursor: default;
+}
+
+/* ── Devices (settings/devices.rs) ─────────────────────────────────── */
+
+/* The pairing box (devices.rs:573-617): field + primary button on one row,
+   11px muted/65 hint under it. */
+.settings-pairing-box {
+  margin-top: 24px;
+  padding: 10px 16px;
+}
+
+.settings-pairing-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-pairing-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-pairing-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+/* "No devices registered" (devices.rs:518-527): px 16 py 40, centered. */
+.settings-empty-devices {
+  padding: 40px 16px;
+  text-align: center;
+  font-size: 14px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* The presence dot (devices.rs:362-381): a 9px dot pinned to the platform
+   tile's bottom-right corner, ringed by the card tone so it "cuts" the
+   tile. Connected = emerald + glow; Reconnecting = amber; Off = faint ink. */
+.device-tile {
+  position: relative;
+}
+
+.presence-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--rb-card);
+  pointer-events: none;
+}
+
+.presence-connected {
+  background: var(--rb-success);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--rb-success) 55%, transparent);
+}
+
+.presence-reconnecting {
+  background: var(--rb-warning);
+}
+
+.presence-off {
+  background: color-mix(in srgb, var(--rb-text) 22%, transparent);
+}
+
+/* The click-to-copy id chip (devices.rs:431-456): mono 10.5px, muted/50;
+   copied flips to success_muted/90 for 1.5s; either state hovers to muted. */
+.id-chip {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  cursor: pointer;
+  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.id-chip:hover {
+  color: var(--rb-text-muted);
+}
+
+.id-chip-copied,
+.id-chip-copied:hover {
+  color: color-mix(in srgb, var(--rb-success-muted) 90%, transparent);
+}
+
+/* The Rename ghost action (devices.rs:491-512): pen icon 14px, 0.7 opacity
+   rising to full + ink/6 wash on hover. */
+.device-rename {
+  opacity: 0.7;
+}
+
+.device-rename:hover {
+  opacity: 1;
+}
+
+/* The rename dialog (devices.rs:244-282 over popover::modal): the scrim
+   swallows clicks without dismissing; only Cancel / Rename / Enter close. */
+.rename-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--rb-z-modal);
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rename-dialog-card {
+  width: min(24rem, 100%);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  background: var(--rb-dialog);
+  border-radius: 16px;
+}
+
+.rename-dialog-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rename-dialog-field {
+  margin-top: 12px;
+}
+
+.rename-dialog-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── The device switcher (accounts.rs:306-365 / harnesses.rs:464-522) ── */
+
+.device-switcher-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.device-switcher-trigger:hover {
+  background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+}
+
+.device-switcher-trigger-open,
+.device-switcher-trigger-open:hover {
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+}
+
+.device-switcher-glyph {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.device-switcher-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.device-switcher-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--rb-text) 20%, transparent);
+}
+
+.device-switcher-dot-local {
+  background: var(--rb-success);
+}
+
+.device-switcher-caret {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
+}
+
+.device-switcher-trigger-open .device-switcher-caret {
+  color: color-mix(in srgb, var(--rb-text-muted) 90%, transparent);
+}
+
+.device-switcher-menu {
+  padding: 6px;
+}
+
+.device-switcher-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.device-switcher-row-you {
+  flex: none;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 35%, transparent);
+}
+
+/* ── Agents (settings/harnesses.rs) ────────────────────────────────── */
+
+.harnesses-skeleton {
+  padding: 16px;
+}
+
+.harness-row-uninstalled {
+  opacity: 0.55;
+}
+
+/* The not-installed hint (harnesses.rs:616-624): warning_muted/90. */
+.harness-hint {
+  color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
+}
+
+/* The load-error state (harnesses.rs:688-704): strip + Retry ghost, mt 8. */
+.settings-error-retry {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.settings-error-retry .btn {
+  margin-left: 0;
+}
+
+/* Session titles (harnesses.rs:245-258): a second card mt 20 p 16. */
+.settings-titles-card {
+  margin-top: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-titles-subtitle {
+  margin: 0;
+  max-width: 512px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--rb-text-muted);
+}
+
+.settings-titles-loading {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--rb-text-muted);
+}
+
+/* One picker (harnesses.rs:286-316): row_title over a ghost-action trigger;
+   non-interactive rows dim to 0.5. */
+.title-picker-row {
+  margin-top: 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.title-picker-label {
+  font-size: 13px;
+}
+
+.title-picker-trigger {
+  margin-top: 4px;
+}
+
+.title-picker-inert .title-picker-trigger {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The inline choice list (harnesses.rs:358-382): scrollable at 240px. */
+.title-picker-options {
+  margin-top: 4px;
+  width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Files (settings/files.rs) ─────────────────────────────────────── */
+
+/* files.rs:146-300 gives the first four rows no separators; the LAST row
+   ("Show all files") is the only one carrying a top border. The classes
+   carry the `settings-files-` stem — the bare `files-row` name belongs to
+   the Files pane's tree rows (27px tall) and must not leak here. */
+.settings-files-nosep + .settings-files-nosep {
+  border-top: none;
+}
+
+/* The pill rows sit under the copy, aligned with the tile (items_start). */
+.settings-files-pills {
+  align-items: flex-start;
+}
+
+/* The pill row (files.rs:197-204): mt 12, flex-wrap, 7px gaps. */
+.pill-row {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* One pill (files.rs:73-96): 28px tall, px 10, radius 7, 11.5px text;
+   active = accent border 70% + wash 11%; inactive = border + wash 2.5%,
+   hover wash 8%. */
+.pill {
+  height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--rb-border);
+  border-radius: 7px;
+  background: rgb(var(--rb-wash) / 0.025);
+  color: var(--rb-text-muted);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.pill:not(.pill-selected):hover {
+  background: rgb(var(--rb-wash) / 0.08);
+}
+
+.pill-selected,
+.pill-selected:hover {
+  border-color: color-mix(in srgb, var(--rb-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--rb-accent) 11%, transparent);
+  color: var(--rb-text);
+}
+
+/* ── Shortcuts (settings/shortcuts.rs) ─────────────────────────────── */
+
+/* The recorder's focus target: focusable but invisible. */
+.recorder-focus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The header (shortcuts.rs:662-718): items-start, justify-between, 24px gap. */
+.shortcuts-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+/* Restore defaults (shortcuts.rs:686-711): a ghost action at 0.35 while
+   nothing is customized or a recording is live. */
+.shortcuts-restore.shortcuts-restore-inert {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.shortcuts-restore.shortcuts-restore-inert:hover {
+  background: transparent;
+  color: var(--rb-text-muted);
+}
+
+/* The two min-h-84 rows (send behavior, escape behavior). */
+.settings-row-min84 {
+  min-height: 84px;
+}
+
+/* Their descriptions (shortcuts.rs:496-505/607-616): 11.5px / 17px at
+   text_muted/65, capped at 430px. */
+.shortcuts-row-description {
+  margin-top: 4px;
+  display: block;
+  max-width: 430px;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+.shortcuts-card-mt32 {
+  margin-top: 32px;
+}
+
+/* The segmented control (shortcuts.rs:517-593): rounded-9 frame with 2px
+   padding over ink/4; options min-w 72, px 12 py 6, radius 7, mono 12px. */
+.send-behavior-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.send-behavior-reset {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.send-behavior-reset:hover {
+  background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+  color: var(--rb-text);
+}
+
+.segmented-control {
+  display: flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+}
+
+.segmented-option {
+  min-width: 72px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+button.segmented-option {
+  border: none;
+  background: transparent;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  cursor: pointer;
+  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+button.segmented-option:hover {
+  color: var(--rb-text);
+}
+
+.segmented-option-selected {
+  background: var(--rb-bg);
+  border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+  color: var(--rb-text);
+}
+
+/* The group cards (shortcuts.rs:624-644): label + card, 12px apart; the
+   groups stack 28px apart under a 28px top margin. */
+.shortcut-groups {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.shortcut-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* One shortcut row (shortcuts.rs:275-303): min-h 72, px 20, gap 20. */
+.shortcut-row {
+  min-height: 72px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.shortcut-row + .shortcut-row {
+  border-top: 1px solid var(--rb-border);
+}
+
+.shortcut-row-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shortcut-row-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.shortcut-row-copy .shortcut-row-description {
+  margin-top: 2px;
+  max-width: none;
+}
+
+.shortcut-row-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+/* Per-row Reset (shortcuts.rs:329-349): 11px at muted/70, hover to text. */
+.shortcut-reset {
+  min-height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-family: inherit;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  cursor: pointer;
+  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.shortcut-reset:hover {
+  color: var(--rb-text);
+}
+
+/* The combo chip (shortcuts.rs:350-392): min-w 96, px 12 py 6, radius 8,
+   mono 12px. Idle: border/bg + text, hover border text/20 + bg ink/3;
+   recording inverts to text-on-solid with a text/30 border. */
+.combo-chip {
+  min-width: 96px;
+  padding: 6px 12px;
+  display: flex;
+  justify-content: center;
+  border: 1px solid var(--rb-border);
+  border-radius: 8px;
+  background: var(--rb-bg);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--rb-text);
+  cursor: pointer;
+  transition: border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.combo-chip:not(.combo-chip-recording):hover {
+  border-color: color-mix(in srgb, var(--rb-text) 20%, transparent);
+  background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+}
+
+.combo-chip-recording,
+.combo-chip-recording:hover {
+  border-color: color-mix(in srgb, var(--rb-text) 30%, transparent);
+  background: var(--rb-text);
+  color: var(--rb-on-solid);
+}
+
+/* The helper line (shortcuts.rs:648-654): mt 12, px 4, min-h 20, centered. */
+.shortcuts-helper {
+  margin: 12px 0 0;
+  padding: 0 4px;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+/* ── Archived sessions (settings/archived.rs) ──────────────────────── */
+
+.archived-page-rows {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One row (archived.rs:113-237): items-center, gap 12, radius 8, px 12
+   py 8, hover ink/3. */
+.archived-page-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.archived-page-row:hover {
+  background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+}
+
+/* The 32px archive tile (archived.rs:131-146). */
+.archived-tile {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rb-border);
+  border-radius: 6px;
+}
+
+.archived-tile-icon {
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.archived-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.archived-row-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archived-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.archived-row-time {
+  flex: none;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/* device · location (archived.rs:176-199): 11px at muted/55, 6px gaps. */
+.archived-row-meta {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
+}
+
+.archived-row-location {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The Unarchive pill (archived.rs:201-236): border, px 10 py 4, radius 6,
+   12px; hidden until the row hovers, forced visible (and dimmed to 0.4)
+   while its unarchive is in flight; hover fill = surface_raised. */
+.archived-unarchive {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--rb-border);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.archived-page-row:hover .archived-unarchive {
+  opacity: 1;
+}
+
+.archived-unarchive:hover {
+  background: var(--rb-raised);
+  color: var(--rb-text);
+}
+
+.archived-unarchive-busy,
+.archived-page-row:hover .archived-unarchive-busy {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The empty state (archived.rs:241-272): centered, mt 96. */
+.archived-empty {
+  margin-top: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/* The icon's own color literal (archived.rs:255) overrides the container's
+   0.5 — an effectively ~20% glyph. */
+.archived-empty-icon {
+  color: color-mix(in srgb, var(--rb-text-muted) 20%, transparent);
+}
+
+.archived-empty-title {
+  margin: 12px 0 0;
+  font-size: 14px;
+}
+
+.archived-empty-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
 }
 
 @media (max-width: 768px) {

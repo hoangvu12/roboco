@@ -87,3 +87,32 @@ export function overlayOwnsKeyboard(): boolean {
 export function useOverlayKeyboard(): boolean {
   return useSyncExternalStore(overlayKeyboard.subscribe, overlayKeyboard.owns, overlayKeyboard.owns);
 }
+
+// ---------------------------------------------------------------------------
+// Keystroke interception (the recorder's cx.intercept_keystrokes)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Shortcuts page's recorder (`cx.intercept_keystrokes`, web-shaped):
+ * while any source holds the intercept, EVERY keystroke belongs to it — the
+ * shell's binding dispatch declines to run (a conflicting chord is
+ * recorded/refused instead of firing its action, shortcuts.rs's
+ * `recorder_refuses_bound_actions_before_they_can_run`) and the recorder's
+ * own capture listener consumes the event. Registration is by name so a
+ * crashed recorder cannot wedge the keyboard permanently.
+ */
+const keystrokeInterceptors = new Set<string>();
+
+/** Register/unregister one interception owner; idempotent by source name. */
+export function setKeystrokeIntercept(source: string, owns: boolean): void {
+  if (owns) {
+    keystrokeInterceptors.add(source);
+  } else {
+    keystrokeInterceptors.delete(source);
+  }
+}
+
+/** Whether a keystroke interceptor owns the keyboard right now. */
+export function keystrokesIntercepted(): boolean {
+  return keystrokeInterceptors.size > 0;
+}
