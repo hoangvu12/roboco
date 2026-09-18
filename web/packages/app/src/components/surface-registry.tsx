@@ -4,6 +4,7 @@ import type { IconName } from "@roboco/icons";
 import { rightPaneStore, type RightSurface } from "../state/right-pane";
 import { ChangesSurface, ChangesToolbar } from "../routes/changes-page";
 import { FilesSurface } from "../routes/files-page";
+import { FileSurface } from "./files/file-viewer";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { useTerminalStore } from "../terminal/store";
 import { SurfacePicker, SurfaceStubBody } from "./surface-picker";
@@ -115,11 +116,11 @@ function registerDefaults(): void {
     kind: "file",
     title: titleOf("File"),
     detail: (s) => facts(s)?.detail ?? null,
-    // The tab strip's IconName slot is monochrome by design; the polychrome
-    // file-type icon (`lib/file-icons.ts`) needs the surface's path, which
-    // only ticket 25's file-surface body has.
+    // The tab strip's IconName slot is monochrome by design; the
+    // polychrome file-type icon lives in the surface's breadcrumb toolbar
+    // (`FileIcon`, ticket 24's manifest).
     icon: () => "document",
-    render: (_s, ctx) => <SurfaceStubBody label={`File · ${ctx.chatId}`} />,
+    render: (s, ctx) => (s.kind === "file" ? <FileSurface chatId={ctx.chatId} surfaceId={s.id} /> : null),
   });
 
   registerRightSurface({

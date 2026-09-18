@@ -13,7 +13,7 @@ shows, instead of silently discarding edits.
 
 **Blocked by:** 24 (Files tree and search)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/10-files-preview.md` §3.1–§3.4,
 §4, §5 (rows quoted below); `../../web-client/research/09-files-tree-editor.md`
@@ -743,3 +743,214 @@ setting.
 
 ## Comments
 
+
+## Comments
+
+### Implementation (2026-09-18, branch `wp2/25-files-preview`)
+
+**What landed:**
+
+- `components/files/code-view.tsx` (new) — `CodeView`: gutter + line
+  numbers + syntax-highlighted rows for both the read-only preview and
+  the editable buffer (one component, the input layer toggled — the
+  desktop's single text state). The editable layer is a transparent
+  `<textarea>` laid over the highlight layer sharing the exact font
+  metrics/paddings/wrap mode; caret `--rb-caret`, selection wash
+  `accent`/0.22, active line `ink`/0.025; read-only rows use the 20px/
+  11.5px preview metrics, editable rows the `filesEditorFontSize` +
+  `max(size+8.5, 20)` formula. Editable highlighting debounces at 120ms
+  (the desktop's figure) — the plain rows hold the current text while
+  tokens catch up. Horizontal scroll is a single `overflow: auto`
+  scroller (native vertical wheel works over it) with the gutter
+  `position: sticky; left: 0` over an opaque plate so line numbers stay
+  pinned while code slides under. The scroller hides native scrollbars
+  and mounts the shared floating rails (`MenuScrollbar` /
+  `HorizontalScrollbar` from `ui/Scrollbar.tsx` — the code plane's half
+  of the "21/25 debt" comment in app.css). Ticket 23's seam: gutter
+  cells render through one `renderGutterCell` per visible row.
+- `components/files/tree-split-panel.tsx` (new) + `lib/tree-split.ts`
+  (new) — the §2.5 split: the breadcrumb toolbar row with the fixed 32px
+  tree-toggle slot, the sidebar (ticket 24's whole `FileTreePanel`)
+  beside the document body, and the `preview_split_handle` (20px hit
+  strip, 1px gradient line, hover blend, drag 1:1 clamped [220, 360] via
+  `state/layout.ts`'s `resizeDragSample` + the 5px/220ms edge bounce,
+  double-click resets to 286). `TreeSidebarMotion` ports the openness
+  sampler: explicit toggles animate on the resize curve and reverse from
+  the current openness; breakpoint crossings and reduced motion snap.
+  All state is in-memory (no settings key), per the ticket.
+- `components/files/editor-context-menu.tsx` (new) — the 170px
+  Cut/Copy/Paste/Select All card over `RbContextMenu` (the chat-menu
+  pattern), availability from the textarea's selection at open time.
+- `components/files/image-view.tsx` (new) — `ImageView` (fit/resize
+  re-fit, ctrl+wheel zoom anchored at the cursor with the DOM sign flip,
+  unmodified wheel pan, two-pointer pinch, window-riding drag with the
+  4px threshold and post-drag click swallow) plus the shared
+  `loadWorkspaceImage` pipeline (readFile → chunked readImage → decode,
+  30s timeout, 64 MiB decoded-size cap).
+- `lib/image-geometry.ts` (new) — the `Geometry`/`ViewState` port of
+  `image_viewer.rs` with the five desktop test names mirrored.
+- `components/files/file-viewer.tsx` (rebuild) — `FileSurface` (the
+  registry body the pane host mounts), the `render_breadcrumb` toolbar
+  (file-type icon, per-segment crumbs with the full-path tooltip after
+  350ms, markdown toggle, the phase-colored save-status pill with
+  clickable `saveFailed` retry + per-phase tooltips, Reveal-in-tree,
+  word-wrap toggle), the two write-outcome banners (lifecycle
+  close-requested and external-change/reload-confirmation with the
+  verbatim desktop copy incl. Title Case "Reload from Disk" and the
+  two-step "Discard unsaved changes?" flow), the truncated-preview
+  strip, and the Markdown/CodeView/Image document bodies.
+- `lib/file-document.ts` — extended (not rewritten): `showMarkdown`
+  (`show_markdown` default for markdown paths), `keepEditing()`
+  (externallyModified → conflict), `discardChanges()`, `prepareClose()`
+  / `blocksLifecycleClose()` / `canAutosave()`, autosave scheduling
+  (`configureAutosave`, the reload-confirmation pause, per-edit
+  re-arming; timers cleared on save failure/conflict/external/delete).
+- `state/file-documents.ts` (new) — the `FileDocument` registry: the
+  web peer of the shell's `file_surfaces` slice. The pane host mounts
+  one surface at a time, so the document + tree model live HERE keyed by
+  surface id, outliving tab switches (edits survive; ticket 22's
+  per-surface Changes store is the precedent) and disposed only on the
+  real close. It also feeds the tab strip's dirty dots (via the pane
+  store's notify) and the `beforeunload` guard.
+- `state/right-pane.ts` — the close lifecycle: `closeSurface` consults
+  `fileDocuments.prepareClose` (allow ⇒ complete now; pending/blocked ⇒
+  keep the tab, reveal it, mark the request); `completeFileClose` /
+  `cancelFileClose` / `isCloseRequested` / `filePathOf`; `describe`'s
+  file rows now read the live dirty flag.
+- `components/app-shell.tsx` — the `save-file` guard now requires the
+  pane's resolved active surface to be Files/File (the ticket's Mod-S
+  scope), reading the live store at keypress.
+- `components/files/markdown-view.tsx` (rebuild) — the §2.3 preview at
+  the files-specific metrics (900px max width via `.files-markdown`,
+  py16, 12px block gap, centered px24 rows): shared `CodeBlock` fences
+  (highlighting + copy + 1200ms reset), interactive task checkboxes
+  writing `[x]`/`[ ]]` into the live buffer through a single edit (the
+  source-match guard in the parent), heading anchors
+  (`buildHeadingAnchors` slug + collision suffix; same-file `#anchor`
+  scrolls), workspace-relative links via the `relative_target` port, and
+  workspace images under the per-document limits (32 entries, 64 MiB
+  combined decoded budget, 480px height cap) opening the lightbox (an
+  `ImageView` at natural size, Escape closes + restores focus, "Open
+  image link").
+- `lib/markdown-doc.ts` — `relativeTarget` (the full
+  `markdown_preview.rs:66-112` semantics: recursive `roboco-file:`
+  strip, raw-target rejections, percent-decoding of path and anchor,
+  `..`/`.` against the document's DIRECTORY, null above the root), task
+  markers carrying their source offset, `clipMarkdownBytes` (2 MiB
+  UTF-8-boundary clip), `buildHeadingAnchors`/`slugify`, and
+  `markdownLinkTarget` now routes bare `#anchor`s (they previously
+  rendered as plain text).
+- `lib/files.ts` — `truncatedMessage` (the "Large file preview is
+  truncated and read-only." condition, `file.truncated && text != null`).
+- `styles/app.css` — the §2.1/§2.2/§2.5 classes (`.files-code*`,
+  `.files-breadcrumb*`, `.files-toolbar-button`, `.files-save-pill`,
+  `.files-banner*` at the warning 0.25/0.055 values, `.files-truncated-banner`,
+  `.files-image*`, `.files-markdown*`, `.files-lightbox*`,
+  `.files-tree-toggle*`, `.files-split*`, `.files-editor-menu`); removed
+  the old `.files-viewer-header`/`.files-back`/`.files-dirty`/
+  `.files-banner-danger`/`.files-editor`/`.files-text-preview` and the
+  entire `.markdown` block (the files preview now rides the shared
+  `md-*` vocabulary).
+- Tests: `tests/image-geometry.test.ts` (the five desktop names),
+  `tests/tree-split.test.ts` (the three sidebar-motion names + the
+  width/breakpoint math), and new `file-document` cases (showMarkdown,
+  keepEditing, autosave fires-after-idle + not-while-saveFailed,
+  prepareClose allow/pending/blocked, discard) and `markdown-doc` cases
+  (task offsets, the five `relative_target` port cases, the 2 MiB clip,
+  heading anchors).
+
+**Deviations and judgment calls:**
+
+- **`state/shortcuts.ts` itself needed no edit** — the `saveFile` entry,
+  `mod-s` default, and `save-file` bus event already existed from
+  earlier tickets; ticket 25's wiring landed as the app-shell surface
+  guard + the FileSurface's `onShortcut("save-file")` listener (the old
+  component-local window keydown listener is gone).
+- **The document registry is a new module the ticket's file table does
+  not name** (`state/file-documents.ts`). Without it, the pane host's
+  one-surface-at-a-time mounting discarded edits on every tab switch —
+  the exact "unmounting discards edits silently" gap this ticket closes.
+  It follows ticket 22's per-surface-store precedent.
+- **Markdown block rendering**: code fences ride the shared
+  `components/markdown.tsx` `CodeBlock` and every other block renders
+  with the shared `md-*` class vocabulary (the transcript's own styles),
+  but the block-level component tree stays on the files parser
+  (`lib/markdown-doc.ts`) rather than the transcript's `Block` model —
+  link resolution, task source offsets, and workspace media are
+  files-specific and the ticket's table keeps that pipeline.
+- **Mermaid fences render as their source code block** — no JS Mermaid
+  renderer was pulled in (per the ticket's deferral allowance); the
+  fence is never omitted. The "Rendering diagram…"/diagram-error states
+  therefore have no live trigger.
+- **`roboco-file:` prefixed targets resolve against the workspace ROOT**
+  (the desktop's `relative_target("", …)` recursion), not the document's
+  directory — verified against the Rust.
+- **Read-only-with-text shows no banner** (the old web's banner was
+  removed): the desktop renders the plain read-only list there; the
+  message only appears centered when there is no text.
+- **`paste` availability cannot be probed synchronously** (a clipboard
+  read would prompt); it tracks the editable state and the click
+  attempts the read, no-oping on denial.
+- **Watch rename handling is not wired**: a renamed open file keeps the
+  old tab title/path until the surface reopens (`rightPaneStore.
+  renameFileSurface` stays ticket 07's unused seam). Noted for a later
+  ticket rather than guessed at.
+- **`target_change_pending` (the sync-target banner) is not ported**: no
+  engine event surfaces a chat checkout change to the web client in a
+  form this can hook today (ticket 24 noted the same); the banner's copy
+  and styling exist but nothing arms it.
+- **The tab-strip file icon stays the monochrome `document` glyph**
+  (ticket 24's documented seam — the ticket's table doesn't claim it).
+- The truncated strip's border is `var(--rb-border)` (the Rust's
+  `theme.border`, full opacity) — the ticket left the border unspecified.
+- The `pending` close banner ("Saving changes before closing…") is
+  covered by the unit tests and the code path; live it flashes too
+  briefly to screenshot (local saves land in well under a frame) — the
+  blocked variant is the screenshotted one.
+
+**Verification:**
+
+- `pnpm -r build` green; `@roboco/app` vitest 52 files / 797 tests green.
+- web_smoke round (fresh engine, the staging dir registered via
+  New project…): live checks for — editable code view with gutter/
+  highlighting at the 48px/10px and 13px/21.5 metrics; word-wrap toggle
+  both ways; horizontal scroll with the sticky gutter (gutter left
+  pinned at the scroller edge while scrolled 300px) and native vertical
+  wheel; Mod-S through the shortcut bus (dirty → saved clean); the
+  save-failed pill on a read-only-on-disk file; the externally-modified
+  banner ("This file changed outside Roboco." + Keep Editing/Reload from
+  Disk) staged by editing on disk under a dirty buffer; Keep Editing →
+  "Save conflict"; the two-step "Discard unsaved changes?"/Cancel/
+  "Discard & Reload" with the buffer reloading; markdown preview (fence
+  + copy button, task list with a live toggle into the buffer, workspace
+  image through the chunked RPC, lightbox open/Escape, same-file anchor
+  link); the image viewer at fit (800×600 at scale 1, centered), two
+  ctrl+wheel zooms (×1.82, anchored), and drag-pan (clamped); the editor
+  context menu (170px, Cut/Copy/Paste/Select All, availability from the
+  selection); the tree split (default 286, drag clamped at 360,
+  double-click reset to 286, animated toggle, the narrow formula —
+  228.36px on a 519px surface — and a dismissal surviving the
+  breakpoint crossing); reveal-in-tree (ancestors + selection);
+  **edits surviving a tab switch** (the registry) with the dirty dot
+  live on the inactive chip; the close lifecycle — blocked close
+  (Retry/Keep Open/Discard Changes), Keep Open keeping the tab dirty,
+  Discard completing the close, and the pending path saving then
+  completing; autosave live (900ms after idle, clean after).
+- Screenshots (web halves) in `.scratch/web-parity/shots/25/`:
+  `web-00-boot-check.png` (final state, no error boundary),
+  `web-01-code-editable-gutter-highlight.png` (the 286px sidebar state),
+  `web-02-word-wrap-on.png`, `web-03-word-wrap-off-hscroll.png`,
+  `web-04-save-failed-pill.png`, `web-05a-externally-modified.png`,
+  `web-05b-discard-reload-confirm.png`, `web-06-markdown-lightbox.png`,
+  `web-07-markdown-preview-fence-tasks.png`, `web-08-image-fit.png`,
+  `web-09-image-zoomed.png`, `web-10-close-lifecycle-blocked.png`,
+  `web-11-editor-context-menu.png`.
+  - **Desktop halves of all pairs: skipped, documented per the runbook**
+    — no `roboco` desktop process is running and none was started (the
+    same skip as tickets 09/10/24).
+  - The "conflict banner with Keep Editing" pair is covered by
+    `web-05a` (the externally-modified banner WITH the Keep Editing
+    action — its clicked outcome, the conflict pill, is verified
+    behaviorally above); no separate post-click shot.
+- Boot check: the app renders with no error boundary after the full
+  round (`web-00-boot-check.png`).

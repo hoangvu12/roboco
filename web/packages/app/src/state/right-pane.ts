@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
 import { changesSurfaceStore } from "./changes-surface";
+import { fileDocuments } from "./file-documents";
 import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
 
 /**
@@ -151,6 +152,12 @@ export class RightPaneStore {
   #byChat = new Map<string, ChatPaneState>();
   #version = 0;
   readonly #listeners = new Set<() => void>();
+  /**
+   * `pending_file_closes` (shell.rs:2882): surfaces whose close waits on
+   * unsaved edits — the surface stays until the saves land (pending) or the
+   * user picks Retry / Keep Open / Discard (blocked).
+   */
+  readonly #closeRequests = new Set<string>();
 
   // Backing entities, keyed by surface id — the desktop's `file_surfaces`,
   // `diffs` and `subagent_tabs` maps. Ids are monotonic and never reused, so
@@ -346,13 +353,29 @@ export class RightPaneStore {
   }
 
   /**
-   * `close_right_surface`: the ✕ — removes THAT tab, not the pane. After a
-   * close, `resolvedActive` falls to the first remaining tab, or stays on
-   * the picker when the list empties. Files/File take the unsaved-changes
-   * path on the desktop; that guard is ticket 24/25's to build.
+   * `close_right_surface` (shell.rs:2788): the ✕ — removes THAT tab, not
+   * the pane. A File surface with a live document consults `prepare_close`
+   * first: "allow" (or no document) completes immediately; "pending" /
+   * "blocked" keep the tab, reveal it, and mark the close request — the
+   * surface's banner carries the rest (ticket 25's contract with the
+   * desktop's `on_file_close_ready` / `complete_file_close`).
    */
   closeSurface(chatId: string, surface: RightSurface): void {
     if (surface.kind === "picker") {
+      return;
+    }
+    if (surface.kind === "file") {
+      const disposition = fileDocuments.prepareClose(surface.id);
+      if (disposition === null || disposition === "allow") {
+        this.#completeFileClose(chatId, surface);
+        return;
+      }
+      // `set_right_active`: reveal the surface the close is waiting on.
+      this.#update(chatId, (current) =>
+        surfaceEqual(current.active, surface) ? current : { ...current, open: true, active: surface },
+      );
+      this.#closeRequests.add(surfaceKey(surface));
+      this.#notify();
       return;
     }
     this.#update(chatId, (current) => {
@@ -366,15 +389,72 @@ export class RightPaneStore {
     // resolves again (`diffs.remove`, `subagent_tabs.remove`, …). A diff
     // tab also drops its per-surface Changes state (scope/folds), which
     // outlives the tab's component tree by design.
-    if (surface.kind === "file") {
-      this.#dropFileEntity(surface.id);
-    } else if (surface.kind === "diff") {
+    if (surface.kind === "diff") {
       this.#diffMeta.delete(surface.id);
       changesSurfaceStore.dispose(chatId, surface.id);
     } else if (surface.kind === "subagent") {
       this.#subagentMeta.delete(surface.id);
     }
     // Terminal keeps its entity — the dock owns the PTY lifecycle.
+  }
+
+  /** `complete_file_close` (shell.rs:2992): the close finally happens. */
+  completeFileClose(chatId: string, surface: RightSurface): void {
+    if (surface.kind !== "file") {
+      this.closeSurface(chatId, surface);
+      return;
+    }
+    this.#completeFileClose(chatId, surface);
+  }
+
+  #completeFileClose(chatId: string, surface: RightSurface): void {
+    this.#closeRequests.delete(surfaceKey(surface));
+    this.#update(chatId, (current) => {
+      const tabs = current.tabs.filter((tab) => !surfaceEqual(tab, surface));
+      const nextActive: RightSurface = surfaceEqual(current.active, surface)
+        ? { kind: "picker" }
+        : current.active;
+      return { ...current, tabs, active: nextActive };
+    });
+    if (surface.kind === "file") {
+      this.#dropFileEntity(surface.id);
+      // The document's real teardown (the `file_surfaces` entity drop) —
+      // its buffer survived every tab switch until now.
+      fileDocuments.disposeSurface(surface.id);
+    }
+  }
+
+  /** `cancel_file_close` (shell.rs:2907): Keep Open. */
+  cancelFileClose(chatId: string, surface: RightSurface): void {
+    if (this.#closeRequests.delete(surfaceKey(surface))) {
+      this.#notify();
+    }
+  }
+
+  /** `pending_file_closes.contains` — the surface shows the close banner. */
+  isCloseRequested(surface: RightSurface): boolean {
+    return this.#closeRequests.has(surfaceKey(surface));
+  }
+
+  /** The surface's backing path (`file_surface_paths`, shell.rs). */
+  filePathOf(surfaceId: string): string | null {
+    return this.#files.get(surfaceId)?.path ?? null;
+  }
+
+  #notify(): void {
+    this.#version += 1;
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+
+  /**
+   * Public notify for external-but-owned state that the rows render: the
+   * file documents' dirty flags flow through here (the desktop's
+   * TitleChanged event fan-out's peer).
+   */
+  notify(): void {
+    this.#notify();
   }
 
   #dropFileEntity(id: string): void {
@@ -427,8 +507,9 @@ export class RightPaneStore {
           title: workspaceFileTitle(entry.path),
           detail: entry.path,
           isHistory: false,
-          // The dirty-flag source is ticket 24/25's file editors.
-          isDirty: false,
+          // `right_surface_rows`' dirty dot — the live document's
+          // unflushed edits (the file surface registers itself).
+          isDirty: fileDocuments.isDirtyFor(surface.id),
         };
       }
       case "diff": {
@@ -500,6 +581,15 @@ export class RightPaneStore {
 }
 
 export const rightPaneStore = new RightPaneStore();
+
+/*
+ * The tab strip's dirty dots re-render when a document's dirty state
+ * flips: the registry notifies, the store bumps its version. (The desktop
+ * re-renders its tab rows off the same TitleChanged event fan-out.)
+ */
+fileDocuments.setDirtyListener(() => {
+  rightPaneStore.notify();
+});
 
 /**
  * The pane's laid-out width — the desktop's `shell.rs::right_target`. The

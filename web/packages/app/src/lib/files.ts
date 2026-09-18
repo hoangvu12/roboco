@@ -105,6 +105,16 @@ export function readOnlyMessage(reason: WorkspaceReadOnlyReason | null): string 
   }
 }
 
+/**
+ * The truncated-preview banner (preview.rs:2766-2779): shown above the code
+ * scroll when text came back but the read was clipped — reachable today via
+ * the markdown client-side 2 MiB clip (the server's own truncation always
+ * pairs with no text).
+ */
+export function truncatedMessage(file: WorkspaceFileText): string | null {
+  return file.truncated && file.text != null ? "Large file preview is truncated and read-only." : null;
+}
+
 /** Desktop document.rs `writable_encoding`. */
 export function writableEncoding(encoding: WorkspaceTextEncoding): WorkspaceWritableEncoding | null {
   switch (encoding) {
