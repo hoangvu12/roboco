@@ -2,6 +2,7 @@ import { RowTile } from "../components/settings-widgets";
 import type { IconName } from "@roboco/icons";
 import { RbSwitch } from "../components/base/switch";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
+import { requestNotificationPermission } from "../lib/notifications";
 
 /**
  * Notifications settings (desktop settings/notifications.rs parity): the
@@ -89,6 +90,9 @@ export function NotificationsSettingsPage() {
     };
     patch[key] = !settings[key];
     uiSettings.updateImmediate(patch);
+    if (key === "notificationsEnabled" && patch.notificationsEnabled) {
+      void requestNotificationPermission();
+    }
   }
 
   return (
