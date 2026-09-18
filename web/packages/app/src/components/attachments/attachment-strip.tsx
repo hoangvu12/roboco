@@ -1,27 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Icon } from "@roboco/icons";
 import { formatByName, stageBytes, stageFile, type StagedAttachment } from "../../lib/attachments";
+import { Lightbox } from "../lightbox";
 
 /**
- * The composer's attachment strip — the web port of `crates/ui/src/composer.rs`
- * `add_paths` / `stage_file` / the 56px-thumbnail strip. Holds staged
- * attachments locally (the bytes travel only when the user actually sends);
- * each row shows a thumbnail, a per-row progress ring, and an × button.
+ * The composer's staged-attachment strip — the web port of
+ * `composer.rs::render_attachment_strip` (:4636). A wrap grid of bare 56px
+ * thumbnails: no filenames, no attach button (the paperclip in the actions
+ * cluster is the ONE attach affordance, driven through `pickerRef`), no
+ * progress bar (upload progress renders in the TRANSCRIPT, as a ring over
+ * the optimistic echo's thumbnails). The remove button hides until hover.
  *
- * Drop zone: phone browsers expose the camera button on the picker (the
- * `accept="image/..."` hint) and desktop browsers expose drag-and-drop
- * here. Clipboard paste lands here too.
- *
- * The strip's drop target is the row (the attach button + the thumbnails).
- * The composer can opt to broaden the drop area to its full extent by
- * forwarding paste events from the textarea.
+ * The staging sources: the hidden picker input (paperclip), clipboard paste
+ * (also forwarded from the composer's textarea), and an OS file drop on the
+ * WHOLE conversation column — the desktop's `shell.rs #chat-dropzone`. The
+ * VEIL is the shell's (app-shell.tsx's `#attachment-drop-overlay`, ticket
+ * 06); this component stages the dropped files by listening for the drop on
+ * its `.chat-column` ancestor, which every drop inside the column bubbles
+ * through. Non-image files are skipped silently (`add_paths`); genuine
+ * failures (oversize, unreadable bytes) surface through `onError`.
  */
 
 interface AttachmentStripProps {
   readonly chatId: string;
   readonly staged: readonly StagedAttachment[];
-  /** Progress 0..1 across the WHOLE send — the strip paints a single bar
-   *  under the row instead of one ring per row. Optional. */
-  readonly uploadProgress: number | null;
   readonly disabled?: boolean;
   readonly onStage: (attachments: readonly StagedAttachment[]) => void;
   readonly onRemove: (id: string) => void;
@@ -29,17 +31,13 @@ interface AttachmentStripProps {
   /**
    * Filled with the strip's own picker opener so the composer's paperclip —
    * which lives in the actions cluster, as on the desktop — can drive it.
-   * When set, the strip drops its inline Attach button: two attach
-   * affordances in one pill is one more than the desktop has.
    */
   readonly pickerRef?: React.MutableRefObject<(() => void) | null>;
 }
 
-/** Stage `File` objects picked up from a picker / drop / paste event. */
 export function AttachmentStrip({
   chatId,
   staged,
-  uploadProgress,
   disabled,
   onStage,
   onRemove,
@@ -47,8 +45,11 @@ export function AttachmentStrip({
   pickerRef,
 }: AttachmentStripProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const dragCounter = useRef(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [preview, setPreview] = useState<StagedAttachment | null>(null);
+  // The dropzone is the strip's `.chat-column` ancestor — the whole
+  // conversation column (transcript + composer), like `#chat-dropzone`.
+  const [dropZone, setDropZone] = useState<HTMLElement | null>(null);
 
   // Resets the file input whenever the chat changes so the same file can
   // be re-picked (browsers refuse to fire `change` for an identical pick).
@@ -58,21 +59,27 @@ export function AttachmentStrip({
     }
   }, [chatId]);
 
+  // Re-resolved on mount since the column re-mounts per chat page.
+  useEffect(() => {
+    const zone = wrapperRef.current?.closest(".chat-column") ?? null;
+    setDropZone(zone instanceof HTMLElement ? zone : null);
+  }, [chatId]);
+
+  /** Stage `File` objects picked up from a picker / drop / paste event. */
   const ingest = useCallback(
     async (files: FileList | File[]) => {
       const next: StagedAttachment[] = [];
       for (const file of Array.from(files)) {
-        // The browser already filters by `accept`, but a drag from a phone's
-        // photo roll can sneak non-images through; check the extension as
-        // a final guard before reading the (potentially large) bytes.
+        // `add_paths` skips unsupported formats SILENTLY (the browser's own
+        // picker already filtered; a phone photo-roll drag can sneak a
+        // non-image through, which just doesn't stage).
         if (formatByName(file.name) === null) {
-          onError(`${file.name} is not a supported image.`);
           continue;
         }
         try {
-          const staged = await stageFile(file);
-          next.push(staged);
+          next.push(await stageFile(file));
         } catch (error) {
+          // Genuine failures (oversize, unreadable bytes) set `failure`.
           onError(error instanceof Error ? error.message : String(error));
         }
       }
@@ -82,6 +89,33 @@ export function AttachmentStrip({
     },
     [onStage, onError],
   );
+
+  const ingestRef = useRef(ingest);
+  ingestRef.current = ingest;
+
+  // `#chat-dropzone`'s `on_drop::<ExternalPaths>` (shell.rs:5998-6003): every
+  // drop inside the conversation column stages its image files here. The
+  // shell's own listener on `main.panel` swallows the browser default; this
+  // one, on the column the composer lives in, is the staging half.
+  useEffect(() => {
+    const zone = dropZone;
+    if (zone === null) {
+      return;
+    }
+    const onDrop = (event: DragEvent): void => {
+      if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) {
+        return;
+      }
+      event.preventDefault();
+      const files = event.dataTransfer?.files;
+      if (files === undefined || files.length === 0 || disabled === true) {
+        return;
+      }
+      void ingestRef.current(files);
+    };
+    zone.addEventListener("drop", onDrop);
+    return () => zone.removeEventListener("drop", onDrop);
+  }, [dropZone, disabled]);
 
   const onPickerChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -93,45 +127,6 @@ export function AttachmentStrip({
     },
     [ingest],
   );
-
-  const onDrop = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      setDragOver(false);
-      dragCounter.current = 0;
-      if (disabled === true) {
-        return;
-      }
-      const files = event.dataTransfer.files;
-      if (files.length === 0) {
-        return;
-      }
-      void ingest(files);
-    },
-    [ingest, disabled],
-  );
-
-  const onDragOver = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      if (dragOver) {
-        return;
-      }
-      setDragOver(true);
-    },
-    [dragOver],
-  );
-
-  const onDragEnter = useCallback(() => {
-    dragCounter.current += 1;
-    setDragOver(true);
-  }, []);
-  const onDragLeave = useCallback(() => {
-    dragCounter.current = Math.max(0, dragCounter.current - 1);
-    if (dragCounter.current === 0) {
-      setDragOver(false);
-    }
-  }, []);
 
   const openPicker = useCallback(() => {
     if (disabled === true) {
@@ -150,6 +145,9 @@ export function AttachmentStrip({
     };
   }, [pickerRef, openPicker]);
 
+  // Clipboard paste landing inside the strip wrapper (the textarea's own
+  // paste is forwarded by the composer). Image files stage; anything else
+  // falls through to the native text paste.
   const onPaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
       if (disabled === true) {
@@ -177,17 +175,8 @@ export function AttachmentStrip({
     [ingest, disabled],
   );
 
-  const hasStaged = staged.length > 0;
-
   return (
-    <div
-      className={`composer-attachments ${dragOver ? "composer-attachments-dropping" : ""}`}
-      onDrop={onDrop}
-      onDragOver={onDragOver}
-      onDragEnter={onDragEnter}
-      onDragLeave={onDragLeave}
-      onPaste={onPaste}
-    >
+    <div className="composer-attachments" ref={wrapperRef} onPaste={onPaste}>
       <input
         ref={fileInputRef}
         type="file"
@@ -199,58 +188,74 @@ export function AttachmentStrip({
         tabIndex={-1}
         aria-hidden
       />
-      {/*
-        No drop veil and no inline attach button here: the drop overlay belongs
-        to the shell's `#chat-dropzone`, and the composer's ONE attach
-        affordance is the paperclip in its actions cluster (`pickerRef`).
-      */}
-      <div className="composer-attachments-row">
-        {hasStaged && (
-          <div className="composer-attachments-strip">
-            {staged.map((att) => (
-              <StagedAttachmentRow
-                key={att.id}
-                attachment={att}
-                onRemove={() => onRemove(att.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-      {/*
-        No progress bar in the strip: the desktop publishes upload progress
-        into `AppState.begin_upload_progress` and renders it elsewhere. The
-        `uploadProgress` plumbing stays (ticket 17 picks where it surfaces).
-      */}
+      {staged.length > 0 && (
+        <div className="composer-attachments-strip">
+          {staged.map((att) => (
+            <StagedAttachmentRow
+              key={att.id}
+              attachment={att}
+              onRemove={() => onRemove(att.id)}
+              onPreview={() => setPreview(att)}
+            />
+          ))}
+        </div>
+      )}
+      {preview !== null && (
+        <Lightbox
+          name={preview.name}
+          src={preview.previewUrl}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   );
 }
 
+/**
+ * One staged thumbnail (composer.rs:4654-4723): the 56px frame (click opens
+ * the lightbox) plus the hover-revealed remove button that floats over its
+ * corner. No filename, ever.
+ */
 function StagedAttachmentRow({
   attachment,
   onRemove,
+  onPreview,
 }: {
   attachment: StagedAttachment;
   onRemove: () => void;
+  onPreview: () => void;
 }) {
   return (
-    <div className="composer-staged-row" title={attachment.name}>
-      <img
+    <div className="composer-staged-row">
+      <button
+        type="button"
         className="composer-staged-thumb"
-        src={attachment.previewUrl}
-        alt=""
-        draggable={false}
-      />
+        onClick={onPreview}
+        aria-label={`Preview ${attachment.name}`}
+      >
+        {/* Explicit 54px dims (56 − the 1px borders) with the img's own 7px
+            radius: the frame's rounding clips rectangularly, and a percent
+            height would let a tall photo grow past the frame. */}
+        <img
+          className="composer-staged-thumb-img"
+          src={attachment.previewUrl}
+          alt=""
+          draggable={false}
+        />
+      </button>
       <button
         type="button"
         className="composer-staged-remove"
-        onClick={onRemove}
+        onClick={(event) => {
+          // The button overhangs the thumbnail's hitbox — don't let the same
+          // click also open the preview (composer.rs:4711-4716).
+          event.stopPropagation();
+          onRemove();
+        }}
         aria-label={`Remove ${attachment.name}`}
-        title="Remove"
       >
-        ×
+        <Icon name="closeCircle" size={14} />
       </button>
-      {/* No filename caption: the desktop's strip shows thumbs only. */}
     </div>
   );
 }

@@ -311,7 +311,7 @@ describe("sendRun with attachments", () => {
     expect(caller.calls).toHaveLength(0);
   });
 
-  it("propagates upload errors with a friendly message", async () => {
+  it("propagates upload errors with the desktop's verbatim copy", async () => {
     const caller = new FakeCaller();
     caller.nextError = new RpcError("transport", "upload chunk timed out");
     await expect(
@@ -324,7 +324,7 @@ describe("sendRun with attachments", () => {
         { mintMessageId: () => "msg-1" },
         { stagedAttachments: [stagePng("a.png")] },
       ),
-    ).rejects.toThrow(/a\.png/);
+    ).rejects.toThrow("Couldn't upload the attachment — the device may be offline.");
   });
 
   it("ships transfers with the chat's host device id on UploadChunk", async () => {

@@ -14,7 +14,7 @@ budget instead of growing forever.
 
 **Blocked by:** 13 (Composer core)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/06-queue-attachments-comments.md`
 §3.4, §3.5, §3.6 (build these); §3.7 is transcribed below for
@@ -572,4 +572,149 @@ ticket replaces it with the full `ImageView` geometry.
 
 ## Comments
 
-(empty; appended during implementation)
+**Landed** (branch `wp2/17-attachments`):
+
+- **Staged strip** (`attachment-strip.tsx`): wrap grid of bare 56px thumbs
+  (gap 8, px 16, pt 12), frame 56/r8/1px `hairline(0.10)` + explicit 54×54
+  r7 cover img, hover-revealed remove (18px circle at −6/−6, `bg var(--rb-bg)`,
+  `shadow_sm`, no border, `closeCircle` 14px `text_muted`), thumb click opens
+  the shared Lightbox, remove `stopPropagation`s first. No filename, no
+  attach button, no progress bar. Non-images skip silently; oversize/read
+  failures still surface via `onError`.
+- **`attachmentStripHeight`** moved into `lib/attachments.ts` (with the
+  STRIP_* constants); `lib/composer-flip.ts` re-exports it so ticket 13's
+  importers and its test keep one address. Live-DOM check: 12 staged thumbs
+  measure exactly 132px (12 + 2·56 + 8) at the 768px column.
+- **Drop**: the veil was NOT rebuilt — ticket 06 had already landed the
+  shell's `#attachment-drop-overlay` (app-shell.tsx, with a comment deferring
+  the file handling to this ticket). This ticket wires the STAGING: a native
+  `drop` listener on the strip's `.chat-column` ancestor (the web's
+  `#chat-dropzone`) feeds `ingest`; the shell's `main.panel` listener still
+  swallows the browser default. Also fixed the shell veil's scrim alpha to
+  the code-faithful net values — see the deviation note below.
+- **Send path** (`composer.tsx`, narrow): the echo now publishes
+  `pending/{id}/{name}` refs from the first frame, the staged bytes are
+  seeded under those refs (echo thumbs render loaded instantly), the
+  whole-send percent lives in the new upload-progress store
+  (`beginUploadProgress`/`setUploadProgress`/`endUploadProgress` /
+  `uploadProgressPercent`, port of `AppState.begin_upload_progress`), and
+  upload failures surface the verbatim string. The strip clears
+  synchronously on submit (ticket 13 already did; verified live).
+- **Transcript thumbs** (`user-attachments.tsx`): 112×80 frame (110×78 r7
+  cover img), 8px gap, `w_full justify_end wrap` with `px(4) pt(4) pb(6)`;
+  states loaded (solid `hairline(0.11)` / `ink(0.035)`), loading (pulsing
+  skeleton on the ROBOCO_PULSE 2400ms wave), error (dashed `hairline(0.14)`
+  empty thumb — the old "!" caption is gone); `pending://`/`pending/` refs
+  draw the sending overlay (pulsing `0.38+0.05·pulse` scrim + 34px
+  `upload_progress_ring` (2.5px stroke, white 0.22 track / 0.95 arc,
+  clockwise from 12, percent label) or the glyph spinner when no percent is
+  known). Row-level retry: an errored thumb schedules its own re-attempt
+  when `retryIn` lands. Errors' snapshots are second-bucket-cached so the
+  countdown re-renders at 1Hz, not per paint.
+- **Cache** (`state/attachment-cache.ts`): 64 MiB byte budget, LRU by
+  last-used tick (bumped on every snapshot read), eviction of the globally
+  oldest non-protected entry on every loaded insert, `protectAttachments`
+  (wholesale replace) fed by a ref-counted mounted-strip registry — the web
+  peer of the desktop's per-row-sync call, tracking the virtualizer's
+  mounted rows.
+- **Lightbox** (`components/lightbox.tsx`, new): full-viewport scrim
+  (`scrim_alpha(0.7)` → `calc(var(--rb-scrim-alpha) · 0.7 / 0.6)`), 90%w ×
+  85%h viewport, 12px gap, filename 11px `ink(0.45)` with ellipsis,
+  "Loading image…" while decoding; pan/zoom ported whole from
+  `image_viewer.rs` (fit never upscales; zoom bounded
+  `min(131072/max(w,h), 32)` / `min(fit, 0.01)` with anchor preservation;
+  clamp `max((natural·scale − viewport)/2, 0)`; plain wheel pans, ctrl+wheel
+  zooms `exp(clamp(±dy·0.0025))`; drag arms past 4px; non-drag click closes
+  anywhere; Escape closes with focus returned to the caller; wheel is
+  swallowed via a non-passive native listener). Mounted through a portal to
+  `document.body` — the composer pill's `backdrop-filter` forms a containing
+  block that would otherwise clip a fixed child. Both the staged strip and
+  the transcript open this one component; the old inline
+  `.user-attachments-lightbox` is deleted.
+- **Transport audit** (`lib/attachments.ts`): chunk retry ladder FIXED —
+  3 attempts per chunk (was 2) staggered `50ms · attempt · (seq+1)` (was
+  `50 · (seq+1)`), matching `attachments.rs:388-417`; the whole-attachment
+  deadline message is now `"attachment upload exceeded {N}s"`; all timeout
+  constants (90/30/150/20s, `min(120+15n, 900)`) audited correct.
+  `chunkRanges` exported for tests.
+
+**Deviations / judgment calls:**
+
+- **Drop-veil alphas**: the ticket transcribes "0.4 light / 0.6 dark", but
+  the cited line (`shell.rs:6132`) actually computes
+  `theme.scrim().opacity(0.4 / 0.6)` — black at 0.4 in dark and at
+  `0.32 · (2/3) ≈ 0.213` in light (light scrim base is 0.32). Implemented
+  the code-faithful values as `calc(var(--rb-scrim-alpha) · 2 / 3)` in
+  ticket 06's existing veil rule.
+- **Upload failure strings**: only `"Couldn't upload the attachment — the
+  device may be offline."` is reachable — the web's single-engine model
+  always targets the paired (possibly remote) engine, so the desktop's
+  local-stage path (`"Couldn't stage the attachment locally."`) has no web
+  equivalent (documented on `AttachmentUploadError`). The queue-edit commit
+  string is not applicable either: the web's queue-edit lease carries no
+  attachments today (ticket 16 owns that path). One existing
+  `composer-actions` test asserted the old invented name-bearing message;
+  updated to assert the verbatim string.
+- **Per-attachment transfer percent**: the desktop's first percent source
+  (the attachment's own relay transfer via `WatchTransfers` + the
+  `pending://<uploadId>` ref) has no web stream; the overlay reads only the
+  send-wide percent, then the spinner — the legacy-flow order the desktop
+  itself falls back to. Large files also base64-encode on the main thread,
+  so the spinner (not the ring) can show for the first ~1s of a huge send.
+- **UserAttachmentThumb device fallback**: the desktop tries the chat's
+  host device then local; the web's single-engine model only ever has one
+  device id — documented simplification in the component.
+- **Pinch**: no `gesturechange` listener — the browser's synthesized
+  ctrl+wheel pinch is handled by the ctrl+wheel path, as the spec's own note
+  anticipates. Double-click zoom skipped per §2.4's "if in doubt, skip".
+- **Latent crash fixed** (found by this ticket's smoke run, pre-existing):
+  `getAttachmentSnapshot` returned a fresh object per call for every state,
+  which `useSyncExternalStore` turns into React error #185 (max update
+  depth). It was unreachable before this ticket because no code path ever
+  rendered attachment rows from a cold cache. Snapshots are now
+  identity-cached: one shared loading singleton, per-image loaded cache,
+  per-second-bucket error cache. Verified by reload-with-persisted-
+  attachments on the production bundle.
+
+**Verification:**
+
+- `pnpm -r build` green (final bundle); package vitest **799/799** (51
+  files) — including the new cases: `attachmentStripHeight` (5),
+  `retryDelayMs` (5), `ensureExtension` 6-char boundary, `chunkRanges`
+  empty-file + tiling, `AttachmentUploadError` verbatim message, appshot-
+  shaped marker, codec round-trip via `stageBytes`, cache eviction (4) +
+  wholesale protection, upload-progress percent, error-snapshot stability,
+  and a `lightbox.test.ts` port of `image_viewer.rs`'s geometry suite
+  (fit/anchor/bounds fixtures).
+- web_smoke boot check (production bundle, fresh load): app renders with a
+  persisted attachment-bearing transcript, no error boundary, thumbnails
+  load to `data-state=loaded` via the ReadAttachmentChunk read-back path.
+- Live DOM verification (desktop-width window, dark theme): staged thumbs
+  56×56/r8/54×54/r7/cover; strip padding `12px 16px 0` gap 8 wrap; remove
+  18×18/r50%/no-border/`-6,-6` with opacity 0→1 on hover; transcript thumbs
+  112×80/r8/border+bg exact, img 110×78/r7, strip pad `4 4 6` gap 8
+  justify-end; 12-thumb wrap = 178px (4 + 2·80 + 8 + 6) over two rows; the
+  ring captured mid-upload at 73%; lightbox frame z70/scrim 0.7/gap 12,
+  image box 1728×803 of 1920×945, fit at natural 320×220 (no upscale),
+  ctrl+wheel zoom to 787×541 (e^0.9), pan clamped, Escape closes and focus
+  returns to the caller thumb; strip clears synchronously on submit.
+  Drag-to-pan and click-to-close in the lightbox are code-reviewed ports
+  (geometry unit-tested) but not live-clicked.
+
+**Screenshots** (web, `C:\Users\ADMIN\Desktop\nguyenvu\roboco\.scratch\web-parity\shots\17\`):
+
+- `01-web-staged-2.png` — staged strip, 2 thumbnails
+- `02-web-staged-hover-remove.png` — same, one hovered (remove revealed)
+- `03-web-drop-veil.png` — drop veil active over the chat column
+- `04-web-mid-upload-ring.png` — sent turn mid-upload, ring at 73%
+- `05-web-loaded-4-thumbs.png` — sent turn loaded, 4 attachments
+- `06-web-staged-wrap-12.png` — staged strip wrapping 12 thumbs (132px)
+- `07-web-transcript-wrap-12.png` — transcript strip wrapping 12 (2 rows)
+- `08-web-lightbox-fit.png` — lightbox open at fit
+- `09-web-lightbox-zoomed.png` — lightbox zoomed (2.46×) and panned
+
+Desktop pairs **skipped**: `parity/shot.ps1` captures a running desktop
+window, and no desktop session with staged attachments was available to
+drive (staging there needs the native picker). The web sides above carry
+the geometry numbers verified against the Rust citations.
+

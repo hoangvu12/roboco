@@ -1,12 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  IMAGE_CACHE_BUDGET_BYTES,
+  __loadedBytesForTests,
+  __resetAttachmentCacheForTests,
+  attachmentCacheKey,
   beginAttachmentLoad,
+  beginUploadProgress,
+  endUploadProgress,
   getAttachmentSnapshot,
   loadAttachment,
+  protectAttachments,
   seedAttachment,
+  setUploadProgress,
   storeAttachmentError,
   subscribeAttachment,
-  __resetAttachmentCacheForTests,
+  uploadProgressPercent,
 } from "../src/state/attachment-cache";
 
 afterEach(() => {
@@ -119,5 +127,114 @@ describe("attachment-cache unsubscribe", () => {
     sub();
     seedAttachment("dev-1", "/host/x.png", FAKE_IMAGE);
     expect(count).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LRU / byte-budget eviction (`ImageCache::insert_loaded`,
+// attachments.rs:599-631) + the protected set (:639-654).
+// ---------------------------------------------------------------------------
+
+const MI = 1024 * 1024;
+
+function bigImage(bytes: number): { name: string; mime: string; bytes: Uint8Array } {
+  return { name: "big.png", mime: "image/png", bytes: new Uint8Array(bytes) };
+}
+
+describe("attachment-cache eviction", () => {
+  it("stays quiet under the 64 MiB budget", () => {
+    seedAttachment("dev-1", "/a.png", bigImage(23 * MI));
+    seedAttachment("dev-1", "/b.png", bigImage(23 * MI));
+    expect(__loadedBytesForTests()).toBe(46 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loaded");
+    expect(getAttachmentSnapshot("dev-1", "/b.png").state).toBe("loaded");
+  });
+
+  it("evicts the globally-oldest entry once the budget is exceeded", () => {
+    seedAttachment("dev-1", "/a.png", bigImage(23 * MI));
+    seedAttachment("dev-1", "/b.png", bigImage(23 * MI));
+    // A read bumps A's LRU tick past B's insert, so B is the oldest.
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loaded");
+    seedAttachment("dev-1", "/c.png", bigImage(23 * MI));
+    expect(__loadedBytesForTests()).toBe(46 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/b.png").state).toBe("loading");
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loaded");
+    expect(getAttachmentSnapshot("dev-1", "/c.png").state).toBe("loaded");
+  });
+
+  it("never evicts the just-inserted key", () => {
+    seedAttachment("dev-1", "/a.png", bigImage(40 * MI));
+    // Inserting the SAME key again replaces it — the old bytes leave the
+    // budget and the new entry cannot evict itself.
+    seedAttachment("dev-1", "/a.png", bigImage(40 * MI));
+    expect(__loadedBytesForTests()).toBe(40 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loaded");
+  });
+
+  it("shields protected keys from eviction, replacing the set wholesale", () => {
+    seedAttachment("dev-1", "/a.png", bigImage(23 * MI));
+    seedAttachment("dev-1", "/b.png", bigImage(23 * MI));
+    const keys = new Set([attachmentCacheKey("dev-1", "/b.png")]);
+    protectAttachments(keys);
+    seedAttachment("dev-1", "/c.png", bigImage(23 * MI));
+    expect(__loadedBytesForTests()).toBe(46 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loading");
+    expect(getAttachmentSnapshot("dev-1", "/b.png").state).toBe("loaded");
+    expect(getAttachmentSnapshot("dev-1", "/c.png").state).toBe("loaded");
+
+    // A wholesale replace drops the old shield: B becomes evictable again.
+    protectAttachments(new Set());
+    seedAttachment("dev-1", "/d.png", bigImage(23 * MI));
+    expect(__loadedBytesForTests()).toBe(46 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/b.png").state).toBe("loading");
+    expect(getAttachmentSnapshot("dev-1", "/d.png").state).toBe("loaded");
+  });
+
+  it("stops evicting when everything left is protected", () => {
+    seedAttachment("dev-1", "/a.png", bigImage(40 * MI));
+    protectAttachments(new Set([attachmentCacheKey("dev-1", "/a.png")]));
+    seedAttachment("dev-1", "/b.png", bigImage(40 * MI));
+    // Nothing evictable: the budget overruns but both entries stay.
+    expect(__loadedBytesForTests()).toBe(80 * MI);
+    expect(getAttachmentSnapshot("dev-1", "/a.png").state).toBe("loaded");
+    expect(getAttachmentSnapshot("dev-1", "/b.png").state).toBe("loaded");
+    expect(80 * MI).toBeGreaterThan(IMAGE_CACHE_BUDGET_BYTES);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Send-wide upload progress (`begin_upload_progress` / `upload_progress_percent`)
+// ---------------------------------------------------------------------------
+
+describe("attachment-cache upload progress", () => {
+  it("reports null when nothing is uploading", () => {
+    expect(uploadProgressPercent()).toBeNull();
+  });
+
+  it("tracks the whole-send percent and clamps to 0..100", () => {
+    beginUploadProgress(200);
+    expect(uploadProgressPercent()).toBe(0);
+    setUploadProgress(100);
+    expect(uploadProgressPercent()).toBe(50);
+    setUploadProgress(500);
+    expect(uploadProgressPercent()).toBe(100);
+    endUploadProgress();
+    expect(uploadProgressPercent()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error-snapshot stability (`useSyncExternalStore` needs a stable identity)
+// ---------------------------------------------------------------------------
+
+describe("attachment-cache error snapshot stability", () => {
+  it("returns the same object while the retry bucket holds", () => {
+    expect(beginAttachmentLoad("dev-1", "/host/x.png")).toBe(true);
+    storeAttachmentError("dev-1", "/host/x.png");
+    const first = getAttachmentSnapshot("dev-1", "/host/x.png");
+    const second = getAttachmentSnapshot("dev-1", "/host/x.png");
+    expect(first).toBe(second);
+    expect(first.state).toBe("error");
+    expect(first.retryIn).toBeGreaterThan(0);
   });
 });

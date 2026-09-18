@@ -24,6 +24,7 @@ import { offeredHarnesses } from "../lib/model-rows";
 import { clampReasoning } from "../lib/traits-summary";
 import {
   ATTACHMENT_ONLY_TEXT,
+  AttachmentUploadError,
   formatByName,
   formatToMime,
   stageFile,
@@ -79,7 +80,7 @@ import {
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
 import { isMacPlatform } from "../state/shortcuts";
-import { seedAttachment } from "../state/attachment-cache";
+import { seedAttachment, beginUploadProgress, endUploadProgress, setUploadProgress } from "../state/attachment-cache";
 import { ComposerPickers } from "./composer-pickers";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 
@@ -226,9 +227,6 @@ export function Composer({
   // Staged attachments per chat id — survives a chat switch (the strip
   // moves with the chat). Empty for a chat the user has never staged on.
   const [stagedByChat, setStagedByChat] = useState<Record<string, readonly StagedAttachment[]>>({});
-  // Whole-send upload progress (0..1) for the strip's progress bar. Null
-  // when nothing is uploading.
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   // The failure notice (composer.rs:7309-7411). Chat-scoped failures
   // survive navigation and only render under their own chat.
   const [failure, setFailure] = useState<FailureNotice | null>(null);
@@ -250,7 +248,6 @@ export function Composer({
     // its stacks — the accepted undo-coalescing divergence).
     setText(chatDrafts.get(chat.id));
     setExpanded(false);
-    setUploadProgress(null);
     setFailure(null);
     routeSnapUntilRef.current = performance.now() + ROUTE_SNAP_MS;
   }, [chat.id]);
@@ -734,6 +731,24 @@ export function Composer({
       // `typed` keeps the user's own words for the failure hand-back below
       // (restoring a folded prompt would paste the trailer as literal text).
       const messageId = mintMessageId();
+      // The echo's attachment refs from the FIRST frame (composer.rs:6188-
+      // 6233): the legacy flow's synthetic `pending/{id}/{name}` paths, so
+      // the just-sent bubble's thumbnails render immediately and carry the
+      // sending overlay while the upload streams; the post-upload refresh
+      // swaps them for the host's absolute paths.
+      const pendingPaths = taken.map((att) => `pending/${att.id}/${att.name}`);
+      const echoDeviceId = session.client.engineInfo?.deviceId ?? null;
+      if (echoDeviceId !== null) {
+        // Seed the staged bytes under the pending refs — the echo renders
+        // from local bytes, never a read-back round-trip.
+        taken.forEach((att, ix) => {
+          seedAttachment(echoDeviceId, pendingPaths[ix]!, {
+            name: att.name,
+            mime: formatToMime(att.format),
+            bytes: att.bytes,
+          });
+        });
+      }
       // The optimistic echo goes up BEFORE the wire call — gated off for a
       // queued send, whose queue row IS its representation until dispatch
       // (`should_publish_optimistic_echo`).
@@ -743,16 +758,21 @@ export function Composer({
           chatId: chat.id,
           startedAtMs: Date.now(),
           text: trimmed,
-          attachmentPaths: [],
+          attachmentPaths: pendingPaths,
         });
       }
       setText("");
       chatDrafts.clear(chat.id);
       setFailure(null);
       setBusy(true);
-      setUploadProgress(taken.length > 0 ? 0 : null);
-      const onProgress = (uploaded: number, total: number): void => {
-        setUploadProgress(total <= 0 ? 1 : uploaded / total);
+      // Whole-send upload accounting (`begin_upload_progress`): the percent
+      // the transcript's sending-overlay ring reads lives in the shared
+      // attachment store, not the strip — the strip itself has no progress UI.
+      if (taken.length > 0) {
+        beginUploadProgress(taken.reduce((sum, att) => sum + att.bytes.byteLength, 0));
+      }
+      const onProgress = (uploaded: number): void => {
+        setUploadProgress(uploaded);
       };
       try {
         if (queue) {
@@ -806,7 +826,6 @@ export function Composer({
             });
           }
         }
-        setUploadProgress(null);
       } catch (error) {
         // Failure: red notice, echo removed, prompt back in the draft,
         // staged files back in the stash (merged by id so anything staged
@@ -825,9 +844,18 @@ export function Composer({
           }
           return next;
         });
-        setFailure({ message: `Send failed: ${describeSendError(error)}`, key: chat.id });
-        setUploadProgress(null);
+        // The upload path's failure copy is verbatim (composer.rs:6358-6374);
+        // every other failure keeps the prefixed shape.
+        setFailure({
+          message: error instanceof AttachmentUploadError
+            ? error.message
+            : `Send failed: ${describeSendError(error)}`,
+          key: chat.id,
+        });
       } finally {
+        if (taken.length > 0) {
+          endUploadProgress();
+        }
         setBusy(false);
       }
     },
@@ -1123,7 +1151,6 @@ export function Composer({
           <AttachmentStrip
             chatId={chat.id}
             staged={staged}
-            uploadProgress={uploadProgress}
             onStage={onStage}
             onRemove={onRemove}
             onError={onStageError}
