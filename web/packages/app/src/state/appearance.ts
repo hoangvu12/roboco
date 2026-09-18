@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Appearance } from "@roboco/theme";
 import type { NewThreadBackgroundEffect, NewThreadComposerBackground } from "./ui-settings";
 import { AppearanceStore, type AppearancePreferences, resolveAppearance } from "../lib/appearance-store";
-import { applyAppearanceToDocument } from "../theme";
+import { applyAppearanceToDocument, applyTypographyToDocument } from "../theme";
 import { resolveNewThreadBackground } from "../lib/new-thread-background";
 import { useUiSettings, uiSettings } from "./ui-settings";
 
@@ -113,11 +113,21 @@ export function currentNewThreadBackgroundSetting(): NewThreadComposerBackground
 export function initAppearance(): () => void {
   const apply = () => applyAppearanceToDocument(appearanceStore.getSnapshot(), systemAppearance());
   apply();
+  // The interface font/size (ticket 28): applied before first paint with the
+  // theme, then re-applied on every settings write — a discrete choice, so
+  // any snapshot change carries it.
+  const applyTypography = () => {
+    const settings = uiSettings.getSnapshot();
+    applyTypographyToDocument({ uiFontFamily: settings.uiFontFamily, uiFontSize: settings.uiFontSize });
+  };
+  applyTypography();
   const unsubscribe = appearanceStore.subscribe(apply);
+  const unsubscribeTypography = uiSettings.subscribe(applyTypography);
   const media = darkMedia();
   media?.addEventListener?.("change", apply);
   return () => {
     unsubscribe();
+    unsubscribeTypography();
     media?.removeEventListener?.("change", apply);
   };
 }

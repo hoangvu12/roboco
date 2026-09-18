@@ -10,7 +10,7 @@
  */
 
 import { themeArtifact } from "./generated/index";
-import type { AccentPresetId, AccentRoles, ThemeColors, ThemeFamily, ThemeVariant } from "./types";
+import type { AccentPresetId, AccentRoles, Appearance, ThemeColors, ThemeFamily, ThemeVariant } from "./types";
 
 export * from "./types";
 export { themeArtifact };
@@ -43,7 +43,11 @@ export function findVariant(id: string): ThemeVariant | undefined {
 /**
  * The accent roles a variant installs under a selection: the theme-authored
  * accent for `"themeDefault"`, otherwise the precomputed preset derivation
- * (identical to the desktop's `ThemeVariant::accent_for`).
+ * (identical to the desktop's `ThemeVariant::accent_for`). A variant the
+ * artifact does not know (an imported custom-library family, ticket 28)
+ * derives at runtime via `AccentRoles::derive` — the same math, so an
+ * imported theme under a preset accent matches what the export would have
+ * precomputed had the family been builtin.
  */
 export function accentForVariant(
   variant: ThemeVariant,
@@ -53,10 +57,136 @@ export function accentForVariant(
     return variant.accent;
   }
   const roles = themeArtifact.accents[variant.id]?.[accent];
-  if (!roles) {
+  if (roles) {
+    return roles;
+  }
+  const preset = themeArtifact.accentPresets.find((entry) => entry.id === accent);
+  if (!preset) {
     throw new Error(`no exported accent derivation for ${variant.id} + ${accent}`);
   }
-  return roles;
+  return deriveAccentRoles(
+    variant.appearance === "dark" ? preset.dark : preset.light,
+    variant.appearance,
+    variant.colors.background,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Accent derivation (crates/theme/src/lib.rs AccentRoles::derive + the Color
+// math it rides: mix/with_alpha/contrast/ensure_contrast/best_on_color)
+// ---------------------------------------------------------------------------
+
+interface Rgba {
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly a: number;
+}
+
+function rgbaOf(hex: string): Rgba | null {
+  if (!isHexColor(hex)) {
+    return null;
+  }
+  return {
+    r: Number.parseInt(hex.slice(1, 3), 16),
+    g: Number.parseInt(hex.slice(3, 5), 16),
+    b: Number.parseInt(hex.slice(5, 7), 16),
+    a: hex.length === 9 ? Number.parseInt(hex.slice(7, 9), 16) : 255,
+  };
+}
+
+/** A `#rrggbb` / `#rrggbbaa` string (the artifact's whole color vocabulary). */
+export function isHexColor(hex: string): boolean {
+  return /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(hex);
+}
+
+/** `Color::contrast` for two hex colors; null when either fails to parse. */
+export function colorContrast(foreground: string, background: string): number | null {
+  const front = rgbaOf(foreground);
+  const back = rgbaOf(background);
+  if (front === null || back === null) {
+    return null;
+  }
+  return contrastOf(front, back);
+}
+
+function hexOf(color: Rgba): string {
+  const channel = (value: number): string => value.toString(16).padStart(2, "0");
+  return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}${channel(color.a)}`;
+}
+
+function mix(a: Rgba, b: Rgba, amount: number): Rgba {
+  const t = Math.min(Math.max(amount, 0), 1);
+  const channel = (front: number, back: number): number => Math.round(front + (back - front) * t);
+  return { r: channel(a.r, b.r), g: channel(a.g, b.g), b: channel(a.b, b.b), a: channel(a.a, b.a) };
+}
+
+const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
+const BLACK: Rgba = { r: 0, g: 0, b: 0, a: 255 };
+
+function luminanceOf(color: Rgba): number {
+  const linear = (channel: number): number => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+}
+
+function contrastOf(foreground: Rgba, background: Rgba): number {
+  const blended = foreground.a === 255 ? foreground : mix(foreground, background, foreground.a / 255);
+  const a = luminanceOf(blended);
+  const b = luminanceOf(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+function ensureContrast(color: Rgba, background: Rgba, minimum: number): Rgba {
+  if (contrastOf(color, background) >= minimum) {
+    return color;
+  }
+  const target = contrastOf(BLACK, background) >= contrastOf(WHITE, background) ? BLACK : WHITE;
+  for (let step = 1; step <= 20; step += 1) {
+    const candidate = mix(color, target, step / 20);
+    if (contrastOf(candidate, background) >= minimum) {
+      return candidate;
+    }
+  }
+  return target;
+}
+
+function bestOnColor(color: Rgba): Rgba {
+  return contrastOf(WHITE, color) >= contrastOf(BLACK, color) ? WHITE : BLACK;
+}
+
+/**
+ * `AccentRoles::derive` (lib.rs:413-448): contrast-secured primary, a
+ * same-family strong, translucent wash/selection, and the glyph ladder the
+ * animated activity pixel paints.
+ */
+export function deriveAccentRoles(
+  primary: string,
+  appearance: Appearance,
+  background: string,
+): AccentRoles {
+  const primaryColor = ensureContrast(rgbaOf(primary) ?? { ...WHITE }, rgbaOf(background) ?? { ...WHITE }, 3);
+  const on = bestOnColor(primaryColor);
+  let strong = primaryColor;
+  if (contrastOf(on, strong) < 4.5) {
+    strong = ensureContrast(strong, on, 4.5);
+  }
+  const dark = appearance === "dark";
+  const light = mix(primaryColor, dark ? WHITE : rgbaOf(background) ?? WHITE, dark ? 0.28 : 0.18);
+  const deep = mix(primaryColor, BLACK, dark ? 0.18 : 0.26);
+  const withAlpha = (color: Rgba, alpha: number): string => hexOf({ ...color, a: Math.round(Math.min(Math.max(alpha, 0), 1) * 255) });
+  return {
+    primary: hexOf(primaryColor),
+    strong: hexOf(strong),
+    wash: withAlpha(primaryColor, dark ? 0.22 : 0.12),
+    on: hexOf(on),
+    selection: withAlpha(primaryColor, dark ? 0.35 : 0.24),
+    caret: hexOf(primaryColor),
+    activity: hexOf(primaryColor),
+    glyph: [hexOf(light), hexOf(primaryColor), hexOf(deep)],
+  };
 }
 
 const kebab = (name: string): string =>

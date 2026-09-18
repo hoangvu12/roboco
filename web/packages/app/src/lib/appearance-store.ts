@@ -1,7 +1,5 @@
 import {
   accentPresets,
-  findVariant,
-  themeVariants,
   type AccentPresetId,
   type Appearance,
   type SurfaceTreatment,
@@ -9,6 +7,7 @@ import {
 } from "@roboco/theme";
 import type { StorageLike } from "./engine-store";
 import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
+import { findVariantAnywhere, variantsForAppearanceAll } from "./theme-library";
 
 /**
  * Appearance preferences — the web peer of the desktop's device-local
@@ -24,9 +23,10 @@ import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settin
  * only valid for the appearance it was authored for, so the pair is validated
  * against the theme registry on the way out of the store, not on the way in.
  *
- * Web scope cuts vs desktop (spec §Theme scope): builtin variants only, no
- * custom theme library, no interface font/size pickers, no new-thread
- * background.
+ * The interface font/size pickers, the new-thread background rows and the
+ * custom theme library (ticket 28) read/write the settings store directly;
+ * the library itself lives in `lib/theme-library.ts` and its variants merge
+ * into this module's registry overlay.
  */
 
 /** The persisted mode choice; `system` follows `prefers-color-scheme`. */
@@ -95,12 +95,14 @@ export function resolveSurfaceTreatment(): SurfaceTreatment {
 }
 
 /**
- * The selector's variant list for one appearance: only variants authored
- * for it, registry order (family by family) — the desktop's
- * `variants_for(appearance)`.
+ * The selector's variant list for one appearance: only variants authored for
+ * it, registry order (family by family) — the desktop's
+ * `variants_for(appearance)`. Installed custom-library variants merge in
+ * after the builtins (ticket 28 §2.11's registry entry), exactly like the
+ * desktop's `ThemeRegistry::active()`.
  */
 export function variantChoices(appearance: Appearance): readonly ThemeVariant[] {
-  return themeVariants.filter((variant) => variant.appearance === appearance);
+  return variantsForAppearanceAll(appearance);
 }
 
 /** Row label for an appearance mode card (AppearanceMode::label). */
@@ -156,12 +158,76 @@ export function accentSwatchColor(accent: AccentSelection, variant: ThemeVariant
   return variant.appearance === "dark" ? preset.dark : preset.light;
 }
 
+// ---------------------------------------------------------------------------
+// Interface font (typography.rs:13-77, web scope: the 3 fixed choices)
+// ---------------------------------------------------------------------------
+
+/** The fixed web catalog — no OS font probe (ticket 28 §2.9 / §5). */
+export type UiFontChoice = "geist" | "geistMono" | "system";
+
+export const UI_FONT_CHOICES: readonly UiFontChoice[] = ["geist", "geistMono", "system"];
+
+/**
+ * `resolve_effective` (typography.rs:295-299), web form: an `installed:*`
+ * request has no availability probe to satisfy, so it resolves to the first
+ * available choice (Geist) — the desktop's fallback when a requested family
+ * is not installed on the device.
+ */
+export function effectiveUiFontFamily(requested: string): UiFontChoice {
+  if (requested === "geistMono" || requested === "system") {
+    return requested;
+  }
+  return "geist";
+}
+
+/** `UiFontFamily::label`. */
+export function fontFamilyLabel(family: UiFontChoice): string {
+  switch (family) {
+    case "geist":
+      return "Geist";
+    case "geistMono":
+      return "Geist Mono";
+    case "system":
+      return "System UI";
+  }
+}
+
+/** The CSS stack a choice installs on `--rb-font-sans`. */
+export function fontFamilyStack(family: UiFontChoice): string {
+  switch (family) {
+    case "geist":
+      return '"Geist", ui-sans-serif, system-ui, sans-serif';
+    case "geistMono":
+      return '"Geist Mono", ui-monospace, monospace';
+    case "system":
+      return "system-ui, ui-sans-serif, sans-serif";
+  }
+}
+
+/**
+ * `step_font` (appearance.rs:462-480), degenerate web form: a clamped index
+ * step over the 3 always-available choices — stepping past either end is a
+ * no-op. (The desktop's availability-skipping walk has nothing to skip: no
+ * OS font probe exists on the web, all choices are always available.)
+ */
+export function stepFont(current: UiFontChoice, delta: number): UiFontChoice {
+  const currentIx = UI_FONT_CHOICES.indexOf(current);
+  if (currentIx < 0 || delta === 0) {
+    return current;
+  }
+  const next = currentIx + Math.sign(delta);
+  if (next < 0 || next >= UI_FONT_CHOICES.length) {
+    return current;
+  }
+  return UI_FONT_CHOICES[next]!;
+}
+
 /** A variant id is only valid for the appearance it was authored for. */
 function variantForAppearance(id: unknown, appearance: Appearance): string | null {
   if (typeof id !== "string") {
     return null;
   }
-  const variant = findVariant(id);
+  const variant = findVariantAnywhere(id);
   return variant !== undefined && variant.appearance === appearance ? variant.id : null;
 }
 

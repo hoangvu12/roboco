@@ -1,152 +1,885 @@
-import { accentPresets, findVariant, themeFamilies, type Appearance } from "@roboco/theme";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Select } from "@base-ui/react/select";
+import {
+  accentForVariant,
+  accentPresets,
+  type Appearance,
+  type ThemeVariant,
+} from "@roboco/theme";
+import { Icon } from "@roboco/icons";
+import { PickerCard } from "../components/ui/PickerCard";
+import { MenuHeading, MenuRow } from "../components/ui/MenuRows";
+import { Dialog, BtnPrimary } from "../components/ui/Dialog";
+import { RbSelect, RbSelectPositioner } from "../components/base/select";
+import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
+import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
+import { uiSettings, useUiSettings, UI_FONT_SIZES, type NewThreadBackgroundEffect } from "../state/ui-settings";
 import {
   accentHelper,
-  accentSwatchColor,
-  appearanceModeLabel,
-  resolveAppearance,
-  resolveSurfaceTreatment,
-  resolveVariantId,
-  surfaceHelper,
-  surfaceLabel,
   APPEARANCE_MODES,
-  SURFACE_PREFERENCES,
+  appearanceModeLabel,
+  DEFAULT_APPEARANCE,
+  effectiveUiFontFamily,
+  fontFamilyLabel,
+  resolveAppearance,
+  UI_FONT_CHOICES,
+  variantChoices,
   type AccentSelection,
-  type SurfacePreference,
+  type UiFontChoice,
 } from "../lib/appearance-store";
+import {
+  findVariantAnywhere,
+  parseThemeSource,
+  reportLines,
+  reportSummary,
+  slug,
+  sourceName,
+  themeLibrary,
+  type ThemeCompilation,
+  type ThemeImportReport,
+  type ThemeLibraryEntry,
+} from "../lib/theme-library";
+import {
+  installNewThreadBackground,
+  removeNewThreadBackground,
+  resolveInstalledBackground,
+} from "../lib/new-thread-background";
+import { idbBackgroundBlobStore } from "../lib/background-blob-store";
 
 /**
- * Appearance settings (desktop settings/appearance.rs parity, web scope):
- * the appearance mode cards, independent light/dark variant selectors, the
- * accent preset swatches, and the glass surface choices. Everything applies
- * live and persists in this browser's storage — the desktop's "These
- * settings stay on this device." Builtin variants only (spec §Theme scope).
- * Web deviation: no Frosted choice — the surface is forced opaque
- * (see `resolveSurfaceTreatment`).
+ * Appearance settings (desktop settings/appearance.rs parity): the
+ * appearance-mode option cards with live theme miniatures, the independent
+ * light/dark theme-family popover selectors, the accent swatch row, the
+ * new-thread composer background and its effect pills, the interface
+ * font/size pickers, and the custom theme library (snapshot import only).
+ * Everything applies live and persists device-locally through ticket 03's
+ * settings store.
+ *
+ * Web deviations (both product decisions, recorded in the ticket's
+ * Comments): the Glass surface row does not render — frosted is removed and
+ * `resolveSurfaceTreatment` is forced opaque; and the theme-library's
+ * Link/Reveal/Reload actions are absent (no linkable OS path in a browser).
  */
+
+/** One shared blob store for the page's background installs. */
+const backgroundBlobs = idbBackgroundBlobStore();
+
+/** `NewThreadBackgroundEffect::ALL` with labels + descriptions (settings.rs). */
+const BACKGROUND_EFFECTS: readonly {
+  readonly id: NewThreadBackgroundEffect;
+  readonly label: string;
+  readonly description: string;
+}[] = [
+  { id: "none", label: "None", description: "Shows the original artwork." },
+  { id: "dither", label: "Dither", description: "Rebuilds the artwork with a dithered color palette." },
+  { id: "ascii", label: "ASCII", description: "Recreates the artwork with colored characters on black." },
+  { id: "halftone", label: "Halftone", description: "Recreates the artwork with colored print dots on black." },
+  { id: "scanlines", label: "Scanlines", description: "Adds a pronounced horizontal display-line texture." },
+];
+
 export function AppearanceSettingsPage() {
   const preferences = useAppearance();
   const system = useSystemAppearance();
   const resolved = resolveAppearance(preferences.mode, system);
-  const surfaceResolved = resolveSurfaceTreatment();
+  const settings = useUiSettings();
+  const [openMenu, setOpenMenu] = useState<Appearance | null>(null);
+  const [backgroundError, setBackgroundError] = useState<string | null>(null);
+  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [importState, setImportState] = useState<ImportDialogState | null>(null);
+  const [reviewEntryId, setReviewEntryId] = useState<string | null>(null);
+  const libraryEntries = useSyncExternalStore(
+    themeLibrary.subscribe,
+    themeLibrary.getSnapshot,
+    themeLibrary.getSnapshot,
+  );
+  const libraryWarning = themeLibrary.getLoadWarning();
+
+  const lightVariant =
+    findVariantAnywhere(preferences.lightVariant) ?? findVariantAnywhere(DEFAULT_APPEARANCE.lightVariant)!;
+  const darkVariant =
+    findVariantAnywhere(preferences.darkVariant) ?? findVariantAnywhere(DEFAULT_APPEARANCE.darkVariant)!;
+  const pageVariant = resolved === "dark" ? darkVariant : lightVariant;
+  const backgroundInstalled = settings.newThreadComposerBackground !== null;
+  const backgroundAvailable = backgroundInstalled && backgroundUrl !== null;
+
+  // The installed background only counts when its blob still resolves
+  // (settings.rs:5848-5859's "file exists" gate).
+  useEffect(() => {
+    let cancelled = false;
+    void resolveInstalledBackground(settings.newThreadComposerBackground).then((url) => {
+      if (!cancelled) {
+        setBackgroundUrl(url);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.newThreadComposerBackground?.path, settings.newThreadComposerBackground?.name]);
+
+  const backgroundInputRef = useRef<HTMLInputElement>(null);
+  const onPickBackgroundFile = (file: File): void => {
+    // `choose_new_thread_background` clears the stale error before staging.
+    setBackgroundError(null);
+    void installNewThreadBackground(file, { settings: uiSettings, blobs: backgroundBlobs }).then(
+      (error) => {
+        setBackgroundError(error);
+      },
+    );
+  };
+  const onRemoveBackground = (): void => {
+    setBackgroundError(null);
+    void removeNewThreadBackground({ settings: uiSettings, blobs: backgroundBlobs }).then((error) => {
+      setBackgroundError(error);
+    });
+  };
+
+  const onMenuOpenChange = (appearance: Appearance) => (next: boolean) => {
+    setOpenMenu((current) => {
+      if (next) {
+        return appearance;
+      }
+      return current === appearance ? null : current;
+    });
+  };
+
+  const backgroundMeta = backgroundInstalled
+    ? backgroundAvailable
+      ? [
+          settings.newThreadComposerBackground?.name ?? "",
+          "Softened automatically on frosted themes.",
+        ]
+      : ["Image unavailable", "Choose a replacement or remove it."]
+    : ["Add an image behind the composer on empty new threads."];
+
+  const libraryAction = (action: () => void): void => {
+    try {
+      action();
+      setLibraryError(null);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <div className="settings-page">
       <h1 className="settings-title">Appearance</h1>
       <p className="settings-subtitle">Choose how Roboco looks. These settings stay in this browser.</p>
 
-      <div className="settings-option-row" role="radiogroup" aria-label="Appearance mode">
-        {APPEARANCE_MODES.map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            role="radio"
-            aria-checked={preferences.mode === mode}
-            className={`option-card ${preferences.mode === mode ? "option-card-selected" : ""}`}
-            onClick={() => appearanceStore.setMode(mode)}
-          >
-            {appearanceModeLabel(mode)}
-          </button>
-        ))}
+      <div className="settings-mode-block">
+        <span className="settings-field-label">Appearance</span>
+        <div className="settings-option-row" role="radiogroup" aria-label="Appearance mode">
+          {APPEARANCE_MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={preferences.mode === mode}
+              className={`option-card ${preferences.mode === mode ? "option-card-selected" : ""}`}
+              onClick={() => appearanceStore.setMode(mode)}
+            >
+              <span className="option-card-frame">
+                <ThemeModePreview mode={mode} lightVariant={lightVariant} darkVariant={darkVariant} />
+              </span>
+              <span className="option-card-caption">{appearanceModeLabel(mode)}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <section className="settings-card">
-        <VariantRow appearance="light" label="Light theme" value={preferences.lightVariant} />
-        <VariantRow appearance="dark" label="Dark theme" value={preferences.darkVariant} />
+        <ThemeSelectorRow
+          appearance="light"
+          label="Light theme"
+          value={preferences.lightVariant}
+          open={openMenu === "light"}
+          onOpenChange={onMenuOpenChange("light")}
+        />
+        <ThemeSelectorRow
+          appearance="dark"
+          label="Dark theme"
+          value={preferences.darkVariant}
+          open={openMenu === "dark"}
+          onOpenChange={onMenuOpenChange("dark")}
+        />
         <div className="settings-row">
+          <RowTile icon="tuning" />
           <div className="settings-row-main">
             <span className="settings-row-title">Accent color</span>
-            <span className="settings-row-meta">{accentHelper(preferences.accent)}</span>
+            <MetaLine fragments={[accentHelper(preferences.accent)]} />
           </div>
           <div className="swatch-row" role="radiogroup" aria-label="Accent color">
-            <AccentSwatch choice="themeDefault" selected={preferences.accent === "themeDefault"} variantId={resolveVariantId(preferences, resolved)} />
+            <AccentSwatch choice="themeDefault" selected={preferences.accent === "themeDefault"} variant={pageVariant} />
             {accentPresets.map((preset) => (
               <AccentSwatch
                 key={preset.id}
                 choice={preset.id}
                 selected={preferences.accent === preset.id}
-                variantId={resolveVariantId(preferences, resolved)}
+                variant={pageVariant}
               />
             ))}
           </div>
         </div>
         <div className="settings-row">
+          {backgroundAvailable ? (
+            <div className="background-tile">
+              <img className="background-tile-img" src={backgroundUrl ?? undefined} alt="" />
+            </div>
+          ) : (
+            <RowTile icon="fileImage" />
+          )}
           <div className="settings-row-main">
-            <span className="settings-row-title">Glass</span>
-            <span className="settings-row-meta">{surfaceHelper(preferences.surface, surfaceResolved)}</span>
+            <span className="settings-row-title">New thread composer background</span>
+            <MetaLine fragments={backgroundMeta} />
           </div>
-          <div className="choice-row" role="radiogroup" aria-label="Surface treatment">
-            {SURFACE_PREFERENCES.map((surface: SurfacePreference) => (
-              <button
-                key={surface}
-                type="button"
-                role="radio"
-                aria-checked={preferences.surface === surface}
-                className={`choice ${preferences.surface === surface ? "choice-selected" : ""}`}
-                onClick={() => appearanceStore.setSurface(surface)}
-              >
-                {surfaceLabel(surface)}
-              </button>
-            ))}
+          <div className="settings-row-actions">
+            {backgroundInstalled ? (
+              <>
+                <CompactAction onClick={() => backgroundInputRef.current?.click()}>Replace image</CompactAction>
+                <CompactActionDanger onClick={onRemoveBackground}>Remove</CompactActionDanger>
+              </>
+            ) : (
+              <CompactAction onClick={() => backgroundInputRef.current?.click()}>Choose image</CompactAction>
+            )}
+          </div>
+          <input
+            ref={backgroundInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file !== undefined) {
+                onPickBackgroundFile(file);
+              }
+            }}
+          />
+        </div>
+        {backgroundAvailable && (
+          <div className="settings-row">
+            <RowTile icon="tuning" />
+            <div className="settings-row-main">
+              <span className="settings-row-title">Background effect</span>
+              <MetaLine
+                fragments={[
+                  BACKGROUND_EFFECTS.find((effect) => effect.id === settings.newThreadBackgroundEffect)
+                    ?.description ?? "",
+                ]}
+              />
+            </div>
+            <div className="settings-effect-choices" role="radiogroup" aria-label="Background effect">
+              {BACKGROUND_EFFECTS.map((effect) => (
+                <button
+                  key={effect.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={settings.newThreadBackgroundEffect === effect.id}
+                  className={`choice choice-effect ${settings.newThreadBackgroundEffect === effect.id ? "choice-selected" : ""}`}
+                  onClick={() => uiSettings.updateImmediate({ newThreadBackgroundEffect: effect.id })}
+                >
+                  {effect.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {backgroundError !== null && (
+          <div className="settings-row-error">
+            <p className="error-strip">
+              <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
+              {backgroundError}
+            </p>
+          </div>
+        )}
+        <div className="settings-row">
+          <RowTile icon="folderWithFiles" />
+          <div className="settings-row-main">
+            <span className="settings-row-title">Theme library</span>
+            <MetaLine fragments={["Import custom themes."]} />
+          </div>
+          <div className="settings-row-actions">
+            <BtnPrimary onClick={() => setImportState({ fileName: null, compilation: null, selected: new Set(), detailsVariant: null, error: null })}>
+              Add theme
+            </BtnPrimary>
           </div>
         </div>
+        {libraryEntries.length > 0 && <div className="library-group-header">IMPORTED</div>}
+        {libraryEntries.map((entry) => (
+          <LibraryEntryRow
+            key={entry.id}
+            entry={entry}
+            onReview={() => setReviewEntryId(entry.id)}
+            onDuplicate={() => libraryAction(() => themeLibrary.duplicate(entry.id))}
+            onRemove={() => libraryAction(() => themeLibrary.remove(entry.id))}
+          />
+        ))}
       </section>
+
+      <InterfaceFontBlock settings={settings} />
+
+      {(libraryError ?? libraryWarning) !== null && (
+        <p className="library-warning">{libraryError ?? libraryWarning}</p>
+      )}
+
+      {importState !== null && (
+        <ThemeImportDialog
+          state={importState}
+          setState={setImportState}
+          onClose={() => setImportState(null)}
+        />
+      )}
+      {reviewEntryId !== null && (
+        <ThemeReviewDialog
+          entry={libraryEntries.find((entry) => entry.id === reviewEntryId) ?? null}
+          onClose={() => setReviewEntryId(null)}
+        />
+      )}
     </div>
   );
 }
 
-function VariantRow({ appearance, label, value }: { appearance: Appearance; label: string; value: string }) {
-  const families = themeFamilies
-    .map((family) => ({ ...family, variants: family.variants.filter((variant) => variant.appearance === appearance) }))
-    .filter((family) => family.variants.length > 0);
+// ---------------------------------------------------------------------------
+// The theme-family selector (appearance.rs:1028-1194)
+// ---------------------------------------------------------------------------
+
+function ThemeSelectorRow(props: {
+  readonly appearance: Appearance;
+  readonly label: string;
+  readonly value: string;
+  readonly open: boolean;
+  readonly onOpenChange: (next: boolean) => void;
+}) {
+  const choices = variantChoices(props.appearance);
+  const selectedVariant =
+    choices.find((variant) => variant.id === props.value) ?? choices[0];
+  if (selectedVariant === undefined) {
+    return null;
+  }
+  const heading = props.appearance === "light" ? "Light themes" : "Dark themes";
   return (
     <div className="settings-row">
+      <RowTile icon="tuning" />
       <div className="settings-row-main">
-        <span className="settings-row-title">{label}</span>
-        <span className="settings-row-meta">Used whenever this appearance is active.</span>
+        <span className="settings-row-title">{props.label}</span>
+        <MetaLine fragments={["Used whenever this appearance is active."]} />
       </div>
-      <select
-        className="input settings-select"
-        aria-label={label}
-        value={value}
-        onChange={(event) => appearanceStore.setVariant(appearance, event.target.value)}
+      <PickerCard
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        placement="anchorBelow"
+        cardClassName="popover-card theme-select-menu"
+        role="menu"
+        ariaLabel={heading}
+        width={260}
+        initialFocus={false}
+        trigger={
+          <button
+            type="button"
+            className={`theme-select-trigger ${props.open ? "theme-select-trigger-open" : ""}`}
+            aria-haspopup="menu"
+            aria-label={props.label}
+          >
+            <PalettePreview variant={selectedVariant} />
+            <span className="theme-select-label">{selectedVariant.name}</span>
+            <Icon name="sortVertical" size={14} className="theme-select-caret" />
+          </button>
+        }
       >
-        {families.map((family) => (
-          <optgroup key={family.id} label={family.name}>
-            {family.variants.map((variant) => (
-              <option key={variant.id} value={variant.id}>
-                {variant.name}
-              </option>
-            ))}
-          </optgroup>
+        <MenuHeading>{heading}</MenuHeading>
+        {choices.map((variant) => (
+          <MenuRow
+            key={variant.id}
+            fadeKey={variant.id}
+            selected={variant.id === props.value}
+            onClick={() => {
+              appearanceStore.setVariant(props.appearance, variant.id);
+              props.onOpenChange(false);
+            }}
+          >
+            <PalettePreview variant={variant} />
+            <span className="theme-select-row-label">{variant.name}</span>
+            {variant.id === props.value && <Icon name="check" size={14} className="theme-select-check" />}
+          </MenuRow>
         ))}
-      </select>
+      </PickerCard>
     </div>
   );
 }
 
-function AccentSwatch({
-  choice,
-  selected,
-  variantId,
-}: {
+// ---------------------------------------------------------------------------
+// The accent swatches (appearance.rs:931-1001)
+// ---------------------------------------------------------------------------
+
+function AccentSwatch(props: {
   readonly choice: AccentSelection;
   readonly selected: boolean;
-  readonly variantId: string;
+  readonly variant: ThemeVariant;
 }) {
-  const variant = findVariant(variantId);
-  const color = variant !== undefined ? accentSwatchColor(choice, variant) : "transparent";
-  const label = choice === "themeDefault" ? "Theme default" : (accentPresets.find((preset) => preset.id === choice)?.label ?? choice);
+  const roles = accentForVariant(props.variant, props.choice);
+  const label =
+    props.choice === "themeDefault"
+      ? "Theme default"
+      : (accentPresets.find((preset) => preset.id === props.choice)?.label ?? props.choice);
   return (
     <button
       type="button"
       role="radio"
-      aria-checked={selected}
+      aria-checked={props.selected}
       title={label}
       aria-label={label}
-      className={`swatch ${selected ? "swatch-selected" : ""}`}
-      style={{ background: color }}
-      onClick={() => appearanceStore.setAccent(choice)}
-    />
+      className={`accent-swatch ${props.selected ? "accent-swatch-selected" : ""}`}
+      onClick={() => appearanceStore.setAccent(props.choice)}
+    >
+      <span className="accent-swatch-chip">
+        {props.choice === "themeDefault" ? (
+          <span className="accent-sample-glyph" style={{ background: roles.wash }}>
+            <span style={{ background: roles.glyph[0] }} />
+            <span style={{ background: roles.glyph[1] }} />
+            <span style={{ background: roles.glyph[2] }} />
+          </span>
+        ) : (
+          <span className="accent-sample-flat" style={{ background: roles.primary }} />
+        )}
+      </span>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The interface font/size pickers (appearance.rs:2295-2554)
+// ---------------------------------------------------------------------------
+
+function InterfaceFontBlock(props: {
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const effectiveFont = effectiveUiFontFamily(props.settings.uiFontFamily);
+  return (
+    <div className="settings-font-block">
+      <div className="settings-font-row">
+        <div className="settings-font-copy">
+          <span className="settings-field-label">Interface font</span>
+          <p className="settings-font-description">
+            Used across the interface and conversations. Code, diffs, and terminal keep their current fonts and
+            sizes.
+          </p>
+        </div>
+        <div className="settings-font-controls">
+          <FontFamilySelect
+            value={effectiveFont}
+            onCommit={(family) => uiSettings.updateImmediate({ uiFontFamily: family })}
+          />
+          <FontSizeSelect
+            value={props.settings.uiFontSize}
+            onCommit={(size) => uiSettings.updateImmediate({ uiFontSize: size })}
+          />
+        </div>
+      </div>
+      {props.settings.uiFontFamily !== effectiveFont && (
+        <p className="error-strip font-error-strip">
+          <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
+          This font could not be loaded. Comet is using Geist.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FontFamilySelect(props: {
+  readonly value: UiFontChoice;
+  readonly onCommit: (family: UiFontChoice) => void;
+}) {
+  return (
+    <RbSelect<UiFontChoice>
+      value={props.value}
+      onValueChange={(next) => {
+        if (next !== null) {
+          props.onCommit(next);
+        }
+      }}
+      overlaySource="settings-font-family"
+    >
+      <Select.Trigger className="settings-select-trigger font-trigger" aria-label="Interface font">
+        <span className="settings-select-label">{fontFamilyLabel(props.value)}</span>
+        <Icon name="altArrowDown" size={14} className="settings-select-caret" />
+      </Select.Trigger>
+      <Select.Portal>
+        <RbSelectPositioner>
+          <Select.Popup className="popover-card settings-select-menu font-menu">
+            {UI_FONT_CHOICES.map((family) => (
+              <Select.Item key={family} value={family} className="settings-select-item">
+                <span className="settings-select-item-label">{fontFamilyLabel(family)}</span>
+                <span className="settings-select-check">
+                  {family === props.value && <Icon name="check" size={14} />}
+                </span>
+              </Select.Item>
+            ))}
+          </Select.Popup>
+        </RbSelectPositioner>
+      </Select.Portal>
+    </RbSelect>
+  );
+}
+
+function FontSizeSelect(props: {
+  readonly value: number;
+  readonly onCommit: (size: number) => void;
+}) {
+  return (
+    <RbSelect<number>
+      value={props.value}
+      onValueChange={(next) => {
+        if (next !== null) {
+          props.onCommit(next);
+        }
+      }}
+      overlaySource="settings-font-size"
+    >
+      <Select.Trigger className="settings-select-trigger size-trigger" aria-label="Interface font size">
+        <span className="settings-select-label">{props.value} px</span>
+        <Icon name="altArrowDown" size={14} className="settings-select-caret" />
+      </Select.Trigger>
+      <Select.Portal>
+        <RbSelectPositioner>
+          <Select.Popup className="popover-card settings-select-menu size-menu">
+            {UI_FONT_SIZES.map((size) => (
+              <Select.Item key={size} value={size} className="settings-select-item">
+                <span className="settings-select-item-label">{size} px</span>
+                <span className="settings-select-check">
+                  {size === props.value && <Icon name="check" size={14} />}
+                </span>
+              </Select.Item>
+            ))}
+          </Select.Popup>
+        </RbSelectPositioner>
+      </Select.Portal>
+    </RbSelect>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The theme library (appearance.rs:1760-1971)
+// ---------------------------------------------------------------------------
+
+function LibraryEntryRow(props: {
+  readonly entry: ThemeLibraryEntry;
+  readonly onReview: () => void;
+  readonly onDuplicate: () => void;
+  readonly onRemove: () => void;
+}) {
+  const entry = props.entry;
+  const variantCount = entry.family.variants.length;
+  const status = `Imported · ${variantCount} variant${variantCount === 1 ? "" : "s"} · ${entry.importedFrom ?? "Self-contained snapshot"}`;
+  return (
+    <div className="settings-row">
+      <RowTile icon="document" />
+      <div className="settings-row-main">
+        <span className="settings-row-title">{entry.name}</span>
+        <span className="library-entry-status">{status}</span>
+      </div>
+      <div className="settings-row-actions library-entry-actions">
+        <CompactAction onClick={props.onReview}>Review</CompactAction>
+        <CompactAction onClick={props.onDuplicate}>Duplicate</CompactAction>
+        <CompactActionDanger onClick={props.onRemove}>Remove</CompactActionDanger>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The import dialog (appearance.rs:1213-1694)
+// ---------------------------------------------------------------------------
+
+interface ImportDialogState {
+  readonly fileName: string | null;
+  readonly compilation: ThemeCompilation | null;
+  readonly selected: ReadonlySet<string>;
+  readonly detailsVariant: string | null;
+  readonly error: string | null;
+}
+
+function ThemeImportDialog(props: {
+  readonly state: ImportDialogState;
+  readonly setState: (next: ImportDialogState) => void;
+  readonly onClose: () => void;
+}) {
+  const state = props.state;
+  const inputRef = useRef<HTMLInputElement>(null);
+  const compilation = state.compilation;
+  const ready = compilation !== null && state.selected.size > 0;
+
+  const onPickFile = (file: File): void => {
+    void file.text().then((text) => {
+      const familyName = sourceName(file.name);
+      const familyId = `custom-${slug(familyName)}`;
+      try {
+        const parsed = parseThemeSource(text, familyId, familyName, file.name);
+        props.setState({
+          fileName: file.name,
+          compilation: parsed,
+          selected: new Set(parsed.family.variants.map((variant) => variant.id)),
+          detailsVariant: null,
+          error: null,
+        });
+      } catch (error) {
+        props.setState({
+          fileName: file.name,
+          compilation: null,
+          selected: new Set(),
+          detailsVariant: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  };
+
+  const onPrimary = (): void => {
+    if (compilation === null) {
+      // `compile_import`'s empty-source rejection, web copy (§2.11).
+      props.setState({ ...state, error: "Choose a theme file." });
+      return;
+    }
+    if (state.selected.size === 0) {
+      props.setState({ ...state, error: "Select at least one variant to import." });
+      return;
+    }
+    try {
+      themeLibrary.install(compilation, [...state.selected]);
+      props.onClose();
+    } catch (error) {
+      props.setState({ ...state, error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  return (
+    <Dialog ariaLabel="Add a theme" onClose={props.onClose}>
+      <div className="import-dialog-card">
+        <header className="import-dialog-header">
+          <div className="import-dialog-heading">
+            <h2 className="import-dialog-title">Add a theme</h2>
+            <p className="import-dialog-body">Import a local theme into your library.</p>
+          </div>
+          <button type="button" className="import-dialog-close" aria-label="Close" onClick={props.onClose}>
+            <Icon name="close" size={12} className="import-dialog-close-icon" />
+          </button>
+        </header>
+        <div className="import-dialog-main">
+          <span className="import-section-label">Source</span>
+          <div className="import-source-row">
+            <div className="import-source-field">{state.fileName ?? ""}</div>
+            <CompactAction className="import-browse" onClick={() => inputRef.current?.click()}>
+              Browse…
+            </CompactAction>
+            <input
+              ref={inputRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file !== undefined) {
+                  onPickFile(file);
+                }
+              }}
+            />
+          </div>
+          <div className="import-mode-block">
+            <span className="import-mode-label">Import a copy</span>
+            <p className="import-mode-description">Works independently from the original file.</p>
+          </div>
+          {compilation === null ? (
+            <p className="import-info-line">
+              <Icon name="infoCircle" size={13} className="import-info-icon" />
+              Roboco finds light and dark variants automatically.
+            </p>
+          ) : (
+            <>
+              <div className="import-detected-header">
+                <span className="import-section-label">Detected themes</span>
+                <span className="import-detected-count">
+                  {compilation.family.variants.length} variant
+                  {compilation.family.variants.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              {compilation.family.variants.map((variant) => (
+                <ImportVariantRow
+                  key={variant.id}
+                  variant={variant}
+                  report={compilation.reports.get(variant.id)}
+                  selected={state.selected.has(variant.id)}
+                  detailsOpen={state.detailsVariant === variant.id}
+                  onToggleSelected={() => {
+                    const next = new Set(state.selected);
+                    if (next.has(variant.id)) {
+                      next.delete(variant.id);
+                    } else {
+                      next.add(variant.id);
+                    }
+                    props.setState({ ...state, selected: next });
+                  }}
+                  onToggleDetails={() => {
+                    props.setState({
+                      ...state,
+                      detailsVariant: state.detailsVariant === variant.id ? null : variant.id,
+                    });
+                  }}
+                />
+              ))}
+              {compilation.failures.map((failure) => (
+                <p key={failure.name} className="import-failure-strip">
+                  {failure.name} could not be compiled · {failure.message}
+                </p>
+              ))}
+            </>
+          )}
+          {state.error !== null && (
+            <p className="import-error-strip">
+              <Icon name="dangerTriangle" size={13} className="import-error-icon" />
+              {state.error}
+            </p>
+          )}
+        </div>
+        <footer className="import-dialog-footer">
+          <CompactAction className="import-footer-cancel" onClick={props.onClose}>
+            Cancel
+          </CompactAction>
+          <BtnPrimary
+            className={`import-footer-primary ${compilation !== null && !ready ? "import-footer-disabled" : ""}`}
+            onClick={compilation === null || ready ? onPrimary : undefined}
+          >
+            {compilation !== null ? "Import selected" : "Analyze theme"}
+          </BtnPrimary>
+        </footer>
+      </div>
+    </Dialog>
+  );
+}
+
+function ImportVariantRow(props: {
+  readonly variant: ThemeVariant;
+  readonly report: ThemeImportReport | undefined;
+  readonly selected: boolean;
+  readonly detailsOpen: boolean;
+  readonly onToggleSelected: () => void;
+  readonly onToggleDetails: () => void;
+}) {
+  return (
+    <div className={`import-variant-row ${props.selected ? "import-variant-row-selected" : ""}`}>
+      <div className="import-variant-row-head">
+        <button
+          type="button"
+          className={`import-variant-select ${props.selected ? "import-variant-select-on" : ""}`}
+          role="checkbox"
+          aria-checked={props.selected}
+          aria-label={props.variant.name}
+          onClick={props.onToggleSelected}
+        >
+          {props.selected && <Icon name="check" size={12} className="import-variant-check" />}
+        </button>
+        <PalettePreview variant={props.variant} />
+        <div className="import-variant-main">
+          <span className="import-variant-name">{props.variant.name}</span>
+          <span className="import-variant-appearance">
+            {props.variant.appearance === "dark" ? "Dark" : "Light"}
+          </span>
+        </div>
+        <CompactAction onClick={props.onToggleDetails}>{props.detailsOpen ? "Hide details" : "Details"}</CompactAction>
+      </div>
+      {props.detailsOpen && (
+        <div className="import-variant-details">
+          <ImportScenePreview variant={props.variant} />
+          {props.report !== undefined && <ReportPanel report={props.report} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * `import_scene_preview` (appearance.rs:775-856): the 3-pane mock editor —
+ * a 152px miniature, a fake code line + the ANSI strip, and the diff pane
+ * with the only place a candidate's diff colors preview (0.35 alpha).
+ */
+function ImportScenePreview(props: { readonly variant: ThemeVariant }) {
+  const { colors, syntax, terminal } = props.variant;
+  return (
+    <div className="import-scene-preview">
+      <div className="scene-miniature">
+        <ThemeMiniature variant={props.variant} corners="all" />
+      </div>
+      <div className="scene-code" style={{ borderColor: colors.border, background: colors.background }}>
+        <code className="scene-code-line">
+          <span style={{ color: syntax.keyword }}>fn </span>
+          <span style={{ color: syntax.function }}>preview</span>
+          <span style={{ color: syntax.punctuation }}>() {"{"}</span>
+        </code>
+        <code className="scene-code-line" style={{ color: syntax.string }}>
+          {"  \"Theme mapping\""}
+        </code>
+        <div className="scene-ansi">
+          {terminal.ansi.slice(0, 8).map((color, ix) => (
+            <span key={ix} className="scene-ansi-slot" style={{ background: color }} />
+          ))}
+        </div>
+      </div>
+      <div className="scene-diff" style={{ borderColor: colors.border, background: colors.shell }}>
+        <span className="scene-diff-bar" style={{ background: `color-mix(in srgb, ${colors.diffAdd} 35%, transparent)` }} />
+        <span className="scene-diff-bar" style={{ background: `color-mix(in srgb, ${colors.diffDelete} 35%, transparent)` }} />
+        <span className="scene-diff-bar" style={{ background: props.variant.accent.wash }} />
+      </div>
+    </div>
+  );
+}
+
+/** `report_panel` (appearance.rs:858-929): the mapping/validation log. */
+function ReportPanel(props: { readonly report: ThemeImportReport }) {
+  const lines = useMemo(() => reportLines(props.report), [props.report]);
+  return (
+    <div className="report-panel">
+      <span className="report-summary">{reportSummary(props.report)}</span>
+      {lines.map((line, ix) => (
+        <span key={ix} className="report-line">
+          {line}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The review dialog (appearance.rs:1709-1758)
+// ---------------------------------------------------------------------------
+
+function ThemeReviewDialog(props: {
+  readonly entry: ThemeLibraryEntry | null;
+  readonly onClose: () => void;
+}) {
+  const entry = props.entry;
+  if (entry === null) {
+    return null;
+  }
+  return (
+    <Dialog ariaLabel="Theme mapping" onClose={props.onClose}>
+      <div className="review-dialog-card">
+        <h2 className="import-dialog-title">Theme mapping</h2>
+        <p className="import-dialog-body review-dialog-body">
+          {entry.name} · Imported
+        </p>
+        {entry.family.variants.map((variant) => (
+          <div key={variant.id} className="review-variant">
+            <span className="review-variant-name">{variant.name}</span>
+            <ImportScenePreview variant={variant} />
+            {entry.reports.get(variant.id) !== undefined && (
+              <ReportPanel report={entry.reports.get(variant.id)!} />
+            )}
+          </div>
+        ))}
+        <div className="review-dialog-footer">
+          <BtnPrimary onClick={props.onClose}>Done</BtnPrimary>
+        </div>
+      </div>
+    </Dialog>
   );
 }
