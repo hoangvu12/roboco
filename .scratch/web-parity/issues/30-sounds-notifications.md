@@ -12,7 +12,7 @@ happen together.
 
 **Blocked by:** 03 (Client settings store), 05 (State fixes: nav history, send ids, optimistic echo)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/14-state-behavior.md` §3.6, §4.4, §5 rows "Session/desktop notification chimes", "`WatchConnectivity` stream", "`sound.rs`/`notify.rs` settings keys", "Device online/presence... derivation" (the freshness-adjacent parts only), §6 (desktop-only delivery mechanics), §7.2.
 
@@ -346,4 +346,118 @@ Full desktop test checklist to treat as the acceptance bar (from research
 
 ## Comments
 
-(empty; appended during implementation)
+### What landed
+
+- `lib/notifications.ts` (new): the `sound.rs` decision engine ported 1:1 —
+  `SessionNotificationState` (interface + `sessionNotificationState`
+  builder over `effectiveIndicator`/`SESSION_STALE_MS` from `lib/view.ts`,
+  reusing — not redefining — the 45s constant), `soundSince`,
+  `connectivitySoundSince`, `ConnectivityNotificationState` (class,
+  `STARTUP_QUIET_MS = 5_000`), `AttentionSoundGate` (class,
+  `COALESCE_MS = 250`), the §2.6 banner-text builders, the `Notification`
+  API wrapper (`postBanner` best-effort, `onChatNotificationClick` =
+  `notify.rs::on_click`'s port, `CHAT_ID_KEY` data payload), and the §2.7
+  permission flow (`requestNotificationPermission` + the pure
+  `shouldRequestPermission` dedupe gate).
+- `lib/sounds.ts` (new): the `Sound` union, `sessionSoundEnabled`
+  (`settings.rs:1138`'s port), the query-flag kill-switch
+  (`parseKillSwitch`), autoplay-gated `<audio>` pool playback
+  (`playSound`), and the notifications kill-switch export the banner
+  wrapper consults.
+- `state/session-provider.tsx`: the call site — a `SessionNotificationDriver`
+  mounted inside `EngineSessionProvider`, keyed by `engineSessionKey` so an
+  engine switch remounts (fresh baselines + re-armed connectivity quiet
+  period; a same-engine retry/reconnect does NOT reset baselines,
+  matching the desktop's persistent `sound_prev`). Runs once per
+  watch-cache identity change; first appearance seeds silently;
+  `sendPending` = `echoStore.forChat(...)` filtered through ticket 05's
+  `pendingSendStatus`; `appFocused = document.hasFocus()` inline (no new
+  hook — the ticket's "otherwise reuse inline" branch).
+- `engine-client`: `WATCH_CONNECTIVITY` method constant + a
+  `ConnectivitySlot` single-value watch in `EngineWatchCache` (`loaded` is
+  the web peer of the desktop's `connectivity_observed`; a generation swap
+  resets it, mirroring `attach_engine`). Identity-stable on unchanged
+  frames; degrades alone on `unknown method` like every other stream.
+- Assets: the three WAVs copied byte-identical (SHA-256 verified) into
+  `web/packages/app/public/sounds/`.
+
+### Deviations / judgment calls
+
+- **Kill-switch choice (§2.2):** URL query flags `?disableSound=1` and
+  `?disableNotifications=1` (parsed once at module load; `0`/`false`/empty
+  values leave the feature on). Explicit — must be typed — so it is safe
+  in production builds.
+- **Autoplay policy:** the ticket did not spec it beyond "errors caught
+  and logged"; implemented the mute-until-interaction pattern the
+  implementation prompt asked for: one `pointerdown`/`keydown` listener
+  unlocks the pool; before any gesture `playSound` is a silent no-op
+  (a chime the browser would refuse anyway).
+- **Ticket 29 has NOT landed on this branch** (wave 4; the settings-nav
+  still links `/settings/notifications` to the stub page). The six
+  toggles' fields exist in ticket 03's store (all read here); §2.7's
+  `requestNotificationPermission()` ships ready for ticket 29's toggle to
+  call — the call site lands with that ticket. The acceptance item
+  "Turning on the Notifications settings toggle triggers exactly one
+  request" is verified at the unit level (`requestNotificationPermission
+  asks exactly once...`); the end-to-end wiring is ticket 29's.
+- **Banner gating double-check:** the driver gates per §2.4.3 and
+  `playSound` defensively re-checks the same `sessionSoundEnabled`
+  predicate over the same store (the file-table row asks for both; one
+  function, so no drift).
+- **`sendPending` degraded variant:** ticket 05's `pendingSendStatus`
+  keeps `degraded = false` (its documented gap). `WatchConnectivity`
+  now exists, but wiring the full per-chat
+  `chat_delivery_degraded` (local-vs-remote + per-chat room state) is
+  queue/composer-surface work, not this ticket's — noted for ticket 31.
+- **No `hooks.ts` change** — `document.hasFocus()` read inline at trigger
+  time, per the ticket's fallback branch.
+
+### Verification
+
+- `pnpm -r build` green (typecheck + vite build, final source).
+- App vitest: 1121 tests green, including
+  `tests/notifications.test.ts` with the eight exact desktop-named tests
+  (`interruptedAndExpiredActivityNeverChime`,
+  `aRunErrorChimesOnceAndNeverMasqueradesAsCompletion`,
+  `durableConnectivityDegradationChimesOncePerOutage`,
+  `ordinaryQueueCompletionsSurviveCoalescedWorkingStates`,
+  `pendingSendConsumesCompletionButPreservesInputRequests`,
+  `staleCompletionIsConsumedWithoutReplayingOnAHeartbeat`,
+  `connectivityBootOutagesSeedSilentlyThenLaterOutagesAlert`,
+  `attentionGateCoalescesSessionAndConnectivityWatchCallbacks`) plus
+  banner-text, settings-gate, kill-switch, permission-dedupe, and
+  wrapper-routing tests.
+- Engine-client vitest: 43 tests green (fake-server + watch-cache incl.
+  three new connectivity-slot tests + web-smoke + real-engine
+  conformance, which exercises the new stream against the actual
+  `WATCH_CONNECTIVITY` handler).
+- Live web_smoke verification (fresh engine, fixed bundle):
+  - **Boot check:** app renders, no `.app-error`; with a pre-boot CDP
+    instrumentation patch installed, a reload over an already-completed
+    chat recorded **0 banners / 0 chimes** — the first-appearance seeding
+    rule held live.
+  - **Completion:** a second client (node, raw ws frames — the
+    "background tab" observer) queued a mock-harness run; the page
+    played `/sounds/done.wav` exactly once and posted the banner
+    `title "Browser smoke chat" / body "Run finished" / data
+    {chatId: "smoke-chat"}` — §2.6 verbatim.
+  - **Click routing:** from `/` (blank canvas), clicking the banner
+    focused the window and navigated to `/chat/smoke-chat`.
+  - Banner screenshots: OS notification toasts are invisible to CDP page
+    screenshots, so a pre-boot instrumentation patch renders the real
+    banner payload as an in-page toast for capture; the authoritative
+    text/data verification is the recorded payload above.
+- Screenshots: `.scratch/web-parity/shots/30/boot-check.png`,
+  `banner-completion.png`, `banner-click-routed.png`,
+  `settings-notifications-stub.png`. **Skipped:** the ticket's (b) "six
+  toggles visible" — the Notifications settings page is still ticket 29's
+  stub on this branch (captured the stub for reference).
+- Browser limitations documented: real OS-level banners can't be
+  screenshotted through CDP (see above), and hidden/minimized tabs are
+  throttled/frozen by Chrome — a suspended tab flushes queued transitions
+  on wake (a completion that lands while frozen chimes late; a run whose
+  row was re-touched by the next run can replay its completion marker on
+  reconnect — the desktop's reconnect semantics have the same shape, but
+  the web's suspension makes it reachable; a real backgrounded tab within
+  Chrome's grace window processes normally, as verified).
+

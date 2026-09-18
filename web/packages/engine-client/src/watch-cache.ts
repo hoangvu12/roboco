@@ -1,6 +1,6 @@
-import type { Chat, Device, EngineInfo, Session, Space } from "@roboco/proto";
+import type { Chat, Connectivity, Device, EngineInfo, Session, Space } from "@roboco/proto";
 import type { EngineClient, EngineStatus, WatchHandle } from "./client";
-import { WATCH_CHATS, WATCH_DEVICES, WATCH_SESSIONS, WATCH_SPACES } from "./methods";
+import { WATCH_CHATS, WATCH_CONNECTIVITY, WATCH_DEVICES, WATCH_SESSIONS, WATCH_SPACES } from "./methods";
 import { RpcError } from "./rpc-error";
 
 /**
@@ -42,11 +42,27 @@ import { RpcError } from "./rpc-error";
 /** Canonical name for the run-status row the wire still calls `Session` (ADR 0005). */
 export type ChatStatus = Session;
 
-export type WatchCollection = "chats" | "spaces" | "devices" | "statuses";
+export type WatchCollection = "chats" | "spaces" | "devices" | "statuses" | "connectivity";
 
 /** One collection of rows plus its stream health on the current generation. */
 export interface RowSet<T> {
   readonly rows: readonly T[];
+  /** A first item has arrived on the current generation. */
+  readonly loaded: boolean;
+  /** Set when the stream degraded: engine lacks the method, stream error, park, or close. */
+  readonly error: RpcError | null;
+}
+
+/**
+ * The connectivity stream's single value plus its health (`WatchConnectivity`
+ * streams ONE `Connectivity` object per engine — not a row collection — so it
+ * gets a dedicated slot instead of `RowSet`'s multi-row diffing). `loaded` is
+ * the web peer of the desktop's `connectivity_observed` (state.rs:1605):
+ * false until the first frame of this generation, so a (re)attach re-arms the
+ * notification quiet period.
+ */
+export interface ConnectivitySlot {
+  readonly value: Connectivity | null;
   /** A first item has arrived on the current generation. */
   readonly loaded: boolean;
   /** Set when the stream degraded: engine lacks the method, stream error, park, or close. */
@@ -63,6 +79,7 @@ export interface WatchCacheSnapshot {
   readonly spaces: RowSet<Space>;
   readonly devices: RowSet<Device>;
   readonly statuses: RowSet<ChatStatus>;
+  readonly connectivity: ConnectivitySlot;
 }
 
 export interface WatchCacheOptions {
@@ -76,6 +93,13 @@ interface CollectionState<T> {
   readonly rowset: RowSet<T>;
 }
 
+interface ConnectivityState {
+  readonly value: Connectivity | null;
+  readonly loaded: boolean;
+  readonly error: RpcError | null;
+  readonly slot: ConnectivitySlot;
+}
+
 const NO_CAPABILITIES: readonly string[] = [];
 
 export class EngineWatchCache {
@@ -87,6 +111,7 @@ export class EngineWatchCache {
   #spaces: CollectionState<Space> = emptyCollection();
   #devices: CollectionState<Device> = emptyCollection();
   #statuses: CollectionState<ChatStatus> = emptyCollection();
+  #connectivity: ConnectivityState = emptyConnectivity();
   #snapshot: WatchCacheSnapshot;
   readonly #handles: WatchHandle[] = [];
   readonly #listeners = new Set<() => void>();
@@ -110,6 +135,7 @@ export class EngineWatchCache {
       spaces: this.#spaces.rowset,
       devices: this.#devices.rowset,
       statuses: this.#statuses.rowset,
+      connectivity: this.#connectivity.slot,
     };
     this.#offStatus = client.onStatus((status) => this.#onStatus(status));
     const status = client.status;
@@ -175,6 +201,7 @@ export class EngineWatchCache {
     this.#spaces = emptyCollection();
     this.#devices = emptyCollection();
     this.#statuses = emptyCollection();
+    this.#connectivity = emptyConnectivity();
     this.#commit();
   }
 
@@ -216,6 +243,15 @@ export class EngineWatchCache {
         },
         onEnd: (error) => this.#streamEnded("statuses", error),
       }),
+      this.#client.watch<Connectivity>(WATCH_CONNECTIVITY, {}, {
+        onItem: (value, { generation }) => {
+          if (this.#accepts(generation)) {
+            this.#connectivity = withValue(this.#connectivity, value);
+            this.#commit();
+          }
+        },
+        onEnd: (error) => this.#streamEnded("connectivity", error),
+      }),
     );
   }
 
@@ -241,12 +277,15 @@ export class EngineWatchCache {
       case "statuses":
         this.#statuses = withError(this.#statuses, error);
         break;
+      case "connectivity":
+        this.#connectivity = withConnectivityError(this.#connectivity, error);
+        break;
     }
     this.#commit();
   }
 
   #degradeAll(error: RpcError): void {
-    for (const key of ["chats", "spaces", "devices", "statuses"] as const) {
+    for (const key of ["chats", "spaces", "devices", "statuses", "connectivity"] as const) {
       this.#streamEnded(key, error);
     }
   }
@@ -259,6 +298,7 @@ export class EngineWatchCache {
       spaces: this.#spaces.rowset,
       devices: this.#devices.rowset,
       statuses: this.#statuses.rowset,
+      connectivity: this.#connectivity.slot,
     };
     const previous = this.#snapshot;
     if (
@@ -267,7 +307,8 @@ export class EngineWatchCache {
       previous.chats === next.chats &&
       previous.spaces === next.spaces &&
       previous.devices === next.devices &&
-      previous.statuses === next.statuses
+      previous.statuses === next.statuses &&
+      previous.connectivity === next.connectivity
     ) {
       return;
     }
@@ -285,6 +326,27 @@ export class EngineWatchCache {
 function emptyCollection<T>(): CollectionState<T> {
   const rows: readonly T[] = [];
   return { rows, loaded: false, error: null, rowset: { rows, loaded: false, error: null } };
+}
+
+function emptyConnectivity(): ConnectivityState {
+  return { value: null, loaded: false, error: null, slot: { value: null, loaded: false, error: null } };
+}
+
+/** Apply one whole-value `Connectivity` frame; identity-stable when unchanged. */
+function withValue(state: ConnectivityState, value: Connectivity): ConnectivityState {
+  if (state.loaded && state.error === null && jsonEqual(state.value, value)) {
+    return state;
+  }
+  return { value, loaded: true, error: null, slot: { value, loaded: true, error: null } };
+}
+
+function withConnectivityError(state: ConnectivityState, error: RpcError): ConnectivityState {
+  return {
+    value: state.value,
+    loaded: state.loaded,
+    error,
+    slot: { value: state.value, loaded: state.loaded, error },
+  };
 }
 
 function withRows<T>(
