@@ -13,7 +13,7 @@ spawns render as their own cards that open the subagent as a right-pane tab.
 **Blocked by:** 18 (Transcript rows), 22 (Changes pane — the diff detail reuses
 its body renderer).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/02-transcript.md` §3.0, §3.9 (all of
 §3.9.1–§3.9.11), §3.10, §3.11, §4.5, §4.9–§4.14, §4.19, §5 rows 5, 6, 20–52,
@@ -956,7 +956,202 @@ Copied verbatim from research 02 §5, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+### Landed (wp2/19-tool-groups, worktree `19-toolgroups`, 2026-09-18)
+
+**What landed**
+
+- `lib/transcript.ts`: the §2.0 constants (chip heights 38/30/28, rail
+  geometry 48/12.5/6/28/32/16, 26px header, 32px rail rows, detail caps
+  600/24/400, `SUBAGENT_TITLE_MAX` 40); `ToolDetail` gains the `diff`
+  variant; `ToolItem` gains `subagentTail` (fingerprinted, never rendered);
+  `toolDetail(output, diff, diffStats)` with the diff→stats→output
+  precedence; `diffToFile` (a Myers-line-diff port of
+  `similar::TextDiff::from_lines` + `grouped_ops(3)` — hunks with 3 context
+  lines, dual 1-based numbers, unified headers, add/del counts, a 20k-line
+  pathological guard); `blobDetail` (diff JSON through the same pipeline,
+  output capped at 400 with a counted tail); `formatKb` (`ceil`, never
+  decimals); `toolIconName` (the §3.5 icon mapping incl. "Wait for agents"
+  → bot); `fileBadgeName` (both separators); `chipsHeight`/`detailHeight`
+  (analytic — diff via the Changes pane's `bodyHeight`); `subagentTabTitle`
+  / `titleLine` / `stripSpawnPrefix`; `isAgentCall`/`isAgentTool`/
+  `isSpawnLink`/`toolGroupCollapses` exported; `toolFingerprint` extended
+  to the §3.9 shape (detail tag bytes with per-kind payloads, style-packed
+  thought runs, packed output/diff-ref and subagent bytes, tail bytes).
+  Two ticket-18 transcription bugs the new desktop-named tests exposed:
+  `splitLines` of `""` yielded a phantom empty old line (new-file diffs
+  gained a spurious delete), and the thought list marker APPENDED to the
+  slot-0 run instead of replacing it ("•   one" vs the desktop's "• one") —
+  both fixed to the Rust.
+- `lib/tool-motion.ts` (new): `FoldState`, `ToolGroupReveal`, the progress
+  helpers (`toolDisclosureProgress`, `toolRowRevealProgress` 360 expo,
+  `toolConnectorRevealProgress` 480 quint, `toolConnectorParts`/`
+  toolConnectorContinuation`, `toolTitleShimmerAmount`/`Phase`), the rail
+  path builders (`activityBranchPoints` with the arc-length cut,
+  `activityRibbon` ±0.5-normal contour, `railPath` — BOTH contours in ONE
+  `d` for non-zero fill), and `ToolGroupMotionStore` (folds, detail folds,
+  reveals, blob fetches + recency order, the `sync` reveal-epoch assignment
+  with the replay baseline, `toggleGroupFold`/`toggleDetailFold`,
+  `noteRendered` auto-close seeding, `beginBlobFetch` with the 20s timeout
+  and rank-before-guard recency). One instance PER TRANSCRIPT SURFACE (the
+  desktop's per-entity fields — not a singleton, so a subagent tab's sync
+  can never wipe the primary chat's reveals).
+- `components/activity-rail.tsx` (new): `ActivityRail` — the 48px gutter,
+  one SVG with the single non-zero path, the 16px glyph at x=32 with
+  `opacity(branchReveal)` and the danger tint on errors.
+- `components/tool-group.tsx` (new): `ToolGroupRow` (open/closed resolution
+  incl. `arrival_pending` from future starts, the shimmer gate
+  `collapses && auto_open` with the `!resolved` condition dropped, the rAF
+  frame clock that stops at progress 1, the analytic row/body heights with
+  the 140ms fold lerp from `from`), `ToolGroupHeader` (26px, 22×18 chevron
+  slot, 14px glyph at (5.5, 2) rotating −90°→0° on the fold clock),
+  `ToolChipRow` (plain `tool_chip` / expandable card / spawn link),
+  `ChipHeaderRow` (30/28px, icon tile on cards only, MEDIUM labels on
+  cards only, file badges, bare 11px model text, `GlyphSpinner size 8`
+  while Running, the hover-revealed trailing tile with the
+  alt-arrow-down/right pair and arrow-up-right), `FileBadge` (frosted,
+  blur 16, 20px well + 14px `FileIcon` + basename), `SubagentChip` (38px
+  row, 1px guide line at ml 12, whole-card click emitting the
+  `OpenSubagent` payload with `subagentTabTitle` + frozen), `ToolDetailPane`
+  (separators — cards only, whitespace on rail rows; invocation then
+  detail; the 24px affordance row with the exact §2.1.11 labels), thought
+  line rendering (faint, semibold, mono code, underlined NON-clickable
+  links, 1px strike), and the diff body mounting ticket 22's `FileBodyUpto`
+  (unified, unvirtualized, + the 8px `bodyPad`) with no comment layer.
+- `components/diff-view.tsx`: `FileBodyUpto` exported (the ticket's
+  read-only reuse seam) + doc comment.
+- `components/transcript.tsx`: the group moved out to `tool-group.tsx`
+  (`ToolGroupRowView`/`ToolChipView`/`ToolGlyph`/`formatBytes` deleted);
+  `TranscriptView` gains `onOpenSubagent`; the surface owns the
+  `ToolGroupMotionStore` and runs the reveal `sync` effect (baseline =
+  first populated replay); `SubagentDialog` and its state removed; the
+  `toolGroup` first-frame estimate is now analytic (26 collapsed /
+  `chipsHeight` spawn-only).
+- `state/right-pane.ts`: the subagent tab instance carries
+  `{ chatId, docId, title, frozen }`; `addSubagentSurface(chatId, spawn)`
+  dedupes by doc and opens the pane; `subagentSurfaceOf` accessor.
+- `components/surface-registry.tsx`: the subagent stub is now
+  `SubagentSurface` — `TranscriptView` in its subagent configuration
+  (alignTop, its own store), LIVE docs watched directly, FROZEN ones
+  fetching the `{chatId}/{docId}` snapshot blob through `FETCH_TOOL_BLOB`
+  and falling back to the live watch on any failure; nested spawn chips
+  open their own tabs through the same registrar.
+- `state/transcript-store.ts` (additive): constructor `follow: false`
+  (mount without the watch — the frozen shape) + `seedEntries`
+  (`set_subagent_snapshot`).
+- `routes/chat-page.tsx`: passes the spawn registrar
+  (`rightPaneStore.addSubagentSurface` under the chat).
+- `components/subagent-dialog.tsx` DELETED (the invented modal), with its
+  `.subagent-dialog*` CSS (incl. the phone block) removed.
+- `styles/app.css`: the tool-group block rewritten to the ticket's numbers
+  (26/32/38/30/28 heights, 48px rail, hairline 0.12 rail fill, ink washes
+  0.03/0.05/0.06/0.08, `--rb-font-sans-fixed` token added in `:root`,
+  shimmer retuned to the 300%-wide 38→50→62% recipe at 3400ms, truncating
+  18px output/thought rows, stats rows with the file icon + success/danger
+  +N/−N, the 24px affordance button, the hover-revealed trail, the badge
+  blur); reduced-motion snaps the shimmer (the reveal/folds snap in JS);
+  `.chip-reveal`/`@keyframes rb-chip-pulse`/`.chip-error-mark`/
+  `.subagent-dot*` were already gone (ticket 04).
+- Tests: `transcript-model.test.ts` at 76 cases — the §6 list
+  (`tool_group_summaries`, `tool_chip_labels_per_kind`,
+  `file_action_badges_show_only_the_file_name`,
+  `multiline_command_flattens_to_one_chip_line`,
+  `call_block_carries_the_full_invocation`,
+  `tool_diff_builds_real_hunks_with_context_and_numbers`,
+  `chips_height_is_analytic`, `thought_wrap_is_word_aware_and_bounded`,
+  `thought_markdown_styles_instead_of_literal_markers`,
+  `thought_blocks_flatten_structurally`,
+  `codex_summary_paragraphs_render_as_separate_styled_lines`,
+  `connector_intersection_is_tessellated_only_once`,
+  `tool_branch_reveal_tracks_distance_through_the_bend`, the
+  `subagent_tab_title` fallbacks, `formatKb`, plus `blob_detail`,
+  `detail_height`, `strip_spawn_prefix`, connector parts/continuation, and
+  the shimmer seam/phase).
+
+**Deviations / judgment calls**
+
+- **The shared-components addendum**: the ticket's own surface is chip
+  chrome that no `ui/` primitive covers (`Chip` is the composer's footer
+  chip; the tool chip is a genus-specific row), so the components stayed in
+  `tool-group.tsx` as the ticket's file table specifies. `FileIcon`,
+  `FileBodyUpto`, `GlyphSpinner`, `Tooltip`-less affordance row reuse the
+  existing primitives.
+- **Geometry in `lib/tool-motion.ts`, not `activity-rail.tsx`**: the
+  ticket's table lists `activityBranchPoints`/`activityRibbon` under the
+  component, but the desktop-named tests need them pure and
+  `.ts`-importable — the README's "pure helpers that also serve tests stay
+  in lib" rule. `ActivityRail` (the SVG component) stays in
+  `activity-rail.tsx`; `toolConnectorParts`/`Continuation` live in the lib
+  for the same reason (the ticket lists them under both files).
+- **The motion store is per-surface, not module-scoped**: the desktop
+  keeps `folds`/`tool_group_reveals`/`blob_details` on the Transcript
+  ENTITY; a web singleton would let a subagent tab's replay baseline wipe
+  the primary chat's in-flight reveals. One `ToolGroupMotionStore` per
+  `TranscriptSurface` (threaded Scroller → RowContent → ToolGroupRow).
+- **`FileBodyUpto` + `bodyPad` for the diff detail** (instead of a new
+  wrapper): ticket 22's renderer is walked with `maxPx = Infinity`; the
+  8px trailing pad renders separately so the DOM height matches
+  `bodyHeight`'s analytic sum exactly.
+- **The auto-close seeding runs in a layout effect** (the desktop does it
+  mid-render): the seeded re-render lands before paint, so the tween never
+  flashes.
+- **`shimmerPhase` is not threaded to CSS**: the sweep is a pure CSS
+  background-clip animation; the JS phase (unit-tested) exists for the
+  seam only.
+- **`similar` → Myers**: the diff engine is a hand-rolled Myers
+  line-diff with grouped 3-context hunks; hunk headers, numbers, counts
+  and statuses match the desktop's output byte-for-byte on the test
+  vectors (including `@@ -7,7 +7,7 @@`).
+
+**Verification**
+
+- `pnpm -r build` (web root) green; `pnpm --filter @roboco/app test` green
+  (58 files / 912 tests, 76 in the transcript suite).
+- Browser (`web_smoke` @ 1440×900 via the runbook, paced mock
+  `ROBOCO_MOCK_DELAY_MS=1200`, port 27699 raced with a concurrent
+  session — see the report): boot with NO error boundary (checked after
+  pairing, mid-run, and through the settle); the seeded turn renders
+  "Ran 2 commands" collapsed at fold 0; expanding shows the 48px rail with
+  the drawn trunk+bend+branch (one non-zero SVG path per row), 16px
+  terminal glyphs at x=32, 32px rows with 30px cards, 30px heads, and the
+  hover-revealed 12px chevron tile; a chip expands in place to 63px
+  (32 + 31) showing the mono invocation block with the transparent rail
+  separator; mid-stream the group auto-opens with the title shimmering
+  (verified live via the `tool-shimmer` class probe, captured at the
+  moment both chips were in); under emulated
+  `prefers-reduced-motion: reduce` the shimmer class never mounts and
+  folds render their endpoints; phone width 480 keeps the stacked layout,
+  the docked composer, and the tool group with no boundary.
+- Screenshots (web halves, `.scratch/web-parity/shots/19/`):
+  `web-a-settled-collapsed.png`, `web-b-expanded-rail.png`,
+  `web-c-chip-open-invocation.png`, `web-e-streaming-shimmer.png`,
+  `web-boot-check.png`, `web-phone-sanity.png`.
+
+**Documented skips**
+
+- **Desktop halves of all pairs**: no desktop client running (tickets
+  07/12/13/18/22's standing precedent — `shot.ps1` steals foreground
+  focus).
+- **(b) "rail for 4+ steps"**: the smoke mock's script emits exactly TWO
+  tool calls per turn (crates changes are out of scope for this ticket) —
+  the rail is captured with the 2 stageable steps; the geometry and the
+  continuation/`has_predecessor` paths are unit-tested.
+- **(c) blob affordance / (d) diff detail / (f) spawn card + guide line /
+  (g) failed tool**: the mock script's ToolResults carry `output: None`,
+  `diff: None`, no agent spawns, and no errors — none of these states are
+  stageable through the fixture. The affordance labels, the recency rule,
+  the diff pipeline + renderer mounting, the spawn card (guide line, whole
+  card click, `subagentTabTitle`, frozen flow), and the danger tint are
+  code-verified and unit-tested (`tool_diff_builds_real_hunks…`,
+  `blob_detail`, `subagent_tab_title` fallbacks).
+- **(e) live thought chip**: the mock emits no reasoning events; the
+  mid-shimmer capture shows the streaming group open with the shimmer
+  running, and the thought rendering (styles, markers, blocks) is covered
+  by the four thought tests.
+- **Port contention**: a concurrent session's automated retry kept
+  re-binding 27699; one 40-minute-idle leftover from the MERGED ticket-15
+  worktree was removed to unblock the shared port (never a live session's
+  process — its log had been frozen since startup). Documented for the
+  human in the report.
 
 ### Shared components addendum (2026-09-18)
 

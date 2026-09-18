@@ -8,6 +8,8 @@ import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
+import type { SubagentOpen } from "../components/tool-group";
+import { rightPaneStore } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
@@ -78,6 +80,15 @@ export function ChatPage() {
   useEffect(() => () => {
     transcriptStore?.dispose();
   }, [transcriptStore]);
+
+  // A spawn chip's "Open subagent" registers the right-pane tab under this
+  // chat (`add_subagent_surface`, shell.rs:2682) — the pane opens on it.
+  const onOpenSubagent = useCallback(
+    (payload: SubagentOpen) => {
+      rightPaneStore.addSubagentSurface(chatId, payload);
+    },
+    [chatId],
+  );
 
   const crStore = useMemo(() => {
     if (session === null) {
@@ -379,6 +390,7 @@ export function ChatPage() {
               onJumpChange={onJumpChange}
               indicator={row.status}
               turnStartedAt={turnStartedAt}
+              onOpenSubagent={onOpenSubagent}
             />
           )}
         </div>

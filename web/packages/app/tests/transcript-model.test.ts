@@ -1,16 +1,29 @@
 import { describe, expect, it } from "vitest";
 import type { MessagePart, SessionMessageEntry, ToolCall, TranscriptFrame } from "@roboco/proto";
-import { parseMarkdown } from "../src/lib/markdown";
+import { parseMarkdown, type InlineRun } from "../src/lib/markdown";
+import { bodyHeight } from "../src/lib/diff";
 import {
-  applyTranscriptFrame,
+  CHIPS_TOP_PAD,
+  CHIP_HEIGHT,
+  CHIP_GAP,
   TranscriptDesync,
+  applyTranscriptFrame,
   assistantCopyText,
+  blobDetail,
   callBlock,
+  chipsHeight,
+  detailHeight,
   diffRows,
+  fileBadgeName,
+  formatKb,
   formatTimestamp,
   rowsForEntry,
   singleLine,
+  stripSpawnPrefix,
+  subagentTabTitle,
+  thoughtLines,
   toolChipContent,
+  toolDetail,
   toolGroupSummary,
   toolGroupTitle,
   topGapFor,
@@ -18,6 +31,17 @@ import {
   visibleRowWindow,
   type TranscriptRow,
 } from "../src/lib/transcript";
+import {
+  ACTIVITY_BEND_RADIUS,
+  ACTIVITY_BRANCH_END_X,
+  ACTIVITY_TRUNK_X,
+  activityBranchPoints,
+  railPath,
+  toolConnectorContinuation,
+  toolConnectorParts,
+  toolTitleShimmerAmount,
+  toolTitleShimmerPhase,
+} from "../src/lib/tool-motion";
 import {
   jumpVisibility,
   shouldAnchorLiveStream,
@@ -301,7 +325,7 @@ describe("topGapFor / diffRows", () => {
 // ---------------------------------------------------------------------------
 
 describe("toolChipContent", () => {
-  it("names every kind like the desktop", () => {
+  it("tool_chip_labels_per_kind", () => {
     expect(toolChipContent(exec("ls -la"))).toEqual({ label: "Run", detail: "ls -la" });
     expect(toolChipContent({ kind: "readFile", path: "a/b.ts" })).toEqual({ label: "Read", detail: "a/b.ts" });
     expect(toolChipContent({ kind: "writeFile", path: "a/b.ts" })).toEqual({ label: "Write", detail: "a/b.ts" });
@@ -319,16 +343,41 @@ describe("toolChipContent", () => {
     expect(toolChipContent({ kind: "unknown", name: "custom_tool" })).toEqual({ label: "Tool", detail: "custom_tool" });
   });
 
-  it("collapses the detail to one line", () => {
-    expect(toolChipContent(exec("ls\n-la   --all")).detail).toBe("ls -la --all");
+  it("single_line_collapses_all_whitespace_runs", () => {
     expect(singleLine(" a\n\tb  c ")).toBe("a b c");
+    expect(singleLine("plain")).toBe("plain");
+    expect(singleLine("")).toBe("");
+    expect(singleLine("\n\n")).toBe("");
+  });
+
+  it("multiline_command_flattens_to_one_chip_line", () => {
+    // The user's breaker: a multi-line script in a Run chip. The detail must
+    // come out as ONE sanitized line — the chip's fixed card then truncates
+    // it with an ellipsis.
+    const { label, detail } = toolChipContent(exec('set -e\nfixture_in_original=0\n\tgrep -c  "x"'));
+    expect(label).toBe("Run");
+    expect(detail).toBe('set -e fixture_in_original=0 grep -c "x"');
+    expect(detail.includes("\n")).toBe(false);
+    // The chip row height is a constant, independent of content shape.
+    expect(chipsHeight(1)).toBe(CHIPS_TOP_PAD + CHIP_HEIGHT);
+    // Every detail kind is sanitized (MCP inputs / queries are model text).
+    expect(toolChipContent({ kind: "webSearch", query: "line one\nline two" }).detail).toBe("line one line two");
+  });
+
+  it("file_action_badges_show_only_the_file_name", () => {
+    expect(fileBadgeName("/Users/me/project/src/main.rs")).toBe("main.rs");
+    expect(fileBadgeName("crates/ui/src/transcript.rs")).toBe("transcript.rs");
+    expect(fileBadgeName("C:\\project\\src\\main.rs")).toBe("main.rs");
+    expect(fileBadgeName("src/components/")).toBe("components");
+    expect(fileBadgeName("main.rs")).toBe("main.rs");
+    expect(fileBadgeName("")).toBe("");
   });
 });
 
 describe("toolGroupSummary", () => {
   const pair = (call: ToolCall, isError = false) => ({ call, isError });
 
-  it("summarizes like the desktop", () => {
+  it("tool_group_summaries", () => {
     expect(toolGroupSummary([pair(exec("ls")), pair(exec("pwd")), pair(exec("cd"))])).toBe("Ran 3 commands");
     expect(
       toolGroupSummary([
@@ -338,6 +387,8 @@ describe("toolGroupSummary", () => {
         pair({ kind: "editFile", path: "a" }),
       ]),
     ).toBe("Ran 1 command · edited 2 files");
+    // Distinct-path dedupe: editing one file twice counts once.
+    expect(toolGroupSummary([pair({ kind: "editFile", path: "a" }), pair({ kind: "editFile", path: "a" })])).toBe("Edited 1 file");
     expect(toolGroupSummary([pair({ kind: "readFile", path: "x" })])).toBe("Read 1 file");
     expect(toolGroupSummary([pair({ kind: "glob", pattern: "*" }), pair({ kind: "webSearch", query: "q" })])).toBe("Searched 2 times");
     expect(toolGroupSummary([pair({ kind: "webFetch", url: "u", prompt: null })])).toBe("Fetched 1 page");
@@ -358,13 +409,17 @@ describe("toolGroupSummary", () => {
 });
 
 describe("callBlock", () => {
-  it("carries the full invocation, wrapped at 80 columns", () => {
-    const block = callBlock(exec("run this"));
-    expect(block).not.toBeNull();
-    expect(block!.kind === "output" && block!.lines).toEqual(["run this"]);
+  it("call_block_carries_the_full_invocation", () => {
+    // Multi-line command: verbatim lines, not the flattened chip line.
+    const block = callBlock(exec("set -e\ncargo test"));
+    expect(block!.kind === "output" && block!.truncatedBy).toBe(0);
+    expect(block!.kind === "output" && block!.lines).toEqual(["set -e", "cargo test"]);
     const long = callBlock(exec("x".repeat(200)));
     expect(long!.kind === "output" && long!.lines.every((line) => [...line].length <= 80)).toBe(true);
     expect(long!.kind === "output" && long!.lines.join("")).toBe("x".repeat(200));
+    // A long single-line command soft-wraps instead of ellipsizing: 200
+    // chars at 80 columns is 3 chunks.
+    expect(long!.kind === "output" && long!.lines.length).toBe(3);
   });
 
   it("renders todo items one per line and mcp input as JSON", () => {
@@ -373,6 +428,278 @@ describe("callBlock", () => {
     const mcp = callBlock({ kind: "mcp", server: "fs", tool: "read", input: { path: "/x" } });
     expect(mcp!.kind === "output" && mcp!.lines[0]).toBe("fs · read");
     expect(mcp!.kind === "output" && mcp!.lines.join("\n")).toContain('"path": "/x"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool groups (ticket 19 — transcript.rs tests :10662-11200)
+// ---------------------------------------------------------------------------
+
+describe("tool details (ticket 19)", () => {
+  it("tool_diff_builds_real_hunks_with_context_and_numbers", () => {
+    const oldLines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    const newLines = [...oldLines];
+    newLines[9] = "LINE 10";
+    const diff = { path: "/w/a.rs", oldText: oldLines.join("\n") + "\n", newText: newLines.join("\n") + "\n" };
+    const detail = toolDetail(null, diff, null);
+    expect(detail).not.toBeNull();
+    expect(detail!.kind).toBe("diff");
+    const file = detail!.kind === "diff" ? detail!.file : null;
+    expect(file).not.toBeNull();
+    // One hunk: the change plus 3 context lines each side, real numbers.
+    expect(file!.hunks.length).toBe(1);
+    const hunk = file!.hunks[0]!;
+    expect(hunk.header).toBe("@@ -7,7 +7,7 @@");
+    expect(hunk.lines.length).toBe(8); // 6 context + 1 del + 1 add
+    const del = hunk.lines.find((line) => line.kind === "del");
+    expect(del).toBeDefined();
+    expect(del!.oldNo).toBe(10);
+    expect(del!.newNo).toBeNull();
+    expect(del!.text).toBe("line 10");
+    const add = hunk.lines.find((line) => line.kind === "add");
+    expect(add).toBeDefined();
+    expect(add!.newNo).toBe(10);
+    expect(add!.oldNo).toBeNull();
+    expect(add!.text).toBe("LINE 10");
+    expect(file!.additions).toBe(1);
+    expect(file!.deletions).toBe(1);
+    // New files carry Added status (and no old numbers).
+    const created = toolDetail(null, { path: "/w/new.txt", oldText: null, newText: "only\n" }, null);
+    expect(created!.kind === "diff" && created!.file.status).toBe("added");
+    expect(created!.kind === "diff" && created!.file.hunks[0]!.lines.every((line) => line.oldNo === null)).toBe(true);
+    // Output: verbatim lines (indentation intact), counted-tail cap.
+    const output = Array.from({ length: 40 }, (_, i) => `    indented ${i}`).join("\n");
+    const outDetail = toolDetail(output, null, null);
+    expect(outDetail!.kind === "output" && outDetail!.lines.length).toBe(24);
+    expect(outDetail!.kind === "output" && outDetail!.truncatedBy).toBe(16);
+    expect(outDetail!.kind === "output" && outDetail!.lines[0]).toBe("    indented 0");
+    // Diff wins over stats wins over output.
+    const stats = [{ path: "a", additions: 1, deletions: 2 }];
+    expect(toolDetail("out", diff, stats)!.kind).toBe("diff");
+    expect(toolDetail("out", null, stats)!.kind).toBe("stats");
+    // Nothing → no detail.
+    expect(toolDetail(null, null, null)).toBeNull();
+    expect(toolDetail("\n\n", null, null)).toBeNull();
+  });
+
+  it("blob_detail parses diff JSON and renders uncapped output", () => {
+    const diffJson = JSON.stringify({ path: "/w/a.rs", oldText: null, newText: "a\nb\n" });
+    const fromBlob = blobDetail(diffJson, true);
+    expect(fromBlob!.kind).toBe("diff");
+    // Output blobs cap at the defensive FULL_OUTPUT_MAX_LINES ceiling.
+    const longOutput = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
+    const out = blobDetail(longOutput, false);
+    expect(out!.kind === "output" && out!.lines.length).toBe(400);
+    expect(out!.kind === "output" && out!.truncatedBy).toBe(100);
+    expect(blobDetail("  \n\n ", false)).toBeNull();
+    expect(blobDetail("{not json", true)).toBeNull();
+  });
+
+  it("chips_height_is_analytic", () => {
+    expect(chipsHeight(0)).toBe(0);
+    expect(chipsHeight(1)).toBe(CHIPS_TOP_PAD + CHIP_HEIGHT);
+    expect(chipsHeight(3)).toBe(CHIPS_TOP_PAD + 3 * CHIP_HEIGHT + 2 * CHIP_GAP);
+  });
+
+  it("detail_height is analytic per kind", () => {
+    const output = toolDetail("a\nb", null, null)!;
+    // 2 lines + no tail row → 2·18 + py(6)×2, plus the separator.
+    expect(detailHeight(output)).toBe(1 + 2 * 18 + 12);
+    const truncated = toolDetail(Array.from({ length: 30 }, () => "x").join("\n"), null, null)!;
+    expect(detailHeight(truncated)).toBe(1 + (24 + 1) * 18 + 12);
+    const stats = toolDetail(null, null, [{ path: "a", additions: 1, deletions: 0 }])!;
+    expect(detailHeight(stats)).toBe(1 + 1 * 18 + 12);
+    const diff = toolDetail(null, { path: "a.rs", oldText: null, newText: "one\ntwo\n" }, null)!;
+    expect(detailHeight(diff)).toBe(1 + bodyHeight(diff.kind === "diff" ? diff.file : null!));
+  });
+
+  it("formatKb never shows decimals", () => {
+    expect(formatKb(512)).toBe("512 B");
+    expect(formatKb(0)).toBe("0 B");
+    expect(formatKb(1023)).toBe("1023 B");
+    expect(formatKb(1024)).toBe("1 KB");
+    expect(formatKb(12288)).toBe("12 KB");
+    expect(formatKb(12500)).toBe("13 KB");
+  });
+});
+
+describe("subagent tab titles (transcript.rs :7188)", () => {
+  it("subagent_tab_title fallbacks and caps", () => {
+    // The tab is the BARE task — the "Agent:" genus is stripped.
+    expect(subagentTabTitle({ kind: "unknown", name: "Agent: scan repo", input: null })).toBe("scan repo");
+    // A bare "Task" digs the description out of the call input.
+    expect(
+      subagentTabTitle({
+        kind: "unknown",
+        name: "Task",
+        input: { description: "Agent: audit the auth flow", prompt: "very long instructions…" },
+      }),
+    ).toBe("audit the auth flow");
+    // Word boundaries only — a name that merely STARTS with the genus keeps
+    // itself.
+    expect(subagentTabTitle({ kind: "unknown", name: "Taskmaster", input: null })).toBe("Taskmaster");
+    // A bare "agent" strips to "" and falls through to the generic label.
+    expect(subagentTabTitle({ kind: "unknown", name: "agent", input: null })).toBe("Subagent");
+    // Absurd lengths cap with an ellipsis.
+    const long = subagentTabTitle({ kind: "unknown", name: "x".repeat(120), input: null });
+    expect([...long].length).toBe(41);
+    expect(long.endsWith("…")).toBe(true);
+    // Multiline names keep only their first line.
+    expect(subagentTabTitle({ kind: "unknown", name: "Agent: one\ntwo", input: null })).toBe("one");
+    // Non-spawn-shaped calls stay generic.
+    expect(subagentTabTitle(exec("ls"))).toBe("Subagent");
+  });
+
+  it("strip_spawn_prefix only strips real word boundaries", () => {
+    expect(stripSpawnPrefix("Agent: scan")).toBe("scan");
+    expect(stripSpawnPrefix("task  cleanup")).toBe("cleanup");
+    expect(stripSpawnPrefix("Taskmaster")).toBe("Taskmaster");
+    expect(stripSpawnPrefix("Agent")).toBe("");
+    expect(stripSpawnPrefix("plain")).toBe("plain");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thought details (transcript.rs :8721-8818)
+// ---------------------------------------------------------------------------
+
+describe("thought details (ticket 19)", () => {
+  const thoughtOf = (text: string): InlineRun[][] => thoughtLines(parseMarkdown(text, false));
+  const lineString = (line: InlineRun[]): string => line.map((run) => run.text).join("");
+  const lineChars = (line: InlineRun[]): number => [...lineString(line)].length;
+
+  it("codex_summary_paragraphs_render_as_separate_styled_lines", () => {
+    const lines = thoughtOf("**Implementing file badges**\n\n**Preparing fixture screenshots**");
+    expect(lines.map(lineString)).toEqual(["Implementing file badges", "", "Preparing fixture screenshots"]);
+    for (const ix of [0, 2]) {
+      expect(lines[ix]!.every((run) => run.text.trim().length === 0 || run.style.bold === true)).toBe(true);
+    }
+  });
+
+  it("thought_wrap_is_word_aware_and_bounded", () => {
+    const lines = thoughtOf("one two three");
+    expect(lines.length).toBe(1);
+    expect(lineString(lines[0]!)).toBe("one two three");
+    const long = "word ".repeat(200);
+    const wrapped = thoughtOf(long);
+    expect(wrapped.every((line) => lineChars(line) <= 96)).toBe(true);
+    expect(wrapped.length).toBeGreaterThan(5);
+    const pathological = "x".repeat(300);
+    expect(thoughtOf(pathological).every((line) => lineChars(line) <= 96)).toBe(true);
+    // A word glued across style boundaries wraps as ONE unit — no line may
+    // split inside `**bold**tail`.
+    const glued = `${"word ".repeat(30)} **bold**tail`;
+    const joined = thoughtOf(glued).map(lineString);
+    expect(joined.some((line) => line.endsWith("boldtail"))).toBe(true);
+  });
+
+  it("thought_markdown_styles_instead_of_literal_markers", () => {
+    // The exact user report: `**bold**` markers showed as glyphs.
+    const lines = thoughtOf("**Planning rollback** then *checking* `parse` [docs](https://d)");
+    expect(lines.length).toBe(1);
+    const flat = lineString(lines[0]!);
+    expect(flat.includes("*")).toBe(false);
+    expect(flat.includes("`")).toBe(false);
+    expect(flat.includes("[")).toBe(false);
+    const line = lines[0]!;
+    expect(line.some((run) => run.style.bold === true && run.text.includes("Planning rollback"))).toBe(true);
+    expect(line.some((run) => run.style.italic === true && run.text.includes("checking"))).toBe(true);
+    expect(line.some((run) => run.style.code === true && run.text.includes("parse"))).toBe(true);
+    expect(line.some((run) => run.style.link !== null && run.text.includes("docs"))).toBe(true);
+  });
+
+  it("thought_blocks_flatten_structurally", () => {
+    const lines = thoughtOf("# Head\n\npara\n\n- one\n- two\n\n```rust\nlet x = 1;\n```");
+    const flat = lines.map(lineString);
+    // Heading renders bold, same size (one 18px row).
+    expect(lines[0]!.some((run) => run.style.bold === true && run.text.includes("Head"))).toBe(true);
+    // Blank separator rows between top-level blocks; tight list inside.
+    expect(flat[1]).toBe("");
+    expect(flat[2]).toBe("para");
+    expect(flat[4]).toBe("• one");
+    expect(flat[5]).toBe("• two");
+    // Code lines verbatim, styled as code (mono at render).
+    const last = lines[lines.length - 1]!;
+    expect(last.some((run) => run.style.code === true && run.text === "let x = 1;")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool motion + rail geometry (transcript.rs :7960-8000, :11127-11200)
+// ---------------------------------------------------------------------------
+
+describe("tool motion (ticket 19)", () => {
+  it("connector_intersection_is_tessellated_only_once", () => {
+    // The web contract: trunk + branch ride ONE <path> with fill-rule
+    // nonzero — two contours in a single `d`, never two strokes (stroke
+    // tessellation would double-blend the fork).
+    const d = railPath({
+      bendRowHeight: 32,
+      canvasHeight: 32,
+      hasPredecessor: false,
+      continues: true,
+      connectorReveal: 1,
+      continuationReveal: 1,
+    });
+    expect(d).not.toBeNull();
+    const starts = d!.split(" ").filter((token) => token === "M").length;
+    expect(starts).toBe(2);
+    expect(d!.includes("Z")).toBe(true);
+    // A row that has not started reveals nothing.
+    expect(
+      railPath({ bendRowHeight: 32, canvasHeight: 32, hasPredecessor: true, continues: true, connectorReveal: 0, continuationReveal: 0 }),
+    ).toBeNull();
+  });
+
+  it("tool_branch_reveal_tracks_distance_through_the_bend", () => {
+    const length = (points: readonly { x: number; y: number }[]): number => {
+      let total = 0;
+      for (let ix = 1; ix < points.length; ix += 1) {
+        total += Math.hypot(points[ix]!.x - points[ix - 1]!.x, points[ix]!.y - points[ix - 1]!.y);
+      }
+      return total;
+    };
+    const full = activityBranchPoints(1);
+    expect(activityBranchPoints(0)).toEqual([{ x: 0, y: 0 }]);
+    const end = full[full.length - 1]!;
+    expect(end.x).toBeCloseTo(ACTIVITY_BRANCH_END_X - ACTIVITY_TRUNK_X, 4);
+    expect(end.y).toBeCloseTo(ACTIVITY_BEND_RADIUS, 4);
+    for (const progress of [0.1, 0.25, 0.5, 0.75, 0.9]) {
+      const partial = activityBranchPoints(progress);
+      expect(length(partial) / length(full)).toBeCloseTo(progress, 4);
+      for (let ix = 1; ix < partial.length; ix += 1) {
+        expect(partial[ix]!.x).toBeGreaterThanOrEqual(partial[ix - 1]!.x);
+        expect(partial[ix]!.y).toBeGreaterThanOrEqual(partial[ix - 1]!.y);
+      }
+    }
+  });
+
+  it("tool_connector_parts split one arrival into phases", () => {
+    expect(toolConnectorParts(0, false)).toEqual({ incoming: 0, branch: 0 });
+    expect(toolConnectorParts(0.44, true)).toEqual({ incoming: 0, branch: 0 });
+    expect(toolConnectorContinuation(0)).toBe(0);
+    expect(toolConnectorContinuation(0.3)).toBeGreaterThan(0);
+    expect(toolConnectorContinuation(0.45)).toBe(1);
+    expect(toolConnectorContinuation(null)).toBe(0);
+    const { incoming, branch } = toolConnectorParts(0.6, true);
+    expect(incoming).toBeGreaterThan(0);
+    expect(incoming).toBeLessThan(1);
+    expect(branch).toBe(0);
+    expect(toolConnectorParts(1, true)).toEqual({ incoming: 1, branch: 1 });
+  });
+
+  it("tool_title_shimmer_crosses_the_title_without_a_loop_seam", () => {
+    expect(toolTitleShimmerAmount(0.5, 0.5)).toBe(1);
+    expect(toolTitleShimmerAmount(0, 0.5)).toBe(0);
+    expect(toolTitleShimmerAmount(1, 0.5)).toBe(0);
+    expect(toolTitleShimmerAmount(0.3, 0.5)).toBeGreaterThan(0.4);
+    expect(toolTitleShimmerAmount(0.7, 0.5)).toBeGreaterThan(0.4);
+    for (const x of [0, 0.25, 0.5, 0.75, 1]) {
+      expect(toolTitleShimmerAmount(x, 0)).toBe(toolTitleShimmerAmount(x, 1));
+    }
+    expect(toolTitleShimmerPhase(0)).toBe(0);
+    expect(toolTitleShimmerPhase(3400)).toBe(0);
+    expect(toolTitleShimmerPhase(1700)).toBeCloseTo(0.5, 6);
   });
 });
 

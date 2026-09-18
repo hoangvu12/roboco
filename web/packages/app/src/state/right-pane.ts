@@ -172,8 +172,8 @@ export class RightPaneStore {
   readonly #fileKeys = new Map<string, string>();
   /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
   readonly #diffMeta = new Map<string, { flavor: DiffFlavor; label: string | null }>();
-  /** `subagent_tabs` — id → { docId, title }. One tab per doc. */
-  readonly #subagentMeta = new Map<string, { docId: string; title: string }>();
+  /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
+  readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean }>();
 
   getVersion = (): number => this.#version;
 
@@ -335,21 +335,36 @@ export class RightPaneStore {
   }
 
   /**
-   * `add_subagent_surface`: one tab per doc. Added programmatically from a
-   * transcript spawn chip, never from the picker.
+   * `add_subagent_surface` (shell.rs:2682): one tab per doc. Added
+   * programmatically from a transcript spawn chip, never from the picker.
+   * `frozen` (subagent done/failed) tries the uploaded transcript blob
+   * first and falls back to the live doc watch; running subagents watch
+   * the doc directly.
    */
-  addSubagentSurface(chatId: string, docId: string, title: string): void {
+  addSubagentSurface(
+    chatId: string,
+    spawn: { chatId: string; docId: string; title: string; frozen: boolean },
+  ): void {
     for (const [id, meta] of this.#subagentMeta) {
-      if (meta.docId === docId) {
+      if (meta.docId === spawn.docId) {
         this.setActive(chatId, { kind: "subagent", id });
         return;
       }
     }
     this.#subagentSeq += 1;
     const id = `s${this.#subagentSeq}`;
-    this.#subagentMeta.set(id, { docId, title });
+    this.#subagentMeta.set(id, { chatId: spawn.chatId, docId: spawn.docId, title: spawn.title, frozen: spawn.frozen });
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "subagent", id }] }));
     this.setActive(chatId, { kind: "subagent", id });
+  }
+
+  /** The subagent tab's instance (`{chatId, docId, title, frozen}`). */
+  subagentSurfaceOf(surfaceId: string): { chatId: string; docId: string; title: string; frozen: boolean } | null {
+    const meta = this.#subagentMeta.get(surfaceId);
+    if (meta === undefined) {
+      return null;
+    }
+    return { ...meta };
   }
 
   /**

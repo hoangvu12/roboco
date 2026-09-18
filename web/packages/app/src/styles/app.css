@@ -213,6 +213,14 @@ a:focus-visible,
 :root {
   /* settings.rs SIDEBAR_DEFAULT / _MIN / _MAX. */
   --rb-sidebar-width: 256px;
+  /*
+   * The tool chrome's `theme.font_sans_fixed` (the tabular/fixed-width
+   * sans). Research 02 §7 q3 could not confirm the desktop's exact stack;
+   * per the ticket this is the same stack ticket 02 assigns the sans role,
+   * behind one token so the day a dedicated fixed-width face ships it
+   * changes in exactly one place. Detail BODIES override to mono.
+   */
+  --rb-font-sans-fixed: "Geist", ui-sans-serif, system-ui, sans-serif;
   /* shell.rs: TITLEBAR_CLUSTER_PAD, group and within-group rhythm. */
   --rb-titlebar-pad: 10px;
   --rb-titlebar-group-gap: 8px;
@@ -7636,58 +7644,95 @@ button.files-save-pill:hover {
   animation-fill-mode: both;
 }
 
-/* ── Tool groups and chips ──────────────────────────────────────────── */
+/* ── Tool groups and chips (transcript.rs:96-136, ticket 19) ─────────── */
 
+/*
+ * The whole group: relative flex col, tool chrome in the fixed-width sans
+ * (the tabular/fixed-width sans — the same stack ticket 02 assigns the
+ * sans role, behind one token). Detail bodies override to mono below this
+ * boundary.
+ */
 .tool-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  font-family: var(--rb-font-sans-fixed);
+  font-size: 12px;
 }
 
+/*
+ * The collapsed summary line (transcript.rs:6107-6158): 26px, gap 6, pr 4,
+ * text_muted — deliberately NOT red when children failed: agents routinely
+ * have failed probes mid-work, and a red header read as "this whole step
+ * broke" (user report). Failures still show on the individual chips (the
+ * danger tint) and in the summary's "· N failed" count.
+ */
 .tool-group-header {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  min-height: 26px;
-  padding: 0 2px;
+  height: 26px;
+  padding: 0 4px 0 0;
   background: none;
   border: none;
+  text-align: left;
+  cursor: pointer;
   color: var(--rb-text-muted);
   font-size: 12px;
-  cursor: pointer;
-  text-align: left;
+  line-height: 18px;
 }
 
 .tool-group-header:hover {
   color: var(--rb-text);
 }
 
+/* The chevron slot: 22×18; the 14px glyph sits at (5.5, 2) and rotates
+   −90°→0° on the 140ms TOOL_FOLD clock (JS inline transform). */
 .tool-group-chevron {
+  position: relative;
+  width: 22px;
+  height: 18px;
   flex: none;
-  font-size: 9px;
-  transform: rotate(-90deg);
-  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  color: var(--rb-text-muted);
 }
 
-.tool-group-chevron-open {
-  transform: rotate(0deg);
+.tool-group-chevron svg {
+  margin-left: 5.5px;
+  transition: none;
 }
 
 .tool-group-title {
   min-width: 0;
+  height: 18px;
+  display: flex;
+  align-items: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* BoardUI sweep over the active group's summary (3400ms, transcript.rs). */
+/*
+ * BoardUI's measured recipe (transcript.rs:2233): a 300%-wide repeating
+ * gradient moves from 200% to −100%; its 38→50→62% highlight maps to a
+ * 36%-of-title shoulder around each peak, adjacent copies three
+ * title-widths apart. 3400ms linear.
+ */
 .tool-shimmer {
   background: linear-gradient(
     100deg,
-    var(--rb-text-muted) 42%,
+    var(--rb-text-muted) 0%,
+    var(--rb-text-muted) 38%,
     var(--rb-text) 50%,
-    var(--rb-text-muted) 58%
+    var(--rb-text-muted) 62%,
+    var(--rb-text-muted) 100%
   );
-  background-size: 280% 100%;
+  background-size: 300% 100%;
+  background-repeat: repeat;
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
@@ -7696,238 +7741,464 @@ button.files-save-pill:hover {
 
 @keyframes rb-tool-shimmer {
   from {
-    background-position: 140% 0;
+    background-position: 200% 0;
   }
   to {
-    background-position: -140% 0;
+    background-position: -100% 0;
   }
 }
 
-/* Fold: TOOL_FOLD 140ms ease-out (transcript-local spec, catalog curve). */
+/* The fold body: JS-driven explicit height + clip (TOOL_FOLD 140ms
+   ease-out, lerped from the last rendered height). */
 .tool-group-fold {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 140ms var(--rb-ease-ease-out);
-}
-
-.tool-group-open .tool-group-fold {
-  grid-template-rows: 1fr;
+  overflow: hidden;
 }
 
 .tool-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-top: 2px;
+}
+
+/* A newly arriving row: ONLY the height clips (JS inline); the content
+   inside keeps its own lift/fade so the connector draws at full contrast
+   (reveal_tool_row, transcript.rs:7210). */
+.tool-reveal {
+  width: 100%;
+  flex: none;
   overflow: hidden;
-  min-height: 0;
 }
 
-/* Row reveal: 360ms expo, 90ms first-row delay + 65ms stagger (inline). */
-@keyframes rb-chip-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.chip-reveal {
-  animation: rb-chip-reveal 360ms var(--rb-ease-ease-out-expo) backwards;
-}
-
+/* One chip row (tool_chip :7327): 32px rail row / 38px card row. */
 .tool-chip {
+  width: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: row;
   min-width: 0;
-  border-radius: var(--rb-radius-control);
 }
 
+/* The card: 30px border-box, vertically centered (JS my()); rail rows are
+   borderless (the rail IS the chrome); standalone cards take the border. */
+.tool-chip-card {
+  height: 30px;
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tool-chip-card-bordered {
+  border-radius: 9px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.07 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.03);
+}
+
+/* The chip's content row (chip_header_row :6871): 30px activity / 28px
+   card, px 0 / 8, gap 8, 12px/18. */
 .tool-chip-head {
   display: flex;
   align-items: center;
-  gap: var(--rb-space-sm);
-  min-height: 30px;
-  padding: 0 8px;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  flex: none;
+  height: 30px;
+  padding: 0;
   font-size: 12px;
-  border-radius: var(--rb-radius-control);
+  line-height: 18px;
+}
+
+.tool-chip-head-card {
+  height: 28px;
+  padding: 0 8px;
 }
 
 .tool-chip-head-button {
   cursor: pointer;
 }
 
-.tool-chip-head-button:hover {
-  background: var(--rb-hover);
-}
-
-.tool-glyph {
+/* The spawn card's 18px icon tile (size-[18px] rounded-[5px] ink(0.08)). */
+.tool-chip-icon-tile {
+  width: 18px;
+  height: 18px;
   flex: none;
-  width: 16px;
-  text-align: center;
-  color: var(--rb-text-faint);
-  font-size: 11px;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
 }
 
 .tool-chip-label {
   flex: none;
-  font-weight: 600;
+  height: 18px;
+  display: flex;
+  align-items: center;
   color: var(--rb-text-muted);
+}
+
+/* MEDIUM only for spawn cards; rail rows are normal weight (:6949). */
+.tool-chip-head-card .tool-chip-label {
+  font-weight: 500;
 }
 
 .tool-chip-detail {
-  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--rb-text-faint);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 11.5px;
-}
-
-.tool-chip-chevron {
-  flex: none;
-  font-size: 9px;
-  color: var(--rb-text-faint);
-  transform: rotate(-90deg);
-  transition: transform var(--rb-motion-chevron) var(--rb-ease-ease);
-}
-
-.tool-chip-chevron-open {
-  transform: rotate(0deg);
-}
-
-.tool-chip-model {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--rb-text-faint);
-  border: 1px solid var(--rb-border);
-  border-radius: 4px;
-  padding: 0 4px;
-}
-
-.tool-chip-body {
-  margin-left: 12px;
-  padding: 2px 0 4px 12px;
-  border-left: 1px solid var(--rb-border);
-}
-
-.tool-invocation,
-.tool-output {
-  margin: 2px 8px 4px 0;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--rb-text-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.tool-invocation {
-  color: var(--rb-text-faint);
-  border-bottom: 1px solid var(--rb-border);
-  padding-bottom: 4px;
-}
-
-.tool-thought {
-  color: var(--rb-text-muted);
-}
-
-.tool-output-line {
-  min-height: 18px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.tool-output-more,
-.tool-output-note {
-  color: var(--rb-text-faint);
-  font-size: 11px;
-}
-
-.tool-stat-row {
+  height: 18px;
   display: flex;
-  gap: var(--rb-space-sm);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.tool-stat-path {
-  flex: 1;
-  min-width: 0;
+  align-items: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--rb-text-muted);
 }
 
-.tool-stat-add {
-  color: var(--rb-diff-add);
+/* Cards: the detail slot is the flex-1 truncating column (:6967). */
+.tool-chip-head-card .tool-chip-detail,
+.tool-chip-head-card .tool-chip-detail-slot {
+  flex: 1;
 }
 
-.tool-stat-del {
-  color: var(--rb-diff-delete);
+.tool-chip-head-card .tool-chip-detail {
+  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
 }
 
-.tool-full-button {
-  margin: 2px 0 4px;
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--rb-accent);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.tool-full-button:hover {
-  text-decoration: underline;
-}
-
-/*
- * No per-chip pending dot and no "failed" word: the desktop shows a
- * `mini_glyph_spinner` while running and expresses failure through the danger
- * tint plus the group summary's "· N failed" count (ticket 19).
- */
-
-.tool-chip-error .tool-chip-label {
+/* Failure is the danger tint — never a word, never a dot (§5 rows 37-39). */
+.tool-chip-head[data-failed="1"] .tool-chip-label,
+.tool-chip-head[data-failed="1"] .tool-chip-detail,
+.tool-chip-head[data-failed="1"] .tool-file-badge {
   color: var(--rb-danger);
 }
 
-/* ── Subagent chips ─────────────────────────────────────────────────── */
+/* Group-hover lights the label/detail/chevron on expandable rail rows that
+   did not fail (chip_header_row's hover_text, :6898). */
+.tool-chip-head[data-hover-text="1"]:hover .tool-chip-label,
+.tool-chip-head[data-hover-text="1"]:hover .tool-chip-detail,
+.tool-chip-head[data-hover-text="1"]:hover .tool-file-badge {
+  color: var(--rb-text);
+}
 
+/* The subagent model: bare faint text, 11px — explicitly NOT a pill. */
+.tool-chip-model {
+  flex: none;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.tool-chip-spinner {
+  flex: none;
+}
+
+/* The trailing tile (:7094): 18×18; on rail rows it is invisible until the
+   header row is hovered. */
+.tool-chip-trail {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+  opacity: 0;
+}
+
+.tool-chip-head:hover .tool-chip-trail {
+  opacity: 1;
+}
+
+.tool-chip-trail-card {
+  opacity: 1;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.06);
+}
+
+.tool-chip-trail svg {
+  color: var(--rb-text-faint);
+}
+
+.tool-chip-head[data-hover-text="1"]:hover .tool-chip-trail svg,
+.tool-chip-head[data-failed="1"]:hover .tool-chip-trail svg {
+  color: var(--rb-text);
+}
+
+.tool-chip-head[data-failed="1"]:hover .tool-chip-trail svg {
+  color: var(--rb-danger);
+}
+
+/* The spawn chip's open-arrow tile keeps its muted rest color (:7126). */
+.tool-chip-trail-open {
+  opacity: 1;
+}
+
+.tool-chip-trail-open svg {
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+}
+
+/* The frosted file-action badge (:6986-7037): h22 rounded(5) bg ink(0.06),
+   pl 1 / pr 6 / gap 6, blur 16, a 20px rounded(4) well holding the 14px
+   file-type icon, and the basename only. */
+.tool-chip-detail-slot {
+  min-width: 0;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.tool-file-badge {
+  min-width: 0;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgb(var(--rb-ink) / 0.06);
+  padding: 0 6px 0 1px;
+  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.tool-file-badge-well {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.tool-file-badge-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-file-badge-failed {
+  color: var(--rb-danger);
+}
+
+/* The activity rail (activity_rail :7227): a 48px gutter, one SVG whose
+   single path unions the trunk and branch (nonzero fill). The glyph
+   (16px at x=32) rides on top. */
+.activity-rail {
+  position: relative;
+  width: 48px;
+  flex: none;
+  height: 100%;
+}
+
+.activity-rail-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.activity-rail-path {
+  fill: rgb(var(--rb-hairline) / calc(0.12 * var(--rb-hairline-scale)));
+}
+
+.activity-rail-glyph {
+  position: absolute;
+  display: inline-flex;
+  color: var(--rb-text-muted);
+}
+
+.activity-rail-glyph-error {
+  color: var(--rb-danger);
+}
+
+/* The spawn chip's plain guide line (subagent_chip :7409): ml 12, h_full,
+   w 1, ink(0.08) — NOT the drawn tree. */
+.tool-agent-guide {
+  margin-left: 12px;
+  width: 1px;
+  flex: none;
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+/* The whole spawn card is the open-subagent click (:7418-7443). */
 .tool-agent-link {
   cursor: pointer;
-  border-radius: var(--rb-radius-control);
 }
 
-.tool-chip-agent .tool-chip-head {
-  border: 1px solid var(--rb-border);
-  background: var(--rb-card);
+.tool-agent-link:hover {
+  background: rgb(var(--rb-ink) / 0.05);
 }
 
-.tool-agent-link:hover .tool-chip-head,
-.tool-chip-agent .tool-chip-head:hover {
-  background: var(--rb-hover);
-}
-
-/* No coloured status dots on a subagent chip — the desktop has none. */
-
-.subagent-dialog {
-  width: min(56rem, 100%);
-  height: min(44rem, 85vh);
+/* The expandable chip's panel (detail_body :6688). */
+.tool-chip-body {
+  flex: none;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-md);
-  background: var(--rb-dialog);
-  border: 1px solid var(--rb-border);
-  border-radius: var(--rb-radius-panel);
-  min-height: 0;
+  overflow: hidden;
 }
 
-.subagent-dialog .transcript-wrap {
-  min-height: 0;
+/* The hairline between an open chip's blocks — cards only; rail rows use
+ * whitespace, not a rule (:6283-6286). */
+.tool-detail-separator {
+  height: 1px;
+  flex: none;
+  background: rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
+}
+
+.tool-detail-separator-rail {
+  background: none;
+}
+
+/* Output and stats bodies: mono 12 (py 6 × 2); thoughts keep the
+ * sans-fixed (the flattened styled runs are prose). */
+.tool-output {
+  padding: 6px 0;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.tool-thought {
+  font-family: var(--rb-font-sans-fixed);
+}
+
+/* The invocation block ("what was asked") reads faint against the output's
+ * brighter rows (transcript.rs:6288 renders both through detail_body; the
+ * invocation keeps the same mono geometry). */
+.tool-invocation {
+  color: var(--rb-text-faint);
+}
+
+/* Output/thought lines TRUNCATE — one 18px row each; heights stay
+ * analytic (never pre-wrap). */
+.tool-output-line {
+  height: 18px;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  color: var(--rb-text-faint);
+}
+
+.tool-output-text,
+.tool-thought-line {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-thought-line {
+  color: var(--rb-text-faint);
+}
+
+/* thought_line_text (:6812): all runs faint; semibold bold, mono code,
+ * underlined-but-inert links, 1px strikethrough. */
+.tool-thought-code {
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+.tool-thought-strong {
+  font-weight: 600;
+}
+
+.tool-thought-link {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rb-text-faint);
+  color: var(--rb-text-faint);
+}
+
+.tool-thought-line s {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rb-text-faint);
+}
+
+.tool-output-more {
+  height: 18px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--rb-text-faint);
+}
+
+/* Stats rows (:6704-6744): 14px file-type icon, faint truncating path,
+ * success +N and danger −N (U+2212). */
+.tool-stat-row {
+  height: 18px;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-stat-row img {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.tool-stat-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text-faint);
+}
+
+.tool-stat-add {
+  flex: none;
+  color: var(--rb-success);
+}
+
+.tool-stat-del {
+  flex: none;
+  color: var(--rb-danger);
+}
+
+/* The blob affordance row (:6300-6324): h24, 12px faint, hover muted. */
+.tool-full-button {
+  height: 24px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--rb-text-faint);
+  cursor: pointer;
+}
+
+.tool-full-button:hover:not(:disabled) {
+  color: var(--rb-text-muted);
+}
+
+.tool-full-button:disabled {
+  cursor: default;
+}
+
+/* The inline tool diff: the Changes pane's own row classes, stacked and
+ * unvirtualized inside the card (no comment layer — a record, not a
+ * review surface). */
+.tool-diff-body {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* ── Input and error chips (§2.9 / §2.10) ───────────────────────────── */
@@ -8045,7 +8316,6 @@ button.files-save-pill:hover {
  */
 @media (prefers-reduced-motion: reduce) {
   .veil-fade,
-  .chip-reveal,
   .page-fade,
   .gate-card-content,
   .jump-pill,
@@ -8054,15 +8324,16 @@ button.files-save-pill:hover {
     animation: none;
   }
 
+  /* The tool groups' reveal/fold/shimmer snap (ticket 19's share of
+   * transcript.rs's reduce-motion early-returns): the JS drives every
+   * height/rotation off the `reduced` gate — progress 1, no rAF loop — and
+   * the title shimmer stops here. */
   .tool-shimmer {
     animation: none;
     background: none;
     color: var(--rb-text-muted);
   }
 
-  .tool-group-fold,
-  .tool-group-chevron,
-  .tool-chip-chevron,
   .sidebar,
   .right-pane,
   .pane-seam-sidebar,
@@ -10056,15 +10327,6 @@ html[data-surface="frosted"] .cr-tooltip {
 
   .drawer-backdrop {
     padding: 0;
-  }
-
-  /* Subagent dialog: full-screen on phones. */
-  .subagent-dialog {
-    width: 100%;
-    height: 100%;
-    max-height: 100vh;
-    border-radius: 0;
-    padding: var(--rb-space-sm);
   }
 
   /* Terminal dock: keep the drag handle easy to grab, raise the
