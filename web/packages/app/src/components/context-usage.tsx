@@ -36,7 +36,7 @@ export function usageFraction(usage: ContextUsage | null): number | null {
 /**
  * `details` (context_usage.rs:85-108) — the card body's four verbatim cases.
  */
-export function contextUsageDetails(usage: ContextUsage | null): string {
+export function usageDetails(usage: ContextUsage | null): string {
   const tokens = usage?.tokens ?? null;
   const window = usage?.window ?? null;
   if (tokens !== null && window !== null && window > 0) {
@@ -92,8 +92,23 @@ export function ContextUsageIndicator({ usage }: { usage: ContextUsage | null })
         </div>
       }
     >
-      <div className="context-usage-card-title">Context window</div>
-      <div className="context-usage-card-body">{contextUsageDetails(usage)}</div>
+      <ContextUsageTooltip usage={usage} />
     </PickerCard>
+  );
+}
+
+/**
+ * The card content (context_usage.rs:110-137): the 12px MEDIUM "Context
+ * window" title over the four `details` strings, 12/19 in `text_muted`. The
+ * live-update subscription is the footer's re-render — the usage flows
+ * through the indicator's props, and Base UI keeps the popup mounted (a
+ * re-render, never a re-mount).
+ */
+export function ContextUsageTooltip({ usage }: { usage: ContextUsage | null }) {
+  return (
+    <>
+      <div className="context-usage-card-title">Context window</div>
+      <div className="context-usage-card-body">{usageDetails(usage)}</div>
+    </>
   );
 }

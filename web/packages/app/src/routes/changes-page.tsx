@@ -384,7 +384,8 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, layout, wrap, fo
           <div className="changes-body">
             {phase === "preparing" ? (
               <div className="changes-empty changes-preparing" role="status">
-                <MatrixSpinner size={16} />
+                {/* `gradient_spinner("changes-preparing", cell 3.0)` (changes.rs:4831) → a 15px box. */}
+                <MatrixSpinner size={15} />
                 <span>Preparing diff…</span>
               </div>
             ) : phase === "clean" ? (

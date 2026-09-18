@@ -20,11 +20,11 @@ export type WorkingTrailerState =
   | { readonly kind: "working"; readonly word: string; readonly elapsed: string };
 
 /**
- * `gradient_spinner(cell 2.5)` → the `MatrixSpinner` at size ≈ 12 (cell 2.5 ×
- * 5). Ticket 20 corrects the spinner's phase denominator and sunrise tints;
- * this renders it as it exists.
+ * `gradient_spinner(cell 2.5)` (transcript.rs:5303) → the `MatrixSpinner` at
+ * size 12.5 (cell 2.5 × 5, ticket 20's geometry: the matrix runs half speed
+ * with the fixed sunrise tints).
  */
-const SPINNER_SIZE = 12;
+const SPINNER_SIZE = 12.5;
 
 export function WorkingTrailer({ state }: { state: WorkingTrailerState }) {
   if (state.kind === "none") {

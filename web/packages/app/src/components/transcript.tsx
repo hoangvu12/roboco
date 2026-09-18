@@ -29,6 +29,7 @@ import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, PENDING_LINK_URL, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   COPIED_CLEAR_MS,
+  OWN_SEND_TOP_INSET_PX,
   SELECTION_SCROLL_TICK_MS,
   TITLEBAR_HEIGHT,
   TRANSCRIPT_FADE_BAND,
@@ -61,10 +62,14 @@ import {
   type ToolItem,
   type TranscriptRow,
 } from "../lib/transcript";
+import { railTicks, type RailTick } from "../lib/rail";
 import { OVERDRAW_PX } from "../lib/stick-spring";
 import { VeilTracker } from "../lib/veil";
 import type { ChatIndicator } from "../lib/view";
+import type { MessageBadge } from "../lib/badges";
 import { MarkdownBlockView } from "./markdown";
+import { MessageBadges } from "./badges";
+import { MessageRail } from "./message-rail";
 import { StickController } from "./stick-controller";
 import { SubagentDialog } from "./subagent-dialog";
 import { UserAttachments } from "./attachments/user-attachments";
@@ -292,6 +297,13 @@ function TranscriptSurface({
     return echoRows.length === 0 ? rows : [...rows, ...echoRows];
   }, [rows, snapshot.entries, pendingSends, deviceId, now]);
 
+  // The rail's data (rail.rs:74-99): one tick per user prompt, doc order,
+  // then the un-deduped optimistic echoes — matching row order.
+  const ticks = useMemo(
+    () => railTicks(snapshot.entries, pendingSends.map((send) => echoEntry(send, deviceId))),
+    [snapshot.entries, pendingSends, deviceId],
+  );
+
   // ── The working trailer's state (render_working_trailer, §2.11) ─────────
   const trailerState = useMemo<WorkingTrailerState>(() => {
     if (alignTop) {
@@ -337,6 +349,7 @@ function TranscriptSurface({
   return (
     <TranscriptScroller
       rows={allRows}
+      ticks={ticks}
       streaming={snapshot.streaming}
       loaded={snapshot.loaded}
       replay={snapshot.replay}
@@ -382,6 +395,8 @@ function echoEntry(send: PendingSend, deviceId: string | null): SessionMessageEn
 
 interface ScrollerProps {
   readonly rows: readonly TranscriptRow[];
+  /** The rail's ticks (`railTicks` over the doc entries + pending echoes). */
+  readonly ticks: readonly RailTick[];
   readonly streaming: boolean;
   readonly loaded: boolean;
   readonly replay: "pending" | "empty" | "populated";
@@ -417,6 +432,7 @@ interface CollapseScroll {
 
 function TranscriptScroller({
   rows,
+  ticks,
   streaming,
   loaded,
   replay,
@@ -460,6 +476,9 @@ function TranscriptScroller({
   const [topFade, setTopFade] = useState(false);
   const [, bumpRunway] = useState(0);
   const [collapseTick, bumpCollapse] = useState(0);
+  // The rail's container box (the wrap element) — the width is the rail's
+  // visibility gate, the height clamps the hover preview card.
+  const [railBox, setRailBox] = useState({ w: 0, h: 0 });
   const reduced =
     typeof globalThis.matchMedia === "function"
       ? globalThis.matchMedia("(prefers-reduced-motion: reduce)")
@@ -599,11 +618,13 @@ function TranscriptScroller({
     (positions[lastIx] ?? 0) + lastNatural >=
       (positions[anchorIx] ?? 0) + viewportHeight - StickController.ownSendInset(anchorIx) + 0.5;
 
-  // The controller's frame-time geometry: anchor position + fill state.
-  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false });
+  // The controller's frame-time geometry: anchor position, fill state, and
+  // the row-top prefix sums the rail glide anchors against.
+  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false, positions: [] as readonly number[] });
   geometryRef.current = {
     anchor: anchorIx >= 0 ? { top: positions[anchorIx]!, ix: anchorIx } : null,
     filled: reservationFilled,
+    positions,
   };
   const anchorExpanded = anchorIx >= 0 && (userFolds.get(rows[anchorIx]!.id)?.open ?? false) === true;
   const anchorExpandedRef = useRef(anchorExpanded);
@@ -663,6 +684,19 @@ function TranscriptScroller({
     stick.setGeometry(() => geometryRef.current);
     stick.attach(el);
     setView({ top: el.scrollTop, height: el.clientHeight });
+    // The rail's gate reads the TRANSCRIPT CONTAINER's (the wrap's) width —
+    // never the viewport's (rail.rs:23, research §3.15 "Web implication").
+    const wrap = el.parentElement;
+    const readWrap = (): void => {
+      if (wrap !== null) {
+        setRailBox({ w: wrap.clientWidth, h: wrap.clientHeight });
+      }
+    };
+    readWrap();
+    const wrapResize = new ResizeObserver(readWrap);
+    if (wrap !== null) {
+      wrapResize.observe(wrap);
+    }
     let raf = 0;
     const onScroll = (): void => {
       anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current);
@@ -738,6 +772,7 @@ function TranscriptScroller({
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", clearDrag);
       window.clearInterval(selectionTimer);
+      wrapResize.disconnect();
       resize.disconnect();
       observer?.disconnect();
       stick.detach();
@@ -1079,6 +1114,13 @@ function TranscriptScroller({
   // The visible window, with the desktop's 320px overdraw on both ends.
   const { first, last } = visibleRowWindow(positions, rowHeights, view.top, view.height, OVERDRAW_PX);
   const visible = rows.slice(first, last + 1);
+  // The rail's reading-line row: the raw clip top advanced past every
+  // MEASURED row whose top is at or above `viewport.top + 48 + 0.5` — the
+  // titlebar overlays the list and the own-turn hold parks the newest prompt
+  // exactly at that inset, so crediting the raw top row kept the previous
+  // tick lit for the whole runway (rail.rs:437-457). Unmeasured rows stop
+  // the walk.
+  const topRow = readingTopRow(rows, positions, heights, view.top);
   const topPad = rows.length === 0 ? layoutTotal : (positions[first] ?? total);
   // The spacer covers everything below the last MOUNTED row — the unmounted
   // rows' arithmetic heights plus the reservation floor, minus the mounted
@@ -1137,6 +1179,20 @@ function TranscriptScroller({
         })}
         <div style={{ height: bottomPad }} aria-hidden />
       </div>
+      {/* The rail overlay (render_rail, rail.rs:471): a 26px column at
+          left:16 inside the wrap, mounted only outside the subagent surface
+          (rail_enabled = doc_override.is_none(), transcript.rs:2835). */}
+      {!alignTop && (
+        <MessageRail
+          ticks={ticks}
+          rows={rows}
+          topRow={topRow}
+          viewportHeight={view.height}
+          containerWidth={railBox.w}
+          containerHeight={railBox.h}
+          onJumpToRow={(row) => stick.scrollToRow(row)}
+        />
+      )}
       {/*
         The edge fade lives on the scroller's own mask (`.transcript` in
         app.css): the desktop's per-glyph EdgeFade is a mask, not a painted
@@ -1195,6 +1251,37 @@ function captureAnchor(
     }
   }
   return null;
+}
+
+/**
+ * The rail's reading-line row (rail.rs:446-457): the first row whose bottom
+ * crosses the scroll top, then a walk forward over MEASURED rows whose tops
+ * are at or above `top + OWN_SEND_TOP_INSET_PX + 0.5`. Unmeasured rows (no
+ * rendered bounds) stop the walk, leaving the raw top row.
+ */
+function readingTopRow(
+  rows: readonly TranscriptRow[],
+  positions: readonly number[],
+  heights: ReadonlyMap<string, number>,
+  scrollTop: number,
+): number {
+  let topRow = Math.max(rows.length - 1, 0);
+  for (let ix = 0; ix < rows.length; ix++) {
+    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
+    if (bottom > scrollTop + 0.5) {
+      topRow = ix;
+      break;
+    }
+  }
+  const readTop = scrollTop + OWN_SEND_TOP_INSET_PX + 0.5;
+  while (
+    topRow + 1 < rows.length &&
+    heights.has(rows[topRow + 1]!.id) &&
+    positions[topRow + 1]! <= readTop
+  ) {
+    topRow++;
+  }
+  return topRow;
 }
 
 /** First-frame estimate per row kind; measurement corrects on render. */
@@ -1389,7 +1476,7 @@ function UserRow({
   pending: boolean;
   undelivered?: boolean;
   attachments: readonly import("../lib/attachments").UserImageAttachment[];
-  badges: readonly unknown[];
+  badges: readonly MessageBadge[];
   client: EngineClient;
   deviceId: string | null;
   fold: UserFoldState | null;
@@ -1482,14 +1569,14 @@ function UserRow({
   if (text.trim().length === 0 && attachments.length === 0) {
     return null;
   }
-  // The badges strip slot (ticket 20 renders its pills; the container and its
-  // ordering are this ticket's).
-  const badgesEl = badges.length > 0 ? <div className="user-badges" /> : null;
+  // The badges strip above the bubble (badges.rs::render's mount,
+  // transcript.rs:5405-5423): right-aligned wrap, one pill per badge. The
+  // strip container is ticket 18's; the pills are ticket 20's.
   return (
     <div className="row-user">
       <div className={`user-content ${pending && !undelivered ? "user-bubble-pending" : ""}`}>
         <UserAttachments client={client} deviceId={deviceId} attachments={attachments} />
-        {badgesEl}
+        <MessageBadges badges={badges} />
         {text.trim().length > 0 && (
           <div className="user-bubble-row">
             <div className={`user-bubble ${pending && !undelivered ? "user-bubble-pending" : ""}`}>
@@ -2150,11 +2237,11 @@ export function StatusStrip({ status, sending }: { status: ChatIndicator; sendin
       ) : sending ? (
         <>
           {/*
-            The desktop's `gradient_spinner("sending-indicator", speed 2.5)`;
-            `MatrixSpinner` is that spinner's standing port, sized to the
-            24px strip — its exact geometry is ticket 20's.
+            The desktop's `gradient_spinner("sending-indicator", cell 2.5)`
+            (shell.rs:6427): a 2.5px cell in a 3×3 grid → a 12.5px box
+            (ticket 06 deferred the exact geometry here).
           */}
-          <MatrixSpinner size={16} className="status-strip-spinner" />
+          <MatrixSpinner size={12.5} className="status-strip-spinner" />
           <span className="status-strip-sending">Sending…</span>
         </>
       ) : null}

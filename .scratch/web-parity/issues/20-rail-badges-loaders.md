@@ -13,7 +13,7 @@ tooltip.
 
 **Blocked by:** 18 (Transcript rows).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../../web-client/research/02-transcript.md` §3.0, §3.15, §3.17,
 §3.18, §3.20, §4.7, §4.18, §5 rows 4, 19, 59, 63–68.
@@ -627,7 +627,108 @@ Copied verbatim from research 02 §5, filtered to this ticket.
 
 ## Comments
 
-(empty; appended during implementation)
+### What landed (2026-09-18)
+
+- **Rail** — `lib/rail.ts` (railVisible/capacity/slots/tickBuckets/bucketOf/
+  activeTick/railTicks/truncatePreview/GlideTimeline, constants verbatim from
+  rail.rs), `components/message-rail.tsx` (MessageRail/RailTickView/
+  RailPreviewCard), mounted inside `.transcript-wrap` outside the subagent
+  surface; the width gate reads the wrap via a ResizeObserver (railBox
+  state), never the viewport. `StickController.scrollToRow(row)` drives the
+  500ms `SCROLL_GLIDE` (EASE_IN_OUT, 16ms cadence, per-frame target re-read
+  from the live prefix sums); `beginScrollNavigation` now also yields any
+  running glide (the scroll-task slot). The reading-line walk
+  (`readingTopRow` in transcript.tsx) advances past measured rows at or above
+  `top + OWN_SEND_TOP_INSET_PX + 0.5`, unmeasured rows stop it.
+- **Badges** — `lib/badges.ts` (splitBadges fold over the EXTRACTORS
+  extension point, extractCommentBadge with both headers + last-occurrence
+  matching, parseBullets with earliest-split-wins, chipLabel),
+  `components/badges.tsx` (MessageBadges/BadgePill/BadgeCard over
+  `PickerCard`'s hover-open shape, 280ms delay); `rowsForEntry` splits
+  badges BEFORE the mention projection and the row's `badges` are
+  `MessageBadge[]` now.
+- **Loaders** — `matrixPhase` fixed to `d/(max+1)`; matrix rows take the
+  fixed sunrise tints via new `--rb-gspin-row-0/1/2` tokens (added in
+  `theme.ts`; ticket 02 never added them); `.glyph-spinner-row` keeps the
+  accent glyph roles (mini only). New `MonoSpinner`, `RobocoMarkLoader`
+  (34 MARK_CELLS verbatim, markCellStagger), `RobocoLoader` (5 cells,
+  +0.15s stagger), `UploadProgressRing` (fixed white-on-wash palette per
+  loaders.rs:313-314 — documented exception); reduced-motion rules snap
+  every cell to rest. Geometry call sites corrected: working-trailer
+  spinner 12→12.5 (cell 2.5), status-strip 16→12.5 (shell.rs:6427,
+  ticket 06's deferred call), changes-page 16→15 (cell 3.0, changes.rs:4831).
+- **Context ring** — ticket 13 had already replaced the `title` attribute
+  with the PickerCard tooltip; this ticket renamed the details fn to
+  `usageDetails`, extracted `ContextUsageTooltip`, and re-verified the four
+  verbatim strings + 260px card live.
+- Tests: `tests/rail.test.ts` (14) + `tests/badges.test.ts` (13, including
+  `the_mini_ring_visits_every_cell_once` and a mark-stagger mirror of
+  loaders.rs's `mark_stagger_follows_flight_axis`).
+
+### Deviations / judgment calls for a human
+
+1. **Preview card inline, not portaled** — the desktop mounts it through
+   `deferred(anchored())` with no entrance motion and it vanishes the moment
+   the pointer leaves the tick; the web card is an absolute,
+   `pointer-events: none` card beside the rail column (left = rail left +
+   26, LeftCenter-anchored, clamped to 8px margins), centered on the tick and
+   clamped via a measure pass. The blueprint's "RbPopover openOnHover" option
+   was considered; the desktop's tick-swallow behavior (the card is a peek,
+   not a surface) made the inline card the faithful port.
+2. **Badge pill triggers open on click** (PickerCard/Base UI trigger
+   semantics) though the desktop's pill is hover-only — the same accepted
+   deviation as ticket 13's context-meter card.
+3. **`--rb-gspin-row-*` tokens added in `app/theme.ts`** rather than the
+   generated `@roboco/theme` artifact — the ticket said "become tokens in
+   ticket 02" but 02 never added them; app-level tokens keep the artifact
+   gate untouched (no Rust changes allowed here).
+4. **`UploadProgressRing` label uses the raw percent** (loaders.rs:331 uses
+   `percent`, only the arc clamps to 100) — kept verbatim.
+5. **Spinner sizes at chat-list (11) and the identity chip (16) left
+   alone** — those are tickets 08/13's per-surface geometry (GlyphSpinner
+   size semantics = slot height); only the three matrix call sites named
+   above were corrected.
+6. **Mid-session tab corruption note (verification only, no code impact):**
+   during smoke captures the long-lived automation tab stopped delivering
+   scroll events entirely (verified world-clean: programmatic writes fired
+   zero scroll events, fresh tabs fired them) — mid-session "view stopped
+   following" observations were that tab's renderer, not the app; all
+   functional verification above was re-confirmed in a fresh tab. A
+   speculative hardening of the scroller ref callback was reverted after the
+   real cause was identified (React does not remount the scroller node when
+   the offline strip toggles — verified with a node marker).
+
+### Verification
+
+- `pnpm -r build` green; `pnpm --filter @roboco/app test` green (52 files /
+  803 tests).
+- Browser (`web_smoke`, 1440×900 emulated, `ROBOCO_MOCK_DELAY_MS=1200` —
+  ticket 18's documented pacing addition): boot with no error boundary
+  (checked on every instance incl. the final bundle); rail geometry
+  measured computed — left 16 within the container, 26px column, 10px
+  slots, 3px gaps, 12×2 bar at `ink(0.16)` → 20px and `text @ 80%` on
+  hover/active; preview card 280px wide at rail-left+26, vertically centered
+  on the tick (card center 436.75 vs tick center 437), prompt+reply content
+  verified; 5-prompt chat — third tick active after gliding to it
+  (active=["0","0","1","0","0"]); reduced-motion emulation: tick click
+  lands hard (no 500ms glide); narrowed viewport 1000 (container 744):
+  rail unmounts, returns at 1440; badge pill 24px/"3 comments" with the
+  block stripped from the bubble ("Review these points before merging.");
+  badge hover card 320px, 3 rows (mono locations, R/L tag pills, bodies);
+  context ring "—" with the 260px tooltip (title + not-reported string);
+  phone-width sanity at 480 (composer present, no rail, no boundary).
+- Screenshots in `.scratch/web-parity/shots/20/`: `web-a-rail-third-active.png`,
+  `web-b-rail-preview-card.png`, `web-c-narrow-no-rail.png`,
+  `web-d-badge-pill.png`, `web-d-badge-hover-card.png`,
+  `web-e-context-ring-tooltip.png`, `web-f-working-trailer-spinner.png`,
+  `web-phone-sanity.png`. (a), (b), (d) are from the final bundle; (c), (e),
+  (f) from the first build — identical code for those surfaces (only the
+  rail-preview positioning CSS changed in between).
+- **Skipped captures:** desktop halves of every pair (no desktop client
+  running, consistent with tickets 08/10/12/13/18); (e)'s <75%/80%/95%
+  ring states — the mock harness never reports context usage (ticket 13
+  hit the same limit; the "—" ring + open tooltip is the stageable half,
+  and the four `details` strings are unit-covered via the shared logic).
 
 ### Shared components addendum (2026-09-18)
 
