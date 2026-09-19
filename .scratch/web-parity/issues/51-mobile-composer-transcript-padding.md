@@ -171,4 +171,40 @@ gutter, M1 status strip gutter) — no additional content.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed as specified — a pure-CSS edit confined to the `@media (max-width: 768px)`
+phone block in `web/packages/app/src/styles/app.css` (the block starting at the
+"Phone layout: drawer sidebar, stacked panels" comment):
+
+- `.composer` phone rule (replaces the old shim rule, same slot): the
+  `width: calc(100% - 2 * var(--rb-space-sm))` shim is deleted →
+  `width: 100%; padding-inline: var(--rb-space-md)`. Ticket 50's bottom arm
+  (`padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom))`) is
+  carried over verbatim, untouched. The phone `padding-inline` longhand
+  composes with the desktop `.composer` shorthand and with 37's landed
+  pill/body shapes (the pill's own 16px inner insets stay, per §2.1).
+- `.status-strip` phone override added in the same block:
+  `padding-inline: var(--rb-space-md)` (desktop 24px rule untouched).
+- `.persistent-composer` phone cap added (the §2.1 optional row):
+  `max-width: 100%` — same reconciliation as the shim's deletion; the wrapper's
+  inline px width tracks the full column at phone, and the cap keeps a
+  mid-glide dock tick from pushing the pill past the viewport edge.
+
+No component, state, or logic files touched. No new tests (CSS-only, §3).
+`.trow`'s phone rule (the 12px alignment target), the ≥769px rules, and the
+pill's inner insets are untouched; every added rule lives inside the ≤768px
+block. The 12px comes from `var(--rb-space-md)` — no new literal px/hex.
+
+Verification (build + tests only, per the wave's hard rule):
+
+- `pnpm -r build` (web/) — green: proto, engine-client, app (tsc --noEmit +
+  vite build, `✓ built in 7.22s`).
+- `pnpm test` (web/packages/app) — green: `Test Files 81 passed (81)`,
+  `Tests 1276 passed (1276)`.
+
+Screenshot pairs (§6) explicitly waived by the wave instructions — no
+dev server / `web_smoke` / browser process was started; geometry follows the
+spec table (card edge 12px, typed text 12 + 16 = 28px, chat text 12px, strip
+text 12px at a 375px window).
+
