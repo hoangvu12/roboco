@@ -16,7 +16,7 @@ import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import type { SubagentOpen } from "../components/tool-group";
 import { remaskNewThreadBackground } from "../components/new-thread-background";
-import { rightPaneStore } from "../state/right-pane";
+import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
@@ -24,6 +24,7 @@ import { useNewThreadTarget } from "../components/composer/new-thread-selectors"
 import { NewThreadCanvas } from "./index-page";
 import {
   bottomClearance,
+  conversationWidth,
   evalWidthTween,
   sidebarTarget,
   useSidebarLayout,
@@ -594,7 +595,53 @@ export function ConversationPage() {
   const prepaintMovingRef = useRef(false);
   const dockTickedRef = useRef(false);
 
-  // ── The same-render dock tick (ticket 35, shell.rs:5865-5868) ────────────
+  // ── The pane's synchronous width — the handoff's arming input ───────────
+  // `right_now` (shell.rs:3820-3826): the pane's width computed from STATE,
+  // never measured — `eval_tween(right_tween, right_target)` is the TARGET
+  // at a navigation commit (the chat switch clears the tweens, shell.rs
+  // 1837-1862, "snap, no tween — the panels belong to the destination
+  // chat"), plus the seam's edge bounce while the pane sits at a drag
+  // bound. The pane store subscription matters even though the handoff
+  // only arms on a docked flip: `previous` must carry the pane width that
+  // was painted while docked, or the undock arm below would read width
+  // 0→0 and never fire. The OLD input — the ResizeObserver-measured
+  // `columnWidth` — was one commit stale by construction: on the flip
+  // commit it still held the canvas width, so the docked flip arrived
+  // WITHOUT its width change and the next (fresh) sample saw the width
+  // change WITHOUT the flip — the handoff never armed (§2.1).
+  const paneState = useRightPane(chatId);
+  const paneOpen = hasSelection && paneState.open;
+  const paneNowWidth = paneOpen
+    ? resolvePaneWidth(paneState, viewport, phone ? 0 : (animatedSidebar ?? sidebarNow)) +
+      (paneState.expanded ? 0 : readPaneEdgeBounceOffset())
+    : 0;
+
+  // ── observePane → transcriptWidth → tick — the desktop's paint order ────
+  // The shell samples the pane BEFORE `render_main`'s dock tick (observe_pane
+  // at shell.rs:7901-7906, transcript_width at :7915-7919, the tick at
+  // :5882-5885 inside render_main): the tick reads `pane.progress` to arm
+  // the panel_return/panel_departure clocks, so the sample must land first —
+  // the ordering ticket 35's merger note flagged (its render-phase tick
+  // preceded the layout effect's observePane, leaving #panelDeparture
+  // unreachable). One timestamp for all three, the desktop's `frame_time`.
+  const frameNowMs = performance.now();
+  const paneHandoffLive = dockRef.current.observePane(hasSelection, paneNowWidth, !dockReduced, frameNowMs);
+  // `transcript_width` (shell.rs:7915-7919): the retained value feeds the
+  // transcript wrapper's width. Called BEFORE the tick so the capture
+  // condition (`!docked && frame.docked`) still sees the pre-flip frame —
+  // what gets retained is the SOURCE column's width. The target is the
+  // conversation's stable content width (`conversation_width(viewport,
+  // sidebar_target, right_target_width)`, shell.rs:7910-7914 — the
+  // takeover-stable leg never co-occurs with a route flip, which clears
+  // the tween).
+  const mainContentWidth = conversationWidth(viewport, sidebarTarget(sidebar), paneNowWidth);
+  const retainedTranscriptWidth = dockRef.current.transcriptWidth(
+    mainContentWidth,
+    hasSelection,
+    paneHandoffLive,
+  );
+
+  // ── The same-render dock tick (ticket 35, shell.rs:5882-5885) ────────────
   // The desktop decides the hero layer's mount from the frame ticked in the
   // SAME render — `tick` precedes the layer at shell.rs:5883. The web's
   // route change used to land one render BEFORE the per-commit layout
@@ -608,7 +655,7 @@ export function ConversationPage() {
   // hero unmounted). The mount decision below reads the freshly ticked
   // MUTABLE frame; `dockFrame` state keeps driving the visuals.
   if (dockRef.current.frame.docked !== hasSelection) {
-    const ticked = dockRef.current.tick(hasSelection, dockReduced, performance.now());
+    const ticked = dockRef.current.tick(hasSelection, dockReduced, frameNowMs);
     setDockFrameState((prev) => (dockFrameEquals(prev, ticked) ? prev : ticked));
   }
 
@@ -643,10 +690,13 @@ export function ConversationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, row?.chat.id, session]);
 
-  // The dock's per-commit pass: observe the column's horizontal frame,
-  // re-anchor the composer's wrapper, publish the stack measurement. Route
-  // changes tick in the render body (the same-render tick above, ticket 35);
-  // steady-state frames advance ONLY on the pump's animation frames —
+  // The dock's per-commit pass: re-anchor the composer's wrapper, publish
+  // the stack measurement. Route changes tick in the render body (the
+  // same-render tick above, ticket 35 — after the render-body `observePane`
+  // sample, the desktop's paint order); the pane sample runs there too, per
+  // render, so the handoff's clock advances on the pump's re-renders. The
+  // measured `columnWidth` here feeds only the composer's width target.
+  // Steady-state frames advance ONLY on the pump's animation frames —
   // ticking per commit would spin the layout-effect/setState pair
   // synchronously and freeze the glide. A layout effect so the transform
   // lands in the same commit as the frame — the web peer of
@@ -654,10 +704,6 @@ export function ConversationPage() {
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const nowMs = performance.now();
-    // `observe_pane`: the handoff arms when the DOCKED flag flips while the
-    // conversation column's width differs — ordinary resizing and
-    // same-column navigation never fade.
-    dock.observePane(hasSelection, columnWidth ?? 0, !dockReduced, nowMs);
     // The clock initializes on the first pass (the desktop's first tick
     // snaps the settled hero state and stamps `last_frame`); route changes
     // are already ticked by the render above, and the docked check stays as
@@ -700,8 +746,14 @@ export function ConversationPage() {
   // flight (the desktop's `request_animation_frame` in prepaint/tick). The
   // setState lands in the rAF callback, so the tick's dt is the real frame
   // gap and the re-render's layout effect re-anchors without ticking again.
+  // The pane-progress leg is shell.rs:7907-7909's `motion_active` peer
+  // (`if panel_handoff { motion_active.set(true) }`): the handoff's 0.320 s
+  // clock can outlive the glide AND the choreography, so `dockFrame.active`
+  // alone would stop the pump early and strand the composer mid-fade (the
+  // §2.4.2 warning) — the gate re-reads the live progress on every pump
+  // bump.
   useEffect(() => {
-    if (!dockFrame.active && !prepaintMovingRef.current) {
+    if (!dockFrame.active && !prepaintMovingRef.current && dockRef.current.paneProgress() === null) {
       return;
     }
     const raf = requestAnimationFrame(() => {
@@ -739,7 +791,8 @@ export function ConversationPage() {
   // The transcript outlet: selected chat → transcript; nothing selected →
   // the centered new-thread composition. A DEPARTING transcript (undocking)
   // keeps its pixels as visual history, fixed at the source column width
-  // and occluded so it is not an interaction surface.
+  // (`transcriptWidth`'s retained value, pinned on `.chat-body` below) and
+  // occluded so it is not an interaction surface.
   const departing = !hasSelection && dockFrame.visuals.transcript > 0;
   // `finish_route_exit`: once the route is blank and the exit finished,
   // release the retained store.
@@ -749,7 +802,50 @@ export function ConversationPage() {
       storeRef.current = null;
     }
   }, [hasSelection, departing]);
-  const transcriptForOutlet = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+  const liveTranscript = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+
+  // ── The chat→chat transcript swap (§2.4.4) ───────────────────────────────
+  // The desktop's ONE `Transcript` entity swaps its doc synchronously on a
+  // chat switch (shell.rs:5914-5945); the web keeps per-chat stores whose
+  // first frame is async, so a swap would paint a blank frame between
+  // chats. The previous chat's rows stay mounted — frozen at their last
+  // snapshot, the store's watch gone or going — until the newly selected
+  // store's first frame lands (the live reset or the offline cache seed,
+  // whichever arrives first). The occluding veil below keeps the retained
+  // pixels from being an interaction surface for the destination chat
+  // (the departing transcript's own rule, shell.rs:5940-5944). The surface
+  // swap happens when `loaded` flips: the outlet then hands the view the
+  // new store, whose `key={active.docId}` remounts with rows already in
+  // place — no blank frame.
+  const subscribeTranscriptLoad = useCallback(
+    (listener: () => void) =>
+      transcriptStore === null ? () => {} : transcriptStore.subscribe(listener),
+    [transcriptStore],
+  );
+  const getTranscriptLoaded = useCallback(
+    () => transcriptStore?.getSnapshot().loaded ?? true,
+    [transcriptStore],
+  );
+  const newTranscriptLoaded = useSyncExternalStore(
+    subscribeTranscriptLoad,
+    getTranscriptLoaded,
+    () => true,
+  );
+  // The last store the outlet PAINTED — written during render like
+  // `storeRef` above (idempotent: the swap window keeps writing the same
+  // frozen store).
+  const lastPaintedTranscriptRef = useRef<TranscriptStore | null>(null);
+  const swappingTranscript =
+    hasSelection &&
+    !newTranscriptLoaded &&
+    lastPaintedTranscriptRef.current !== null &&
+    lastPaintedTranscriptRef.current !== transcriptStore;
+  const transcriptForOutlet = swappingTranscript
+    ? lastPaintedTranscriptRef.current
+    : liveTranscript;
+  if (transcriptForOutlet !== null) {
+    lastPaintedTranscriptRef.current = transcriptForOutlet;
+  }
   const transcriptOpacity = departing || transcriptGeometryReady ? dockFrame.visuals.transcript : 0;
   const transcriptRise = 8 * (1 - dockFrame.visuals.transcript);
 
@@ -910,6 +1006,13 @@ export function ConversationPage() {
           style={{
             opacity: transcriptOpacity,
             transform: `translateY(${transcriptRise}px)`,
+            // `transcript_width`'s retained value (shell.rs:5917-5938's
+            // `.w(px(transcript_width))`): while a departing handoff runs,
+            // the wrapper is pinned to the SOURCE column's width so the
+            // fading rows never reflow into the canvas-wide layout — the
+            // exit flash the retention exists to prevent. `inset: 0` plus
+            // a width is over-constrained in LTR: left + width win.
+            ...(departing && paneHandoffLive ? { width: `${retainedTranscriptWidth}px` } : {}),
           }}
         >
           {transcriptForOutlet !== null && session !== null ? (
@@ -931,9 +1034,10 @@ export function ConversationPage() {
           {/*
             A departing transcript is visual history, not an active
             interaction surface bound to the newly blank route
-            (shell.rs:5925-5927).
+            (shell.rs:5940-5944) — and a chat→chat swap's retained rows get
+            the same occlusion for the frames they outlive their chat.
           */}
-          {departing && <div className="departing-veil" aria-hidden="true" />}
+          {(departing || swappingTranscript) && <div className="departing-veil" aria-hidden="true" />}
         </div>
         {/*
           The bottom chrome stack (`render_main`'s flex-none bottom section):
@@ -963,7 +1067,10 @@ export function ConversationPage() {
                 session={session}
                 chat={effectiveChat}
                 catalog={session.catalog}
-                transcript={transcriptForOutlet}
+                // The LIVE store, never the swap-retained one: the
+                // composer's target is the destination chat — the wizard's
+                // rows must not offer the previous chat's entries.
+                transcript={liveTranscript}
                 availableWidth={composerWidth}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
@@ -1023,20 +1130,28 @@ function prefersReducedMotion(): boolean {
 }
 
 /**
- * The live sidebar edge-bounce offset (`--rb-sidebar-edge-offset`, the seam
- * drag's 5px pulse written by `pane-seam.tsx`): the desktop's
- * `sidebar_now()` includes it, so a flip's `from` captures it before the
- * seam's unmount clears the variable.
+ * The live edge-bounce offset of a seam's 5px pulse (the `--rb-*-edge-offset`
+ * variables `pane-seam.tsx` writes on the document element): the desktop's
+ * `sidebar_now()`/`right_now()` include them, so a width sampled mid-bounce
+ * carries the painted value.
  */
-function readSidebarEdgeBounceOffset(): number {
+function readEdgeOffset(varName: string): number {
   if (typeof document === "undefined") {
     return 0;
   }
-  const raw = window
-    .getComputedStyle(document.documentElement)
-    .getPropertyValue("--rb-sidebar-edge-offset");
+  const raw = window.getComputedStyle(document.documentElement).getPropertyValue(varName);
   const parsed = Number.parseFloat(raw);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** `sidebar_now()`'s bounce leg — `--rb-sidebar-edge-offset`. */
+function readSidebarEdgeBounceOffset(): number {
+  return readEdgeOffset("--rb-sidebar-edge-offset");
+}
+
+/** `right_now()`'s bounce leg (shell.rs:3822-3825) — `--rb-pane-edge-offset`. */
+function readPaneEdgeBounceOffset(): number {
+  return readEdgeOffset("--rb-pane-edge-offset");
 }
 
 /**

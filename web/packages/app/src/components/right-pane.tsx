@@ -114,9 +114,24 @@ export function RightPane({
     return () => cancelAnimationFrame(raf);
   }, [tween]);
 
+  // The chat-switch snap (shell.rs:1837-1862): when the pane KEY (the owning
+  // chat) changed in this commit, the width lands at the destination's flags
+  // immediately — the desktop clears `right_tween` & co ("snap, no tween —
+  // the panels belong to the destination chat"). The flag drops on the next
+  // commit (`data-pane-snap` in app.css kills the width transition for that
+  // one commit only), so the pane's OWN same-chat open/close/takeover glides
+  // are untouched: by the time a toggle changes the width, the ref below has
+  // already caught up and the transition is back.
+  const previousPaneKeyRef = useRef(chatId);
+  const paneKeyChanged = previousPaneKeyRef.current !== chatId;
+  useLayoutEffect(() => {
+    previousPaneKeyRef.current = chatId;
+  });
+
   return (
     <aside
       className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}`}
+      data-pane-snap={paneKeyChanged ? "1" : "0"}
       style={{ width: `calc(${pane.open ? openWidth : 0}px + var(--rb-pane-edge-offset, 0px))` }}
       aria-label="Panel"
       aria-hidden={!pane.open}
