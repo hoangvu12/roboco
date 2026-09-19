@@ -11,7 +11,9 @@ import { motion } from "@roboco/theme";
  * - the SIGNAL (`sidebarTweenSignal` / `sidebarTweenActive()`): true from the
  *   flip commit until the transition settles — the deferral flag tickets
  *   59/63 (and any later per-frame work) consult so nothing re-renders or
- *   re-rasters under the moving column;
+ *   re-rasters under the moving column, and `subscribe()` hands the same
+ *   arm/settle window to boundary-work riders (63's identity freeze) with
+ *   no second flag threaded through the tree;
  * - the remask cadence's ONE predicate (`remaskDue` + `HeroRemaskGate`):
  *   the hero re-rasters only on settle, artwork/effect change, or — once
  *   settled — a real geometry change. While the tween runs, the cutout hole
@@ -61,19 +63,44 @@ export function remaskDue(tweenActive: boolean, reason: RemaskReason): boolean {
  */
 export class SidebarTweenSignal {
   #active = false;
+  #listeners = new Set<(active: boolean) => void>();
 
   /** The flip landed and the CSS transition is (re)starting. */
   arm(): void {
     this.#active = true;
+    this.#notify();
   }
 
   /** `transitionend` (or the settle cap / a disarm) — the glide is over. */
   settle(): void {
     this.#active = false;
+    this.#notify();
   }
 
   isActive(): boolean {
     return this.#active;
+  }
+
+  /**
+   * Observe the arm/settle edges synchronously — the window's riders (63's
+   * identity freeze) attach once and ride every settle path (transitionend,
+   * the cap, the drag/reduce disarms) for free, since they all funnel
+   * through `settle()`. Fires on every arm/settle call, flip or re-arm
+   * alike: a mid-glide reversal re-arms, and a listener that re-captures
+   * from the painted state on it matches the signal's own retarget
+   * semantics. Returns the unsubscribe.
+   */
+  subscribe(listener: (active: boolean) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  #notify(): void {
+    for (const listener of this.#listeners) {
+      listener(this.#active);
+    }
   }
 }
 

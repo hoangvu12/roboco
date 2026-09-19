@@ -43,10 +43,16 @@ None beyond a tween-active predicate (57 likely exports it — reuse; do not for
 
 ## 6. Acceptance
 
-- [ ] Open a chat with a subagent tab → close the sidebar: the titlebar text does NOT re-truncate mid-animation (code-verified gate + manual check note).
-- [ ] With no pane open, sidebar close unchanged.
-- [ ] `pnpm -r build` + `pnpm test` green.
+- [x] Open a chat with a subagent tab → close the sidebar: the titlebar text does NOT re-truncate mid-animation (code-verified gate + manual check note).
+- [x] With no pane open, sidebar close unchanged.
+- [x] `pnpm -r build` + `pnpm test` green.
 
 ## Comments
 
 (User report 2026-09-20 #8.)
+
+**Step 0 — verification on the landed 57 mechanism (2026-09-20, branch wp2r2/63-identity-freeze):** the split-clock cause STILL exists, structurally. 57a unified the *clock* (one flip commit, the browser interpolates, zero React frames) but not the *inputs*: `--rb-titlebar-row-left` (app-shell.tsx, from `titlebarRowLeft({sidebar: sidebarForGeometry})`) and `--rb-pane-band` (from `titlebarPaneBandWidth({viewport, paneWidth, rowLeft})` with `paneWidth = resolvePaneWidth(..., sidebarForGeometry)`) are both endpoint-computed at the flip commit — 57a's diff touched only the hero's width transition and the raster window, not the row. The row's padding-left (app.css `.titlebar`) and the pane band's width transition DO now ride the same resize curve (timing lockstep), but lockstep is not the desktop's invariance: the free space moves as `(ΔP − ΔB)·f(t)`, and in the clamped-pane case ΔB (the `rightPaneMaxWidth` clamp loosening, up to the full sidebar width) exceeds ΔP (the inset retreat, sidebar+16 minus the 136/152 content-start floor), so the identity — the row's only shrinkable child — still re-truncates progressively through the 200ms. Fix **option 1 (identity freeze)** chosen: option 2 (invariant row inputs from one tweened source) would need a per-frame JS writer for both vars — exactly the pump 57 removed.
+
+**Implementation (option 1):** `lib/identity-freeze.ts` — the arm/settle window gates the clamp. The window is 57a's own signal, extended (not forked) with `SidebarTweenSignal.subscribe()`: every settle path (transitionend, the cap, the drag/reduce disarms) funnels through `settle()`, so the freeze releases with whichever lands first. At arm (the flip commit's layout effects, while the row's transitions still sit at their pre-tween values) the identity's laid-out width is captured and written as `--rb-identity-freeze-width` + `data-rb-identity-frozen`; the stylesheet pins the box (`flex: none` + `max-width: var(...)`, reproducing the pre-tween box exactly, truncated or not). At settle the clamp lifts and truncation re-evaluates exactly once — the sanctioned snap. One read + one write per edge, zero per-frame work. `dockGlideActive()` does NOT move the row (the dock glide's channels are the conversation column's opacity/rise/width set; the row's inputs change only via sidebar flips, pane store toggles, and viewport resizes), so the sidebar signal is the only window.
+
+**Manual check note:** screenshot pairs waived per the ticket instructions — verification is `pnpm -r build` + `pnpm test` (the new `tests/identity-freeze.test.ts` drives the window gate: one read at arm, the max-width constant through the window, release at settle; plus the CSS artifact and wiring greps). Known bounded trade-off recorded: with a *clamped* pane open, the transient deficit the freeze refuses to take out of the identity instead displaces the trailing band/toggle rightward (≤ ΔB−ΔP, tens of px, clipped at the window edge — `body { overflow: hidden }`, no scrollbar) for the 200ms and snaps back at the settle release, in the same commit that re-truncates the text once. With no pane open the freeze is inert (the box is content-sized; the fill absorbs the glide) — sidebar close unchanged.

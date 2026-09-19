@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
 import { Icon, type IconName } from "@roboco/icons";
+import { installIdentityFreeze } from "../lib/identity-freeze";
+import { sidebarTweenSignal } from "../lib/sidebar-tween";
 import {
   CLUSTER_BUTTONS_WIDTH,
   evalWidthTween,
@@ -257,6 +259,22 @@ export function Titlebar({
   const reduced = usePrefersReducedMotion();
   const island = useIslandTween(islandTarget, reduced);
   const islandGeometry = titlebarIslandVerticalGeometry(island);
+  // The identity freeze (ticket 63): while the sidebar tween runs the row's
+  // free space slides (its two inputs animate on one curve but from
+  // endpoint deltas that do not cancel when the pane is width-clamped),
+  // and the identity is the row's only shrinkable child. The subscription
+  // is the freeze's ONLY integration point — every settle path funnels
+  // through `sidebarTweenSignal.settle()` — so the box pins at the flip
+  // (the capture reads the layout while the row's transitions still sit at
+  // their pre-tween values) and the truncation re-evaluates exactly once
+  // at settle. The dock glide never moves the row, so the sidebar signal
+  // is the only window. A layout effect so the subscription exists before
+  // any flip could arm it.
+  const identityRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(
+    () => installIdentityFreeze(sidebarTweenSignal, () => identityRef.current),
+    [],
+  );
   return (
     <div className={`titlebar ${takeover ? "titlebar-takeover" : ""}`}>
       <div className="titlebar-cluster">
@@ -310,7 +328,11 @@ export function Titlebar({
         In panel takeover the header strip spans the whole band, so the
         identity hides for the duration rather than sitting under it.
       */}
-      {identity !== undefined && !takeover && <div className="titlebar-identity">{identity}</div>}
+      {identity !== undefined && !takeover && (
+        <div className="titlebar-identity" ref={identityRef}>
+          {identity}
+        </div>
+      )}
       {/*
         The desktop's `flex_1` spacer (tabs.rs:353) — kept even when the
         identity is empty so the trailing group stays right-anchored.

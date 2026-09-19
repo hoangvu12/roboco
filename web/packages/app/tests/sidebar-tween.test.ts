@@ -59,6 +59,24 @@ describe("SidebarTweenSignal", () => {
     sidebarTweenSignal.settle();
     expect(sidebarTweenActive()).toBe(false);
   });
+
+  it("subscribe() hands the arm/settle edges to window riders (ticket 63)", () => {
+    const signal = new SidebarTweenSignal();
+    const edges: boolean[] = [];
+    const unsubscribe = signal.subscribe((active) => {
+      edges.push(active);
+    });
+    signal.arm();
+    // A mid-glide reversal re-arms — the rider sees the edge and
+    // re-captures from the painted state, the signal's retarget semantics.
+    signal.arm();
+    signal.settle();
+    signal.settle();
+    expect(edges).toEqual([true, true, false, false]);
+    unsubscribe();
+    signal.arm();
+    expect(edges).toEqual([true, true, false, false]);
+  });
 });
 
 describe("HeroRemaskGate — zero remasks during the tween, exactly one on settle", () => {
