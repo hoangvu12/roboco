@@ -440,4 +440,97 @@ ticket — rows 4–10:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation (2026-09-19)
+
+**What landed.** The loading/error semantics, the re-kick discipline, the
+boot-race heal, and the tooltip deletion — no CSS, no card geometry, no
+send path, no chip placement (37's landed work untouched):
+
+- **§2.1 chip gates** — `lib/catalog-loading.ts` (new) ports the pure
+  predicates: `catalogLoading` (`!loaded && error === null`, pickers.rs:
+  4207), `modelsLoading` (slot absent/Idle/Loading — an errored model
+  slot reads as settled, pickers.rs:4208-4213), and `shouldReload`
+  (pickers.rs:1037-1041's Idle/Loading/Ready|Error+force table).
+  `composer-pickers.tsx` gates `iconLoading`/`labelLoading` on them
+  (replacing the error-blind `!harnesses.loaded` arms) and adds one
+  `harnesses.error === null` arm to `labelLoading`: with an errored
+  harness catalog the (never-requested, thus "loading") model slot must
+  not resurrect the skeleton — that is the web's counterpart of the
+  desktop's `model_label.is_empty()` guard (pickers.rs:4186-4206), where
+  the resolved raw id makes the label non-empty and kills the ghost bar.
+  `resolveChipLabel` itself needed no change (it already resolves
+  remembered label → configured/raw id); the error simply stops being
+  masked. The `noAgents` gate (composer-pickers.tsx:117) verified against
+  `no_agents_available()` — matches, unchanged.
+- **§2.3 re-kick cadence** — a per-commit effect in `ComposerPickers`
+  (`[catalog, harnesses]` deps: every slot-identity move) calls a
+  non-forced `loadHarnesses()` gated by `shouldReload(slot, false)` — a
+  no-op unless Idle, exactly `ensure_harnesses(false)`. Plus the ticket's
+  optional window-focus trigger: focus re-arms an errored, row-less slot
+  (reset → Idle, then the non-forced kick), never touching Ready/Loading
+  (gap row 8's first arm; the card-open force stays the forced path).
+- **§2.3 boot-race heal** — `picker-catalog.ts` `#retryOfflineSlots`
+  grows an `offlineOnly` arm: `connected` still heals every errored,
+  not-loaded slot (the plain-refresh heal, unchanged); any OTHER status
+  change re-arms only slots carrying the literal pre-dial error
+  (`"Engine is offline; reconnecting"`, client.ts:241 — matched by exact
+  message via `isOfflineError`). A timeout/teardown error that landed
+  while connected is NOT re-armed there (heals via cadence/focus/open,
+  per the ticket); a re-arm while still disconnected may re-latch once
+  per status event — bounded, instant, client-side rejections.
+- **§2.2 Idle-slot scheduling** — no JSX change to the takeover itself
+  (Idle|Loading ⇒ skeletons, Error ⇒ ErrorRow per pickers.rs:3153-3180):
+  the "kick behind it" is the cadence effect above plus the open-force —
+  every Idle slot is one commit away from a pending load, and a load that
+  flips to Loading is in-flight by construction. No state shows
+  unscheduled skeletons.
+- **§2.4 verification-only pass** — card geometry re-verified at HEAD,
+  no drift: width 304 (`.identity-card`), max-height 640 (inline),
+  radius 12 (`--rb-radius-card`), 44px blur (`.popover-card`), 40px tab
+  strip (32×32 r8 tabs, 2px marker) / 40px search row ("Search models…")
+  / 216px list band / traits tray (236px cap, "Default" badge, no check
+  marks) — all present in `app.css`/`composer-pickers.tsx`.
+- **S3 row 10** — the invented native `title` on the chip deleted
+  outright; no replacement, no aria invention (grep `title=` in
+  composer-pickers.tsx: no hit).
+
+**Tests.** New `tests/catalog-loading.test.ts` (8):
+`chip_loading_states_exclude_error` (mirrors the pickers.rs:4207-4221
+composition over the label resolution — errored slots never load, and
+the errored-catalog case where the model slot was never requested still
+resolves "not loading" via the label) plus the `shouldReload` table
+(Idle/Loading/Ready/Error × force, the rows-kept error variant, and the
+settled-cadence no-op sweep). Extended `tests/picker-catalog.test.ts`
+(+3): offline re-arm on a non-`connected` status change; a timeout error
+NOT re-armed by one (heals on `connected`); single-flight open-force +
+idle-cadence (exactly one `ListHarnesses`). The FakeClient gained an
+`emitStatus(state)` seam (`emitConnected` delegates). Base suites
+untouched and green (1205 → 1216).
+
+**Deviations / judgment calls.**
+
+1. `labelLoading` keeps ticket 10's landed "raw id reads as unresolved"
+   shape (`modelLabel === draft.model && rememberedLabel === null`) rather
+   than porting the desktop's `model_label.is_empty()` literally — the
+   research flags only the error-blind arms, and the new
+   `harnesses.error === null` arm restores the error-path behavior the
+   acceptance demands. (Literal port would show raw ids mid-load on a
+   fresh refresh; landed behavior skeletons them — kept.)
+2. The focus re-kick resets to Idle before loading (the Error → Idle →
+   Loading walk) so it routes through `shouldReload`'s Idle row rather
+   than force-revalidating; a Ready catalog is never re-kicked by focus.
+3. The `emitStatus("connecting")` heal test resolves via a successful
+   fake call (the fake cannot model an still-offline socket): what it
+   pins is the re-arm discipline, not the transport failure.
+4. The §6 screenshot pair (states a–e, desktop halves) needs a live
+   capture session — left to the merger, as with tickets 08/10/12/13/37.
+   The chip's error-state label and the ErrorRow path are covered by the
+   unit gates above.
+
+**Verification.**
+
+- `pnpm -r build` (from `web/`) green — proto, engine-client, app
+  (tsc --noEmit + vite build, 4.25s).
+- `web/packages/app` `pnpm test` green: 74 files / 1216 tests, including
+  `catalog-loading` (8, new), `picker-catalog` (15, +3), `model-rows`,
+  `traits-summary`, `composer-flip`, `composer-send` untouched.
