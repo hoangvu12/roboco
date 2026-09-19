@@ -355,4 +355,102 @@ resolved value either way: §2.2.)
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed both halves on `wp2r2/34-canvas-sidebar-slide-titlebar-island`, based on
+`web-parity/wave-2 @ 24d0e23c` (33/37/40/42/46/47 in). `pnpm -r build` green;
+app vitest 1211 passed (1205 base + 6 new).
+
+**§2.1 the slide** — `routes/chat-page.tsx`:
+
+- `heroWidth` (:688) now reads `viewport − (animatedSidebar ?? sidebarNow)`;
+  `animatedSidebar` is null when settled, so the settled formula is unchanged.
+- Arm (`useLayoutEffect`, :477-515, keyed `[sidebar]`): on a `collapsed` flip it
+  captures `from = painted + liveEdgeBounce` (painted = a live tween's last
+  frame, else the previous target; the bounce read off `--rb-sidebar-edge-offset`
+  — the desktop's `sidebar_now()` includes it, and the layout-effect runs before
+  PaneSeam's passive cleanup zeroes the var on collapse). A LAYOUT effect so
+  the flip frame paints `from`, not a one-frame endpoint flash. Non-flip sidebar
+  changes (a seam drag) kill a live tween — the column tracks the pointer
+  exactly under `data-rb-resizing`, and the hero must follow the drag.
+- Pump (`useEffect`, :517-563, keyed `[sidebarPump, reducedMotion]`): one rAF
+  per frame for the 200 ms; `evalWidthTween(from, to, elapsed)`; terminal frame
+  hands the width back to the settled formula (null — the same number), so a
+  later drag can never read a stale one. Reduced motion (at arm or mid-tween)
+  writes the endpoint directly. Phone: no loop (the arm skips it).
+- Same-frame remask: each frame calls `remaskNewThreadBackground()`
+  (new-thread-background.tsx:206) AFTER a **`flushSync`'d setState** — see
+  deviation 1. The per-commit effect (:260-393) is untouched apart from
+  registering its current closure in the registry (:388-389).
+
+**§2.2 the island** — `components/titlebar.tsx` (+`app-shell.tsx`, `app.css`):
+
+- Pure: `islandTarget` (titlebar.tsx:90) and `titlebarIslandVerticalGeometry`
+  (:110) — geometry reads `TITLEBAR_HEIGHT`/`TITLEBAR_TOP_PAD` from
+  `state/layout.ts` (TOP_PAD newly exported there; see deviation 3).
+- Motion: `useIslandTween` (:149) — the scalar 0↔1 twin of the hero loop:
+  200 ms ease-out via `evalWidthTween`, reversal from the painted value,
+  initial presentation settled (mount at target), reduced motion snaps
+  (mid-tween too).
+- Element: the wrapper is `.titlebar-cluster`'s FIRST child (titlebar.tsx:243),
+  `left 6 / right 0` inline-`top`/`height`/`opacity`, `z-index: -1` +
+  `pointer-events: none` so it paints BEHIND the controls with no hit area; the
+  frosted panel child (`> 0.001`, mirroring the desktop's content gate) carries
+  radius 12 / blur 20 / glass-overlay tint / `--rb-shadow-sm` (app.css:349-378).
+  The bar itself stays NO FILL / NO BLUR / NO BORDER.
+- Wiring: `app-shell.tsx:443-449` — `islandTarget({isChatRoute, hasSelectedChat:
+  paneChatId !== null, sidebarCollapsed, backgroundResolves: url !== null})`
+  from `useNewThreadBackground()` (the RESOLVED source; see deviation 4), passed
+  as the `islandTarget` prop (:551). No `state/chrome.ts` involvement.
+- Tests: `tests/titlebar-island.test.ts` — mirrors
+  `island_stays_centered_on_controls_while_expanding` (center 21 constant,
+  height ∈ [28,32], 4px air, clamp) + the target rule in all counter-states
+  and the resolved-vs-raw gate.
+
+**Deviations / adaptations (file:line drift noted):**
+
+1. **`flushSync` per frame** (chat-page.tsx:546-548): the ticket names a rAF
+   loop but not the commit mode. A scheduled setState lands after paint and
+   trails the column's CSS clock by a frame (the artwork's right edge would
+   visibly retract ~30px mid-collapse); `flushSync` inside the rAF callback
+   lands the commit in the same frame phase the CSS transition is evaluated
+   in — the web peer of the desktop evaluating `sidebar_now()` in render.
+   `heroWidth` stays a prop-driven inline style; no CSS width transition
+   exists (only a comment noting that, app.css `.new-thread-hero`).
+2. **The island is INSIDE `.titlebar-cluster`** (§2.2's "inside the cluster
+   row"), not a sibling "first child of the cluster's parent" as the file
+   table's phrasing read: a sibling cannot track the cluster's shrink-to-fit
+   width, and `left 6 / right 0` needs the row as the containing block.
+   Consequence: the inline `top` is row-space minus `TITLEBAR_TOP_PAD`, since
+   the cluster's padding box starts 4px down (titlebar.tsx:247).
+3. **`state/layout.ts`** gained `TITLEBAR_TOP_PAD = 4` (proto/layout.rs:48) —
+   the ticket says to read the constant from there, but it did not exist yet;
+   `TITLEBAR_HEIGHT`'s citation corrected :44 → :45.
+4. **The resolved-background source is `useNewThreadBackground`**
+   (state/appearance.ts) — the pre-35/48 source; 35 should swap the shell (and
+   the canvas) onto its hoisted store. Its resolution is async, so a reload's
+   first island appearance rides the 200 ms tween once the URL resolves; the
+   tween itself mounts settled (no animation when the target is present at
+   first effect — e.g. once 35 lands a synchronous source).
+5. **The remask is exposed as a module-level callable** —
+   `remaskNewThreadBackground()` + a listener Set the per-commit effect
+   (re)registers — rather than a ref through `NewThreadCanvas`
+   (routes/index-page.tsx is not in the touch list) and it matches the
+   codebase's module-store idiom. During the 200 ms glide the per-commit
+   effect also fires once per commit, so the hero rasterizes twice per frame
+   for 200 ms — accepted (the per-commit effect stays per the ticket).
+6. **No hero-width host test** — the repo has no component-test harness (vitest
+   node env, no testing-library); the tween frames stay covered by
+   `tests/layout.test.ts` and the flip semantics are in the component.
+   Screenshot/CDP captures (acceptance items 1-2, 9) were not taken in this
+   headless session — the geometry/timing contracts they check are unit-covered
+   instead.
+
+**Merger notes for 35/36:** 35 owns hoisting the background resolution —
+replace `useNewThreadBackground()` in app-shell.tsx:443 (and the gate comment)
+with the hoisted store; the `backgroundResolves` input stays a boolean. 36 owns
+the route/dock choreography — nothing here touched `heroVisible`, `dissolve`,
+or the dock; 36 only needs to know `heroWidth`'s number now comes from the
+tween state (chat-page.tsx:688) during sidebar flips. The island gate consumes
+`isChatRoute`/`paneChatId` exactly as the shell computes them today
+(app-shell.tsx:429-448).

@@ -332,6 +332,46 @@ a:focus-visible,
   gap: var(--rb-titlebar-group-gap);
 }
 
+/*
+ * The titlebar island (ticket 34) — `render_titlebar_cluster`'s frosted
+ * panel behind the window controls (shell.rs:3990-4042): visible only on
+ * the canvas route with the sidebar collapsed and a background RESOLVING
+ * beneath (installed or the bundled default — ticket 48's predicate; the
+ * gate is wired in app-shell, never the raw setting). The wrapper is the
+ * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028) and
+ * carries the tween's inline `top`/`height`/`opacity` (200ms resize
+ * ease-out, reversal from the painted value, initial presentation
+ * settled, reduced motion snaps). `z-index: -1` paints it BEHIND the
+ * controls — pure chrome behind existing ones, no hit area, no pointer
+ * events. The bar itself stays NO FILL / NO BLUR / NO BORDER (ticket 06):
+ * the island is a child, not a bar background and not a cluster fill.
+ */
+.titlebar-island {
+  position: absolute;
+  /* shell.rs:4027 — the island's own left inset. */
+  left: 6px;
+  right: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/*
+ * `frost::frosted(12.0, 20.0, …)` (frost.rs:27-33): a 12px radius, a 20px
+ * backdrop blur, the glass-overlay tint, `shadow_sm` — the popover cards'
+ * glass idiom at the island's lighter blur. Rendered only while the
+ * tween is above ~0, exactly the desktop's `(island > 0.001)` content
+ * gate; the wrapper above keeps the geometry mounted through the fade.
+ */
+.titlebar-island-panel {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--rb-shadow-sm);
+}
+
 .titlebar-group {
   display: flex;
   flex-direction: row;
@@ -2490,7 +2530,10 @@ a:focus-visible,
  * shell chrome painted under the overlaid titlebar, never an interaction
  * surface). Width/height/opacity ride inline styles: the full conversation
  * canvas even while the right pane clips it — navigation must never
- * rescale the artwork.
+ * rescale the artwork. The width deliberately has NO CSS transition: on a
+ * sidebar flip it is written per-frame by the rAF tween in
+ * `ConversationPage` (ticket 34) — one clock must own the width, or the
+ * cutout mask cannot follow it.
  */
 .new-thread-hero {
   position: absolute;
