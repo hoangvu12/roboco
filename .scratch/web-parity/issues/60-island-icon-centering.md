@@ -49,3 +49,45 @@ None beyond the conditional render. If titlebar-island.test.ts asserts the curre
 ## Comments
 
 (User report 2026-09-20 #2.)
+
+### Implementer note (2026-09-20)
+
+Landed **option 1** (§2) on `wp2r2/60-island-icon-centering`, based on
+`web-parity/wave-2 @ dc591f16`. `pnpm -r build` green; app vitest **1296
+passed (1293 base + 3 new)** from both `web\` and `web\packages\app`;
+engine-client 43 passed. (The first root `pnpm test` hit the cold-worktree
+cargo build of `web_conformance` — conformance errored and smoke's 600 s
+beforeAll hook timed out; the same build run directly finishes in ~5 min and
+the suite is green on re-run. Environmental, not code.)
+
+- `components/titlebar.tsx` — the `+` is conditionally rendered
+  (`onNewSession != null && newSessionAlpha > 0.01`, mirroring
+  `show_plus.then(...)` at shell.rs:4093-4104): at alpha 0 it contributes NO
+  geometry, so the cluster's shrink-to-fit width ends at the last visible
+  control and the island's `right: 0` anchors there. New
+  `titlebarIslandHorizontalGeometry(showsNewSession)` ports the span math;
+  `state/layout.ts` gains `TITLEBAR_ISLAND_INSET = 6` (shell.rs:4027-4028).
+  The `data-alpha`/`aria-hidden`/`tabIndex` trappings are gone — a rendered
+  `+` is a plain tappable control, an unrendered one is out of the tree.
+- `styles/app.css` — the appear fade is now the mount animation
+  `rb-titlebar-plus-in` on the same RESIZE curve the row's left padding
+  rides; the `data-alpha`/`visibility` transition machinery is deleted
+  (nothing renders at alpha 0). The reduced-motion block moves
+  `.titlebar-new-session` from `transition: none` to `animation: none`
+  (its fade is an animation now).
+- `tests/titlebar-island.test.ts` — 3 new assertions: hidden `+` → island
+  **[16, 92]** width 76; shown `+` → [16, 124]; pill center **54** over the
+  [10, 92] visible controls (center 51) — the desktop's own 3 px pill/glyph
+  relationship (research §S1(b): glyph 52 under pill 54), replacing the
+  pre-fix 19 px bias (pill center 70).
+
+**Deviation from the pre-fix fade model:** the disappear is now the unmount
+itself — no fade-out. The ticket's option 1 frames the fade as "a mount
+transition", and the desktop's own `show_plus` gate pops the `+` out the
+same way; the island and the `+` are mutually exclusive by construction
+(research §S1(c)), so nothing else is mid-fade when it goes. The show
+condition (`titlebarNewSessionAlpha` + the null-handler gate) and the
+row-left slot math are untouched.
+
+Screenshot pairs waived this session (headless; build + tests verification
+only) — the geometry contract is unit-covered by the new assertions.

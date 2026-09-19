@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { TITLEBAR_HEIGHT, TITLEBAR_TOP_PAD } from "../src/state/layout";
+import {
+  CLUSTER_BUTTONS_WIDTH,
+  TITLEBAR_CLUSTER_PAD,
+  TITLEBAR_HEIGHT,
+  TITLEBAR_TOP_PAD,
+} from "../src/state/layout";
 import {
   islandTarget,
+  titlebarIslandHorizontalGeometry,
   titlebarIslandVerticalGeometry,
 } from "../src/components/titlebar";
 
@@ -10,7 +16,8 @@ import {
  * `titlebar_island_vertical_geometry` (shell.rs:829-835) and `island_target`
  * (shell.rs:3990-4001, as amended by ticket 48's resolved-artwork
  * predicate). The tween's frames are `evalWidthTween`, already covered by
- * `tests/layout.test.ts`.
+ * `tests/layout.test.ts`. Ticket 60 adds the horizontal half: the island's
+ * span with the `+` conditioned out of the cluster row.
  */
 
 /**
@@ -41,6 +48,47 @@ describe("island_stays_centered_on_controls_while_expanding", () => {
   it("clamps progress outside [0, 1] to the endpoints", () => {
     expect(titlebarIslandVerticalGeometry(-1).height).toBe(28);
     expect(titlebarIslandVerticalGeometry(2).height).toBe(32);
+  });
+});
+
+/**
+ * Ticket 60 — the island's horizontal geometry, mirrored from the desktop:
+ * `left(6).right_0()` over the cluster's shrink-to-fit content box
+ * (shell.rs:4027-4028; taffy insets from the padding box), with the `+`'s
+ * 32px slot in that box ONLY while the `+` is rendered — `show_plus.then`
+ * (shell.rs:4093-4104) reserves no phantom slot at alpha 0. The reported
+ * state (sidebar closed on the new-thread canvas) has no `+`, so the pill
+ * must end at the last visible control: the research's measured
+ * [16, 124] → the desktop's [16, 92].
+ */
+describe("titlebarIslandHorizontalGeometry (ticket 60 — icons centered)", () => {
+  it("with the `+` hidden the island spans the desktop's [16, 92]", () => {
+    const { left, right } = titlebarIslandHorizontalGeometry(false);
+    expect(left).toBe(16);
+    expect(right).toBe(92);
+    expect(right - left).toBe(76);
+  });
+
+  it("with the `+` shown its 32px slot extends the span to [16, 124]", () => {
+    const { left, right } = titlebarIslandHorizontalGeometry(true);
+    expect(left).toBe(16);
+    expect(right).toBe(124);
+  });
+
+  it("centers the icons like the desktop: pill center 54 over the [10, 92] controls", () => {
+    const { left, right } = titlebarIslandHorizontalGeometry(false);
+    // The visible controls — the 24px toggle and the back/forward pair —
+    // span the cluster's content box [10, 92]; the pill's own 6/0 insets put
+    // its center 3px right of that box's center, exactly the desktop's
+    // relationship (its glyph center 52 under its pill center 54, the
+    // research's measurement). Pre-fix the pill center was 70 — a 19px
+    // leftward bias on the icons.
+    const controlsCenter =
+      (TITLEBAR_CLUSTER_PAD + TITLEBAR_CLUSTER_PAD + CLUSTER_BUTTONS_WIDTH) / 2;
+    const pillCenter = (left + right) / 2;
+    expect(controlsCenter).toBe(51);
+    expect(pillCenter).toBe(54);
+    expect(pillCenter - controlsCenter).toBe(3);
   });
 });
 

@@ -507,22 +507,25 @@ a:focus-visible,
 }
 
 /*
- * The new-session `+` — MOUNTED at all times, cross-faded by
- * `titlebar_plus_alpha` on the RESIZE curve while the row's left padding rides
- * the same curve: the desktop tweens the two as one. `visibility` transitions
- * with the same duration so the button stays paintable through the fade-out
- * and then drops out of interaction, matching the desktop's `alpha > 0.01`
- * render gate.
+ * The new-session `+` — rendered only while shown (ticket 60): the desktop's
+ * `show_plus.then(...)` (shell.rs:4093-4104) leaves NO phantom slot at alpha
+ * 0, so the cluster's shrink-to-fit width ends at the last visible control
+ * and the island's `right: 0` anchor hugs it — the icons center at the
+ * desktop's [16, 92]. The appear fade is a MOUNT animation on the RESIZE
+ * curve while the row's left padding rides the same curve: the desktop
+ * tweens the two as one. The disappear is the unmount itself (the island
+ * and the `+` are mutually exclusive, so nothing else is mid-fade when it
+ * goes).
  */
 .titlebar-new-session {
   flex: none;
-  transition: opacity var(--rb-motion-resize) var(--rb-ease-ease-out),
-    visibility var(--rb-motion-resize) var(--rb-ease-ease-out);
+  animation: rb-titlebar-plus-in var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
-.titlebar-new-session[data-alpha="0"] {
-  opacity: 0;
-  visibility: hidden;
+@keyframes rb-titlebar-plus-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /*
@@ -9164,6 +9167,8 @@ button.files-save-pill:hover {
   .page-fade,
   .gate-card-content,
   .jump-pill,
+  /* The `+`'s appear fade is a mount animation (ticket 60). */
+  .titlebar-new-session,
   /* A new sidebar row appears at full opacity; the glide is skipped in JS. */
   .chat-row-in {
     animation: none;
@@ -9185,7 +9190,6 @@ button.files-save-pill:hover {
   .pane-seam-right,
   .titlebar,
   .titlebar-pane-band,
-  .titlebar-new-session,
   .attachment-drop-overlay,
   .jump-pill-inner,
   .update-strip,

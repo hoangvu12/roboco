@@ -2,7 +2,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
 import { Icon, type IconName } from "@roboco/icons";
-import { evalWidthTween, TITLEBAR_HEIGHT, TITLEBAR_TOP_PAD } from "../state/layout";
+import {
+  CLUSTER_BUTTONS_WIDTH,
+  evalWidthTween,
+  TITLEBAR_ACTION_SLOT_WIDTH,
+  TITLEBAR_CLUSTER_PAD,
+  TITLEBAR_HEIGHT,
+  TITLEBAR_ISLAND_INSET,
+  TITLEBAR_TOP_PAD,
+} from "../state/layout";
 
 /**
  * The unified titlebar — the desktop's `render_titlebar_cluster` (left) and
@@ -27,9 +35,11 @@ import { evalWidthTween, TITLEBAR_HEIGHT, TITLEBAR_TOP_PAD } from "../state/layo
  * `header_icon_button` all render at size 16).
  *
  * The `+` is driven by `titlebar_new_session_alpha`: 1 only on the chat route
- * with a chat selected. It stays MOUNTED and cross-fades opacity on the
- * resize curve while `--rb-titlebar-row-left` transitions on the same curve —
- * the desktop tweens the two as one.
+ * with a chat selected. It is conditionally rendered — the desktop's
+ * `show_plus.then(...)` leaves no phantom slot at alpha 0 (ticket 60), so the
+ * cluster's shrink-to-fit width ends at the last visible control — and
+ * APPEARS with a mount fade on the same 200ms resize curve
+ * `--rb-titlebar-row-left` transitions on; the desktop tweens the two as one.
  *
  * The island (ticket 34) is the desktop's `render_titlebar_cluster` panel:
  * a frosted 12/20 island behind the controls, shown exactly when the canvas
@@ -52,7 +62,8 @@ export interface TitlebarProps {
   readonly canForward: boolean;
   /**
    * `titlebar_new_session_alpha` — 1 while an existing chat is selected on
-   * the chat route, else 0. The `+` stays mounted and fades between the two.
+   * the chat route, else 0. The `+` renders only above the desktop's 0.01
+   * gate and appears with a mount fade.
    */
   readonly newSessionAlpha: number;
   /**
@@ -114,6 +125,29 @@ export function titlebarIslandVerticalGeometry(progress: number): {
   const height = 28 + 4 * Math.min(Math.max(progress, 0), 1);
   const center = (TITLEBAR_HEIGHT + TITLEBAR_TOP_PAD) * 0.5;
   return { top: center - height * 0.5, height };
+}
+
+/**
+ * The island's horizontal span in window space (ticket 60): the wrapper is
+ * `left(6).right_0()` over the cluster's shrink-to-fit content box
+ * (shell.rs:4027-4028; taffy measures an absolute child's insets from the
+ * parent's padding box, and the web cluster carries no padding), and that
+ * box includes the `+`'s 32px slot ONLY while the `+` is in the tree — the
+ * desktop's `show_plus.then(...)` (shell.rs:4093-4104) reserves no phantom
+ * slot at alpha 0. With the `+` hidden the pill ends at the last visible
+ * control — [16, 92], width 76, the desktop's exact span, the icons at the
+ * desktop's centers; with it shown the slot extends the span to [16, 124].
+ */
+export function titlebarIslandHorizontalGeometry(showsNewSession: boolean): {
+  readonly left: number;
+  readonly right: number;
+} {
+  const clusterWidth =
+    CLUSTER_BUTTONS_WIDTH + (showsNewSession ? TITLEBAR_ACTION_SLOT_WIDTH : 0);
+  return {
+    left: TITLEBAR_CLUSTER_PAD + TITLEBAR_ISLAND_INSET,
+    right: TITLEBAR_CLUSTER_PAD + clusterWidth,
+  };
 }
 
 /** `motion::RESIZE` — the curve the island's opacity/height tween rides. */
@@ -256,25 +290,21 @@ export function Titlebar({
           <NavHistoryButton icon="arrowRight" label="Forward" onClick={onForward} enabled={canForward} />
         </div>
         {/*
-          The `+` stays mounted: the fade is opacity on the same 200ms resize
-          curve the row's left padding rides, and an unmount would blink the
-          cluster. At alpha 0 it is invisible AND inert — `visibility` is
-          transitioned with opacity, so it stays paintable through the fade
-          out and then drops out of the tab order, matching the desktop's
-          alpha>0.01 render gate.
+          The `+` renders only while shown — the desktop's
+          `show_plus.then(...)` (shell.rs:4093-4104), gate `plus_alpha >
+          0.01` — so at alpha 0 it contributes NO geometry and the island's
+          `right: 0` anchors to the last visible control (ticket 60: the
+          icons center at the desktop's [16, 92]). The appear fade is a
+          MOUNT animation on the same 200ms resize curve the row's left
+          padding rides; the disappear is the unmount itself — the island
+          requires "no selected chat" and the `+` requires one, so the two
+          are never visible together and nothing is mid-fade when it goes.
         */}
-        <div
-          className="titlebar-new-session"
-          data-alpha={onNewSession != null ? newSessionAlpha : 0}
-          aria-hidden={onNewSession == null || newSessionAlpha === 0}
-        >
-          <WindowControl
-            icon="plus"
-            label="New session"
-            onClick={onNewSession ?? (() => {})}
-            tabIndex={onNewSession != null && newSessionAlpha > 0 ? undefined : -1}
-          />
-        </div>
+        {onNewSession != null && newSessionAlpha > 0.01 && (
+          <div className="titlebar-new-session">
+            <WindowControl icon="plus" label="New session" onClick={onNewSession} />
+          </div>
+        )}
       </div>
       {/*
         In panel takeover the header strip spans the whole band, so the
