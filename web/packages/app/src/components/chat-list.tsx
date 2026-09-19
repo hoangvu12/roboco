@@ -176,6 +176,9 @@ export function ChatList() {
           showPullRequest: sidebar.showPullRequest,
           changeRequests,
           engineStates,
+          // A dangling spaceId hides its chat only once the spaces frame
+          // is in; until then the row renders with the "?" label (ticket 43).
+          spacesLoaded: snapshot.spaces.loaded,
         })
       : [];
 

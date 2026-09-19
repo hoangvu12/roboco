@@ -105,7 +105,11 @@ function EngineRow({ engine, entry }: EngineRowProps) {
   const snapshot = session?.cache.getSnapshot() ?? null;
   const urgent =
     snapshot !== null && snapshot.chats.loaded
-      ? mostUrgent(chatListRows(snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, Date.now()).map((row) => row.status))
+      ? mostUrgent(
+          chatListRows(snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, Date.now(), [], {
+            spacesLoaded: snapshot.spaces.loaded,
+          }).map((row) => row.status),
+        )
       : null;
 
   function pairAgain(): void {
