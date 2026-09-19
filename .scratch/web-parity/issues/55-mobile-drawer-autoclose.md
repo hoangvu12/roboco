@@ -200,4 +200,39 @@ select) — same content.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed as specified. Notes and small judgment calls:
+
+- The effect sits directly after the nav-history visit effect
+  (`app-shell.tsx` — same `[pathname]` dependency, separate effect per §2.1),
+  matchMedia-guarded with the toggle's own `PHONE_MAX_WIDTH` breakpoint, the
+  width read inside the effect body, `sidebarOpen` read via the state value
+  and deliberately not a dep. The three existing affordances (toggle, Escape
+  ladder, backdrop) are untouched; `drawerOpen` and 52's surface untouched;
+  no CSS, no row-component changes.
+- The rule is extracted as `shouldCloseDrawer(pathChanged, sidebarOpen,
+  isPhone)` — §3's suggested signature — exported from `app-shell.tsx` and
+  consulted by the effect. `pathChanged` comes from a previous-pathname ref
+  in the effect: behaviorally identical to §2.1's verbatim shape (deps
+  `[pathname]` already mean "runs on change only"; the mount run finds
+  `pathChanged === false` and the drawer closed), but it lets the rule's
+  same-path branch be asserted directly and double-guards a same-path
+  refire.
+- The four named tests live in `tests/app-shell-drawer.test.ts`, each
+  asserting its branch plus the complementary combinations that must stay
+  open. No matchMedia mock: the suite is node-only (vitest
+  `environment: "node"`, no DOM/jsdom, zero mount tests repo-wide), so the
+  research's app-shell-level mocked-375px case is landed as §3's sanctioned
+  pure-helper extraction — `isPhone` stands in for the mocked
+  `(max-width: 768px)` matchMedia. The wiring (the media string, deps,
+  `setSidebarOpen(false)`) is typechecked by `tsc --noEmit` in
+  `pnpm -r build`.
+- Ticket 49's `state/media.ts` has not landed at this base — raw
+  `window.matchMedia` per the spec, as directed.
+- Not done: the acceptance's `use-browser` 375×667 screenshot pair — no
+  runnable browser session against `web_smoke` in this environment (same
+  stand-down as ticket 45's note); unit + build verification stands in.
+  No desktop-width visual change (no CSS touched).
+- Verification: `pnpm -r build` green; `pnpm test` in packages/app green
+  (1239 = base 1235 + the 4 new drawer tests).
