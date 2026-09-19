@@ -280,6 +280,8 @@ export const TITLEBAR_IDENTITY_GAP = 12;
 export const CLUSTER_BUTTONS_WIDTH = 24 * 3 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
 /** The new-session `+` budgets one slot so the title never sits under it. */
 export const TITLEBAR_ACTION_SLOT_WIDTH = TITLEBAR_GROUP_GAP + 24;
+/** The island wrapper's own left inset — `left(6).right_0()` (shell.rs:4027-4028). */
+export const TITLEBAR_ISLAND_INSET = 6;
 const SPACE_LG = 16;
 
 // ---------------------------------------------------------------------------
