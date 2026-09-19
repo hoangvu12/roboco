@@ -342,4 +342,60 @@ selector row, M9 project selector phone — same content.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed exactly per §2 (line numbers had shifted after the wave-2 merges;
+regions matched by content):
+
+- **Hero gate** (`chat-page.tsx`): `heroVisible` is now
+  `heroLayerMounted(hasSelection, dockRef.current.frame)` — the `&& !phone`
+  arm is dropped — and `app.css`'s phone block lost
+  `.new-thread-hero { display: none }` (the rule and its decision-5 comment
+  deleted together).
+- **Selector row (M9)**: `.dock-target-selectors { display: none }` deleted
+  from the same phone block — the CSS half of M9's fix-by-construction lands
+  here; the popover phone form stays 49's `PickerCard` branch (no per-site
+  code added, cross-checked: `composer.tsx` mounts the row on
+  `chrome.newThread > 0` with no JS phone gate, so the deletion alone
+  re-shows it).
+- **Dock re-anchor (recorded choice, option 1)**: `dockReduced =
+  reducedMotion` (the `|| phone` arm dropped) and the prepaint branch lost
+  its `!phone` guard, so `dock.prepaint` anchors the wrapper at
+  `(vh − h)·0.5 + 8` at ≤768 exactly as at ≥769 and the full dock
+  choreography (glide, channels, dissolve, handoff) runs at phone; reduced
+  motion still snaps through the existing `reducedMotion` arms. The
+  two-line fallback if device testing shows the glide fighting the phone
+  (research option 2): restore `const dockReduced = reducedMotion || phone`,
+  restore `&& !phone` on the prepaint's `if`, and add
+  `.persistent-composer { margin-block: auto }` to the phone block (bottom
+  stack already sits at the column bottom) — nothing else changes.
+- **Hero width sidebar term**: `sidebarNow = phone ? 0 : sidebarTarget(sidebar)`
+  — inline in `chat-page.tsx` (50/52 exported no shared
+  `sidebarForGeometry`; `app-shell.tsx`'s is local), per §2.1's
+  implementation note. Because it stayed inline there is nothing to unit
+  test per §3 — this note is that statement. The sidebar-tween arming guard
+  keeps its `phone` arm deliberately: the sidebar is out of flow at ≤768, so
+  there is no painted column width to tween, and arming would feed the hero
+  a dragged width mid-tween (375/304 → 71px) — the comment there was
+  reworded to say so (it previously claimed "the phone never mounts the
+  hero", which this ticket makes false).
+- **Untouched, per §2.4/§5**: status strip, footer Layer A git chips,
+  `NewThreadCanvas`/`NewThreadBackground` (33's paint machinery mounts
+  as-is at 375px — the ResizeObserver cutout and `newThreadBackgroundHeight`
+  are width-agnostic), send path, desktop ≥769px behavior (all flips are
+  ≤768-only conditions; the ≥769 media blocks were not edited).
+
+Deviations from the file table (comment-only, both in regions this ticket
+owns): `lib/composer-dock.ts`'s `heroLayerMounted` docstring dropped its
+"the phone layer never mounts the hero" sentence (stale the moment the
+exclusion went away — no logic change), and `chat-page.tsx`'s file-header +
+tween-guard comments were updated for the same reason.
+
+Verification: `pnpm -r build` green (tsc + vite, all 5 workspace projects);
+`pnpm test` in `packages/app` green — 81 files / 1276 tests, including the
+ticket's named suites (`composer-dock.test.ts` 21 — the dock-anchor
+"prepaint anchors and travel" case with `(881 − 172)·0.5 + 8` is green;
+`new-thread-background.test.ts` 22; `new-thread-background-store.test.ts`
+9). No new tests were added (§3's inline path). Screenshot pairs at
+375×667 are WAIVED per the session's hard rule (no dev server / browser /
+CDP processes; build + vitest only).

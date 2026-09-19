@@ -6800,17 +6800,6 @@ button.files-save-pill:hover {
     padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom));
   }
 
-  /* The new-thread hero and its floating selector row are desktop-width
-     chrome (spec decision 5): the phone canvas keeps the composer in its
-     slot, no artwork, no re-anchoring. */
-  .new-thread-hero {
-    display: none;
-  }
-
-  .dock-target-selectors {
-    display: none;
-  }
-
   /* The identity's folder line is the first thing to go when width runs out. */
   .identity-folder {
     display: none;

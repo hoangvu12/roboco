@@ -94,8 +94,9 @@ function transcriptCacheFor(engineKey: string, scopedChatId: string): Transcript
  * owns everything: the glide (0.420/470 s critically damped), the pill
  * height (`dockHeight`), the four staged chrome channels, the hero's
  * `dissolve`, the 0.320 s panel handoff, and the width glide that snaps
- * inside the handoff's invisible interval. Reduced motion — and the phone
- * layer (≤ 768px, out of scope) — snap everything.
+ * inside the handoff's invisible interval. Reduced motion snaps everything.
+ * The phone layer (≤ 768px) mounts the same canvas — hero, selectors, dock
+ * re-anchoring — per ticket 53's amendment to spec decision 5.
  */
 export function ConversationPage() {
   // `chatId === ""` is the new-thread canvas; anything else names a chat.
@@ -453,7 +454,17 @@ export function ConversationPage() {
   const viewport = useViewportWidth();
   const viewportHeight = useViewportHeight();
   const sidebar = useSidebarLayout();
-  const sidebarNow = sidebarTarget(sidebar);
+  // The shared media hook (ticket 49): `(max-width: 768px)` resolved through
+  // matchMedia — the same query the stylesheet keys, so JS and CSS flip in
+  // the same paint (the old `viewport <= PHONE_MAX_WIDTH` innerWidth compare could
+  // disagree with the media query by rounding).
+  const phone = useIsPhone();
+  // The phone sidebar is a fixed overlay out of flow (the same M3/M2
+  // correction `app-shell.tsx` applies to the titlebar's geometry), so the
+  // hero's sidebar term reads 0 at ≤768 — `heroWidth` is the full phone
+  // canvas width, never `viewport − dragged` (375/304 would paint a 71px
+  // hero).
+  const sidebarNow = phone ? 0 : sidebarTarget(sidebar);
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -462,14 +473,11 @@ export function ConversationPage() {
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
-  // The shared media hook (ticket 49): `(max-width: 768px)` resolved through
-  // matchMedia — the same query the stylesheet keys, so JS and CSS flip in the
-  // same paint (the old `viewport <= PHONE_MAX_WIDTH` innerWidth compare could
-  // disagree with the media query by rounding).
-  const phone = useIsPhone();
-  // The phone layer (spec decision 5, amended for ticket 49's wave) keeps the
-  // composer in its slot: the dock snaps and never re-anchors.
-  const dockReduced = reducedMotion || phone;
+  // Ticket 53's recorded choice (§2.2, option 1): the dock re-anchors at
+  // phone exactly as at ≥769 — the glide, the chrome channels and the
+  // dissolve all run, anchored at `(vh − h)·0.5 + 8`; reduced motion still
+  // snaps everything through `reducedMotion`.
+  const dockReduced = reducedMotion;
 
   // ── The sidebar slide (ticket 34) ─────────────────────────────────────
   // `toggle_sidebar` (shell.rs:1947-1957) arms a oneshot 200ms tween from
@@ -510,7 +518,9 @@ export function ConversationPage() {
     if (reducedMotion || phone || sidebarTarget(previous) === sidebarTarget(sidebar)) {
       // `evalWidthTween`'s contract: under reduced motion the caller writes
       // the endpoint — the CSS has already snapped, and the settled formula
-      // below IS the endpoint. The phone never mounts the hero.
+      // below IS the endpoint. At phone the sidebar is out of flow, so there
+      // is no painted column width to tween — the hero's sidebar term is
+      // pinned to 0 by the `sidebarNow` phone arm above.
       setAnimatedSidebar(null);
       return;
     }
@@ -660,7 +670,7 @@ export function ConversationPage() {
 
     const wrapper = wrapperRef.current;
     const stack = bottomStackRef.current;
-    if (wrapper !== null && stack !== null && !phone) {
+    if (wrapper !== null && stack !== null) {
       const stackRect = stack.getBoundingClientRect();
       // The wrapper's NATURAL slot (transform excluded — offsets are layout
       // values): the desktop's prepaint reads the layout bounds.
@@ -717,12 +727,13 @@ export function ConversationPage() {
   // rescaled by the right pane), mounted while `!has_selection` or the dock
   // is still dissolving one away, outside the transcript's edge fade.
   // `sidebar_now` is the TWEENED width while the sidebar slide runs
-  // (ticket 34) — the settled target otherwise. The mount decision consumes
+  // (ticket 34) — the settled target otherwise (0 at phone, where the
+  // sidebar is an out-of-flow overlay). The mount decision consumes
   // the MUTABLE frame ticked in THIS render (the same-render tick above,
   // ticket 35 — shell.rs:5883's `(!has_selection || dock_frame.active)`),
-  // while `dockFrame` state drives the visuals; the phone layer never
-  // mounts the hero (out of scope, spec decision 5).
-  const heroVisible = heroLayerMounted(hasSelection, dockRef.current.frame) && !phone;
+  // while `dockFrame` state drives the visuals; the phone layer mounts the
+  // hero too (ticket 53 amended decision 5).
+  const heroVisible = heroLayerMounted(hasSelection, dockRef.current.frame);
   const heroWidth = Math.max(viewport - (animatedSidebar ?? sidebarNow), 0);
 
   // The transcript outlet: selected chat → transcript; nothing selected →
