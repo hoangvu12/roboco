@@ -40,6 +40,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Dialog, type DialogRootProps, type DialogPopupProps } from "@base-ui/react/dialog";
 import { useOverlayKeyboardSource } from "./overlay";
+import { drawerOnOpenChange, RbDrawerSheet } from "./responsive-surface";
+import { useIsPhone } from "../../state/media";
 
 export interface RbDialogProps {
   /** Controlled open. Close-on-unmount is the normal parity pattern (no exit motion). */
@@ -128,9 +130,39 @@ export interface RbDialogGlassProps {
  * is the caller's `[data-closed]` CSS, which Base UI's animation-aware
  * unmount waits out — the palette's 100ms layer fade, replacing the old
  * layer's reap timer.
+ *
+ * At ≤768px (ticket 49) the glass renders through the shared phone sheet
+ * (`RbDrawerSheet`): the 680px palette as a bottom sheet — the natural
+ * mobile form; its own phone cap (`width: 100%; max-width: 680px`,
+ * `app.css`'s `.add-space-card` block) applies inside the sheet unchanged.
+ * The caller's backdrop/card classes ride along so the `[data-closed]`
+ * exit CSS keeps working through the sheet exactly as through the
+ * centered form. `disablePointerDismissal` is NOT passed here — the glass
+ * contract's scrim press closes, same as at desktop.
  */
 export function RbDialogGlass(props: RbDialogGlassProps) {
+  // Registered here for the desktop arm; the phone sheet re-registers the
+  // same name through its own seam (idempotent — the registry is a Set, so
+  // both arms agree on the claim without fighting over it).
   useOverlayKeyboardSource(props.overlaySource, props.overlayOpen ?? props.open);
+  const isPhone = useIsPhone();
+  if (isPhone) {
+    return (
+      <RbDrawerSheet
+        open={props.open}
+        onOpenChange={drawerOnOpenChange(props.onOpenChange)}
+        onOpenChangeComplete={props.onOpenChangeComplete}
+        ariaLabel={props.ariaLabel}
+        backdropClassName={`modal-glass-backdrop ${props.backdropClassName ?? ""}`}
+        cardClassName={`rb-dialog-card ${props.cardClassName ?? ""}`}
+        style={props.style}
+        overlaySource={props.overlaySource}
+        overlayOpen={props.overlayOpen}
+      >
+        {props.children}
+      </RbDrawerSheet>
+    );
+  }
   return (
     <Dialog.Root
       open={props.open}

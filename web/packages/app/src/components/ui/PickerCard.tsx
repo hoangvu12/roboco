@@ -22,6 +22,9 @@
  * this one and opens that one — Base UI's `trigger-press` reason, the
  * four-chip switching behavior (pickers.rs's menu switching) the wrapper
  * already carries.
+ *
+ * At ≤768px (ticket 49) the card body opens as the shared bottom sheet
+ * instead of the floating card — see the branch in `PickerCard` below.
  */
 
 import { useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
@@ -33,6 +36,8 @@ import {
   type AnchorPlacement,
   type RbPopoverProps,
 } from "../base/popover";
+import { drawerOnOpenChange, RbDrawerSheet } from "../base/responsive-surface";
+import { useIsPhone } from "../../state/media";
 
 export interface PickerCardProps {
   /** Controlled open — the caller owns every open/close transition. */
@@ -87,6 +92,37 @@ export interface PickerCardProps {
 /** `PickerCard` — trigger + popover card, pre-wired as one unit. */
 export function PickerCard(props: PickerCardProps) {
   const [handle] = useState(() => createRbPopoverHandle());
+  // The responsive branch lives HERE (one place — every consumer converts
+  // at once): at ≤768px the card body opens as the shared bottom sheet
+  // (`base/responsive-surface.tsx`'s `RbDrawerSheet`, ticket 49) with the
+  // trigger unchanged — same element, same classes; its press toggles the
+  // sheet through `Drawer.Trigger`'s `render` adoption exactly as the
+  // popover form adopts it, and the pressed/expanded styling keeps
+  // following the caller's controlled `open` flag. `placement`, `gap`, and
+  // `width` are ignored (the sheet spans the viewport), as are
+  // `openOnHover`/`hoverDelayMs` (no hover layer to arm under a modal
+  // sheet) and `escapeFocusTarget`/`motionSpeed` (the sheet's modal
+  // contract: Base UI's default focus return, no popover exit window).
+  // The card body itself renders unchanged — the sheet replaces
+  // placement, not the card's inner layout.
+  const isPhone = useIsPhone();
+  if (isPhone) {
+    return (
+      <RbDrawerSheet
+        open={props.open}
+        onOpenChange={drawerOnOpenChange(props.onOpenChange)}
+        trigger={props.trigger}
+        role={props.role}
+        ariaLabel={props.ariaLabel}
+        initialFocus={props.initialFocus}
+        cardClassName={props.cardClassName ?? "popover-card"}
+        overlaySource={props.overlaySource}
+        onKeyDown={props.onKeyDown}
+      >
+        {props.children}
+      </RbDrawerSheet>
+    );
+  }
   const style: CSSProperties | undefined =
     props.width === undefined ? props.style : { ...props.style, width: props.width };
   return (
