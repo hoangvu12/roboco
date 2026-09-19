@@ -833,7 +833,7 @@ export function shouldCloseDrawer(
  *
  * A layout effect, not a passive one: the class it flips
  * (`shell-pane-gliding`) must ride the SAME commit as the takeover flip, or
- * the titlebar's row-left jump would spend a frame inside its padding-left
+ * the titlebar's row-left jump would spend a frame inside its translateX
  * transition before the suppression below lands.
  */
 function useTakeoverStableWidth(takeover: boolean, conversation: number): number | null {

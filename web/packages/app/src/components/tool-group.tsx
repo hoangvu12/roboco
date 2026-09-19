@@ -44,6 +44,7 @@ import {
   toolConnectorRevealProgress,
   toolDisclosureProgress,
   toolFoldProgress,
+  toolRevealClock,
   toolRowRevealProgress,
   ToolGroupMotionStore,
   type BlobFetch,
@@ -69,9 +70,10 @@ import { GlyphSpinner } from "./glyph-spinner";
  * blob affordance row when one is offered; spawn chips are LINKS whose whole
  * card opens the subagent's transcript as a right-pane tab.
  *
- * While any tween/reveal is unfinished the row re-renders on a rAF clock
- * (the desktop's invisible per-frame canvas); the loop stops when every
- * progress reaches 1.
+ * While any tween/reveal is unfinished the row re-renders on the SHARED rAF
+ * clock (ticket 59, the desktop's invisible per-frame canvas — ONE loop for
+ * every live row, armed by the first subscriber and stopped by the last);
+ * per-row timings are unchanged.
  */
 
 // ---------------------------------------------------------------------------
@@ -199,19 +201,15 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
   }
   const bodyHeight = bodyTweened.height;
 
-  // The rAF clock: the desktop keeps requesting frames while a tween/reveal
-  // is unfinished; the loop stops when every progress reaches 1.
+  // The SHARED rAF clock (ticket 59): the desktop keeps requesting frames
+  // while a tween/reveal is unfinished — ONE loop drives every live row and
+  // stops when the last row's progress reaches 1. The row still computes
+  // every progress from the delivered `now`, so its timings are untouched.
   useEffect(() => {
     if (!motionActive) {
       return;
     }
-    let raf = 0;
-    const tick = (): void => {
-      setNow(performance.now());
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return toolRevealClock.subscribe(setNow);
   }, [motionActive]);
 
   // The rendered-open flip without a user click (auto-open expiring) seeds
