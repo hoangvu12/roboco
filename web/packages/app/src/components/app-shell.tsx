@@ -44,6 +44,7 @@ import {
   titlebarRowLeft,
   useSidebarLayout,
   useViewportWidth,
+  PHONE_MAX_WIDTH,
 } from "../state/layout";
 import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
