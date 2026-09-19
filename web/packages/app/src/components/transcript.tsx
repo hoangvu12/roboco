@@ -80,15 +80,6 @@ import { UserAttachments } from "./attachments/user-attachments";
 import { MatrixSpinner } from "./glyph-spinner";
 import { WorkingTrailer, type WorkingTrailerState } from "./working-trailer";
 
-/**
- * The chat transcript — virtualization at block granularity over the row model
- * of `../lib/transcript.ts` (the desktop's `rows_for_entry` port), with the
- * stick-to-bottom spring and the own-turn runway driving the scroller. Rows
- * are accounted by measured heights (estimates until rendered, 320px
- * overdraw), so a thousand-message chat keeps a bounded DOM and a stable
- * viewport.
- */
-
 /** Line cap for a FETCHED full output (defensive; desktop FULL_OUTPUT_MAX_LINES). */
 const FULL_OUTPUT_MAX_LINES = 400;
 
@@ -111,7 +102,21 @@ export interface JumpButtonState {
   readonly jump: () => void;
 }
 
-export function TranscriptView({
+/**
+ * The chat transcript — virtualization at block granularity over the row model
+ * of `../lib/transcript.ts` (the desktop's `rows_for_entry` port), with the
+ * stick-to-bottom spring and the own-turn runway driving the scroller. Rows
+ * are accounted by measured heights (estimates until rendered, 320px
+ * overdraw), so a thousand-message chat keeps a bounded DOM and a stable
+ * viewport.
+ *
+ * Memoized (ticket 57b): every prop is stable across the page's mid-glide
+ * commits (the flip, a chrome mount crossing, the settle — the discrete
+ * publishes of the de-Reacted dock pump), so the pump's phase events and the
+ * async loads that re-render the page no longer descend into the transcript
+ * tree; the row renders ride the store's own subscription.
+ */
+export const TranscriptView = memo(function TranscriptView({
   client,
   docId,
   deviceId,
@@ -223,7 +228,7 @@ export function TranscriptView({
       deliveryDegraded={deliveryDegraded}
     />
   );
-}
+});
 
 function TranscriptSurface({
   store,

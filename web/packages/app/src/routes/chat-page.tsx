@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { flushSync } from "react-dom";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { motion } from "@roboco/theme";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { encodeScopedId, methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
@@ -15,7 +13,6 @@ import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import type { SubagentOpen } from "../components/tool-group";
-import { remaskNewThreadBackground } from "../components/new-thread-background";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
@@ -25,11 +22,23 @@ import { NewThreadCanvas } from "./index-page";
 import {
   bottomClearance,
   conversationWidth,
-  evalWidthTween,
   sidebarTarget,
   useSidebarLayout,
   useViewportWidth,
 } from "../state/layout";
+import {
+  SIDEBAR_GLIDE_MS,
+  SIDEBAR_SETTLE_CAP_MS,
+  sidebarTweenSignal,
+} from "../lib/sidebar-tween";
+import {
+  DockMountSequencer,
+  clearDockGlideVars,
+  dockGlideChannels,
+  dockGlideSignal,
+  writeDockGlideVars,
+} from "../lib/dock-glide";
+import type { SurfaceTreatment } from "@roboco/theme";
 import { useIsPhone } from "../state/media";
 import { navEntryForPath } from "../state/nav-history";
 import {
@@ -52,10 +61,6 @@ import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
-
-/** `motion::RESIZE` — the 200ms curve the sidebar glide and the hero's tween ride. */
-const SIDEBAR_GLIDE_MS =
-  motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
 
 /**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
@@ -480,120 +485,158 @@ export function ConversationPage() {
   // snaps everything through `reducedMotion`.
   const dockReduced = reducedMotion;
 
-  // ── The sidebar slide (ticket 34) ─────────────────────────────────────
-  // `toggle_sidebar` (shell.rs:1947-1957) arms a oneshot 200ms tween from
-  // the PAINTED width at the flip — a mid-animation reversal restarts from
-  // what is painted — and the desktop's `sidebar_now()` (3797-3801)
-  // evaluates it per frame, feeding `hero_width = viewport −
-  // sidebar_now()` (shell.rs:5897). The web's column already glides on the
-  // exact CSS transition (`app.css:1159`); this loop is the missing half —
-  // feeding the ANIMATED value to the hero (and its mask) instead of the
-  // target. `heroWidth` stays a prop-driven inline style with NO CSS width
-  // transition: one clock (this loop) must own the width, or the mask
-  // cannot follow it.
-  const sidebarTweenRef = useRef<{ from: number; to: number; startedAt: number } | null>(null);
+  // ── The sidebar slide (tickets 34 → 57a) ─────────────────────────────
+  // `toggle_sidebar` (shell.rs:1947-1957) flips the column target; the
+  // desktop's `sidebar_now()` (3797-3801) evaluates the 200ms tween IN
+  // RENDER (one scalar, GPU-side). The web's peer is now a CSS `width`
+  // transition the BROWSER interpolates: `.new-thread-hero[data-sidebar-
+  // tween="1"]` (app.css) rides the exact `--rb-motion-resize` spec the
+  // column glides on, so the hero and the column share one frame clock with
+  // ZERO React frames — no rAF loop, no synchronous re-render per frame
+  // (ticket 57a replaces the ticket-34 pump; the visible targets — the
+  // 200ms slide, the easeOut curve, the reduced-motion snap — are
+  // unchanged). The cutout hole tracks
+  // the pill through the raster-window CSS (the readiness layer holds the
+  // pre-flip bitmap centered on the gliding hero, `app.css`), and the hero
+  // re-rasters ONCE, at settle. A mid-glide reversal needs no capture: a CSS
+  // transition retargets from the painted width, which IS the desktop's
+  // "restarts from what is painted" semantics.
   const previousSidebarRef = useRef(sidebar);
-  // The animated sidebar width while a tween is live, else null — settled,
-  // where the target formula below IS the endpoint.
-  const [animatedSidebar, setAnimatedSidebar] = useState<number | null>(null);
-  const [sidebarPump, setSidebarPump] = useState(0);
+  // True while the glide runs: flips the hero's `data-sidebar-tween` flag
+  // (its width transition + the raster window) from the flip's follow-up
+  // commit to the settle commit. Two React commits per toggle, none per
+  // frame.
+  const [sidebarTweening, setSidebarTweening] = useState(false);
+  // The FLIP render's width hold: the flip commit re-renders with the NEW
+  // `sidebarNow` before the layout effect below can raise the flag, so the
+  // flip render pins the hero's width to the PREVIOUS target — the flip
+  // commit is a visual no-op, and the ONE commit that follows (flag on +
+  // new width) is the only width change the browser recalcs, which is what
+  // arms the transition (a forced layout read inside the flip commit's own
+  // layout effects would otherwise recalc the change with the flag still
+  // off, and the hero would snap). Mid-glide reversals skip the hold: the
+  // running transition retargets from the painted width, so committing the
+  // new target directly is correct.
+  const sidebarFlip = previousSidebarRef.current.collapsed !== sidebar.collapsed;
+  const sidebarTweenArming =
+    sidebarFlip &&
+    !reducedMotion &&
+    !phone &&
+    sidebarTarget(previousSidebarRef.current) !== sidebarTarget(sidebar);
+  const heroSidebarTerm = sidebarTweenArming && !sidebarTweening
+    ? sidebarTarget(previousSidebarRef.current)
+    : sidebarNow;
 
-  // Arm on a flip. A LAYOUT effect: the flip commit would otherwise paint
-  // the endpoint for one frame (heroWidth falls back to the target before
-  // the loop's first frame); writing `from` here re-renders before paint,
-  // so the flip frame paints the hero exactly where it already is.
+  // Arm on the flip. A LAYOUT effect so the flag's commit lands before
+  // paint (the hold above made the flip commit itself a no-op).
   useLayoutEffect(() => {
     const previous = previousSidebarRef.current;
     previousSidebarRef.current = sidebar;
     if (previous.collapsed === sidebar.collapsed) {
       // Not a flip: a seam drag took the clock over mid-tween (the column
       // tracks the pointer exactly under `data-rb-resizing`) — drop the
-      // tween so the hero follows the drag instead of a stale target.
-      if (sidebarTweenRef.current !== null) {
-        sidebarTweenRef.current = null;
-        setAnimatedSidebar(null);
+      // flag so the hero's width transition dies with the column's and the
+      // hero follows the drag; NewThreadBackground's settle path snaps the
+      // raster to the drag geometry in the same commit.
+      if (sidebarTweening) {
+        sidebarTweenSignal.settle();
+        setSidebarTweening(false);
       }
       return;
     }
-    sidebarTweenRef.current = null;
     if (reducedMotion || phone || sidebarTarget(previous) === sidebarTarget(sidebar)) {
-      // `evalWidthTween`'s contract: under reduced motion the caller writes
-      // the endpoint — the CSS has already snapped, and the settled formula
-      // below IS the endpoint. At phone the sidebar is out of flow, so there
-      // is no painted column width to tween — the hero's sidebar term is
-      // pinned to 0 by the `sidebarNow` phone arm above.
-      setAnimatedSidebar(null);
+      // The reduce arm: the endpoint, directly — the reduce block in
+      // app.css kills the transition, and the settled formula above IS the
+      // endpoint. At phone the sidebar is out of flow, so there is no
+      // painted column width to tween — the hero's sidebar term is pinned
+      // to 0 by the `sidebarNow` phone arm.
+      if (sidebarTweening) {
+        sidebarTweenSignal.settle();
+        setSidebarTweening(false);
+      }
       return;
     }
-    // `from` = the PAINTED width at the flip (a live tween's last frame,
-    // else the previous target) plus the live edge-bounce offset — the
-    // desktop's `sidebar_now()` captures both before `toggle_sidebar`
-    // clears the bounce.
-    const painted = animatedSidebar ?? sidebarTarget(previous);
-    const from = painted + readSidebarEdgeBounceOffset();
-    const to = sidebarTarget(sidebar);
-    sidebarTweenRef.current = { from, to, startedAt: performance.now() };
-    setAnimatedSidebar(from);
-    setSidebarPump((pump) => pump + 1);
-    // `animatedSidebar`/`reducedMotion`/`phone` are read from this render's
+    // A qualifying flip — or a mid-glide reversal (the retarget restarts
+    // from the painted width on its own). The settle listeners below own
+    // the fall.
+    sidebarTweenSignal.arm();
+    setSidebarTweening(true);
+    // `sidebarTweening`/`reducedMotion`/`phone` are read from this render's
     // closure on purpose: only a flip re-arms, never their own changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebar]);
 
-  // The frame pump: one write per ANIMATION frame while the tween is live —
-  // the web peer of the desktop's `motion_active` → rAF render loop. The
-  // setState is flushed SYNCHRONOUSLY inside the callback, not scheduled:
-  // the column's CSS transition is evaluated at style time, so the commit
-  // must land inside this same rAF phase for the hero to ride the SAME
-  // frame's clock — the web peer of the desktop evaluating `sidebar_now()`
-  // in render. A scheduled commit lands after paint and trails the column
-  // by a frame. The same loop then re-runs the hero's remask, so the cutout
-  // hole tracks the pill's viewport-space rect every frame (mask.rs:49-51):
-  // the pill glides with the column (`margin-inline: auto`) even though its
-  // size does not change.
+  // The settle: `transitionend` on the hero's width transition is the glide
+  // falling — ONE commit (flag off), and NewThreadBackground's layout effect
+  // re-rasters at the settled geometry inside it, before paint. The hero
+  // element is NewThreadBackground's (reached below via NewThreadCanvas);
+  // the settle cap covers the swallowed cases (the hero unmounts mid-glide,
+  // the tab hides the transition, a kill cancels without a successor), and
+  // a cancel whose width already matches the inline target settles at once
+  // (that is the reduce/resize snap, not a retarget).
   useEffect(() => {
-    if (sidebarTweenRef.current === null) {
+    if (!sidebarTweening) {
       return;
     }
-    const raf = requestAnimationFrame(() => {
-      const tween = sidebarTweenRef.current;
-      if (tween === null) {
+    const settle = (): void => {
+      sidebarTweenSignal.settle();
+      setSidebarTweening(false);
+    };
+    const hero = document.querySelector<HTMLElement>(".new-thread-hero");
+    const inlineWidth = hero === null ? null : parseFloat(hero.style.width);
+    const isHeroWidthEvent = (event: TransitionEvent): boolean =>
+      event.propertyName === "width" && event.target === hero;
+    const onEnd = (event: TransitionEvent): void => {
+      if (isHeroWidthEvent(event)) {
+        settle();
+      }
+    };
+    const onCancel = (event: TransitionEvent): void => {
+      if (!isHeroWidthEvent(event) || hero === null) {
         return;
       }
-      if (reducedMotion) {
-        // `evalWidthTween`'s contract: the endpoint, directly — the CSS has
-        // already snapped.
-        sidebarTweenRef.current = null;
-        setAnimatedSidebar(null);
-        return;
+      // A retarget fires cancel + restart (the width is mid-flight, away
+      // from the inline target — stay armed for the successor); a kill
+      // (reduce flip, `data-rb-resizing`) snaps the width TO the inline
+      // target — settle now so the settle remask lands with the snap.
+      if (inlineWidth !== null && Math.abs(hero.offsetWidth - inlineWidth) < 0.5) {
+        settle();
       }
-      const elapsed = performance.now() - tween.startedAt;
-      const value = evalWidthTween(tween.from, tween.to, elapsed);
-      flushSync(() => {
-        setAnimatedSidebar(value);
-      });
-      remaskNewThreadBackground();
-      if (elapsed >= SIDEBAR_GLIDE_MS) {
-        // Done: hand the width back to the settled formula (the same
-        // number — `to`), so a later drag can never read a stale one.
-        sidebarTweenRef.current = null;
-        setAnimatedSidebar(null);
-        return;
-      }
-      setSidebarPump((pump) => pump + 1);
-    });
-    return () => cancelAnimationFrame(raf);
-    // `reducedMotion` rides along so a mid-tween flip to reduced motion
-    // snaps instead of running the clock out.
+    };
+    const cap = window.setTimeout(settle, SIDEBAR_GLIDE_MS + SIDEBAR_SETTLE_CAP_MS);
+    hero?.addEventListener("transitionend", onEnd);
+    hero?.addEventListener("transitioncancel", onCancel);
+    return () => {
+      window.clearTimeout(cap);
+      hero?.removeEventListener("transitionend", onEnd);
+      hero?.removeEventListener("transitioncancel", onCancel);
+    };
+    // `sidebar` re-runs on a mid-glide reversal so the cap restarts and
+    // still bounds the NEW glide, not the old one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sidebarPump, reducedMotion]);
+  }, [sidebarTweening, sidebar]);
 
   const dockRef = useRef(new DockState());
   const [dockFrame, setDockFrameState] = useState<DockFrame>(() => dockFrameSettled(false));
-  const [dockPump, setDockPump] = useState(0);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const prepaintMovingRef = useRef(false);
   const dockTickedRef = useRef(false);
+  // The de-Reacted pump's channels (ticket 57b, §2.3): the live frame the
+  // composer's evaluate pass reads per frame (nulled at render — the
+  // `dockFrame` prop is authoritative between glides; the pump writes it
+  // inside its rAF callback, before the evaluate it invokes), and the
+  // composer's evaluate pass itself, parked here so the loop can re-run it
+  // per animation frame with zero React state.
+  const liveDockFrame = useRef<DockFrame | null>(null);
+  liveDockFrame.current = null;
+  const dockEvaluateRef = useRef<(() => void) | null>(null);
+  // The pump's per-frame inputs, read at rAF time through refs — renders
+  // keep them current (the loop never re-arms per frame, so it cannot read
+  // them from a stale closure).
+  const viewportHeightRef = useRef(viewportHeight);
+  viewportHeightRef.current = viewportHeight;
+  const dockReducedRef = useRef(dockReduced);
+  dockReducedRef.current = dockReduced;
 
   // ── The pane's synchronous width — the handoff's arming input ───────────
   // `right_now` (shell.rs:3820-3826): the pane's width computed from STATE,
@@ -612,9 +655,11 @@ export function ConversationPage() {
   const paneState = useRightPane(chatId);
   const paneOpen = hasSelection && paneState.open;
   const paneNowWidth = paneOpen
-    ? resolvePaneWidth(paneState, viewport, phone ? 0 : (animatedSidebar ?? sidebarNow)) +
+    ? resolvePaneWidth(paneState, viewport, phone ? 0 : sidebarNow) +
       (paneState.expanded ? 0 : readPaneEdgeBounceOffset())
     : 0;
+  const paneNowWidthRef = useRef(paneNowWidth);
+  paneNowWidthRef.current = paneNowWidth;
 
   // ── observePane → transcriptWidth → tick — the desktop's paint order ────
   // KNOWN LIMITATION (sanctioned per tickets 35/36): this render body mutates
@@ -645,6 +690,8 @@ export function ConversationPage() {
     hasSelection,
     paneHandoffLive,
   );
+  const mainContentWidthRef = useRef(mainContentWidth);
+  mainContentWidthRef.current = mainContentWidth;
 
   // ── The same-render dock tick (ticket 35, shell.rs:5882-5885) ────────────
   // The desktop decides the hero layer's mount from the frame ticked in the
@@ -747,51 +794,135 @@ export function ConversationPage() {
     }
   });
 
-  // The frame pump: one tick per ANIMATION FRAME while anything is in
-  // flight (the desktop's `request_animation_frame` in prepaint/tick). The
-  // setState lands in the rAF callback, so the tick's dt is the real frame
-  // gap and the re-render's layout effect re-anchors without ticking again.
-  // The pane-progress leg is shell.rs:7907-7909's `motion_active` peer
-  // (`if panel_handoff { motion_active.set(true) }`): the handoff's 0.320 s
-  // clock can outlive the glide AND the choreography, so `dockFrame.active`
-  // alone would stop the pump early and strand the composer mid-fade (the
-  // §2.4.2 warning) — the gate re-reads the live progress on every pump
-  // bump.
-  useEffect(() => {
-    if (!dockFrame.active && !prepaintMovingRef.current && dockRef.current.paneProgress() === null) {
-      return;
-    }
-    const raf = requestAnimationFrame(() => {
-      const next = dockRef.current.tick(hasSelection, dockReduced, performance.now());
-      setDockFrameState((prev) => (dockFrameEquals(prev, next) ? prev : next));
-      setDockPump((value) => value + 1);
-    });
-    return () => cancelAnimationFrame(raf);
-    // `hasSelection` rides along so a mid-glide reversal retargets the next
-    // frame's tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dockFrame.active, dockPump, hasSelection]);
-
   // The composer's own width: glides on the dock's clock (snapping inside
   // the handoff's invisible interval), clamped to the 768px cap — the
   // desktop's `layout_width(main_content_width.min(COMPOSER_MAX_WIDTH))`,
   // fed back through `set_available_width` so the pill re-wraps mid-glide.
   // `layoutWidth` with a ~0 dt is a no-op, so render-path calls are safe.
   const composerWidthTarget = Math.min(Math.max(columnWidth ?? COMPOSER_MAX_WIDTH, 0), COMPOSER_MAX_WIDTH);
+  const composerWidthTargetRef = useRef(composerWidthTarget);
+  composerWidthTargetRef.current = composerWidthTarget;
   const composerWidth = dockRef.current.layoutWidth(composerWidthTarget, dockReduced, performance.now());
+
+  // The frame pump, de-Reacted (ticket 57b, §2.3): one rAF loop while
+  // anything is in flight (the desktop's `request_animation_frame` in
+  // prepaint/tick), but the frame's channels land as CSS custom properties
+  // on the column (`writeDockGlideVars`) and the composer's evaluate pass
+  // is invoked imperatively through `dockEvaluateRef` — ZERO React state
+  // per frame (the old pump re-rendered the whole page per frame for the
+  // 420/470 ms glide + the 0.32 s handoff; the audit's S1(b) #1). The loop
+  // self-sustains on the MUTABLE dock state — the effect no longer re-arms
+  // per frame — and runs the desktop's per-paint order: the pane sample
+  // (the handoff's clock USED to advance on the pump's re-renders, so the
+  // loop must sample it itself — observe_pane at shell.rs:7901-7906), the
+  // transcript-width retention (:7915-7919), the tick (:5882-5885), the
+  // width glide, the composer's evaluate (the child-first layout-effect
+  // peer), then prepaint. The pane-progress leg is shell.rs:7907-7909's
+  // `motion_active` peer: the handoff's 0.320 s clock can outlive the glide
+  // AND the choreography, so `frame.active` alone would stop the loop early
+  // and strand the composer mid-fade (the §2.4.2 warning) — the gate
+  // re-reads the live progress on every frame.
+  useEffect(() => {
+    if (!dockFrame.active && !prepaintMovingRef.current && dockRef.current.paneProgress() === null) {
+      // The glide is over and the settle commit has landed: the JSX
+      // fallbacks are authoritative again. Clear the converged vars (the
+      // removal never paints a jump — they equal the settled values within
+      // the position epsilon) and null the live frame (the prop is the
+      // authority between glides).
+      clearDockGlideVars(chatColumnRef.current?.style ?? null);
+      liveDockFrame.current = null;
+      return;
+    }
+    dockGlideSignal.arm();
+    const mounts = new DockMountSequencer();
+    let raf = 0;
+    let stopped = false;
+    const pumpFrame = (): void => {
+      if (stopped) {
+        return;
+      }
+      const dock = dockRef.current;
+      const nowMs = performance.now();
+      const paneLive = dock.observePane(
+        hasSelection,
+        paneNowWidthRef.current,
+        !dockReducedRef.current,
+        nowMs,
+      );
+      dock.transcriptWidth(mainContentWidthRef.current, hasSelection, paneLive);
+      const frame = dock.tick(hasSelection, dockReducedRef.current, nowMs);
+      liveDockFrame.current = frame;
+      const composerWidth = dock.layoutWidth(composerWidthTargetRef.current, dockReducedRef.current, nowMs);
+      dockEvaluateRef.current?.();
+      const wrapper = wrapperRef.current;
+      const stack = bottomStackRef.current;
+      if (wrapper !== null && stack !== null) {
+        const stackRect = stack.getBoundingClientRect();
+        // The wrapper's NATURAL slot (transform excluded — offsets are
+        // layout values): the desktop's prepaint reads the layout bounds.
+        const bounds = {
+          left: stackRect.left + wrapper.offsetLeft,
+          top: stackRect.top + wrapper.offsetTop,
+          height: wrapper.offsetHeight,
+        };
+        const { dx, dy, moving } = dock.prepaint(bounds, viewportHeightRef.current, dockReducedRef.current, nowMs);
+        wrapper.style.transform = `translate(${dx}px, ${dy}px)`;
+        prepaintMovingRef.current = moving;
+      } else if (wrapper !== null) {
+        wrapper.style.transform = "";
+        prepaintMovingRef.current = false;
+      }
+      writeDockGlideVars(
+        chatColumnRef.current?.style ?? null,
+        dockGlideChannels(frame, dock.opacity(), composerWidth, readSurfaceTreatment()),
+      );
+      // The phase sequencer — the glide's ONLY React state writes: the
+      // chrome rows' mount crossings, published as the live frame so the
+      // composer's `> 0` mounts flip exactly when the channels cross zero
+      // (discrete, per-navigation; every other frame writes none).
+      if (mounts.crossing(frame)) {
+        setDockFrameState((prev) => (dockFrameEquals(prev, frame) ? prev : frame));
+      }
+      if (!frame.active && !prepaintMovingRef.current && dock.paneProgress() === null) {
+        // Settled: ONE publish lands the settled frame — the settle commit's
+        // JSX fallbacks, the composer's final evaluate (its `layout`
+        // republish), and the per-commit stack publication carry the rest.
+        // The vars stay set (converged = the settled values) until the
+        // effect's stop branch above clears them, and the signal falls for
+        // 59/63.
+        setDockFrameState((prev) => (dockFrameEquals(prev, frame) ? prev : frame));
+        dockGlideSignal.settle();
+        return;
+      }
+      raf = requestAnimationFrame(pumpFrame);
+    };
+    raf = requestAnimationFrame(pumpFrame);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      dockGlideSignal.settle();
+    };
+    // `hasSelection` re-runs on a mid-glide reversal so the closure (and the
+    // fresh `DockMountSequencer`) retarget with the next frame's tick;
+    // `dockFrame.active` re-runs at the flip and the settle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dockFrame.active, hasSelection]);
 
   // The hero: full conversation canvas (`viewport − sidebar_now`, never
   // rescaled by the right pane), mounted while `!has_selection` or the dock
   // is still dissolving one away, outside the transcript's edge fade.
-  // `sidebar_now` is the TWEENED width while the sidebar slide runs
-  // (ticket 34) — the settled target otherwise (0 at phone, where the
-  // sidebar is an out-of-flow overlay). The mount decision consumes
+  // During the sidebar slide (ticket 57a) the width term is the PREVIOUS
+  // target on the flip render (the hold that lets the flag commit arm the
+  // CSS transition) and the settled target otherwise — the ANIMATION
+  // between them is the browser's (`data-sidebar-tween`), never React
+  // state (0 at phone, where the sidebar is an out-of-flow overlay). The
+  // mount decision consumes
   // the MUTABLE frame ticked in THIS render (the same-render tick above,
   // ticket 35 — shell.rs:5883's `(!has_selection || dock_frame.active)`),
   // while `dockFrame` state drives the visuals; the phone layer mounts the
   // hero too (ticket 53 amended decision 5).
   const heroVisible = heroLayerMounted(hasSelection, dockRef.current.frame);
-  const heroWidth = Math.max(viewport - (animatedSidebar ?? sidebarNow), 0);
+  const heroWidth = Math.max(viewport - heroSidebarTerm, 0);
 
   // The transcript outlet: selected chat → transcript; nothing selected →
   // the centered new-thread composition. A DEPARTING transcript (undocking)
@@ -1004,13 +1135,20 @@ export function ConversationPage() {
             viewportHeight={viewportHeight}
             heroWidth={heroWidth}
             dissolve={dockFrame.visuals.dissolve}
+            sidebarTween={sidebarTweening}
           />
         )}
         <div
           className="chat-body"
           style={{
-            opacity: transcriptOpacity,
-            transform: `translateY(${transcriptRise}px)`,
+            // Ticket 57b: the glide's transcript channels ride the pump's
+            // CSS vars (written per frame on the column); the fallback is
+            // the last PUBLISHED frame — the flip, a mount crossing, or the
+            // settle — so a mid-glide render can never clobber the live
+            // values, and the settle commit's fallback takes over the
+            // instant the vars clear.
+            opacity: `var(--rb-dock-transcript-opacity, ${transcriptOpacity})`,
+            transform: `translateY(var(--rb-dock-transcript-rise, ${transcriptRise}px))`,
             // `transcript_width`'s retained value (shell.rs:5917-5938's
             // `.w(px(transcript_width))`): while a departing handoff runs,
             // the wrapper is pinned to the SOURCE column's width so the
@@ -1064,8 +1202,11 @@ export function ConversationPage() {
               id="persistent-composer"
               ref={wrapperRef}
               style={{
-                width: `${composerWidth}px`,
-                opacity: `${dockRef.current.opacity()}`,
+                // Ticket 57b: the glide's width and the handoff's
+                // fade-through ride the pump's CSS vars — the fallbacks are
+                // the last render's values, clobber-proof mid-glide.
+                width: `var(--rb-dock-composer-width, ${composerWidth}px)`,
+                opacity: `var(--rb-dock-pane-opacity, ${dockRef.current.opacity()})`,
               }}
             >
               <Composer
@@ -1083,6 +1224,8 @@ export function ConversationPage() {
                 editCommitRef={editCommitRef}
                 activateLatestQueued={activateLatestQueued}
                 dockFrame={dockFrame}
+                liveDockFrame={liveDockFrame}
+                dockEvaluateRef={dockEvaluateRef}
                 onNewThreadLaunched={onNewThreadLaunched}
                 dockCorrectionRef={dockCorrectionRef}
                 queueSlot={
@@ -1149,14 +1292,21 @@ function readEdgeOffset(varName: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** `sidebar_now()`'s bounce leg — `--rb-sidebar-edge-offset`. */
-function readSidebarEdgeBounceOffset(): number {
-  return readEdgeOffset("--rb-sidebar-edge-offset");
-}
-
 /** `right_now()`'s bounce leg (shell.rs:3822-3825) — `--rb-pane-edge-offset`. */
 function readPaneEdgeBounceOffset(): number {
   return readEdgeOffset("--rb-pane-edge-offset");
+}
+
+/**
+ * The hero's dissolve multiplier's surface leg, read live per pump frame —
+ * the same resolution `NewThreadBackground`'s reactive hook performs (the
+ * `data-surface` attribute on the document root, installed by `theme.ts`).
+ */
+function readSurfaceTreatment(): SurfaceTreatment {
+  if (typeof document === "undefined") {
+    return "opaque";
+  }
+  return document.documentElement.dataset.surface === "frosted" ? "frosted" : "opaque";
 }
 
 /**

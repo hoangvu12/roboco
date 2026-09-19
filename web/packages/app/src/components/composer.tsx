@@ -279,6 +279,23 @@ interface ComposerProps {
    * DESTINATION footprint and never pumps mid-route.
    */
   readonly dockCorrectionRef?: { current: number };
+  /**
+   * The dock glide's live frame channel (ticket 57b, §2.3): the page's rAF
+   * pump writes the frame it just ticked HERE, outside React, so the
+   * evaluate pass consumes the live `amount`/`active` per frame without a
+   * re-render. Null at render time (the `dockFrame` prop is authoritative
+   * between glides); set only inside the pump's frame callback, immediately
+   * before the evaluate it invokes through `dockEvaluateRef`.
+   */
+  readonly liveDockFrame?: { current: DockFrame | null };
+  /**
+   * The pump's evaluate channel: the composer parks its evaluate pass here
+   * (identity-stable by design — every input is a ref) so the page's rAF
+   * loop re-runs it once per animation frame with ZERO React state: during
+   * a glide the pill's height/radius, the box height, and the clearance
+   * correction are DOM writes; only the settle republishes `layout`.
+   */
+  readonly dockEvaluateRef?: { current: (() => void) | null };
 }
 
 export function Composer({
@@ -295,6 +312,8 @@ export function Composer({
   editCommitRef,
   activateLatestQueued,
   dockFrame = null,
+  liveDockFrame,
+  dockEvaluateRef,
   onNewThreadLaunched,
   dockCorrectionRef,
 }: ComposerProps) {
@@ -684,6 +703,24 @@ export function Composer({
   reducedMotionRef.current = reducedMotion;
   const availableWidthRef2 = useRef(availableWidth);
   availableWidthRef2.current = availableWidth;
+  // The glide's height channels write these directly (ticket 57b): the pill
+  // root and the expanded input box carry their animated height/radius as
+  // CSS custom properties — the JSX consumes them with a stale-safe
+  // fallback, so a mid-glide render cannot clobber the live values.
+  const pillRef = useRef<HTMLDivElement | null>(null);
+  const inputBoxRef = useRef<HTMLDivElement | null>(null);
+  // The morph loop's liveness, render-tracked: a glide that starts mid-morph
+  // must still publish the loop's death (the evaluate otherwise skips the
+  // state publish while the dock owns the height, which would leave the
+  // composer's own rAF clock ticking through the whole glide).
+  const morphLoopLiveRef = useRef(false);
+  morphLoopLiveRef.current = layout.morphing;
+  // The pump's evaluate channel (ticket 57b): the page's rAF loop calls the
+  // parked pass once per frame — every input is a ref, so the identity the
+  // pump holds stays valid however stale the closure.
+  if (dockEvaluateRef !== undefined) {
+    dockEvaluateRef.current = () => evaluateRef.current();
+  }
 
   evaluateRef.current = () => {
     const el = textareaRef.current;
@@ -776,8 +813,14 @@ export function Composer({
       commentStripHeight(commentCountRef.current);
     // `dock_height` (composer.rs:7489-7500): with a dock frame installed the
     // shared clock owns the pill's height across the route; without one the
-    // mode's own height applies.
-    const frame = dockFrameRef.current;
+    // mode's own height applies. The LIVE frame during a glide (the pump
+    // wrote it before invoking this pass — ticket 57b), else the prop-parked
+    // one; they agree whenever nothing is in flight.
+    const frame =
+      liveDockFrame !== undefined && liveDockFrame.current !== null
+        ? liveDockFrame.current
+        : dockFrameRef.current;
+    const dockDriven = frame !== null && frame.active;
     const dockAmount = frame !== null ? Math.min(Math.max(frame.amount, 0), 1) : 0;
     const baseHeight =
       frame !== null
@@ -854,6 +897,30 @@ export function Composer({
     const morphing =
       (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) ||
       (flipMorph !== null && !flipMorphDone(flipMorph, nowMs));
+    if (dockDriven) {
+      // The glide's height channels are DOM writes (ticket 57b, §2.3): the
+      // pill's outer height, its radius (`26 − 4·dock_amount`,
+      // composer.rs:7603 — the frost blur's mask follows the radius), and
+      // the expanded box's height ride CSS custom properties the JSX below
+      // consumes with a stale-safe fallback — `set_dock_frame` owns the
+      // height, so nothing re-renders for it. The settle evaluate's
+      // republish (the non-driven branch) plus the `[layout]` effect's var
+      // removal hand the values back to the state.
+      pillRef.current?.style.setProperty("--rb-dock-pill-height", `${pillHeight}px`);
+      pillRef.current?.style.setProperty("--rb-dock-pill-radius", `${(26 - 4 * dockAmount).toFixed(2)}px`);
+      if (mode) {
+        inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
+      }
+      if (!morphing && !morphLoopLiveRef.current) {
+        // A pure glide frame: the imperative writes above (plus the
+        // textarea height and the datasets already applied) carry
+        // everything — skip the state publish so the glide runs ZERO React
+        // frames. A glide that caught a live morph still publishes once,
+        // landing the loop's death (`morphing` false) so the composer's own
+        // rAF clock stops.
+        return;
+      }
+    }
     setLayout({
       pillHeight,
       boxHeight,
@@ -874,8 +941,29 @@ export function Composer({
     evaluateRef.current();
     // The dock's amount moves the pill height every frame of the route
     // glide — re-run the pass per frame change, not only per text/width
-    // change (the desktop recomputes per render).
+    // change (the desktop recomputes per render). The per-FRAME driver is
+    // the page's pump (it invokes the pass through `dockEvaluateRef`,
+    // ticket 57b); the prop change re-runs it at the discrete publishes
+    // (the flip, a chrome mount crossing, the settle).
   }, [text, expanded, availableWidth, staged.length, commentCount, tick, dockFrame?.amount, dockFrame?.active]);
+
+  // The glide vars fall with the state publish: the commit that republishes
+  // `layout` while the dock is no longer driving re-applies the JSX
+  // fallbacks settled, and removing the vars in the SAME commit (pre-paint)
+  // keeps the pill from flashing the pre-glide fallback. During a glide no
+  // publish lands (the evaluate's dock branch skips it), so the vars
+  // survive the whole glide by construction.
+  useLayoutEffect(() => {
+    const frame = liveDockFrame !== undefined ? liveDockFrame.current : null;
+    if ((frame ?? dockFrameRef.current)?.active !== true) {
+      pillRef.current?.style.removeProperty("--rb-dock-pill-height");
+      pillRef.current?.style.removeProperty("--rb-dock-pill-radius");
+      inputBoxRef.current?.style.removeProperty("--rb-dock-box-height");
+    }
+    // `dockFrameRef` is render-assigned; the live ref is pump-owned. This
+    // effect only needs to run when a publish landed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
 
   // The rAF loop: keep frames coming while a morph is in flight (the
   // desktop's `window.request_animation_frame`, shell.rs `motion_active`).
@@ -2722,7 +2810,7 @@ export function Composer({
         <div
           className="dock-target-selectors"
           id="dock-target-selectors"
-          style={{ opacity: `${chrome.newThread}` }}
+          style={{ opacity: `var(--rb-dock-chrome-new, ${chrome.newThread})` }}
         >
           <NewThreadTargetSelectors />
         </div>
@@ -2749,9 +2837,16 @@ export function Composer({
             <div
               className="composer-pill"
               data-mode={expandedRender ? "expanded" : "compact"}
+              ref={pillRef}
               style={{
-                height: `${layout.pillHeight}px`,
-                ...(surfaceRadius !== null ? { borderRadius: `${surfaceRadius.toFixed(2)}px` } : {}),
+                // Ticket 57b: the glide's animated height and radius ride
+                // the evaluate pass's CSS vars (written per frame while the
+                // dock drives); the fallback is the last PUBLISHED layout —
+                // settled between glides, clobber-proof mid-glide.
+                height: `var(--rb-dock-pill-height, ${layout.pillHeight}px)`,
+                ...(surfaceRadius !== null
+                  ? { borderRadius: `var(--rb-dock-pill-radius, ${surfaceRadius.toFixed(2)}px)` }
+                  : {}),
               }}
               onMouseDown={onPillMouseDown}
             >
@@ -2767,9 +2862,15 @@ export function Composer({
               <div className="composer-body">
                 <div
                   className="composer-input-box"
+                  ref={inputBoxRef}
                   style={
                     expandedRender
-                      ? { height: `${layout.boxHeight}px`, paddingTop: `${layout.textPad}px` }
+                      ? {
+                          // Ticket 57b: the glide's box height rides the
+                          // evaluate pass's CSS var (expanded mode only).
+                          height: `var(--rb-dock-box-height, ${layout.boxHeight}px)`,
+                          paddingTop: `${layout.textPad}px`,
+                        }
                       : { top: `${-layout.textGlide}px` }
                   }
                 >
@@ -2896,7 +2997,7 @@ export function Composer({
           {chrome.newThread > 0 && (
             <div
               className="composer-footer-layer composer-footer-layer-a"
-              style={{ opacity: `${chrome.newThread}` }}
+              style={{ opacity: `var(--rb-dock-chrome-new, ${chrome.newThread})` }}
             >
               <NewThreadGitSelectors />
             </div>
@@ -2904,7 +3005,7 @@ export function Composer({
           {chrome.session > 0 && (
             <div
               className="composer-footer-layer composer-footer-layer-b"
-              style={{ opacity: `${chrome.session}` }}
+              style={{ opacity: `var(--rb-dock-chrome-session, ${chrome.session})` }}
             >
               {footerSlot}
             </div>
