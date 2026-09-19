@@ -65,7 +65,6 @@ import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
 import { RightTabStrip } from "./right-tab-strip";
-import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
@@ -111,7 +110,6 @@ const TAKEOVER_GLIDE_MS =
 
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const fleet = useFleet();
   const session = useEngineSession();
   const status = useEngineStatus(session);
@@ -204,13 +202,7 @@ export function AppShell() {
 
   const onCloseDrawer = useCallback(() => {
     setSidebarOpen(false);
-    setDrawerOpen(false);
   }, []);
-
-  // The sidebar's user menu opens the engine drawer, whose open flag lives
-  // here; the shortcut bus carries it rather than threading a prop through
-  // the whole sidebar.
-  useEffect(() => onShortcut("open-engines", () => setDrawerOpen(true)), []);
 
   // The global keymap dispatch (`apply_keymap` + the action guards,
   // shell.rs:7768-7839): one capture-phase window listener consulting the
@@ -307,8 +299,9 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [table, route, pathname, paneChatId, pane.open, onNewChat]);
 
-  // The shell-owned actions subscribe to the bus the same way the engine
-  // drawer does — the keyboard layer stays free of component imports.
+  // The shell-owned actions subscribe to the bus the same way the
+  // scattered widget listeners do — the keyboard layer stays free of
+  // component imports.
   useEffect(() => onShortcut("toggle-sidebar", () => onToggleSidebar()), [onToggleSidebar]);
   useEffect(
     () =>
@@ -345,19 +338,19 @@ export function AppShell() {
 
   // The shell's Escape model — one capture-phase ladder (installed once) plus
   // the bubble-phase interrupt (`on_key_down` → `resolve_shell_escape`). The
-  // engine drawer and the phone sidebar register as a ladder surface; the
-  // popovers and dialogs that still close on their own Escape listeners are
-  // theirs to migrate onto the ladder in their tickets.
+  // phone sidebar registers as a ladder surface; the popovers and dialogs
+  // that still close on their own Escape listeners are theirs to migrate
+  // onto the ladder in their tickets.
   useEffect(() => installEscapeLadder(), []);
   useEffect(() => {
-    if (!drawerOpen && !sidebarOpen) {
+    if (!sidebarOpen) {
       return;
     }
     return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
       onCloseDrawer();
       return true;
     });
-  }, [drawerOpen, sidebarOpen, onCloseDrawer]);
+  }, [sidebarOpen, onCloseDrawer]);
 
   // Interrupts already in flight for a chat — the desktop's
   // `composer.is_interrupting(chat_id)`. A second Escape while the Stop
@@ -719,7 +712,6 @@ export function AppShell() {
           bounceVar="--rb-pane-edge-offset"
         />
       )}
-      <EngineDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }

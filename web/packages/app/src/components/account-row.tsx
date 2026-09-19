@@ -4,7 +4,6 @@ import { Icon } from "@roboco/icons";
 import { useEngineSessions } from "../state/session-provider";
 import { useFleet } from "../state/fleet";
 import { useWatchSnapshot } from "../state/hooks";
-import { emitShortcut } from "../state/shortcuts";
 
 /**
  * The sidebar's bottom identity row — the desktop's `render_user_menu`.
@@ -15,11 +14,12 @@ import { emitShortcut } from "../state/shortcuts";
  * quiet until hovered and settles one step stronger while the menu is open.
  *
  * The menu opens UPWARD with a 6px gap, exactly as wide as the trigger row,
- * and carries: the muted "Stored on this device" identity line, the
- * web-only Engines row (the pairing entry point — the desktop has no
- * per-device identity concept here, and the user menu is where its one
- * settings entry lives), then the single "Settings" row, which lands on the
- * Devices section (`SettingsSection::Devices`), the desktop's landing row.
+ * and carries exactly two things — desktop parity (`shell.rs:5290-5302`):
+ * the muted "Stored on this device" identity line, then the single
+ * "Settings" row, which lands on the Devices section
+ * (`SettingsSection::Devices`), the desktop's landing row. Engine
+ * management lives in Settings → Devices (ticket 45 folded the old
+ * web-only Engines drawer there).
  */
 export function AccountRow() {
   // The ACTIVE engine's session carries this row's identity — the desktop's
@@ -76,23 +76,6 @@ export function AccountRow() {
       {open && (
         <div className="user-menu-card" role="menu">
           <div className="user-menu-identity">Stored on this device</div>
-          {/*
-            Devices/engines are reached from the user menu, as on the desktop —
-            never from the titlebar, whose only trailing control is the right
-            pane's toggle. The web keeps this row as its pairing entry point.
-          */}
-          <button
-            type="button"
-            className="menu-item"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              emitShortcut("open-engines");
-            }}
-          >
-            <Icon name="monitor" size={16} />
-            Engines
-          </button>
           <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
             <Icon name="settingsMinimalistic" size={16} />
             Settings

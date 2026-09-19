@@ -4,6 +4,7 @@ import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } 
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
+import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import {
   accountInitial,
   accountLabel,
@@ -254,6 +255,7 @@ export function AccountsSettingsPage() {
       <p className="settings-subtitle">
         The Claude Code, Codex, and Cursor logins on this device. Roboco detects the live session, keeps each account
         backed up, and can swap between them.
+        <SettingsEngineIndicator />
       </p>
 
       {actionError !== null && (

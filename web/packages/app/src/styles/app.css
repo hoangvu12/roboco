@@ -236,7 +236,7 @@ a:focus-visible,
    * z-index outside these six tiers:
    *   5  pane seams (in-flow chrome that floats over column edges)
    *   40 titlebar (overlays every column)
-   *   50 drawers / sheets (the engine drawer, the phone sidebar's backdrop)
+   *   50 drawers / sheets (the phone sidebar's backdrop)
    *   55 menus + popovers, ONE generation: ticket 09's popover family and
    *      the legacy cards still on their own styling (the right-pane plus
    *      menu, the sidebar user menu) share the tier; ticket 10 collapsed
@@ -5633,8 +5633,7 @@ html[data-surface="frosted"] .composer-pill {
   margin: 0;
 }
 
-.pair-form,
-.add-engine {
+.pair-form {
   display: flex;
   flex-direction: column;
   gap: var(--rb-space-sm);
@@ -5649,156 +5648,6 @@ html[data-surface="frosted"] .composer-pill {
   color: var(--rb-text-faint);
   font-size: 12px;
   margin: 0;
-}
-
-/* ── Engine drawer ──────────────────────────────────────────────────── */
-
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  /* scrim(): literal black in both appearances — a scrim darkens what is
-     behind it; tinting toward the panel color washes light mode white. */
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 10vh var(--rb-space-md) var(--rb-space-md);
-  /* The drawer tier of the ladder — above the titlebar it slides over. */
-  z-index: var(--rb-z-drawer);
-}
-
-.drawer {
-  width: min(28rem, 100%);
-  max-height: 80vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-md);
-  padding: var(--rb-space-md);
-  background: var(--rb-dialog);
-}
-
-.drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.drawer-header h2 {
-  font-size: 15px;
-  margin: 0;
-}
-
-.drawer-note {
-  margin: 0;
-  color: var(--rb-text-faint);
-  font-size: 13px;
-}
-
-.engine-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-xs);
-}
-
-.engine-row {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-sm);
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-}
-
-.engine-row-active {
-  border-color: var(--rb-accent);
-  background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
-}
-
-.engine-row-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.engine-row-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.engine-row-host {
-  font-weight: 600;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-row-badge {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--rb-on-accent);
-  background: var(--rb-accent);
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-
-.engine-row-sub {
-  font-size: 12px;
-  color: var(--rb-text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-row-actions {
-  display: flex;
-  gap: var(--rb-space-xs);
-  flex: none;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.engine-row-pair {
-  color: var(--rb-warning);
-  border-color: color-mix(in srgb, var(--rb-warning) 50%, var(--rb-border));
-}
-
-.engine-row-pair:not(:disabled):hover {
-  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
-  color: var(--rb-warning);
-  border-color: var(--rb-warning);
-}
-
-.engine-row-parked {
-  border-color: color-mix(in srgb, var(--rb-danger) 35%, var(--rb-border));
-  background: color-mix(in srgb, var(--rb-danger) 4%, transparent);
-}
-
-.engine-row-sub {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  flex-wrap: wrap;
-}
-
-.engine-row-identity {
-  color: var(--rb-text-faint);
-  font-size: 12px;
-}
-
-.engine-row-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
 }
 
 /* ── Files surface (the pane's tree_pane) ────────────────────────────── */
@@ -9590,6 +9439,69 @@ button.files-save-pill:hover {
   line-height: 20px;
 }
 
+/* ── Settings engine indicator (the engine-addressing pages' pill) ──── */
+
+.settings-engine-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  margin-left: var(--rb-space-sm);
+  padding: 1px 8px;
+  border: 1px solid var(--rb-border);
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+  transition:
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.settings-engine-indicator:hover {
+  color: var(--rb-text-muted);
+  border-color: color-mix(in srgb, var(--rb-text-muted) 30%, transparent);
+}
+
+.settings-engine-indicator-open,
+.settings-engine-indicator-open:hover {
+  color: var(--rb-text-muted);
+  border-color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
+}
+
+.settings-engine-indicator-label {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-engine-indicator-caret {
+  flex: none;
+  opacity: 0.5;
+}
+
+/* The popover's rows: connection dot · host · active check. */
+.settings-engine-menu {
+  padding: 6px;
+}
+
+.settings-engine-row-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-engine-row-check {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
 /* `field_label` (widgets.rs:65-71): 13px Medium — the group caption over a
    control, not a page headline. */
 .settings-field-label {
@@ -11000,8 +10912,8 @@ button.files-save-pill:hover {
   position: fixed;
   inset: 0;
   z-index: var(--rb-z-modal);
-  /* scrim(): the same literal-black backdrop as .drawer-backdrop — the desktop
-     has one scrim strength, appearance-branched by alpha only. */
+  /* scrim(): literal black in both appearances — a scrim darkens what is
+     behind it; tinting toward the panel color washes light mode white. */
   background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
   align-items: flex-start;
@@ -12964,20 +12876,6 @@ html[data-surface="frosted"] .cr-tooltip {
     text-overflow: clip;
   }
 
-  /* Engine drawer: full-width on phones so the row actions don't wrap
-     into the engine host label. */
-  .drawer {
-    width: 100%;
-    max-height: 100vh;
-    min-height: 100vh;
-    border-radius: 0;
-    padding: var(--rb-space-md);
-  }
-
-  .drawer-backdrop {
-    padding: 0;
-  }
-
   /* Terminal dock: keep the drag handle easy to grab on phones (the handle
      spans the inner's top edge; -4px centers a taller grab zone on it). */
   .term-dock-handle {
@@ -13485,7 +13383,6 @@ html[data-surface="frosted"] .cr-tooltip {
 .sidebar-list,
 .settings-scroll,
 .settings-nav-sections,
-.drawer,
 .files-tree,
 .files-search-results,
 .files-code-scroll,
@@ -13505,7 +13402,6 @@ html[data-surface="frosted"] .cr-tooltip {
 .sidebar-list::-webkit-scrollbar,
 .settings-scroll::-webkit-scrollbar,
 .settings-nav-sections::-webkit-scrollbar,
-.drawer::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
 .files-search-results::-webkit-scrollbar,
 .files-code-scroll::-webkit-scrollbar,
