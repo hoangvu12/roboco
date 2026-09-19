@@ -287,4 +287,49 @@ Copied verbatim from research S3.d:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Implemented as specced, no deviations:
+
+- `crates/proto/src/entities.rs`: `AgentLoginStart` gained
+  `#[serde(default)] cli_opens_browser: bool` with the spec's doc comment
+  (serializes as `cliOpensBrowser`; `default` keeps old JSON fixtures
+  parsing).
+- `crates/engine/src/agent_accounts.rs`: in `start_codex_login` the flag is
+  computed in the same expression that sets `BROWSER` (a `match` on
+  `ensure_noop_browser(...)` — `Some` applies the env and yields `false`,
+  `None` yields `true`), so flag and env cannot drift; the non-unix arm is
+  a paired `#[cfg(not(unix))] let cli_opens_browser = true;` matching the
+  file's existing cfg-pair style (`write_file_atomic` :1991-1997). Claude
+  and cursor replies set `cli_opens_browser: false` explicitly. The two
+  adjacent comments (double-tab history :615-622, URL-scan :649-651) were
+  touched only to stop describing the pre-flag behavior.
+- `crates/ui/src/settings/accounts.rs:508`: the client open is now
+  `if !start.cli_opens_browser { cx.open_url(&start.url); }`; dialog
+  branching, poll loop, and the Reopen link untouched.
+- `web/packages/app/src/routes/settings-accounts.tsx` `addAccount`:
+  `window.open("about:blank", "_blank")` runs synchronously first (no
+  `noopener` — handle needed), then post-RPC: `cliOpensBrowser` →
+  `tab?.close()`; else navigate `tab.location.href = start.url` and sever
+  `tab.opener = null` (noopener property preserved); `tab === null` →
+  old `window.open(start.url, "_blank", "noopener,noreferrer")` fallback;
+  RPC failure → `tab?.close()` + existing error path. State machine and
+  Reopen anchors untouched. No CSS touched.
+- Wire types regenerated via `pnpm codegen` (only
+  `AgentLoginStart.ts` changed — gained `cliOpensBrowser: boolean`); no
+  other consumers found (the m5c integration test and the web test fakes
+  assert unrelated fields / are untyped stubs).
+
+Verification (worktree, Windows): `cargo check -p roboco-engine
+-p roboco-proto` green; `cargo check -p roboco-ui` green (warnings all
+pre-existing, none in touched files); `cargo test -p roboco-engine
+agent_accounts` 15/15; `cargo test -p roboco-engine --test
+m5c_accounts_uploads_titles` 12/13 — the one failure
+(`cursor_login_flow_spawns_shim_and_auto_activates`, os error 193
+spawning the `.mjs` shim) reproduces identically with this branch's
+changes stashed, i.e. pre-existing on this machine, unrelated to the
+ticket; `pnpm codegen:check` exit 0 ("wire types are fresh");
+`pnpm -r build` exit 0; `pnpm test` in `web/packages/app` 72 files /
+1165 tests green. Per §3, no new tests were invented for the flag logic
+(spec says the type flow is covered by wiregen + build typecheck).
+

@@ -139,18 +139,33 @@ export function AccountsSettingsPage() {
     if (client === null || login !== null) {
       return;
     }
+    // Pre-open a blank tab inside the click gesture: after the RPC await,
+    // popup blockers treat a fresh window.open as un-gestured and may eat
+    // it. No `noopener` here — the handle is needed to navigate the tab
+    // once the start reply lands (the opener is severed right after).
+    const tab = window.open("about:blank", "_blank");
     setActionError(null);
     setLogin({ kind: "starting", harness });
     void (async () => {
       try {
         const start = await startAgentLogin(client, harness, target);
-        window.open(start.url, "_blank", "noopener,noreferrer");
+        if (start.cliOpensBrowser) {
+          // The engine machine's CLI already opened the page — one tab total.
+          tab?.close();
+        } else if (tab !== null) {
+          tab.location.href = start.url;
+          tab.opener = null;
+        } else {
+          // Hard blocker ate the pre-open — retry the old direct open.
+          window.open(start.url, "_blank", "noopener,noreferrer");
+        }
         setLogin(
           start.mode === "paste-code"
             ? { kind: "paste-code", harness, start, submitting: false, error: null }
             : { kind: "browser", harness, start, message: null, error: null },
         );
       } catch (cause) {
+        tab?.close();
         setLogin(null);
         setActionError(`Login failed to start: ${cause instanceof Error ? cause.message : String(cause)}`);
       }

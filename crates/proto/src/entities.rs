@@ -802,6 +802,10 @@ pub struct AgentLoginStart {
     pub login_id: String,
     pub url: String,
     pub mode: AgentLoginMode,
+    /// True when the spawned CLI opens the authorization page itself
+    /// (the engine could not suppress it) — clients must not open it too.
+    #[serde(default)]
+    pub cli_opens_browser: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
