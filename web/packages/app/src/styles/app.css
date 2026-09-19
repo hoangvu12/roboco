@@ -6883,15 +6883,41 @@ button.files-save-pill:hover {
     display: block;
   }
 
-  /* The pill is edge-to-edge on desktop only; a phone needs its gutters.
-     The footer is the composer column's child now, so the column alone
-     takes the gutter — narrowing both would double-subtract. The bottom
-     padding also carries the home indicator's inset (0 without
-     `viewport-fit=cover`'s notched devices), keeping the pill above it. */
+  /*
+   * Ticket 51 (research M1(b)): the composer adopts the transcript's phone
+   * gutter — one 12px rhythm from the first `.trow` down to the pill. The
+   * 8px width shim is deleted (the column measures the full viewport) and
+   * the desktop's 16px horizontal column inset yields to `.trow`'s phone
+   * `--rb-space-md`; the pill's own 16px inner insets are the desktop's and
+   * stay. The footer is the composer column's child (ticket 37), so the
+   * column alone takes the gutter. The bottom padding is ticket 50's arm
+   * and stays: `--rb-space-lg` plus the home indicator's inset (0 without
+   * `viewport-fit=cover`'s notched devices), keeping the pill above it.
+   */
   .composer {
-    width: calc(100% - 2 * var(--rb-space-sm));
+    width: 100%;
+    padding-inline: var(--rb-space-md);
     padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom));
   }
+
+  /* Same reconciliation for the wrapper: its inline px width tracks the
+     full column at phone (the sidebar is a drawer out of the flow), so the
+     768px cap yields to the viewport — a mid-glide dock tick cannot push
+     the pill past the edge. */
+  .persistent-composer {
+    max-width: 100%;
+  }
+
+  /* The status strip reads in the same 12px gutter (its desktop 24px inner
+     gutters are the ≥769px rule and stay): strip text, message rows, and
+     the pill's card edge share one axis at phone. */
+  .status-strip {
+    padding-inline: var(--rb-space-md);
+  }
+
+  /* The new-thread hero and its floating selector row now render on the
+     phone canvas (ticket 53); the decision-5 display:none pair is gone. */
+
 
   /* The identity's folder line is the first thing to go when width runs out. */
   .identity-folder {
