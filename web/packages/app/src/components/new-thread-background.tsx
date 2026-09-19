@@ -185,6 +185,30 @@ function rasterToCanvas(raster: RasterData): HTMLCanvasElement | null {
   return canvas;
 }
 
+// ---------------------------------------------------------------------------
+// The per-frame remask entry point (ticket 34)
+// ---------------------------------------------------------------------------
+
+/**
+ * The sidebar-slide loop's per-frame entry into the mounted hero's remask.
+ * While `.sidebar`'s CSS width glides, the pill's viewport-space rect moves
+ * every frame (`margin-inline: auto` centers it inside the gliding column)
+ * even though its size does not — and the cutout hole must track it, the
+ * desktop's "including on sidebar resize" same-frame contract
+ * (mask.rs:49-51). The mounted hero registers its CURRENT remask closure
+ * here on every commit (the per-commit effect below, which stays the
+ * typing-morph path); `ConversationPage`'s rAF loop calls this once per
+ * frame of the tween. No hero mounted — a no-op.
+ */
+const remaskListeners = new Set<() => void>();
+
+/** Re-run the mounted hero's remask once — the sidebar tween calls this per frame. */
+export function remaskNewThreadBackground(): void {
+  for (const remask of remaskListeners) {
+    remask();
+  }
+}
+
 export function NewThreadBackground({
   artwork,
   viewportHeight,
@@ -359,6 +383,10 @@ export function NewThreadBackground({
     // Same-frame contract: rAF fires after this commit's layout effects (the
     // dock prepaint writes the wrapper transform there) and before paint.
     const raf = requestAnimationFrame(remask);
+    // Ticket 34's per-frame entry point: the sidebar-slide loop in
+    // `ConversationPage` calls the CURRENT closure through
+    // `remaskNewThreadBackground()` while the column glides.
+    remaskListeners.add(remask);
     const observer =
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => remask())
@@ -368,6 +396,7 @@ export function NewThreadBackground({
       observer.observe(composerSurface);
     }
     return () => {
+      remaskListeners.delete(remask);
       cancelAnimationFrame(raf);
       observer?.disconnect();
     };

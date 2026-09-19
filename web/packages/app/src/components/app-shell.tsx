@@ -59,6 +59,7 @@ import {
   useRightPane,
 } from "../state/right-pane";
 import { useSidebar } from "../state/sidebar";
+import { useNewThreadBackground } from "../state/appearance";
 import { SidebarBody } from "./sidebar-body";
 import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
@@ -66,7 +67,7 @@ import { RightPane, usePaneGlide } from "./right-pane";
 import { RightTabStrip } from "./right-tab-strip";
 import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
-import { Titlebar } from "./titlebar";
+import { Titlebar, islandTarget } from "./titlebar";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
 
 /**
@@ -428,6 +429,24 @@ export function AppShell() {
   // never in Settings.
   const isChatRoute = navEntryForPath(pathname)?.kind === "chat";
   const plusAlpha = titlebarNewSessionAlpha(isChatRoute, paired && paneChatId !== null);
+  // ── The titlebar island's gate (ticket 34) ─────────────────────────────
+  // The desktop's `island_target` (shell.rs:3990-4001) keyed off the
+  // RESOLVED background — ticket 48's semantics (installed-else-default),
+  // never the raw setting: `useNewThreadBackground` resolves through
+  // `resolveNewThreadBackground`, so a stored entry that no longer decodes
+  // falls back to the bundled default and the island still shows; only a
+  // resolution failure (null url) hides it. Deliberately not through
+  // `state/chrome.ts` — route-published effect state is what tore columns
+  // down before (ticket 06's lesson). The resolution lands a frame after
+  // mount, so the island's first appearance on a reload rides its 200ms
+  // tween; the tween itself mounts settled.
+  const newThreadBackground = useNewThreadBackground();
+  const islandTargetValue = islandTarget({
+    isChatRoute,
+    hasSelectedChat: paneChatId !== null,
+    sidebarCollapsed: sidebar.collapsed,
+    backgroundResolves: newThreadBackground.url !== null,
+  });
   // The settings route's bar is a BARE strip (`render_title_bar`,
   // shell.rs:3898-3909): no identity, no `+`, no trailing group, and its
   // left inset is flat `title_bar_content_start()` — it does not track the
@@ -529,6 +548,7 @@ export function AppShell() {
         canBack={nav.canBack}
         canForward={nav.canForward}
         newSessionAlpha={plusAlpha}
+        islandTarget={islandTargetValue}
         // No fallback handler: the `+` exists only where the route published
         // one (a selected chat), exactly `titlebar_plus_alpha`'s gate.
         onNewSession={chrome.onNewSession}

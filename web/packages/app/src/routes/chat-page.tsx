@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { motion } from "@roboco/theme";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
@@ -13,13 +15,21 @@ import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import type { SubagentOpen } from "../components/tool-group";
+import { remaskNewThreadBackground } from "../components/new-thread-background";
 import { rightPaneStore } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
 import { useNewThreadTarget } from "../components/composer/new-thread-selectors";
 import { NewThreadCanvas } from "./index-page";
-import { bottomClearance, PHONE_MAX_WIDTH, sidebarTarget, useSidebarLayout, useViewportWidth } from "../state/layout";
+import {
+  bottomClearance,
+  evalWidthTween,
+  PHONE_MAX_WIDTH,
+  sidebarTarget,
+  useSidebarLayout,
+  useViewportWidth,
+} from "../state/layout";
 import { navEntryForPath } from "../state/nav-history";
 import {
   bottomStackMeasurementMatches,
@@ -40,6 +50,10 @@ import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
+
+/** `motion::RESIZE` — the 200ms curve the sidebar glide and the hero's tween ride. */
+const SIDEBAR_GLIDE_MS =
+  motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
 
 /**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
@@ -442,6 +456,112 @@ export function ConversationPage() {
   // its slot: the dock snaps and never re-anchors.
   const dockReduced = reducedMotion || phone;
 
+  // ── The sidebar slide (ticket 34) ─────────────────────────────────────
+  // `toggle_sidebar` (shell.rs:1947-1957) arms a oneshot 200ms tween from
+  // the PAINTED width at the flip — a mid-animation reversal restarts from
+  // what is painted — and the desktop's `sidebar_now()` (3797-3801)
+  // evaluates it per frame, feeding `hero_width = viewport −
+  // sidebar_now()` (shell.rs:5897). The web's column already glides on the
+  // exact CSS transition (`app.css:1159`); this loop is the missing half —
+  // feeding the ANIMATED value to the hero (and its mask) instead of the
+  // target. `heroWidth` stays a prop-driven inline style with NO CSS width
+  // transition: one clock (this loop) must own the width, or the mask
+  // cannot follow it.
+  const sidebarTweenRef = useRef<{ from: number; to: number; startedAt: number } | null>(null);
+  const previousSidebarRef = useRef(sidebar);
+  // The animated sidebar width while a tween is live, else null — settled,
+  // where the target formula below IS the endpoint.
+  const [animatedSidebar, setAnimatedSidebar] = useState<number | null>(null);
+  const [sidebarPump, setSidebarPump] = useState(0);
+
+  // Arm on a flip. A LAYOUT effect: the flip commit would otherwise paint
+  // the endpoint for one frame (heroWidth falls back to the target before
+  // the loop's first frame); writing `from` here re-renders before paint,
+  // so the flip frame paints the hero exactly where it already is.
+  useLayoutEffect(() => {
+    const previous = previousSidebarRef.current;
+    previousSidebarRef.current = sidebar;
+    if (previous.collapsed === sidebar.collapsed) {
+      // Not a flip: a seam drag took the clock over mid-tween (the column
+      // tracks the pointer exactly under `data-rb-resizing`) — drop the
+      // tween so the hero follows the drag instead of a stale target.
+      if (sidebarTweenRef.current !== null) {
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+      }
+      return;
+    }
+    sidebarTweenRef.current = null;
+    if (reducedMotion || phone || sidebarTarget(previous) === sidebarTarget(sidebar)) {
+      // `evalWidthTween`'s contract: under reduced motion the caller writes
+      // the endpoint — the CSS has already snapped, and the settled formula
+      // below IS the endpoint. The phone never mounts the hero.
+      setAnimatedSidebar(null);
+      return;
+    }
+    // `from` = the PAINTED width at the flip (a live tween's last frame,
+    // else the previous target) plus the live edge-bounce offset — the
+    // desktop's `sidebar_now()` captures both before `toggle_sidebar`
+    // clears the bounce.
+    const painted = animatedSidebar ?? sidebarTarget(previous);
+    const from = painted + readSidebarEdgeBounceOffset();
+    const to = sidebarTarget(sidebar);
+    sidebarTweenRef.current = { from, to, startedAt: performance.now() };
+    setAnimatedSidebar(from);
+    setSidebarPump((pump) => pump + 1);
+    // `animatedSidebar`/`reducedMotion`/`phone` are read from this render's
+    // closure on purpose: only a flip re-arms, never their own changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebar]);
+
+  // The frame pump: one write per ANIMATION frame while the tween is live —
+  // the web peer of the desktop's `motion_active` → rAF render loop. The
+  // setState is flushed SYNCHRONOUSLY inside the callback, not scheduled:
+  // the column's CSS transition is evaluated at style time, so the commit
+  // must land inside this same rAF phase for the hero to ride the SAME
+  // frame's clock — the web peer of the desktop evaluating `sidebar_now()`
+  // in render. A scheduled commit lands after paint and trails the column
+  // by a frame. The same loop then re-runs the hero's remask, so the cutout
+  // hole tracks the pill's viewport-space rect every frame (mask.rs:49-51):
+  // the pill glides with the column (`margin-inline: auto`) even though its
+  // size does not change.
+  useEffect(() => {
+    if (sidebarTweenRef.current === null) {
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const tween = sidebarTweenRef.current;
+      if (tween === null) {
+        return;
+      }
+      if (reducedMotion) {
+        // `evalWidthTween`'s contract: the endpoint, directly — the CSS has
+        // already snapped.
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+        return;
+      }
+      const elapsed = performance.now() - tween.startedAt;
+      const value = evalWidthTween(tween.from, tween.to, elapsed);
+      flushSync(() => {
+        setAnimatedSidebar(value);
+      });
+      remaskNewThreadBackground();
+      if (elapsed >= SIDEBAR_GLIDE_MS) {
+        // Done: hand the width back to the settled formula (the same
+        // number — `to`), so a later drag can never read a stale one.
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+        return;
+      }
+      setSidebarPump((pump) => pump + 1);
+    });
+    return () => cancelAnimationFrame(raf);
+    // `reducedMotion` rides along so a mid-tween flip to reduced motion
+    // snaps instead of running the clock out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarPump, reducedMotion]);
+
   const dockRef = useRef(new DockState());
   const [dockFrame, setDockFrameState] = useState<DockFrame>(() => dockFrameSettled(false));
   const [dockPump, setDockPump] = useState(0);
@@ -562,8 +682,10 @@ export function ConversationPage() {
   // The hero: full conversation canvas (`viewport − sidebar_now`, never
   // rescaled by the right pane), mounted while `!has_selection` or the dock
   // is still dissolving one away, outside the transcript's edge fade.
+  // `sidebar_now` is the TWEENED width while the sidebar slide runs
+  // (ticket 34) — the settled target otherwise.
   const heroVisible = (!hasSelection || dockFrame.active) && !phone;
-  const heroWidth = Math.max(viewport - sidebarNow, 0);
+  const heroWidth = Math.max(viewport - (animatedSidebar ?? sidebarNow), 0);
 
   // The transcript outlet: selected chat → transcript; nothing selected →
   // the centered new-thread composition. A DEPARTING transcript (undocking)
@@ -841,6 +963,23 @@ function useViewportHeight(): number {
 /** `prefers-reduced-motion` at first paint. */
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * The live sidebar edge-bounce offset (`--rb-sidebar-edge-offset`, the seam
+ * drag's 5px pulse written by `pane-seam.tsx`): the desktop's
+ * `sidebar_now()` includes it, so a flip's `from` captures it before the
+ * seam's unmount clears the variable.
+ */
+function readSidebarEdgeBounceOffset(): number {
+  if (typeof document === "undefined") {
+    return 0;
+  }
+  const raw = window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue("--rb-sidebar-edge-offset");
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /**

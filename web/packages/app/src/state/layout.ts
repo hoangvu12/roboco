@@ -257,8 +257,10 @@ export function resizeBounceOffset(edge: ResizeEdge, elapsedMs: number): number 
  * (`pane_resize_hitboxes_yield_the_titlebar_chrome`).
  */
 export const PANE_RESIZE_HITBOX_HALF_WIDTH = 10;
-/** `Theme::TITLEBAR_HEIGHT` (`proto/layout.rs:44`), same value as `--rb-titlebar-height`. */
+/** `Theme::TITLEBAR_HEIGHT` (`proto/layout.rs:45`), same value as `--rb-titlebar-height`. */
 export const TITLEBAR_HEIGHT = 38;
+/** `Theme::TITLEBAR_TOP_PAD` (`proto/layout.rs:48`), same value as `--rb-titlebar-top-pad`. */
+export const TITLEBAR_TOP_PAD = 4;
 
 // ---------------------------------------------------------------------------
 // Titlebar row inset — `tabs.rs::render_session_title_bar`
