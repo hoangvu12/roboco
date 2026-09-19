@@ -8,6 +8,7 @@ import {
   type Rect,
 } from "../lib/new-thread-background";
 import { effectRaster, type RasterData } from "../lib/new-thread-background-effects";
+import { HeroRemaskGate } from "../lib/sidebar-tween";
 import { useResolvedAppearance } from "../state/appearance";
 
 /**
@@ -36,12 +37,17 @@ import { useResolvedAppearance } from "../state/appearance";
  * while the defrost decision itself stays where it lives
  * (`lib/appearance-store.ts`).
  *
- * The mask is regenerated from the measured `#composer-surface` rect on
- * every commit (scheduled on the animation frame AFTER the commit's layout
- * effects, so it consumes the same frame's dock-transform write, never last
- * frame's geometry — the web peer of "all prepaint completes before any
- * paint") and on every surface resize (the 180 ms typing morph grows the
- * pill — and the hole tracks it).
+ * The mask is regenerated from the measured `#composer-surface` rect only
+ * on the settle conditions (ticket 57a, §2.2): an artwork/effect change
+ * (scheduled on the animation frame AFTER the commit's layout effects, so
+ * it consumes the same frame's dock-transform write, never last frame's
+ * geometry — the web peer of "all prepaint completes before any paint"), a
+ * real geometry change (the hero's or the surface's ResizeObserver — the
+ * 180 ms typing morph grows the pill, viewport resizes re-crop the artwork),
+ * and the sidebar tween's settle commit (the snap to the true raster after
+ * the CSS glide). While the tween runs, nothing re-rasters: the readiness
+ * layer's raster-window CSS (app.css) holds the pre-flip bitmap centered on
+ * the gliding hero so the dome hole tracks the pill with no JS per frame.
  *
  * The hero uses the full conversation-canvas width even while the right pane
  * clips it: navigation must never rescale the artwork.
@@ -61,6 +67,13 @@ export interface NewThreadBackgroundProps {
   readonly dissolve: number;
   /** The settings-store effect — `none` paints the raw artwork; the others paint their raster. */
   readonly effect: NewThreadBackgroundEffect;
+  /**
+   * True while the sidebar's 200ms CSS glide runs (ticket 57a): renders the
+   * hero's `data-sidebar-tween` flag (its width transition + the raster
+   * window) and, on the fall to false, re-rasters at the settled geometry
+   * inside the same commit.
+   */
+  readonly sidebarTween: boolean;
 }
 
 /** `prefers-reduced-motion` at first paint, reactive afterwards. */
@@ -189,36 +202,13 @@ function rasterToCanvas(raster: RasterData): HTMLCanvasElement | null {
   return canvas;
 }
 
-// ---------------------------------------------------------------------------
-// The per-frame remask entry point (ticket 34)
-// ---------------------------------------------------------------------------
-
-/**
- * The sidebar-slide loop's per-frame entry into the mounted hero's remask.
- * While `.sidebar`'s CSS width glides, the pill's viewport-space rect moves
- * every frame (`margin-inline: auto` centers it inside the gliding column)
- * even though its size does not — and the cutout hole must track it, the
- * desktop's "including on sidebar resize" same-frame contract
- * (mask.rs:49-51). The mounted hero registers its CURRENT remask closure
- * here on every commit (the per-commit effect below, which stays the
- * typing-morph path); `ConversationPage`'s rAF loop calls this once per
- * frame of the tween. No hero mounted — a no-op.
- */
-const remaskListeners = new Set<() => void>();
-
-/** Re-run the mounted hero's remask once — the sidebar tween calls this per frame. */
-export function remaskNewThreadBackground(): void {
-  for (const remask of remaskListeners) {
-    remask();
-  }
-}
-
 export function NewThreadBackground({
   artwork,
   viewportHeight,
   heroWidth,
   dissolve,
   effect,
+  sidebarTween,
 }: NewThreadBackgroundProps) {
   const reduced = useReducedMotion();
   const heroRef = useRef<HTMLDivElement | null>(null);
@@ -243,11 +233,17 @@ export function NewThreadBackground({
   // lifecycle) and only a NEW id starts cold. `reduced` still snaps the
   // transition off here.
 
-  // Re-paint both passes from the live composer surface: once per commit
+  // Re-paint both passes from the live composer surface — but only on the
+  // settle conditions (ticket 57a, §2.2): an artwork/effect/surface change
   // (scheduled via rAF so the dock's transform write in the same commit's
-  // layout effects is already on the element) and once per surface resize
-  // (the typing morph). The cutout pass consumes the single combined
+  // layout effects is already on the element), a real geometry change (the
+  // surface's resize — the typing morph, the dock's pill-height glide; the
+  // hero's resize — viewport resizes, drag takeovers), and the sidebar
+  // tween's settle commit below. NEVER per commit, never per frame: while
+  // the tween runs the gate absorbs the observers' ticks (the raster window
+  // CSS tracks the hole). The cutout pass consumes the single combined
   // min(hole, fade) mask; the reveal pass the fade alone.
+  const gateRef = useRef<HeroRemaskGate | null>(null);
   useLayoutEffect(() => {
     const remask = (): void => {
       const hero = heroRef.current;
@@ -305,6 +301,10 @@ export function NewThreadBackground({
       const paint = (canvas: HTMLCanvasElement, cutout: boolean): void => {
         const cssWidth = Math.max(1, Math.round(heroBox.width));
         const cssHeight = Math.max(1, Math.round(heroBox.height));
+        // The raster window's width (ticket 57a): the readiness layer holds
+        // THIS box during a sidebar tween, so the bitmap never scales —
+        // recorded on the hero for the CSS to read back.
+        hero.style.setProperty("--rb-hero-raster-width", `${cssWidth}px`);
         const scale = Math.max(1, window.devicePixelRatio || 1);
         const rasterWidth = Math.max(1, Math.round(heroBox.width * scale));
         const rasterHeight = Math.max(1, Math.round(heroBox.height * scale));
@@ -366,27 +366,58 @@ export function NewThreadBackground({
       paint(revealCanvas, false);
       paint(cutoutCanvas, true);
     };
+    // Every request routes through the settle predicate: while the sidebar
+    // tween is active the geometry ticks are absorbed (the raster window
+    // CSS owns the hole), so nothing below can re-raster mid-glide.
+    const gate = new HeroRemaskGate(remask);
+    gateRef.current = gate;
     // Same-frame contract: rAF fires after this commit's layout effects (the
     // dock prepaint writes the wrapper transform there) and before paint.
-    const raf = requestAnimationFrame(remask);
-    // Ticket 34's per-frame entry point: the sidebar-slide loop in
-    // `ConversationPage` calls the CURRENT closure through
-    // `remaskNewThreadBackground()` while the column glides.
-    remaskListeners.add(remask);
+    const raf = requestAnimationFrame(() => gate.note("artwork"));
     const observer =
       typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => remask())
+        ? new ResizeObserver(() => gate.note("surface-geometry"))
         : null;
     const composerSurface = document.getElementById("composer-surface");
     if (observer !== null && composerSurface !== null) {
       observer.observe(composerSurface);
     }
+    // The hero's own geometry (viewport resizes, the seam-drag takeover):
+    // fires per frame during the width transition, which is exactly what the
+    // gate is there to absorb.
+    const heroObserver =
+      typeof ResizeObserver !== "undefined" && heroRef.current !== null
+        ? new ResizeObserver(() => gate.note("hero-geometry"))
+        : null;
+    if (heroObserver !== null && heroRef.current !== null) {
+      heroObserver.observe(heroRef.current);
+    }
     return () => {
-      remaskListeners.delete(remask);
+      gateRef.current = null;
       cancelAnimationFrame(raf);
       observer?.disconnect();
+      heroObserver?.disconnect();
     };
-  });
+    // Scoped to what actually repaints the hero (ticket 57a): the artwork
+    // and its decoded/rasterized sources, the effect, and the surface
+    // treatment — never per commit, never `dissolve` (the element opacity
+    // rides the render) and never the tween flag (the settle effect below
+    // owns that commit's remask).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artwork, image, rasterCanvas, effect, surface]);
+
+  // The tween's settle (or a drag takeover's disarm): the commit that
+  // returns the readiness layer to `inset: 0` has already restored the
+  // canvases' boxes to the hero's settled box, so the settle remask HERE —
+  // inside the same commit, before paint — snaps the raster to the true
+  // geometry with no stretched intermediate frame.
+  const wasSidebarTweenRef = useRef(false);
+  useLayoutEffect(() => {
+    if (wasSidebarTweenRef.current && !sidebarTween) {
+      gateRef.current?.note("settle");
+    }
+    wasSidebarTweenRef.current = sidebarTween;
+  }, [sidebarTween]);
 
   if (artwork === null) {
     return null;
@@ -397,6 +428,7 @@ export function NewThreadBackground({
       className="new-thread-hero"
       ref={heroRef}
       data-effect={effect}
+      data-sidebar-tween={sidebarTween ? "1" : "0"}
       style={{ width: `${heroWidth}px`, height: `${height}px`, opacity: heroOpacity }}
       aria-hidden="true"
     >
@@ -405,6 +437,10 @@ export function NewThreadBackground({
         data-ready="false" and the store-owned clock flips it a frame later
         (the 120 ms CSS ramp); the SAME id mounts ready and never re-fades —
         a remount keeps its identity, so no transition runs (ticket 35).
+        During a sidebar tween this layer becomes the RASTER WINDOW (app.css,
+        ticket 57a): fixed at the current raster's width, centered on the
+        hero, so the cutout dome (painted at the pill's center = the raster's
+        center) tracks the pill for the whole glide with zero re-rasters.
       */}
       <div
         className="new-thread-hero-readiness"

@@ -20,11 +20,14 @@ export function NewThreadCanvas({
   viewportHeight,
   heroWidth,
   dissolve,
+  sidebarTween,
 }: {
   readonly viewportHeight: number;
   readonly heroWidth: number;
   /** The dock's `dissolve` channel: 0 = the hero, 1 = the established thread. */
   readonly dissolve: number;
+  /** True while the sidebar's 200ms CSS glide runs (ticket 57a): arms the hero's width transition + raster window. */
+  readonly sidebarTween: boolean;
 }) {
   // The shell-scoped artwork source (ticket 35): `useNewThreadBackground`
   // is a thin subscription to `newThreadArtworkStore`, so this call never
@@ -47,6 +50,7 @@ export function NewThreadCanvas({
       heroWidth={heroWidth}
       dissolve={dissolve}
       effect={background.effect}
+      sidebarTween={sidebarTween}
     />
   );
 }

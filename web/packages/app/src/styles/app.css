@@ -1238,6 +1238,7 @@ a:focus-visible,
 :root[data-rb-resizing] .sidebar,
 :root[data-rb-resizing] .right-pane,
 :root[data-rb-resizing] .pane-seam,
+:root[data-rb-resizing] .new-thread-hero,
 :root[data-rb-resizing] .titlebar,
 :root[data-rb-resizing] .titlebar-pane-band {
   transition: none;
@@ -2617,10 +2618,19 @@ a:focus-visible,
  * shell chrome painted under the overlaid titlebar, never an interaction
  * surface). Width/height/opacity ride inline styles: the full conversation
  * canvas even while the right pane clips it — navigation must never
- * rescale the artwork. The width deliberately has NO CSS transition: on a
- * sidebar flip it is written per-frame by the rAF tween in
- * `ConversationPage` (ticket 34) — one clock must own the width, or the
- * cutout mask cannot follow it.
+ * rescale the artwork.
+ *
+ * The sidebar glide (ticket 57a): the width transition below is scoped to
+ * the tween flag and rides the EXACT spec the `.sidebar` column glides on
+ * (the column's own rule, ~90 lines below) — both transitions arm on the
+ * same flip commit and share the
+ * curve, so the hero's `viewport − sidebar` box tracks the column in
+ * lockstep with zero JS per frame (the browser interpolates; the web peer
+ * of the desktop evaluating `sidebar_now()` in render). The flag is set by
+ * the one follow-up commit after the flip and cleared by the settle commit
+ * (`transitionend`), so a plain viewport resize or seam drag never
+ * animates — the width tracks exactly, as before. The reduce and
+ * `data-rb-resizing` kills below (and in their blocks) keep the snap paths.
  */
 .new-thread-hero {
   position: absolute;
@@ -2628,6 +2638,10 @@ a:focus-visible,
   left: 0;
   overflow: hidden;
   pointer-events: none;
+}
+
+.new-thread-hero[data-sidebar-tween="1"] {
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
 /*
@@ -2652,6 +2666,29 @@ a:focus-visible,
 
 .new-thread-hero-readiness[data-reduced="true"] {
   transition: none;
+}
+
+/*
+ * The raster window (ticket 57a, §2.2): while the sidebar tween runs, hold
+ * the CURRENT raster's box fixed and centered on the gliding hero instead
+ * of letting the canvases stretch with the width. `left: 50%` resolves
+ * against the ANIMATING width, so the layer's center — and with it the
+ * bitmap's dome hole, painted at the pill's pre-flip center, which
+ * `margin-inline: auto` keeps at the column's center = the hero's center —
+ * tracks the pill for the whole glide with no bitmap scaling and no
+ * re-raster. `--rb-hero-raster-width` is written by the remask itself (the
+ * raster's own CSS width; `100%` fallback ≈ the pre-tween `inset: 0`), so
+ * the window is always the true raster's box. The hero's `overflow:
+ * hidden` windows it: the clip's edge rides the column exactly while the
+ * artwork's crop holds — the settle commit then returns this layer to
+ * `inset: 0` and re-rasters at the settled width (the snap the ticket
+ * sanctions). Compositor-class motion: no JS, no canvas work per frame.
+ */
+.new-thread-hero[data-sidebar-tween="1"] .new-thread-hero-readiness {
+  left: 50%;
+  right: auto;
+  width: var(--rb-hero-raster-width, 100%);
+  margin-left: calc(var(--rb-hero-raster-width, 100%) / -2);
 }
 
 /*
@@ -9184,6 +9221,9 @@ button.files-save-pill:hover {
     color: var(--rb-text-muted);
   }
 
+  /* The hero's sidebar glide snaps with the column: the JS never arms the
+     tween flag under reduce, and this kill catches a mid-glide flip. */
+  .new-thread-hero,
   .sidebar,
   .right-pane,
   .pane-seam-sidebar,
