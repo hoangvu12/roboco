@@ -106,6 +106,7 @@ impl Render for RemoteAccessPage {
                         .child(crate::icons::icon(crate::icons::REFRESH)
                             .size(px(14.0))
                             .text_color(theme.text_muted))
+                        .child(SharedString::from("Refresh"))
                         .on_click(cx.listener(|page, _, _, cx| {
                             page.request(methods::GET_REMOTE_ACCESS, json!({}), cx)
                         })),
@@ -188,7 +189,7 @@ impl Render for RemoteAccessPage {
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from("No devices paired yet.")),
+                    .child(SharedString::from("No clients paired yet.")),
             );
         }
         for (index, row) in rows.into_iter().enumerate() {

@@ -282,4 +282,43 @@ Copied verbatim from research S1.e:
 
 ## Comments
 
-(empty; appended during implementation)
+**Implementer note (2026-09-19, landed in `fix(ui): ticket 46 remote access
+list refresh-on-visit and copy`):**
+
+- Chose the `open_settings` site (§2.1's first option): added
+  `SettingsSection::RemoteAccess` to the recreate-per-visit branch
+  alongside `Harnesses` (`shell.rs:3271-3280`, comment extended with the
+  why — no observe/watch on the pairing store, so the constructor's
+  `GetRemoteAccess` is the only refetch). `settings_outlet`'s RemoteAccess
+  arm is untouched; back/forward re-entry uses the cached entity exactly
+  as Harnesses does (mirror-of-precedent, per spec).
+- Refresh label added after the 14px glyph
+  (`remote_access.rs:109`), matching this file's own labeled ghost actions
+  ("Create pairing link", "Copy") — Accounts' 12.5px text-size tweak is
+  not carried over (its context differs); the label text is verbatim
+  "Refresh".
+- Empty state is "No clients paired yet." on both sides
+  (`remote_access.rs:192`, `settings-remote-access.tsx:185`); subtitle and
+  link-card copy untouched.
+- Web: went with "the route computes `sessionIsSelf(row, session.engine)`
+  while mapping rows" (the first of the two offered options);
+  `sessionRows` keeps its shape. The badge is guarded by
+  `session !== null` (`useEngineSession()` returns `EngineSession | null`)
+  and reuses the existing `.badge` pill — no new CSS. `ownSessionId`
+  returns null for a non-string `sessionId` (shape-drifted storage) so a
+  null id never matches, per §2.4.
+- Rejected-alternative record (§2.1): a `WatchPairingSessions` stream was
+  not attempted — `rpc.rs:859-876` is unary-only; per-visit refresh
+  remains the parity-minimal fix.
+- Desktop tests (§3/§6): no unit test exists for the recreate-per-visit
+  behavior (none exists for the Harnesses precedent either) — verified by
+  the full suite staying green plus the §6 manual re-entry check; the web
+  unit test `sessionIsSelfMatchesStoredSessionId` covers the four
+  specified cases (match / different id / null sessionId / revoked self).
+- Verification on Windows (this worktree): `cargo check -p roboco-ui`
+  green (pre-existing dead-code warnings only); `cargo test -p roboco-ui`
+  → 934 passed, 0 failed, 5 ignored; web `pnpm -r build` green;
+  `web/packages/app` `pnpm test` → 72 files, 1169 tests passed.
+  `roboco-engine` not touched, so not re-checked.
+- No new literal hex/px anywhere (badge reuses `.badge`; the 14px icon
+  size was pre-existing and kept).
