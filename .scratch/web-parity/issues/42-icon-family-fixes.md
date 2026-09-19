@@ -322,4 +322,56 @@ at generated/index.ts:49-53, `fileImage` at :51.)
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Done as specced, one commit on `wp2r2/42-icon-family-fixes`:
+
+- §2.1 — `ASSET_PREFIX = "/file-icons/"` in `web/packages/app/src/lib/file-icons.ts`
+  (no `import.meta.env.BASE_URL` form: nothing in `web/` reads `BASE_URL`, no
+  vite base is configured). `fileIconAssetPath` and both resolvers now emit
+  root-absolute URLs; the resolver logic is untouched.
+- §2.2 — `generate.mjs::parse()` reads the root `stroke`/`stroke-width`/
+  `stroke-linecap`/`stroke-linejoin` and re-emits each (only when the shape
+  element does not already carry it) onto every shape tag
+  (path/circle/ellipse/rect/line/polyline/polygon/text/use), preserving
+  self-closing form. Regenerated via `pnpm --filter @roboco/icons regenerate`;
+  the generated diff is ONLY the stroke additions on `fileCode`/`fileData`/
+  `fileImage`/`fileMarkdown`/`fileStyle` (the only five root-stroked sources —
+  scanned all 97 assets to confirm no other root-stroked asset exists).
+  `pnpm --filter @roboco/icons check` green. Root-paint assertion added at the
+  entries map (fails the run in both write and check modes, names the file).
+- §2.3 — `FileGlyph` deleted; `FileHeaderRow` renders
+  `<FileIcon kind="file" name={file.path} appearance={appearance} size={14}
+  className="diff-file-icon" />`; `appearance` threaded as a required prop
+  `DiffView → DiffSurface → DiffScroller → RowContent → FileHeaderRow`,
+  sourced from `useResolvedAppearance()` in `ChangesBody` (the only `DiffView`
+  mount; `FileBodyUpto`/tool-group untouched — it renders no file headers).
+- §3 — `file-icons.test.ts`: new root-absolute describe (every light+dark
+  resolved path starts with `/file-icons/` and `new URL(path, base)` resolves
+  identically at `https://host/` and `https://host/chat/abc`), plus the
+  ticket-24 suite's expected strings updated `file-icons/…` → `/file-icons/…`
+  (forced by the prefix change; structure/names unchanged, not rewritten).
+
+Deviations (all noted for the merger):
+
+1. `web/packages/app/src/state/appearance.ts` (outside the file list):
+   `useAppearance`/`useSystemAppearance` now pass `getSnapshot`/
+   `systemAppearance` as `getServerSnapshot` — the repo's existing SSR-safe
+   convention (ui-settings.ts:746, fleet.ts:31, changes-page.tsx:289).
+   Threading appearance into `ChangesBody` made the changes-surface render
+   smoke (`renderToString`) hit the hooks, which threw "Missing
+   getServerSnapshot" without it. No client behavior change.
+2. Root-paint assertion carves out a body containing `<image`:
+   `roboco-logo.svg` paints via an embedded base64 raster (`fill="none"`,
+   no stroke/fill attrs anywhere) — the literal condition would reject a
+   visible glyph. The assertion still rejects the invisible-glyph class
+   (verified on a scratch copy: `bad-glyph.svg` fails the run, exit 1).
+3. `app.css` `.diff-file-icon` (:12356-12361) left untouched per the ticket's
+   file list — its `color` is inert on an `<img>`, but its comment still says
+   "placeholder `document`"; a one-line comment sweep can ride the next CSS
+   ticket.
+
+Verification: `pnpm -r build` exit 0; `pnpm test` (app) 72 files / 1166 tests
+green; `pnpm --filter @roboco/icons check` fresh (97 glyphs, 354 file icons);
+scratch rejection verified. The DOM-level `naturalWidth > 0` walk (§6 row 1)
+is a browser acceptance step, not covered by unit tests here.

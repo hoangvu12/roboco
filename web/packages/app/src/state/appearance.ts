@@ -19,7 +19,7 @@ const subscribeStore = (listener: () => void) => appearanceStore.subscribe(liste
 const getSnapshot = () => appearanceStore.getSnapshot();
 
 export function useAppearance(): AppearancePreferences {
-  return useSyncExternalStore(subscribeStore, getSnapshot);
+  return useSyncExternalStore(subscribeStore, getSnapshot, getSnapshot);
 }
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
@@ -44,7 +44,7 @@ export function useSystemAppearance(): Appearance {
     media?.addEventListener?.("change", listener);
     return () => media?.removeEventListener?.("change", listener);
   };
-  return useSyncExternalStore(subscribe, () => (darkMedia()?.matches === false ? "light" : "dark"));
+  return useSyncExternalStore(subscribe, systemAppearance, systemAppearance);
 }
 
 /**

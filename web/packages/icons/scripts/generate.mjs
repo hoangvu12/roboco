@@ -22,6 +22,15 @@ const outFile = join(outDir, "index.ts");
 /** `alt-arrow-down.svg` -> `altArrowDown`. */
 const camel = (name) => name.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
 
+/**
+ * Root-stroke carry: these presentation attributes are read off the root
+ * `<svg>` and re-emitted on every shape element that does not carry its
+ * own. The body is injected via `dangerouslySetInnerHTML`, so a root-only
+ * stroke does not survive and the glyph would paint nothing.
+ */
+const STROKE_ATTRS = ["stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"];
+const SHAPE_TAGS = ["path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "use"];
+
 /** Pull the root `<svg …>` attributes and its inner markup. */
 function parse(source) {
   const open = source.match(/<svg\b([^>]*)>/);
@@ -31,10 +40,25 @@ function parse(source) {
   const attrs = Object.fromEntries(
     [...open[1].matchAll(/([a-zA-Z:-]+)\s*=\s*"([^"]*)"/g)].map((m) => [m[1], m[2]]),
   );
-  const body = source
+  let body = source
     .slice(open.index + open[0].length, source.lastIndexOf("</svg>"))
     .replace(/\s+/g, " ")
     .trim();
+  const rootStrokes = STROKE_ATTRS.filter((name) => attrs[name] !== undefined);
+  if (rootStrokes.length > 0) {
+    const shapeTag = new RegExp(`<(${SHAPE_TAGS.join("|")})\\b([^>]*)>`, "g");
+    body = body.replace(shapeTag, (tag, name, rest) => {
+      const selfClose = rest.endsWith("/");
+      const attrText = (selfClose ? rest.slice(0, -1) : rest).replace(/\s+$/, "");
+      const own = new Set([...attrText.matchAll(/([a-zA-Z:-]+)\s*=/g)].map((m) => m[1]));
+      const carried = rootStrokes.filter((attrName) => !own.has(attrName));
+      if (carried.length === 0) {
+        return tag;
+      }
+      const extra = carried.map((attrName) => ` ${attrName}="${attrs[attrName]}"`).join("");
+      return `<${name}${attrText}${extra}${selfClose ? "/" : ""}>`;
+    });
+  }
   return { viewBox: attrs.viewBox ?? "0 0 24 24", fill: attrs.fill ?? "none", body };
 }
 
@@ -44,6 +68,12 @@ const entries = readdirSync(assetDir)
   .map((file) => {
     const slug = file.slice(0, -4);
     const { viewBox, fill, body } = parse(readFileSync(join(assetDir, file), "utf8"));
+    // The root-paint floor: a glyph whose root fill is `none` and whose
+    // body carries no `stroke=`/`fill=` (and no embedded raster) renders
+    // invisible — fail the run instead of committing it.
+    if (fill === "none" && !body.includes("stroke=") && !body.includes("fill=") && !body.includes("<image")) {
+      throw new Error(`${file}: root paints nothing (fill="none", no stroke/fill in the body)`);
+    }
     return { key: camel(slug), slug, viewBox, fill, body };
   });
 
