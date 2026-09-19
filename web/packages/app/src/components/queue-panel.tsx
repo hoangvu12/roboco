@@ -515,7 +515,7 @@ function QueueRow(props: QueueRowProps) {
       data-compact={previewLimit === 1 ? "true" : "false"}
       data-editing={beingEdited ? "true" : undefined}
       data-removing={beingRemoved ? "true" : undefined}
-      style={{ top: `${offset}px` }}
+      style={{ transform: `translateY(${offset}px)` }}
       draggable={draggable}
       onDragStart={(event) => {
         if (!draggable) {

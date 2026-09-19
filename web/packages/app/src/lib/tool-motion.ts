@@ -411,6 +411,135 @@ export function railPath(input: {
 }
 
 // ---------------------------------------------------------------------------
+// The shared reveal clock (ticket 59, audit fix plan P5)
+// ---------------------------------------------------------------------------
+
+/** What one subscribing row does with a frame's timestamp (`setNow`). */
+export type RevealClockListener = (now: number) => void;
+
+/** Constructor seams — injectable so the unit tests drive the clock headless. */
+export interface ToolRevealClockSeams {
+  readonly schedule?: (callback: () => void) => number;
+  readonly cancel?: (handle: number) => void;
+  readonly now?: () => number;
+  readonly reduced?: () => boolean;
+}
+
+let reducedQuery: MediaQueryList | null = null;
+
+/** `prefers-reduced-motion` as a live read (cached query, node-safe). */
+const prefersReducedMotion = (): boolean => {
+  if (typeof globalThis.matchMedia !== "function") {
+    return false;
+  }
+  reducedQuery ??= globalThis.matchMedia("(prefers-reduced-motion: reduce)");
+  return reducedQuery.matches;
+};
+
+/**
+ * The ONE rAF clock behind every tool-group row's reveal/fold tween. Each
+ * `ToolGroupRow` used to run its own `requestAnimationFrame` + `setNow` loop
+ * while its motion was active, so a live reveal re-rendered every group row
+ * from N independent loops; this clock shares the loop — the first
+ * subscriber arms it, the last unsubscribe stops it.
+ *
+ * Per-row TIMINGS are preserved exactly: every subscriber is handed the same
+ * `performance.now()` a per-row loop would have sampled that frame, and each
+ * row still computes its own progress from that timestamp — only the loop is
+ * shared, never the tween state.
+ *
+ * `prefers-reduced-motion` never rides the loop: rows gate their
+ * `motionActive` off the same media query, so nothing subscribes under
+ * reduce; the two reduced arms here are the safety net for a flip landing
+ * between a row's render and its effect — a subscribe under reduce delivers
+ * ONE immediate tick (the snap frame; the row renders its endpoint and
+ * unsubscribes), and a flip mid-flight makes the current frame the last.
+ */
+export class ToolRevealClock {
+  readonly #listeners = new Set<RevealClockListener>();
+  readonly #schedule: (callback: () => void) => number;
+  readonly #cancel: (handle: number) => void;
+  readonly #now: () => number;
+  readonly #reduced: () => boolean;
+  #raf = 0;
+  #running = false;
+
+  constructor(seams: ToolRevealClockSeams = {}) {
+    this.#schedule = seams.schedule ?? ((callback) => requestAnimationFrame(callback));
+    this.#cancel = seams.cancel ?? ((handle) => cancelAnimationFrame(handle));
+    this.#now = seams.now ?? (() => performance.now());
+    this.#reduced = seams.reduced ?? prefersReducedMotion;
+  }
+
+  /** True while the shared loop is armed (the start/stop test seam). */
+  isRunning(): boolean {
+    return this.#running;
+  }
+
+  subscribe = (listener: RevealClockListener): (() => void) => {
+    this.#listeners.add(listener);
+    if (this.#listeners.size === 1) {
+      this.#arm();
+    }
+    return () => {
+      this.#listeners.delete(listener);
+      if (this.#listeners.size === 0) {
+        this.#disarm();
+      }
+    };
+  };
+
+  #arm(): void {
+    if (this.#reduced()) {
+      // The snap: one synchronous tick, no loop — the row renders its
+      // endpoint and unsubscribes on its own.
+      this.#deliver(this.#now());
+      return;
+    }
+    this.#running = true;
+    this.#raf = this.#schedule(this.#tick);
+  }
+
+  #disarm(): void {
+    if (!this.#running) {
+      return;
+    }
+    this.#running = false;
+    this.#cancel(this.#raf);
+    this.#raf = 0;
+  }
+
+  #tick = (): void => {
+    if (!this.#running) {
+      return;
+    }
+    this.#deliver(this.#now());
+    if (!this.#running) {
+      // The last listener unsubscribed mid-dispatch and stopped the clock.
+      return;
+    }
+    if (this.#reduced()) {
+      // Reduced motion flipped mid-flight: this frame is the snap, and it
+      // is the last — the rows render their endpoints and unsubscribe.
+      this.#running = false;
+      this.#raf = 0;
+      return;
+    }
+    this.#raf = this.#schedule(this.#tick);
+  };
+
+  #deliver(now: number): void {
+    // A copy: a listener may unsubscribe (or subscribe) inside its tick.
+    for (const listener of [...this.#listeners]) {
+      listener(now);
+    }
+  }
+}
+
+/** The app's ONE shared reveal clock — every surface's rows ride this loop. */
+export const toolRevealClock = new ToolRevealClock();
+
+// ---------------------------------------------------------------------------
 // The per-instance state store (transcript.rs:2588-2731 fields)
 // ---------------------------------------------------------------------------
 

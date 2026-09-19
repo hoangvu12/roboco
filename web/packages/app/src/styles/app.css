@@ -295,12 +295,19 @@ a:focus-visible,
 
 /*
  * `render_session_title_bar`'s row. Its left inset is NOT the cluster's width:
- * the cluster is an overlay (below), and the row pads itself to
+ * the cluster is an overlay (below), and the row's content starts at
  * `--rb-titlebar-row-left` — the conversation column's own left edge, clamped
  * past the cluster. That is what puts the identity above the transcript rather
  * than jammed against the window controls, and what makes it glide left when
  * the sidebar collapses (the desktop tweens this exact value; roboco's
  * `__root.tsx` transitions the same padding).
+ *
+ * Ticket 59: the glide is compositor-owned — the row itself carries NO
+ * left padding (its layout never changes mid-glide), the identity
+ * translates to the row's left inset on the same 200ms RESIZE curve, and
+ * the `flex_1` spacer's `min-width` reserves the inset so the identity
+ * truncates exactly where the padded row used to clip it (the reserve,
+ * not the padding, is what keeps a long title out of the pane band).
  */
 .titlebar {
   position: absolute;
@@ -308,7 +315,6 @@ a:focus-visible,
   z-index: var(--rb-z-titlebar);
   height: var(--rb-titlebar-height);
   padding-top: var(--rb-titlebar-top-pad);
-  padding-left: var(--rb-titlebar-row-left);
   padding-right: var(--rb-titlebar-edge-inset);
   display: flex;
   flex-direction: row;
@@ -331,7 +337,6 @@ a:focus-visible,
    * re-sample a backdrop whose contents move on every frame of a sidebar
    * collapse.
    */
-  transition: padding-left var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
 /*
@@ -541,11 +546,27 @@ a:focus-visible,
   align-items: center;
   gap: 6px;
   overflow: hidden;
+  /*
+   * The row-left glide (ticket 59): the identity's layout box sits at the
+   * row's left edge and the transform carries it to the conversation
+   * column's own edge, on the desktop's exact RESIZE spec. The cluster is
+   * an absolute overlay OUTSIDE this element, so it never rides the glide.
+   */
+  transform: translateX(var(--rb-titlebar-row-left));
+  transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
-/* `flex_1` — the spacer that keeps the trailing group at the right edge. */
+/*
+ * `flex_1` — the spacer that keeps the trailing group at the right edge. Its
+ * `min-width` stands in for the row's old left padding: the identity may not
+ * spend the row-left inset, so its truncation point (and the trailing band's
+ * room) is the same box the padded row offered. The var holds the glide's
+ * TARGET, so the reserve is static mid-glide — one layout per flip, none per
+ * frame.
+ */
 .titlebar-fill {
   flex: 1;
+  min-width: var(--rb-titlebar-row-left);
 }
 
 .identity-brand {
@@ -1190,15 +1211,21 @@ a:focus-visible,
 /*
  * The sidebar clips its overflow, so its seam is a child of the shell parked
  * over the column's right edge; the pane's seam rides its own left edge.
+ * Ticket 59: both edges are transform-owned — the seam sits at the window's
+ * edge in layout and translates to the moving column edge on the same RESIZE
+ * spec, so a glide moves an already-rasterized layer instead of re-laying out
+ * an absolutely positioned box every frame.
  */
 .pane-seam-sidebar {
-  left: calc(var(--rb-sidebar-now) - 10px);
-  transition: left var(--rb-motion-resize) var(--rb-ease-ease-out);
+  left: 0;
+  transform: translateX(calc(var(--rb-sidebar-now) - 10px));
+  transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
 .pane-seam-right {
-  right: calc(var(--rb-pane-now) - 10px);
-  transition: right var(--rb-motion-resize) var(--rb-ease-ease-out);
+  right: 0;
+  transform: translateX(calc((var(--rb-pane-now) - 10px) * -1));
+  transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
 .pane-seam-line {
@@ -1239,7 +1266,7 @@ a:focus-visible,
 :root[data-rb-resizing] .right-pane,
 :root[data-rb-resizing] .pane-seam,
 :root[data-rb-resizing] .new-thread-hero,
-:root[data-rb-resizing] .titlebar,
+:root[data-rb-resizing] .titlebar-identity,
 :root[data-rb-resizing] .titlebar-pane-band {
   transition: none;
 }
@@ -2057,11 +2084,11 @@ a:focus-visible,
  * A takeover flip's row-left jump SNAPS: `row_left` (tabs.rs:206-221, applied
  * as `pl(row_left)` at tabs.rs:305) is recomputed per render and is not itself
  * tweened — it glides only when the sidebar tweens, which on the web is the
- * `.titlebar`'s padding-left transition at the top of this file. Suppressed
- * only while a takeover glide is in flight (`shell-pane-gliding` is armed by
+ * identity's translateX transition at the top of this file. Suppressed only
+ * while a takeover glide is in flight (`shell-pane-gliding` is armed by
  * takeover flips alone), so sidebar-collapse transitions keep animating.
  */
-.shell-pane-gliding .titlebar {
+.shell-pane-gliding .titlebar-identity {
   transition: none;
 }
 
@@ -2808,9 +2835,10 @@ a:focus-visible,
  * `queue_row` (queue.rs:498-631): NOT a card — borderless and transparent
  * at idle, 36px tall, flush rows (ROW_GAP 0), 8px side pad, 8px radius.
  * The internal flex gap is 8, or 4 under the narrow composer
- * (`queue_preview_limit() == 1`, queue.rs:508-512). The paint-only `top`
- * offset carries the drag slide (TAB_SLIDE: 150ms EASE_OUT, queue.rs:650-
- * 656) — siblings never reflow.
+ * (`queue_preview_limit() == 1`, queue.rs:508-512). The drag slide
+ * (TAB_SLIDE: 150ms EASE_OUT, queue.rs:650-656) rides a compositor
+ * transform — siblings never reflow, and the row's own layout never
+ * re-runs (ticket 59: the inline `top` became an inline `translateY`).
  */
 .queue-row {
   position: relative;
@@ -2823,7 +2851,7 @@ a:focus-visible,
   padding: 0 8px;
   border-radius: 8px;
   cursor: default;
-  transition: top var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
+  transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
 }
 
 .queue-row[data-compact="true"] {
@@ -2841,6 +2869,13 @@ a:focus-visible,
 
 .queue-row[data-removing="true"] {
   opacity: 0.55;
+}
+
+/* The drag slide snaps under reduce — the documented TAB_SLIDE contract. */
+@media (prefers-reduced-motion: reduce) {
+  .queue-row {
+    transition: none;
+  }
 }
 
 /* The drag marker (queue.rs:481-498): 14×22, rounded 4, the drag-handle
@@ -9228,7 +9263,7 @@ button.files-save-pill:hover {
   .right-pane,
   .pane-seam-sidebar,
   .pane-seam-right,
-  .titlebar,
+  .titlebar-identity,
   .titlebar-pane-band,
   .attachment-drop-overlay,
   .jump-pill-inner,
@@ -14627,12 +14662,14 @@ button.segmented-option:hover {
   touch-action: none;
 }
 
+/* Ticket 59: the node/ring carry constant inline geometry (radius×2 — the
+   lane math positions them; nothing grows them), so the old width/height
+   transition entries had no trigger and were removed as dead layout
+   transitions. The live fade is the dim below — paint-only, kept. */
 .history-node {
   position: absolute;
   border-radius: 50%;
-  transition: width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
-    height var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
-    opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 .history-node-dim {
@@ -14644,8 +14681,6 @@ button.segmented-option:hover {
   border: 1px solid;
   border-radius: 50%;
   background: var(--rb-bg);
-  transition: width var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
-    height var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
 /* The branch fold control: 16×16, just right of the node. */
