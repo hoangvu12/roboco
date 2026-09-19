@@ -2418,6 +2418,8 @@ a:focus-visible,
   height: 18px;
   padding-inline: 4px;
   margin-right: -4px;
+  border: 0;
+  outline: none;
   border-radius: 5px;
   background: rgb(var(--rb-wash) / 0.1);
   color: var(--rb-text-muted);
