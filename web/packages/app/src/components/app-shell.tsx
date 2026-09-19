@@ -456,6 +456,22 @@ export function AppShell() {
   const paired = fleet.engines.length > 0;
   const hasPane = paired && paneChatId !== null;
   const takeover = hasPane && pane.open && pane.expanded;
+  // The phone pane drawer rides the Escape ladder's same rung as the phone
+  // sidebar drawer (12, `webDrawer` — the web-only phone chrome): Escape
+  // closes it exactly as it closes the sidebar drawer, and two drawers open
+  // at once peel one per press in registration order. Desktop-pane-open
+  // Escape is untouched — the rung is phone-gated.
+  useEffect(() => {
+    if (!phone || !hasPane || !pane.open) {
+      return;
+    }
+    return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
+      if (paneChatId !== null) {
+        rightPaneStore.close(paneChatId);
+      }
+      return true;
+    });
+  }, [phone, hasPane, pane.open, paneChatId]);
   // One glide, shared: `toggle_right_pane_expand` tweens the pane AND the
   // conversation together, so both columns have to read the same clock.
   const glide = usePaneGlide(hasPane && pane.open, takeover, hasPane ? paneOpenWidth : 0);
@@ -601,9 +617,12 @@ export function AppShell() {
         paneExpanded={hasPane && pane.expanded}
         // Mounted whether or not the pane is open: the band clips it to zero
         // when shut, so it can glide away with the column instead of blinking
-        // out on the first frame of the close.
+        // out on the first frame of the close. At phone the band renders NO
+        // tabs — the strip lives in the drawer's header (RightPane mounts it
+        // there, §2.2) — so the prop is gated here at its mount site and the
+        // band carries only the expand control next to the toggle.
         paneTabs={
-          hasPane ? <RightTabStrip chatId={paneChatId} pane={pane} /> : undefined
+          hasPane && !phone ? <RightTabStrip chatId={paneChatId} pane={pane} /> : undefined
         }
         onToggleExpand={hasPane ? () => rightPaneStore.toggleExpanded(paneChatId) : null}
       />
@@ -760,6 +779,24 @@ export function AppShell() {
           bounceVar="--rb-pane-edge-offset"
         />
       )}
+      {/*
+        The phone pane drawer's backdrop — the mirror of `.sidebar-backdrop`
+        above: fixed, z 20 under the drawer's 30, and shown by the phone CSS
+        only while the pane is open (the drawer's own `aria-hidden` drives the
+        sibling rule). A tap closes the pane, the phone counterpart of the
+        sidebar backdrop's tap. Mounted unconditionally like the sidebar's —
+        at ≥769px the stylesheet hides it, and the pane is the in-flow column
+        there.
+      */}
+      <div
+        className="pane-backdrop"
+        role="presentation"
+        onClick={() => {
+          if (paneChatId !== null) {
+            rightPaneStore.close(paneChatId);
+          }
+        }}
+      />
     </div>
   );
 }
