@@ -575,4 +575,67 @@ touched here.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed as specced, with three calls to record:
+
+- **`state/media.ts` created (49 had not landed).** Minimal shape from the
+  identical spec (49 §2.1 / research item 5): `useMediaQuery` promoted
+  verbatim from `transcript.tsx`'s local hook, plus `useIsPhone()`/
+  `useIsDesktop()` keyed on `PHONE_MAX_WIDTH` imported from `state/layout`.
+  This ticket's only consumer is `AppShell`'s `sidebarForGeometry` branch;
+  the two raw call sites (`app-shell.tsx`'s toggle, `chat-page.tsx`'s phone
+  flag) and `transcript.tsx`'s local copy are untouched — 49's at merge.
+  Textual conflicts with 49's version of the file are expected and should
+  resolve to 49's (same shape).
+- **Engine-drawer scope → successor surface.** Ticket 45 deleted
+  `engine-drawer.tsx` and its whole CSS family (`.drawer`, the phone
+  full-screen block at the cited `app.css:12948-12954` — gone). The
+  engine-drawer's two ticket rows (the `100dvh` height swap and the
+  `safe-area-inset-bottom` padding) were applied to what replaced it: the
+  engine rows now live in Settings → Devices inside `.settings-scroll`, so
+  the phone `.settings-page` bottom padding became
+  `calc(48px + env(safe-area-inset-bottom))` (the dvh half is moot — the
+  drawer's dedicated `100vh` heights died with the component; the page rides
+  the shell's new `100dvh` chain). The `.drawer { overscroll-behavior:
+  contain }` row of the M4 table was dropped — no `.drawer` selector exists
+  anymore.
+- **Titlebar safe-area needed two companions to the prescribed
+  padding-top.** The ticket's §2.3 rule is
+  `padding-top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top))`
+  — but `.titlebar` is a fixed-height border-box bar and `.titlebar-cluster`
+  is absolutely positioned off the padding box, so the padding alone
+  neither grows the band nor moves the cluster (it would squeeze the row's
+  content box to a negative height). The phone block therefore also grows
+  `height: calc(var(--rb-titlebar-height) + env(safe-area-inset-top))` and
+  shifts `.titlebar-cluster`'s `top` by the same inset. Inset 0 (non-notched,
+  or no `viewport-fit=cover`) collapses all three to today's exact values,
+  and ≥769px is untouched — the acceptance's "clears the notch" is what
+  these companions buy.
+
+Everything else is per the ticket: `viewport-fit=cover` +
+`interactive-widget=resizes-content` in `index.html`; global
+`overscroll-behavior: none` on `html, body` (render-neutral at desktop —
+`body` has `overflow: hidden`); the phone-scoped `100vh`→`100dvh` cascade on
+`html, body, #root` and `.shell`; `touch-action: manipulation` +
+`user-select: none` on `.titlebar`, and `touch-action: manipulation` on the
+`.window-control`/`.header-icon-button` resets; `overscroll-behavior:
+contain` on `.sidebar-list`, `.settings-scroll`, `.settings-nav-sections`,
+`.add-space-list` (transcript/queue/composer-input already had it; the
+lightbox/files-handle/history-drag sites left as-is); the phone composer's
+`padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom))`;
+and the `sidebarForGeometry = phone ? 0 : sidebarWidth` branch feeding
+`titlebarRowLeft` and `resolvePaneWidth` (the band inputs fix transitively
+through `paneWidth`/`rowLeft`). The pure function itself, the drawer
+sidebar, the z-ladder, the escape-surface gating (`sidebarOpen` only, per
+45's merger note), and the desktop ≥769 behavior are all unchanged.
+
+The arithmetic note confirmed: the phone rowLeft out of the untouched
+function is 136 (`showsNewSession`) / 104 (otherwise) — nothing hardcoded;
+`tests/layout.test.ts` gained `describe("phone geometry inputs")` beside
+`describe("titlebarRowLeft")` with the three §3 cases (136/104,
+`rightPaneMaxWidth(375, 0) = 75` vs `(375, 304) = 0`, band 41 at phone
+inputs). `pnpm -r build` green; package vitest 1238 passed (1235 base + 3
+new; one full-suite run tripped a pre-existing timing flake in
+`registry.test.ts`'s reconnect-backoff test, which passes in isolation and
+in the re-run).

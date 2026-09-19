@@ -46,6 +46,7 @@ import {
   useSidebarLayout,
   useViewportWidth,
 } from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
@@ -121,6 +122,15 @@ export function AppShell() {
   const sidebar = useSidebarLayout();
   const viewport = useViewportWidth();
   const sidebarWidth = sidebarTarget(sidebar);
+  // The phone sidebar is a fixed overlay out of flow (app.css's phone block),
+  // so the desktop width functions must not see its dragged width: with 0
+  // the title row starts at 136/104 instead of the dragged 320 (M3 — the
+  // identity lands next to the cluster), and the pane keeps its 75px floor
+  // instead of collapsing to 0 (M2's geometry inputs; its phone FORM is
+  // ticket 52's). One branch, shared by `rowLeft`, `paneOpenWidth` and the
+  // band the two feed.
+  const phone = useIsPhone();
+  const sidebarForGeometry = phone ? 0 : sidebarWidth;
   // The pane's owning chat, straight off the router. Deliberately NOT via the
   // chrome store: that is published from an effect and cleared on every dep
   // change, so the shell saw "no pane" for one commit on each toggle and tore
@@ -175,7 +185,7 @@ export function AppShell() {
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
   // Keeping the two apart is what lets the column animate between them: the
   // content keeps the open width while the column itself glides to zero.
-  const paneOpenWidth = resolvePaneWidth({ ...pane, open: true }, viewport, sidebarWidth);
+  const paneOpenWidth = resolvePaneWidth({ ...pane, open: true }, viewport, sidebarForGeometry);
   const paneWidth = paneChatId !== null && pane.open ? paneOpenWidth : 0;
 
   const onNewChat = useCallback(() => {
@@ -446,7 +456,7 @@ export function AppShell() {
   // sidebar, because the settings column is not the conversation column.
   const rowLeft = isChatRoute
     ? titlebarRowLeft({
-        sidebar: sidebarWidth,
+        sidebar: sidebarForGeometry,
         showsNewSession: plusAlpha > 0,
         takeover,
       })

@@ -15,6 +15,19 @@ body,
   height: 100%;
 }
 
+/*
+ * The document scroll lock's overscroll half (M4, ticket 50): no
+ * document-level scroll chaining or rubber-banding, so a pan that starts on
+ * the titlebar or ends at an interior scroller's boundary cannot scroll the
+ * document behind the app. Render-neutral at desktop widths, where `body`
+ * never scrolls (`overflow: hidden` below); the height half of the lock is
+ * the phone-scoped 100dvh block at the titlebar.
+ */
+html,
+body {
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--rb-bg);
@@ -301,6 +314,12 @@ a:focus-visible,
   flex-direction: row;
   align-items: center;
   gap: var(--rb-titlebar-group-gap);
+  /* The always-touched chrome (M4, ticket 50): manipulation keeps taps and
+     kills pans and double-tap-zoom; no selection callout on a long-press of
+     the title. A no-op for pointer input at desktop widths. */
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
   /*
    * NO FILL, NO BLUR, NO BORDER. The desktop's bar is literally
    * `div().h(TITLEBAR_HEIGHT).flex_none().child(inner)` — the shell's frost
@@ -330,6 +349,43 @@ a:focus-visible,
   align-items: center;
   flex: none;
   gap: var(--rb-titlebar-group-gap);
+}
+
+/*
+ * The phone viewport baseline (M4, ticket 50): `100dvh` with a `100vh`
+ * fallback makes the shell URL-bar-stable — the document no longer tracks
+ * the large viewport, so iOS cannot scroll it by the toolbar height and a
+ * URL-bar collapse no longer re-kicks the bottom-pinned transcript. With
+ * `viewport-fit=cover` (index.html) the safe-area insets become real on
+ * notched devices and resolve to 0 everywhere else: the titlebar grows by
+ * the top inset so the cluster and the row clear the notch (the cluster is
+ * absolutely positioned off the padding box, so its `top` carries the inset
+ * too — the padding alone cannot move it), and the phone keyboard reshapes
+ * this same dynamic viewport (`interactive-widget=resizes-content`). At
+ * ≥769px nothing changes: the chain stays `height: 100%` and the 38px band
+ * plus its 4px pad stay exact.
+ */
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .shell {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .titlebar {
+    height: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
+    padding-top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+  }
+
+  .titlebar-cluster {
+    top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+  }
 }
 
 /*
@@ -396,6 +452,8 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
+  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
@@ -437,6 +495,8 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
+  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
@@ -1273,6 +1333,9 @@ a:focus-visible,
   width: 100%;
   height: 100%;
   overflow-y: auto;
+  /* A fling that ends at the boundary must not chain to the document
+     (M4's drawer containment — same treatment as `.transcript`). */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   padding: var(--rb-space-xs) var(--rb-space-sm) 0;
@@ -6680,9 +6743,12 @@ button.files-save-pill:hover {
 
   /* The pill is edge-to-edge on desktop only; a phone needs its gutters.
      The footer is the composer column's child now, so the column alone
-     takes the gutter — narrowing both would double-subtract. */
+     takes the gutter — narrowing both would double-subtract. The bottom
+     padding also carries the home indicator's inset (0 without
+     `viewport-fit=cover`'s notched devices), keeping the pill above it. */
   .composer {
     width: calc(100% - 2 * var(--rb-space-sm));
+    padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom));
   }
 
   /* The new-thread hero and its floating selector row are desktop-width
@@ -9296,6 +9362,7 @@ button.files-save-pill:hover {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /*
@@ -9319,6 +9386,7 @@ button.files-save-pill:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -11888,10 +11956,14 @@ button.segmented-option:hover {
 
 @media (max-width: 768px) {
   /* The nav lives in the sidebar column (a drawer over content at phone
-     widths), so the page needs no nav-related reflow here. */
+     widths), so the page needs no nav-related reflow here. The bottom
+     padding carries the home indicator's inset — ticket 50's engine-drawer
+     safe-area scope, applied to its successor surface (ticket 45 folded the
+     engines drawer into Settings → Devices, which scrolls here to the
+     bottom edge). */
 
   .settings-page {
-    padding: 20px 16px 48px;
+    padding: 20px 16px calc(48px + env(safe-area-inset-bottom));
   }
 
   .settings-option-row {
@@ -13182,6 +13254,7 @@ html[data-surface="frosted"] .cr-tooltip {
 .add-space-list {
   height: 100%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 8px;
   display: flex;
   flex-direction: column;

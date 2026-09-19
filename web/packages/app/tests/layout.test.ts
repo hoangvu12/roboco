@@ -166,6 +166,41 @@ describe("titlebarRowLeft", () => {
   });
 });
 
+/*
+ * The phone geometry inputs (ticket 50, mobile-native — the desktop has no
+ * phone layout, so no desktop test maps): at ≤768px the sidebar is a fixed
+ * overlay out of flow, and `AppShell` feeds the desktop width functions the
+ * term 0 (`sidebarForGeometry = phone ? 0 : sidebarWidth`) instead of the
+ * dragged column width. Today's phone reality feeds the live width (e.g.
+ * 304), which pushes the identity to x=320 of a 375px window and collapses
+ * the pane's width inputs to 0.
+ */
+describe("phone geometry inputs", () => {
+  it("titlebarRowLeft phone sidebar is out of flow", () => {
+    // With a chat selected the `+` slot rides in: max(0 + 16, 104 + 32) = 136;
+    // otherwise, and on the blank canvas, max(16, 104) = 104 — the identity
+    // sits next to the window-control cluster instead of at 320 (304 + 16).
+    expect(titlebarRowLeft({ sidebar: 0, showsNewSession: true, takeover: false })).toBe(136);
+    expect(titlebarRowLeft({ sidebar: 0, showsNewSession: false, takeover: false })).toBe(104);
+  });
+
+  it("right_pane_ceiling_keeps_a_phone_floor", () => {
+    // 375 - 0 - 300: the pane keeps a 75px floor when the sidebar term is 0,
+    // instead of the 0 the live width produces (375 - 304 - 300 < 0).
+    expect(rightPaneMaxWidth(375, 0)).toBe(75);
+    expect(rightPaneMaxWidth(375, 304)).toBe(0);
+  });
+
+  it("titlebarPaneBandWidth phone inputs no longer collapse to zero", () => {
+    // rowLeft 136 (the phone identity inset) and a real pane width: the band
+    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 16) - 28 = 41 —
+    // where the live-width inputs collapsed it to 0.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
+    ).toBe(41);
+  });
+});
+
 describe("titlebar cluster geometry", () => {
   it("titlebar_cluster_matches_roboco_window_controls (shell.rs:8447)", () => {
     // 24·3 controls + the 8px group gap + the 2px control gap.
