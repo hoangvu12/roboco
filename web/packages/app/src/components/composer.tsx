@@ -834,7 +834,12 @@ export function Composer({
     const textPad = morphTextPad(morphT);
     const inputHeight = mode ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
     el.style.height = `${inputHeight}px`;
-    el.style.overflowY = mode && contentHeight > inputHeight ? "auto" : "hidden";
+    // The scrollability gate, not an inline overflowY: the CSS owns the
+    // overflow (`[data-scrollable="true"]` → `overflow-y: auto`, bar
+    // hidden), so the overflowing input still wheel-scrolls while a
+    // non-overflowing one chains its wheel to the transcript
+    // (`on_scroll_wheel`, composer.rs:2898-2933).
+    el.dataset["scrollable"] = mode && contentHeight > inputHeight ? "true" : "false";
     // The scroll fade mask: only SETTLED overflow at an edge gets the ramp —
     // the settled viewport is the committed target's, not the animating
     // box's (`input_overflow_edges`, composer.rs:181-192).
@@ -1757,7 +1762,8 @@ export function Composer({
 
   // While the wizard is mounted the flip machinery stands down (the pill is
   // not rendered); the wizard's own auto-grow owns the input's height,
-  // capped at five lines.
+  // capped at five lines — and past the cap the same `data-scrollable`
+  // gate (CSS-side, bar hidden) keeps the wheel scrolling the input.
   useEffect(() => {
     if (!wizardActive || textareaRef.current === null) {
       return;
@@ -1766,7 +1772,7 @@ export function Composer({
     el.style.height = "auto";
     const capped = Math.min(Math.max(el.scrollHeight, 22.75), 120);
     el.style.height = `${capped}px`;
-    el.style.overflowY = el.scrollHeight > 120 ? "auto" : "hidden";
+    el.dataset["scrollable"] = el.scrollHeight > 120 ? "true" : "false";
   }, [wizardActive, text, placeholder]);
 
   // When the wizard opens, focus lands where the desktop keeps it: the

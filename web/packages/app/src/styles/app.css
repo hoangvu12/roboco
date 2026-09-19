@@ -3172,11 +3172,18 @@ a:focus-visible,
 }
 
 /*
- * The body: expanded, a column with the textarea box in flow and the
- * actions row ABSOLUTE at the stationary bottom; compact, one 47px row
- * (`COMPACT_TOTAL_HEIGHT − PILL_BORDER_V`), bottom-justified so the pill
- * top can sweep down over it during a collapse.
+ * The body: expanded, a column stretched to the pill (`flex: 1`) so its
+ * bottom edge IS the pill's — the actions row's absolute anchor lands on
+ * the stationary bottom edge, like the desktop's pill-level anchor
+ * (composer.rs:7752-7758); compact, one 47px row
+ * (`COMPACT_TOTAL_HEIGHT − PILL_BORDER_V`) riding the pill's bottom-
+ * justified group, so the pill's top sweeps down over it during a
+ * collapse (composer.rs:7805, 7788-7792).
  */
+.composer-pill[data-mode="compact"] {
+  justify-content: flex-end;
+}
+
 .composer-pill[data-mode="compact"] .composer-body {
   display: flex;
   flex-direction: row;
@@ -3189,6 +3196,8 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .composer-body {
@@ -3225,6 +3234,14 @@ a:focus-visible,
  * only on the SETTLED overflow edges (INPUT_FADE_BAND).
  * `overscroll-behavior: contain` is the web's wheel-swallow at the scroll
  * boundary (composer.rs:2918-2925).
+ *
+ * No native scrollbar, ever: the desktop editor shows none (the
+ * `overflow_hidden` box + wheel offsets + fades, composer.rs:7746,
+ * 2898-2933), so the bar is hidden outright and the fade masks are the
+ * only affordance. The wheel stays native — `data-scrollable="true"`
+ * (written by the layout pass / the wizard's auto-grow) makes the input a
+ * scroll container ONLY while it overflows; otherwise the wheel chains to
+ * the transcript, as `on_scroll_wheel` does (composer.rs:2898-2933).
  */
 .composer-input {
   display: block;
@@ -3241,6 +3258,15 @@ a:focus-visible,
   outline: none;
   overflow: hidden;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.composer-input::-webkit-scrollbar {
+  display: none;
+}
+
+.composer-input[data-scrollable="true"] {
+  overflow-y: auto;
 }
 
 .composer-input[data-fade-top="true"][data-fade-bottom="true"] {
@@ -3744,6 +3770,9 @@ a:focus-visible,
  * The free-text slot (composer.rs:7065-7076): a hairline over the re-parented
  * composer input. The shared textarea keeps `.composer-input` metrics; the
  * stack grows with the content here rather than through the pill's flip.
+ * The input's overflow is NOT forced here — it rides the shared
+ * `data-scrollable` gate (past the 120px cap), so the wheel chains while
+ * the borrowed input fits.
  */
 .wizard-input-slot {
   margin-top: 12px;
@@ -3759,7 +3788,6 @@ a:focus-visible,
   height: auto;
   min-height: 22.75px;
   max-height: 120px;
-  overflow-y: auto;
 }
 
 .wizard-footer {
