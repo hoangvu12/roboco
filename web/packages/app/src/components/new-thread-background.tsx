@@ -429,7 +429,16 @@ export function NewThreadBackground({
       ref={heroRef}
       data-effect={effect}
       data-sidebar-tween={sidebarTween ? "1" : "0"}
-      style={{ width: `${heroWidth}px`, height: `${height}px`, opacity: heroOpacity }}
+      style={{
+        width: `${heroWidth}px`,
+        height: `${height}px`,
+        // Ticket 57b: during a route glide the dock pump writes the
+        // dissolve element opacity as a CSS var on the conversation column
+        // (the parity formula, computed per frame); the fallback is this
+        // render's value — the last published frame — so a mid-glide render
+        // can never clobber the live fade.
+        opacity: `var(--rb-dock-hero-opacity, ${heroOpacity})`,
+      }}
       aria-hidden="true"
     >
       {/*
