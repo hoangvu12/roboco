@@ -182,7 +182,7 @@ export class ChangesSurfaceStore {
 
   /**
    * Pin a commit-diff tab to its sha (`Changes::for_commit`): the scope
-   * becomes `commit` for the surface's whole life — there is no scope chip
+   * becomes `commit` for the surface's whole life — there is no scope row
    * to move it back.
    */
   pinCommit(chatId: string, surfaceId: string, sha: string): void {
