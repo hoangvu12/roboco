@@ -557,6 +557,29 @@ a:focus-visible,
 }
 
 /*
+ * The identity freeze (ticket 63): the sidebar tween slides the row's free
+ * space — its two inputs (the row inset and the pane band) ride one resize
+ * curve but from endpoint deltas that do not cancel when the pane is
+ * width-clamped — and the identity is the row's ONLY shrinkable child, so
+ * its title/folder would re-truncate frame by frame through the 200ms
+ * (the desktop's single `sidebar_now(t)` clock keeps the free space
+ * invariant instead; tabs.rs:179-253). While the tween runs, `lib/
+ * identity-freeze.ts` pins the box at its arm-time capture: `flex: none`
+ * opts it out of the row's shrink distribution, and the captured width as
+ * `max-width` reproduces the pre-tween box exactly — a basis-auto child
+ * capped at its own rendered width, truncated or not. The capture reads
+ * inside the flip commit's layout effects (the transitions still sit at
+ * their pre-tween values); the settle lifts the flag and the truncation
+ * re-evaluates ONCE, the snap the ticket sanctions. The arm never happens
+ * under reduced motion, at phone widths, or mid seam-drag — the signal's
+ * own guards — so no kill list entry is needed here.
+ */
+.titlebar-identity[data-rb-identity-frozen] {
+  flex: none;
+  max-width: var(--rb-identity-freeze-width, none);
+}
+
+/*
  * `flex_1` — the spacer that keeps the trailing group at the right edge. Its
  * `min-width` stands in for the row's old left padding: the identity may not
  * spend the row-left inset, so its truncation point (and the trailing band's
