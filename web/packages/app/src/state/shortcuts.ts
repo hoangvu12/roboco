@@ -511,12 +511,10 @@ export function browserNeverDelivers(keystroke: string): boolean {
 
 /**
  * The actions the bus carries. `new-chat` keeps its pre-parity name (the
- * titlebar `+`, the keyboard layer and `NewChatListener` already speak it);
- * `open-engines` is the web-only user-menu → engine drawer event.
+ * titlebar `+`, the keyboard layer and `NewChatListener` already speak it).
  */
 export type ShortcutEvent =
   | "new-chat"
-  | "open-engines"
   | "save-file"
   | "toggle-sidebar"
   | "toggle-changes"

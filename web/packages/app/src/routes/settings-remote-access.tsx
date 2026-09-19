@@ -3,6 +3,7 @@ import type { RemoteAccessSnapshot } from "@roboco/proto";
 import type { EngineClient } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
+import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import {
   createPairingLink,
   getRemoteAccess,
@@ -114,6 +115,7 @@ export function RemoteAccessSettingsPage() {
       <h1 className="settings-title">Remote access</h1>
       <p className="settings-subtitle">
         Pair your other devices with this engine. Use a trusted network or your own tunnel.
+        <SettingsEngineIndicator />
       </p>
 
       <section className="settings-card">

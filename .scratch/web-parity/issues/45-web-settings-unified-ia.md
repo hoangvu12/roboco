@@ -359,4 +359,33 @@ Copied verbatim from research S2.e:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed as specified. Notes and small judgment calls:
+
+- `describeRedeemError` moved to `lib/pairing-errors.ts` byte-identical
+  (verified against the deleted drawer's export with a script compare);
+  `pair-page.tsx` and `settings-devices.tsx` import the new path.
+- The `entryConnection` port lives as `engineConnection` in
+  `lib/settings-engine.ts` (not inside the route file) so the suite's
+  pure-function test convention covers it — the table-driven
+  `engineConnectionLabelsParkedAndIdentityChanged` test is included.
+- The indicator popover reuses `PickerCard` + `MenuRow` (the
+  DeviceSwitcher shape); rows are connection dot · host · check-on-active,
+  with the dot fed from `useFleetRegistry()` — a store read, not an RPC, so
+  the "reads: useFleet(), no RPC" contract holds. `fleetStore.setActive`
+  gained its first UI caller here.
+- Drawer deletions went beyond the class list where grep found more
+  orphans: the `.drawer` entries in the scrollbar-hiding selector lists,
+  the phone media-query `.drawer`/`.drawer-backdrop` block, and stale
+  comments in `state/escape.ts`, `app.css`'s z-ladder, and the
+  login-dialog scrim note. `--rb-z-drawer` (the ladder token, not a class)
+  was kept — the documented six-tier scale still reserves the drawer tier.
+- `.add-engine-label` kept (pair-page.tsx:60); `.pair-form` kept as the
+  sole selector where it shared a rule with the dead `.add-engine` form.
+- Not done: the acceptance's screenshot pair (desktop vs web) — no
+  runnable desktop/web session pair was available in this environment;
+  static verification (build, vitest 1207, grep-zero drawer references)
+  stands in for it.
+- Verification: `pnpm -r build` green; `pnpm test` in packages/app green
+  (1207 = base 1205 + the 2 new settings-engine tests).
