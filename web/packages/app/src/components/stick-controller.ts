@@ -31,6 +31,12 @@ export interface OwnTurnGeometry {
   readonly filled: boolean;
   /** Row-top positions (the virtualizer's prefix sums), in scroll content space. */
   readonly positions: readonly number[];
+  /**
+   * True while the row list is mid-replay (the store not loaded, or its
+   * replay pending — a resubscribe/reconnect window). A missing anchor in
+   * that window is transient: the runway waits, never retires.
+   */
+  readonly transient: boolean;
 }
 
 export interface StickControllerOptions {
@@ -591,9 +597,13 @@ export class StickController {
     const geometry = this.#geometry?.() ?? null;
     const anchor = geometry?.anchor ?? null;
     if (anchor === null) {
-      // The optimistic echo may arrive on the next state notification — but
-      // once the prompt has appeared, its disappearance is terminal.
-      if (ownTurn.seenPrompt) {
+      // The desktop waits one notification for the optimistic echo
+      // (transcript.rs:3541-3543) — and a row list that is momentarily
+      // replaying (a resubscribe or reconnect window; rows are never
+      // emptied, but the geometry can lag a frame) is the same wait: keep
+      // the runway and schedule the next frame. Only a prompt absent from a
+      // POPULATED frame is terminal (a failed echo or a removed entry).
+      if (ownTurn.seenPrompt && geometry?.transient !== true) {
         this.#retireOwnTurn();
         return false;
       }

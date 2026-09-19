@@ -153,7 +153,7 @@ describe("echo overlay", () => {
 describe("TranscriptStore acks the overlay from the stream", () => {
   function fakeClient(): {
     client: TranscriptClient;
-    emit: (update: TranscriptUpdate) => void;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
   } {
     let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
     return {
@@ -167,7 +167,7 @@ describe("TranscriptStore acks the overlay from the stream", () => {
           return { cancel: () => {} };
         },
       } as TranscriptClient,
-      emit: (update) => onItem?.(update, { generation: 1 }),
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
     };
   }
 
@@ -198,6 +198,103 @@ describe("TranscriptStore acks the overlay from the stream", () => {
       count: 1,
     });
     expect(echoes.forChat(CHAT)).toHaveLength(0);
+    store.dispose();
+  });
+});
+
+describe("TranscriptStore reset without the empty window (ticket 40)", () => {
+  function fakeClient(): {
+    client: TranscriptClient;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
+  } {
+    let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
+    return {
+      client: {
+        watch<T>(
+          _method: string,
+          _params: unknown,
+          handlers: { onItem: (item: T, ctx: { generation: number }) => void },
+        ) {
+          onItem = handlers.onItem as (item: TranscriptUpdate, ctx: { generation: number }) => void;
+          return { cancel: () => {} };
+        },
+      } as TranscriptClient,
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
+    };
+  }
+
+  /** A delta that cannot apply — the desync tripwire (resubscribe path). */
+  const DESYNC_DELTA: TranscriptUpdate = {
+    contextUsage: null,
+    upsert: [],
+    append: [{ entry: "ghost", part: "p0", text: "x", len: 1 }],
+    remove: [],
+    count: 3,
+  };
+
+  it("a_desync_resubscribe_keeps_the_previous_entries_until_the_reset_frame_lands", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    const a = userEntry("a");
+    const b = userEntry("b");
+    emit({ contextUsage: null, reset: [a, b] });
+    const settled = store.getSnapshot();
+    expect(settled.entries).toHaveLength(2);
+    expect(settled.loaded).toBe(true);
+    expect(settled.replay).toBe("populated");
+
+    // The desync trips the resubscribe: the rows STAY (rows are only empty
+    // on a genuine chat switch — the desktop re-derives them atomically,
+    // transcript.rs:4032-4057); only the replay returns to "pending".
+    emit(DESYNC_DELTA);
+    const mid = store.getSnapshot();
+    expect(mid.entries).toBe(settled.entries);
+    expect(mid.loaded).toBe(true);
+    expect(mid.replay).toBe("pending");
+
+    // The fresh stream's reset lands as an atomic swap: deep-equal entries
+    // keep their object identities (`preserveIdentity`), so the row cache
+    // and the measured-height map survive it.
+    emit({ contextUsage: null, reset: [userEntry("a"), userEntry("b")] });
+    const after = store.getSnapshot();
+    expect(after.replay).toBe("populated");
+    expect(after.entries[0]).toBe(a);
+    expect(after.entries[1]).toBe(b);
+    store.dispose();
+  });
+
+  it("a_generation_swap_keeps_the_previous_entries_until_the_reset_frame_lands", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    const a = userEntry("a");
+    emit({ contextUsage: null, reset: [a] });
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // A reconnect bumps the generation: the swap commits the pending window
+    // BEFORE the frame applies (the surface observes it, so the coming reset
+    // re-arms the reveal baseline), and the rows stay put throughout — an
+    // empty, unloaded snapshot is never published.
+    const observed: { replay: string; entries: number }[] = [];
+    const unsubscribe = store.subscribe(() => {
+      const snap = store.getSnapshot();
+      observed.push({ replay: snap.replay, entries: snap.entries.length });
+    });
+    emit({ contextUsage: null, upsert: [], append: [], remove: [], count: 1 }, 2);
+    unsubscribe();
+    expect(observed.map((o) => o.replay)).toEqual(["pending", "populated"]);
+    expect(observed.every((o) => o.entries === 1)).toBe(true);
+
+    // The stale-stream guard stays: a frame from the OLD generation is
+    // dropped without touching the snapshot.
+    emit({ contextUsage: null, reset: [userEntry("zzz")] }, 1);
+    expect(store.getSnapshot().entries).toHaveLength(1);
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // The new stream's reset lands: populated, identity preserved.
+    emit({ contextUsage: null, reset: [userEntry("a")] }, 2);
+    const after = store.getSnapshot();
+    expect(after.replay).toBe("populated");
+    expect(after.entries[0]).toBe(a);
     store.dispose();
   });
 });

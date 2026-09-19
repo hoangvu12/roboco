@@ -1191,3 +1191,285 @@ describe("SavedViewportCache (transcript.rs:2401)", () => {
     expect(cache.get("chat-old")).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ticket 40 — transcript stability: replay baseline re-arms, rows never
+// empty mid-session, the open-group estimate, the reservation's slack +
+// fold-expansion terms (ports of the desktop tests at transcript.rs:7851,
+// :7862, :7894, :10392)
+// ---------------------------------------------------------------------------
+
+import {
+  estimateRowHeight,
+  ownTurnReservationFloor,
+  userFoldExpansionHeight,
+  type UserFoldState,
+} from "../src/components/transcript";
+import { StickController } from "../src/components/stick-controller";
+import {
+  OWN_SEND_SCROLL_SLACK_PX,
+  OWN_SEND_TOP_INSET_PX,
+  SPACE_LG,
+  TITLEBAR_HEIGHT,
+  TOOL_GROUP_HEADER_HEIGHT,
+} from "../src/lib/transcript";
+import { ToolGroupMotionStore, TOOL_CONNECTOR_REVEAL_MS } from "../src/lib/tool-motion";
+
+/** One collapsible tool-group row, built through the real row model. */
+function toolGroupRow(entryId: string, commands: string[], streamingTail = false): TranscriptRow {
+  const e = entry(
+    entryId,
+    commands.map((command, ix) => toolPart(`c${ix}`, exec(command))),
+    streamingTail ? { status: "streaming" } : {},
+  );
+  const rows = rowsForEntry(e, { parse });
+  const group = rows.find((row) => row.rowKind.kind === "toolGroup");
+  if (group === undefined) {
+    throw new Error("expected a tool group row");
+  }
+  return group;
+}
+
+/**
+ * The component's open resolution (tool-group.tsx:119-127), mirrored so the
+ * tests assert what the row would actually render. The test env has no
+ * `matchMedia`, so reduced motion is false — the same branch the component
+ * takes there.
+ */
+function resolvedGroupOpen(motion: ToolGroupMotionStore, row: TranscriptRow, at: number): boolean {
+  if (row.rowKind.kind !== "toolGroup") {
+    throw new Error("expected toolGroup");
+  }
+  const starts = motion.revealOf(row.id)?.starts ?? [];
+  const arrivalPending = starts.some((start) => start != null && at - start < TOOL_CONNECTOR_REVEAL_MS);
+  return motion.groupFold(row.id)?.open ?? (row.rowKind.autoOpen || arrivalPending);
+}
+
+describe("replay baseline re-arms per replay (ticket 40)", () => {
+  it("tool_groups_stay_closed_on_populated_chat_attach", () => {
+    const motion = new ToolGroupMotionStore();
+    const row = toolGroupRow("tools", ["pwd"]);
+    // Repeated attach/replay (chat-b, chat-a, chat-b on the desktop): each
+    // cycle is the resubscribe shape — populated baseline → transient empty
+    // window (replay pending) → the reset frame lands with the baseline
+    // re-armed.
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      motion.sync([row], true);
+      motion.sync([], false, true);
+      motion.sync([row], true);
+      const at = performance.now();
+      expect(resolvedGroupOpen(motion, row, at)).toBe(false);
+      motion.noteRendered(row.id, false, 0);
+      const reveal = motion.revealOf(row.id);
+      expect(reveal).not.toBeNull();
+      // History flashed open on its first render — never.
+      expect(reveal!.renderedOpen).toBe(false);
+      // History replayed a stale closing tween — never.
+      expect(reveal!.renderedHeight).toBe(0);
+      expect(reveal!.headerStartedAt).toBeNull();
+      expect([...reveal!.starts].every((start) => start == null)).toBe(true);
+    }
+  });
+
+  it("tool_groups_stay_closed_after_rapid_new_chat_navigation", () => {
+    const motion = new ToolGroupMotionStore();
+    const row = toolGroupRow("tools", ["pwd"]);
+    motion.sync([row], true);
+    // Navigate away during the previous close animation: a fold pinned
+    // closed with live tween clocks (a stale 120px closing tween).
+    motion.toggleGroupFold(row.id, 0, false);
+    motion.toggleGroupFold(row.id, 120, false);
+    expect(motion.groupFold(row.id)?.open).toBe(false);
+    expect(motion.groupFold(row.id)?.toggledAt).not.toBeNull();
+    // Rapid navigation lands the replay without waiting the tween out.
+    motion.sync([], false, true);
+    motion.sync([row], true);
+    const fold = motion.groupFold(row.id);
+    expect(fold).not.toBeNull();
+    // The user pin survives; the stale closing tween never resumes.
+    expect(fold!.open).toBe(false);
+    expect(fold!.toggledAt).toBeNull();
+    expect(fold!.disclosureAt).toBeNull();
+    const at = performance.now();
+    expect(resolvedGroupOpen(motion, row, at)).toBe(false);
+    motion.noteRendered(row.id, false, 0);
+    const reveal = motion.revealOf(row.id)!;
+    expect(reveal.renderedOpen).toBe(false);
+    expect(reveal.renderedHeight).toBe(0);
+    expect([...reveal.starts].every((start) => start == null)).toBe(true);
+  });
+
+  it("tool_group_navigation_keeps_user_pins_and_new_arrivals", () => {
+    const motion = new ToolGroupMotionStore();
+    const row = toolGroupRow("tools", ["pwd"]);
+    motion.sync([row], true);
+    // The user EXPANDED the group.
+    motion.toggleGroupFold(row.id, 0, false);
+    // Cached replay lands without an intervening pending frame.
+    motion.sync([row], true);
+    expect(motion.groupFold(row.id)?.open).toBe(true);
+    const at = performance.now();
+    expect(resolvedGroupOpen(motion, row, at)).toBe(true);
+    motion.noteRendered(row.id, true, 34);
+    const reveal = motion.revealOf(row.id)!;
+    expect(reveal.renderedOpen).toBe(true);
+    expect([...reveal.starts].every((start) => start == null)).toBe(true);
+
+    // A genuinely NEW streamed arrival staggers in: the same group grows a
+    // chip and only the new chip gets a start (old_count comes from the
+    // previous LIVE rows, never a wiped map).
+    const grown = toolGroupRow("tools", ["pwd", "ls"]);
+    motion.sync([grown], false);
+    const grownStarts = motion.revealOf(row.id)!.starts;
+    expect(grownStarts[0] == null).toBe(true);
+    expect(grownStarts[1]).not.toBeNull();
+    expect(grownStarts[1]!).toBeGreaterThan(at - 1);
+
+    // A brand-new group on a new streaming entry: every chip animates.
+    const fresh = toolGroupRow("live-tools", ["ls"], true);
+    motion.sync([grown, fresh], false);
+    const freshReveal = motion.revealOf("live-tools#g0");
+    expect(freshReveal).not.toBeNull();
+    expect(freshReveal!.headerStartedAt).not.toBeNull();
+    expect([...freshReveal!.starts].every((start) => start != null)).toBe(true);
+  });
+
+  it("a transient empty window never wipes the live sets; an authoritative empty does", () => {
+    const motion = new ToolGroupMotionStore();
+    const row = toolGroupRow("tools", ["pwd"]);
+    motion.sync([row], false);
+    expect(motion.revealOf(row.id)).not.toBeNull();
+    // The resubscribe window: rows momentarily empty while replaying — the
+    // reset has not landed; counts and reveals must survive it.
+    motion.sync([], false, true);
+    expect(motion.revealOf(row.id)).not.toBeNull();
+    // An authoritative empty (replay "empty") is genuine: cleanup fires.
+    motion.sync([], false, false);
+    expect(motion.revealOf(row.id)).toBeNull();
+  });
+});
+
+describe("open-group height estimate (ticket 40 — transcript.rs:96-136)", () => {
+  it("a closed group estimates its header only", () => {
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"]))).toBe(TOOL_GROUP_HEADER_HEIGHT);
+  });
+
+  it("an auto-open group estimates the open height (header + chips)", () => {
+    const row = toolGroupRow("t", ["pwd"], true);
+    // Resolved tools keep their chip details closed by default, so the open
+    // estimate is the header plus the analytic chips height.
+    expect(estimateRowHeight(row)).toBe(TOOL_GROUP_HEADER_HEIGHT + chipsHeight(1));
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"], true))).toBe(
+      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2),
+    );
+  });
+
+  it("a user-pinned-open group estimates the open height; a pinned-closed one the header", () => {
+    const row = toolGroupRow("t", ["pwd", "ls"]);
+    expect(estimateRowHeight(row, () => true)).toBe(TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2));
+    // A user pin CLOSED overrides the auto-open rule.
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"], true), () => false)).toBe(
+      TOOL_GROUP_HEADER_HEIGHT,
+    );
+  });
+
+  it("a live thought chip's detail rides the open estimate", () => {
+    const e = entry(
+      "t",
+      [toolPart("c0", exec("pwd")), { kind: "reasoning", id: "r0", text: "thinking\nharder" }],
+      { status: "streaming" },
+    );
+    const rows = rowsForEntry(e, { parse });
+    const group = rows.find((row) => row.rowKind.kind === "toolGroup")!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected toolGroup");
+    }
+    const thought = group.rowKind.tools[1]!;
+    expect(thought.isThought).toBe(true);
+    expect(thought.resolved).toBe(false);
+    expect(thought.detail).not.toBeNull();
+    // A live thought opens its detail by default (tool-group.tsx:153-158).
+    expect(estimateRowHeight(group, () => true)).toBe(
+      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2) + detailHeight(thought.detail!),
+    );
+    // Without the pin the group still auto-opens (streaming tail).
+    expect(estimateRowHeight(group)).toBe(
+      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2) + detailHeight(thought.detail!),
+    );
+  });
+
+  it("a spawn-only group still estimates its unwrapped chips", () => {
+    const spawn: ToolCall = { kind: "unknown", name: "Agent: scan repo" };
+    const e = entry("t", [toolPart("c0", spawn)]);
+    const rows = rowsForEntry(e, { parse });
+    expect(estimateRowHeight(rows[0]!)).toBe(chipsHeight(1));
+  });
+});
+
+describe("own-send reservation terms (ticket 40 — transcript.rs:3483-3513)", () => {
+  const fold = (fields: Partial<UserFoldState>): UserFoldState => ({
+    open: false,
+    epoch: 1,
+    toggledAt: 0,
+    durationMs: 400,
+    from: 0,
+    expansion: 220,
+    ...fields,
+  });
+
+  it("the reservation value is inset − slack − expansion", () => {
+    // The 2px slack reads as the app's bottom (below perception); the
+    // expansion term carries the anchor row's live fold tween.
+    const floor = ownTurnReservationFloor({ anchorTop: 100, lastTop: 260, viewport: 800, inset: 48, expansion: 0 });
+    expect(floor).toBe(100 + 800 - (48 - OWN_SEND_SCROLL_SLACK_PX) - 260);
+  });
+
+  it("folding_releases_sent_turn_hold_without_removing_reservation (shape)", () => {
+    // The anchor row's fold toggles open: the tween's height lands in the
+    // anchor row (lastTop grows with it) while the expansion term grows in
+    // lockstep — the floor still binds instead of collapsing with the tween.
+    const viewport = 800;
+    const inset = 48;
+    const anchorTop = 100;
+    const lastTop = 260;
+    const expansion = 220;
+    const before = ownTurnReservationFloor({ anchorTop, lastTop, viewport, inset, expansion: 0 });
+    expect(before).toBeGreaterThan(0);
+    const after = ownTurnReservationFloor({
+      anchorTop,
+      lastTop: lastTop + expansion,
+      viewport,
+      inset,
+      expansion,
+    });
+    expect(after).toBeGreaterThan(0);
+    expect(after).toBeCloseTo(before, 6);
+  });
+
+  it("the expansion term tracks the fold tween (transcript.rs:3490-3504)", () => {
+    const opening = fold({ open: true, toggledAt: 0 });
+    // A degenerate duration or reduced motion snaps to the target (the
+    // desktop's `_` arm).
+    expect(userFoldExpansionHeight(fold({ open: true, durationMs: 0, toggledAt: 0 }), 5000, false)).toBe(220);
+    expect(userFoldExpansionHeight(opening, 5000, true)).toBe(220);
+    // Opening: 0 → full expansion over the duration.
+    expect(userFoldExpansionHeight(opening, 0, false)).toBe(0);
+    const mid = userFoldExpansionHeight(opening, 200, false);
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(220);
+    expect(userFoldExpansionHeight(opening, 400, false)).toBe(220);
+    // Show less decays the term back to zero.
+    const closing = fold({ open: false, toggledAt: 0 });
+    expect(userFoldExpansionHeight(closing, 0, false)).toBe(220);
+    expect(userFoldExpansionHeight(closing, 400, false)).toBe(0);
+  });
+
+  it("a first send in an empty chat parks row 0 at 64 (echo start)", () => {
+    // Row 0's own gap carries the chrome: the inset for row 0 is 0 and the
+    // first row's gap is the 64px titlebar clearance (transcript.rs:3435-3445
+    // — adding both parked a first prompt ~66px low, user report).
+    expect(StickController.ownSendInset(0)).toBe(0);
+    expect(StickController.ownSendInset(3)).toBe(OWN_SEND_TOP_INSET_PX);
+    expect(TITLEBAR_HEIGHT + SPACE_LG + 10).toBe(64);
+  });
+});
