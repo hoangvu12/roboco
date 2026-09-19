@@ -421,7 +421,7 @@ a:focus-visible,
 .titlebar-island-panel {
   position: absolute;
   inset: 0;
-  border-radius: 12px;
+  border-radius: var(--rb-radius-card);
   background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);

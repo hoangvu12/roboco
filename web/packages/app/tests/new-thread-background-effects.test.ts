@@ -329,3 +329,47 @@ describe("effectRasterKey (effects.rs:53-61)", () => {
     expect(effectRasterKey("scanlines", true)).not.toBe(effectRasterKey("scanlines", false));
   });
 });
+
+describe("a rejected job evicts itself so a retry re-attempts (memoPromise)", () => {
+  it("a failed decode leaves no warm entry: the retry re-attempts and lands", async () => {
+    const source = fixture();
+    let attempts = 0;
+    const failing: EffectRasterDriver = {
+      loadLuminance: () => {
+        attempts += 1;
+        return Promise.reject(new Error("offline fetch"));
+      },
+      rasterize: async (src) => noneRaster(src),
+    };
+    await expect(luminanceSource(FIXTURE_URL, failing)).rejects.toThrow("offline fetch");
+
+    // The rejection evicted the memo entry — the healed driver is called,
+    // not handed the poisoned promise.
+    const healed: EffectRasterDriver = {
+      loadLuminance: async () => source,
+      rasterize: async (src) => noneRaster(src),
+    };
+    await expect(luminanceSource(FIXTURE_URL, healed)).resolves.toBe(source);
+    expect(attempts).toBe(1);
+  });
+
+  it("a failed raster evicts its (url, effect, light) entry the same way", async () => {
+    const source = fixture();
+    let attempts = 0;
+    const failing: EffectRasterDriver = {
+      loadLuminance: async () => source,
+      rasterize: () => {
+        attempts += 1;
+        return Promise.reject(new Error("raster worker died"));
+      },
+    };
+    await expect(effectRaster(FIXTURE_URL, "ascii", false, failing)).rejects.toThrow("raster worker died");
+
+    const healed: EffectRasterDriver = {
+      loadLuminance: async () => source,
+      rasterize: async (src, effect, light) => rasterizeEffect(src, effect, light),
+    };
+    await expect(effectRaster(FIXTURE_URL, "ascii", false, healed)).resolves.toBeDefined();
+    expect(attempts).toBe(1);
+  });
+});

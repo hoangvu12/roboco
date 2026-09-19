@@ -73,7 +73,7 @@ export const GLYPHS: readonly (readonly number[])[] = [
   [14, 17, 23, 21, 23, 16, 14],
 ];
 
-function clamp(value: number, low: number, high: number): number {
+export function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
 }
 
@@ -371,33 +371,42 @@ const luminanceJobs = new Map<string, Promise<BackgroundLuminance>>();
 const rasterJobs = new Map<string, Promise<RasterData>>();
 
 /**
- * The decoded artwork for a URL — the memoized promise IS the single
- * pending job (effects.rs:243-263's reuse without the desktop-only FIFO
- * eviction): 100 callers while decoding share one decode, and every later
- * caller reuses the same `BackgroundLuminance`. A failure evicts the entry
- * so a retry can re-attempt (an offline fetch must not poison the cache).
+ * The get-or-memo-promise both job maps share: the memoized promise IS the
+ * single pending job (effects.rs:243-263's reuse without the desktop-only
+ * FIFO eviction) — 100 callers while it is pending share one job, and warm
+ * callers reuse the settled value. A rejection evicts its own entry so a
+ * retry can re-attempt (an offline fetch must not poison the cache).
+ */
+function memoPromise<T>(jobs: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {
+  const warm = jobs.get(key);
+  if (warm !== undefined) {
+    return warm;
+  }
+  const job = start();
+  job.catch(() => {
+    jobs.delete(key);
+  });
+  jobs.set(key, job);
+  return job;
+}
+
+/**
+ * The decoded artwork for a URL (effects.rs:243-263): one decode shared by
+ * every effect key through `memoPromise`.
  */
 export function luminanceSource(
   url: string,
   driver: EffectRasterDriver = browserDriver,
 ): Promise<BackgroundLuminance> {
-  const warm = luminanceJobs.get(url);
-  if (warm !== undefined) {
-    return warm;
-  }
-  const job = driver.loadLuminance(url);
-  job.catch(() => {
-    luminanceJobs.delete(url);
-  });
-  luminanceJobs.set(url, job);
-  return job;
+  return memoPromise(luminanceJobs, url, () => driver.loadLuminance(url));
 }
 
 /**
  * `raster_image` (effects.rs:47-108): one raster per `(url, effect, light)`
- * key — the memoized promise is the single pending job, so 100 calls while
- * rasterizing yield ONE raster (the desktop's `None` marker slot), and warm
- * calls return the identical raster. Rejections evict themselves.
+ * key through `memoPromise` — the memoized promise is the single pending
+ * job, so 100 calls while rasterizing yield ONE raster (the desktop's
+ * `None` marker slot), and warm calls return the identical raster.
+ * Rejections evict themselves.
  */
 export function effectRaster(
   url: string,
@@ -406,16 +415,9 @@ export function effectRaster(
   driver: EffectRasterDriver = browserDriver,
 ): Promise<RasterData> {
   const key = `${url}\u0000${effectRasterKey(effect, light)}`;
-  const warm = rasterJobs.get(key);
-  if (warm !== undefined) {
-    return warm;
-  }
-  const job = luminanceSource(url, driver).then((source) => driver.rasterize(source, effect, light));
-  job.catch(() => {
-    rasterJobs.delete(key);
-  });
-  rasterJobs.set(key, job);
-  return job;
+  return memoPromise(rasterJobs, key, () =>
+    luminanceSource(url, driver).then((source) => driver.rasterize(source, effect, light)),
+  );
 }
 
 /**

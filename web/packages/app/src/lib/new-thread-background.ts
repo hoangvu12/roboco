@@ -29,6 +29,7 @@
 
 import type { SurfaceTreatment } from "@roboco/theme";
 import type { UiSettingsStore } from "../state/ui-settings";
+import { clamp } from "./new-thread-background-effects";
 import { idbBackgroundBlobStore, type BackgroundBlobStore } from "./background-blob-store";
 
 // ---------------------------------------------------------------------------
@@ -81,13 +82,17 @@ export function newThreadBackgroundElementOpacity(
   readiness: number,
   surface: SurfaceTreatment,
 ): number {
-  const settled = 1 - Math.min(Math.max(dissolve, 0), 1);
+  const settled = 1 - clamp(dissolve, 0, 1);
   return settled * readiness * newThreadBackgroundOpacity(surface === "frosted");
 }
 
 /** `new_thread_background_height` (shell.rs:852-855): `min(max(vh,0)·0.72, 760)`. */
 export function newThreadBackgroundHeight(viewportHeight: number): number {
-  return Math.min(Math.max(viewportHeight, 0) * NEW_THREAD_BACKGROUND_VIEWPORT_RATIO, NEW_THREAD_BACKGROUND_MAX_HEIGHT);
+  return clamp(
+    viewportHeight * NEW_THREAD_BACKGROUND_VIEWPORT_RATIO,
+    0,
+    NEW_THREAD_BACKGROUND_MAX_HEIGHT,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +145,7 @@ export function heroMaskGeometry(hero: Rect, composer: Rect, cutout: boolean): H
   return {
     bounds: cutout ? cleared : parked,
     radius: cutout ? HERO_MASK_RADIUS : 0,
-    feather: cutout ? Math.min(Math.max(height * 0.52, 120), 280) : REVEAL_FEATHER,
+    feather: cutout ? clamp(height * 0.52, 120, 280) : REVEAL_FEATHER,
     clearance: cutout ? HERO_MASK_CLEARANCE : 0,
     // Start fading at the image's top, rather than holding full opacity
     // through its first 40% and compressing the transition near the bottom.
@@ -160,7 +165,7 @@ export function heroMaskGeometry(hero: Rect, composer: Rect, cutout: boolean): H
  * `value ≥ edge` (compact support).
  */
 function smoothstep(value: number, edge: number): number {
-  const t = Math.min(Math.max(value / edge, 0), 1);
+  const t = clamp(value / edge, 0, 1);
   return t * t * (3 - 2 * t);
 }
 
@@ -306,7 +311,7 @@ export class Readiness {
     if (reduced) {
       return 1;
     }
-    const t = Math.min(Math.max((nowMs - this.#startMs) / 120, 0), 1);
+    const t = clamp((nowMs - this.#startMs) / 120, 0, 1);
     return t * t * (3 - 2 * t);
   }
 }

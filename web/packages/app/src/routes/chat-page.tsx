@@ -617,6 +617,11 @@ export function ConversationPage() {
     : 0;
 
   // ── observePane → transcriptWidth → tick — the desktop's paint order ────
+  // KNOWN LIMITATION (sanctioned per tickets 35/36): this render body mutates
+  // `dockRef.current` (observePane/transcriptWidth/tick) — React-concurrent-
+  // unsafe if this pass were discarded. The tick is guarded to be idempotent
+  // (`frame.docked !== hasSelection`), and no concurrent features are enabled,
+  // so this is safe under current non-concurrent usage.
   // The shell samples the pane BEFORE `render_main`'s dock tick (observe_pane
   // at shell.rs:7901-7906, transcript_width at :7915-7919, the tick at
   // :5882-5885 inside render_main): the tick reads `pane.progress` to arm
