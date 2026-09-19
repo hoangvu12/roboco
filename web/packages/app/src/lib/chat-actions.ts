@@ -1,5 +1,7 @@
 import { methods } from "@roboco/engine-client";
 import type { WatchCacheSnapshot } from "@roboco/engine-client";
+import type { ChatConfig } from "@roboco/proto";
+import { mintId } from "./id";
 
 /**
  * The chat-management surface of the `Mutate` RPC (crates/ui/src/shell.rs
@@ -24,23 +26,40 @@ export interface CreateChatTarget {
 export interface CreateChatOptions extends CreateChatTarget {
   /** Id factory — client-minted like the desktop's `Uuid::new_v4`. */
   readonly mintId?: () => string;
-}
-
-function defaultMintId(): string {
-  return crypto.randomUUID();
+  /**
+   * The resolved draft config (composer.rs:6528-6533): only a genuinely NEW
+   * chat writes one; the field is inserted only when present.
+   */
+  readonly config?: ChatConfig;
+  /**
+   * The checkout plan's picked ref (composer.rs:6523-6527): inserted only
+   * when present. The engine stamps it as the chat's branch.
+   */
+  readonly branch?: string;
+  /**
+   * A worktree-reuse path (composer.rs:6515-6521) — inserted only when
+   * present. The projectless `"~"` NEVER rides here: it lives on the
+   * `RunRequest`, where the engine expands it host-side.
+   */
+  readonly cwd?: string;
 }
 
 /**
  * Create a chat and return its id. The engine writes the row immediately
  * (workspace_host create_chat is idempotent — a retry never duplicates).
+ * `spaceId`/`deviceId`/`cwd`/`branch`/`config` are inserted only when
+ * present, exactly like the desktop's `Mutate` assembly (composer.rs:6494-6544).
  */
 export async function createChat(caller: MutateCaller, options: CreateChatOptions = {}): Promise<string> {
-  const chatId = (options.mintId ?? defaultMintId)();
+  const chatId = (options.mintId ?? mintId)();
   await caller.call(methods.MUTATE, {
     op: "createChat",
     chatId,
     ...(options.spaceId !== undefined ? { spaceId: options.spaceId } : {}),
     ...(options.spaceId === undefined && options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.branch !== undefined ? { branch: options.branch } : {}),
+    ...(options.config !== undefined ? { config: options.config } : {}),
   });
   return chatId;
 }

@@ -1,6 +1,7 @@
 import type { ConnectivityState, ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
+import { mintId } from "../lib/id";
 import {
   PendingQueuedTurns,
   SavedViewportCache,
@@ -216,7 +217,7 @@ export class EchoStore {
     }
     const next: PendingSend = {
       ...previous,
-      messageId: (options.mintMessageId ?? defaultMintEchoId)(),
+      messageId: (options.mintMessageId ?? mintId)(),
       startedAtMs: options.nowMs ?? Date.now(),
     };
     const sends = this.forChat(previous.chatId);
@@ -258,10 +259,6 @@ export class EchoStore {
       listener();
     }
   }
-}
-
-function defaultMintEchoId(): string {
-  return crypto.randomUUID();
 }
 
 export const echoStore = new EchoStore();

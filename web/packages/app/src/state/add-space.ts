@@ -23,6 +23,7 @@ import {
   type StaleGuard,
 } from "../lib/add-space";
 import type { EngineSession } from "./engine-session";
+import { mintId } from "../lib/id";
 import { sidebarStore } from "./sidebar";
 import { uiSettings } from "./ui-settings";
 
@@ -122,10 +123,6 @@ export interface AddSpaceContext {
   readonly session: EngineSession | null;
   /** Route to the blank canvas — the desktop's `Route::Chat` landing. */
   readonly goToCanvas: () => void;
-}
-
-function mintId(): string {
-  return crypto.randomUUID();
 }
 
 function errorMessage(error: unknown): string {

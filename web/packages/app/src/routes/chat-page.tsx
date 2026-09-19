@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { motion } from "@roboco/theme";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import { methods, parseScopedId } from "@roboco/engine-client";
+import { encodeScopedId, methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
@@ -807,9 +807,17 @@ export function ConversationPage() {
   // `select_chat`'s commit (shell.rs:1289-1295 just notifies).
   const onNewThreadLaunched = useCallback(
     (mintedId: string) => {
-      void navigate({ to: "/chat/$chatId", params: { chatId: mintedId } });
+      // §2.3 (composer.rs:6047-6050): the desktop mints the new chat id
+      // SCOPED; the web mints raw on the wire (request-routing decodes
+      // either form) and scopes HERE, at the navigation — the same call
+      // add-space's optimistic space rows make. The merged fleet rows are
+      // all scoped, so the URL id then matches `chatPageRow`'s exact
+      // compare and the not-found page stays a last resort for genuinely
+      // foreign ids.
+      const scoped = session === null ? mintedId : encodeScopedId(session.engine.baseUrl, mintedId);
+      void navigate({ to: "/chat/$chatId", params: { chatId: scoped } });
     },
-    [navigate],
+    [navigate, session],
   );
 
   // The titlebar is the shell's; the route fills its identity and the `+`'s

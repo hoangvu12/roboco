@@ -6,11 +6,13 @@ import {
   messageEnterBindings,
   modifiedSubmitTarget,
   platformModifierCombo,
+  resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
   sendButtonMode,
   shouldPublishOptimisticEcho,
 } from "../src/lib/composer-send";
+import { buildRunRequest, sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
 /**
  * The composer's send-path decisions — each describe named after the
@@ -19,6 +21,28 @@ import {
  * run, the Mod+Enter target, the optimistic-echo gate, and the interrupt
  * tracking.
  */
+
+class FakeCaller {
+  readonly calls: { method: string; params: unknown }[] = [];
+  replies: Map<string, unknown> = new Map();
+
+  async call<T>(method: string, params?: unknown): Promise<T> {
+    this.calls.push({ method, params });
+    const byMethod = this.replies.get(method);
+    if (byMethod !== undefined) {
+      return byMethod as T;
+    }
+    return {} as T;
+  }
+}
+
+const DRAFT: DraftConfig = {
+  harness: "claude-code",
+  model: "claude-3-5-sonnet",
+  reasoning: "high",
+  sandbox: "workspace-write",
+  modelOptions: {},
+};
 
 describe("staged_comments_alone_are_content", () => {
   it("attachments and comments each count as content on their own", () => {
@@ -108,6 +132,65 @@ describe("message_enter_never_adds_extra_modifier_bindings", () => {
         ["ctrl-enter", "shift-cmd-enter", "alt-cmd-enter", "shift-enter"].includes(binding.keystroke),
       ),
     ).toBe(false);
+  });
+});
+
+describe("resolve_send_cwd", () => {
+  // composer.rs:6433-6440: the exact rule — a NEW chat runs from the picked
+  // space's path else "~"; an EXISTING chat from its stored cwd else ".".
+  // There is no error path.
+  it("a new chat runs from the space's path, else ~", () => {
+    expect(resolveSendCwd(true, "/Users/me/proj", null)).toBe("/Users/me/proj");
+    expect(resolveSendCwd(true, null, null)).toBe("~");
+    expect(resolveSendCwd(true, undefined, undefined)).toBe("~");
+  });
+
+  it("an existing chat runs from its stored cwd, else .", () => {
+    expect(resolveSendCwd(false, "/ignored-new-path", "/Users/me/proj")).toBe("/Users/me/proj");
+    expect(resolveSendCwd(false, "/ignored-new-path", null)).toBe(".");
+    expect(resolveSendCwd(false, "/ignored-new-path", undefined)).toBe(".");
+  });
+
+  it("blank and whitespace-only paths count as absent", () => {
+    expect(resolveSendCwd(true, "   ", null)).toBe("~");
+    expect(resolveSendCwd(false, null, "  ")).toBe(".");
+  });
+});
+
+describe("projectless_composer_allows_send_and_enter_submission", () => {
+  // composer.rs:8281, the web mirror: a projectless canvas send is legal —
+  // it reaches the QUEUE_COMMAND step with cwd "~" and never surfaces the
+  // deleted web-only working-directory failure.
+  it("a projectless canvas send reaches QueueCommand with cwd ~", async () => {
+    const caller = new FakeCaller();
+    caller.replies.set("QueueCommand", { commandId: "cmd-1" });
+    // The canvas stub's cwd is null with no space picked → resolveSendCwd.
+    const sendCwd = resolveSendCwd(true, null, null);
+    await sendRun(caller, "chat-1", DRAFT, "Hello without a project", sendCwd, {
+      mintMessageId: () => "msg-1",
+    });
+    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    const queue = caller.calls[0]!.params as { command: { request: { cwd: string } } };
+    expect(queue.command.request.cwd).toBe("~");
+  });
+
+  it("an existing chat with a blank stored cwd sends with cwd .", async () => {
+    const caller = new FakeCaller();
+    caller.replies.set("QueueCommand", { commandId: "cmd-2" });
+    await sendRun(caller, "chat-1", DRAFT, "hi", resolveSendCwd(false, null, "   "), {
+      mintMessageId: () => "msg-2",
+    });
+    const queue = caller.calls[0]!.params as { command: { request: { cwd: string } } };
+    expect(queue.command.request.cwd).toBe(".");
+  });
+});
+
+describe("expand_home parity", () => {
+  // §3.2: the engine at sessions.rs:1303-1313 is authoritative — the web
+  // only ever sends the LITERAL "~" and "." (never expands client-side).
+  it("buildRunRequest carries cwd ~ verbatim", () => {
+    expect(buildRunRequest(DRAFT, "hi", "~").cwd).toBe("~");
+    expect(buildRunRequest(DRAFT, "hi", ".").cwd).toBe(".");
   });
 });
 

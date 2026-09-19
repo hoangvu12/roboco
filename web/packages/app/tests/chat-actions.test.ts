@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { RpcError } from "@roboco/engine-client";
+import { encodeScopedId, RpcError } from "@roboco/engine-client";
 import type { WatchCacheSnapshot } from "@roboco/engine-client";
-import type { Chat } from "@roboco/proto";
+import type { Chat, ChatConfig } from "@roboco/proto";
 import {
   chatSeenAt,
   createChat,
@@ -13,6 +13,7 @@ import {
   setChatArchived,
   waitForChatRow,
 } from "../src/lib/chat-actions";
+import { chatPageRow } from "../src/lib/view";
 
 class FakeCaller {
   readonly calls: { method: string; params: unknown }[] = [];
@@ -90,6 +91,85 @@ describe("createChat", () => {
     const caller = new FakeCaller();
     caller.error = new RpcError("transport", "Engine is offline; reconnecting");
     await expect(createChat(caller, { spaceId: "s" })).rejects.toThrow("Engine is offline");
+  });
+
+  // §2.2 (composer.rs:6494-6544): the full wire payload — cwd/branch/config
+  // inserted only when present, exactly like the desktop's assembly.
+  it("carries the resolved config, the checkout plan's branch, and a worktree-reuse cwd", async () => {
+    const caller = new FakeCaller();
+    const config: ChatConfig = {
+      harness: "claude-code",
+      model: "claude-3-5-sonnet",
+      reasoning: "high",
+      sandbox: "workspace-write",
+      modelOptions: { effort: "low" },
+    };
+    await createChat(caller, {
+      spaceId: "space-1",
+      mintId: () => "chat-9",
+      config,
+      branch: "feature/x",
+      cwd: "/repo/.worktrees/feature-x",
+    });
+    expect(caller.calls[0]!.params).toEqual({
+      op: "createChat",
+      chatId: "chat-9",
+      spaceId: "space-1",
+      cwd: "/repo/.worktrees/feature-x",
+      branch: "feature/x",
+      config,
+    });
+  });
+
+  it("never inserts absent fields — a projectless createChat names the host device outright", async () => {
+    const caller = new FakeCaller();
+    const config: ChatConfig = {
+      harness: "claude-code",
+      model: null,
+      reasoning: null,
+      sandbox: "workspace-write",
+      modelOptions: {},
+    };
+    await createChat(caller, { deviceId: "device-9", mintId: () => "chat-10", config });
+    expect(caller.calls[0]!.params).toEqual({
+      op: "createChat",
+      chatId: "chat-10",
+      deviceId: "device-9",
+      config,
+    });
+    // The projectless "~" NEVER rides createChat — it lives on the RunRequest
+    // (composer.rs:6515-6521 inserts cwd only for the worktree-reuse override).
+    expect(JSON.stringify(caller.calls[0]!.params)).not.toContain("~");
+  });
+});
+
+describe("canvasSendNavigatesUnderScopedId", () => {
+  // §2.3: the wire keeps the RAW mint (createChat, waitForChatRow, the
+  // session's own watch cache); the route carries the SCOPED form, so the
+  // merged fleet rows' scoped ids match chatPageRow's exact compare.
+  it("mints raw, creates and waits raw, navigates scoped, and the page row resolves", async () => {
+    const engineKey = "http://192.168.1.4:4312";
+    const caller = new FakeCaller();
+    const cache = fakeCache();
+    // The engine's watch echo lands the row under its RAW id.
+    cache.push(chat({ id: "raw-1", deviceId: "device-9" }));
+
+    const chatId = await createChat(caller, { deviceId: "device-9", mintId: () => "raw-1" });
+    expect(chatId).toBe("raw-1");
+    expect((caller.calls[0]!.params as { chatId: string }).chatId).toBe("raw-1");
+    await expect(waitForChatRow(cache, chatId)).resolves.toBe(true);
+
+    // The navigation scopes the mint — the same call add-space's optimistic
+    // space rows make.
+    const scoped = encodeScopedId(engineKey, chatId);
+    expect(scoped.startsWith("engine:v1:")).toBe(true);
+
+    // The merged fleet snapshot scopes the engine's raw row; the page's exact
+    // compare resolves under the scoped URL id…
+    const merged = [chat({ id: scoped, deviceId: "device-9" })];
+    expect(chatPageRow(scoped, merged, [], [], 0)?.chat.id).toBe(scoped);
+    // …while the raw URL form misses — the pre-ticket-39 not-found page.
+    expect(chatPageRow(chatId, merged, [], [], 0)).toBeUndefined();
   });
 });
 

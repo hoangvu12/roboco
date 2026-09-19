@@ -11,6 +11,7 @@ import type {
   SentReply,
 } from "@roboco/proto";
 import { describeMutateError } from "./chat-actions";
+import { mintId } from "./id";
 
 /**
  * The message-queue RPC surface — web peer of `crates/engine/rpc.rs` §3.5.
@@ -184,7 +185,7 @@ export async function finishQueuedMessageEdit(
  * a lease by accident.
  */
 export function mintEditorInstanceId(): string {
-  return crypto.randomUUID();
+  return mintId();
 }
 
 /** User-facing mutation failure copy (mirrors chat-actions describeMutateError). */

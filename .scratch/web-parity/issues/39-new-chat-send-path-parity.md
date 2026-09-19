@@ -629,4 +629,90 @@ Consolidated (spaces research), filtered — rows 1, 2, 3, 4, 13, 14:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed on `wp2r2/39-new-chat-send-path-parity`, one commit
+`fix(web): ticket 39 new-chat send path parity`.
+
+**§2.1** — both guards deleted (the component notice at composer.tsx
+1872-1875 pre-edit and the `sendRun` throw at composer-actions.ts:158-160);
+`sendRun`'s `chatCwd` is now a resolved non-empty `string`. `resolveSendCwd`
+lives in `lib/composer-send.ts` (the send-path pure-logic module its test
+file already imports); `send()` computes `sendCwd` once and passes it where
+`chat.cwd` went. The RunRequest carries the literal `"~"`/`"."` — nothing
+client-side expands them.
+
+**§2.2** — `CreateChatOptions` gains `config?`/`branch?`/`cwd?`, inserted
+only when `undefined` (composer.rs:6515-6533 order). The composer's
+new-chat call passes `config: buildChatConfig(draft)` always (a genuinely
+new chat); `branch`/`cwd` ride only when present — **deviation, recorded**:
+the web's picked ref is component-local state inside
+`NewThreadGitSelectors`/`RefChip` (ticket 10 deviation 2 — the checkout
+executes `SwitchRef` at pick time) and no worktree-reuse path is modeled,
+so neither is reachable from `send()` today. The payload assembly (all
+combos, only-when-present inserts) is pinned in
+`tests/chat-actions.test.ts`; lifting the pick is the checkout-plan
+ticket's scope, per this ticket's Do-not #4. The projectless `"~"` never
+rides createChat (asserted).
+
+**§2.3** — `onNewThreadLaunched` (chat-page) scopes at navigation:
+`encodeScopedId(session.engine.baseUrl, mintedId)`; the composer keeps the
+raw id on the wire and computes the same scoped `pageChatId` for the stores
+that derive from the route param. Audited consumers: the echo
+(`pushEcho`/refresh — now keyed `pageChatId`, so `forChat(docId)` and
+`ackFromFrame` match on the scoped route), the draft map, the staged stash,
+the review-comment restore key, and the failure-notice key — all now key
+the page id; `createChat`/`waitForChatRow`/`QUEUE_COMMAND` keep the raw id.
+`waitForChatRow` waits on the registry's own watch cache (session.cache IS
+`engineRegistry.watchCacheFor`), so the merged scoped row and the raw
+session row land together — no new race. The not-found page stays verbatim
+and last-resort only (a scoped URL id now matches the merged row); **the
+desktop's transient-notice shape was NOT adopted** (judgment call the
+ticket left to Comments — the page is kept for genuinely foreign ids).
+
+**§2.4** — `pickNoProject` routes through a new exported
+`rememberNoProject(device, sidebar)` (lib/composer-draft.ts, next to
+`rememberTarget`): persists the opt-out target AND calls
+`sidebar.setSpaceFilter(null)`. The footer passes the singleton; the
+sidebar parameter is the test seam (vitest env is `node` — no render
+harness exists), used by the §3.5 mirror in
+`tests/composer-draft.test.ts`
+(`projectless_new_session_restores_opt_out_and_clears_sidebar_filter`).
+
+**§2.5** — `lib/id.ts` `mintId()` (app-local home, per the ticket's stated
+preference — no second consumer exists); all seven sites route through it
+(`chat-actions`, `composer-actions` message ids, `queue-actions` edit
+leases, `transcript-store` echo ids, `review-comments`, `attachments`
+`finalizeStage`, `add-space`); `grep randomUUID web/packages` → zero bare
+call sites. The optional dev console warning is implemented (warn-once,
+DEV only). The existing-chat mint moved inside the try — the try now opens
+BEFORE the mint (its first statement), so any pre-flight throw runs the
+full failure recovery (echo cleanup via a `pushedEchoId` that stays null
+until an echo publishes; text/attachments/comments hand-back keyed the
+page id) and surfaces as the notice, never a silent dead send.
+
+**§3 tests** — `resolveSendCwd` + the
+`projectless_composer_allows_send_and_enter_submission` mirror (reaches
+QUEUE_COMMAND with `cwd: "~"`) + the `buildRunRequest(…, "~").cwd === "~"`
+pin → `tests/composer-send.test.ts`; `mintId` three arms → new
+`tests/id.test.ts` (vi.stubGlobal fake crypto); createChat payload
+assembly + `canvasSendNavigatesUnderScopedId` (mint raw → createChat raw →
+waitForChatRow raw → scoped navigate → `chatPageRow` resolves, raw misses)
+→ `tests/chat-actions.test.ts`; the §2.4 filter-clearing mirror →
+`tests/composer-draft.test.ts`. Updated the old-guard test
+(`rejects when the chat has no cwd` → `~`/`.` are legal wire values).
+1249 green (1235 at base + 14 new); `pnpm -r build` green.
+
+**Verification gaps** — the live-verification acceptance rows (screenshot
+pair incl. the LAN-HTTP origin, zero-spaces bootstrap) need a paired
+engine; unit mirrors landed instead. Pre-existing seam noticed and left
+alone (out of this ticket's surface, matches existing-chat behavior
+today): the session-notification driver reads
+`echoStore.forChat(<raw session-cache chatId>)` while echoes key the
+page (scoped) id — ticket 13/16 own those semantics.
+
+**Line-number drift** — the ticket's citations predate the wave-2 merges;
+verified against the worktree before editing (guard at composer.tsx
+1872-1875, throw at composer-actions.ts:158-160, pickNoProject at
+composer-footer.tsx:395-399 — all matched; chat-page's
+`onNewThreadLaunched` had moved to :808-813).
