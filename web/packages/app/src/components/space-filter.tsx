@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Space } from "@roboco/proto";
 import { methods, parseScopedId } from "@roboco/engine-client";
@@ -383,23 +383,68 @@ const SIDEBAR_VIEW_ROWS: readonly { row: ViewRow; label: string; icon: IconName 
   { row: { kind: "ShowHarness" }, label: "Harness", icon: "bot" },
 ];
 
+/**
+ * The "Sidebar view options" label's show/hide controller — the web port
+ * of gpui's `.tooltip(…)` + `.tooltip_show_delay(350ms)` contract
+ * (`spaces.rs:1150-1151`: show after the delay while hovered, dismiss
+ * when the pointer leaves or the element unmounts), hand-rolled because
+ * the label is the inline-span exception (`ui/Tooltip.tsx` — no library
+ * to lean on, so the defensive paths are spelled out): one tracked
+ * timer, cleared before every re-arm so enter/leave cycles never stack;
+ * `leave`, `blur`, `escape`, and `dispose` (unmount) all clear it and
+ * hide. Focus NEVER arms it — the trigger's `aria-label` is the
+ * assistive-tech path, and the desktop's visible label is hover-only.
+ * The 350ms itself stays the shared `TOOLTIP_VIEW_OPTIONS_MS`
+ * (`spaces.rs:960-966`), never inlined.
+ */
+export function createViewOptionsTooltip(
+  setVisible: (visible: boolean) => void,
+): {
+  enter: () => void;
+  leave: () => void;
+  blur: () => void;
+  escape: () => void;
+  dispose: () => void;
+} {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  function clearTimer(): void {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+  function dismiss(): void {
+    clearTimer();
+    setVisible(false);
+  }
+  return {
+    enter() {
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = null;
+        setVisible(true);
+      }, TOOLTIP_VIEW_OPTIONS_MS);
+    },
+    leave: dismiss,
+    blur: dismiss,
+    escape: dismiss,
+    dispose: dismiss,
+  };
+}
+
 export function SidebarViewMenu() {
   const sidebar = useSidebar();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const [tooltip, setTooltip] = useState(false);
 
-  // The 350ms show delay (spaces.rs:960-966) is the shared
-  // `TOOLTIP_VIEW_OPTIONS_MS` convention from `ui/Tooltip.tsx` — the lone
-  // tooltip in the popover family; hovering shorter than that shows
-  // nothing.
-  const showTooltip = useCallback(() => {
-    const timer = setTimeout(() => setTooltip(true), TOOLTIP_VIEW_OPTIONS_MS);
-    return () => {
-      clearTimeout(timer);
-      setTooltip(false);
-    };
-  }, []);
+  // The label's contract rides the controller above; hovering shorter
+  // than the 350ms delay shows nothing. Unmounting the sidebar clears
+  // any pending arm.
+  const tooltipControl = useMemo(() => createViewOptionsTooltip(setTooltip), []);
+  useEffect(() => {
+    return () => tooltipControl.dispose();
+  }, [tooltipControl]);
 
   function isSelected(row: ViewRow): boolean {
     switch (row.kind) {
@@ -496,11 +541,19 @@ export function SidebarViewMenu() {
             ref={buttonRef}
             className={openChipClass("space-filter-sort", open)}
             aria-label="Sidebar view options"
-            onMouseEnter={showTooltip}
-            onFocus={showTooltip}
+            onMouseEnter={tooltipControl.enter}
+            onMouseLeave={tooltipControl.leave}
+            onBlur={tooltipControl.blur}
             onKeyDown={(event) => {
-              // Enter/Space toggle through the trigger's own click semantics;
-              // ArrowDown only opens, never closes (spaces.rs:966-973).
+              // Escape is a LOCAL dismissal of the visible label — the
+              // label is not a popover, so it never joins the shell's
+              // escape ladder (state/escape.ts). Enter/Space toggle
+              // through the trigger's own click semantics; ArrowDown only
+              // opens, never closes (spaces.rs:966-973).
+              if (event.key === "Escape" && tooltip) {
+                tooltipControl.escape();
+                return;
+              }
               if (event.key === "ArrowDown" && !open) {
                 event.preventDefault();
                 event.stopPropagation();

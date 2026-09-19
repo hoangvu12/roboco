@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Chat, Device } from "@roboco/proto";
 import { archivedChats, chatLocation } from "../src/lib/archived";
 import { archivedRows } from "../src/lib/view";
+import { archivedRightSlot } from "../src/components/archived-section";
 
 const NOW = 1_800_000_000_000;
 
@@ -83,5 +84,20 @@ describe("chatLocation (proto view.rs:252-270)", () => {
     expect(chatLocation(chat({ branch: "main" }))).toBe("main");
     expect(chatLocation(chat({}))).toBe(null);
     expect(chatLocation(chat({ cwd: "~", branch: "  " }))).toBe(null);
+  });
+});
+
+describe("archivedRightSlot (spaces.rs:1669-1712)", () => {
+  it("archivedRowRightSlotRendersExactlyOneChild", () => {
+    // Rest — and every non-hover state, since focus never pins the pill
+    // and touch never fires hover — renders the time-ago, only.
+    expect(archivedRightSlot(false)).toBe("time");
+    // Pointer within the row, pill included: the Unarchive pill, only.
+    expect(archivedRightSlot(true)).toBe("pill");
+    // Exactly one child at every instant: the choice is always one of
+    // the two slots, never both.
+    for (const hovered of [false, true]) {
+      expect(["time", "pill"]).toContain(archivedRightSlot(hovered));
+    }
   });
 });
