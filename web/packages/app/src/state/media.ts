@@ -2,7 +2,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { PHONE_MAX_WIDTH } from "./layout";
 
 /**
- * The one shared media-hook module (ticket 49, research M8 §(b)1): every
+ * The one shared media-hook module (ticket 49, research M8(b)1): every
  * width branch in the app resolves through HERE so the JS breakpoint and
  * the stylesheet's can never drift apart. `PHONE_MAX_WIDTH` is the
  * stylesheet's boundary — every phone block in `app.css` is
