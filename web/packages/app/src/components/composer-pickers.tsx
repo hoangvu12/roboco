@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
-import { catalogLoading, modelsLoading, shouldReload } from "../lib/catalog-loading";
+import { catalogLoading, modelsLoading, openForceRefire, shouldReload } from "../lib/catalog-loading";
 import {
   applyDraftUpdate,
   composerDefaults,
@@ -223,16 +223,28 @@ export function ComposerPickers(props: ComposerPickersProps) {
 
   // Force: the enabled set moves under us (Settings → Agents, possibly from
   // another viewer) — every open revalidates, keeping current rows visible
-  // until the fresh catalog lands (pickers.rs:1003-1019). The
-  // overlaySource prop below registers the `composer-pickers` overlay
+  // until the fresh catalog lands (pickers.rs:1003-1019). The force also
+  // RE-FIRES when the slot lands Error while the card stays open (ticket
+  // 61, hole 1): the desktop's per-render `ensure_harnesses` cadence
+  // (pickers.rs:4164-4168) never waits for an event to re-kick, and the
+  // web's stand-in for that cadence is this effect re-running on a state
+  // change — the slot's error arm is the one that must re-kick (an open
+  // card's ErrorRow has no scheduled retry otherwise). `openForceRefire`
+  // keys on that arm alone, so a warm Ready slot never re-fires (each
+  // landed reload produces a fresh slot object — keying on identity would
+  // loop) and a failed re-arm does not re-fire again until a new error
+  // lands. The in-flight guard inside `loadHarnesses` bounds a wedged
+  // load's lifetime, so the re-force can supersede it.
+  // The overlaySource prop below registers the `composer-pickers` overlay
   // keyboard source while the card is open (shell.rs:3681-3683).
   const opened = open;
+  const openRefire = openForceRefire(harnesses);
   useEffect(() => {
     if (opened) {
       void catalog.loadHarnesses({ force: true });
       catalog.prefetchModels(true);
     }
-  }, [catalog, opened]);
+  }, [catalog, opened, openRefire]);
 
   // The desktop's per-render `ensure_harnesses(false, cx)` kick
   // (pickers.rs:4164-4168) has no per-frame web peer — port the discipline

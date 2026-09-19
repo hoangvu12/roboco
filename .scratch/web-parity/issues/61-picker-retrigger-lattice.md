@@ -47,10 +47,20 @@
 
 ## 6. Acceptance
 
-- [ ] The four named unit cases green (one per hole) in the catalog/picker suites.
-- [ ] Manual sequence (code-traced or fake-session test): mount page → engine connects AFTER mount → open picker immediately → harnesses/models load (or a real error + working Retry). No refresh.
-- [ ] `pnpm -r build` + `pnpm test` green.
+- [x] The four named unit cases green (one per hole) in the catalog/picker suites.
+- [x] Manual sequence (code-traced or fake-session test): mount page → engine connects AFTER mount → open picker immediately → harnesses/models load (or a real error + working Retry). No refresh.
+- [x] `pnpm -r build` + `pnpm test` green.
 
 ## Comments
 
 (User report 2026-09-20 #5 — "when i first connect to the engine, the model picker just dont work at all, until i hit refresh".)
+
+Landed 2026-09-20, branch `wp2r2/61-picker-retrigger-lattice`, one commit:
+
+- **§2.1 every-open force** — `openForceRefire` (lib/catalog-loading.ts): the composer's open effect gained the refire key; a load that fails while the card stays open re-forces (the desktop's per-render `ensure_harnesses` discipline, pickers.rs:4164-4168 — never wait for an event). Keyed on the slot's error arm alone so a warm Ready slot never re-fires (each landed reload produces a fresh slot object — a wider key would loop).
+- **§2.2 in-flight bound** — `HARNESS_IN_FLIGHT_MS` = 10s (the identity-call cap family, client.ts:85) + `inFlightLost` (lib/catalog-loading.ts); `#harnessesInFlight` became a flight token in picker-catalog.ts: a kick past the bound supersedes the wedged flight and the late landing is dropped by the token check; `slotNeedsRetry`'s in-flight arm is age-aware, so the heal re-kicks around a lost flight. The 30s unary timeout no longer gates the lattice.
+- **§2.3 reconnect emission** — `EngineClient#dial` emits `connecting` on every dial (was dial 1 only, client.ts:309-311). Verified against the scripted fake engine (fails at base).
+- **§2.4 state-based re-arm** — `LoadableList.errorKind` carries the typed error; the heal's offline arm (`slotNeedsRetry` → `isConnectionError`) keys on the connection-level kinds (`transport` = pre-dial offline / failed dial, `closed` = mid-call teardown) instead of the literal message. `timeout` stays on the connected-only heal (the landed 38 test locks that).
+- **Named cases**: catalog-loading.test.ts (`openForceRefire` + `inFlightLost` tables), picker-catalog.test.ts (supersession with a hanging call, dial-2 `connecting` re-arm, closed-kind re-arm), engine-client fake-server.test.ts (every-dial emission). 6 new tests total.
+- **Verification**: `pnpm -r build` green; `pnpm test` green from web\ (engine-client 44/44, app 1298 = base 1293 + 5) and web\packages\app (1298/1298). Screenshot pairs waived per the ticket brief (no dev server/browser in this environment); the first-connect sequence is covered by the lattice cases above (mount-load → offline latch → status heal, dial-2 re-arm, wedged-call supersession).
+- **Environment note (not this change)**: on a cold target dir, engine-client's smoke and conformance vitest projects race their cargo example builds; the first full run failed at `cargo build --example web_smoke` (exit 101, parallel lock contention). Direct build + re-run is green — pre-existing parallelism.
