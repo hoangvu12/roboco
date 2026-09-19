@@ -525,7 +525,7 @@ export function upsertDiffFrame<T extends { readonly checkoutId: string }>(
 /**
  * The diff scope — Working tree / Branch changes / Latest turn, plus the
  * commit-pinned flavour a commit-diff tab mounts (ticket 27 reaches it via
- * `addDiffSurface(chatId, "commit", …)`; no scope chip exposes it).
+ * `addDiffSurface(chatId, "commit", …)`; no scope row exposes it).
  * History is NOT a scope on the web: it is its own pane surface (ticket 27).
  */
 export type DiffScope = "workingTree" | "branch" | "turn" | "commit";

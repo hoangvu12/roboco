@@ -12224,37 +12224,63 @@ button.segmented-option:hover {
   min-width: 0;
 }
 
-/* Scope chips — the documented web deviation for the desktop's dropdown
-   (research §5): a row of toggle chips, same labels, HOVER_FADE blends. */
-.changes-scope {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-xs);
+/* The scope selector's trigger (`render_header_controls`' scope trigger,
+   changes.rs:3699-3744 — ticket 62): one 24px chip — the current scope's
+   label + a 12px chevron — where ticket 22's three chips sat. Rest carries
+   the desktop's faint wash(0.05); hover blends to wash(0.14) over
+   HOVER_FADE. */
+.changes-scope-trigger {
   flex: none;
-  flex-wrap: wrap;
-}
-
-.changes-scope-chip {
-  border: 1px solid var(--rb-border);
-  background: transparent;
-  color: var(--rb-text-muted);
-  padding: 4px 10px;
+  height: 24px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
   border-radius: var(--rb-radius-control);
-  font-size: 12px;
+  background: rgb(var(--rb-wash) / 0.05);
   cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
-    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-.changes-scope-chip:hover {
-  background: var(--rb-hover);
+.changes-scope-trigger:hover {
+  background: rgb(var(--rb-wash) / 0.14);
+}
+
+/* The trigger's label: `scope.label()` — 12px text on a 14px line
+   (changes.rs:3733-3739). */
+.changes-scope-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 14px;
   color: var(--rb-text);
 }
 
-.changes-scope-chip-active {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
-  color: var(--rb-text);
-  border-color: rgb(var(--rb-hairline) / calc(0.09 * var(--rb-hairline-scale)));
+/* The chevron: `ALT_ARROW_DOWN` 12px, `text_muted` at 0.7
+   (changes.rs:3740-3744). */
+.changes-scope-caret {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+/* The scope menu's body (`render_scope_menu`, changes.rs:3845-3871): the
+   popover card's 180px column with the 2px row gap every other menu
+   carries — rows straight on the card abutted, adjacent washes read as
+   one slab (user report). */
+.changes-scope-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The active row's trailing check, beside the selected wash. */
+.changes-scope-check {
+  flex: none;
+  margin-left: auto;
+  color: var(--rb-text-muted);
 }
 
 /*
@@ -13099,7 +13125,7 @@ html[data-surface="frosted"] .cr-tooltip {
 
 @media (prefers-reduced-motion: reduce) {
   .cr-badge,
-  .changes-scope-chip,
+  .changes-scope-trigger,
   .changes-tool {
     transition: none;
   }
