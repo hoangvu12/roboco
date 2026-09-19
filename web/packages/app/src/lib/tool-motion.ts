@@ -529,9 +529,14 @@ export class ToolGroupMotionStore {
    * The reveal-epoch assignment on every row sync (:4059-4116). `baseline` is
    * the replay baseline (the first populated frame after attach): it clears
    * every reveal and strips the group folds' tween clocks, so replaying
-   * history never re-animates an existing task tree.
+   * history never re-animates an existing task tree. `replaying` marks a
+   * TRANSIENT empty window (the store re-subscribing — a desync, a
+   * reconnect): the reset lands as an atomic swap, so the live-set cleanup
+   * below is skipped for that call and the reveal counts survive it
+   * (the desktop reads `previous_tool_counts` off the LIVE rows, which never
+   * empty mid-session, transcript.rs:4073-4097).
    */
-  sync(rows: readonly TranscriptRow[], baseline: boolean): void {
+  sync(rows: readonly TranscriptRow[], baseline: boolean, replaying = false): void {
     const now = performance.now();
     if (baseline) {
       this.#reveals.clear();
@@ -576,13 +581,18 @@ export class ToolGroupMotionStore {
       }
       this.#counts.set(row.id, tools.length);
     }
+    // The live-set cleanup: reveals and counts for rows absent from `rows`.
+    // A transient empty window while the store is replaying is NOT an
+    // authoritative empty — the reset frame replaces the rows atomically —
+    // so the cleanup is skipped entirely for that call.
+    const transientEmpty = rows.length === 0 && replaying;
     for (const id of [...this.#reveals.keys()]) {
-      if (!live.has(id)) {
+      if (!transientEmpty && !live.has(id)) {
         this.#reveals.delete(id);
       }
     }
     for (const id of [...this.#counts.keys()]) {
-      if (!live.has(id)) {
+      if (!transientEmpty && !live.has(id)) {
         this.#counts.delete(id);
       }
     }

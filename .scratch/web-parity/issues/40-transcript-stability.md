@@ -509,4 +509,114 @@ fill-smoothness and echo-start rows are S5-only and listed above.)
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed in the order the ticket prescribes — store preservation, baseline
+re-arm, estimates, stick model — with tests green at each step.
+
+**§2.1 store.** `resubscribe()` and `#onItem`'s generation swap keep
+`#entries`, `#loaded`, and `#contextUsage`; both clear `#error` (the Retry
+affordance must not strand a stale terminal error — `#onItem` never clears
+it) and set `#replay = "pending"`. One addition beyond the literal §2.1
+table: the swap branch now **commits before the frame applies**. Without it,
+a plain reconnect's reset coalesces with the swap into a single
+`"populated"` commit, the surface never observes `"pending"`, and §2.2's
+re-arm (which names the generation swap as a trigger) never fires on the
+most common reconnect path. The intermediate commit publishes kept rows +
+pending replay (verified by the listener sequence in the pending-send test).
+
+**§2.2 baseline.** The surface effect re-arms `revealBaselineRef` when
+`replay` returns to `"pending"`; the next populated frame runs
+`sync(rows, true)`. With rows kept, the rows memo hits through the whole
+window (entries array identity unchanged), so the reset frame is the only
+thing that re-runs the effect.
+
+**§2.3 counts + estimate.** `sync(rows, baseline, replaying = false)` skips
+the live-set cleanup only when `rows.length === 0 && replaying`
+(transient ≠ authoritative-empty). `estimateRowHeight` is exported and takes
+a `groupFoldOpen` resolver: closed → 26, spawn-only → `chipsHeight(n)`,
+open (pin `true` or `autoOpen`) → `26 + chipsHeight(n) +
+Σ detailHeight(open chips)` — a chip's detail counts when it opens by
+default (a live unresolved thought), mirroring tool-group.tsx:153-158; no
+detail-fold lookup (the ticket names only the group fold). The resolver is
+threaded through all four call sites (height model, `lastNatural`,
+`captureAnchor`, `readingTopRow`). Note the estimate follows the ticket's
+formula verbatim, so it uses `chipsHeight` (38px rows) where the rendered
+rail rows are 32px — it errs ~6px/chip tall until measurement corrects;
+the ticket's formula is the spec.
+
+**§2.4 reservation terms — sign resolution.** The ticket's "subtracts the
+slack and the expansion term in addition to the inset" was implemented as
+the desktop's reservation VALUE (`inset − OWN_SEND_SCROLL_SLACK_PX −
+expansion`, transcript.rs:3506-3509) replacing the bare `inset` term the
+old floor subtracted — i.e. the floor GROWS by slack+expansion, it does not
+shrink. Verified against the zui fork's `set_tail_reservation`
+(list.rs:1089-1135: `minimum = viewport − inset`, extra pads the tail): this
+is the only sign that makes the scroll end park the anchor at
+`inset − slack − expansion` like the desktop, makes the §3.4 test shape
+work (the expansion term cancels the landed tween height — the floor stays
+bound instead of collapsing), and avoids double-counting the anchor row's
+growth (the SUBTRACT reading shrinks the floor twice as the tween lands and
+would sink the prompt below the inset). The pure helpers
+`ownTurnReservationFloor`/`userFoldExpansionHeight` are exported from
+transcript.tsx; the desktop's `Option<toggled_at>` arm maps to
+reduced-motion/degenerate-duration (web `UserFoldState.toggledAt` is
+`number`, always armed at toggle).
+
+**§2.4 finalize recompute.** The floor now reads the CURRENT render's
+prefix sums instead of `positionsRef` (prior layout): rows above the last
+never depend on the floor (it only raises the last row), so natural prefix
+sums are computed first and the floor closes the ~20px parking drift with
+no cycle. `rowHeights[last] = max(natural, floor)` is preserved.
+
+**§2.4/§3.5 runway survival.** `OwnTurnGeometry` gains `transient`
+(`!loaded || replay === "pending"`); `#stepOwnTurn`'s missing-anchor branch
+retires only when `seenPrompt && !transient`, otherwise it schedules the
+next frame — the desktop's wait-one-notification rule. Geometry-missing
+(null provider) keeps the old terminal behavior.
+
+**§2.5 compensation effect.** Logic unchanged (the guards are the
+contract); the lead comment now states the contract and why the
+hold-anchor/chase-tail shuttle stops at the source. The `lastTotalRef`
+hold-open and the scroller-presence rule are untouched (comments updated
+to the no-empty-window model). `reservationFilled` is unchanged per the
+ticket — the fill-smoothness gap row points at the estimator, not the fill
+check; net effect: the web retires up to slack+expansion earlier than the
+desktop's `tail_reservation_filled`, noted for a future pass.
+
+**Tests** (transcript-model.test.ts +9, pending-send.test.ts +2, all
+existing anchors untouched and green): the three desktop ports drive
+`ToolGroupMotionStore.sync` through populated → empty(replaying) →
+reset-baseline and assert closed groups / `renderedOpen === false` /
+renderedHeight 0 / no starts / user pins surviving with stripped tween
+clocks / only genuinely new arrivals staggering; the transient-vs-
+authoritative-empty cleanup contrast; the estimator cases (closed,
+auto-open, pinned-open, pinned-closed-override, live-thought detail,
+spawn-only); the floor + expansion-term tween cases; the row-0-parks-at-64
+echo-start assertion (`ownSendInset(0) === 0`,
+`TITLEBAR_HEIGHT + SPACE_LG + 10 === 64`); the store's desync and
+generation-swap sequences (entries kept through pending, identity
+preserved by `preserveIdentity`, stale-stream guard intact).
+
+**Not ported, and why:** the desktop's `finish_route_exit`/
+`retain_for_route_exit` variants of `tool_groups_stay_closed_after_rapid_
+new_chat_navigation` (route-exit retention is desktop shell machinery with
+no web analogue — the shape is ported without them);
+`folding_releases_sent_turn_hold_without_removing_reservation` as a full
+controller integration (needs a live DOM scroller; ported as the §3.4
+floor-shape assertion the ticket prescribes); the desktop's gpui
+`with_tool_group_navigation` AppState harness (the web drives the pure
+stores directly); the screenshot-pair acceptance items are manual.
+
+**Flake note:** one full-suite run under my changes reported 1 failed /
+1179 passed with the failing test name lost to output truncation; it did
+not reproduce in 7 subsequent full runs on this branch or 4 on the base
+commit (both while other builds ran on the machine). My two suites pass
+deterministically across ~10 isolated runs. Treated as a load flake, not a
+regression.
+
+**Verification:** `pnpm -r build` green (proto, engine-client, app tsc +
+vite); `pnpm test` in `web/packages/app` green — 72 files / 1180 tests.
+No new hex/px literals in app code (constants are the named geometry from
+lib/transcript.ts / lib/tool-motion.ts); no CSS, component, or string
+changes.
