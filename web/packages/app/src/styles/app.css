@@ -4991,6 +4991,18 @@ html[data-surface="frosted"] .composer-pill {
   color: var(--rb-text);
 }
 
+/* The phone backstop (ticket 54, research M6(b)): a `.dialog-card` that is
+   NOT inside 49's sheet (`RbResponsiveDialog` renders those as the bottom
+   sheet, which removes the 360px overflow by construction — §2.4's "do
+   not do both for one site") still fits the viewport: the `min()` mirrors
+   the backdrop's `var(--rb-space-lg)` padding, so the card centers inside
+   it with the same 32px phone breathing room. */
+@media (max-width: 768px) {
+  .dialog-card:not(.rb-drawer-card *) {
+    width: min(360px, calc(100vw - 2 * var(--rb-space-lg)));
+  }
+}
+
 .dialog-card-title {
   margin: 0;
   font-size: 0.9375rem;
@@ -10598,6 +10610,25 @@ button.files-save-pill:hover {
   color: var(--rb-accent);
 }
 
+/* The RbSelect phone arm (ticket 54): inside 49's sheet the menu fills the
+   card — the 220/128 menu widths and the font menu's 320px scroll cap are
+   the floating form's parity numbers (the sheet frame owns the height
+   clamp and the scrolling), and the floating form's entrance/exit yield
+   to the sheet's `rb-dialog-in` (the sheet is the motion source at
+   phone). */
+@media (max-width: 768px) {
+  .rb-drawer-card .settings-select-menu {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .rb-drawer-card .settings-select-menu[data-open],
+  .rb-drawer-card .settings-select-menu[data-closed] {
+    animation: none;
+  }
+}
+
 /* The import/review dialogs (appearance.rs:1593-1664, 1709-1758): the
    desktop's dialog_card at its own geometry — 600px/660px wide, hairline
    (0.08) frame reused by the row separators and the footer's top edge. */
@@ -12021,6 +12052,36 @@ button.segmented-option:hover {
 
   .settings-row {
     flex-wrap: wrap;
+  }
+
+  /* Ticket 54 (research M6(b)): the appearance page's fixed clusters go
+     fluid — every `flex: none` trailing cluster in a settings row wraps
+     below the label at full width, and the fixed-width triggers become
+     fluid (the 220+128 pair rides flex-shrink at ~2:1 of the row, the
+     desktop's own ratio; the 220/128/430/360 literals above are the
+     ≥769px parity numbers and stay untouched). */
+  .settings-font-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-font-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-select-trigger {
+    width: 100%;
+  }
+
+  .size-trigger {
+    width: 50%;
+  }
+
+  .settings-effect-choices {
+    width: 100%;
+    max-width: none;
+    justify-content: flex-start;
+    margin-left: 0;
   }
 }
 
