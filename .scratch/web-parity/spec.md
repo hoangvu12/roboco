@@ -26,9 +26,13 @@ Not "inspired by". Copied.
    Stop exactly as the desktop does. The queue panel offers Send now only.
 4. **Invented web-only UI is deleted, not polished.** Ticket 4 removes every
    item marked INVENTED in the research; later tickets must not re-add.
-5. **Phone widths are out of scope.** Tickets target desktop widths
-   (≥ 768px). The existing phone layer (drawer sidebar, docked composer)
-   stays as is; do not break it, do not extend it.
+5. **Phone widths are out of scope — amended 2026-09-19.** Round 1 tickets
+   target desktop widths (≥ 768px). Round 2 (user directive, 2026-09-19)
+   brings the phone layer into scope: tickets 49-55 build a proper mobile
+   experience (responsive drawer/dialog primitive, phone layout system,
+   right-pane drawer, phone new-thread page, mobile-friendly settings).
+   Do not break desktop-width behavior; desktop parity rules still govern
+   at ≥ 769px.
 6. **Desktop-only stays desktop-only.** Native captions, vibrancy, embedded
    browser tabs, appshots, native menus, macOS notification plumbing. Each
    research file's §6 lists them.
