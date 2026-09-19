@@ -560,6 +560,7 @@ impl AgentAccounts {
             login_id,
             url,
             mode: AgentLoginMode::PasteCode,
+            cli_opens_browser: false,
         }
     }
 
@@ -612,15 +613,25 @@ impl AgentAccounts {
             .stdout(roboco_harness::process::Stdio::piped())
             .stderr(roboco_harness::process::Stdio::piped());
         // The CLI opens the authorization tab itself (via the `webbrowser`
-        // crate) AND the app opens the page when this start reply lands —
+        // crate) AND the client opens the page when this start reply lands —
         // users got TWO identical auth.openai.com tabs. `webbrowser` prefers
         // $BROWSER over xdg-open, so a no-op script there keeps the CLI's
         // open quiet; a failed open is advisory to `codex login` (it prints
-        // the URL and keeps serving the loopback callback either way).
+        // the URL and keeps serving the loopback callback either way). The
+        // reply's `cli_opens_browser` flag tells the client which side owns
+        // the open, so the two can never double up.
         #[cfg(unix)]
-        if let Some(noop_browser) = ensure_noop_browser(&self.inner.config.root_dir()) {
-            command.env("BROWSER", noop_browser);
-        }
+        let cli_opens_browser = match ensure_noop_browser(&self.inner.config.root_dir()) {
+            Some(noop_browser) => {
+                command.env("BROWSER", noop_browser);
+                false
+            }
+            None => true,
+        };
+        // Non-unix (Windows): `webbrowser` ignores $BROWSER, so the CLI's
+        // own open is never suppressed — the client must not open a second tab.
+        #[cfg(not(unix))]
+        let cli_opens_browser = true;
         let child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -636,8 +647,8 @@ impl AgentAccounts {
         };
 
         // codex prints the authorize URL (to stderr as of 0.142 — scan both
-        // streams); grab it so the app can open the single authorization tab
-        // (the CLI's own browser-open is suppressed via BROWSER above).
+        // streams); grab it so the client can open the single authorization
+        // tab whenever the CLI's own open was suppressed (BROWSER above).
         let (child, output, exit) = wire_login_child(child);
         lock(&self.inner.flows).insert(
             login_id.clone(),
@@ -655,6 +666,7 @@ impl AgentAccounts {
             login_id,
             url,
             mode: AgentLoginMode::Browser,
+            cli_opens_browser,
         })
     }
 
@@ -706,6 +718,7 @@ impl AgentAccounts {
             login_id,
             url,
             mode: AgentLoginMode::Browser,
+            cli_opens_browser: false,
         })
     }
 
