@@ -1,7 +1,8 @@
 /**
- * The dialog family — `base/dialog.tsx`'s `RbDialog` composite plus the
- * card chrome the desktop's `popover.rs:657-1076` dialog builders define
- * (`dialog_card` `:978-990`, `dialog_title` `:993`, `dialog_body`
+ * The dialog family — `base/responsive-surface.tsx`'s `RbResponsiveDialog`
+ * (`RbDialog`'s composite at ≥769px, the Drawer bottom sheet at ≤768px)
+ * plus the card chrome the desktop's `popover.rs:657-1076` dialog builders
+ * define (`dialog_card` `:978-990`, `dialog_title` `:993`, `dialog_body`
  * `:1002`, `dialog_field` `:1012-1023`, the `btn_*` row `:1028-1076`).
  *
  * `Dialog` wires the mount-while-open pattern every consumer repeats
@@ -13,7 +14,8 @@
  */
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { RbDialog, type RbDialogProps } from "../base/dialog";
+import { RbResponsiveDialog } from "../base/responsive-surface";
+import type { RbDialogProps } from "../base/dialog";
 
 export interface DialogProps {
   /** The dialog's accessible name. */
@@ -28,7 +30,7 @@ export interface DialogProps {
 /** `Dialog` — the open-while-mounted modal shell (scrim, trap, Escape). */
 export function Dialog(props: DialogProps) {
   return (
-    <RbDialog
+    <RbResponsiveDialog
       open
       onOpenChange={(next) => {
         if (!next) {
@@ -39,7 +41,7 @@ export function Dialog(props: DialogProps) {
       initialFocus={props.initialFocus}
     >
       {props.children}
-    </RbDialog>
+    </RbResponsiveDialog>
   );
 }
 

@@ -78,14 +78,16 @@ export function resolveShellEscape(input: ShellEscapeInput): EscapeOutcome {
  * `true` either way.
  *
  * Priorities 10-70 are the desktop's surfaces, in its exact order, reserved
- * for the tickets that own them. `webDrawer` (12) slots the web-only engine
- * drawer just under the blocking overlays — a judgment call this ticket makes
- * because the desktop has no drawer; see the ticket's Comments.
+ * for the tickets that own them. `webDrawer` (12) slots the web-only
+ * phone-sidebar drawer just under the blocking overlays — a judgment call
+ * this ticket makes because the desktop has no drawer; see the ticket's
+ * Comments. (The engine drawer that once shared this rung was deleted by
+ * ticket 45.)
  */
 export const ESCAPE_PRIORITY = {
   /** Delete confirms + chat/space/user menus: BLOCK, nothing closes. */
   blockingOverlay: 10,
-  /** The engine drawer + phone sidebar drawer (web-only chrome). */
+  /** The phone sidebar drawer (web-only chrome). */
   webDrawer: 12,
   /** The rename-chat dialog: close. (Ticket 09/10.) */
   renameDialog: 20,

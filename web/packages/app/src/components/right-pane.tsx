@@ -2,8 +2,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
 import { evalWidthTween } from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { resolvedActive, type ChatPaneState } from "../state/right-pane";
 import { renderRightSurface, surfaceEntry } from "./surface-registry";
+import { RightTabStrip } from "./right-tab-strip";
 
 /**
  * The right pane — the desktop's surface host (`render_right_pane`).
@@ -35,6 +37,15 @@ import { renderRightSurface, surfaceEntry } from "./surface-registry";
  * The pane's edge bounce (`eval_resize_edge_bounce`) adds its offset through
  * the `--rb-pane-edge-offset` var the shell composes in — the desktop's
  * `+ edge_offset` on the container width, driven by the seam.
+ *
+ * At phone widths (ticket 52) the column's FORM is a right-side overlay
+ * drawer — the mirror of the left sidebar drawer — while this component's
+ * surface bookkeeping is unchanged: the width glide and the inner's held
+ * width are desktop concerns the phone CSS simply outweighs (`width: 100%
+ * !important` beats the inline writes), the surfaces still stay mounted
+ * through the close, and the tabs that lived in the titlebar band render
+ * in a 38px strip header INSIDE the drawer instead (the band renders no
+ * pane tabs at phone).
  */
 
 /** `motion::RESIZE` — the same 200ms the stylesheet transitions on. */
@@ -55,6 +66,7 @@ export function RightPane({
 }) {
   const active = resolvedActive(pane);
   const closing = !pane.open;
+  const phone = useIsPhone();
   // The Files family stays unmounted throughout the closing animation after
   // its resources are suspended (`shell.rs:6455-6459`); everything else
   // renders until the glide finishes.
@@ -114,13 +126,42 @@ export function RightPane({
     return () => cancelAnimationFrame(raf);
   }, [tween]);
 
+  // The chat-switch snap (shell.rs:1837-1862): when the pane KEY (the owning
+  // chat) changed in this commit, the width lands at the destination's flags
+  // immediately — the desktop clears `right_tween` & co ("snap, no tween —
+  // the panels belong to the destination chat"). The flag drops on the next
+  // commit (`data-pane-snap` in app.css kills the width transition for that
+  // one commit only), so the pane's OWN same-chat open/close/takeover glides
+  // are untouched: by the time a toggle changes the width, the ref below has
+  // already caught up and the transition is back.
+  const previousPaneKeyRef = useRef(chatId);
+  const paneKeyChanged = previousPaneKeyRef.current !== chatId;
+  useLayoutEffect(() => {
+    previousPaneKeyRef.current = chatId;
+  });
+
   return (
     <aside
       className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}`}
-      style={{ width: `calc(${pane.open ? openWidth : 0}px + var(--rb-pane-edge-offset, 0px))` }}
+      data-pane-snap={paneKeyChanged ? "1" : "0"}
+      // At phone the drawer's width is CSS-owned (`min(30rem, 88vw)`, and
+      // `100vw` expanded) — the inline column width is the desktop glide's
+      // input and is skipped so it cannot fight the drawer rule.
+      style={phone ? undefined : { width: `calc(${pane.open ? openWidth : 0}px + var(--rb-pane-edge-offset, 0px))` }}
       aria-label="Panel"
       aria-hidden={!pane.open}
     >
+      {/*
+        The phone strip header (§2.2): the tabs that the titlebar band
+        carries at desktop widths render inside the drawer at phone, above
+        the pane body. Mounted through the close glide like everything
+        else — `aria-hidden` hides the tree while the drawer is shut.
+      */}
+      {phone && (
+        <div className="right-pane-strip-header">
+          <RightTabStrip chatId={chatId} pane={pane} />
+        </div>
+      )}
       {/*
         A takeover glide drives this width per frame (the effect above); any
         other glide holds the wider endpoint's width; `null` only ever means

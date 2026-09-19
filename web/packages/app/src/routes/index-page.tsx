@@ -26,11 +26,20 @@ export function NewThreadCanvas({
   /** The dock's `dissolve` channel: 0 = the hero, 1 = the established thread. */
   readonly dissolve: number;
 }) {
+  // The shell-scoped artwork source (ticket 35): `useNewThreadBackground`
+  // is a thin subscription to `newThreadArtworkStore`, so this call never
+  // resets per mount — a remounting canvas picks up the warm url/id/effect
+  // (and the readiness clock's `ready` flag) instead of re-resolving from
+  // null.
   const background = useNewThreadBackground();
   const artwork =
     background.url === null
       ? null
-      : { url: background.url, id: background.url as string | number };
+      : {
+          url: background.url,
+          id: background.url as string | number,
+          ready: background.ready,
+        };
   return (
     <NewThreadBackground
       artwork={artwork}

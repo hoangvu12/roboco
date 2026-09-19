@@ -20,6 +20,7 @@ import {
   type FileFold,
 } from "../lib/diff";
 import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
+import { useResolvedAppearance } from "../state/appearance";
 import { CommentAdder } from "../components/review-comments/comment-adder";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
@@ -252,6 +253,8 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   // every engine; the diff store runs on the routed session's client.
   const snapshot = useFleetSnapshot();
   const now = useNow(10_000);
+  // File headers resolve polychrome icons — dark picks the `dark/` tree.
+  const appearance = useResolvedAppearance();
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
   const chat = chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now)?.chat ?? null;
@@ -512,6 +515,7 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
             ) : (
               <DiffView
                 files={files}
+                appearance={appearance}
                 layout={layout}
                 wrap={wrap}
                 folds={folds}

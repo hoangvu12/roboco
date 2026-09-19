@@ -122,6 +122,14 @@ export interface SidebarRowOptions {
   readonly changeRequests?: ReadonlyMap<string, ChangeRequestSummary>;
   /** Registry engine connection states, for the live-presence override. */
   readonly engineStates?: EnginePresence;
+  /**
+   * Whether the spaces list is authoritative — the spaces RowSet's
+   * `loaded` flag at the call site. A dangling spaceId hides the chat
+   * only when true; while the frame is still out (lag or stream error)
+   * the row renders with the "?" label (ticket 43 — the desktop's
+   * one-drive-loop registry is never transiently wrong, state.rs:1438).
+   */
+  readonly spacesLoaded?: boolean;
 }
 
 /** The corner's status word, mirroring the desktop (Idle shows time-ago). */
@@ -411,7 +419,9 @@ export function sidebarKeyOrderChanged(old: readonly SidebarKeyed[], next: reado
  * non-archived chat of a live space — or no space at all — idle included,
  * display statuses and project lines attached, sorted by the user's sidebar
  * preference with the show-toggle fields cleared before layout. Chats whose
- * spaceId points at a missing space row stay hidden.
+ * spaceId points at a missing space row hide only once the spaces RowSet is
+ * loaded (`options.spacesLoaded`); until then they render with the "?"
+ * label (ticket 43).
  */
 export function chatListRows(
   chats: readonly Chat[],
@@ -441,7 +451,8 @@ export function chatListRows(
 /**
  * One chat's row by id — the chat page's lookup. Unlike the sidebar list
  * this includes archived chats (archiving never closes an open chat);
- * chats whose spaceId dangles stay hidden, exactly as in the list.
+ * chats whose spaceId dangles hide under the same loaded-only gate as
+ * the list (`spacesLoaded`, ticket 43).
  */
 export function chatPageRow(
   chatId: string,
@@ -451,6 +462,7 @@ export function chatPageRow(
   now: number,
   devices: readonly Device[] = [],
   engineStates?: EnginePresence,
+  spacesLoaded = true,
 ): ChatRow | undefined {
   const chat = chats.find((candidate) => candidate.id === chatId);
   if (chat === undefined) {
@@ -459,7 +471,7 @@ export function chatPageRow(
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
   const deviceById = new Map(devices.map((device) => [device.id, device]));
-  return toChatRow(chat, spaceById, statusByChat, now, deviceById, { engineStates }) ?? undefined;
+  return toChatRow(chat, spaceById, statusByChat, now, deviceById, { engineStates, spacesLoaded }) ?? undefined;
 }
 
 function toChatRow(
@@ -472,7 +484,13 @@ function toChatRow(
 ): ChatRow | null {
   const space =
     chat.spaceId !== null && chat.spaceId !== undefined ? spaceById.get(chat.spaceId) : undefined;
-  if (chat.spaceId !== null && chat.spaceId !== undefined && space === undefined) {
+  const dangling = chat.spaceId !== null && chat.spaceId !== undefined && space === undefined;
+  // Hide only once the spaces list is loaded and the id is truly missing
+  // (desktop parity, state.rs:1438). While the spaces frame is still out
+  // — lagging or errored — the row renders with the "?" label until the
+  // space resolves; a spaces-stream error must never blank
+  // space-attached chats (ticket 43).
+  if (dangling && (options.spacesLoaded ?? true)) {
     return null;
   }
   // Only conversation-owned source context is trusted (`conversation_branch`):
@@ -480,7 +498,7 @@ function toChatRow(
   // it was written.
   const rawBranch = chat.sourceContext?.branch ?? null;
   const branch = rawBranch !== null && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
-  const project = space !== undefined ? spaceDisplayName(space) : "~";
+  const project = space !== undefined ? spaceDisplayName(space) : dangling ? "?" : "~";
   const device = deviceById.get(chat.deviceId);
   const harness =
     options.showHarness === false ? null : (chat.config?.harness ?? null);

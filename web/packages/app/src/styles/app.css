@@ -15,6 +15,19 @@ body,
   height: 100%;
 }
 
+/*
+ * The document scroll lock's overscroll half (M4, ticket 50): no
+ * document-level scroll chaining or rubber-banding, so a pan that starts on
+ * the titlebar or ends at an interior scroller's boundary cannot scroll the
+ * document behind the app. Render-neutral at desktop widths, where `body`
+ * never scrolls (`overflow: hidden` below); the height half of the lock is
+ * the phone-scoped 100dvh block at the titlebar.
+ */
+html,
+body {
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--rb-bg);
@@ -236,7 +249,7 @@ a:focus-visible,
    * z-index outside these six tiers:
    *   5  pane seams (in-flow chrome that floats over column edges)
    *   40 titlebar (overlays every column)
-   *   50 drawers / sheets (the engine drawer, the phone sidebar's backdrop)
+   *   50 drawers / sheets (the phone sidebar's backdrop)
    *   55 menus + popovers, ONE generation: ticket 09's popover family and
    *      the legacy cards still on their own styling (the right-pane plus
    *      menu, the sidebar user menu) share the tier; ticket 10 collapsed
@@ -301,6 +314,12 @@ a:focus-visible,
   flex-direction: row;
   align-items: center;
   gap: var(--rb-titlebar-group-gap);
+  /* The always-touched chrome (M4, ticket 50): manipulation keeps taps and
+     kills pans and double-tap-zoom; no selection callout on a long-press of
+     the title. A no-op for pointer input at desktop widths. */
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
   /*
    * NO FILL, NO BLUR, NO BORDER. The desktop's bar is literally
    * `div().h(TITLEBAR_HEIGHT).flex_none().child(inner)` — the shell's frost
@@ -332,6 +351,83 @@ a:focus-visible,
   gap: var(--rb-titlebar-group-gap);
 }
 
+/*
+ * The phone viewport baseline (M4, ticket 50): `100dvh` with a `100vh`
+ * fallback makes the shell URL-bar-stable — the document no longer tracks
+ * the large viewport, so iOS cannot scroll it by the toolbar height and a
+ * URL-bar collapse no longer re-kicks the bottom-pinned transcript. With
+ * `viewport-fit=cover` (index.html) the safe-area insets become real on
+ * notched devices and resolve to 0 everywhere else: the titlebar grows by
+ * the top inset so the cluster and the row clear the notch (the cluster is
+ * absolutely positioned off the padding box, so its `top` carries the inset
+ * too — the padding alone cannot move it), and the phone keyboard reshapes
+ * this same dynamic viewport (`interactive-widget=resizes-content`). At
+ * ≥769px nothing changes: the chain stays `height: 100%` and the 38px band
+ * plus its 4px pad stay exact.
+ */
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .shell {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .titlebar {
+    height: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
+    padding-top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+  }
+
+  .titlebar-cluster {
+    top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+  }
+}
+
+/*
+ * The titlebar island (ticket 34) — `render_titlebar_cluster`'s frosted
+ * panel behind the window controls (shell.rs:3990-4042): visible only on
+ * the canvas route with the sidebar collapsed and a background RESOLVING
+ * beneath (installed or the bundled default — ticket 48's predicate; the
+ * gate is wired in app-shell, never the raw setting). The wrapper is the
+ * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028) and
+ * carries the tween's inline `top`/`height`/`opacity` (200ms resize
+ * ease-out, reversal from the painted value, initial presentation
+ * settled, reduced motion snaps). `z-index: -1` paints it BEHIND the
+ * controls — pure chrome behind existing ones, no hit area, no pointer
+ * events. The bar itself stays NO FILL / NO BLUR / NO BORDER (ticket 06):
+ * the island is a child, not a bar background and not a cluster fill.
+ */
+.titlebar-island {
+  position: absolute;
+  /* shell.rs:4027 — the island's own left inset. */
+  left: 6px;
+  right: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/*
+ * `frost::frosted(12.0, 20.0, …)` (frost.rs:27-33): a 12px radius, a 20px
+ * backdrop blur, the glass-overlay tint, `shadow_sm` — the popover cards'
+ * glass idiom at the island's lighter blur. Rendered only while the
+ * tween is above ~0, exactly the desktop's `(island > 0.001)` content
+ * gate; the wrapper above keeps the geometry mounted through the fade.
+ */
+.titlebar-island-panel {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--rb-shadow-sm);
+}
+
 .titlebar-group {
   display: flex;
   flex-direction: row;
@@ -356,6 +452,8 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
+  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
@@ -397,6 +495,8 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
+  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
@@ -1021,6 +1121,20 @@ a:focus-visible,
   transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
+/*
+ * The chat-switch snap (shell.rs:1837-1862): when the pane KEY (the owning
+ * chat) changed in this commit, the width lands at the destination's stored
+ * flags immediately — the desktop clears `right_tween` /
+ * `right_takeover_content_tween` / `main_takeover_tween` with "snap, no
+ * tween — the panels belong to the destination chat". The flag is set for
+ * exactly that commit (`RightPane` drops it once the key ref catches up),
+ * so the pane's own same-chat open/close/takeover glides above are
+ * untouched.
+ */
+.right-pane[data-pane-snap="1"] {
+  transition: none;
+}
+
 .right-pane-inner {
   position: absolute;
   top: 0;
@@ -1233,6 +1347,9 @@ a:focus-visible,
   width: 100%;
   height: 100%;
   overflow-y: auto;
+  /* A fling that ends at the boundary must not chain to the document
+     (M4's drawer containment — same treatment as `.transcript`). */
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   padding: var(--rb-space-xs) var(--rb-space-sm) 0;
@@ -2447,7 +2564,12 @@ a:focus-visible,
   }
 }
 
-/* Chat body holds the transcript column. */
+/* Chat body holds the transcript column. While a departing panel handoff
+ * runs, the page pins this element's inline width to `transcript_width`'s
+ * retained SOURCE value (shell.rs:5917-5938's `.w(px(transcript_width))`) so
+ * the fading rows never reflow into the canvas-wide layout; at desktop
+ * widths `inset: 0` plus a width is over-constrained in LTR — left + width
+ * win — so the pin needs no rule here. */
 .chat-body {
   flex: 1;
   min-height: 0;
@@ -2490,7 +2612,10 @@ a:focus-visible,
  * shell chrome painted under the overlaid titlebar, never an interaction
  * surface). Width/height/opacity ride inline styles: the full conversation
  * canvas even while the right pane clips it — navigation must never
- * rescale the artwork.
+ * rescale the artwork. The width deliberately has NO CSS transition: on a
+ * sidebar flip it is written per-frame by the rAF tween in
+ * `ConversationPage` (ticket 34) — one clock must own the width, or the
+ * cutout mask cannot follow it.
  */
 .new-thread-hero {
   position: absolute;
@@ -2503,9 +2628,11 @@ a:focus-visible,
 /*
  * The artwork readiness fade (new_thread_background_effects.rs:11-32): a
  * 120 ms smoothstep on image-id change (`cubic-bezier(0.45, 0, 0.55, 1)`),
- * starting at 0 and flipping to 1 two frames after the keyed mount; the
- * same artwork never remounts, so it never re-fades. Reduced motion snaps
- * to 1 with no transition.
+ * keyed on and fed by the SHELL-SCOPED artwork store's clock (ticket 35):
+ * a cold id mounts at 0 and the store flips `data-ready` a frame after the
+ * arrival; the same artwork remounts READY (no transition runs on a fresh
+ * element whose initial style is already 1), so a route change never
+ * re-fades it. Reduced motion snaps to 1 with no transition.
  */
 .new-thread-hero-readiness {
   position: absolute;
@@ -2523,20 +2650,23 @@ a:focus-visible,
 }
 
 /*
- * The two stacked passes (new_thread_background_mask.rs): both paint the
- * same cover-fit image (`background-size: cover` + `50% 50%` == the fit
- * steps — centred crop, `corner_radii` 0, no grayscale). The reveal pass
- * runs at CUTOUT_REVEAL_OPACITY (0.5) with only the shared bottom fade; the
- * cutout pass at 1 additionally clears the feathered hole (its mask is a
- * separate mask on the child that carries the image — element masks
- * multiply, so the two compose).
+ * The two stacked passes (new_thread_background_mask.rs): both are CANVASES
+ * painting the same cover-fit artwork (drawn at the device-pixel ratio with
+ * the desktop's `paint` fit math — max scale, centred crop, `corner_radii`
+ * 0, no grayscale), then alpha-masked per pixel by the JS on the same-frame
+ * remask cadence: the reveal pass multiplies its alpha by the shared bottom
+ * fade only, at CUTOUT_REVEAL_OPACITY (0.5); the cutout pass at 1 applies
+ * the single combined min(hole, fade) mask in one canvas — the desktop's
+ * ONE shader, so the hole and the fade compose by min, never by multiplying
+ * two element masks. The hole itself is the smoothstep-over-SDF ramp (a
+ * hard 8px transparent margin, then the 120–280px one-sided dome), not a
+ * Gaussian blur. These classes carry geometry and pass opacity only.
  */
 .new-thread-hero-art {
   position: absolute;
   inset: 0;
-  background-size: cover;
-  background-position: 50% 50%;
-  background-repeat: no-repeat;
+  width: 100%;
+  height: 100%;
 }
 
 .new-thread-hero-art--reveal {
@@ -2545,59 +2675,6 @@ a:focus-visible,
 
 .new-thread-hero-art--cutout {
   opacity: 1;
-}
-
-/*
- * The background effects (ticket 28 §2.8, settings.rs
- * NewThreadBackgroundEffect): the desktop rasterizes true transforms
- * (dither/ASCII/halftone pixels, scanline rows). Web scope cut: `none` is
- * exact, scanlines is a real overlay (the pronounced display-line texture,
- * painted INSIDE the masked art passes so the composer's cutout hole stays
- * clear), and dither/ascii/halftone ship as CSS-filter stand-ins evoking
- * the palette/dot/character reduction — flagged in the ticket's Comments
- * as the follow-up a canvas port owes.
- */
-.new-thread-hero[data-effect="scanlines"] .new-thread-hero-hole::after,
-.new-thread-hero[data-effect="scanlines"] .new-thread-hero-art--reveal::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgb(0 0 0 / 0.16) 0 1px,
-    transparent 1px 3px
-  );
-}
-
-.new-thread-hero[data-effect="dither"] .new-thread-hero-art,
-.new-thread-hero[data-effect="dither"] .new-thread-hero-hole {
-  filter: contrast(1.4) saturate(0.7);
-}
-
-.new-thread-hero[data-effect="halftone"] .new-thread-hero-art,
-.new-thread-hero[data-effect="halftone"] .new-thread-hero-hole {
-  filter: contrast(1.25) brightness(1.05) grayscale(0.25);
-}
-
-.new-thread-hero[data-effect="ascii"] .new-thread-hero-art,
-.new-thread-hero[data-effect="ascii"] .new-thread-hero-hole {
-  filter: grayscale(1) contrast(1.6) brightness(1.1);
-}
-
-/*
- * The cutout hole: white with a blurred black rounded rect at the
- * composer's live box (radius 26 + the 8px hard-transparency clearance,
- * feathered over clamp(0.52·heroHeight, 120, 280)), regenerated every frame
- * from the measured `#composer-surface` — the JS writes the mask-image
- * inline; this class only carries the artwork itself.
- */
-.new-thread-hero-hole {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: 50% 50%;
-  background-repeat: no-repeat;
 }
 
 /*
@@ -3172,11 +3249,31 @@ a:focus-visible,
 }
 
 /*
- * The body: expanded, a column with the textarea box in flow and the
- * actions row ABSOLUTE at the stationary bottom; compact, one 47px row
- * (`COMPACT_TOTAL_HEIGHT − PILL_BORDER_V`), bottom-justified so the pill
- * top can sweep down over it during a collapse.
+ * The frosted branch (composer.rs:7714 + frost.rs:27-33): under a resolved
+ * frosted surface the pill's background becomes the composer sidebar tint —
+ * a translucent bg-tone wash that moves toward the pane tone while leaving
+ * most of the blurred backdrop visible (theme.rs `composer_sidebar_tint`,
+ * alpha 0.15) — over the retained 16px backdrop blur, instead of the opaque
+ * input flatten. Radius `26 − 4·dockAmount` rides the inline morph.
+ * `--rb-*` tokens only.
  */
+html[data-surface="frosted"] .composer-pill {
+  background: color-mix(in srgb, var(--rb-bg) 15%, transparent);
+}
+
+/*
+ * The body: expanded, a column stretched to the pill (`flex: 1`) so its
+ * bottom edge IS the pill's — the actions row's absolute anchor lands on
+ * the stationary bottom edge, like the desktop's pill-level anchor
+ * (composer.rs:7752-7758); compact, one 47px row
+ * (`COMPACT_TOTAL_HEIGHT − PILL_BORDER_V`) riding the pill's bottom-
+ * justified group, so the pill's top sweeps down over it during a
+ * collapse (composer.rs:7805, 7788-7792).
+ */
+.composer-pill[data-mode="compact"] {
+  justify-content: flex-end;
+}
+
 .composer-pill[data-mode="compact"] .composer-body {
   display: flex;
   flex-direction: row;
@@ -3189,6 +3286,8 @@ a:focus-visible,
   display: flex;
   flex-direction: column;
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .composer-body {
@@ -3225,6 +3324,14 @@ a:focus-visible,
  * only on the SETTLED overflow edges (INPUT_FADE_BAND).
  * `overscroll-behavior: contain` is the web's wheel-swallow at the scroll
  * boundary (composer.rs:2918-2925).
+ *
+ * No native scrollbar, ever: the desktop editor shows none (the
+ * `overflow_hidden` box + wheel offsets + fades, composer.rs:7746,
+ * 2898-2933), so the bar is hidden outright and the fade masks are the
+ * only affordance. The wheel stays native — `data-scrollable="true"`
+ * (written by the layout pass / the wizard's auto-grow) makes the input a
+ * scroll container ONLY while it overflows; otherwise the wheel chains to
+ * the transcript, as `on_scroll_wheel` does (composer.rs:2898-2933).
  */
 .composer-input {
   display: block;
@@ -3241,6 +3348,15 @@ a:focus-visible,
   outline: none;
   overflow: hidden;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.composer-input::-webkit-scrollbar {
+  display: none;
+}
+
+.composer-input[data-scrollable="true"] {
+  overflow-y: auto;
 }
 
 .composer-input[data-fade-top="true"][data-fade-bottom="true"] {
@@ -3744,6 +3860,9 @@ a:focus-visible,
  * The free-text slot (composer.rs:7065-7076): a hairline over the re-parented
  * composer input. The shared textarea keeps `.composer-input` metrics; the
  * stack grows with the content here rather than through the pill's flip.
+ * The input's overflow is NOT forced here — it rides the shared
+ * `data-scrollable` gate (past the 120px cap), so the wheel chains while
+ * the borrowed input fits.
  */
 .wizard-input-slot {
   margin-top: 12px;
@@ -3759,7 +3878,6 @@ a:focus-visible,
   height: auto;
   min-height: 22.75px;
   max-height: 120px;
-  overflow-y: auto;
 }
 
 .wizard-footer {
@@ -4290,10 +4408,15 @@ a:focus-visible,
      PANEL_RADIUS (10) panels use — gap row 86. */
   --rb-radius-card: 12px;
   /* The popover family's shared drop shadow (`.popover-card`,
-     `.palette-card`, `.dialog-card`, `.jump-pill`, `.cr-tooltip`,
-     `.add-space-card`) — the documented shadow_lg() placeholder, spelled
-     once as a local convenience, not a theme catalog token. */
+     `.palette-card`, `.dialog-card`, `.cr-tooltip`, `.add-space-card`) —
+     the documented shadow_lg() placeholder, spelled once as a local
+     convenience, not a theme catalog token. */
   --rb-shadow-popover: 0 8px 30px rgb(0 0 0 / 0.35);
+  /* gpui's `shadow_md` — the zui fork's Tailwind port (gpui_macros
+     styles.rs:441-449), verbatim: the jump pill's elevation (shell.rs:6217),
+     a subtle md weight instead of the popover family's heavy wash. Spelled
+     once as a local convenience, not a theme catalog token. */
+  --rb-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 
 /*
@@ -4826,6 +4949,67 @@ a:focus-visible,
   }
 }
 
+/*
+ * The phone sheet (ticket 49, research M8 §(b)2): `.rb-drawer-card` — the
+ * Drawer arm of the dialog/drawer primitive. Mobile-native (the desktop's
+ * minimum window geometry makes a 375px window impossible, so the sheet
+ * has no desktop analog): fixed to the bottom edge, spanning the viewport,
+ * rounded only on top, clamped to the viewport minus breathing room — no
+ * card can overflow a 375px viewport. It rides the SAME modal tier as the
+ * centered card (70, via the sibling `.modal-backdrop` — the ladder is
+ * closed, no new tiers) and it replaces PLACEMENT only: the card
+ * interiors keep their own geometry inside it (`.dialog-card`'s 360px, the
+ * popover rows, the add-space card's 680px phone cap). Base UI's swipe
+ * gesture drives the popup through an inline transform while a drag is
+ * live, which composes with (never fights) the resting `transform: none`.
+ */
+@media (max-width: 768px) {
+  .rb-drawer-card {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    z-index: var(--rb-z-modal);
+    border-radius: 16px 16px 0 0;
+    max-height: calc(100dvh - var(--rb-space-lg));
+    overflow: auto;
+    scrollbar-width: none;
+    animation: none;
+  }
+
+  .rb-drawer-card::-webkit-scrollbar {
+    display: none;
+  }
+
+  /*
+   * The right pane's `+` menu in the strip's in-drawer phone form (ticket
+   * 52, 49's explicit deferral): the anchored 168px card's rows ride the
+   * shared sheet — the sheet replaces placement, the rows keep their own
+   * rhythm (`gap 2`, the menu's `--rb-overlay` tone and 13px type).
+   */
+  .rb-drawer-card.right-plus-menu-sheet {
+    gap: 2px;
+    padding: var(--rb-space-xs);
+    background: var(--rb-overlay);
+    color: var(--rb-text);
+    font-size: 13px;
+  }
+
+  .rb-drawer-card[data-open] {
+    animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The sheet entrance snaps to its endpoint (motion.rs:118) — the same
+     pattern as the centered card's, above. */
+  .rb-drawer-card[data-open] {
+    animation: none;
+  }
+}
+
 /* `dialog_card` (popover.rs:978-990) — the centered 360px card. */
 .dialog-card {
   box-sizing: border-box;
@@ -4838,6 +5022,18 @@ a:focus-visible,
   background: var(--rb-dialog);
   box-shadow: var(--rb-shadow-popover);
   color: var(--rb-text);
+}
+
+/* The phone backstop (ticket 54, research M6(b)): a `.dialog-card` that is
+   NOT inside 49's sheet (`RbResponsiveDialog` renders those as the bottom
+   sheet, which removes the 360px overflow by construction — §2.4's "do
+   not do both for one site") still fits the viewport: the `min()` mirrors
+   the backdrop's `var(--rb-space-lg)` padding, so the card centers inside
+   it with the same 32px phone breathing room. */
+@media (max-width: 768px) {
+  .dialog-card:not(.rb-drawer-card *) {
+    width: min(360px, calc(100vw - 2 * var(--rb-space-lg)));
+  }
 }
 
 .dialog-card-title {
@@ -5594,8 +5790,7 @@ a:focus-visible,
   margin: 0;
 }
 
-.pair-form,
-.add-engine {
+.pair-form {
   display: flex;
   flex-direction: column;
   gap: var(--rb-space-sm);
@@ -5610,156 +5805,6 @@ a:focus-visible,
   color: var(--rb-text-faint);
   font-size: 12px;
   margin: 0;
-}
-
-/* ── Engine drawer ──────────────────────────────────────────────────── */
-
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  /* scrim(): literal black in both appearances — a scrim darkens what is
-     behind it; tinting toward the panel color washes light mode white. */
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 10vh var(--rb-space-md) var(--rb-space-md);
-  /* The drawer tier of the ladder — above the titlebar it slides over. */
-  z-index: var(--rb-z-drawer);
-}
-
-.drawer {
-  width: min(28rem, 100%);
-  max-height: 80vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-md);
-  padding: var(--rb-space-md);
-  background: var(--rb-dialog);
-}
-
-.drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.drawer-header h2 {
-  font-size: 15px;
-  margin: 0;
-}
-
-.drawer-note {
-  margin: 0;
-  color: var(--rb-text-faint);
-  font-size: 13px;
-}
-
-.engine-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rb-space-xs);
-}
-
-.engine-row {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  padding: var(--rb-space-sm);
-  border-radius: var(--rb-radius-control);
-  border: 1px solid var(--rb-border);
-}
-
-.engine-row-active {
-  border-color: var(--rb-accent);
-  background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
-}
-
-.engine-row-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.engine-row-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.engine-row-host {
-  font-weight: 600;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-row-badge {
-  flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--rb-on-accent);
-  background: var(--rb-accent);
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-
-.engine-row-sub {
-  font-size: 12px;
-  color: var(--rb-text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.engine-row-actions {
-  display: flex;
-  gap: var(--rb-space-xs);
-  flex: none;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.engine-row-pair {
-  color: var(--rb-warning);
-  border-color: color-mix(in srgb, var(--rb-warning) 50%, var(--rb-border));
-}
-
-.engine-row-pair:not(:disabled):hover {
-  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
-  color: var(--rb-warning);
-  border-color: var(--rb-warning);
-}
-
-.engine-row-parked {
-  border-color: color-mix(in srgb, var(--rb-danger) 35%, var(--rb-border));
-  background: color-mix(in srgb, var(--rb-danger) 4%, transparent);
-}
-
-.engine-row-sub {
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  flex-wrap: wrap;
-}
-
-.engine-row-identity {
-  color: var(--rb-text-faint);
-  font-size: 12px;
-}
-
-.engine-row-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
 }
 
 /* ── Files surface (the pane's tree_pane) ────────────────────────────── */
@@ -6733,17 +6778,16 @@ button.files-save-pill:hover {
   color: var(--rb-text-faint);
   cursor: default;
 }
-/* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
+/* ── Phone layout: drawer sidebar, drawer panes ─────────────────────── */
 
 @media (max-width: 768px) {
   /*
-   * The sidebar leaves the flow for a drawer, so the row becomes a stack: the
-   * conversation on top, the pane beneath it. Neither outer column has a width
-   * worth dragging at this size, so both seams retire.
+   * Both outer columns leave the flow for drawers: the sidebar slides from
+   * the left (below), the right pane from the right (ticket 52, research
+   * M2(b)) — the shell itself stays a row whose one in-flow child is the
+   * conversation. Neither column has a width worth dragging at this size,
+   * so both seams retire.
    */
-  .shell {
-    flex-direction: column;
-  }
 
   /* The drawer draws its own edge, so the column's inset seam retires. */
   .sidebar {
@@ -6760,53 +6804,132 @@ button.files-save-pill:hover {
   }
 
   /*
-   * Stacked, so there is no width to clip or glide: the pane takes a row and
-   * its inner child goes back into normal flow.
+   * The pane drawer — the exact mirror of the sidebar drawer below: fixed to
+   * the right edge, `min(30rem, 88vw)` wide, sliding on the 140ms menu-in
+   * ease-out. The existing `aria-hidden` attribute drives it (closed is
+   * `translateX(100%)`, the mounted-hidden form, so surfaces stay mounted
+   * through the closing glide); the drawer's width is CSS-owned — the
+   * `!important` also overrides the inline column width `RightPane` writes
+   * at desktop widths, which the component skips at phone for the same
+   * reason. z 30 sits deliberately under the titlebar (40): its cluster
+   * must stay clickable to close what it opened (the ladder's documented
+   * decision — no new tiers).
    */
   .right-pane {
-    width: auto !important;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(30rem, 88vw) !important;
+    z-index: 30;
+    transform: translateX(100%);
+    transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+    border-left: 1px solid var(--rb-border);
+    background: var(--rb-bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .right-pane:not([aria-hidden="true"]) {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
+  }
+
+  /* Expanded (takeover) at phone: the drawer at full width — the same
+     toggle semantics, no separate phone state; the drawer covers the
+     chat instead of the stacked layout's `display: none` handoff. */
+  .right-pane.right-pane-expanded {
+    width: 100vw !important;
+  }
+
+  /*
+   * The in-drawer tab strip header (§2.2): the 38px row that carries the
+   * surface tabs at phone — the titlebar band's phone replacement, since
+   * the band renders no pane tabs there and 41px could not fit a strip
+   * anyway. The strip inside is the desktop's, chips and all.
+   */
+  .right-pane-strip-header {
+    flex: none;
+    height: var(--rb-titlebar-height);
+    display: flex;
+    align-items: center;
+    padding-inline: var(--rb-space-sm);
+    border-bottom: 1px solid var(--rb-border);
+  }
+
+  .right-pane-strip-header .right-tab-strip {
     flex: 1;
-    min-height: 0;
-    overflow: visible;
   }
 
-  .right-pane[aria-hidden="true"] {
-    display: none;
-  }
-
+  /*
+   * The drawer's content reset (the stacked layout's inner rules, re-homed):
+   * the inner returns to normal flow and fills the drawer below the strip
+   * header; the width `!important` holds it against the glide's inline
+   * writes (an author-important sheet rule beats a normal inline style).
+   */
   .right-pane-inner {
     position: static;
     width: 100% !important;
+    height: auto;
+    flex: 1;
+    min-height: 0;
     border-left: none;
-    border-top: 1px solid var(--rb-border);
   }
 
   .right-pane-body {
     padding-top: 0;
   }
 
-  /* Takeover on a phone is just "the pane, full bleed". */
-  .shell-pane-takeover .main {
+  /* The pane drawer's backdrop — the mirror of `.sidebar-backdrop` below:
+     z 20 under the drawer's 30, shown only while the pane is open (the
+     drawer's own `aria-hidden` drives the sibling rule). */
+  .pane-backdrop {
     display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
   }
 
-  /* The pill is edge-to-edge on desktop only; a phone needs its gutters.
-     The footer is the composer column's child now, so the column alone
-     takes the gutter — narrowing both would double-subtract. */
+  .right-pane:not([aria-hidden="true"]) ~ .pane-backdrop {
+    display: block;
+  }
+
+  /*
+   * Ticket 51 (research M1(b)): the composer adopts the transcript's phone
+   * gutter — one 12px rhythm from the first `.trow` down to the pill. The
+   * 8px width shim is deleted (the column measures the full viewport) and
+   * the desktop's 16px horizontal column inset yields to `.trow`'s phone
+   * `--rb-space-md`; the pill's own 16px inner insets are the desktop's and
+   * stay. The footer is the composer column's child (ticket 37), so the
+   * column alone takes the gutter. The bottom padding is ticket 50's arm
+   * and stays: `--rb-space-lg` plus the home indicator's inset (0 without
+   * `viewport-fit=cover`'s notched devices), keeping the pill above it.
+   */
   .composer {
-    width: calc(100% - 2 * var(--rb-space-sm));
+    width: 100%;
+    padding-inline: var(--rb-space-md);
+    padding-bottom: calc(var(--rb-space-lg) + env(safe-area-inset-bottom));
   }
 
-  /* The new-thread hero and its floating selector row are desktop-width
-     chrome (spec decision 5): the phone canvas keeps the composer in its
-     slot, no artwork, no re-anchoring. */
-  .new-thread-hero {
-    display: none;
+  /* Same reconciliation for the wrapper: its inline px width tracks the
+     full column at phone (the sidebar is a drawer out of the flow), so the
+     768px cap yields to the viewport — a mid-glide dock tick cannot push
+     the pill past the edge. */
+  .persistent-composer {
+    max-width: 100%;
   }
 
-  .dock-target-selectors {
-    display: none;
+  /* The status strip reads in the same 12px gutter (its desktop 24px inner
+     gutters are the ≥769px rule and stay): strip text, message rows, and
+     the pill's card edge share one axis at phone. */
+  .status-strip {
+    padding-inline: var(--rb-space-md);
   }
+
+  /* The new-thread hero and its floating selector row now render on the
+     phone canvas (ticket 53); the decision-5 display:none pair is gone. */
+
 
   /* The identity's folder line is the first thing to go when width runs out. */
   .identity-folder {
@@ -6851,7 +6974,8 @@ button.files-save-pill:hover {
 }
 
 @media (min-width: 769px) {
-  .sidebar-backdrop {
+  .sidebar-backdrop,
+  .pane-backdrop {
     display: none;
   }
 }
@@ -7455,7 +7579,8 @@ button.files-save-pill:hover {
 
 /*
  * The pill: 30px tall, fully rounded (radius 15 = half the height), hairline
- * border, `shadow-md`, frosted — blur 16 over the floating-card tint
+ * border, `shadow_md` (the md elevation — NOT the popover family's shadow_lg;
+ * ticket 41), frosted — blur 16 over the floating-card tint
  * (`frost::frosted(15, 16)`); the `@supports` fallback drops the frost and
  * keeps the tint. It enters on `dialog_in` (180ms: opacity 0→1, top 2px→0).
  */
@@ -7469,7 +7594,7 @@ button.files-save-pill:hover {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   isolation: isolate;
-  box-shadow: var(--rb-shadow-popover);
+  box-shadow: var(--rb-shadow-md);
   cursor: pointer;
   padding: 0;
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
@@ -9315,10 +9440,12 @@ button.files-save-pill:hover {
 /*
  * The Unarchive pill, matching the active row's Archive pill EXACTLY
  * (18px, gap 4, px 4 bleeding into the row's own padding via mr -4, radius
- * 5, wash 0.10 → 0.18) — two sizes of the same affordance.
+ * 5, wash 0.10 → 0.18) — two sizes of the same affordance. It is MOUNTED
+ * only while the row is hovered: the row picks the slot at render
+ * (`archivedRightSlot`), so there is no reveal CSS here.
  */
 .arch-row-unarchive {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 18px;
@@ -9334,29 +9461,8 @@ button.files-save-pill:hover {
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-/* The right slot swaps: time yields to the pill on row hover/focus. */
-.arch-row:hover .arch-row-time,
-.arch-row-item:focus-within .arch-row-time {
-  display: none;
-}
-
-.arch-row:hover .arch-row-unarchive,
-.arch-row-item:focus-within .arch-row-unarchive {
-  display: inline-flex;
-}
-
 .arch-row-unarchive:hover {
   background: rgb(var(--rb-wash) / 0.18);
-}
-
-/* Touch has no hover to swap the slot — the pill stays put. */
-@media (hover: none) {
-  .arch-row-unarchive {
-    display: inline-flex;
-  }
-  .arch-row-time {
-    display: none;
-  }
 }
 
 /* "Show N more": 36px, gap 10, radius 6, muted at 55% until hovered. */
@@ -9426,6 +9532,7 @@ button.files-save-pill:hover {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /*
@@ -9449,6 +9556,7 @@ button.files-save-pill:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -9567,6 +9675,69 @@ button.files-save-pill:hover {
   /* Appearance.rs:2488-2489 — the subtitle's own clamp, 512px / 20px. */
   max-width: 512px;
   line-height: 20px;
+}
+
+/* ── Settings engine indicator (the engine-addressing pages' pill) ──── */
+
+.settings-engine-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-xs);
+  margin-left: var(--rb-space-sm);
+  padding: 1px 8px;
+  border: 1px solid var(--rb-border);
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+  transition:
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.settings-engine-indicator:hover {
+  color: var(--rb-text-muted);
+  border-color: color-mix(in srgb, var(--rb-text-muted) 30%, transparent);
+}
+
+.settings-engine-indicator-open,
+.settings-engine-indicator-open:hover {
+  color: var(--rb-text-muted);
+  border-color: color-mix(in srgb, var(--rb-text-muted) 40%, transparent);
+}
+
+.settings-engine-indicator-label {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-engine-indicator-caret {
+  flex: none;
+  opacity: 0.5;
+}
+
+/* The popover's rows: connection dot · host · active check. */
+.settings-engine-menu {
+  padding: 6px;
+}
+
+.settings-engine-row-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-engine-row-check {
+  flex: none;
+  color: var(--rb-text-muted);
 }
 
 /* `field_label` (widgets.rs:65-71): 13px Medium — the group caption over a
@@ -10548,6 +10719,25 @@ button.files-save-pill:hover {
   color: var(--rb-accent);
 }
 
+/* The RbSelect phone arm (ticket 54): inside 49's sheet the menu fills the
+   card — the 220/128 menu widths and the font menu's 320px scroll cap are
+   the floating form's parity numbers (the sheet frame owns the height
+   clamp and the scrolling), and the floating form's entrance/exit yield
+   to the sheet's `rb-dialog-in` (the sheet is the motion source at
+   phone). */
+@media (max-width: 768px) {
+  .rb-drawer-card .settings-select-menu {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .rb-drawer-card .settings-select-menu[data-open],
+  .rb-drawer-card .settings-select-menu[data-closed] {
+    animation: none;
+  }
+}
+
 /* The import/review dialogs (appearance.rs:1593-1664, 1709-1758): the
    desktop's dialog_card at its own geometry — 600px/660px wide, hairline
    (0.08) frame reused by the row separators and the footer's top edge. */
@@ -10979,8 +11169,8 @@ button.files-save-pill:hover {
   position: fixed;
   inset: 0;
   z-index: var(--rb-z-modal);
-  /* scrim(): the same literal-black backdrop as .drawer-backdrop — the desktop
-     has one scrim strength, appearance-branched by alpha only. */
+  /* scrim(): literal black in both appearances — a scrim darkens what is
+     behind it; tinting toward the panel color washes light mode white. */
   background: rgb(0 0 0 / var(--rb-scrim-alpha));
   display: flex;
   align-items: flex-start;
@@ -11955,10 +12145,14 @@ button.segmented-option:hover {
 
 @media (max-width: 768px) {
   /* The nav lives in the sidebar column (a drawer over content at phone
-     widths), so the page needs no nav-related reflow here. */
+     widths), so the page needs no nav-related reflow here. The bottom
+     padding carries the home indicator's inset — ticket 50's engine-drawer
+     safe-area scope, applied to its successor surface (ticket 45 folded the
+     engines drawer into Settings → Devices, which scrolls here to the
+     bottom edge). */
 
   .settings-page {
-    padding: 20px 16px 48px;
+    padding: 20px 16px calc(48px + env(safe-area-inset-bottom));
   }
 
   .settings-option-row {
@@ -11967,6 +12161,36 @@ button.segmented-option:hover {
 
   .settings-row {
     flex-wrap: wrap;
+  }
+
+  /* Ticket 54 (research M6(b)): the appearance page's fixed clusters go
+     fluid — every `flex: none` trailing cluster in a settings row wraps
+     below the label at full width, and the fixed-width triggers become
+     fluid (the 220+128 pair rides flex-shrink at ~2:1 of the row, the
+     desktop's own ratio; the 220/128/430/360 literals above are the
+     ≥769px parity numbers and stay untouched). */
+  .settings-font-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-font-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-select-trigger {
+    width: 100%;
+  }
+
+  .size-trigger {
+    width: 50%;
+  }
+
+  .settings-effect-choices {
+    width: 100%;
+    max-width: none;
+    justify-content: flex-start;
+    margin-left: 0;
   }
 }
 
@@ -12943,20 +13167,6 @@ html[data-surface="frosted"] .cr-tooltip {
     text-overflow: clip;
   }
 
-  /* Engine drawer: full-width on phones so the row actions don't wrap
-     into the engine host label. */
-  .drawer {
-    width: 100%;
-    max-height: 100vh;
-    min-height: 100vh;
-    border-radius: 0;
-    padding: var(--rb-space-md);
-  }
-
-  .drawer-backdrop {
-    padding: 0;
-  }
-
   /* Terminal dock: keep the drag handle easy to grab on phones (the handle
      spans the inner's top edge; -4px centers a taller grab zone on it). */
   .term-dock-handle {
@@ -13263,6 +13473,7 @@ html[data-surface="frosted"] .cr-tooltip {
 .add-space-list {
   height: 100%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 8px;
   display: flex;
   flex-direction: column;
@@ -13464,7 +13675,6 @@ html[data-surface="frosted"] .cr-tooltip {
 .sidebar-list,
 .settings-scroll,
 .settings-nav-sections,
-.drawer,
 .files-tree,
 .files-search-results,
 .files-code-scroll,
@@ -13484,7 +13694,6 @@ html[data-surface="frosted"] .cr-tooltip {
 .sidebar-list::-webkit-scrollbar,
 .settings-scroll::-webkit-scrollbar,
 .settings-nav-sections::-webkit-scrollbar,
-.drawer::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
 .files-search-results::-webkit-scrollbar,
 .files-code-scroll::-webkit-scrollbar,

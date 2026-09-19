@@ -34,8 +34,10 @@ import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
  * exit window — `unmounted()` fires when Base UI's animation-aware unmount
  * drains, dropping the flow. Headless while closed — the state machine
  * lives in `state/add-space.ts` (`addSpaceStore`); ticket 10's spaces-menu
- * row and ticket 12's `Mod+K` binding call `open()`. Escape resolves on the
- * shell's capture ladder at the reserved `addSpace` priority, so one
+ * row and ticket 12's `Mod+K` binding call `open()`. A deviceless open
+ * (no device rows streamed yet) waits bounded in the store and resolves
+ * through the devices-frame effect below (ticket 43). Escape resolves on
+ * the shell's capture ladder at the reserved `addSpace` priority, so one
  * keystroke can never reach two handlers.
  */
 
@@ -69,9 +71,10 @@ export function AddSpacePalette() {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   // The store is module-level; the mounted card is its window onto the
-  // active session. An engine switch remounts the sidebar (AppShell keys
-  // it), which re-attaches here and closes any open palette. The canvas
-  // hop rides a ref so the binding only re-runs when the session does.
+  // active session, re-attached on engine switches WITHOUT closing — the
+  // shell never keys the sidebar tree to engines, so an open palette
+  // survives a switch (ticket 43). The canvas hop rides a ref so the
+  // binding only re-runs when the session does.
   const goToCanvasRef = useRef(() => {
     void navigate({ to: "/" });
   });
@@ -85,11 +88,19 @@ export function AddSpacePalette() {
         goToCanvasRef.current();
       },
     });
-    return () => {
-      // The host is unmounting — nothing is left to paint, so no exit.
-      addSpaceStore.forceClose();
-    };
   }, [session]);
+  // Only a true host unmount force-closes — nothing is left to paint, so
+  // no exit window either. A session change re-runs the effect above; it
+  // is not an unmount, and an open flow stays open.
+  useEffect(() => () => addSpaceStore.forceClose(), []);
+
+  // The deviceless-open resolve seam (ticket 43): a flow that opened
+  // before the routed engine's device rows streamed resolves the moment
+  // one lands — no reopen needed. Re-runs on every devices frame; the
+  // store no-ops unless a wait is armed.
+  useEffect(() => {
+    addSpaceStore.resolveDevice();
+  }, [snapshot?.devices.rows]);
 
   // The shell's Escape ladder owns Escape at the reserved addSpace
   // priority — one capture-phase handler, so the focused input's own
@@ -123,7 +134,11 @@ export function AddSpacePalette() {
   const listing =
     typeof flow.listing === "object" && "entries" in flow.listing ? flow.listing : null;
   const loadError = typeof flow.listing === "object" && "error" in flow.listing ? flow.listing.error : null;
-  const loading = !listing && loadError === null;
+  // The deviceless wait's skeleton is time-bounded, not eternal: once the
+  // deadline flips the wait to the timeout error, the body swaps the
+  // skeleton for the error row (the listing itself stays idle — no loads
+  // can run without a device).
+  const loading = !listing && loadError === null && flow.deviceWait !== "timeout";
   const rows = listing !== null ? filteredFolders(listing.entries, flow.query) : [];
   const completion = listing !== null ? addSpaceCompletion(rows, flow.active, flow.query) : null;
 
@@ -400,10 +415,11 @@ function CrumbSeparator() {
 }
 
 /**
- * The folder list: skeletons while loading, the error row + Retry on
- * failure, the empty hints, or the nav-style folder rows (repo rows carry
- * the trailing git-branch glyph — the row you're usually hunting for
- * announces itself).
+ * The folder list: skeletons while loading, the deviceless error row +
+ * Retry once the device wait expires (ticket 43), the error row + Retry
+ * on a failed load, the empty hints, or the nav-style folder rows (repo
+ * rows carry the trailing git-branch glyph — the row you're usually
+ * hunting for announces itself).
  */
 function FolderList(props: {
   readonly flow: AddSpaceFlow;
@@ -431,6 +447,23 @@ function FolderList(props: {
     return (
       <div className="add-space-list-state">
         <SkeletonRows count={6} />
+      </div>
+    );
+  }
+  if (flow.deviceWait === "timeout") {
+    // The deviceless terminal state (ticket 43): the routed engine's
+    // device rows never streamed within the wait. The SAME ErrorRow +
+    // Retry chip as a failed folder load, with the transport-shaped
+    // message — Retry re-runs open()'s full pick (fresh identity,
+    // re-armed wait), not the current-path reload.
+    return (
+      <div className="add-space-list-error">
+        <ErrorRow
+          message={`${deviceName} didn't respond — is it online?`}
+          onRetry={() => {
+            addSpaceStore.retryDeviceWait();
+          }}
+        />
       </div>
     );
   }

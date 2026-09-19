@@ -5,6 +5,7 @@ import {
   attentionRank,
   chatIndicator,
   chatListRows,
+  chatPageRow,
   displayStatus,
   effectiveIndicator,
   mergePendingSpaces,
@@ -293,5 +294,65 @@ describe("chatListRows", () => {
     ) as ChatRow[];
     expect(rows.find((row) => row.chat.id === "unseen")!.status).toBe("completed");
     expect(rows.find((row) => row.chat.id === "seen")!.status).toBe("idle");
+  });
+});
+
+describe("danglingSpaceChatsHiddenOnlyWhenSpacesAreLoaded (ticket 43)", () => {
+  const space = (id: string, name: string | null): Space => ({
+    id,
+    deviceId: "device-1",
+    path: `/srv/${id}`,
+    name,
+    gitDetected: false,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+
+  it("danglingSpaceChatsHiddenOnlyWhenSpacesAreLoaded", () => {
+    const chats = [chat({ id: "lagging", spaceId: "s1" }), chat({ id: "loose", spaceId: null })];
+
+    // Spaces frame still out (loading, or errored before any frame): the
+    // space-attached row renders with the "?" label — a lagging or failed
+    // spaces stream must never blank space-attached chats.
+    const unresolved = chatListRows(chats, [], [], NOW, [], { spacesLoaded: false });
+    expect(unresolved.map((row) => row.chat.id)).toEqual(["lagging", "loose"]);
+    expect(unresolved[0]!.project).toBe("?");
+    expect(unresolved[0]!.folder).toBe("?");
+    expect(unresolved[1]!.project).toBe("~");
+
+    // The frame lands: the label resolves to the space's display name.
+    const landed = chatListRows(chats, [space("s1", "Engine work")], [], NOW, [], { spacesLoaded: true });
+    expect(landed.map((row) => row.chat.id)).toEqual(["lagging", "loose"]);
+    expect(landed[0]!.project).toBe("Engine work");
+
+    // Loaded and truly missing: the row hides — the desktop's
+    // merged-registry rule (state.rs:1438).
+    const gone = chatListRows(
+      [chat({ id: "gone", spaceId: "nope" }), chat({ id: "kept", spaceId: "s1" })],
+      [space("s1", "Alpha")],
+      [],
+      NOW,
+      [],
+      { spacesLoaded: true },
+    );
+    expect(gone.map((row) => row.chat.id)).toEqual(["kept"]);
+    expect(gone[0]!.project).toBe("Alpha");
+  });
+
+  it("an errored spaces stream keeps the rows up with the ? label", () => {
+    // errored-before-loaded: the RowSet's loaded flag stays false — the
+    // same unresolved branch as the lag, so the invariant holds.
+    const rows = chatListRows([chat({ id: "dangling", spaceId: "x" })], [], [], NOW, [], { spacesLoaded: false });
+    expect(rows.map((row) => row.chat.id)).toEqual(["dangling"]);
+    expect(rows[0]!.project).toBe("?");
+  });
+
+  it("chatPageRow applies the same gate as the list", () => {
+    const chats = [chat({ id: "lagging", spaceId: "s1" })];
+    const unresolved = chatPageRow("lagging", chats, [], [], NOW, [], undefined, false);
+    expect(unresolved!.project).toBe("?");
+    const landed = chatPageRow("lagging", chats, [space("s1", "Engine work")], [], NOW, [], undefined, true);
+    expect(landed!.project).toBe("Engine work");
+    const hidden = chatPageRow("lagging", chats, [], [], NOW, [], undefined, true);
+    expect(hidden).toBe(undefined);
   });
 });

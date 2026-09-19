@@ -14,7 +14,7 @@ import {
 import { Icon } from "@roboco/icons";
 import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, Model, UserInputAnswer } from "@roboco/proto";
 import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
-import { methods, RpcError } from "@roboco/engine-client";
+import { encodeScopedId, methods, RpcError } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
 import type { TranscriptStore } from "../state/transcript-store";
 import { useEngineStatus, useNow } from "../state/hooks";
@@ -37,6 +37,7 @@ import {
 } from "../lib/attachments";
 import {
   describeSendError,
+  buildChatConfig,
   mintMessageId,
   persistChatConfig,
   queueMessage,
@@ -76,6 +77,7 @@ import {
   messageEnterBindings,
   modifiedSubmitTarget,
   platformModifierCombo,
+  resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
   sendButtonMode,
@@ -265,7 +267,9 @@ interface ComposerProps {
    * `ComposerEvent::NewThreadTransitionStarted`'s web half: the first send
    * off the new-thread canvas mints the chat and the host navigates to it
    * (the desktop's `select_chat` commit) — the route observation then drives
-   * the dock. Called once the row exists, BEFORE the send leaves.
+   * the dock. Called once the row exists, BEFORE the send leaves, with the
+   * RAW minted id; the host scopes it for the route (§2.3) while the
+   * composer keeps the raw id on the wire.
    */
   readonly onNewThreadLaunched?: (chatId: string) => void;
   /**
@@ -834,7 +838,12 @@ export function Composer({
     const textPad = morphTextPad(morphT);
     const inputHeight = mode ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
     el.style.height = `${inputHeight}px`;
-    el.style.overflowY = mode && contentHeight > inputHeight ? "auto" : "hidden";
+    // The scrollability gate, not an inline overflowY: the CSS owns the
+    // overflow (`[data-scrollable="true"]` → `overflow-y: auto`, bar
+    // hidden), so the overflowing input still wheel-scrolls while a
+    // non-overflowing one chains its wheel to the transcript
+    // (`on_scroll_wheel`, composer.rs:2898-2933).
+    el.dataset["scrollable"] = mode && contentHeight > inputHeight ? "true" : "false";
     // The scroll fade mask: only SETTLED overflow at an edge gets the ramp —
     // the settled viewport is the committed target's, not the animating
     // box's (`input_overflow_edges`, composer.rs:181-192).
@@ -1757,7 +1766,8 @@ export function Composer({
 
   // While the wizard is mounted the flip machinery stands down (the pill is
   // not rendered); the wizard's own auto-grow owns the input's height,
-  // capped at five lines.
+  // capped at five lines — and past the cap the same `data-scrollable`
+  // gate (CSS-side, bar hidden) keeps the wheel scrolling the input.
   useEffect(() => {
     if (!wizardActive || textareaRef.current === null) {
       return;
@@ -1766,7 +1776,7 @@ export function Composer({
     el.style.height = "auto";
     const capped = Math.min(Math.max(el.scrollHeight, 22.75), 120);
     el.style.height = `${capped}px`;
-    el.style.overflowY = el.scrollHeight > 120 ? "auto" : "hidden";
+    el.dataset["scrollable"] = el.scrollHeight > 120 ? "true" : "false";
   }, [wizardActive, text, placeholder]);
 
   // When the wizard opens, focus lands where the desktop keeps it: the
@@ -1863,16 +1873,26 @@ export function Composer({
         }
       }
       const trimmed = typed.trim();
-      if (chat.cwd === null || chat.cwd === undefined || chat.cwd.trim().length === 0) {
-        setFailure({ message: "This chat has no working directory yet — pick a space first.", key: chat.id });
-        return;
-      }
+      // The resolved send cwd (composer.rs:6433-6440, `resolveSendCwd`): a
+      // NEW chat runs from the picked space's path else `"~"` — expanded by
+      // the ENGINE host-side when the run spawns (sessions.rs:342-352; the
+      // web never expands it client-side); an EXISTING chat runs from its
+      // stored cwd else `"."`. There is no error path — the desktop has no
+      // guard for a projectless send, and neither does the web.
+      const sendCwd = resolveSendCwd(chat.id === "", chat.cwd, chat.cwd);
       // New-chat mode mints the chat id on first send (shell.rs:5897-5899,
       // composer.rs:6249-6258): create the row, wait for it to land, and
       // hand the host the navigation BEFORE the wire call — the route
       // observation then drives the dock, exactly the
       // `NewThreadTransitionStarted` → `select_chat` chain.
       let chatId = chat.id;
+      // The id the ROUTE and the page's stores read — the echo, the drafts,
+      // the staged stash, the failure key. An existing chat's URL id is
+      // already the scoped row id; a fresh mint scopes here (the same call
+      // add-space's optimistic rows make) because every merged fleet row id
+      // is scoped while the WIRE keeps the raw id (request-routing decodes
+      // either form).
+      let pageChatId = chat.id;
       if (chatId === "") {
         if (session.client.state !== "connected") {
           setFailure({ message: "Send failed: Engine not connected", key: null });
@@ -1881,13 +1901,28 @@ export function Composer({
         try {
           chatId = await createChat(
             session.client,
-            chat.spaceId != null ? { spaceId: chat.spaceId } : { deviceId: chat.deviceId },
+            {
+              ...(chat.spaceId != null ? { spaceId: chat.spaceId } : { deviceId: chat.deviceId }),
+              // §2.2 (composer.rs:6494-6544): the full wire payload. Only a
+              // genuinely NEW chat writes a config — the resolved draft rides
+              // here while the run carries model/reasoning/options on the
+              // RunRequest itself. `branch`/`cwd` insert only when present:
+              // the canvas's ref pick stays chip-local today (ticket 10's
+              // checkout executes SwitchRef at pick time), and the
+              // projectless `"~"` NEVER rides here — it lives on the
+              // RunRequest (composer.rs:6515-6521 inserts `cwd` only for the
+              // worktree-reuse override).
+              config: buildChatConfig(draft),
+            },
           );
           await waitForChatRow(session.cache, chatId);
         } catch (error) {
           setFailure({ message: `Send failed: ${describeSendError(error)}`, key: null });
           return;
         }
+        pageChatId = encodeScopedId(session.engine.baseUrl, chatId);
+        // The host scopes the id at navigation (§2.3): the raw id stays on
+        // the wire, the route carries the scoped form.
         onNewThreadLaunched?.(chatId);
       }
       // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
@@ -1895,7 +1930,7 @@ export function Composer({
       const taken = staged;
       setStagedByChat((current) => {
         const next = { ...current };
-        delete next[chatId];
+        delete next[pageChatId];
         return next;
       });
       // `take_review_comments` (composer.rs:6130-6136): the comment block is
@@ -1904,51 +1939,63 @@ export function Composer({
       const takenComments = reviewCommentStore.takeComments(chat.id);
       // `typed` keeps the user's own words for the failure hand-back below
       // (restoring a folded prompt would paste the trailer as literal text).
-      const messageId = mintMessageId();
-      // The echo's attachment refs from the FIRST frame (composer.rs:6188-
-      // 6233): the legacy flow's synthetic `pending/{id}/{name}` paths, so
-      // the just-sent bubble's thumbnails render immediately and carry the
-      // sending overlay while the upload streams; the post-upload refresh
-      // swaps them for the host's absolute paths.
-      const pendingPaths = taken.map((att) => `pending/${att.id}/${att.name}`);
-      const echoDeviceId = session.client.engineInfo?.deviceId ?? null;
-      if (echoDeviceId !== null) {
-        // Seed the staged bytes under the pending refs — the echo renders
-        // from local bytes, never a read-back round-trip.
-        taken.forEach((att, ix) => {
-          seedAttachment(echoDeviceId, pendingPaths[ix]!, {
-            name: att.name,
-            mime: formatToMime(att.format),
-            bytes: att.bytes,
-          });
-        });
-      }
-      // The optimistic echo goes up BEFORE the wire call — gated off for a
-      // queued send, whose queue row IS its representation until dispatch
-      // (`should_publish_optimistic_echo`).
-      if (shouldPublishOptimisticEcho(queue)) {
-        echoStore.pushEcho({
-          messageId,
-          chatId,
-          startedAtMs: Date.now(),
-          text: trimmed,
-          attachmentPaths: pendingPaths,
-        });
-      }
-      setText("");
-      chatDrafts.clear(chatId);
-      setFailure(null);
-      setBusy(true);
-      // Whole-send upload accounting (`begin_upload_progress`): the percent
-      // the transcript's sending-overlay ring reads lives in the shared
-      // attachment store, not the strip — the strip itself has no progress UI.
-      if (taken.length > 0) {
-        beginUploadProgress(taken.reduce((sum, att) => sum + att.bytes.byteLength, 0));
-      }
+      // The echo cleanup key: null until an echo actually goes up, so a
+      // pre-flight throw (or a queued send, which never publishes) removes
+      // nothing.
+      let pushedEchoId: string | null = null;
       const onProgress = (uploaded: number): void => {
         setUploadProgress(uploaded);
       };
       try {
+        // The mint is the try's FIRST step (§2.5's silent-crash half): ANY
+        // pre-flight throw — a missing `crypto.randomUUID` on a plain-HTTP
+        // LAN origin included — surfaces as the failure notice with the full
+        // hand-back, never an uncaught async rejection.
+        const messageId = mintMessageId();
+        // The echo's attachment refs from the FIRST frame (composer.rs:6188-
+        // 6233): the legacy flow's synthetic `pending/{id}/{name}` paths, so
+        // the just-sent bubble's thumbnails render immediately and carry the
+        // sending overlay while the upload streams; the post-upload refresh
+        // swaps them for the host's absolute paths.
+        const pendingPaths = taken.map((att) => `pending/${att.id}/${att.name}`);
+        const echoDeviceId = session.client.engineInfo?.deviceId ?? null;
+        if (echoDeviceId !== null) {
+          // Seed the staged bytes under the pending refs — the echo renders
+          // from local bytes, never a read-back round-trip.
+          taken.forEach((att, ix) => {
+            seedAttachment(echoDeviceId, pendingPaths[ix]!, {
+              name: att.name,
+              mime: formatToMime(att.format),
+              bytes: att.bytes,
+            });
+          });
+        }
+        // The optimistic echo goes up BEFORE the wire call — gated off for a
+        // queued send, whose queue row IS its representation until dispatch
+        // (`should_publish_optimistic_echo`). Keyed by the PAGE id — the
+        // scoped form on a first send — so the just-sent bubble renders on
+        // the route this send navigated to, exactly as an existing chat's
+        // echo does (the transcript reads `forChat(docId)` off the URL).
+        if (shouldPublishOptimisticEcho(queue)) {
+          echoStore.pushEcho({
+            messageId,
+            chatId: pageChatId,
+            startedAtMs: Date.now(),
+            text: trimmed,
+            attachmentPaths: pendingPaths,
+          });
+          pushedEchoId = messageId;
+        }
+        setText("");
+        chatDrafts.clear(pageChatId);
+        setFailure(null);
+        setBusy(true);
+        // Whole-send upload accounting (`begin_upload_progress`): the percent
+        // the transcript's sending-overlay ring reads lives in the shared
+        // attachment store, not the strip — the strip itself has no progress UI.
+        if (taken.length > 0) {
+          beginUploadProgress(taken.reduce((sum, att) => sum + att.bytes.byteLength, 0));
+        }
         if (queue) {
           // Queue rows keep a clean body (the host rebuilds the attachment
           // transport when it promotes the row); the bytes upload first on
@@ -1970,7 +2017,7 @@ export function Composer({
             chatId,
             draft,
             trimmed,
-            chat.cwd,
+            sendCwd,
             { mintMessageId: () => messageId },
             taken.length > 0 || takenComments.length > 0
               ? { stagedAttachments: taken, uploadProgress: onProgress, stagedReviewComments: takenComments }
@@ -1982,7 +2029,7 @@ export function Composer({
             echoStore.removeEcho(messageId);
             echoStore.pushEcho({
               messageId,
-              chatId,
+              chatId: pageChatId,
               startedAtMs: Date.now(),
               text: sendResult.finalPrompt,
               attachmentPaths: [...sendResult.attachmentPaths],
@@ -2008,21 +2055,25 @@ export function Composer({
       } catch (error) {
         // Failure: red notice, echo removed, prompt back in the draft,
         // staged files back in the stash (merged by id so anything staged
-        // during the send survives).
-        echoStore.removeEcho(messageId);
+        // during the send survives). The hand-back keys the PAGE id — the
+        // route this send navigated to reads its drafts/stash under the
+        // scoped form.
+        if (pushedEchoId !== null) {
+          echoStore.removeEcho(pushedEchoId);
+        }
         setText(typed);
-        chatDrafts.set(chatId, typed);
+        chatDrafts.set(pageChatId, typed);
         // The taken comments stage back under the chat's key
         // (`add_review_comment(&restore_key, …)`, composer.rs:6663-6667).
-        reviewCommentStore.restoreComments(chatId, takenComments);
+        reviewCommentStore.restoreComments(pageChatId, takenComments);
         setStagedByChat((current) => {
-          const fresh = current[chatId] ?? [];
+          const fresh = current[pageChatId] ?? [];
           const merged = [...taken.filter((att) => !fresh.some((f) => f.id === att.id)), ...fresh];
           const next = { ...current };
           if (merged.length === 0) {
-            delete next[chatId];
+            delete next[pageChatId];
           } else {
-            next[chatId] = merged;
+            next[pageChatId] = merged;
           }
           return next;
         });
@@ -2032,7 +2083,7 @@ export function Composer({
           message: error instanceof AttachmentUploadError
             ? error.message
             : `Send failed: ${describeSendError(error)}`,
-          key: chatId,
+          key: pageChatId,
         });
       } finally {
         if (taken.length > 0) {
@@ -2041,7 +2092,7 @@ export function Composer({
         setBusy(false);
       }
     },
-    [chat.id, chat.cwd, draft, session.client, staged, engineSupports, onNewThreadLaunched, commentCount],
+    [chat.id, chat.cwd, draft, session.client, session.engine.baseUrl, staged, engineSupports, onNewThreadLaunched, commentCount],
   );
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────

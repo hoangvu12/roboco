@@ -834,6 +834,23 @@ fn titlebar_island_vertical_geometry(progress: f32) -> (f32, f32) {
     (center - height * 0.5, height)
 }
 
+/// The frosted island's target alpha: 1.0 exactly on the blank new-thread
+/// canvas with the sidebar collapsed AND a background that resolves — the
+/// user's file or the bundled default (`active_new_thread_background`),
+/// never the raw stored field. A stored-but-missing file keeps it off.
+fn titlebar_island_target(
+    route_is_chat: bool,
+    selected_chat_is_some: bool,
+    sidebar_collapsed: bool,
+    background_resolves: bool,
+) -> f32 {
+    if route_is_chat && !selected_chat_is_some && sidebar_collapsed && background_resolves {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 fn bottom_stack_measurement_matches(
     measured_has_composer: bool,
     expected_has_composer: bool,
@@ -3268,8 +3285,15 @@ impl Shell {
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         // Recreate per visit: the page's ListHarnesses load re-probes which
         // CLIs are installed, so installing one shows up on the next open.
+        // RemoteAccessPage has no observe/watch on the pairing store, so
+        // recreating it (its `new` fires GetRemoteAccess) is what surfaces
+        // sessions paired since the last visit, e.g. a web client paired
+        // from the browser.
         if section == SettingsSection::Harnesses {
             self.harnesses_page = None;
+        }
+        if section == SettingsSection::RemoteAccess {
+            self.remote_access_page = None;
         }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
@@ -3980,18 +4004,12 @@ impl Shell {
         // leave two competing + placements across the responsive variants.
         let plus_alpha = self.titlebar_plus_alpha(cx);
         let show_plus = plus_alpha > 0.01;
-        let island_target = if matches!(self.route, Route::Chat)
-            && self.state.read(cx).selected_chat.is_none()
-            && self.settings.sidebar_collapsed
-            && settings::current(cx)
-                .new_thread_composer_background
-                .as_ref()
-                .is_some_and(|background| std::path::Path::new(&background.path).is_file())
-        {
-            1.0
-        } else {
-            0.0
-        };
+        let island_target = titlebar_island_target(
+            matches!(self.route, Route::Chat),
+            self.state.read(cx).selected_chat.is_some(),
+            self.settings.sidebar_collapsed,
+            settings::active_new_thread_background(cx).is_some(),
+        );
         // Persistent manual tween: reversals start from the painted value,
         // initial presentation is settled, and reduced motion snaps.
         match self.titlebar_island {
@@ -5839,16 +5857,15 @@ impl Shell {
             self.bottom_stack_has_composer.get(),
             (has_spaces || no_project || has_appshots) && has_selection,
         );
-        let ui_settings = settings::current(cx);
-        let new_thread_background_setting = ui_settings.new_thread_composer_background;
-        let new_thread_background_effect = ui_settings.new_thread_background_effect;
+        let new_thread_background_effect = settings::current(cx).new_thread_background_effect;
         let frame_time = self.render_time.unwrap_or_else(std::time::Instant::now);
         // Prewarm even in an established thread. Decode/effect work is not
-        // contingent on a hero measurement or a navigation gesture.
-        let artwork = new_thread_background_setting
-            .as_ref()
+        // contingent on a hero measurement or a navigation gesture. The
+        // accessor resolves the user background, else the bundled default;
+        // a stored-but-missing file resolves to None, which flows into
+        // `prepare` exactly like the missing path did before.
+        let artwork = crate::settings::active_new_thread_background(cx)
             .map(|background| std::path::PathBuf::from(&background.path))
-            .or_else(|| crate::settings::default_new_thread_background(cx))
             .and_then(|path| {
                 crate::new_thread_background_effects::prepare(
                     new_thread_background_effect,
@@ -8278,6 +8295,14 @@ mod tests {
         assert_eq!(new_thread_background_height(1_000.0), 720.0);
         assert_eq!(new_thread_background_height(1_200.0), 760.0);
         assert!(new_thread_background_height(848.0) > 848.0 / 2.0);
+        // The island keys off the RESOLVED background (ticket 48): the
+        // bundled default counts exactly like an installed image —
+        // `active_new_thread_background` (settings.rs) supplies that flag.
+        assert_eq!(titlebar_island_target(true, false, true, true), 1.0);
+        assert_eq!(titlebar_island_target(true, false, true, false), 0.0);
+        assert_eq!(titlebar_island_target(true, true, true, true), 0.0);
+        assert_eq!(titlebar_island_target(false, false, true, true), 0.0);
+        assert_eq!(titlebar_island_target(true, false, false, true), 0.0);
     }
 
     #[test]
@@ -9035,6 +9060,62 @@ mod exit_regressions {
                 })
                 .unwrap();
         }
+    }
+
+    #[gpui::test]
+    fn titlebar_island_gates_on_the_resolved_background(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            settings::init(settings::UiSettings::default(), dir.path(), cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+
+                    default_harness: roboco_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        window
+            .update(cx, |shell, _, cx| {
+                // Default settings (no stored background), blank chat
+                // canvas, sidebar collapsed: the island target is 1.0 over
+                // the bundled default artwork (ticket 48).
+                shell.settings.sidebar_collapsed = true;
+                let _ = shell.render_titlebar_cluster(cx);
+                assert_eq!(shell.titlebar_island.map(|tween| tween.to), Some(1.0));
+                // A stored background whose file is missing resolves to
+                // None — the island stays off, exactly like before.
+                settings::update(settings::SavePolicy::Immediate, cx, |settings| {
+                    settings.new_thread_composer_background =
+                        Some(settings::NewThreadComposerBackground {
+                            path: dir
+                                .path()
+                                .join("missing.png")
+                                .to_string_lossy()
+                                .into_owned(),
+                            name: "missing.png".into(),
+                        });
+                });
+                let _ = shell.render_titlebar_cluster(cx);
+                assert_eq!(shell.titlebar_island.map(|tween| tween.to), Some(0.0));
+            })
+            .unwrap();
     }
 
     #[gpui::test]

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { motion } from "@roboco/theme";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import { methods, parseScopedId } from "@roboco/engine-client";
+import { encodeScopedId, methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
@@ -13,19 +15,29 @@ import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import type { SubagentOpen } from "../components/tool-group";
-import { rightPaneStore } from "../state/right-pane";
+import { remaskNewThreadBackground } from "../components/new-thread-background";
+import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
 import { useNewThreadTarget } from "../components/composer/new-thread-selectors";
 import { NewThreadCanvas } from "./index-page";
-import { bottomClearance, PHONE_MAX_WIDTH, sidebarTarget, useSidebarLayout, useViewportWidth } from "../state/layout";
+import {
+  bottomClearance,
+  conversationWidth,
+  evalWidthTween,
+  sidebarTarget,
+  useSidebarLayout,
+  useViewportWidth,
+} from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { navEntryForPath } from "../state/nav-history";
 import {
   bottomStackMeasurementMatches,
   dockFrameEquals,
   dockFrameSettled,
   DockState,
+  heroLayerMounted,
   type DockFrame,
 } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
@@ -40,6 +52,10 @@ import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
+
+/** `motion::RESIZE` — the 200ms curve the sidebar glide and the hero's tween ride. */
+const SIDEBAR_GLIDE_MS =
+  motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
 
 /**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
@@ -79,8 +95,9 @@ function transcriptCacheFor(engineKey: string, scopedChatId: string): Transcript
  * owns everything: the glide (0.420/470 s critically damped), the pill
  * height (`dockHeight`), the four staged chrome channels, the hero's
  * `dissolve`, the 0.320 s panel handoff, and the width glide that snaps
- * inside the handoff's invisible interval. Reduced motion — and the phone
- * layer (≤ 768px, out of scope) — snap everything.
+ * inside the handoff's invisible interval. Reduced motion snaps everything.
+ * The phone layer (≤ 768px) mounts the same canvas — hero, selectors, dock
+ * re-anchoring — per ticket 53's amendment to spec decision 5.
  */
 export function ConversationPage() {
   // `chatId === ""` is the new-thread canvas; anything else names a chat.
@@ -422,13 +439,33 @@ export function ConversationPage() {
   const row =
     !snapshot.chats.loaded
       ? undefined
-      : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows, engineStatesOf(registry));
+      : chatPageRow(
+          chatId,
+          snapshot.chats.rows,
+          snapshot.spaces.rows,
+          snapshot.statuses.rows,
+          now,
+          snapshot.devices.rows,
+          engineStatesOf(registry),
+          // The same loaded-only dangling gate as the sidebar (ticket 43).
+          snapshot.spaces.loaded,
+        );
 
   // ── The dock: one retargetable clock for the route choreography ────────
   const viewport = useViewportWidth();
   const viewportHeight = useViewportHeight();
   const sidebar = useSidebarLayout();
-  const sidebarNow = sidebarTarget(sidebar);
+  // The shared media hook (ticket 49): `(max-width: 768px)` resolved through
+  // matchMedia — the same query the stylesheet keys, so JS and CSS flip in
+  // the same paint (the old `viewport <= PHONE_MAX_WIDTH` innerWidth compare could
+  // disagree with the media query by rounding).
+  const phone = useIsPhone();
+  // The phone sidebar is a fixed overlay out of flow (the same M3/M2
+  // correction `app-shell.tsx` applies to the titlebar's geometry), so the
+  // hero's sidebar term reads 0 at ≤768 — `heroWidth` is the full phone
+  // canvas width, never `viewport − dragged` (375/304 would paint a 71px
+  // hero).
+  const sidebarNow = phone ? 0 : sidebarTarget(sidebar);
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -437,10 +474,119 @@ export function ConversationPage() {
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
-  const phone = viewport <= PHONE_MAX_WIDTH;
-  // The phone layer (out of scope, spec decision 5) keeps the composer in
-  // its slot: the dock snaps and never re-anchors.
-  const dockReduced = reducedMotion || phone;
+  // Ticket 53's recorded choice (§2.2, option 1): the dock re-anchors at
+  // phone exactly as at ≥769 — the glide, the chrome channels and the
+  // dissolve all run, anchored at `(vh − h)·0.5 + 8`; reduced motion still
+  // snaps everything through `reducedMotion`.
+  const dockReduced = reducedMotion;
+
+  // ── The sidebar slide (ticket 34) ─────────────────────────────────────
+  // `toggle_sidebar` (shell.rs:1947-1957) arms a oneshot 200ms tween from
+  // the PAINTED width at the flip — a mid-animation reversal restarts from
+  // what is painted — and the desktop's `sidebar_now()` (3797-3801)
+  // evaluates it per frame, feeding `hero_width = viewport −
+  // sidebar_now()` (shell.rs:5897). The web's column already glides on the
+  // exact CSS transition (`app.css:1159`); this loop is the missing half —
+  // feeding the ANIMATED value to the hero (and its mask) instead of the
+  // target. `heroWidth` stays a prop-driven inline style with NO CSS width
+  // transition: one clock (this loop) must own the width, or the mask
+  // cannot follow it.
+  const sidebarTweenRef = useRef<{ from: number; to: number; startedAt: number } | null>(null);
+  const previousSidebarRef = useRef(sidebar);
+  // The animated sidebar width while a tween is live, else null — settled,
+  // where the target formula below IS the endpoint.
+  const [animatedSidebar, setAnimatedSidebar] = useState<number | null>(null);
+  const [sidebarPump, setSidebarPump] = useState(0);
+
+  // Arm on a flip. A LAYOUT effect: the flip commit would otherwise paint
+  // the endpoint for one frame (heroWidth falls back to the target before
+  // the loop's first frame); writing `from` here re-renders before paint,
+  // so the flip frame paints the hero exactly where it already is.
+  useLayoutEffect(() => {
+    const previous = previousSidebarRef.current;
+    previousSidebarRef.current = sidebar;
+    if (previous.collapsed === sidebar.collapsed) {
+      // Not a flip: a seam drag took the clock over mid-tween (the column
+      // tracks the pointer exactly under `data-rb-resizing`) — drop the
+      // tween so the hero follows the drag instead of a stale target.
+      if (sidebarTweenRef.current !== null) {
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+      }
+      return;
+    }
+    sidebarTweenRef.current = null;
+    if (reducedMotion || phone || sidebarTarget(previous) === sidebarTarget(sidebar)) {
+      // `evalWidthTween`'s contract: under reduced motion the caller writes
+      // the endpoint — the CSS has already snapped, and the settled formula
+      // below IS the endpoint. At phone the sidebar is out of flow, so there
+      // is no painted column width to tween — the hero's sidebar term is
+      // pinned to 0 by the `sidebarNow` phone arm above.
+      setAnimatedSidebar(null);
+      return;
+    }
+    // `from` = the PAINTED width at the flip (a live tween's last frame,
+    // else the previous target) plus the live edge-bounce offset — the
+    // desktop's `sidebar_now()` captures both before `toggle_sidebar`
+    // clears the bounce.
+    const painted = animatedSidebar ?? sidebarTarget(previous);
+    const from = painted + readSidebarEdgeBounceOffset();
+    const to = sidebarTarget(sidebar);
+    sidebarTweenRef.current = { from, to, startedAt: performance.now() };
+    setAnimatedSidebar(from);
+    setSidebarPump((pump) => pump + 1);
+    // `animatedSidebar`/`reducedMotion`/`phone` are read from this render's
+    // closure on purpose: only a flip re-arms, never their own changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebar]);
+
+  // The frame pump: one write per ANIMATION frame while the tween is live —
+  // the web peer of the desktop's `motion_active` → rAF render loop. The
+  // setState is flushed SYNCHRONOUSLY inside the callback, not scheduled:
+  // the column's CSS transition is evaluated at style time, so the commit
+  // must land inside this same rAF phase for the hero to ride the SAME
+  // frame's clock — the web peer of the desktop evaluating `sidebar_now()`
+  // in render. A scheduled commit lands after paint and trails the column
+  // by a frame. The same loop then re-runs the hero's remask, so the cutout
+  // hole tracks the pill's viewport-space rect every frame (mask.rs:49-51):
+  // the pill glides with the column (`margin-inline: auto`) even though its
+  // size does not change.
+  useEffect(() => {
+    if (sidebarTweenRef.current === null) {
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const tween = sidebarTweenRef.current;
+      if (tween === null) {
+        return;
+      }
+      if (reducedMotion) {
+        // `evalWidthTween`'s contract: the endpoint, directly — the CSS has
+        // already snapped.
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+        return;
+      }
+      const elapsed = performance.now() - tween.startedAt;
+      const value = evalWidthTween(tween.from, tween.to, elapsed);
+      flushSync(() => {
+        setAnimatedSidebar(value);
+      });
+      remaskNewThreadBackground();
+      if (elapsed >= SIDEBAR_GLIDE_MS) {
+        // Done: hand the width back to the settled formula (the same
+        // number — `to`), so a later drag can never read a stale one.
+        sidebarTweenRef.current = null;
+        setAnimatedSidebar(null);
+        return;
+      }
+      setSidebarPump((pump) => pump + 1);
+    });
+    return () => cancelAnimationFrame(raf);
+    // `reducedMotion` rides along so a mid-tween flip to reduced motion
+    // snaps instead of running the clock out.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarPump, reducedMotion]);
 
   const dockRef = useRef(new DockState());
   const [dockFrame, setDockFrameState] = useState<DockFrame>(() => dockFrameSettled(false));
@@ -448,6 +594,70 @@ export function ConversationPage() {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const prepaintMovingRef = useRef(false);
   const dockTickedRef = useRef(false);
+
+  // ── The pane's synchronous width — the handoff's arming input ───────────
+  // `right_now` (shell.rs:3820-3826): the pane's width computed from STATE,
+  // never measured — `eval_tween(right_tween, right_target)` is the TARGET
+  // at a navigation commit (the chat switch clears the tweens, shell.rs
+  // 1837-1862, "snap, no tween — the panels belong to the destination
+  // chat"), plus the seam's edge bounce while the pane sits at a drag
+  // bound. The pane store subscription matters even though the handoff
+  // only arms on a docked flip: `previous` must carry the pane width that
+  // was painted while docked, or the undock arm below would read width
+  // 0→0 and never fire. The OLD input — the ResizeObserver-measured
+  // `columnWidth` — was one commit stale by construction: on the flip
+  // commit it still held the canvas width, so the docked flip arrived
+  // WITHOUT its width change and the next (fresh) sample saw the width
+  // change WITHOUT the flip — the handoff never armed (§2.1).
+  const paneState = useRightPane(chatId);
+  const paneOpen = hasSelection && paneState.open;
+  const paneNowWidth = paneOpen
+    ? resolvePaneWidth(paneState, viewport, phone ? 0 : (animatedSidebar ?? sidebarNow)) +
+      (paneState.expanded ? 0 : readPaneEdgeBounceOffset())
+    : 0;
+
+  // ── observePane → transcriptWidth → tick — the desktop's paint order ────
+  // The shell samples the pane BEFORE `render_main`'s dock tick (observe_pane
+  // at shell.rs:7901-7906, transcript_width at :7915-7919, the tick at
+  // :5882-5885 inside render_main): the tick reads `pane.progress` to arm
+  // the panel_return/panel_departure clocks, so the sample must land first —
+  // the ordering ticket 35's merger note flagged (its render-phase tick
+  // preceded the layout effect's observePane, leaving #panelDeparture
+  // unreachable). One timestamp for all three, the desktop's `frame_time`.
+  const frameNowMs = performance.now();
+  const paneHandoffLive = dockRef.current.observePane(hasSelection, paneNowWidth, !dockReduced, frameNowMs);
+  // `transcript_width` (shell.rs:7915-7919): the retained value feeds the
+  // transcript wrapper's width. Called BEFORE the tick so the capture
+  // condition (`!docked && frame.docked`) still sees the pre-flip frame —
+  // what gets retained is the SOURCE column's width. The target is the
+  // conversation's stable content width (`conversation_width(viewport,
+  // sidebar_target, right_target_width)`, shell.rs:7910-7914 — the
+  // takeover-stable leg never co-occurs with a route flip, which clears
+  // the tween).
+  const mainContentWidth = conversationWidth(viewport, sidebarTarget(sidebar), paneNowWidth);
+  const retainedTranscriptWidth = dockRef.current.transcriptWidth(
+    mainContentWidth,
+    hasSelection,
+    paneHandoffLive,
+  );
+
+  // ── The same-render dock tick (ticket 35, shell.rs:5882-5885) ────────────
+  // The desktop decides the hero layer's mount from the frame ticked in the
+  // SAME render — `tick` precedes the layer at shell.rs:5883. The web's
+  // route change used to land one render BEFORE the per-commit layout
+  // effect's tick below, so the navigation render read the previous
+  // render's settled frame: `heroVisible` went false, the hero unmounted
+  // for that commit (its artwork state with it), and the tick's re-render
+  // remounted it — the route-change double flash. The route-change tick
+  // now runs HERE, in the render body, and publishes through a render-phase
+  // update (the sanctioned derive-state-during-render shape: React discards
+  // this pass and re-renders immediately, so no commit ever paints with the
+  // hero unmounted). The mount decision below reads the freshly ticked
+  // MUTABLE frame; `dockFrame` state keeps driving the visuals.
+  if (dockRef.current.frame.docked !== hasSelection) {
+    const ticked = dockRef.current.tick(hasSelection, dockReduced, frameNowMs);
+    setDockFrameState((prev) => (dockFrameEquals(prev, ticked) ? prev : ticked));
+  }
 
   // ── Bottom chrome stack bookkeeping ─────────────────────────────────────
   // `bottom_stack` measured live (the desktop's paint-time canvas) PLUS
@@ -480,24 +690,24 @@ export function ConversationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, row?.chat.id, session]);
 
-  // The dock's per-commit pass: observe the column's horizontal frame,
-  // re-anchor the composer's wrapper, publish the stack measurement. ROUTE
-  // CHANGES tick the clock immediately (the frame flips so the pump below
-  // can start); steady-state frames advance ONLY on the pump's animation
-  // frames — ticking per commit would spin the layout-effect/setState pair
+  // The dock's per-commit pass: re-anchor the composer's wrapper, publish
+  // the stack measurement. Route changes tick in the render body (the
+  // same-render tick above, ticket 35 — after the render-body `observePane`
+  // sample, the desktop's paint order); the pane sample runs there too, per
+  // render, so the handoff's clock advances on the pump's re-renders. The
+  // measured `columnWidth` here feeds only the composer's width target.
+  // Steady-state frames advance ONLY on the pump's animation frames —
+  // ticking per commit would spin the layout-effect/setState pair
   // synchronously and freeze the glide. A layout effect so the transform
   // lands in the same commit as the frame — the web peer of
   // prepaint-before-paint.
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const nowMs = performance.now();
-    // `observe_pane`: the handoff arms when the DOCKED flag flips while the
-    // conversation column's width differs — ordinary resizing and
-    // same-column navigation never fade.
-    dock.observePane(hasSelection, columnWidth ?? 0, !dockReduced, nowMs);
     // The clock initializes on the first pass (the desktop's first tick
-    // snaps the settled hero state and stamps `last_frame`), then only
-    // route changes tick here — steady frames advance on the pump.
+    // snaps the settled hero state and stamps `last_frame`); route changes
+    // are already ticked by the render above, and the docked check stays as
+    // the safety net. Steady frames advance on the pump.
     if (dock.frame.docked !== hasSelection || !dockTickedRef.current) {
       dockTickedRef.current = true;
       const next = dock.tick(hasSelection, dockReduced, nowMs);
@@ -506,7 +716,7 @@ export function ConversationPage() {
 
     const wrapper = wrapperRef.current;
     const stack = bottomStackRef.current;
-    if (wrapper !== null && stack !== null && !phone) {
+    if (wrapper !== null && stack !== null) {
       const stackRect = stack.getBoundingClientRect();
       // The wrapper's NATURAL slot (transform excluded — offsets are layout
       // values): the desktop's prepaint reads the layout bounds.
@@ -536,8 +746,14 @@ export function ConversationPage() {
   // flight (the desktop's `request_animation_frame` in prepaint/tick). The
   // setState lands in the rAF callback, so the tick's dt is the real frame
   // gap and the re-render's layout effect re-anchors without ticking again.
+  // The pane-progress leg is shell.rs:7907-7909's `motion_active` peer
+  // (`if panel_handoff { motion_active.set(true) }`): the handoff's 0.320 s
+  // clock can outlive the glide AND the choreography, so `dockFrame.active`
+  // alone would stop the pump early and strand the composer mid-fade (the
+  // §2.4.2 warning) — the gate re-reads the live progress on every pump
+  // bump.
   useEffect(() => {
-    if (!dockFrame.active && !prepaintMovingRef.current) {
+    if (!dockFrame.active && !prepaintMovingRef.current && dockRef.current.paneProgress() === null) {
       return;
     }
     const raf = requestAnimationFrame(() => {
@@ -562,13 +778,21 @@ export function ConversationPage() {
   // The hero: full conversation canvas (`viewport − sidebar_now`, never
   // rescaled by the right pane), mounted while `!has_selection` or the dock
   // is still dissolving one away, outside the transcript's edge fade.
-  const heroVisible = (!hasSelection || dockFrame.active) && !phone;
-  const heroWidth = Math.max(viewport - sidebarNow, 0);
+  // `sidebar_now` is the TWEENED width while the sidebar slide runs
+  // (ticket 34) — the settled target otherwise (0 at phone, where the
+  // sidebar is an out-of-flow overlay). The mount decision consumes
+  // the MUTABLE frame ticked in THIS render (the same-render tick above,
+  // ticket 35 — shell.rs:5883's `(!has_selection || dock_frame.active)`),
+  // while `dockFrame` state drives the visuals; the phone layer mounts the
+  // hero too (ticket 53 amended decision 5).
+  const heroVisible = heroLayerMounted(hasSelection, dockRef.current.frame);
+  const heroWidth = Math.max(viewport - (animatedSidebar ?? sidebarNow), 0);
 
   // The transcript outlet: selected chat → transcript; nothing selected →
   // the centered new-thread composition. A DEPARTING transcript (undocking)
   // keeps its pixels as visual history, fixed at the source column width
-  // and occluded so it is not an interaction surface.
+  // (`transcriptWidth`'s retained value, pinned on `.chat-body` below) and
+  // occluded so it is not an interaction surface.
   const departing = !hasSelection && dockFrame.visuals.transcript > 0;
   // `finish_route_exit`: once the route is blank and the exit finished,
   // release the retained store.
@@ -578,7 +802,50 @@ export function ConversationPage() {
       storeRef.current = null;
     }
   }, [hasSelection, departing]);
-  const transcriptForOutlet = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+  const liveTranscript = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+
+  // ── The chat→chat transcript swap (§2.4.4) ───────────────────────────────
+  // The desktop's ONE `Transcript` entity swaps its doc synchronously on a
+  // chat switch (shell.rs:5914-5945); the web keeps per-chat stores whose
+  // first frame is async, so a swap would paint a blank frame between
+  // chats. The previous chat's rows stay mounted — frozen at their last
+  // snapshot, the store's watch gone or going — until the newly selected
+  // store's first frame lands (the live reset or the offline cache seed,
+  // whichever arrives first). The occluding veil below keeps the retained
+  // pixels from being an interaction surface for the destination chat
+  // (the departing transcript's own rule, shell.rs:5940-5944). The surface
+  // swap happens when `loaded` flips: the outlet then hands the view the
+  // new store, whose `key={active.docId}` remounts with rows already in
+  // place — no blank frame.
+  const subscribeTranscriptLoad = useCallback(
+    (listener: () => void) =>
+      transcriptStore === null ? () => {} : transcriptStore.subscribe(listener),
+    [transcriptStore],
+  );
+  const getTranscriptLoaded = useCallback(
+    () => transcriptStore?.getSnapshot().loaded ?? true,
+    [transcriptStore],
+  );
+  const newTranscriptLoaded = useSyncExternalStore(
+    subscribeTranscriptLoad,
+    getTranscriptLoaded,
+    () => true,
+  );
+  // The last store the outlet PAINTED — written during render like
+  // `storeRef` above (idempotent: the swap window keeps writing the same
+  // frozen store).
+  const lastPaintedTranscriptRef = useRef<TranscriptStore | null>(null);
+  const swappingTranscript =
+    hasSelection &&
+    !newTranscriptLoaded &&
+    lastPaintedTranscriptRef.current !== null &&
+    lastPaintedTranscriptRef.current !== transcriptStore;
+  const transcriptForOutlet = swappingTranscript
+    ? lastPaintedTranscriptRef.current
+    : liveTranscript;
+  if (transcriptForOutlet !== null) {
+    lastPaintedTranscriptRef.current = transcriptForOutlet;
+  }
   const transcriptOpacity = departing || transcriptGeometryReady ? dockFrame.visuals.transcript : 0;
   const transcriptRise = 8 * (1 - dockFrame.visuals.transcript);
 
@@ -675,9 +942,17 @@ export function ConversationPage() {
   // `select_chat`'s commit (shell.rs:1289-1295 just notifies).
   const onNewThreadLaunched = useCallback(
     (mintedId: string) => {
-      void navigate({ to: "/chat/$chatId", params: { chatId: mintedId } });
+      // §2.3 (composer.rs:6047-6050): the desktop mints the new chat id
+      // SCOPED; the web mints raw on the wire (request-routing decodes
+      // either form) and scopes HERE, at the navigation — the same call
+      // add-space's optimistic space rows make. The merged fleet rows are
+      // all scoped, so the URL id then matches `chatPageRow`'s exact
+      // compare and the not-found page stays a last resort for genuinely
+      // foreign ids.
+      const scoped = session === null ? mintedId : encodeScopedId(session.engine.baseUrl, mintedId);
+      void navigate({ to: "/chat/$chatId", params: { chatId: scoped } });
     },
-    [navigate],
+    [navigate, session],
   );
 
   // The titlebar is the shell's; the route fills its identity and the `+`'s
@@ -731,6 +1006,13 @@ export function ConversationPage() {
           style={{
             opacity: transcriptOpacity,
             transform: `translateY(${transcriptRise}px)`,
+            // `transcript_width`'s retained value (shell.rs:5917-5938's
+            // `.w(px(transcript_width))`): while a departing handoff runs,
+            // the wrapper is pinned to the SOURCE column's width so the
+            // fading rows never reflow into the canvas-wide layout — the
+            // exit flash the retention exists to prevent. `inset: 0` plus
+            // a width is over-constrained in LTR: left + width win.
+            ...(departing && paneHandoffLive ? { width: `${retainedTranscriptWidth}px` } : {}),
           }}
         >
           {transcriptForOutlet !== null && session !== null ? (
@@ -752,9 +1034,10 @@ export function ConversationPage() {
           {/*
             A departing transcript is visual history, not an active
             interaction surface bound to the newly blank route
-            (shell.rs:5925-5927).
+            (shell.rs:5940-5944) — and a chat→chat swap's retained rows get
+            the same occlusion for the frames they outlive their chat.
           */}
-          {departing && <div className="departing-veil" aria-hidden="true" />}
+          {(departing || swappingTranscript) && <div className="departing-veil" aria-hidden="true" />}
         </div>
         {/*
           The bottom chrome stack (`render_main`'s flex-none bottom section):
@@ -784,7 +1067,10 @@ export function ConversationPage() {
                 session={session}
                 chat={effectiveChat}
                 catalog={session.catalog}
-                transcript={transcriptForOutlet}
+                // The LIVE store, never the swap-retained one: the
+                // composer's target is the destination chat — the wizard's
+                // rows must not offer the previous chat's entries.
+                transcript={liveTranscript}
                 availableWidth={composerWidth}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
@@ -841,6 +1127,31 @@ function useViewportHeight(): number {
 /** `prefers-reduced-motion` at first paint. */
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * The live edge-bounce offset of a seam's 5px pulse (the `--rb-*-edge-offset`
+ * variables `pane-seam.tsx` writes on the document element): the desktop's
+ * `sidebar_now()`/`right_now()` include them, so a width sampled mid-bounce
+ * carries the painted value.
+ */
+function readEdgeOffset(varName: string): number {
+  if (typeof document === "undefined") {
+    return 0;
+  }
+  const raw = window.getComputedStyle(document.documentElement).getPropertyValue(varName);
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** `sidebar_now()`'s bounce leg — `--rb-sidebar-edge-offset`. */
+function readSidebarEdgeBounceOffset(): number {
+  return readEdgeOffset("--rb-sidebar-edge-offset");
+}
+
+/** `right_now()`'s bounce leg (shell.rs:3822-3825) — `--rb-pane-edge-offset`. */
+function readPaneEdgeBounceOffset(): number {
+  return readEdgeOffset("--rb-pane-edge-offset");
 }
 
 /**

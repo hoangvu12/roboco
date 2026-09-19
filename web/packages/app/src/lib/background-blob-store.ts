@@ -53,11 +53,27 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-/** The real store; a memory stand-in when IndexedDB is unavailable (tests). */
+/**
+ * The ONE process-wide store (ticket 35, gap G19): every background
+ * resolution shares a single `cachedUrl`, so the object URL minted for a
+ * blob revision — hence the artwork's identity — is stable across every
+ * mount, and a put/delete retires it exactly once. Before ticket 35 each
+ * call returned a fresh closure with its own cache, so every resolve minted
+ * a NEW blob: URL nobody ever revoked: the artwork's id changed per mount,
+ * the keyed readiness wrapper remounted, and the 120 ms fade replayed.
+ */
 export function idbBackgroundBlobStore(): BackgroundBlobStore {
-  if (typeof indexedDB === "undefined") {
-    return memoryBackgroundBlobStore();
+  if (singletonBlobStore === null) {
+    singletonBlobStore =
+      typeof indexedDB === "undefined" ? memoryBackgroundBlobStore() : createIdbBackgroundBlobStore();
   }
+  return singletonBlobStore;
+}
+
+let singletonBlobStore: BackgroundBlobStore | null = null;
+
+/** The real store; a memory stand-in when IndexedDB is unavailable (tests). */
+function createIdbBackgroundBlobStore(): BackgroundBlobStore {
   let cachedUrl: string | null = null;
   const revoke = (): void => {
     if (cachedUrl !== null) {

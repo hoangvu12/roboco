@@ -541,6 +541,49 @@ fn surface_helper(surface: SurfacePreference, resolved: SurfaceTreatment) -> Str
     }
 }
 
+/// The background row's presentation state: the resolved background drives
+/// the row (the thumbnail, the name meta, the effect row), while the stored
+/// one preserves the "Image unavailable" distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundRowState {
+    /// Artwork resolves — the user's file or the bundled default.
+    Selected,
+    /// Stored, but its file no longer exists.
+    Unavailable,
+    /// Nothing stored and nothing resolvable.
+    Empty,
+}
+
+fn background_row_state(
+    stored: Option<&crate::settings::NewThreadComposerBackground>,
+    resolved: Option<&crate::settings::NewThreadComposerBackground>,
+) -> BackgroundRowState {
+    match (stored.is_some(), resolved) {
+        (_, Some(_)) => BackgroundRowState::Selected,
+        (true, None) => BackgroundRowState::Unavailable,
+        (false, None) => BackgroundRowState::Empty,
+    }
+}
+
+fn background_row_meta(
+    stored: Option<&crate::settings::NewThreadComposerBackground>,
+    resolved: Option<&crate::settings::NewThreadComposerBackground>,
+) -> Vec<SharedString> {
+    match (stored.is_some(), resolved) {
+        (_, Some(background)) => vec![
+            SharedString::from(background.name.clone()),
+            SharedString::from("Softened automatically on frosted themes."),
+        ],
+        (true, None) => vec![
+            SharedString::from("Image unavailable"),
+            SharedString::from("Choose a replacement or remove it."),
+        ],
+        (false, None) => vec![SharedString::from(
+            "Add an image behind the composer on empty new threads.",
+        )],
+    }
+}
+
 fn surface_choice(
     theme: &Theme,
     surface: SurfacePreference,
@@ -1991,7 +2034,10 @@ impl Render for AppearancePage {
         let current_accent = appearance::accent(cx);
         let current_surface = appearance::surface(cx);
         let ui_settings = crate::settings::current(cx);
-        let current_background = ui_settings.new_thread_composer_background;
+        let stored_background = ui_settings.new_thread_composer_background;
+        // The resolved value drives the row; the raw stored one only
+        // preserves the "Image unavailable" distinction (ticket 48).
+        let current_background = crate::settings::active_new_thread_background(cx);
         let current_background_effect = ui_settings.new_thread_background_effect;
         let cards = AppearanceMode::ALL
             .into_iter()
@@ -2130,9 +2176,9 @@ impl Render for AppearancePage {
                 )
                 .into_any_element(),
         );
-        let background_available = current_background
-            .as_ref()
-            .is_some_and(|background| Path::new(&background.path).is_file());
+        let background_row =
+            background_row_state(stored_background.as_ref(), current_background.as_ref());
+        let background_available = background_row == BackgroundRowState::Selected;
         let background_tile: AnyElement = if let Some(background) =
             current_background.as_ref().filter(|_| background_available)
         {
@@ -2153,27 +2199,11 @@ impl Render for AppearancePage {
         } else {
             widgets::row_tile(&theme, icons::FILE_IMAGE).into_any_element()
         };
-        let background_meta = match current_background.as_ref() {
-            Some(background) if background_available => vec![
-                div()
-                    .child(SharedString::from(background.name.clone()))
-                    .into_any_element(),
-                div()
-                    .child("Softened automatically on frosted themes.")
-                    .into_any_element(),
-            ],
-            Some(_) => vec![
-                div().child("Image unavailable").into_any_element(),
-                div()
-                    .child("Choose a replacement or remove it.")
-                    .into_any_element(),
-            ],
-            None => vec![
-                div()
-                    .child("Add an image behind the composer on empty new threads.")
-                    .into_any_element(),
-            ],
-        };
+        let background_meta =
+            background_row_meta(stored_background.as_ref(), current_background.as_ref())
+                .into_iter()
+                .map(|fragment| div().child(fragment).into_any_element())
+                .collect::<Vec<_>>();
         settings_rows.push(
             widgets::card_row(&theme, false)
                 .child(background_tile)
@@ -2191,7 +2221,11 @@ impl Render for AppearancePage {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .when(current_background.is_some(), |actions| {
+                        // "Replace image" + "Remove" whenever anything is
+                        // stored OR resolves — the bundled default counts
+                        // as selected (Remove on it is a no-op that falls
+                        // back to the default again).
+                        .when(background_row != BackgroundRowState::Empty, |actions| {
                             actions
                                 .child(
                                     compact_action(
@@ -2215,7 +2249,7 @@ impl Render for AppearancePage {
                                     )),
                                 )
                         })
-                        .when(current_background.is_none(), |actions| {
+                        .when(background_row == BackgroundRowState::Empty, |actions| {
                             actions.child(
                                 compact_action(
                                     &theme,
@@ -2612,6 +2646,76 @@ mod tests {
         assert!(
             surface_helper(SurfacePreference::Opaque, SurfaceTreatment::Frosted)
                 .contains("every theme")
+        );
+    }
+
+    #[test]
+    fn background_row_state_sees_the_default_and_keeps_unavailable_distinct() {
+        let default_background = crate::settings::NewThreadComposerBackground {
+            path: "/data/new-thread-backgrounds/default-new-thread-background.png".into(),
+            name: "Roboco".into(),
+        };
+        let user_background = crate::settings::NewThreadComposerBackground {
+            path: "/data/new-thread-backgrounds/new-thread-background-1.png".into(),
+            name: "wall.png".into(),
+        };
+        // Fresh install: nothing stored, the resolver returns the default —
+        // the row (and the effect row's `background_available` gate) sees
+        // it as selected, exactly like an installed image.
+        assert_eq!(
+            background_row_state(None, Some(&default_background)),
+            BackgroundRowState::Selected
+        );
+        // Stored and resolving: unchanged.
+        assert_eq!(
+            background_row_state(Some(&user_background), Some(&user_background)),
+            BackgroundRowState::Selected
+        );
+        // Stored but missing: "Image unavailable", never the default.
+        assert_eq!(
+            background_row_state(Some(&user_background), None),
+            BackgroundRowState::Unavailable
+        );
+        // Nothing stored and nothing resolvable.
+        assert_eq!(background_row_state(None, None), BackgroundRowState::Empty);
+    }
+
+    #[test]
+    fn background_row_meta_names_the_default_and_keeps_the_stored_copy() {
+        let default_background = crate::settings::NewThreadComposerBackground {
+            path: "/data/new-thread-backgrounds/default-new-thread-background.png".into(),
+            name: "Roboco".into(),
+        };
+        let user_background = crate::settings::NewThreadComposerBackground {
+            path: "/data/new-thread-backgrounds/new-thread-background-1.png".into(),
+            name: "wall.png".into(),
+        };
+        assert_eq!(
+            background_row_meta(None, Some(&default_background)),
+            vec![
+                SharedString::from("Roboco"),
+                SharedString::from("Softened automatically on frosted themes."),
+            ]
+        );
+        assert_eq!(
+            background_row_meta(Some(&user_background), Some(&user_background)),
+            vec![
+                SharedString::from("wall.png"),
+                SharedString::from("Softened automatically on frosted themes."),
+            ]
+        );
+        assert_eq!(
+            background_row_meta(Some(&user_background), None),
+            vec![
+                SharedString::from("Image unavailable"),
+                SharedString::from("Choose a replacement or remove it."),
+            ]
+        );
+        assert_eq!(
+            background_row_meta(None, None),
+            vec![SharedString::from(
+                "Add an image behind the composer on empty new threads."
+            )]
         );
     }
 

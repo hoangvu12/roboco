@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
-import type { DriveEntry, FolderEntry } from "@roboco/proto";
-import { addSpaceStore, toggleAddSpace } from "../src/state/add-space";
+import { describe, expect, it, vi } from "vitest";
+import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
+import { methods } from "@roboco/engine-client";
+import type { EngineSession } from "../src/state/engine-session";
+import {
+  ADD_SPACE_DEVICE_WAIT_MS,
+  addSpaceStore,
+  toggleAddSpace,
+} from "../src/state/add-space";
 import {
   activeLocation,
   addSpaceCompletion,
@@ -264,5 +270,174 @@ describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
     addSpaceStore.close();
     reaped();
     expect(addSpaceStore.getSnapshot().status).toBe("closed");
+  });
+});
+
+describe("addSpaceStore deviceless open (ticket 43)", () => {
+  /**
+   * The fake routed session of the headless suite's deviceless tests: a
+   * LIVE devices RowSet the test mutates row-by-row (the streaming lag
+   * itself), a recording client whose calls resolve instantly, and an
+   * optional local device id. The store only reads
+   * `cache.getSnapshot().devices.rows`, `client.engineInfo`, and
+   * `client.call`, so that is the whole surface.
+   */
+  function fakeSession(
+    devices: Device[],
+    calls: string[],
+    localDeviceId: string | null = null,
+  ): EngineSession {
+    return {
+      engine: { baseUrl: "https://engine.test", credential: "cred" },
+      client: {
+        engineInfo: { deviceId: localDeviceId },
+        call: (method: string): Promise<unknown> => {
+          calls.push(method);
+          if (method === methods.LIST_FOLDERS) {
+            return Promise.resolve({ path: "/home/wing", entries: [], truncated: false });
+          }
+          if (method === methods.LIST_DRIVES) {
+            return Promise.resolve({ drives: [] });
+          }
+          return Promise.resolve({});
+        },
+      },
+      cache: {
+        getSnapshot: () => ({
+          devices: { rows: devices, loaded: devices.length > 0, error: null },
+        }),
+      },
+    } as unknown as EngineSession;
+  }
+
+  const device = (id: string): Device => ({
+    id,
+    name: `Device ${id}`,
+    platform: "macos",
+    lastSeenAt: null,
+    createdAt: null,
+  });
+
+  const cleanup = (): void => {
+    addSpaceStore.close();
+    addSpaceStore.unmounted();
+  };
+
+  it("openWithoutDeviceRowsWaitsThenResolvesWhenDevicesStream", () => {
+    vi.useFakeTimers();
+    try {
+      const devices: Device[] = [];
+      const calls: string[] = [];
+      addSpaceStore.attach({ session: fakeSession(devices, calls, "d-local"), goToCanvas: () => {} });
+
+      addSpaceStore.open();
+      const flow = addSpaceStore.getSnapshot().flow;
+      expect(flow).not.toBe(null);
+      // The deviceless open: no device row has streamed, so no loads kick
+      // and the wait is armed — the body's skeleton is time-bounded, not
+      // eternal.
+      expect(flow!.deviceId).toBe(null);
+      expect(flow!.deviceWait).toBe("waiting");
+      expect(flow!.listing).toBe("idle");
+      expect(calls).toEqual([]);
+
+      // A device row lands; the mounted palette's devices-frame effect
+      // calls resolveDevice() — open()'s pick rule finishes the job: the
+      // local device beats the first registered row.
+      devices.push(device("d-first"), device("d-local"));
+      addSpaceStore.resolveDevice();
+      const resolved = addSpaceStore.getSnapshot().flow!;
+      expect(resolved.deviceId).toBe("d-local");
+      expect(resolved.deviceWait).toBe(null);
+      expect(resolved.listing).toBe("loading");
+      expect(calls).toEqual([methods.LIST_FOLDERS, methods.LIST_DRIVES]);
+
+      // Past the deadline, still open and resolved: the wait was
+      // disarmed at resolve, so nothing flips.
+      vi.advanceTimersByTime(ADD_SPACE_DEVICE_WAIT_MS * 2);
+      const settled = addSpaceStore.getSnapshot().flow!;
+      expect(settled.deviceWait).toBe(null);
+      expect(settled.deviceId).toBe("d-local");
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
+  it("openWithoutDeviceRowsTimesOutToErrorWithWorkingRetry", () => {
+    vi.useFakeTimers();
+    try {
+      const devices: Device[] = [];
+      const calls: string[] = [];
+      addSpaceStore.attach({ session: fakeSession(devices, calls), goToCanvas: () => {} });
+
+      addSpaceStore.open();
+      const identity = addSpaceStore.getSnapshot().flow!.identity;
+      expect(calls).toEqual([]);
+
+      // One millisecond short of the deadline: still the bounded wait.
+      vi.advanceTimersByTime(ADD_SPACE_DEVICE_WAIT_MS - 1);
+      expect(addSpaceStore.getSnapshot().flow!.deviceWait).toBe("waiting");
+
+      // The deadline: the terminal deviceless error. A device row that
+      // lands too late cannot resolve it — Retry is the only way out.
+      vi.advanceTimersByTime(1);
+      const timedOut = addSpaceStore.getSnapshot().flow!;
+      expect(timedOut.deviceWait).toBe("timeout");
+      expect(timedOut.deviceId).toBe(null);
+      devices.push(device("d-late"));
+      addSpaceStore.resolveDevice();
+      expect(addSpaceStore.getSnapshot().flow!.deviceWait).toBe("timeout");
+
+      // Retry re-runs open()'s full pick: a fresh identity, a re-armed
+      // wait — not retryLoad's current-path reload, which presumes a
+      // device and would silently early-return again. (With a row by now
+      // present, the same pick would resolve instantly; the rows are
+      // still absent here, so the wait re-arms.)
+      devices.length = 0;
+      addSpaceStore.retryDeviceWait();
+      const retried = addSpaceStore.getSnapshot().flow!;
+      expect(retried.deviceWait).toBe("waiting");
+      expect(retried.deviceId).toBe(null);
+      expect(retried.identity).not.toBe(identity);
+      expect(calls).toEqual([]);
+
+      // The re-armed wait resolves when the row lands this time.
+      devices.push(device("d-recovered"));
+      addSpaceStore.resolveDevice();
+      const recovered = addSpaceStore.getSnapshot().flow!;
+      expect(recovered.deviceId).toBe("d-recovered");
+      expect(recovered.deviceWait).toBe(null);
+      expect(calls).toEqual([methods.LIST_FOLDERS, methods.LIST_DRIVES]);
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
+  });
+
+  it("escape closes from the deviceless wait, and a stale resolve never mutates state", () => {
+    vi.useFakeTimers();
+    try {
+      const devices: Device[] = [];
+      const calls: string[] = [];
+      addSpaceStore.attach({ session: fakeSession(devices, calls), goToCanvas: () => {} });
+
+      addSpaceStore.open();
+      // The escape ladder's call, straight from the waiting state.
+      addSpaceStore.close();
+      expect(addSpaceStore.getSnapshot().status).toBe("closing");
+      addSpaceStore.unmounted();
+      expect(addSpaceStore.getSnapshot().status).toBe("closed");
+      expect(addSpaceStore.getSnapshot().flow).toBe(null);
+
+      // A devices frame landing after the close resolves nothing.
+      devices.push(device("d-stale"));
+      addSpaceStore.resolveDevice();
+      expect(addSpaceStore.getSnapshot().flow).toBe(null);
+      expect(calls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      cleanup();
+    }
   });
 });

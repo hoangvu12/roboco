@@ -113,6 +113,16 @@ export function ArchivedSection() {
   );
 }
 
+/**
+ * The archived row's right-slot choice (`spaces.rs:1669-1712`): exactly
+ * ONE child, picked at render — the time-ago at rest, the Unarchive pill
+ * while the row is hovered. Never both, and never pinned by focus or
+ * touch: no CSS decides this, the row does.
+ */
+export function archivedRightSlot(hovered: boolean): "time" | "pill" {
+  return hovered ? "pill" : "time";
+}
+
 function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: boolean }) {
   // Unarchive routes to the row's owning engine off its scoped id.
   const sessions = useEngineSessions();
@@ -120,6 +130,10 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
   const harness = showHarness ? row.chat.config?.harness ?? null : null;
   const brand = harness === null ? null : harnessBrandIcon(harness);
   const { menu, element } = useChatMenu(row.chat);
+  // Per-row hover state — the web equivalent of the desktop's
+  // `archived_hover` field (`spaces.rs:1654`, set/cleared by the row's
+  // listener at `:1729-1739`), never a sidebar-store concern.
+  const [hovered, setHovered] = useState(false);
 
   function unarchive(event: React.MouseEvent): void {
     // The row's own click opens the chat; only the pill restores.
@@ -134,11 +148,13 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
     });
   }
 
-  // Both right-slot children stay mounted; CSS swaps them on row hover (and
-  // pins the pill on touch, where hover never fires) — the desktop renders
-  // exactly one of the two, same pixels. `menu` wraps the Link so a
-  // right-click opens the SAME chat context menu the active rows use, at
-  // the pointer.
+  // Right slot: time at rest; the Unarchive affordance takes its place on
+  // row hover — ONE child, chosen at render the way the desktop does it
+  // (`spaces.rs:1669-1712`) and the way the active rows' corner already
+  // does, so no CSS pin can hold the pill on touch or after a click. The
+  // pill sits inside the row's Link, so hovering it keeps the row hovered
+  // — no flicker. `menu` wraps the Link so a right-click opens the SAME
+  // chat context menu the active rows use, at the pointer.
   return (
     <li className="arch-row-item">
       {menu(
@@ -147,6 +163,8 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
           params={{ chatId: row.chat.id }}
           className="arch-row"
           activeProps={{ className: "arch-row arch-row-active" }}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
         >
           {brand !== null && (
             <Icon
@@ -157,16 +175,19 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
             />
           )}
           <span className="arch-row-title">{row.title}</span>
-          <span className="arch-row-time">{row.timeAgo}</span>
-          <button
-            type="button"
-            className="arch-row-unarchive"
-            aria-label="Unarchive chat"
-            onClick={unarchive}
-          >
-            <Icon name="archiveUpMinimalistic" size={11} />
-            Unarchive
-          </button>
+          {archivedRightSlot(hovered) === "pill" ? (
+            <button
+              type="button"
+              className="arch-row-unarchive"
+              aria-label="Unarchive chat"
+              onClick={unarchive}
+            >
+              <Icon name="archiveUpMinimalistic" size={11} />
+              Unarchive
+            </button>
+          ) : (
+            <span className="arch-row-time">{row.timeAgo}</span>
+          )}
         </Link>,
       )}
       {element}

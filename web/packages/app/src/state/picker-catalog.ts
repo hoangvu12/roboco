@@ -36,7 +36,13 @@ import { normalizeModelRows, offeredHarnesses } from "../lib/model-rows";
  * A unary call fired while the socket is still dialing fails immediately
  * (`EngineClient.call` throws "engine offline"); the catalog re-kicks such
  * errored slots on every `connected` status so a full page reload heals
- * without user action.
+ * without user action. The boot race can also emit `connected` BEFORE the
+ * rejection lands (the cache-seeded mount flips the app to ready
+ * mid-dial), so any OTHER status change re-arms slots still carrying the
+ * offline error — the slot never waits for a `connected` that already
+ * fired. A failure that lands while the connection is up (the unary call
+ * timeout) is not re-armed here: the composer's re-kick cadence, a window
+ * focus, or the card-open force heals it.
  *
  * React binding contract (mirrors the watch cache): `getSnapshot` /
  * `subscribe` are identity-stable until an actual change.
@@ -78,6 +84,13 @@ function listWithError<T>(prev: LoadableList<T>, message: string): LoadableList<
 
 function listWithLoading<T>(prev: LoadableList<T>): LoadableList<T> {
   return { rows: prev.rows, loaded: prev.loaded, error: prev.error, loading: true, generation: prev.generation + 1 };
+}
+
+/** The pre-dial transport error (`EngineClient.call`, client.ts:235-242). */
+const OFFLINE_MESSAGE = "Engine is offline; reconnecting";
+
+function isOfflineError(message: string): boolean {
+  return message === OFFLINE_MESSAGE;
 }
 
 function isUnknownMethod(error: RpcError): boolean {
@@ -125,11 +138,15 @@ export class PickerCatalog {
     this.#log = options.log ?? (() => {});
     // A page-load call races the websocket dial and fails immediately with a
     // transport error; re-kick the errored slots once the engine connects.
+    // Any other status change re-arms the slots still carrying that offline
+    // error — see `#retryOfflineSlots`.
     this.#offStatus =
       typeof client.onStatus === "function"
         ? client.onStatus((status) => {
             if (status.state === "connected") {
               this.#retryOfflineSlots();
+            } else {
+              this.#retryOfflineSlots(true);
             }
           })
         : null;
@@ -392,16 +409,37 @@ export class PickerCatalog {
     return this.#targetDeviceId === null ? {} : { targetDeviceId: this.#targetDeviceId };
   }
 
-  #retryOfflineSlots(): void {
+  /**
+   * The status heal. `connected` re-kicks every errored, not-loaded slot
+   * (the plain-refresh heal). Any other status change — the client is, by
+   * definition, not connected — re-arms only slots carrying the pre-dial
+   * offline error: such a slot latched while the client was still dialing,
+   * and a later status change is the next chance to retry ("connected" may
+   * already have fired before the rejection landed). A failure that lands
+   * while the connection is up (the unary call timeout) is NOT re-armed
+   * here — the cadence/focus re-kick or the card-open force heals it, and
+   * the chip shows the real label meanwhile.
+   */
+  #retryOfflineSlots(offlineOnly = false): void {
     if (this.#disposed) {
       return;
     }
-    if (this.#harnesses.error !== null && !this.#harnesses.loaded && !this.#harnessesInFlight) {
+    if (
+      this.#harnesses.error !== null &&
+      !this.#harnesses.loaded &&
+      !this.#harnessesInFlight &&
+      (!offlineOnly || isOfflineError(this.#harnesses.error))
+    ) {
       this.resetHarnesses();
       void this.loadHarnesses();
     }
     for (const [harness, slot] of this.#models) {
-      if (slot.error !== null && !slot.loaded && !this.#modelsInFlight.has(harness)) {
+      if (
+        slot.error !== null &&
+        !slot.loaded &&
+        !this.#modelsInFlight.has(harness) &&
+        (!offlineOnly || isOfflineError(slot.error))
+      ) {
         this.resetModels(harness);
         void this.loadModels(harness);
       }

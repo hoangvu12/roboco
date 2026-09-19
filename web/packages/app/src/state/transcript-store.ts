@@ -1,6 +1,7 @@
 import type { ConnectivityState, ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
+import { mintId } from "../lib/id";
 import {
   PendingQueuedTurns,
   SavedViewportCache,
@@ -216,7 +217,7 @@ export class EchoStore {
     }
     const next: PendingSend = {
       ...previous,
-      messageId: (options.mintMessageId ?? defaultMintEchoId)(),
+      messageId: (options.mintMessageId ?? mintId)(),
       startedAtMs: options.nowMs ?? Date.now(),
     };
     const sends = this.forChat(previous.chatId);
@@ -258,10 +259,6 @@ export class EchoStore {
       listener();
     }
   }
-}
-
-function defaultMintEchoId(): string {
-  return crypto.randomUUID();
 }
 
 export const echoStore = new EchoStore();
@@ -389,8 +386,14 @@ export class TranscriptStore {
 
   /**
    * Drop the stream and re-subscribe for a fresh reset — the desync recovery
-   * and the Retry affordance. Frame state resets with the stream, mirroring
-   * the watch cache's generation swap.
+   * and the Retry affordance. The replay state follows the stream (it returns
+   * to `"pending"` so the first populated frame re-arms the reveal baseline),
+   * but the ROWS stay: the engine re-sends a full reset on re-subscribe and
+   * its `preserveIdentity` swap lands atomically, so the surface never
+   * observes an empty, unloaded transcript mid-session — rows are only
+   * empty on a genuine chat switch (the desktop clears its rows exactly
+   * there, transcript.rs:3974-3989, and re-derives them atomically from the
+   * doc state, :4032-4057).
    */
   resubscribe(): void {
     if (this.#disposed) {
@@ -398,9 +401,6 @@ export class TranscriptStore {
     }
     this.#handle?.cancel();
     this.#handle = null;
-    this.#entries = EMPTY_ENTRIES;
-    this.#contextUsage = null;
-    this.#loaded = false;
     this.#error = null;
     this.#replay = "pending";
     this.#subscribe();
@@ -450,13 +450,18 @@ export class TranscriptStore {
       return;
     }
     if (generation > this.#generation) {
-      // New connection generation: the stream re-sends a full reset first, so
-      // adopting it here only guards a misbehaving peer.
+      // New connection generation: the stream re-sends a full reset first,
+      // so adopting it here only guards a misbehaving peer. The rows and the
+      // loaded flag stay — the reset replaces the entries wholesale
+      // (`preserveIdentity`) and rows are never observed empty mid-session.
+      // The pending replay is committed BEFORE the frame applies, so the
+      // surface observes it (a reconnect's reset is a replay baseline, like
+      // the desktop's re-attach) instead of the swap and the reset landing
+      // as one populated commit.
       this.#generation = generation;
-      this.#entries = EMPTY_ENTRIES;
-      this.#loaded = false;
       this.#error = null;
       this.#replay = "pending";
+      this.#commit();
     }
     const frame = asFrame(update);
     if (frame === null) {

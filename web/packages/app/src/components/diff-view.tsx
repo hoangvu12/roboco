@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Icon } from "@roboco/icons";
+import type { Appearance } from "@roboco/theme";
 import {
   ACCENT_BAR_WIDTH,
   BODY_BOTTOM_PAD,
@@ -36,6 +37,7 @@ import type { ReviewComment } from "../lib/review-comments";
 import { highlightCode, splitTokenLines } from "../lib/syntax";
 import { CommentCard } from "./review-comments/comment-card";
 import { CommentDraft } from "./review-comments/comment-draft";
+import { FileIcon } from "./files/file-icon";
 
 /**
  * The diff viewer — file headers + hunks + per-line rows, virtualized at
@@ -98,6 +100,11 @@ export interface DiffReviewWiring {
 export interface DiffViewProps {
   /** The parsed files — `useParsedDiff` on the host side. */
   readonly files: readonly FileDiff[];
+  /**
+   * The resolved appearance — file headers pick their polychrome icons
+   * from the `dark/` tree when dark (the desktop's `file_icons::icon`).
+   */
+  readonly appearance: Appearance;
   readonly layout?: DiffLayout;
   readonly wrap?: boolean;
   /** Per-file fold state, keyed by path (the surface store's snapshot). */
@@ -145,6 +152,7 @@ export function useParsedDiff(
 
 export function DiffView({
   files,
+  appearance,
   layout = "unified",
   wrap = false,
   folds,
@@ -165,6 +173,7 @@ export function DiffView({
   return (
     <DiffSurface
       files={files}
+      appearance={appearance}
       layout={layout}
       wrap={wrap}
       folds={folds}
@@ -179,6 +188,7 @@ export function DiffView({
 
 interface DiffSurfaceProps {
   readonly files: readonly FileDiff[];
+  readonly appearance: Appearance;
   readonly layout: DiffLayout;
   readonly wrap: boolean;
   readonly folds?: ReadonlyMap<string, FileFold>;
@@ -189,7 +199,7 @@ interface DiffSurfaceProps {
   readonly review?: DiffReviewWiring | null;
 }
 
-function DiffSurface({ files, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review }: DiffSurfaceProps) {
+function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review }: DiffSurfaceProps) {
   const emptyFolds = useRef(EMPTY_FOLDS).current;
   const foldMap = folds ?? emptyFolds;
   const rows: DiffRow[] = useMemo(
@@ -210,6 +220,7 @@ function DiffSurface({ files, layout, wrap, folds, onToggleFold, scroll, onLineH
   return (
     <DiffScroller
       rows={rows}
+      appearance={appearance}
       layout={layout}
       wrap={wrap}
       onToggleFold={onToggleFold}
@@ -292,6 +303,7 @@ export class FilePlaneScroll {
 
 interface ScrollerProps {
   readonly rows: readonly DiffRow[];
+  readonly appearance: Appearance;
   readonly layout: DiffLayout;
   readonly wrap: boolean;
   readonly onToggleFold?: (path: string) => void;
@@ -302,7 +314,7 @@ interface ScrollerProps {
   readonly review?: DiffReviewWiring | null;
 }
 
-function DiffScroller({ rows, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: ScrollerProps) {
+function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const positionsRef = useRef<readonly number[]>([]);
@@ -416,6 +428,7 @@ function DiffScroller({ rows, layout, wrap, onToggleFold, scroll, hover, onHover
               >
                 <RowContent
                   row={row}
+                  appearance={appearance}
                   layout={layout}
                   wrap={wrap}
                   onToggleFold={onToggleFold}
@@ -451,6 +464,7 @@ function findRowAt(rows: readonly DiffRow[], positions: readonly number[], offse
 
 interface RowContentProps {
   readonly row: DiffRow;
+  readonly appearance: Appearance;
   readonly layout: DiffLayout;
   readonly wrap: boolean;
   readonly onToggleFold?: (path: string) => void;
@@ -461,12 +475,13 @@ interface RowContentProps {
   readonly review?: DiffReviewWiring | null;
 }
 
-function RowContent({ row, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: RowContentProps) {
+function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: RowContentProps) {
   switch (row.kind) {
     case "fileHeader":
       return (
         <FileHeaderRow
           file={row.file}
+          appearance={appearance}
           expanded={row.expanded}
           animating={row.animating}
           onToggle={() => onToggleFold?.(row.file.path)}
@@ -549,14 +564,14 @@ function RowContent({ row, layout, wrap, onToggleFold, scroll, hover, onHover, r
  * added/deleted/renamed state is carried by the notice row alone
  * (`render_file_header`, changes.rs:3348-3482).
  */
-function FileHeaderRow({ file, expanded, animating, onToggle }: { file: FileDiff; expanded: boolean; animating: boolean; onToggle: () => void }) {
+function FileHeaderRow({ file, appearance, expanded, animating, onToggle }: { file: FileDiff; appearance: Appearance; expanded: boolean; animating: boolean; onToggle: () => void }) {
   return (
     <div className={`diff-file-header ${expanded ? "diff-file-expanded" : "diff-file-collapsed"}`}>
       <button type="button" className="diff-file-button" onClick={onToggle} aria-expanded={expanded}>
         <span className={`diff-chevron ${animating ? "diff-chevron-anim" : ""}`}>
           <Icon name={expanded ? "altArrowDown" : "altArrowRight"} size={13} />
         </span>
-        <FileGlyph path={file.path} />
+        <FileIcon kind="file" name={file.path} appearance={appearance} size={14} className="diff-file-icon" />
         <span className="diff-file-path mono">
           {file.oldPath !== null ? <span className="diff-file-rename">{file.oldPath} → </span> : null}
           {file.path}
@@ -567,17 +582,6 @@ function FileHeaderRow({ file, expanded, animating, onToggle }: { file: FileDiff
       </button>
     </div>
   );
-}
-
-/**
- * The file-type glyph. `FileIcon` — ticket 24's port of the
- * `file_icons::icon` resolver (per-extension manifest) — replaces this
- * single seam when it lands; until then one generic document glyph stands
- * in for every extension, per the ticket's placeholder rule.
- */
-function FileGlyph({ path }: { path: string }) {
-  void path;
-  return <Icon name="document" size={14} className="diff-file-icon" aria-hidden />;
 }
 
 function HunkHeaderRow({ file, hunkIx }: { file: FileDiff; hunkIx: number }) {

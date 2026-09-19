@@ -16,6 +16,7 @@ import { methods } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
+import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
 import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
@@ -29,6 +30,7 @@ import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   COPIED_CLEAR_MS,
+  OWN_SEND_SCROLL_SLACK_PX,
   OWN_SEND_TOP_INSET_PX,
   SELECTION_SCROLL_TICK_MS,
   TITLEBAR_HEIGHT,
@@ -38,10 +40,12 @@ import {
   USER_LINE_HEIGHT,
   captureSavedViewport,
   chipsHeight,
+  detailHeight,
   flavourSeed,
   flavourWord,
   formatElapsed,
   formatTimestamp,
+  isSpawnLink,
   ownTurnReleasedForRestore,
   parseForRow,
   resolveViewportAnchor,
@@ -96,8 +100,9 @@ const USER_COLLAPSED_TEXT_HEIGHT = USER_COLLAPSED_LINES * USER_LINE_HEIGHT;
 const USER_COLLAPSED_HEIGHT = USER_COLLAPSED_TEXT_HEIGHT + USER_LINE_HEIGHT;
 /** Trailer estimate for unmounted last rows: `pt(16)` + one 12px line. */
 const TRAILER_ESTIMATE_HEIGHT = 28;
-/** Desktop widths — the underlay layout and the clearance pad apply here. */
-const DESKTOP_QUERY = "(min-width: 769px)";
+/** Desktop widths — the underlay layout and the clearance pad apply here.
+ *  `DESKTOP_QUERY` and the `useMediaQuery` hook live in `state/media.ts`
+ *  now — the one shared breakpoint module (ticket 49). */
 
 /** The jump pill's visibility + action, published up to the chat page. */
 export interface JumpButtonState {
@@ -320,12 +325,23 @@ function TranscriptSurface({
   useEffect(() => () => toolMotion.reset(), [toolMotion]);
   const revealBaselineRef = useRef(false);
   useEffect(() => {
+    // The desktop arms `veil_attach_pending` on every (re)attach and consumes
+    // it on the first populated frame (transcript.rs:3915, :3954, :4063,
+    // :4147-4154). The store's replay returns to "pending" on a resubscribe
+    // (desync, reconnect, engine restart), so the baseline RE-ARMS here and
+    // the next populated frame runs `sync(rows, true)` again — replayed
+    // history never re-animates, whatever reset the stream.
+    if (snapshot.replay === "pending") {
+      revealBaselineRef.current = false;
+    }
     if (snapshot.replay === "populated" && !revealBaselineRef.current) {
       revealBaselineRef.current = true;
       toolMotion.sync(rows, true);
       return;
     }
-    toolMotion.sync(rows, false);
+    // `replay === "pending"` marks a transient window: rows are kept through
+    // it, and a genuinely empty pending frame (a fresh mount) is harmless.
+    toolMotion.sync(rows, false, snapshot.replay === "pending");
   }, [rows, snapshot.replay, toolMotion]);
 
   const allRows = useMemo(() => {
@@ -487,7 +503,7 @@ interface ScrollerProps {
 }
 
 /** The user-bubble fold, lifted so virtualizer remounts never lose it. */
-interface UserFoldState {
+export interface UserFoldState {
   readonly open: boolean;
   readonly epoch: number;
   readonly toggledAt: number;
@@ -627,26 +643,28 @@ function TranscriptScroller({
   // minimum height, so the prompt can sit at the viewport top with the
   // scroll ending at the app's bottom (`set_tail_reservation`; the floor is
   // met by the bottom spacer — plain scrollable space, never painted
-  // chrome). The arithmetic reads the PREVIOUS layout's positions, exactly
-  // like the desktop's pre-layout `update_runway_minimum`.
+  // chrome). The reservation value is the desktop's
+  // `own_send_inset − OWN_SEND_SCROLL_SLACK_PX − expansion`
+  // (transcript.rs:3506-3509): the 2px slack reads as the app's bottom, and
+  // the expansion term carries the anchor row's live Show-more fold tween
+  // (:3490-3504) — revealing the prompt adds reading space (the scroll end
+  // extends with it); only reply growth consumes the reservation. The floor
+  // reads the CURRENT render's prefix sums, so measurement that lands
+  // recomputes it in the same pass (the finalize recompute; the sums above
+  // the last row never depend on the floor, so there is no cycle).
   const anchorIx =
     stickOwnTurn !== null
       ? rows.findIndex((row) => row.turnStart && row.entryId === stickOwnTurn.messageId)
       : -1;
   const lastIx = rows.length - 1;
   const viewportHeight = view.height;
-  const priorPositions = positionsRef.current;
-  const reservationFloor =
-    anchorIx >= 0 && viewportHeight > 0
-      ? Math.max(
-          0,
-          (priorPositions[anchorIx] ?? 0) +
-            viewportHeight -
-            StickController.ownSendInset(anchorIx) -
-            (priorPositions[lastIx] ?? 0),
-        )
-      : 0;
   const trailerLive = trailer.kind !== "none";
+  const groupFoldOpen = (rowId: string): boolean | null => toolMotion.groupFold(rowId)?.open ?? null;
+  const anchorFold = anchorIx >= 0 ? userFolds.get(rows[anchorIx]!.id) ?? null : null;
+  const anchorExpansion =
+    anchorFold !== null
+      ? userFoldExpansionHeight(anchorFold, performance.now(), reduced?.matches === true)
+      : 0;
 
   // Row positions: prefix sums over measured heights (estimates until
   // rendered). The last row's height carries its clearance pad — and the
@@ -664,19 +682,34 @@ function TranscriptScroller({
     const isLast = ix === lastIx;
     const natural =
       heights.get(rows[ix]!.id) ??
-      estimateRowHeight(rows[ix]!) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
+      estimateRowHeight(rows[ix]!, groupFoldOpen) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
     naturalHeights[ix] = natural;
-    rowHeights[ix] = isLast ? Math.max(natural, reservationFloor) : natural;
-    total += rowHeights[ix]!;
+    rowHeights[ix] = natural;
+    total += natural;
+  }
+  const reservationFloor =
+    anchorIx >= 0 && viewportHeight > 0
+      ? ownTurnReservationFloor({
+          anchorTop: positions[anchorIx] ?? 0,
+          lastTop: positions[lastIx] ?? 0,
+          viewport: viewportHeight,
+          inset: StickController.ownSendInset(anchorIx),
+          expansion: anchorExpansion,
+        })
+      : 0;
+  if (lastIx >= 0 && reservationFloor > naturalHeights[lastIx]!) {
+    rowHeights[lastIx] = reservationFloor;
+    total += reservationFloor - naturalHeights[lastIx]!;
   }
   rowsRef.current = rows;
   positionsRef.current = positions;
   rowHeightsRef.current = rowHeights;
-  // A transient replay (the store's desync resubscribe) empties the rows for
-  // a frame before the reset lands. Hold the last measured layout open so
-  // the content never shrinks under the viewport — the browser would clamp
-  // scrollTop to 0 and the released view would land at the top (the desktop
-  // keeps its offset logical across replays; the web needs the spacer).
+  // The lastTotalRef hold-open: an authoritative-empty transition (rows went
+  // to 0 and stayed) must not shrink the content under the viewport — the
+  // browser would clamp scrollTop to 0 and the released view would land at
+  // the top (the desktop keeps its offset logical across replays; the web
+  // needs the spacer). Mid-session rows never empty now (the store keeps
+  // them through a resubscribe), so this only arms on a real empty state.
   const lastTotalRef = useRef(0);
   if (rows.length > 0) {
     lastTotalRef.current = total;
@@ -688,7 +721,7 @@ function TranscriptScroller({
   const lastNatural =
     lastIx >= 0
       ? (heights.get(rows[lastIx]!.id) ??
-        estimateRowHeight(rows[lastIx]!) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
+        estimateRowHeight(rows[lastIx]!, groupFoldOpen) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
       : 0;
   const reservationFilled =
     anchorIx >= 0 &&
@@ -696,13 +729,16 @@ function TranscriptScroller({
     (positions[lastIx] ?? 0) + lastNatural >=
       (positions[anchorIx] ?? 0) + viewportHeight - StickController.ownSendInset(anchorIx) + 0.5;
 
-  // The controller's frame-time geometry: anchor position, fill state, and
-  // the row-top prefix sums the rail glide anchors against.
-  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false, positions: [] as readonly number[] });
+  // The controller's frame-time geometry: anchor position, fill state, the
+  // row-top prefix sums the rail glide anchors against, and whether the row
+  // list is mid-replay (a transient window — a missing anchor waits, never
+  // retires the runway).
+  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false, positions: [] as readonly number[], transient: false });
   geometryRef.current = {
     anchor: anchorIx >= 0 ? { top: positions[anchorIx]!, ix: anchorIx } : null,
     filled: reservationFilled,
     positions,
+    transient: !loaded || replay === "pending",
   };
   const anchorExpanded = anchorIx >= 0 && (userFolds.get(rows[anchorIx]!.id)?.open ?? false) === true;
   const anchorExpandedRef = useRef(anchorExpanded);
@@ -777,7 +813,7 @@ function TranscriptScroller({
     }
     let raf = 0;
     const onScroll = (): void => {
-      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current);
+      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current, groupFoldOpen);
       if (alignTop) {
         // The override instance's top fade is gated on real overflow
         // (transcript.rs:7648-7651): max_offset − distance_from_bottom > 1.
@@ -1026,7 +1062,13 @@ function TranscriptScroller({
   // one commit per streamed delta is the web's equivalent cadence); pinned →
   // let the spring track growth; escaped → keep the captured anchor row
   // visually stationary across splices and measures. An animating fold owns
-  // the viewport for the duration of its tween.
+  // the viewport for the duration of its tween. This is the desktop's
+  // escape-anchor semantics and it must never fight an active runway: the
+  // guards below (own-turn hold, collapse scroll) are that contract, and the
+  // height oscillation that used to shuttle the viewport between "hold
+  // anchor" and "chase tail" now stops at the source (rows never empty
+  // mid-session, replayed groups never re-reveal, open groups estimate their
+  // open height).
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (el === null) {
@@ -1196,7 +1238,7 @@ function TranscriptScroller({
   // exactly at that inset, so crediting the raw top row kept the previous
   // tick lit for the whole runway (rail.rs:437-457). Unmeasured rows stop
   // the walk.
-  const topRow = readingTopRow(rows, positions, heights, view.top);
+  const topRow = readingTopRow(rows, positions, heights, view.top, groupFoldOpen);
   const topPad = rows.length === 0 ? layoutTotal : (positions[first] ?? total);
   // The spacer covers everything below the last MOUNTED row — the unmounted
   // rows' arithmetic heights plus the reservation floor, minus the mounted
@@ -1296,30 +1338,17 @@ function offlineStripMessage(alignTop: boolean, status: EngineStatus | null): st
     : "Reconnecting… Cached history is read-only.";
 }
 
-/** Live matchMedia as a React value (breakpoints only — it re-renders on flip). */
-function useMediaQuery(query: string): boolean {
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      const mql = window.matchMedia(query);
-      mql.addEventListener("change", listener);
-      return () => mql.removeEventListener("change", listener);
-    },
-    [query],
-  );
-  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
-}
-
 /** Capture the first visible row + its pixel offset — the escape anchor. */
 function captureAnchor(
   top: number,
   rows: readonly TranscriptRow[],
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
+  groupFoldOpen: (rowId: string) => boolean | null = () => null,
 ): { id: string; offset: number } | null {
   for (let ix = 0; ix < rows.length; ix++) {
     const rowTop = positions[ix]!;
-    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
+    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, groupFoldOpen));
     if (bottom > top + 1) {
       return { id: rows[ix]!.id, offset: top - rowTop };
     }
@@ -1338,10 +1367,11 @@ function readingTopRow(
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
   scrollTop: number,
+  groupFoldOpen: (rowId: string) => boolean | null = () => null,
 ): number {
   let topRow = Math.max(rows.length - 1, 0);
   for (let ix = 0; ix < rows.length; ix++) {
-    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
+    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, groupFoldOpen));
     if (bottom > scrollTop + 0.5) {
       topRow = ix;
       break;
@@ -1358,8 +1388,22 @@ function readingTopRow(
   return topRow;
 }
 
-/** First-frame estimate per row kind; measurement corrects on render. */
-function estimateRowHeight(row: TranscriptRow): number {
+/**
+ * First-frame estimate per row kind; measurement corrects on render. The
+ * `toolGroup` branch is analytic (the desktop needs no estimation at all —
+ * its rows are analytic, transcript.rs:96-136): a collapsed group is its
+ * 26px header, a spawn-only group is its unwrapped chips, and a group that
+ * will render OPEN (a user pin or `autoOpen`) estimates its open height —
+ * header + chips + the open chips' details — so mounting or replaying a long
+ * group does not lurch 26 → full body. `groupFoldOpen` resolves the surface's
+ * group-fold pin (null = follow the auto-open rule); a chip's detail is open
+ * when the chip itself opens it by default (a live thought,
+ * tool-group.tsx:153-158).
+ */
+export function estimateRowHeight(
+  row: TranscriptRow,
+  groupFoldOpen: (rowId: string) => boolean | null = () => null,
+): number {
   const kind = row.rowKind;
   switch (kind.kind) {
     case "user": {
@@ -1376,16 +1420,71 @@ function estimateRowHeight(row: TranscriptRow): number {
       return 30;
     }
     case "toolGroup": {
-      // The analytic first frame: a collapsed group is its 26px header; a
-      // spawn-only group is its unwrapped chips (measurement corrects an
-      // auto-opened group on mount).
       const collapses = toolGroupCollapses(kind.tools);
-      return collapses ? TOOL_GROUP_HEADER_HEIGHT : chipsHeight(kind.tools.length);
+      if (!collapses) {
+        return chipsHeight(kind.tools.length);
+      }
+      if ((groupFoldOpen(row.id) ?? kind.autoOpen) !== true) {
+        return TOOL_GROUP_HEADER_HEIGHT;
+      }
+      let open = TOOL_GROUP_HEADER_HEIGHT + chipsHeight(kind.tools.length);
+      for (const tool of kind.tools) {
+        if (isSpawnLink(tool)) {
+          continue;
+        }
+        if ((tool.detail !== null || tool.invocation !== null) && tool.isThought && !tool.resolved) {
+          open += (tool.invocation !== null ? detailHeight(tool.invocation) : 0) +
+            (tool.detail !== null ? detailHeight(tool.detail) : 0);
+        }
+      }
+      return open;
     }
     case "inputChip":
     case "errorChip":
       return 42;
   }
+}
+
+/**
+ * `update_runway_minimum`'s floor (transcript.rs:3483-3513): the LAST row's
+ * minimum height while a runway is live. The reservation value is
+ * `inset − OWN_SEND_SCROLL_SLACK_PX − expansion` (:3506-3509) — the 2px slack
+ * keeps the held layout out of the shorter-than-viewport regime, and the
+ * expansion term carries the anchor row's live Show-more fold tween — so the
+ * content end reaches `anchorTop + viewport − reservation` and the scroll end
+ * parks the anchor at the reservation value. The space itself is plain
+ * scrollable whitespace (the bottom spacer), never painted chrome.
+ */
+export function ownTurnReservationFloor(input: {
+  readonly anchorTop: number;
+  readonly lastTop: number;
+  readonly viewport: number;
+  readonly inset: number;
+  readonly expansion: number;
+}): number {
+  const reservation = input.inset - OWN_SEND_SCROLL_SLACK_PX - input.expansion;
+  return Math.max(0, input.anchorTop + input.viewport - reservation - input.lastTop);
+}
+
+/**
+ * The anchor row's live fold-tween height (transcript.rs:3490-3504): the
+ * tweened value of the prompt's expansion beyond its collapsed height —
+ * `lerp(expansion − target, target, progress)` over the user-resize curve,
+ * the target being the full expansion while open and 0 while closed, so an
+ * opening tween grows the term and Show-less decays it back. Reduced motion
+ * or a degenerate duration snaps to the target (the desktop's `_` arm).
+ */
+export function userFoldExpansionHeight(fold: UserFoldState, now: number, reduced: boolean): number {
+  const target = fold.open ? fold.expansion : 0;
+  if (reduced || fold.durationMs <= 0) {
+    return target;
+  }
+  const raw = Math.min(Math.max((now - fold.toggledAt) / fold.durationMs, 0), 1);
+  const curve = motion.curves[userResizeCurve(fold.expansion)] as
+    | readonly [number, number, number, number]
+    | undefined;
+  const progress = cubicBezierEval(curve ?? motion.curves.easeOut!, raw);
+  return fold.expansion - target + (2 * target - fold.expansion) * progress;
 }
 
 // ---------------------------------------------------------------------------

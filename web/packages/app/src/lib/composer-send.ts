@@ -101,6 +101,31 @@ export function shouldPublishOptimisticEcho(queue: boolean): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// The send cwd (composer.rs:6433-6440)
+// ---------------------------------------------------------------------------
+
+/**
+ * `resolve_send_cwd` (composer.rs:6433-6440): a NEW chat runs from the
+ * picked space's path, else `"~"` — the host's home, expanded by the ENGINE
+ * when the run spawns (`sessions.rs::expand_home`, 1303-1313; the web never
+ * expands it client-side); an EXISTING chat runs from its stored cwd, else
+ * `"."`. Blank/whitespace counts as absent (the deleted web-only guard's
+ * trim rule folds in here). There is no error path — the desktop has none
+ * for a projectless send.
+ */
+export function resolveSendCwd(
+  isNew: boolean,
+  spacePath: string | null | undefined,
+  existingCwd: string | null | undefined,
+): string {
+  const path = isNew ? spacePath : existingCwd;
+  if (typeof path === "string" && path.trim().length > 0) {
+    return path;
+  }
+  return isNew ? "~" : ".";
+}
+
+// ---------------------------------------------------------------------------
 // Interrupt tracking (composer.rs:587-599, 6707-6741)
 // ---------------------------------------------------------------------------
 
