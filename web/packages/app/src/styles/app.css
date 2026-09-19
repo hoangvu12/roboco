@@ -414,17 +414,17 @@ a:focus-visible,
 /*
  * `frost::frosted(12.0, 20.0, …)` (frost.rs:27-33): a 12px radius, a 20px
  * backdrop blur, the glass-overlay tint, `shadow_sm` — the popover cards'
- * glass idiom at the island's lighter blur. Rendered only while the
- * tween is above ~0, exactly the desktop's `(island > 0.001)` content
- * gate; the wrapper above keeps the geometry mounted through the fade.
+ * glass idiom at the island's lighter blur. The web is always opaque
+ * (ticket 56): the plate drops the blur and takes the solid overlay tone.
+ * Rendered only while the tween is above ~0, exactly the desktop's
+ * `(island > 0.001)` content gate; the wrapper above keeps the geometry
+ * mounted through the fade.
  */
 .titlebar-island-panel {
   position: absolute;
   inset: 0;
   border-radius: var(--rb-radius-card);
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  background: var(--rb-overlay);
   box-shadow: var(--rb-shadow-sm);
 }
 
@@ -2703,16 +2703,16 @@ a:focus-visible,
 /*
  * `queue_panel_surface` (queue.rs:223-237): ONE frosted glass surface
  * docked directly behind the composer pill — top corners rounded at
- * PANEL_RADIUS (16), 1px border, a translucent plate over a 16px blur,
- * 18px of bottom padding reserved for the portion tucked behind the
+ * PANEL_RADIUS (16), 1px border, an opaque raised plate, 18px of bottom
+ * padding reserved for the portion tucked behind the
  * composer (`QUEUE_COMPOSER_OVERLAP`, composer.rs:77; visible rows sit
  * flush with the tray edge). The 16px side inset and the −26px overlap
  * live on `.composer-queue-tray` (the slot seam, composer.rs:7459-7467).
- * No `input_glass_bg` token exists yet — `raised @ 92%` over the blur is
- * the ticket's sanctioned fallback; `shadow_lg()` (opaque surface mode)
- * is the shared `--rb-shadow-popover` placeholder. Enter fades over
- * FADE_QUICK (150ms EASE); the exit leg rides the `[data-open]`
- * transition before the panel unmounts.
+ * No `input_glass_bg` token exists yet — solid `raised` is the ticket's
+ * sanctioned fallback (the web is always opaque, ticket 56);
+ * `shadow_lg()` (opaque surface mode) is the shared `--rb-shadow-popover`
+ * placeholder. Enter fades over FADE_QUICK (150ms EASE); the exit leg
+ * rides the `[data-open]` transition before the panel unmounts.
  */
 .queue-panel {
   flex: none;
@@ -2722,9 +2722,7 @@ a:focus-visible,
      generic 10px `--rb-radius-panel` panels use. */
   border-radius: 16px 16px 0 0;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-raised) 92%, transparent);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--rb-raised);
   padding-bottom: 18px;
   box-shadow: var(--rb-shadow-popover);
   animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
@@ -3230,8 +3228,7 @@ a:focus-visible,
  * Its bottom edge is stationary: growth moves the TOP edge, so the controls
  * pin to the bottom and only the text glides with the reveal. The web is
  * forced opaque (the 2026-09-17 defrost decision), so the pill takes the
- * desktop's opaque branch — `flatten(input, bg)` — with the 16px frost blur
- * retained on the translucent input tint (`frost::frosted`'s 16).
+ * desktop's opaque branch — `flatten(input, bg)`.
  *
  * ONE DOM shape for both modes: the compact row and the expanded column
  * are the same tree re-laid-out by `[data-mode]`; the height (and the
@@ -3245,22 +3242,7 @@ a:focus-visible,
   border-radius: 26px;
   border: 1px solid var(--rb-border);
   background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
   box-shadow: var(--rb-shadow-popover);
-}
-
-/*
- * The frosted branch (composer.rs:7714 + frost.rs:27-33): under a resolved
- * frosted surface the pill's background becomes the composer sidebar tint —
- * a translucent bg-tone wash that moves toward the pane tone while leaving
- * most of the blurred backdrop visible (theme.rs `composer_sidebar_tint`,
- * alpha 0.15) — over the retained 16px backdrop blur, instead of the opaque
- * input flatten. Radius `26 − 4·dockAmount` rides the inline morph.
- * `--rb-*` tokens only.
- */
-html[data-surface="frosted"] .composer-pill {
-  background: color-mix(in srgb, var(--rb-bg) 15%, transparent);
 }
 
 /*
@@ -3732,8 +3714,6 @@ html[data-surface="frosted"] .composer-pill {
   border-radius: 26px;
   border: 1px solid var(--rb-border);
   background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
   box-shadow: var(--rb-shadow-popover);
   outline: none;
   animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
@@ -4479,8 +4459,10 @@ html[data-surface="frosted"] .composer-pill {
 /*
  * `popover_card` (popover.rs:306-325): 1px hairline(0.10) border, CARD_RADIUS
  * (12), 4px inset, the glass overlay tint over a 44px backdrop blur
- * (frost.rs:23), capped at 640px (pickers.rs:2738). The shadow is the
- * documented shadow_lg() placeholder (see the ticket's Comments).
+ * (frost.rs:23), capped at 640px (pickers.rs:2738) — the web is always
+ * opaque (ticket 56): the solid `--rb-overlay` plate without the blur.
+ * The shadow is the documented shadow_lg() placeholder (see the ticket's
+ * Comments).
  */
 .popover-card {
   box-sizing: border-box;
@@ -4492,9 +4474,7 @@ html[data-surface="frosted"] .composer-pill {
   overflow: hidden;
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
   border-radius: var(--rb-radius-card);
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  -webkit-backdrop-filter: blur(44px);
-  backdrop-filter: blur(44px);
+  background: var(--rb-overlay);
   box-shadow: var(--rb-shadow-popover);
   font-size: 0.8125rem;
   color: var(--rb-text);
@@ -4515,9 +4495,7 @@ html[data-surface="frosted"] .composer-pill {
   min-width: 0;
   overflow: hidden;
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  -webkit-backdrop-filter: blur(44px);
-  backdrop-filter: blur(44px);
+  background: var(--rb-overlay);
   box-shadow: var(--rb-shadow-popover);
   font-size: 0.8125rem;
   color: var(--rb-text);
@@ -4864,7 +4842,9 @@ html[data-surface="frosted"] .composer-pill {
  * family that dim the page. The scrim is scrim() — plain black at
  * --rb-scrim-alpha (0.6 dark / 0.32 light) for modal; modal_glass scales it
  * to scrim(0.35). The card plays `dialog_in` (180ms EASE, opacity + 2px
- * rise — motion.rs:389-397) and carries the same 44px frost as the cards.
+ * rise — motion.rs:389-397); the web is always opaque (ticket 56), so the
+ * card's 44px frost is dropped — the interior cards carry their own solid
+ * backgrounds.
  */
 .modal-backdrop,
 .modal-glass-backdrop {
@@ -4891,8 +4871,6 @@ html[data-surface="frosted"] .composer-pill {
   display: flex;
   flex-direction: column;
   border-radius: 16px;
-  -webkit-backdrop-filter: blur(44px);
-  backdrop-filter: blur(44px);
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
 }
 
@@ -7241,7 +7219,8 @@ button.files-save-pill:hover {
 
 /*
  * The hover preview card (rail.rs:505-539): `popover_card w(280) p(8) flex
- * flex_col gap(6)` with the frost wrap (12 / MENU_BLUR) — anchored at the
+ * flex_col gap(6)` with the frost wrap (12 / MENU_BLUR) — the web renders
+ * the popover card opaque (ticket 56). Anchored at the
  * tick's LeftCenter, snapped to the window with an 8px margin. Here: an
  * absolute card beside the rail column, vertically centered on the tick and
  * clamped (JS), transparent to the pointer — the desktop's card vanishes the
@@ -7258,9 +7237,7 @@ button.files-save-pill:hover {
   padding: var(--rb-space-sm);
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
   border-radius: var(--rb-radius-card);
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  -webkit-backdrop-filter: blur(44px);
-  backdrop-filter: blur(44px);
+  background: var(--rb-overlay);
   box-shadow: var(--rb-shadow-popover);
   pointer-events: none;
 }
@@ -7582,9 +7559,9 @@ button.files-save-pill:hover {
 /*
  * The pill: 30px tall, fully rounded (radius 15 = half the height), hairline
  * border, `shadow_md` (the md elevation — NOT the popover family's shadow_lg;
- * ticket 41), frosted — blur 16 over the floating-card tint
- * (`frost::frosted(15, 16)`); the `@supports` fallback drops the frost and
- * keeps the tint. It enters on `dialog_in` (180ms: opacity 0→1, top 2px→0).
+ * ticket 41), the solid floating-card tint (`frost::frosted(15, 16)`'s
+ * opaque branch — the web is always opaque, ticket 56). It enters on
+ * `dialog_in` (180ms: opacity 0→1, top 2px→0).
  */
 .jump-pill {
   pointer-events: auto;
@@ -7592,9 +7569,7 @@ button.files-save-pill:hover {
   height: 30px;
   border-radius: 15px;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--rb-dialog);
   isolation: isolate;
   box-shadow: var(--rb-shadow-md);
   cursor: pointer;
@@ -7602,16 +7577,10 @@ button.files-save-pill:hover {
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
 }
 
-@supports not (backdrop-filter: blur(1px)) {
-  .jump-pill {
-    background: var(--rb-dialog);
-  }
-}
-
 /*
  * The hover wash is an inner full-height layer (the desktop's
- * `hover_blend(transparent, glass_hover)`): the outer box carries the frost
- * and tint, so the wash rides inside without thinning either.
+ * `hover_blend(transparent, glass_hover)`): the outer box carries the
+ * plate, so the wash rides inside without thinning it.
  */
 .jump-pill-inner {
   height: 100%;
@@ -7711,8 +7680,8 @@ button.files-save-pill:hover {
 
 /*
  * The hover card (badges.rs:103-183): `popover_card w(320) p(6) flex flex_col
- * gap(4)` over the `.popover-card` chrome (frosted at CARD_RADIUS /
- * MENU_BLUR). Opens on the 280ms family hover.
+ * gap(4)` over the `.popover-card` chrome (opaque at CARD_RADIUS — the web
+ * is always opaque, ticket 56). Opens on the 280ms family hover.
  */
 .badge-card {
   padding: 6px;
@@ -8818,8 +8787,8 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
 }
 
-/* The frosted file-action badge (:6986-7037): h22 rounded(5) bg ink(0.06),
-   pl 1 / pr 6 / gap 6, blur 16, a 20px rounded(4) well holding the 14px
+/* The file-action badge (:6986-7037): h22 rounded(5) bg ink(0.06),
+   pl 1 / pr 6 / gap 6, a 20px rounded(4) well holding the 14px
    file-type icon, and the basename only. */
 .tool-chip-detail-slot {
   min-width: 0;
@@ -8840,7 +8809,6 @@ button.files-save-pill:hover {
   background: rgb(var(--rb-ink) / 0.06);
   padding: 0 6px 0 1px;
   color: color-mix(in srgb, var(--rb-text) 85%, transparent);
-  backdrop-filter: blur(16px);
 }
 
 .tool-file-badge-well {
@@ -12499,8 +12467,7 @@ button.segmented-option:hover {
  * free when the sticky element's containing block is the scroll list.
  *
  * Opaque (the forced web resolution): the frost tint flattens into a solid
- * composite — an ink(0.025) plate over the pane bg. The frosted branch
- * (blur 16) stays gated on `data-surface` for the day the policy flips.
+ * composite — an ink(0.025) plate over the pane bg.
  */
 .diff-file-header {
   display: flex;
@@ -12523,16 +12490,6 @@ button.segmented-option:hover {
   background:
     linear-gradient(rgb(var(--rb-ink) / 0.05), rgb(var(--rb-ink) / 0.05)),
     var(--rb-bg);
-}
-
-html[data-surface="frosted"] .diff-file-header {
-  background: rgb(var(--rb-ink) / 0.025);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-html[data-surface="frosted"] .diff-file-header:hover {
-  background: var(--rb-hover);
 }
 
 .diff-file-button {
@@ -12989,12 +12946,6 @@ html[data-surface="frosted"] .diff-file-header:hover {
   z-index: 10;
 }
 
-html[data-surface="frosted"] .cr-tooltip {
-  background: color-mix(in srgb, var(--rb-dialog) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
-  backdrop-filter: blur(44px);
-  -webkit-backdrop-filter: blur(44px);
-}
-
 .cr-badge:hover .cr-tooltip,
 .cr-badge:focus-visible .cr-tooltip {
   display: flex;
@@ -13217,12 +13168,11 @@ html[data-surface="frosted"] .cr-tooltip {
  * The ?K-style "New project" card: a 680px palette_card with its OWN 14px
  * radius (deliberately not the generic 12px CARD_RADIUS), centered on the
  * lighter 0.35 modal_glass scrim (`RbDialogGlass` — Backdrop and card are
- * portal siblings, so the card self-centers via `.rb-dialog-card` and the
- * frost wrapper supplies the 44px blur with the `dialog_in` entrance; the
- * card itself carries only the glass tint — stacking two blurs would
- * double-frost it). Exit: both siblings fade over MENU_OUT (100ms, EASE)
- * while dead to hit-testing, then unmount — Base UI's animation-aware
- * unmount replaces the old layer's reap timer.
+ * portal siblings, so the card self-centers via `.rb-dialog-card`; the
+ * frost wrapper's 44px blur is gone (the web is always opaque, ticket 56),
+ * so the card carries the solid overlay plate itself. Exit: both siblings
+ * fade over MENU_OUT (100ms, EASE) while dead to hit-testing, then unmount
+ * — Base UI's animation-aware unmount replaces the old layer's reap timer.
  */
 .add-space-frost {
   border-radius: 14px;
@@ -13256,7 +13206,7 @@ html[data-surface="frosted"] .cr-tooltip {
   overflow: hidden;
   border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
   border-radius: 14px;
-  background: color-mix(in srgb, var(--rb-overlay) calc(var(--rb-glass-overlay-alpha) * 100%), transparent);
+  background: var(--rb-overlay);
   box-shadow: var(--rb-shadow-popover);
   color: var(--rb-text);
 }
@@ -13958,8 +13908,8 @@ html[data-surface="frosted"] .cr-tooltip {
 
 /*
  * The Files preview's floating card (preview.rs:2896-2985): the
- * `.popover-card` chrome (radius 12, hairline 0.10, glass overlay over the
- * 44px frost) positioned absolutely at the anchor math, `px(16) py(10)`,
+ * `.popover-card` chrome (radius 12, hairline 0.10, the opaque overlay
+ * plate) positioned absolutely at the anchor math, `px(16) py(10)`,
  * height `card_height` (inline).
  */
 .editor-comment-card {
