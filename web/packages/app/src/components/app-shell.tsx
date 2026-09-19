@@ -151,6 +151,38 @@ export function AppShell() {
     navHistory.visit(entry);
   }, [pathname]);
 
+  // ── M7(b): the phone drawer closes on navigate (ticket 55) ─────────────
+  // Every entry surface into the drawer's content navigates by changing the
+  // pathname — chat rows and archived rows are router Links, settings rows
+  // are Links, the account menu's Settings item calls `navigate` — so ONE
+  // effect keyed on the pathname covers them all, future surfaces included.
+  // At phone width the drawer is a transient overlay over the destination,
+  // so it closes; at desktop width the sidebar is a persistent column that
+  // never closes on selection, and the matchMedia guard — the toggle's own
+  // breakpoint (`onToggleSidebar` above), read at navigation time inside the
+  // body, not at render time — makes this a no-op there. Re-notifying the
+  // SAME pathname does not refire the effect (deps compare equal), and the
+  // ref-recorded `pathChanged` keeps even a hypothetical refire from reading
+  // as a navigation: the drawer stays open on a same-path re-tap (the
+  // recorded known limitation — the backdrop, the cluster toggle, and Escape
+  // still close it). `sidebarOpen` is deliberately NOT a dep: a dep would
+  // fire this on drawer-open changes alone and slam the drawer shut the
+  // frame the toggle opens it.
+  const previousPathname = useRef(pathname);
+  useEffect(() => {
+    const pathChanged = previousPathname.current !== pathname;
+    previousPathname.current = pathname;
+    if (
+      shouldCloseDrawer(
+        pathChanged,
+        sidebarOpen,
+        window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches,
+      )
+    ) {
+      setSidebarOpen(false);
+    }
+  }, [pathname]);
+
   const onNavWalk = useCallback(
     (entry: NavEntry | null) => {
       if (entry === null) {
@@ -714,6 +746,26 @@ export function AppShell() {
       )}
     </div>
   );
+}
+
+/**
+ * Ticket 55 / research M7(b) — the phone drawer's close-on-navigate rule:
+ * close iff the navigation actually changed the pathname, the drawer is
+ * open (the already-closed state is the effect's early return, encoded
+ * here as the short-circuit), and the viewport is at phone width — the
+ * toggle's own matchMedia breakpoint, so the desktop column never closes
+ * on selection ("there is nothing to port", M7(b)). Extracted pure so the
+ * drawer suite can drive the rule's full truth table, the same-path branch
+ * included: the effect's `[pathname]` deps never refire on a same-path
+ * re-notify, and the previous-pathname ref keeps even a refire from
+ * reading as a navigation.
+ */
+export function shouldCloseDrawer(
+  pathChanged: boolean,
+  sidebarOpen: boolean,
+  isPhone: boolean,
+): boolean {
+  return pathChanged && sidebarOpen && isPhone;
 }
 
 /**
