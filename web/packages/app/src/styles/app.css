@@ -9306,10 +9306,12 @@ button.files-save-pill:hover {
 /*
  * The Unarchive pill, matching the active row's Archive pill EXACTLY
  * (18px, gap 4, px 4 bleeding into the row's own padding via mr -4, radius
- * 5, wash 0.10 → 0.18) — two sizes of the same affordance.
+ * 5, wash 0.10 → 0.18) — two sizes of the same affordance. It is MOUNTED
+ * only while the row is hovered: the row picks the slot at render
+ * (`archivedRightSlot`), so there is no reveal CSS here.
  */
 .arch-row-unarchive {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 18px;
@@ -9325,29 +9327,8 @@ button.files-save-pill:hover {
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
 }
 
-/* The right slot swaps: time yields to the pill on row hover/focus. */
-.arch-row:hover .arch-row-time,
-.arch-row-item:focus-within .arch-row-time {
-  display: none;
-}
-
-.arch-row:hover .arch-row-unarchive,
-.arch-row-item:focus-within .arch-row-unarchive {
-  display: inline-flex;
-}
-
 .arch-row-unarchive:hover {
   background: rgb(var(--rb-wash) / 0.18);
-}
-
-/* Touch has no hover to swap the slot — the pill stays put. */
-@media (hover: none) {
-  .arch-row-unarchive {
-    display: inline-flex;
-  }
-  .arch-row-time {
-    display: none;
-  }
 }
 
 /* "Show N more": 36px, gap 10, radius 6, muted at 55% until hovered. */

@@ -306,4 +306,58 @@ if the one-child port is blocked.)
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Implemented on `wp2r2/44-sidebar-row-and-tooltip-polish` @ 24d0e23c; one
+commit, `fix(web): ticket 44 sidebar row hover slot + view-options tooltip`.
+
+**§2.1 archived row.** `ArchivedRow` now holds per-row `hovered` state
+(`onMouseEnter`/`onMouseLeave` on the row's Link, inside the `useChatMenu`
+wrap — the exact `ChatListRow` pattern) and renders the time span OR the
+pill via the new exported pure predicate `archivedRightSlot(hovered) →
+"time" | "pill"` (archived-section.tsx:116-124); the stale both-mounted
+comment at the old :137-141 is rewritten. Both invented pins deleted from
+app.css — located by selector after the wave-1 drift (the swap sat at
+9328-9337 and the touch pin at 9343-9351 in this worktree, 9 lines above
+the ticket's numbers): the `:focus-within`/`:hover` display swap and the
+`@media (hover: none)` pin, comments included. The pill, its handler, and
+`aria-label` are verbatim; only the mounting condition changed. The
+active-row family (chat-list.tsx / app.css:2297) untouched, verify only.
+
+**One deliberate detail beyond "the base stays":** `.arch-row-unarchive`'s
+base flipped `display: none` → `display: inline-flex` (app.css:9313). The
+`display: none` existed only to serve the deleted CSS swap; with React
+owning the mount it would have hidden the hovered pill too. The active
+twin `.chat-row-archive` (:2297) is `display: inline-flex` for the same
+reason. All geometry (h 18 / gap 4 / px 4 / mr −4 / radius 5 / wash
+0.10→0.18 / 11px icon / 10px label) untouched.
+
+**§2.2 tooltip.** The dead cleanup-returning `showTooltip` (its returned
+closure was never invoked) is replaced by the exported factory
+`createViewOptionsTooltip(setVisible)` → `{ enter, leave, blur, escape,
+dispose }` (space-filter.tsx:386-433): one timer-ref, cleared before every
+re-arm, `enter` arms the imported `TOOLTIP_VIEW_OPTIONS_MS` (never
+inlined), the dismissers clear + hide, `dispose` runs from an unmount
+effect. Wiring: `onMouseEnter`/`onMouseLeave`/`onBlur` on the trigger;
+`onFocus` dropped (hover-only contract; `aria-label` covers AT); Escape is
+a local keydown on the trigger gated on the label being visible — never
+registered on the shell's escape ladder; the `!open` suppression stays.
+Label CSS, trigger geometry/keyboard, and the 350ms constant untouched.
+
+**Tests** (vitest, node env, pure seams — no rendering infra):
+`archivedRowRightSlotRendersExactlyOneChild` (tests/archived.test.ts) and
+`viewOptionsTooltipAppearsAfterDelayAndDismissesOnLeave` /
+`viewOptionsTooltipReArmDoesNotStackTimers` /
+`viewOptionsTooltipNeverArmsOnFocus` (new tests/sidebar-tooltip.test.ts,
+fake timers; `vi.getTimerCount()` pins the no-stacking invariant, and the
+recorded visible-history tape pins that `true` only ever fires from a
+hover arm — blur/escape/dispose dismiss, they never arm).
+
+**Verification:** `pnpm -r build` green (proto, engine-client, app);
+`pnpm test` in packages/app → **74 files / 1209 tests passed** (1205 at
+base + 4 new).
+
+**Not done here (per §5 / Do not):** no touch affordance added (the row's
+context menu stays the touch unarchive path), no gpui tooltip library
+port, no escape-ladder registration, no send-path/namespace or palette
+surfaces (39/43), active rows untouched.
