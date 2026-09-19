@@ -16,6 +16,7 @@ import { methods } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
+import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
 import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
@@ -99,8 +100,9 @@ const USER_COLLAPSED_TEXT_HEIGHT = USER_COLLAPSED_LINES * USER_LINE_HEIGHT;
 const USER_COLLAPSED_HEIGHT = USER_COLLAPSED_TEXT_HEIGHT + USER_LINE_HEIGHT;
 /** Trailer estimate for unmounted last rows: `pt(16)` + one 12px line. */
 const TRAILER_ESTIMATE_HEIGHT = 28;
-/** Desktop widths — the underlay layout and the clearance pad apply here. */
-const DESKTOP_QUERY = "(min-width: 769px)";
+/** Desktop widths — the underlay layout and the clearance pad apply here.
+ *  `DESKTOP_QUERY` and the `useMediaQuery` hook live in `state/media.ts`
+ *  now — the one shared breakpoint module (ticket 49). */
 
 /** The jump pill's visibility + action, published up to the chat page. */
 export interface JumpButtonState {
@@ -1334,20 +1336,6 @@ function offlineStripMessage(alignTop: boolean, status: EngineStatus | null): st
   return status.state === "parked" || status.state === "closed"
     ? "Engine off. Cached history is read-only."
     : "Reconnecting… Cached history is read-only.";
-}
-
-/** Live matchMedia as a React value (breakpoints only — it re-renders on flip). */
-function useMediaQuery(query: string): boolean {
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      const mql = window.matchMedia(query);
-      mql.addEventListener("change", listener);
-      return () => mql.removeEventListener("change", listener);
-    },
-    [query],
-  );
-  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 /** Capture the first visible row + its pixel offset — the escape anchor. */

@@ -4865,6 +4865,53 @@ html[data-surface="frosted"] .composer-pill {
   }
 }
 
+/*
+ * The phone sheet (ticket 49, research M8 §(b)2): `.rb-drawer-card` — the
+ * Drawer arm of the dialog/drawer primitive. Mobile-native (the desktop's
+ * minimum window geometry makes a 375px window impossible, so the sheet
+ * has no desktop analog): fixed to the bottom edge, spanning the viewport,
+ * rounded only on top, clamped to the viewport minus breathing room — no
+ * card can overflow a 375px viewport. It rides the SAME modal tier as the
+ * centered card (70, via the sibling `.modal-backdrop` — the ladder is
+ * closed, no new tiers) and it replaces PLACEMENT only: the card
+ * interiors keep their own geometry inside it (`.dialog-card`'s 360px, the
+ * popover rows, the add-space card's 680px phone cap). Base UI's swipe
+ * gesture drives the popup through an inline transform while a drag is
+ * live, which composes with (never fights) the resting `transform: none`.
+ */
+@media (max-width: 768px) {
+  .rb-drawer-card {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    z-index: var(--rb-z-modal);
+    border-radius: 16px 16px 0 0;
+    max-height: calc(100dvh - var(--rb-space-lg));
+    overflow: auto;
+    scrollbar-width: none;
+    animation: none;
+  }
+
+  .rb-drawer-card::-webkit-scrollbar {
+    display: none;
+  }
+
+  .rb-drawer-card[data-open] {
+    animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The sheet entrance snaps to its endpoint (motion.rs:118) — the same
+     pattern as the centered card's, above. */
+  .rb-drawer-card[data-open] {
+    animation: none;
+  }
+}
+
 /* `dialog_card` (popover.rs:978-990) — the centered 360px card. */
 .dialog-card {
   box-sizing: border-box;

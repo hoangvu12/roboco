@@ -25,11 +25,11 @@ import { NewThreadCanvas } from "./index-page";
 import {
   bottomClearance,
   evalWidthTween,
-  PHONE_MAX_WIDTH,
   sidebarTarget,
   useSidebarLayout,
   useViewportWidth,
 } from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { navEntryForPath } from "../state/nav-history";
 import {
   bottomStackMeasurementMatches,
@@ -461,9 +461,13 @@ export function ConversationPage() {
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
-  const phone = viewport <= PHONE_MAX_WIDTH;
-  // The phone layer (out of scope, spec decision 5) keeps the composer in
-  // its slot: the dock snaps and never re-anchors.
+  // The shared media hook (ticket 49): `(max-width: 768px)` resolved through
+  // matchMedia — the same query the stylesheet keys, so JS and CSS flip in the
+  // same paint (the old `viewport <= PHONE_MAX_WIDTH` innerWidth compare could
+  // disagree with the media query by rounding).
+  const phone = useIsPhone();
+  // The phone layer (spec decision 5, amended for ticket 49's wave) keeps the
+  // composer in its slot: the dock snaps and never re-anchors.
   const dockReduced = reducedMotion || phone;
 
   // ── The sidebar slide (ticket 34) ─────────────────────────────────────

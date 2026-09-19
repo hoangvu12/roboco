@@ -32,7 +32,6 @@ import {
   type NavEntry,
 } from "../state/nav-history";
 import {
-  PHONE_MAX_WIDTH,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   TITLEBAR_CONTENT_START,
@@ -46,6 +45,7 @@ import {
   useSidebarLayout,
   useViewportWidth,
 } from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
@@ -190,15 +190,21 @@ export function AppShell() {
 
   // One control, two meanings — the desktop's `toggle_sidebar` collapses the
   // column; at phone widths the same button opens the drawer over the content.
-  // The breakpoint is the stylesheet's: asking at a wider one left a dead band
-  // where the click flipped the drawer flag while CSS still drew the column.
+  // The breakpoint is the shared media hook's (`state/media.ts`, ticket 49):
+  // the same `(max-width: 768px)` query the stylesheet keys, so the click can
+  // never land in the dead band the old one-shot matchMedia-per-click risked —
+  // asking at a wider query than CSS drew left a window where the click
+  // flipped the drawer flag while CSS still drew the column. The value is
+  // read at render and captured in the callback, so a resize re-renders and
+  // the captured branch follows.
+  const isPhone = useIsPhone();
   const onToggleSidebar = useCallback(() => {
-    if (window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches) {
+    if (isPhone) {
       setSidebarOpen((current) => !current);
       return;
     }
     sidebarLayout.toggleCollapsed();
-  }, []);
+  }, [isPhone]);
 
   const onCloseDrawer = useCallback(() => {
     setSidebarOpen(false);

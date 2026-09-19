@@ -480,4 +480,107 @@ consolidated gap table.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Implemented on `wp2r2/49-responsive-dialog-drawer-primitive`; one commit,
+`feat(web): ticket 49 responsive dialog/drawer primitive + adoptions`.
+**Finished from WIP:** a previous implementer session produced the entire
+change set uncommitted (it was cancelled before verification/commit); this
+session reviewed the WIP line-by-line against the spec, confirmed the API
+usage against `@base-ui/react` 1.8.0's shipped `.d.ts`/sources, fixed one
+stale doc comment in `transcript.tsx` (the old `DESKTOP_QUERY` site's
+comment still pointed at "the hook below" after both moved), re-ran
+verification, and committed the whole thing as the one commit.
+
+**§2.1 `state/media.ts`.** Landed as specced: `PHONE_QUERY`/`DESKTOP_QUERY`
+derive from `PHONE_MAX_WIDTH` (`state/layout.ts:43`), `useMediaQuery` is
+the transcript's own 12-line hook (matchMedia subscribe +
+`useSyncExternalStore`, server snapshot `false`), `useIsPhone`/`useIsDesktop`
+wrap the two queries. All three call sites converted: `transcript.tsx`'s
+local copy deleted (import from the shared module), `app-shell.tsx`'s
+`onToggleSidebar` reads `useIsPhone()` at render and captures it in the
+callback (the one-shot `matchMedia` per click and its dead-band risk gone),
+`chat-page.tsx`'s `phone` is `useIsPhone()` (the innerWidth compare gone;
+`viewport` itself stays — the hero width math still consumes it). The
+unstable subpath was NOT adopted. **Merger note:** ticket 50 (parallel) also
+creates this file from the same §2.1 — identical export set and derivation
+(`useMediaQuery`/`useIsPhone`/`useIsDesktop` + the two query constants off
+`PHONE_MAX_WIDTH`), so the merge should converge on either copy; the hooks'
+bodies are the transcript's promoted original.
+
+**§2.2 `RbResponsiveDialog` + the sheet body.**
+`base/responsive-surface.tsx` exports `RbResponsiveDialog`
+(`RbDialogProps` verbatim, a drop-in for `RbDialog`) and `RbDrawerSheet`
+(the shared phone sheet). Desktop arm: `<RbDialog {...props} />` — rendered
+AS that component, so the ≥769px tree is ticket 09's byte-for-byte;
+`base/dialog.tsx`'s `RbDialog` function body is untouched. Phone arm:
+`Drawer.Root {open, onOpenChange, onOpenChangeComplete, actionsRef, modal,
+swipeDirection: "down"}` → `Drawer.Portal` → `Backdrop` (default
+`.modal-backdrop`) → `Popup className="modal-card rb-drawer-card …"`, no
+snap points, `disablePointerDismissal` carried per wrapper (the dialog sheet
+passes it — rename/delete keep their scrim-swallowing contract; the glass
+and picker sheets do not), `useOverlayKeyboardSource` registered on the
+sheet for all arms. `drawerOnOpenChange` is the one narrowing seam between
+Base UI's per-component change-event reason unions (the Drawer's adds
+`swipe`/`close-watcher`); every adopted consumer reads only the boolean.
+
+**One deviation from the ticket's literal tree, required by the library:**
+the sheet renders `Drawer.Viewport` between `Portal` and `Popup`. Base UI
+1.8.0's own invariant — `<Drawer.Popup> expected to be rendered within
+<Drawer.Viewport>. Omitting the viewport disables drawer swipe handling and
+touch scroll locking` (`drawer/popup/DrawerPopup.js`) — makes the §2.2 tree
+(the ticket's, verbatim from the research) unable to swipe at all; the
+`Viewport` is the gesture host and the touch-scroll arbiter. The ticket
+itself lists `Viewport` among the shipped parts; this is the wiring the
+research's tree omitted, not a semantic change.
+
+**§2.3 glass arm / §2.4 picker branch.** `RbDialogGlass`'s phone arm renders
+the sheet with `modal-glass-backdrop {caller backdrop classes}` +
+`modal-card rb-drawer-card rb-dialog-card {caller card classes}`, exit CSS
+(`[data-closed]` on both siblings) and `overlayOpen` carried through — the
+add-space palette's 100ms fade and `unmounted()` flow survive the sheet
+form. `PickerCard`'s phone branch renders the caller's trigger unchanged
+through `Drawer.Trigger`'s `render` adoption (same element, same classes,
+pressed/expanded styling still keyed off the caller's controlled `open`)
+with the card body in the sheet; `placement`/`gap`/`width`/`style`/
+`openOnHover`/`hoverDelayMs`/`escapeFocusTarget`/`motionSpeed` are ignored
+at phone per spec. All 8 popover sites in the §2.5 table convert through
+that one branch (plus `badges`/`context-usage`/`settings-engine-indicator`/
+`DeviceSwitcher`, which also compose `PickerCard` — "every consumer converts
+at once" is the design); the 7 dialogs convert through `ui/Dialog.tsx` →
+`RbResponsiveDialog` and the glass arm, zero call-site edits.
+
+**CSS.** `.rb-drawer-card` under `@media (max-width: 768px)`: fixed
+left/right/bottom 0, `top: auto`, `transform: none` (the resting state Base
+UI's inline drag styles compose with), radius `16px 16px 0 0`, `max-height:
+calc(100dvh - var(--rb-space-lg))`, `overflow: auto` + hidden scrollbar,
+z-index `var(--rb-z-modal)` (the modal tier via the portal-sibling
+`.modal-backdrop`, no new tiers), entrance keyed to `[data-open]` reusing
+`rb-dialog-in`, and a `prefers-reduced-motion` snap. It is placed after
+`.rb-dialog-card`/`.modal-card` so its single-class specificity wins the
+placement properties while every card interior (`.dialog-card` 360px, the
+popover rows, `.add-space-card`'s phone `width: 100%; max-width: 680px`)
+keeps its own geometry — the sheet replaces placement only.
+
+**§3 tests.** `tests/media.test.ts` (5 tests): the two query constants
+locked to `PHONE_MAX_WIDTH`/`(max-width: 768px)`/`(min-width: 769px)`, a
+parse-based complement proof (same feature family, same unit, boundary+1 —
+exactly one matches at any width), and the export-set pin. Node env, pure
+parts only — the hook bodies are acceptance territory.
+
+**Verification: build and tests only, per the session's hard rule.**
+`pnpm -r build` green (proto, engine-client, app: `tsc --noEmit` + vite);
+`pnpm test` in packages/app → **78 files / 1240 tests passed** (1235 at
+base + 5 new; no regressions). **The §6 screenshot pair at 375px is
+explicitly waived for this session** (no dev server / browser capture may
+be launched here); the both-arms proof rests on the structural guarantees
+above — the desktop arm IS `RbDialog`/the unchanged glass/picker trees, and
+the phone arm's sheet geometry is the CSS block, gated on the same
+`(max-width: 768px)` query `useIsPhone()` resolves.
+
+**Not done here (per §5 / Do not):** `RbSelect` menus, the chat context
+menu, and the right-pane `+` menu keep their floating phone forms (52/54);
+`.dock-target-selectors { display: none }` is untouched (53 owns the
+un-hide — this ticket supplies the chips' drawer form via the
+`composer-footer` chips both surfaces share); no side-drawer form, no snap
+points, no hover delays, no Tab-trap, no copy changes.
