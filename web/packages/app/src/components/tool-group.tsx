@@ -420,6 +420,9 @@ function ToolChipRow(props: ToolChipRowProps) {
             height: CHIP_CARD_HEIGHT,
             marginTop: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
             marginBottom: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
+            // The rail margin (transcript.rs:7363): the label breaks 8px off
+            // the rail icon when the rail renders.
+            marginLeft: collapses ? ACTIVITY_TEXT_GAP : undefined,
             ...(collapses && contentReveal < 1 ? liftStyle(contentReveal) : null),
           }}
         >
@@ -463,6 +466,9 @@ function ToolChipRow(props: ToolChipRowProps) {
           height: cardHeight,
           marginTop: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
           marginBottom: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
+          // The rail margin (transcript.rs:6233): same 8px icon→label break
+          // when the rail renders.
+          marginLeft: collapses ? ACTIVITY_TEXT_GAP : undefined,
           ...(collapses && contentReveal < 1 ? liftStyle(contentReveal) : null),
         }}
       >

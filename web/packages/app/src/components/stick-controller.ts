@@ -5,6 +5,7 @@ import {
   SPRING_MAX_CATCHUP_FRAMES,
   SPRING_SETTLE_GRACE_MS,
   StickSpring,
+  jumpButtonShown,
   jumpVisibility,
   shouldAnchorLiveStream,
   shouldBreakPin,
@@ -483,7 +484,10 @@ export class StickController {
       this.kick();
     }
     this.#prevDistance = distance;
-    this.#setJumpShown(jumpVisibility(this.#jumpShown, distance));
+    // `handle_scroll`'s pinned gate (transcript.rs:3198): never flash the
+    // pill while the bottom spring settles near the end. No own turn is
+    // live in this branch (the one above owns the held suppression).
+    this.#setJumpShown(jumpButtonShown(this.#jumpShown, distance, this.#pinned, false));
   };
 
   #setJumpShown(shown: boolean): void {

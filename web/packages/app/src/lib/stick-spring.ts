@@ -37,6 +37,22 @@ export function jumpVisibility(wasShown: boolean, distance: number): boolean {
 }
 
 /**
+ * `jump_button_shown` (transcript.rs:3198, :3743-3745): the pill follows
+ * `jumpVisibility`'s hysteresis, hidden while pinned (so a settling bottom
+ * spring never flashes it) and while an own-turn hold is live
+ * (transcript.rs:3174-3175 — the scroll handler's own-turn branch carries
+ * that half inline).
+ */
+export function jumpButtonShown(
+  jumpShown: boolean,
+  distance: number,
+  pinned: boolean,
+  ownTurnHeld: boolean,
+): boolean {
+  return jumpVisibility(jumpShown, distance) && !pinned && !ownTurnHeld;
+}
+
+/**
  * Direction-aware re-stick: scrolling away from the bottom never re-sticks,
  * even inside the band (a 20px wheel notch from the pinned bottom must break
  * the pin); returning toward it re-engages once inside the 70px band.

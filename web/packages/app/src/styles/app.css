@@ -4281,10 +4281,15 @@ html[data-surface="frosted"] .composer-pill {
      PANEL_RADIUS (10) panels use — gap row 86. */
   --rb-radius-card: 12px;
   /* The popover family's shared drop shadow (`.popover-card`,
-     `.palette-card`, `.dialog-card`, `.jump-pill`, `.cr-tooltip`,
-     `.add-space-card`) — the documented shadow_lg() placeholder, spelled
-     once as a local convenience, not a theme catalog token. */
+     `.palette-card`, `.dialog-card`, `.cr-tooltip`, `.add-space-card`) —
+     the documented shadow_lg() placeholder, spelled once as a local
+     convenience, not a theme catalog token. */
   --rb-shadow-popover: 0 8px 30px rgb(0 0 0 / 0.35);
+  /* gpui's `shadow_md` — the zui fork's Tailwind port (gpui_macros
+     styles.rs:441-449), verbatim: the jump pill's elevation (shell.rs:6217),
+     a subtle md weight instead of the popover family's heavy wash. Spelled
+     once as a local convenience, not a theme catalog token. */
+  --rb-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 
 /*
@@ -7446,7 +7451,8 @@ button.files-save-pill:hover {
 
 /*
  * The pill: 30px tall, fully rounded (radius 15 = half the height), hairline
- * border, `shadow-md`, frosted — blur 16 over the floating-card tint
+ * border, `shadow_md` (the md elevation — NOT the popover family's shadow_lg;
+ * ticket 41), frosted — blur 16 over the floating-card tint
  * (`frost::frosted(15, 16)`); the `@supports` fallback drops the frost and
  * keeps the tint. It enters on `dialog_in` (180ms: opacity 0→1, top 2px→0).
  */
@@ -7460,7 +7466,7 @@ button.files-save-pill:hover {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   isolation: isolate;
-  box-shadow: var(--rb-shadow-popover);
+  box-shadow: var(--rb-shadow-md);
   cursor: pointer;
   padding: 0;
   animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
