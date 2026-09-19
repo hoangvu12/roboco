@@ -47,9 +47,11 @@ import {
   type ThemeLibraryEntry,
 } from "../lib/theme-library";
 import {
+  backgroundRowState,
   installNewThreadBackground,
   removeNewThreadBackground,
-  resolveInstalledBackground,
+  resolveActiveNewThreadBackground,
+  type ResolvedNewThreadBackground,
 } from "../lib/new-thread-background";
 import { idbBackgroundBlobStore } from "../lib/background-blob-store";
 
@@ -91,7 +93,7 @@ export function AppearanceSettingsPage() {
   const settings = useUiSettings();
   const [openMenu, setOpenMenu] = useState<Appearance | null>(null);
   const [backgroundError, setBackgroundError] = useState<string | null>(null);
-  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
+  const [activeBackground, setActiveBackground] = useState<ResolvedNewThreadBackground | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [importState, setImportState] = useState<ImportDialogState | null>(null);
   const [reviewEntryId, setReviewEntryId] = useState<string | null>(null);
@@ -107,16 +109,24 @@ export function AppearanceSettingsPage() {
   const darkVariant =
     findVariantAnywhere(preferences.darkVariant) ?? findVariantAnywhere(DEFAULT_APPEARANCE.darkVariant)!;
   const pageVariant = resolved === "dark" ? darkVariant : lightVariant;
-  const backgroundInstalled = settings.newThreadComposerBackground !== null;
-  const backgroundAvailable = backgroundInstalled && backgroundUrl !== null;
+  // The row keys off the RESOLVED background (ticket 48), never the raw
+  // field: nothing stored resolves the bundled default the same way the
+  // canvas painter already does.
+  const backgroundRow = backgroundRowState(
+    settings.newThreadComposerBackground,
+    activeBackground,
+  );
+  const backgroundInstalled = backgroundRow.installed;
+  const backgroundAvailable = backgroundRow.available;
 
-  // The installed background only counts when its blob still resolves
-  // (settings.rs:5848-5859's "file exists" gate).
+  // The stored entry only counts while its blob still resolves; nothing
+  // stored resolves the bundled default (the desktop's
+  // `active_new_thread_background`).
   useEffect(() => {
     let cancelled = false;
-    void resolveInstalledBackground(settings.newThreadComposerBackground).then((url) => {
+    void resolveActiveNewThreadBackground(settings.newThreadComposerBackground).then((resolved) => {
       if (!cancelled) {
-        setBackgroundUrl(url);
+        setActiveBackground(resolved);
       }
     });
     return () => {
@@ -150,14 +160,7 @@ export function AppearanceSettingsPage() {
     });
   };
 
-  const backgroundMeta = backgroundInstalled
-    ? backgroundAvailable
-      ? [
-          settings.newThreadComposerBackground?.name ?? "",
-          "Softened automatically on frosted themes.",
-        ]
-      : ["Image unavailable", "Choose a replacement or remove it."]
-    : ["Add an image behind the composer on empty new threads."];
+  const backgroundMeta = backgroundRow.meta;
 
   const libraryAction = (action: () => void): void => {
     try {
@@ -228,9 +231,9 @@ export function AppearanceSettingsPage() {
           </div>
         </div>
         <div className="settings-row">
-          {backgroundAvailable ? (
+          {activeBackground !== null ? (
             <div className="background-tile">
-              <img className="background-tile-img" src={backgroundUrl ?? undefined} alt="" />
+              <img className="background-tile-img" src={activeBackground.url} alt="" />
             </div>
           ) : (
             <RowTile icon="fileImage" />

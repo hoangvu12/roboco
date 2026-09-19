@@ -549,4 +549,115 @@ Web:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Implemented Option A exactly as specced, desktop + web twin, one commit on
+`wp2r2/48-background-active-resolution`.
+
+**Desktop** (all file:line cites verified against this worktree before
+editing; line numbers below are post-edit):
+
+- `crates/ui/src/settings.rs` — new `active_new_thread_background(cx)`
+  beside `default_new_thread_background` (+ `DEFAULT_NEW_THREAD_
+  BACKGROUND_NAME = "Roboco"` const): `Some`+is_file → user entry;
+  `Some`+missing → `None`; `None` → the materialized default with name
+  "Roboco"; materialization failure → `None`. Never writes
+  `ui-settings.json` (zero migration; Option B/C untouched).
+- `crates/ui/src/shell.rs` — `render_main`'s artwork now resolves through
+  the accessor (the `or_else` fallback is gone from render; the local
+  `new_thread_background_setting` binding was only used there and was
+  dropped); the island predicate extracted as pure
+  `titlebar_island_target(route_is_chat, selected_chat_is_some,
+  sidebar_collapsed, background_resolves)` and routed through
+  `settings::active_new_thread_background(cx).is_some()`. `prepare` chain,
+  hero/mask/dissolve/effect pipelines, and `sync_independent_settings`
+  untouched.
+- `crates/ui/src/settings/appearance.rs` — row reads
+  `stored_background` (raw) + `current_background` (resolved); new pure
+  helpers `background_row_state` (Selected/Unavailable/Empty) and
+  `background_row_meta` implement §2.2(c)'s truth table; `background_
+  available` is now `row == Selected`; actions gate `!= Empty` (stored OR
+  resolved — "Remove" stays rendered on the default, a no-op by
+  construction); effect row gate unchanged (`background_available`), now
+  true on the default.
+
+**Web twin:**
+
+- `lib/new-thread-background.ts` — new `resolveActiveNewThreadBackground`
+  + `ResolvedNewThreadBackground` (url/name/isDefault; null on broken
+  stored); `resolveNewThreadBackground` is now a thin wrapper
+  (`(await resolveActiveNewThreadBackground(...))?.url ?? defaultUrl`) so
+  the painter keeps painting the default on broken stored (the
+  page-vs-painter split is preserved, per Do-not). Also exported
+  `backgroundRowState(stored, resolved)` — the §2.2(c) truth table as a
+  pure helper — so the page and its test share one row state.
+- `routes/settings-appearance.tsx` — the row keys off
+  `backgroundRowState(settings.newThreadComposerBackground,
+  activeBackground)` with the same async `useEffect` + state pattern the
+  page already used; `backgroundUrl` state replaced by
+  `activeBackground: ResolvedNewThreadBackground | null`; thumbnail uses
+  `activeBackground.url`; actions/effect-row gates unchanged but now
+  resolved-derived. No new CSS (logic-only, per acceptance).
+- `state/appearance.ts` — minimal: `useNewThreadBackground`'s doc comment
+  now names the shared resolver; its code is unchanged because the wrapper
+  it already calls IS the shared resolution (changing it to call the
+  resolved helper directly would have broken the painter's broken-stored
+  fallback, which the ticket preserves).
+
+**Tests** (all named in §6, extended + new):
+
+- settings.rs: new `active_background_resolves_default_user_and_broken_
+  states` (sibling of `composer_send_behavior…`, which keeps its
+  `is_none()` assertion); `background_cleanup…` proves the default file
+  survives retirement; `valid_background_replacement…` materializes the
+  default first and asserts install/replace never retires it (managed-dir
+  count 1→2), the resolver tracks the user entry, and remove flips
+  resolver+dir back to default-only; `invalid_initial_background_import…`
+  asserts the failed import leaves the resolver returning the default;
+  `round_trip` asserts a default `UiSettings` serializes without the
+  `newThreadComposerBackground` key.
+- shell.rs: `new_thread_handoff…` asserts `titlebar_island_target`
+  (default counts like installed); new `gpui::test`
+  `titlebar_island_gates_on_the_resolved_background` boots a real `Shell`
+  (the `panel_saves…` harness pattern) — default settings + collapsed
+  sidebar + blank canvas → tween target 1.0; broken-stored → 0.0.
+- appearance.rs: `background_row_state_sees_the_default_and_keeps_
+  unavailable_distinct` + `background_row_meta_names_the_default_and_
+  keeps_the_stored_copy` (pure-helper style, full truth table).
+- web: `new-thread-background.test.ts` — new
+  `resolve_active_new_thread_background` describe (default/user/broken +
+  the painter wrapper's fallback in every state);
+  `appearance-store.test.ts` — new "settings-page background row
+  resolution" describe (default ⇒ installed/available ⇒ effect gate open;
+  user unchanged; Image unavailable distinct; empty row only when nothing
+  resolves).
+
+**Deviations / notes:**
+
+- Review note (per §2.1, not "fixed"): the accessor's `is_file()` probe is
+  synchronous `std::fs` metadata on render paths — same as the island
+  predicate and availability probe that predate this ticket.
+- The web island (ticket 34, `components/app-shell.tsx:436-442`) already
+  keys off `useNewThreadBackground().url !== null`; since that hook now
+  resolves through the shared helper, no island change was needed or made
+  (the ticket says 48 only provides the helper).
+- Ticket 33's landed rework had already moved
+  `resolveNewThreadBackground` to :346-353; the twin was added beside it
+  in the current shape (the ticket's :253-260 cites were pre-33).
+- The new shell `gpui::test` lives beside its cited harness
+  (`panel_saves…`) inside shell.rs's `exit_regressions` test module, so
+  its test path is `shell::exit_regressions::…`.
+- One-frame row flip on web: the page's async resolution means a
+  default-background install shows "Choose image" for the first frame
+  before flipping to the resolved row — the same accepted pattern the
+  page already used for `backgroundUrl`.
+
+**Verification:** `cargo check -p roboco-ui` clean (pre-existing dead-code
+warnings only); `cargo test -p roboco-ui` 938 passed / 0 failed (full
+suite, includes all 44 targeted-filter tests); web `pnpm -r build` green;
+`pnpm test` in `web/packages/app` 1241 passed (1235 base + 6 new).
+rustfmt-clean for every hunk I touched (remaining `--check` diffs in
+settings/* and shell.rs:2783 pre-date this branch — landed 46/47 code).
+Screenshot pair (acceptance §6 web bullet) not produced: headless
+environment; the row-state truth table is covered by the pure-helper tests
+on both platforms.
