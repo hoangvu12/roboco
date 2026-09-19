@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import type { ChatStatus } from "@roboco/engine-client";
+import { encodeScopedId, type ChatStatus } from "@roboco/engine-client";
 import type { SessionStatus } from "@roboco/proto";
 import {
   AttentionSoundGate,
@@ -9,6 +9,7 @@ import {
   chatBannerTexts,
   connectivityBannerTexts,
   connectivitySoundSince,
+  echoSendPending,
   notificationPermission,
   onChatNotificationClick,
   postBanner,
@@ -21,6 +22,7 @@ import {
 } from "../src/lib/notifications";
 import { parseKillSwitch, sessionSoundEnabled } from "../src/lib/sounds";
 import { appAttentionGate, resetAppAttentionGate } from "../src/state/attention-gate";
+import { EchoStore, UNDELIVERED_GRACE_MS, type PendingSend } from "../src/state/transcript-store";
 
 const NOW = Date.parse("2026-09-16T12:00:00Z");
 
@@ -97,6 +99,48 @@ test("staleCompletionIsConsumedWithoutReplayingOnAHeartbeat", () => {
   expect(soundSince(stale, before, false)).toBeNull();
   const refreshed = baseline("working", "old");
   expect(soundSince(refreshed, stale, false)).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// The driver's send_pending probe (the echo overlay's id namespace)
+// ---------------------------------------------------------------------------
+
+describe("echoSendPending", () => {
+  const ENGINE = "http://engine-a:27699";
+  const RAW = "chat-1";
+
+  function send(overrides: Partial<PendingSend> = {}): PendingSend {
+    return {
+      messageId: "msg-1",
+      chatId: encodeScopedId(ENGINE, RAW),
+      startedAtMs: 0,
+      text: "hello",
+      attachmentPaths: [],
+      ...overrides,
+    };
+  }
+
+  test("an echo recorded under the scoped page id suppresses the driver's raw status row", () => {
+    const echoes = new EchoStore();
+    echoes.pushEcho(send());
+    // The composer publishes under the scoped PAGE id; the driver's status
+    // row carries the engine's RAW chat id — the probe bridges the two.
+    expect(echoSendPending(echoes, ENGINE, RAW, 1_000)).toBe(true);
+    // The suppression is honest: past the grace window nothing is pending.
+    expect(echoSendPending(echoes, ENGINE, RAW, UNDELIVERED_GRACE_MS + 1)).toBe(false);
+  });
+
+  test("a raw-keyed echo (the pre-fix namespace) never matches the probe", () => {
+    const echoes = new EchoStore();
+    echoes.pushEcho(send({ chatId: RAW }));
+    expect(echoSendPending(echoes, ENGINE, RAW, 1_000)).toBe(false);
+  });
+
+  test("another engine's scope never matches", () => {
+    const echoes = new EchoStore();
+    echoes.pushEcho(send());
+    expect(echoSendPending(echoes, "http://engine-b:27699", RAW, 1_000)).toBe(false);
+  });
 });
 
 test("connectivityBootOutagesSeedSilentlyThenLaterOutagesAlert", () => {

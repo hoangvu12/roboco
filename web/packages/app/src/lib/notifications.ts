@@ -1,5 +1,6 @@
-import type { ChatStatus } from "@roboco/engine-client";
+import { encodeScopedId, type ChatStatus } from "@roboco/engine-client";
 import type { ConnectivityState } from "@roboco/proto";
+import { pendingSendStatus, type EchoStore } from "../state/transcript-store";
 import { effectiveIndicator, SESSION_STALE_MS, type Indicator } from "./view";
 import { notificationsDisabled, type Sound } from "./sounds";
 
@@ -73,6 +74,26 @@ export function soundSince(
     return "done";
   }
   return null;
+}
+
+/**
+ * The session notification driver's `send_pending` probe, namespace-corrected:
+ * the echo overlay is keyed by the PAGE id — the scoped form the composer
+ * publishes under (`pageChatId`) and the transcript route reads — while the
+ * driver's status rows carry the engine's RAW chat ids. Scope the row's id to
+ * its engine (the registry key, `engine.baseUrl`) before the lookup, exactly
+ * as the registry's projection scopes its rows, or the probe never matches
+ * and the app chimes and banners for its own sends.
+ */
+export function echoSendPending(
+  echoes: EchoStore,
+  engineKey: string,
+  chatId: string,
+  nowMs: number,
+): boolean {
+  return echoes
+    .forChat(encodeScopedId(engineKey, chatId))
+    .some((send) => pendingSendStatus(send, nowMs) === "pending");
 }
 
 /**

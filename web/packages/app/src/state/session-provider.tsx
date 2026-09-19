@@ -8,11 +8,12 @@ import { useSidebar } from "./sidebar";
 import { createEngineSession, disposeEngineSession, engineSessionKey, type EngineSession } from "./engine-session";
 import { useWatchSnapshot } from "./hooks";
 import { useUiSettings } from "./ui-settings";
-import { echoStore, pendingSendStatus } from "./transcript-store";
+import { echoStore } from "./transcript-store";
 import {
   ConnectivityNotificationState,
   chatBannerTexts,
   connectivityBannerTexts,
+  echoSendPending,
   onChatNotificationClick,
   postBanner,
   sessionNotificationState,
@@ -191,9 +192,9 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
         // First appearance: seed silently, never chime or banner on boot.
         continue;
       }
-      const sendPending = echoStore
-        .forChat(status.chatId)
-        .some((send) => pendingSendStatus(send, now) === "pending");
+      // `send_pending`: the overlay is keyed by the scoped PAGE id, so the
+      // probe scopes this row's RAW chat id to the session's engine first.
+      const sendPending = echoSendPending(echoStore, session.engine.baseUrl, status.chatId, now);
       const sound = soundSince(baseline, prev, sendPending);
       if (sound === null) {
         continue;

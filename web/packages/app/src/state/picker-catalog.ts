@@ -93,6 +93,21 @@ function isOfflineError(message: string): boolean {
   return message === OFFLINE_MESSAGE;
 }
 
+/**
+ * The heal guard both slot families share (`#retryOfflineSlots`): a slot
+ * qualifies when it latched an error without rows, nothing is in flight for
+ * it, and — when only offline-latched slots are being re-armed — the error
+ * is the pre-dial transport error.
+ */
+function slotNeedsRetry(slot: LoadableList<unknown>, inFlight: boolean, offlineOnly: boolean): boolean {
+  return (
+    slot.error !== null &&
+    !slot.loaded &&
+    !inFlight &&
+    (!offlineOnly || isOfflineError(slot.error))
+  );
+}
+
 function isUnknownMethod(error: RpcError): boolean {
   return error.kind === "unknown-method" || /unknown method/i.test(error.message);
 }
@@ -424,22 +439,12 @@ export class PickerCatalog {
     if (this.#disposed) {
       return;
     }
-    if (
-      this.#harnesses.error !== null &&
-      !this.#harnesses.loaded &&
-      !this.#harnessesInFlight &&
-      (!offlineOnly || isOfflineError(this.#harnesses.error))
-    ) {
+    if (slotNeedsRetry(this.#harnesses, this.#harnessesInFlight, offlineOnly)) {
       this.resetHarnesses();
       void this.loadHarnesses();
     }
     for (const [harness, slot] of this.#models) {
-      if (
-        slot.error !== null &&
-        !slot.loaded &&
-        !this.#modelsInFlight.has(harness) &&
-        (!offlineOnly || isOfflineError(slot.error))
-      ) {
+      if (slotNeedsRetry(slot, this.#modelsInFlight.has(harness), offlineOnly)) {
         this.resetModels(harness);
         void this.loadModels(harness);
       }
