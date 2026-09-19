@@ -322,8 +322,8 @@ export function dockFrameSettled(docked: boolean): DockFrame {
  * shell.rs:5865-5868 precedes the layer at 5883): the layer stays mounted
  * while the dock is still dissolving one away, so no painted frame of a
  * route change exists with the layer — and the artwork state inside it —
- * absent. The web caller (`ConversationPage`) adds the phone-layer
- * exclusion on top (the phone layer never mounts the hero).
+ * absent. The phone layer mounts the hero too (ticket 53's amendment to
+ * spec decision 5) — the web caller passes the rule through unchanged.
  */
 export function heroLayerMounted(hasSelection: boolean, frame: { readonly active: boolean }): boolean {
   return !hasSelection || frame.active;
