@@ -337,4 +337,98 @@ ticket 50, not this one.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed on `wp2r2/52-mobile-right-pane-drawer`. **Screenshot pairs are
+waived per the run's hard rule** (no `web_smoke`, no browser/CDP, no dev
+server); verification was `pnpm -r build` + `pnpm test` from
+`web/packages/app`, both green — see the branch's commit for the tails.
+
+What landed, per the spec:
+
+- **CSS (`app.css`)** — the phone block's stacking rules are deleted
+  (`.shell` column, the stacked `.right-pane` row + its `display:none`
+  close, `.shell-pane-takeover .main`); `.right-pane` is now the right
+  drawer mirroring `.sidebar`'s: fixed top/right/bottom 0,
+  `min(30rem, 88vw) !important` (the `!important` is the inline-width
+  defense the old rule carried), `translateX(100%)` closed driven by the
+  existing `aria-hidden`, `transition: transform menu-in ease-out`, z 30
+  under the titlebar's 40, `border-left` + open shadow like the left
+  drawer's `border-right`/shadow; `.right-pane.right-pane-expanded` →
+  `100vw !important`. The stacked inner rules re-homed as the drawer's
+  content reset (`position: static; width: 100% !important; height: auto;
+  flex: 1` — the stacked form's `border-top` is dropped, the divider is the
+  38px header's `border-bottom`); `.right-pane-body { padding-top: 0 }`.
+  New `.right-pane-strip-header` (38px via `--rb-titlebar-height`) + the
+  strip's `flex: 1` inside it; new `.pane-backdrop` (z 20, shown by
+  `.right-pane:not([aria-hidden="true"]) ~ .pane-backdrop` — the backdrop
+  is a later shell sibling of the pane, same show shape as
+  `.shell-sidebar-open .sidebar-backdrop`) and the ≥769 reset extends the
+  existing one to `.pane-backdrop`. A `.rb-drawer-card.right-plus-menu-sheet`
+  rule (phone block beside 49's sheet) carries the anchored card's rhythm
+  (gap 2, `--rb-space-xs` pad, `--rb-overlay` bg, 13px) inside the shared
+  sheet.
+- **`right-pane.tsx`** — `useIsPhone()` branch: the inline column width is
+  skipped at phone (§2.3) and `RightTabStrip` mounts in the 38px header
+  above `.right-pane-inner`, chip geometry verbatim, strip-internal
+  behavior untouched. The glide's inline inner-width writes and the rAF
+  tween are left as-is: the CSS `width: 100% !important` outweighs them at
+  phone, so no JS branching on the glide path (36 owns that machinery).
+- **`app-shell.tsx`** — consumes 50's `sidebarForGeometry` inputs as-is
+  (nothing re-landed; the new unit tests pin the outputs:
+  `--rb-pane-open` 75 / band 41 at 375, expanded 375); `paneTabs` is gated
+  on `!phone` at its mount site (§2.2's own prescription — the band keeps
+  the expand control, renders no tabs); the `.pane-backdrop` div is mounted
+  (tap → `rightPaneStore.close(paneChatId)`); a phone-gated Escape-ladder
+  registration at `ESCAPE_PRIORITY.webDrawer` (12) closes the pane drawer —
+  desktop-pane Escape is untouched.
+- **`right-tab-strip.tsx`** — the `+` menu's phone arm (49's explicit
+  deferral HERE): the card body renders through `RbDrawerSheet` (49's
+  landed sheet, `cardClassName="right-plus-menu-sheet"`), trigger unchanged
+  (same button, same press-was-open toggle, controlled `open`). The desktop
+  anchored portal is untouched; the rows are one shared `AddSurfaceRows`.
+  The sheet's window listeners (outside-press/Escape) are skipped at phone
+  — Base UI's modal owns them, and the anchored card's outside test would
+  read the sheet's own portal as "outside". The menu also closes with the
+  pane (a `paneOpen` effect): at phone the strip header stays mounted
+  through the drawer's close glide, and the sheet would otherwise linger
+  over the closed drawer when the ladder's drawer rung consumed the
+  Escape before the sheet's own handler.
+- **`tests/layout.test.ts`** — both specced cases added under a new
+  `phone pane drawer inputs (ticket 52)` describe: `resolvePaneWidth phone
+  inputs: sidebar term is zero` (75 / expanded 375) and
+  `titlebarPaneBandWidth phone inputs no longer collapse the band` (41, and
+  the today-shape `{375, 0, 320}` → 0 documentation case). 50's adjacent
+  cases are untouched.
+
+Deviations / notes for the record:
+
+- **`titlebar.tsx` needed no edit.** §2.2's prescription is the app-shell
+  mount-site gate, and `Toggle panel`/`Collapse panel`/`Expand panel` stay
+  mounted by construction (they live outside the `paneTabs` slot). The
+  file-table row is satisfied vacuously; nothing in the component is
+  phone-aware.
+- **Reduced motion: no new rule added** (so none recorded for both
+  drawers). The ticket's premise ("the left drawer's slide is likewise not
+  in the snap list") is stale against the current sheet: `.sidebar` and
+  `.right-pane` are BOTH already in the pre-existing reduced-motion snap
+  lists (the shell-tween list and the `:12952` pane list), so the right
+  drawer's slide already snaps under reduce with the left drawer's, in the
+  same pre-existing rules.
+- **Two drawers open at once** (sidebar + pane, both z 30, both rung 12):
+  not specced, not exclusivity-wired — Escape peels one per press in
+  registration order (sidebar first, it registered first), each backdrop
+  closes its own drawer. Recorded as a known corner, deliberately not
+  invented around.
+- **36 merger note:** the takeover glide (`useTakeoverStableWidth`,
+  `--rb-main-stable`, `shell-pane-gliding`) is untouched per the Do-nots.
+  At phone it can pin `.main-inner` to the desktop-modeled conversation
+  width (375 − dragged-sidebar − pane) for the 200ms glide window —
+  invisible while the drawer covers the chat, a brief squeeze in the
+  sliver it does not. If 36 wants to arm/suppress the stable width at
+  phone, that seam is theirs.
+- **The chat context menu's phone arm is left floating, NOT this
+  ticket's** (49 deferred it to "52/54 per the wave plan", but M2's
+  research section does not cover it). Ownership: ticket 54 or the next
+  mobile wave ticket that specs it.
+

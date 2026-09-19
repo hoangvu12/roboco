@@ -4964,6 +4964,20 @@ html[data-surface="frosted"] .composer-pill {
     display: none;
   }
 
+  /*
+   * The right pane's `+` menu in the strip's in-drawer phone form (ticket
+   * 52, 49's explicit deferral): the anchored 168px card's rows ride the
+   * shared sheet — the sheet replaces placement, the rows keep their own
+   * rhythm (`gap 2`, the menu's `--rb-overlay` tone and 13px type).
+   */
+  .rb-drawer-card.right-plus-menu-sheet {
+    gap: 2px;
+    padding: var(--rb-space-xs);
+    background: var(--rb-overlay);
+    color: var(--rb-text);
+    font-size: 13px;
+  }
+
   .rb-drawer-card[data-open] {
     animation: rb-dialog-in var(--rb-motion-dialog-in) var(--rb-ease-ease);
   }
@@ -6733,17 +6747,16 @@ button.files-save-pill:hover {
   color: var(--rb-text-faint);
   cursor: default;
 }
-/* ── Phone layout: drawer sidebar, stacked panels ───────────────────── */
+/* ── Phone layout: drawer sidebar, drawer panes ─────────────────────── */
 
 @media (max-width: 768px) {
   /*
-   * The sidebar leaves the flow for a drawer, so the row becomes a stack: the
-   * conversation on top, the pane beneath it. Neither outer column has a width
-   * worth dragging at this size, so both seams retire.
+   * Both outer columns leave the flow for drawers: the sidebar slides from
+   * the left (below), the right pane from the right (ticket 52, research
+   * M2(b)) — the shell itself stays a row whose one in-flow child is the
+   * conversation. Neither column has a width worth dragging at this size,
+   * so both seams retire.
    */
-  .shell {
-    flex-direction: column;
-  }
 
   /* The drawer draws its own edge, so the column's inset seam retires. */
   .sidebar {
@@ -6760,34 +6773,95 @@ button.files-save-pill:hover {
   }
 
   /*
-   * Stacked, so there is no width to clip or glide: the pane takes a row and
-   * its inner child goes back into normal flow.
+   * The pane drawer — the exact mirror of the sidebar drawer below: fixed to
+   * the right edge, `min(30rem, 88vw)` wide, sliding on the 140ms menu-in
+   * ease-out. The existing `aria-hidden` attribute drives it (closed is
+   * `translateX(100%)`, the mounted-hidden form, so surfaces stay mounted
+   * through the closing glide); the drawer's width is CSS-owned — the
+   * `!important` also overrides the inline column width `RightPane` writes
+   * at desktop widths, which the component skips at phone for the same
+   * reason. z 30 sits deliberately under the titlebar (40): its cluster
+   * must stay clickable to close what it opened (the ladder's documented
+   * decision — no new tiers).
    */
   .right-pane {
-    width: auto !important;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(30rem, 88vw) !important;
+    z-index: 30;
+    transform: translateX(100%);
+    transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+    border-left: 1px solid var(--rb-border);
+    background: var(--rb-bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .right-pane:not([aria-hidden="true"]) {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
+  }
+
+  /* Expanded (takeover) at phone: the drawer at full width — the same
+     toggle semantics, no separate phone state; the drawer covers the
+     chat instead of the stacked layout's `display: none` handoff. */
+  .right-pane.right-pane-expanded {
+    width: 100vw !important;
+  }
+
+  /*
+   * The in-drawer tab strip header (§2.2): the 38px row that carries the
+   * surface tabs at phone — the titlebar band's phone replacement, since
+   * the band renders no pane tabs there and 41px could not fit a strip
+   * anyway. The strip inside is the desktop's, chips and all.
+   */
+  .right-pane-strip-header {
+    flex: none;
+    height: var(--rb-titlebar-height);
+    display: flex;
+    align-items: center;
+    padding-inline: var(--rb-space-sm);
+    border-bottom: 1px solid var(--rb-border);
+  }
+
+  .right-pane-strip-header .right-tab-strip {
     flex: 1;
-    min-height: 0;
-    overflow: visible;
   }
 
-  .right-pane[aria-hidden="true"] {
-    display: none;
-  }
-
+  /*
+   * The drawer's content reset (the stacked layout's inner rules, re-homed):
+   * the inner returns to normal flow and fills the drawer below the strip
+   * header; the width `!important` holds it against the glide's inline
+   * writes (an author-important sheet rule beats a normal inline style).
+   */
   .right-pane-inner {
     position: static;
     width: 100% !important;
+    height: auto;
+    flex: 1;
+    min-height: 0;
     border-left: none;
-    border-top: 1px solid var(--rb-border);
   }
 
   .right-pane-body {
     padding-top: 0;
   }
 
-  /* Takeover on a phone is just "the pane, full bleed". */
-  .shell-pane-takeover .main {
+  /* The pane drawer's backdrop — the mirror of `.sidebar-backdrop` below:
+     z 20 under the drawer's 30, shown only while the pane is open (the
+     drawer's own `aria-hidden` drives the sibling rule). */
+  .pane-backdrop {
     display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
+  }
+
+  .right-pane:not([aria-hidden="true"]) ~ .pane-backdrop {
+    display: block;
   }
 
   /* The pill is edge-to-edge on desktop only; a phone needs its gutters.
@@ -6854,7 +6928,8 @@ button.files-save-pill:hover {
 }
 
 @media (min-width: 769px) {
-  .sidebar-backdrop {
+  .sidebar-backdrop,
+  .pane-backdrop {
     display: none;
   }
 }

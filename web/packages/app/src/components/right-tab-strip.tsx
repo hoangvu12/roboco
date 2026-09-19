@@ -9,8 +9,10 @@ import {
   type RightSurface,
   type SurfaceFacts,
 } from "../state/right-pane";
+import { useIsPhone } from "../state/media";
 import { surfaceEntry, type SurfaceContext } from "./surface-registry";
 import { surfaceChoices, useGitDetected } from "./surface-picker";
+import { drawerOnOpenChange, RbDrawerSheet } from "./base/responsive-surface";
 
 /**
  * The right pane's surface tabs — the desktop's `render_right_tab_strip`
@@ -226,7 +228,7 @@ export function RightTabStrip({ chatId, pane }: { chatId: string; pane: ChatPane
         (`shell.rs:7013`), mounted only while at least one tab exists
         (`:7145-7147`).
       */}
-      {rows.length > 0 && <AddSurfaceButton chatId={chatId} />}
+      {rows.length > 0 && <AddSurfaceButton chatId={chatId} paneOpen={pane.open} />}
       {drag !== null &&
         createPortal(
           <div
@@ -386,17 +388,41 @@ function TabChip({
  * portaled to the body — the strip scrolls and the titlebar band clips, and
  * the desktop's `popover::anchored_menu_below_gap` likewise paints above the
  * band rather than inside it.
+ *
+ * At phone widths (ticket 52, 49's explicit deferral to "the right-pane
+ * phone-drawer work") the card body renders in 49's landed bottom-sheet form
+ * (`RbDrawerSheet`, the same `PickerCard` phone arm) instead of the anchored
+ * portal — the trigger is unchanged: same button, same press-was-open
+ * toggle, same controlled `open` flag. The rows are the same component both
+ * arms render (below); the sheet replaces placement, not the menu itself.
  */
-function AddSurfaceButton({ chatId }: { chatId: string }) {
+function AddSurfaceButton({ chatId, paneOpen }: { chatId: string; paneOpen: boolean }) {
   const [open, setOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gitDetected = useGitDetected(chatId);
+  const isPhone = useIsPhone();
+
+  // The menu belongs to the pane's strip, so it leaves with the pane: at
+  // phone the strip header stays mounted through the drawer's close glide,
+  // and the sheet would otherwise linger over the closed drawer (the Escape
+  // ladder's drawer rung consumes the key before the sheet's own handler).
+  // At desktop the strip unmounts with the band on the same flip, so this
+  // is a no-op there.
+  useEffect(() => {
+    if (!paneOpen) {
+      setOpen(false);
+    }
+  }, [paneOpen]);
 
   useEffect(() => {
-    if (!open) {
+    // The sheet arm needs none of this: Base UI's modal Drawer owns the
+    // outside press (the backdrop) and the Escape path, and the rows live in
+    // its portal — the anchored card's window listeners would read the sheet
+    // itself as "outside" and close it mid-press.
+    if (!open || isPhone) {
       return;
     }
     // Park the card below the button, right-aligned to its edge, 10px down
@@ -426,7 +452,7 @@ function AddSurfaceButton({ chatId }: { chatId: string }) {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, isPhone]);
 
   return (
     <div className="right-surface-add-host" ref={rootRef}>
@@ -447,7 +473,23 @@ function AddSurfaceButton({ chatId }: { chatId: string }) {
       >
         <Icon name="plus" size={13} />
       </button>
-      {open && anchor !== null &&
+      {isPhone ? (
+        <RbDrawerSheet
+          open={open}
+          onOpenChange={drawerOnOpenChange((next: boolean) => {
+            if (!next) {
+              setOpen(false);
+            }
+          })}
+          role="menu"
+          ariaLabel="Add panel surface"
+          cardClassName="right-plus-menu-sheet"
+        >
+          <AddSurfaceRows chatId={chatId} gitDetected={gitDetected} onPick={() => setOpen(false)} />
+        </RbDrawerSheet>
+      ) : (
+        open &&
+        anchor !== null &&
         createPortal(
           <AddSurfaceMenu
             chatId={chatId}
@@ -457,15 +499,48 @@ function AddSurfaceButton({ chatId }: { chatId: string }) {
             onPick={() => setOpen(false)}
           />,
           document.body,
-        )}
+        )
+      )}
     </div>
   );
 }
 
 /**
- * The `+` menu (`shell.rs:7054-7144`): the same rows as the picker, minus
- * `Browser` (desktop-only). 168px card, rows with 13px icons. Picking a row
- * closes the menu, as every popover menu does.
+ * The `+` menu's rows (`shell.rs:7054-7144`): the same rows as the picker,
+ * minus `Browser` (desktop-only). Picking a row closes the menu, as every
+ * popover menu does. Shared by the desktop anchored card and the phone
+ * sheet — the two arms differ in placement only.
+ */
+function AddSurfaceRows({
+  chatId,
+  gitDetected,
+  onPick,
+}: {
+  chatId: string;
+  gitDetected: boolean;
+  onPick: () => void;
+}) {
+  return surfaceChoices(gitDetected).map((choice) => (
+    <button
+      key={choice.id}
+      type="button"
+      role="menuitem"
+      className="right-plus-menu-row"
+      onClick={() => {
+        choice.open(chatId);
+        onPick();
+      }}
+    >
+      <Icon name={choice.icon} size={13} />
+      <span className="right-plus-menu-label">{choice.label}</span>
+    </button>
+  ));
+}
+
+/**
+ * The `+` menu's desktop form (`shell.rs:7054-7144`): the 168px card portaled
+ * to the body at the button's viewport coords, 10px below it. The phone form
+ * is `AddSurfaceButton`'s sheet arm above; the rows are `AddSurfaceRows`.
  */
 function AddSurfaceMenu({
   chatId,
@@ -482,21 +557,7 @@ function AddSurfaceMenu({
 }) {
   return (
     <div className="right-plus-menu" role="menu" aria-label="Add panel surface" style={{ left, top }}>
-      {surfaceChoices(gitDetected).map((choice) => (
-        <button
-          key={choice.id}
-          type="button"
-          role="menuitem"
-          className="right-plus-menu-row"
-          onClick={() => {
-            choice.open(chatId);
-            onPick();
-          }}
-        >
-          <Icon name={choice.icon} size={13} />
-          <span className="right-plus-menu-label">{choice.label}</span>
-        </button>
-      ))}
+      <AddSurfaceRows chatId={chatId} gitDetected={gitDetected} onPick={onPick} />
     </div>
   );
 }

@@ -201,6 +201,38 @@ describe("phone geometry inputs", () => {
   });
 });
 
+/*
+ * The phone pane drawer's width inputs (ticket 52, mobile-native — the
+ * desktop has no phone layout, so no desktop test maps): 50's
+ * `sidebarForGeometry = phone ? 0 : sidebarWidth` term is consumed here,
+ * not re-landed — these cases pin what it buys the pane once the phone
+ * form is the drawer (§2.3's verification math).
+ */
+describe("phone pane drawer inputs (ticket 52)", () => {
+  it("resolvePaneWidth phone inputs: sidebar term is zero", () => {
+    // The stored 520 against the phone ceiling: min(520, 375 - 0 - 300) = 75
+    // — the number `--rb-pane-open` carries, where the live dragged width
+    // (375 - 304 - 300 < 0) starved it to 0.
+    expect(resolvePaneWidth(pane({ width: 520 }), 375, 0)).toBe(75);
+    // The expanded arm hands the drawer the whole viewport: 375 - 0.
+    expect(resolvePaneWidth(pane({ width: 520, expanded: true }), 375, 0)).toBe(375);
+  });
+
+  it("titlebarPaneBandWidth phone inputs no longer collapse the band", () => {
+    // The phone-corrected inputs (sidebar 0 → rowLeft 136, pane 75): 41 —
+    // the band the strip's in-drawer header supersedes, but which the
+    // titlebar still consumes so nothing downstream reads 0-by-accident.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
+    ).toBe(41);
+    // Today's shape, documented: the live dragged sidebar (304 → rowLeft
+    // 320, pane 0) starves the band to 0 — the "i dont see the tabs" bug.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 0, rowLeft: 320, takeover: false }),
+    ).toBe(0);
+  });
+});
+
 describe("titlebar cluster geometry", () => {
   it("titlebar_cluster_matches_roboco_window_controls (shell.rs:8447)", () => {
     // 24·3 controls + the 8px group gap + the 2px control gap.
