@@ -46,11 +46,93 @@
 
 ## 6. Acceptance
 
-- [ ] Switch between two chats with open tool groups + mid-transcript scroll offsets: content lands in place instantly — no visible scroll-down animation, no groups animating closed, no shimmer flash.
-- [ ] Unit tests: arrival predicate + no-spring-on-arrival + existing 40 suites green.
-- [ ] Live streaming in the CURRENT chat still animates as before (manual/code check).
-- [ ] `pnpm -r build` + `pnpm test` green.
+- [ ] Switch between two chats with open tool groups + mid-transcript scroll offsets: content lands in place instantly — no visible scroll-down animation, no groups animating closed, no shimmer flash. *(Manual item — screenshot pairs waived per the worktree rule; see the implementer note.)*
+- [x] Unit tests: arrival predicate + no-spring-on-arrival + existing 40 suites green.
+- [x] Live streaming in the CURRENT chat still animates as before (manual/code check). *(Code check: every gate consults the arrival window, which is closed for all same-chat frames — ticket 40's reveal baseline, reservation, runway, and per-commit stepper run exactly as landed.)*
+- [x] `pnpm -r build` + `pnpm test` green.
 
 ## Comments
 
 (User report 2026-09-20 #6. Ticket 40's Comments record the landed baseline machinery this builds on.)
+
+### Implementer note (2026-09-20)
+
+**The ONE predicate.** `ChatArrivalWindow` (`lib/chat-arrival.ts`, pure — a
+`now` parameter everywhere so the tests drive the timeline): `arm(now)` at
+the surface's first loaded commit, `noteMeasure(now)` per ResizeObserver
+height batch, `isArrival(now)` true while armed AND (no measure yet, or
+within `ARRIVAL_QUIESCE_MS` = 50 of the last one) AND inside
+`ARRIVAL_HARD_CAP_MS` = 500. The surface creates one instance per mount
+(`useMemo` keyed on the store) and hands the SAME instance to the scroller
+and `ToolGroupMotionStore`. The surface remounts per doc
+(`key={active.docId}`) and the outlet hands the view the new store only
+once its first frame has landed — so the first loaded commit IS the switch
+arrival (chat-page.tsx:812-855's retain-paint swap). The arm lives in the
+restore layout effect (declaration order: attach → own-send → restore), so
+it runs before the per-commit kick effect on the same commit and before
+the surface's passive baseline `sync`.
+
+**§2.1 scroll.** The 12-frame rAF restore poll is REPLACED (the spec's
+"replace", not the "can stay" branch): the restore effect assigns from THIS
+commit's estimate-based prefix sums synchronously — `restoreViewport` /
+`snapToEnd` are already hard writes — and the post-measure correction is
+the landed per-commit anchor preserve (`writePreserving`, a write, never a
+tween; the desktop's `viewport_finalize` follow-up). No new correction
+machinery. The spring glide is dead at the source: `StickController.kick`
+gains an arrival branch (pinned + window armed → write `maxScroll()`
+directly, spring reset, NO `#schedule` — the spring queue stays empty),
+mirroring `snapToEnd`'s shape; `shouldAnchorLiveStream`'s live-stream
+hard-anchor path is untouched, so live tail-follow never changes. The gate
+is pinned-only by design: the anchored restore path leaves `pinned=false`,
+so its kicks pass through to the (no-op for a released runway) stepper,
+and the anchor preserve owns the corrections.
+
+**§2.2 folds.** `noteRendered` seeds its close tween only when
+`isArrival(now)` is false — a mid-arrival rendered-open flip (the
+streaming-status settle/desync flap behind "try to close the opened group
+tabs") records the endpoint with NO tween; a same-chat flip after the
+window closes animates exactly as before. User clicks are unaffected (a
+click's own `toggledAt`/`from` come from `toggleGroupFold`, not this path).
+
+**§2.3 shimmer.** `sync` arms `shimmerStartedAt` only outside the window:
+the baseline frame and the settle-cascade syncs leave it null for an
+already-loaded transcript's first paint; the next live sync (real streaming
+content) arms it. Note the visible `.tool-shimmer` CSS class keys on
+`active = collapses && autoOpen` (ticket 19/40 territory, untouched per §5
+"do not change row components") — the arrival fix lands in the store
+contract the ticket's §3 names (`tool-motion.ts`'s shimmer epoch), where
+the restart mid-cycle was recorded.
+
+**Subagent (alignTop) surfaces** get the same per-surface window and gates;
+the desktop's override tabs also land at the end (`land_end_pending`,
+transcript.rs:2852, :4239), so the arrival's hard write matches its
+destination semantics.
+
+**Tests** (`tests/chat-arrival.test.ts`, 7 new): the predicate timeline
+(arm/cap, measure quiesce + re-extension, inert measures, superseding arm);
+`chat_switch_arrival_restores_in_one_assignment_and_schedules_no_spring`
+(the desktop-mirror name: `snapToEnd` → per-commit kicks through grown
+content write the new end directly with `requestAnimationFrame` never
+called; after the window closes a kick schedules the spring) plus the
+anchored one-assignment restore; the fold-tween/shimmer gates (arrival
+flap records no tween + shimmer stays null; post-window flip seeds the
+tween and a live sync arms the shimmer); a window-less store keeps ticket
+40's semantics byte-identical. All ticket 40 suites (incl.
+`tool_groups_stay_closed_after_rapid_new_chat_navigation`) green and
+unmodified.
+
+**Screenshot pairs waived** per the worktree rule (verification = build +
+tests only; no dev server / browser / `cargo run` was started). The visual
+acceptance item stays open for a human pass.
+
+**Flake note:** one full-suite run failed `registry.test.ts >
+reconnectBackoffDoublesAndResetsAfterALongLivedConnection` under
+first-run load (2357ms vs 532ms isolated); it passes in isolation and on
+the immediate full re-run, and this change never touches the engine
+registry — same load-flake class ticket 40's note records on this machine.
+
+**Verification:** `pnpm -r build` green (proto, engine-client, app
+`tsc --noEmit` + vite); `pnpm test` in `web/packages/app` green — 82 files
+/ 1300 tests (1293 at base + 7 new). No CSS, string, or row-component
+changes; no new hex/px (the two new constants are named ms durations in
+`lib/chat-arrival.ts`).

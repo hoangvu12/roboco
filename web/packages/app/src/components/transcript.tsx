@@ -66,6 +66,7 @@ import {
 } from "../lib/transcript";
 import { railTicks, type RailTick } from "../lib/rail";
 import { OVERDRAW_PX } from "../lib/stick-spring";
+import { ChatArrivalWindow } from "../lib/chat-arrival";
 import { VeilTracker } from "../lib/veil";
 import type { ChatIndicator } from "../lib/view";
 import type { MessageBadge } from "../lib/badges";
@@ -321,7 +322,17 @@ function TranscriptSurface({
   // never re-animate an existing task tree. The store is per-surface (the
   // desktop's per-Transcript fields): a subagent tab's sync can never touch
   // this chat's reveals.
-  const toolMotion = useMemo(() => new ToolGroupMotionStore(), [store]);
+  //
+  // The chat-switch arrival window (ticket 58): ONE predicate shared by every
+  // arrival gate — the scroller's restore/spring, the tool groups' fold
+  // tweens, the shimmer arming. Armed at this surface's first loaded commit
+  // (the `key={active.docId}` remount IS the chat switch — the outlet hands
+  // the view the new store only once its first frame has landed), cleared
+  // when the measurement cascade quiesces or its hard cap passes. The
+  // desktop's switch is atomic (state.rs:1740-1792, shell.rs:1837-1862,
+  // composer.rs:5849-5874); this window is the web's equivalent gate.
+  const chatArrival = useMemo(() => new ChatArrivalWindow(), [store]);
+  const toolMotion = useMemo(() => new ToolGroupMotionStore(chatArrival), [chatArrival]);
   useEffect(() => () => toolMotion.reset(), [toolMotion]);
   const revealBaselineRef = useRef(false);
   useEffect(() => {
@@ -448,6 +459,7 @@ function TranscriptSurface({
         onJumpChange={onJumpChange}
         onOpenSubagent={onOpenSubagent}
         toolMotion={toolMotion}
+        chatArrival={chatArrival}
       />
     </MarkdownSurfaceProvider>
   );
@@ -500,6 +512,8 @@ interface ScrollerProps {
   readonly onOpenSubagent?: (payload: SubagentOpen) => void;
   /** The surface's tool-group motion store (folds, reveals, blob fetches). */
   readonly toolMotion: ToolGroupMotionStore;
+  /** The surface's chat-switch arrival window (ticket 58's ONE predicate). */
+  readonly chatArrival: ChatArrivalWindow;
 }
 
 /** The user-bubble fold, lifted so virtualizer remounts never lose it. */
@@ -538,6 +552,7 @@ function TranscriptScroller({
   onJumpChange,
   onOpenSubagent,
   toolMotion,
+  chatArrival,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
@@ -609,6 +624,7 @@ function TranscriptScroller({
         holdTimersRef.current.clear();
       },
       reducedMotion: reduced,
+      arrival: chatArrival,
     });
   }
   const stick = stickRef.current;
@@ -764,6 +780,9 @@ function TranscriptScroller({
         }
       }
       if (changed) {
+        // The settle cascade's heartbeat: extend the chat-switch arrival
+        // window so its gates cover this batch's scroll corrections (ticket 58).
+        chatArrival.noteMeasure(performance.now());
         bumpMeasure((tick) => tick + 1);
       }
     });
@@ -926,44 +945,37 @@ function TranscriptScroller({
     pendingViewportRef.current = alignTop ? null : (savedViewportCache.get(docId) ?? null);
   }
   const restoredRef = useRef(false);
+  const arrivalArmedRef = useRef(false);
   useLayoutEffect(() => {
     const el = scrollerRef.current;
-    if (el === null || restoredRef.current || !loaded) {
+    if (el === null || !loaded) {
       return;
     }
-    // The restore targets the anchor row's position, which is only real once
-    // the mounted rows have MEASURED (the desktop's `viewport_finalize`
-    // token waits for layout the same way) — specifically the anchor row's.
-    // Poll a few frames before resolving the saved viewport.
-    let raf = 0;
-    let waited = 0;
-    const anchorId =
-      pendingViewportRef.current !== null && pendingViewportRef.current.kind === "anchored"
-        ? pendingViewportRef.current.anchor.rowId
-        : null;
-    const apply = (): void => {
-      raf = 0;
-      if (scrollerRef.current === null) {
-        return;
-      }
-      const measuredEnough = anchorId === null ? heightsRef.current.size > 0 : heightsRef.current.has(anchorId);
-      if (!measuredEnough && waited < 12) {
-        waited++;
-        raf = requestAnimationFrame(apply);
-        return;
-      }
-      restoredRef.current = true;
-      const elNow = scrollerRef.current;
-      applyRestoredViewport(elNow!);
-    };
-    raf = requestAnimationFrame(apply);
-    return () => {
-      if (raf !== 0) {
-        cancelAnimationFrame(raf);
-      }
-    };
+    // Ticket 58: arm the chat-switch arrival window at this surface's first
+    // loaded commit. The surface remounts per doc (`key={active.docId}`) and
+    // the outlet hands the view the new store only once its first frame has
+    // landed — so this commit IS the arrival. Every arrival gate (the
+    // spring, the fold tweens, the shimmer) consults the window until the
+    // measurement cascade quiesces; the desktop's switch applies the same
+    // state atomically in one frame (state.rs:1740-1792).
+    if (!arrivalArmedRef.current) {
+      arrivalArmedRef.current = true;
+      chatArrival.arm(performance.now());
+    }
+    if (restoredRef.current) {
+      return;
+    }
+    // Ticket 58 §2.1: resolve the saved viewport from THIS commit's
+    // estimate-based prefix sums and assign it immediately — a hard
+    // `scrollTop` write, no poll frames, no spring. The per-commit anchor
+    // preserve below is the post-measure correction: when the anchor row's
+    // measured position differs from the estimate it re-assigns (each
+    // correction is a write, never a tween), exactly like the desktop's
+    // `viewport_finalize` follow-up.
+    restoredRef.current = true;
+    applyRestoredViewport(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stick, loaded, replay, rows.length, alignTop]);
+  }, [stick, loaded, replay, rows.length, alignTop, chatArrival]);
 
   /** Resolve and apply the saved viewport (or open at the end). */
   const applyRestoredViewport = (el: HTMLElement): void => {
@@ -1078,8 +1090,10 @@ function TranscriptScroller({
     // `own_turn_kick` on every sync — the fill-check and the post-layout
     // re-assert advance per streamed delta, transcript.rs:7541-7549); the
     // released reservation still needs the fill-check, so the kick fires for
-    // any live anchor, held or not. A pending viewport restore owns the
-    // first frames instead — the spring must not pre-empt it.
+    // any live anchor, held or not. While the chat-switch arrival window is
+    // armed the kick writes the end directly (ticket 58 — the spring never
+    // pre-empts the restore or glides through the settle cascade); a pending
+    // viewport restore still owns the first frames for the un-loaded case.
     if (pendingViewportRef.current === null && (stick.ownTurn !== null || stick.pinned)) {
       stick.kick();
     }

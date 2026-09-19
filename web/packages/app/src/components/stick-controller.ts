@@ -1,3 +1,4 @@
+import type { ChatArrivalWindow } from "../lib/chat-arrival";
 import {
   AT_BOTTOM_PX,
   GLIDE_MAX_VIEWPORTS,
@@ -47,6 +48,13 @@ export interface StickControllerOptions {
   /** User scroll input (not ours) — the surface cancels its hold/anim state. */
   onUserInput?: () => void;
   reducedMotion?: MediaQueryList | null;
+  /**
+   * The chat-switch arrival window (ticket 58): while it is armed, `kick`
+   * writes the end directly instead of arming the spring — a switch's
+   * arrival is atomic (the desktop's `select_chat`, state.rs:1740-1792),
+   * so the estimate→measure settle cascade must never read as motion.
+   */
+  arrival?: ChatArrivalWindow | null;
 }
 
 /**
@@ -99,11 +107,13 @@ export class StickController {
   readonly #onOwnTurnChange: () => void;
   readonly #onUserInput: () => void;
   readonly #reduced: MediaQueryList | null;
+  readonly #arrival: ChatArrivalWindow | null;
 
   constructor(options: StickControllerOptions) {
     this.#onJumpVisibility = options.onJumpVisibility;
     this.#onOwnTurnChange = options.onOwnTurnChange ?? (() => {});
     this.#onUserInput = options.onUserInput ?? (() => {});
+    this.#arrival = options.arrival ?? null;
     this.#reduced =
       options.reducedMotion ??
       (typeof globalThis.matchMedia === "function" ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null);
@@ -158,6 +168,19 @@ export class StickController {
 
   /** Content or viewport resized: one observation frame (desktop wake_spring). */
   kick(): void {
+    if (this.#pinned && this.#arrival?.isArrival(performance.now())) {
+      // Ticket 58 — a chat switch's arrival is atomic: while the arrival
+      // window is armed, the settle cascade's measurement batches must not
+      // arm the spring against their drift (the visible "scrolling down").
+      // Write the end directly (`snapToEnd`'s shape) and leave the spring
+      // parked; the window is the scroller's ONE arrival predicate.
+      this.#spring.reset();
+      this.#lastTick = null;
+      this.#settledAt = null;
+      this.#write(this.#maxScroll());
+      this.#prevDistance = this.#distance();
+      return;
+    }
     if (
       this.#settledAt !== null &&
       this.#lastTick !== null &&

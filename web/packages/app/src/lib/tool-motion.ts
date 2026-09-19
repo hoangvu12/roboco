@@ -14,6 +14,7 @@
  */
 
 import { motion } from "@roboco/theme";
+import type { ChatArrivalWindow } from "./chat-arrival";
 import { blobDetail, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
 
 // ---------------------------------------------------------------------------
@@ -437,9 +438,20 @@ export class ToolGroupMotionStore {
   readonly #blobs = new Map<string, BlobFetch>();
   readonly #blobOrder = new Map<string, number>();
   readonly #counts = new Map<string, number>();
+  readonly #arrival: ChatArrivalWindow | null;
   #blobCounter = 0;
   #version = 0;
   readonly #listeners = new Set<() => void>();
+
+  /**
+   * @param arrival The chat-switch arrival window (ticket 58) — the surface's
+   * ONE predicate, shared with the scroller. While it is armed, fold flips
+   * render their endpoint without a tween and `sync` does not arm the
+   * shimmer: a switch's arrival is atomic, not choreographed.
+   */
+  constructor(arrival: ChatArrivalWindow | null = null) {
+    this.#arrival = arrival;
+  }
 
   getVersion = (): number => this.#version;
 
@@ -508,7 +520,10 @@ export class ToolGroupMotionStore {
    * The rendered-open flip without a user click (auto-open expiring,
    * :5862-5870): seed the fold's tween from the last RENDERED height. A user
    * toggle's own `from`/`toggledAt` agree with these values, so the seed
-   * never fights a click.
+   * never fights a click. On a chat-switch ARRIVAL the flip records its
+   * endpoint WITHOUT the tween (ticket 58): the arrival predicate is armed,
+   * so the render is the destination state — only a same-chat flip (the
+   * chat live again) animates.
    */
   noteRendered(rowId: string, open: boolean, bodyHeight: number): void {
     const reveal = this.#reveals.get(rowId);
@@ -516,10 +531,12 @@ export class ToolGroupMotionStore {
       return;
     }
     if (reveal.renderedOpen !== null && reveal.renderedOpen !== open) {
-      const prev = this.#folds.get(rowId) ?? DEFAULT_FOLD;
-      const now = performance.now();
-      this.#folds.set(rowId, { ...prev, from: reveal.renderedHeight, toggledAt: now, disclosureAt: now });
-      this.#bump();
+      if (this.#arrival?.isArrival(performance.now()) !== true) {
+        const prev = this.#folds.get(rowId) ?? DEFAULT_FOLD;
+        const now = performance.now();
+        this.#folds.set(rowId, { ...prev, from: reveal.renderedHeight, toggledAt: now, disclosureAt: now });
+        this.#bump();
+      }
     }
     reveal.renderedOpen = open;
     reveal.renderedHeight = bodyHeight;
@@ -566,7 +583,10 @@ export class ToolGroupMotionStore {
         reveal = { ...DEFAULT_REVEAL, starts: [] };
         this.#reveals.set(row.id, reveal);
       }
-      if (reveal.shimmerStartedAt === null) {
+      // Ticket 58: no shimmer restart on a chat switch's arrival — the
+      // window is armed, so this is the first paint of an already-loaded
+      // transcript; a later live sync (real streaming content) arms it.
+      if (reveal.shimmerStartedAt === null && this.#arrival?.isArrival(now) !== true) {
         reveal.shimmerStartedAt = now;
       }
       if (isNewGroup && reveal.headerStartedAt === null) {
