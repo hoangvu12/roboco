@@ -312,6 +312,23 @@ export function dockFrameSettled(docked: boolean): DockFrame {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The hero layer's mount rule (shell.rs:5883, ticket 35)
+// ---------------------------------------------------------------------------
+
+/**
+ * `(!has_selection || dock_frame.active)` — the new-thread hero layer's
+ * mount rule, decided from the frame ticked in the SAME render (the tick at
+ * shell.rs:5865-5868 precedes the layer at 5883): the layer stays mounted
+ * while the dock is still dissolving one away, so no painted frame of a
+ * route change exists with the layer — and the artwork state inside it —
+ * absent. The web caller (`ConversationPage`) adds the phone-layer
+ * exclusion on top (the phone layer never mounts the hero).
+ */
+export function heroLayerMounted(hasSelection: boolean, frame: { readonly active: boolean }): boolean {
+  return !hasSelection || frame.active;
+}
+
 /** Equality on the frame's observable fields (React render guard). */
 export function dockFrameEquals(a: DockFrame, b: DockFrame): boolean {
   return (

@@ -2546,9 +2546,11 @@ a:focus-visible,
 /*
  * The artwork readiness fade (new_thread_background_effects.rs:11-32): a
  * 120 ms smoothstep on image-id change (`cubic-bezier(0.45, 0, 0.55, 1)`),
- * starting at 0 and flipping to 1 two frames after the keyed mount; the
- * same artwork never remounts, so it never re-fades. Reduced motion snaps
- * to 1 with no transition.
+ * keyed on and fed by the SHELL-SCOPED artwork store's clock (ticket 35):
+ * a cold id mounts at 0 and the store flips `data-ready` a frame after the
+ * arrival; the same artwork remounts READY (no transition runs on a fresh
+ * element whose initial style is already 1), so a route change never
+ * re-fades it. Reduced motion snaps to 1 with no transition.
  */
 .new-thread-hero-readiness {
   position: absolute;

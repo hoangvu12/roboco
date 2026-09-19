@@ -271,4 +271,86 @@ S5(d), verbatim:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed on `wp2r2/35-route-change-double-flash`. Screenshot pairs waived per
+the handoff (verification = build + vitest only).
+
+**The same-render tick — shape chosen:** the render-phase tick. The route
+change's tick now runs in `ConversationPage`'s render body (guarded on
+`dockRef.current.frame.docked !== hasSelection`, idempotent under StrictMode
+double-render) and publishes through a render-phase state update (the
+sanctioned derive-state-during-render shape — React discards the first pass,
+so no commit ever contains the hero unmounted). `heroVisible` reads the
+freshly ticked MUTABLE frame via `heroLayerMounted(hasSelection, dockRef.current.frame)`
+(new pure helper in `lib/composer-dock.ts`, shell.rs:5883 verbatim; the page
+adds the web's phone-layer exclusion on top) while `dockFrame` state keeps
+driving the visuals. The per-commit layout effect keeps only its first-pass
+initialization tick; its route-change clause stays as a dead safety net.
+One ordering nuance vs the old flow: the route-change tick now runs BEFORE
+the same commit's `observePane` (it used to run after), so a
+`#panelDeparture`/`#panelReturn` flag would read the pane state as of the
+previous commit. That case requires the panel handoff to arm on the very
+commit the docked flag flips with a width change in the same
+`observePane` sample — which the measured-async `columnWidth` makes
+unreachable today (research S6: the handoff never arms; ticket 36 owns the
+arming input). No channel values or choreography were touched.
+
+**The store:** `NewThreadArtworkStore` in `state/appearance.ts` — module
+scope (`newThreadArtworkStore`), keyed on the settings triple
+(`(path, name)` value-compared + the effect). It owns the resolve
+(`resolveNewThreadBackground` → the singleton blob store), the 120 ms
+`Readiness` clock, the prewarm, and the rAF-while-fading loop
+(shell.rs:5884-5886: frames are requested while `url !== null && value < 1`;
+the loop stops at 1). Snapshot = `{url, id, effect, ready}` (identity-stable
+for `useSyncExternalStore`); `readinessValue()` exposes the clock's value for
+tests and the one-fade assertion. The clock restarts only on a new id; an
+effect flip publishes + re-prewarms but never re-fades (the readiness is
+id-keyed, like the desktop's). Prewarm = decode + raster only, per §5:
+`prepareNewThreadBackgroundEffects(effect, appearance, url)` (ticket 33's
+hero-geometry-free prepare — the call site ticket 34's merger note assigned
+to this ticket) plus `new Image().decode()` for the raw artwork (the
+`none` effect's hero paints the image itself; a warm decode keeps a
+remounting hero from painting empty canvases — the undock direction's
+residual 1-frame canvas gap also hides under `(1 − dissolve) ≈ 0`).
+
+**The blob singleton:** `idbBackgroundBlobStore()` now returns ONE
+process-wide instance (memory stand-in when IndexedDB is absent), so every
+resolve shares one `cachedUrl` — the artwork id is stable per blob revision
+and a put/delete retires the URL exactly once. The resolvers' default
+parameters already called the accessor, so they now bind the singleton with
+no signature change; `settings-appearance.tsx`'s module-level
+`backgroundBlobs` const silently became the same instance (its
+install/remove now retire the URL the hero resolved).
+
+**Deliberate details / deviations:**
+
+- `data-ready` is fed from the store clock as `readiness > 0` (the first
+  frame after a cold id's arrival); the keyed-wrapper CSS stays, so the
+  visible 120 ms ramp is still the CSS transition (the landed
+  approximation), starting ~1 frame after arrival instead of the old 2 —
+  the desktop's smoothstep VALUES are asserted at the store level instead.
+- A background replaced with the SAME path/name keeps the old URL: the
+  settings write is a no-op (`UiSettingsStore.update` short-circuits on an
+  identical serialization), and the desktop's path-keyed artwork cache
+  behaves the same. A different name re-resolves → new URL → new id → its
+  own readiness (spec §2.2's "background replaced" row).
+- The "host test" is the page's pure render body driven through both route
+  states (the vitest environment is node — no React mounting exists in this
+  repo's suite): a real `DockState` (+ per-commit `prepaint`, which warms
+  the dock's clock exactly like the layout effect does) stepped through
+  `/` → `/chat/$id` → `/` with a real store instance, asserting the mount
+  rule, the artwork-id continuity, readiness 1 through the dissolve window
+  (element opacity = the dissolve product alone), and the stale-frame
+  contrast that documents the old defect.
+- Ticket 48 is NOT in this base (`resolveActiveNewThreadBackground` absent);
+  the store consumes `resolveNewThreadBackground` as-is — 48 can re-point
+  the store's injected default resolver without touching its shape.
+
+**Acceptance status:** host test ✓ (route-change survival + identity);
+URL identity/revocation ✓ (singleton + revokeObjectURL spy, no re-resolve
+across remounts); store-level readiness port ✓ (0.5@60ms, 1@≥120, warm → 1,
+new id → 0, reduced → 1, loop stops at 1); one-fade ✓ (readiness 1 during
+the dissolve window); rAF-while-fading ✓ (the store's own frame source);
+build + 1244 tests green (1235 base + 9 new, no regressions); no new
+literal hex/px.

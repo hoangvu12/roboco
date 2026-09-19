@@ -48,8 +48,12 @@ import { useResolvedAppearance } from "../state/appearance";
  */
 
 export interface NewThreadBackgroundProps {
-  /** The decoded artwork to paint, or null while resolving. */
-  readonly artwork: { readonly url: string; readonly id: string | number } | null;
+  /**
+   * The resolved artwork to paint, or null while nothing is resolved at all
+   * (the store's `url === null` — the only null-paint case, ticket 35);
+   * `ready` is the shell-scoped readiness clock's `data-ready` flag.
+   */
+  readonly artwork: { readonly url: string; readonly id: string | number; readonly ready: boolean } | null;
   readonly viewportHeight: number;
   /** `viewport_width − sidebar_now` — the full conversation canvas. */
   readonly heroWidth: number;
@@ -221,7 +225,6 @@ export function NewThreadBackground({
   const revealCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cutoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [ready, setReady] = useState(false);
   const surface = useRootSurfaceTreatment();
   const appearance = useResolvedAppearance();
   const image = useDecodedImage(artwork === null ? null : artwork.url);
@@ -233,29 +236,12 @@ export function NewThreadBackground({
   // the readiness leg rides the CSS wrapper (nested opacities multiply back
   // to the element formula).
   const heroOpacity = newThreadBackgroundElementOpacity(dissolve, 1, surface);
-
-  // The readiness fade (effects.rs:11-32): a 120 ms smoothstep on image-id
-  // change; the same artwork never re-fades; reduced motion snaps.
-  useLayoutEffect(() => {
-    if (artwork === null) {
-      setReady(false);
-      return;
-    }
-    if (reduced) {
-      setReady(true);
-      return;
-    }
-    setReady(false);
-    let inner = 0;
-    const outer = requestAnimationFrame(() => {
-      inner = requestAnimationFrame(() => setReady(true));
-    });
-    return () => {
-      cancelAnimationFrame(outer);
-      cancelAnimationFrame(inner);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artwork?.id, reduced]);
+  // The readiness fade (effects.rs:11-32) is OWNED by the shell-scoped
+  // artwork store (ticket 35): `artwork.ready` is its clock's past-arrival
+  // flag, so a remount with the SAME id mounts ready (no re-fade — the
+  // 120 ms ramp rides the store's own frame source, never this component's
+  // lifecycle) and only a NEW id starts cold. `reduced` still snaps the
+  // transition off here.
 
   // Re-paint both passes from the live composer surface: once per commit
   // (scheduled via rAF so the dock's transform write in the same commit's
@@ -415,14 +401,15 @@ export function NewThreadBackground({
       aria-hidden="true"
     >
       {/*
-        The readiness wrapper keyed on the artwork id: mounting a new id
-        starts the 120 ms fade from 0; the SAME id never remounts, so it
-        never re-fades.
+        The readiness wrapper keyed on the artwork id: a NEW id mounts with
+        data-ready="false" and the store-owned clock flips it a frame later
+        (the 120 ms CSS ramp); the SAME id mounts ready and never re-fades —
+        a remount keeps its identity, so no transition runs (ticket 35).
       */}
       <div
         className="new-thread-hero-readiness"
         key={String(artwork.id)}
-        data-ready={ready ? "true" : "false"}
+        data-ready={artwork.ready ? "true" : "false"}
         data-reduced={reduced ? "true" : "false"}
       >
         {/*

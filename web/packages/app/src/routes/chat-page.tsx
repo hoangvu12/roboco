@@ -36,6 +36,7 @@ import {
   dockFrameEquals,
   dockFrameSettled,
   DockState,
+  heroLayerMounted,
   type DockFrame,
 } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
@@ -579,6 +580,24 @@ export function ConversationPage() {
   const prepaintMovingRef = useRef(false);
   const dockTickedRef = useRef(false);
 
+  // ── The same-render dock tick (ticket 35, shell.rs:5865-5868) ────────────
+  // The desktop decides the hero layer's mount from the frame ticked in the
+  // SAME render — `tick` precedes the layer at shell.rs:5883. The web's
+  // route change used to land one render BEFORE the per-commit layout
+  // effect's tick below, so the navigation render read the previous
+  // render's settled frame: `heroVisible` went false, the hero unmounted
+  // for that commit (its artwork state with it), and the tick's re-render
+  // remounted it — the route-change double flash. The route-change tick
+  // now runs HERE, in the render body, and publishes through a render-phase
+  // update (the sanctioned derive-state-during-render shape: React discards
+  // this pass and re-renders immediately, so no commit ever paints with the
+  // hero unmounted). The mount decision below reads the freshly ticked
+  // MUTABLE frame; `dockFrame` state keeps driving the visuals.
+  if (dockRef.current.frame.docked !== hasSelection) {
+    const ticked = dockRef.current.tick(hasSelection, dockReduced, performance.now());
+    setDockFrameState((prev) => (dockFrameEquals(prev, ticked) ? prev : ticked));
+  }
+
   // ── Bottom chrome stack bookkeeping ─────────────────────────────────────
   // `bottom_stack` measured live (the desktop's paint-time canvas) PLUS
   // `dock_clearance_correction` — the shell reserves the DESTINATION
@@ -611,10 +630,10 @@ export function ConversationPage() {
   }, [chatId, row?.chat.id, session]);
 
   // The dock's per-commit pass: observe the column's horizontal frame,
-  // re-anchor the composer's wrapper, publish the stack measurement. ROUTE
-  // CHANGES tick the clock immediately (the frame flips so the pump below
-  // can start); steady-state frames advance ONLY on the pump's animation
-  // frames — ticking per commit would spin the layout-effect/setState pair
+  // re-anchor the composer's wrapper, publish the stack measurement. Route
+  // changes tick in the render body (the same-render tick above, ticket 35);
+  // steady-state frames advance ONLY on the pump's animation frames —
+  // ticking per commit would spin the layout-effect/setState pair
   // synchronously and freeze the glide. A layout effect so the transform
   // lands in the same commit as the frame — the web peer of
   // prepaint-before-paint.
@@ -626,8 +645,9 @@ export function ConversationPage() {
     // same-column navigation never fade.
     dock.observePane(hasSelection, columnWidth ?? 0, !dockReduced, nowMs);
     // The clock initializes on the first pass (the desktop's first tick
-    // snaps the settled hero state and stamps `last_frame`), then only
-    // route changes tick here — steady frames advance on the pump.
+    // snaps the settled hero state and stamps `last_frame`); route changes
+    // are already ticked by the render above, and the docked check stays as
+    // the safety net. Steady frames advance on the pump.
     if (dock.frame.docked !== hasSelection || !dockTickedRef.current) {
       dockTickedRef.current = true;
       const next = dock.tick(hasSelection, dockReduced, nowMs);
@@ -693,8 +713,12 @@ export function ConversationPage() {
   // rescaled by the right pane), mounted while `!has_selection` or the dock
   // is still dissolving one away, outside the transcript's edge fade.
   // `sidebar_now` is the TWEENED width while the sidebar slide runs
-  // (ticket 34) — the settled target otherwise.
-  const heroVisible = (!hasSelection || dockFrame.active) && !phone;
+  // (ticket 34) — the settled target otherwise. The mount decision consumes
+  // the MUTABLE frame ticked in THIS render (the same-render tick above,
+  // ticket 35 — shell.rs:5883's `(!has_selection || dock_frame.active)`),
+  // while `dockFrame` state drives the visuals; the phone layer never
+  // mounts the hero (out of scope, spec decision 5).
+  const heroVisible = heroLayerMounted(hasSelection, dockRef.current.frame) && !phone;
   const heroWidth = Math.max(viewport - (animatedSidebar ?? sidebarNow), 0);
 
   // The transcript outlet: selected chat → transcript; nothing selected →

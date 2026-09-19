@@ -342,6 +342,12 @@ export async function decodeBackgroundBlob(blob: Blob): Promise<boolean> {
  * else the bundled default. A `path` that is not the managed key is fetched
  * as a URL (a same-session object URL from a pre-managed install) so legacy
  * stored paths keep resolving until they are replaced.
+ *
+ * The default blob store is the module-level singleton
+ * (`idbBackgroundBlobStore`), so every resolution — this one, the
+ * Appearance row's, the install/remove staging — shares ONE `cachedUrl`:
+ * the resolved URL (hence the artwork's identity) is stable across mounts,
+ * and replacing the blob retires the old URL exactly once (ticket 35).
  */
 export async function resolveNewThreadBackground(
   setting: { readonly path: string; readonly name: string } | null,
@@ -355,7 +361,8 @@ export async function resolveNewThreadBackground(
 /**
  * The installed background's URL, or null when nothing is installed or the
  * stored entry no longer decodes — the Appearance row's "Image unavailable"
- * state and the effect row's gate.
+ * state and the effect row's gate. Binds the singleton blob store by
+ * default (see `resolveNewThreadBackground`).
  */
 export async function resolveInstalledBackground(
   setting: { readonly path: string; readonly name: string } | null,
