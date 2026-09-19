@@ -389,4 +389,68 @@ ticket — rows 1, 2, 3, 11:
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementation (2026-09-19)
+
+**What landed.** CSS + inline-style-channel work only, exactly the ticket's
+regions plus the two gate writes; no pure layer touched
+(`lib/composer-flip.ts` / `lib/composer-send.ts` / `lib/composer-dock.ts`
+byte-identical to HEAD), no DOM-structure change (the `.composer-body`
+wrapper and ticket 13's one-shape design stand):
+
+- **§2.1** `app.css` `.composer-pill[data-mode="expanded"] .composer-body`
+  gains `flex: 1 1 auto; min-height: 0` — the body stretches to the pill,
+  so the absolute actions row's containing block bottom IS the pill's
+  bottom edge (the desktop's pill-level anchor, composer.rs:7752-7758).
+  The blank band and the row-over-text overlap fall out of the arithmetic
+  (four-line draft: pill 159 = box 111 + row 46 + borders 2; the row spans
+  the pill's content box [111, 157], flush under the box). The input-box
+  and actions-row rules + their inline styles are untouched.
+- **§2.2** `app.css` new rule `.composer-pill[data-mode="compact"] {
+  justify-content: flex-end; }` beside the body rules — strips + body
+  bottom-justify as one group (empty strips render null, so settled
+  compact rest is pixel-identical: the 47px body fills the 49px pill's
+  content box exactly); during a collapse the row stays put while the
+  pill's top sweeps down over it (composer.rs:7805, 7788-7792).
+- **§2.3** `composer.tsx:837` and `:1769` now write the SAME booleans as
+  `el.dataset["scrollable"]` (no inline `overflowY` remains anywhere in
+  the file); `app.css` `.composer-input` gains `scrollbar-width: none` +
+  `.composer-input::-webkit-scrollbar { display: none; }` (the
+  completion-list / model-list / traits-tray recipe) and the gate
+  `.composer-input[data-scrollable="true"] { overflow-y: auto; }`. Class
+  default stays `overflow: hidden`; `overscroll-behavior: contain`, the
+  fade masks, the wheel, and the drag-autoscroll are untouched, so the
+  wheel chains to the transcript whenever the input has no overflow
+  (`on_scroll_wheel`'s chaining rule, composer.rs:2898-2933).
+
+**Deviation / judgment call for a human.**
+
+1. **`.wizard-input-slot .composer-input` lost its `overflow-y: auto`
+   line** (the rule the ticket's table does not list — app.css:3784-3789
+   at HEAD, ticket 14's wizard slot). Equal specificity + later source
+   order than the new gate meant leaving it would keep the wizard's
+   borrowed input an UNCONDITIONALLY scrollable container — defeating the
+   ticket's own "wizard: content past 120px" gate (§2.3 item 3) and
+   violating "Do not" #4 (the wheel must chain while the input fits).
+   The slot keeps its `height: auto / min-height: 22.75px /
+   max-height: 120px` sizing; overflow now rides the shared
+   `data-scrollable` gate. Relatedly, §2.3 item 2's "delete its write"
+   was read as "delete the inline style write", per the "Why the gate
+   must survive" reconciliation (a fully hidden input cannot
+   wheel-scroll): the wizard effect (composer.tsx:1761-1770) writes the
+   gate with the same `scrollHeight > 120` condition, so past the cap the
+   input still wheel-scrolls (bar hidden) and below it the wheel chains.
+2. **No new or modified tests**, per §3/§6 ("no test file needed
+   modification") — the S1/S4 fixes are CSS/inline-style only; the named
+   suites are the guard and stayed green untouched.
+
+**Verification.**
+
+- `pnpm -r build` (from `web/`) green — proto, engine-client, app
+  (tsc --noEmit + vite build).
+- `web/packages/app` `pnpm test` green: 72 files / 1165 tests, including
+  the untouched `composer-flip` (28), `composer-send` (11), `model-rows`
+  (10), `traits-summary` (6) suites.
+- The §6 screenshot pair (states a–e, desktop halves included) needs a
+  live capture session and is left to the merger, as with tickets
+  08/10/12/13; the geometry above is the code-level derivation of (b),
+  (c), (e), and the compact-rest invariance of (a)/(d).
