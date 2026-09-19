@@ -3268,8 +3268,15 @@ impl Shell {
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         // Recreate per visit: the page's ListHarnesses load re-probes which
         // CLIs are installed, so installing one shows up on the next open.
+        // RemoteAccessPage has no observe/watch on the pairing store, so
+        // recreating it (its `new` fires GetRemoteAccess) is what surfaces
+        // sessions paired since the last visit, e.g. a web client paired
+        // from the browser.
         if section == SettingsSection::Harnesses {
             self.harnesses_page = None;
+        }
+        if section == SettingsSection::RemoteAccess {
+            self.remote_access_page = None;
         }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));

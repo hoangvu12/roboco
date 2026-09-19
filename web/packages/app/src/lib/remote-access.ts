@@ -1,5 +1,6 @@
 import { methods, type EngineClient } from "@roboco/engine-client";
 import type { PairedSession, PairingLink, RemoteAccessSnapshot } from "@roboco/proto";
+import type { StoredEngine } from "./engine-store";
 import { formatLastSeen } from "./devices";
 
 /**
@@ -46,4 +47,19 @@ export function sessionRows(snapshot: RemoteAccessSnapshot, now: number): Sessio
       lastSeenLabel: revoked ? null : `Last seen ${formatLastSeen(session.lastSeen, now)}`,
     };
   });
+}
+
+/**
+ * The routed engine's stored Session id — the row this browser should mark
+ * as its own. Null when the id is missing (shape-drifted storage); a null
+ * id never matches a row. The desktop has no counterpart: its loopback
+ * client is credential-free and holds no Session at all.
+ */
+export function ownSessionId(stored: StoredEngine): string | null {
+  return typeof stored.sessionId === "string" ? stored.sessionId : null;
+}
+
+/** True when `row` is the stored engine's own paired Session. */
+export function sessionIsSelf(row: SessionRow, stored: StoredEngine): boolean {
+  return row.id === ownSessionId(stored);
 }
