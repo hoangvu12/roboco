@@ -11,11 +11,14 @@ import {
   newThreadBackgroundElementOpacity,
   newThreadBackgroundHeight,
   newThreadBackgroundOpacity,
+  NEW_THREAD_BACKGROUND_IDB_PATH,
   Readiness,
   rectEquals,
+  resolveActiveNewThreadBackground,
   resolveNewThreadBackground,
   type Rect,
 } from "../src/lib/new-thread-background";
+import { memoryBackgroundBlobStore } from "../src/lib/background-blob-store";
 
 /**
  * The new-thread hero's geometry — each describe named after the
@@ -302,5 +305,41 @@ describe("resolve_new_thread_background (the decode contract)", () => {
     // attachment, the background must not.
     const svg = new Blob(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], { type: "image/svg+xml" });
     expect(await decodeBackgroundBlob(svg)).toBe(false);
+  });
+});
+
+describe("resolve_active_new_thread_background (ticket 48)", () => {
+  it("resolves the bundled default with name Roboco when nothing is stored", async () => {
+    expect(await resolveActiveNewThreadBackground(null, "/default.png")).toEqual({
+      url: "/default.png",
+      name: "Roboco",
+      isDefault: true,
+    });
+  });
+
+  it("resolves the stored entry while its resource lives, null when it breaks", async () => {
+    const blobs = memoryBackgroundBlobStore();
+    const setting = { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" };
+    // Nothing staged yet: unresolved (null), never silently the default —
+    // the Appearance row's "Image unavailable" state.
+    expect(await resolveActiveNewThreadBackground(setting, "/default.png", blobs)).toBe(null);
+    await blobs.put(new Blob(["bytes"], { type: "image/png" }));
+    const resolved = await resolveActiveNewThreadBackground(setting, "/default.png", blobs);
+    expect(resolved).toEqual({ url: expect.any(String), name: "wall.png", isDefault: false });
+    // A stored entry whose resource is gone is unresolved again.
+    await blobs.delete();
+    expect(await resolveActiveNewThreadBackground(setting, "/default.png", blobs)).toBe(null);
+  });
+
+  it("keeps the painter's default fallback in every state (the thin wrapper)", async () => {
+    const blobs = memoryBackgroundBlobStore();
+    const setting = { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" };
+    await blobs.put(new Blob(["bytes"], { type: "image/png" }));
+    expect(await resolveNewThreadBackground(null, "/default.png", blobs)).toBe("/default.png");
+    expect(await resolveNewThreadBackground(setting, "/default.png", blobs)).not.toBe("/default.png");
+    // A broken stored entry still paints the default (existing behavior —
+    // the page-vs-painter split on the broken state).
+    await blobs.delete();
+    expect(await resolveNewThreadBackground(setting, "/default.png", blobs)).toBe("/default.png");
   });
 });

@@ -341,15 +341,50 @@ export async function decodeBackgroundBlob(blob: Blob): Promise<boolean> {
  * Resolve the artwork to paint: the setting's managed blob if it decodes,
  * else the bundled default. A `path` that is not the managed key is fetched
  * as a URL (a same-session object URL from a pre-managed install) so legacy
- * stored paths keep resolving until they are replaced.
+ * stored paths keep resolving until they are replaced. Thin wrapper over
+ * [`resolveActiveNewThreadBackground`] — the painter and the Appearance row
+ * share that one resolution; on a broken stored entry this wrapper keeps
+ * painting the default (the page-vs-painter split is existing behavior).
  */
 export async function resolveNewThreadBackground(
   setting: { readonly path: string; readonly name: string } | null,
   defaultUrl: string = DEFAULT_NEW_THREAD_BACKGROUND_URL,
   blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
 ): Promise<string> {
+  return (await resolveActiveNewThreadBackground(setting, defaultUrl, blobs))?.url ?? defaultUrl;
+}
+
+/** The background that actually renders (ticket 48's resolved selection). */
+export interface ResolvedNewThreadBackground {
+  /** The artwork that will paint. */
+  readonly url: string;
+  /** Display name: the stored name, or "Roboco" for the default. */
+  readonly name: string;
+  /** True when nothing is stored and the bundled default resolved. */
+  readonly isDefault: boolean;
+}
+
+/**
+ * The web peer of the desktop's `settings::active_new_thread_background`:
+ * the stored entry while its blob still resolves, else the bundled default.
+ * A stored entry that no longer resolves returns null — the Appearance
+ * row's "Image unavailable" state — while the painter separately falls back
+ * to the default through `resolveNewThreadBackground`. Callers gating UI on
+ * "is a background active" must use this, never the raw persisted field.
+ */
+export async function resolveActiveNewThreadBackground(
+  setting: { readonly path: string; readonly name: string } | null,
+  defaultUrl: string = DEFAULT_NEW_THREAD_BACKGROUND_URL,
+  blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
+): Promise<ResolvedNewThreadBackground | null> {
+  if (setting === null) {
+    return { url: defaultUrl, name: "Roboco", isDefault: true };
+  }
   const installed = await resolveInstalledBackground(setting, blobs);
-  return installed ?? defaultUrl;
+  if (installed === null) {
+    return null;
+  }
+  return { url: installed, name: setting.name, isDefault: false };
 }
 
 /**
@@ -380,6 +415,46 @@ export async function resolveInstalledBackground(
     // Not installed (or unreachable) — the caller falls back.
   }
   return null;
+}
+
+/**
+ * The Appearance page's background row state (ticket 48's truth table, the
+ * web peer of the desktop's `background_row_state`): the resolved value
+ * drives the row — thumbnail, meta name, and the effect row's gate — while
+ * the stored one preserves the "Image unavailable" distinction.
+ */
+export interface BackgroundRowState {
+  /** "Replace image" + "Remove" actions (the bundled default counts). */
+  readonly installed: boolean;
+  /** The artwork tile and effect row show exactly when artwork resolves. */
+  readonly available: boolean;
+  /** The meta fragments under the row title. */
+  readonly meta: readonly string[];
+}
+
+export function backgroundRowState(
+  stored: { readonly path: string; readonly name: string } | null,
+  resolved: ResolvedNewThreadBackground | null,
+): BackgroundRowState {
+  if (resolved !== null) {
+    return {
+      installed: true,
+      available: true,
+      meta: [resolved.name, "Softened automatically on frosted themes."],
+    };
+  }
+  if (stored !== null) {
+    return {
+      installed: true,
+      available: false,
+      meta: ["Image unavailable", "Choose a replacement or remove it."],
+    };
+  }
+  return {
+    installed: false,
+    available: false,
+    meta: ["Add an image behind the composer on empty new threads."],
+  };
 }
 
 // ---------------------------------------------------------------------------

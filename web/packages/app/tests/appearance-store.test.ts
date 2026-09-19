@@ -16,10 +16,13 @@ import {
 } from "../src/lib/appearance-store";
 import { sourceName, slug } from "../src/lib/theme-library";
 import {
+  backgroundRowState,
   BACKGROUND_UNSUPPORTED_MESSAGE,
+  DEFAULT_NEW_THREAD_BACKGROUND_URL,
   installNewThreadBackground,
   NEW_THREAD_BACKGROUND_IDB_PATH,
   removeNewThreadBackground,
+  resolveActiveNewThreadBackground,
   resolveInstalledBackground,
 } from "../src/lib/new-thread-background";
 import { memoryBackgroundBlobStore } from "../src/lib/background-blob-store";
@@ -312,5 +315,63 @@ describe("new-thread background install/remove (settings.rs:305-386)", () => {
     expect(await resolveInstalledBackground(settings.getSnapshot().newThreadComposerBackground, blobs)).not.toBe(null);
     // Not installed at all resolves null too.
     expect(await resolveInstalledBackground(null, blobs)).toBe(null);
+  });
+});
+
+describe("settings-page background row resolution (ticket 48)", () => {
+  it("recognizes the default as selected and opens the effect gate", async () => {
+    const settings = new UiSettingsStore({ storage: memoryStorage() });
+    const blobs = memoryBackgroundBlobStore();
+    // Fresh install: nothing stored — the row resolves the bundled default
+    // the same way the canvas painter already does.
+    const stored = settings.getSnapshot().newThreadComposerBackground;
+    expect(stored).toBe(null);
+    const resolved = await resolveActiveNewThreadBackground(
+      stored,
+      DEFAULT_NEW_THREAD_BACKGROUND_URL,
+      blobs,
+    );
+    expect(resolved).toEqual({
+      url: DEFAULT_NEW_THREAD_BACKGROUND_URL,
+      name: "Roboco",
+      isDefault: true,
+    });
+    const row = backgroundRowState(stored, resolved);
+    expect(row.installed).toBe(true);
+    // The effect row's gate: the default keeps it open.
+    expect(row.available).toBe(true);
+    expect(row.meta).toEqual(["Roboco", "Softened automatically on frosted themes."]);
+  });
+
+  it("keeps the user row unchanged and Image unavailable distinct", async () => {
+    const settings = new UiSettingsStore({ storage: memoryStorage() });
+    const blobs = memoryBackgroundBlobStore();
+    settings.updateImmediate({
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+    });
+    const stored = settings.getSnapshot().newThreadComposerBackground;
+    await blobs.put(new Blob(["bytes"], { type: "image/png" }));
+    const resolved = await resolveActiveNewThreadBackground(stored, DEFAULT_NEW_THREAD_BACKGROUND_URL, blobs);
+    expect(resolved?.name).toBe("wall.png");
+    expect(resolved?.isDefault).toBe(false);
+    expect(backgroundRowState(stored, resolved).meta).toEqual([
+      "wall.png",
+      "Softened automatically on frosted themes.",
+    ]);
+    // Stored but broken: "Image unavailable", the effect gate closed.
+    await blobs.delete();
+    const broken = await resolveActiveNewThreadBackground(stored, DEFAULT_NEW_THREAD_BACKGROUND_URL, blobs);
+    expect(broken).toBe(null);
+    const row = backgroundRowState(stored, broken);
+    expect(row.installed).toBe(true);
+    expect(row.available).toBe(false);
+    expect(row.meta).toEqual(["Image unavailable", "Choose a replacement or remove it."]);
+  });
+
+  it("falls back to the empty row only when nothing resolves", () => {
+    const row = backgroundRowState(null, null);
+    expect(row.installed).toBe(false);
+    expect(row.available).toBe(false);
+    expect(row.meta).toEqual(["Add an image behind the composer on empty new threads."]);
   });
 });

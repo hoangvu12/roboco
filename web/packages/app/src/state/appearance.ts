@@ -77,11 +77,14 @@ export interface NewThreadArtwork {
 
 /**
  * Read `newThreadComposerBackground` + `newThreadBackgroundEffect` off the
- * ticket-03 settings store and resolve the artwork to paint: a stored
- * background is only "available" when it actually decodes (SVG is allowed
- * as an attachment but rejected as a background); nothing installed falls
- * back to the bundled `default-new-thread-background.png`. The Appearance
- * UI for setting them is ticket 28's.
+ * ticket-03 settings store and resolve the artwork to paint through the
+ * shared resolver (ticket 48's `resolveActiveNewThreadBackground`, reached
+ * via the `resolveNewThreadBackground` wrapper): a stored background is
+ * only "available" when it actually decodes (SVG is allowed as an
+ * attachment but rejected as a background); nothing installed — or a
+ * stored entry that no longer decodes — falls back to the bundled
+ * `default-new-thread-background.png`. The Appearance UI for setting them
+ * is ticket 28's.
  */
 export function useNewThreadBackground(): NewThreadArtwork {
   const settings = useUiSettings();
