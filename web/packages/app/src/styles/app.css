@@ -2523,20 +2523,23 @@ a:focus-visible,
 }
 
 /*
- * The two stacked passes (new_thread_background_mask.rs): both paint the
- * same cover-fit image (`background-size: cover` + `50% 50%` == the fit
- * steps — centred crop, `corner_radii` 0, no grayscale). The reveal pass
- * runs at CUTOUT_REVEAL_OPACITY (0.5) with only the shared bottom fade; the
- * cutout pass at 1 additionally clears the feathered hole (its mask is a
- * separate mask on the child that carries the image — element masks
- * multiply, so the two compose).
+ * The two stacked passes (new_thread_background_mask.rs): both are CANVASES
+ * painting the same cover-fit artwork (drawn at the device-pixel ratio with
+ * the desktop's `paint` fit math — max scale, centred crop, `corner_radii`
+ * 0, no grayscale), then alpha-masked per pixel by the JS on the same-frame
+ * remask cadence: the reveal pass multiplies its alpha by the shared bottom
+ * fade only, at CUTOUT_REVEAL_OPACITY (0.5); the cutout pass at 1 applies
+ * the single combined min(hole, fade) mask in one canvas — the desktop's
+ * ONE shader, so the hole and the fade compose by min, never by multiplying
+ * two element masks. The hole itself is the smoothstep-over-SDF ramp (a
+ * hard 8px transparent margin, then the 120–280px one-sided dome), not a
+ * Gaussian blur. These classes carry geometry and pass opacity only.
  */
 .new-thread-hero-art {
   position: absolute;
   inset: 0;
-  background-size: cover;
-  background-position: 50% 50%;
-  background-repeat: no-repeat;
+  width: 100%;
+  height: 100%;
 }
 
 .new-thread-hero-art--reveal {
@@ -2545,59 +2548,6 @@ a:focus-visible,
 
 .new-thread-hero-art--cutout {
   opacity: 1;
-}
-
-/*
- * The background effects (ticket 28 §2.8, settings.rs
- * NewThreadBackgroundEffect): the desktop rasterizes true transforms
- * (dither/ASCII/halftone pixels, scanline rows). Web scope cut: `none` is
- * exact, scanlines is a real overlay (the pronounced display-line texture,
- * painted INSIDE the masked art passes so the composer's cutout hole stays
- * clear), and dither/ascii/halftone ship as CSS-filter stand-ins evoking
- * the palette/dot/character reduction — flagged in the ticket's Comments
- * as the follow-up a canvas port owes.
- */
-.new-thread-hero[data-effect="scanlines"] .new-thread-hero-hole::after,
-.new-thread-hero[data-effect="scanlines"] .new-thread-hero-art--reveal::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgb(0 0 0 / 0.16) 0 1px,
-    transparent 1px 3px
-  );
-}
-
-.new-thread-hero[data-effect="dither"] .new-thread-hero-art,
-.new-thread-hero[data-effect="dither"] .new-thread-hero-hole {
-  filter: contrast(1.4) saturate(0.7);
-}
-
-.new-thread-hero[data-effect="halftone"] .new-thread-hero-art,
-.new-thread-hero[data-effect="halftone"] .new-thread-hero-hole {
-  filter: contrast(1.25) brightness(1.05) grayscale(0.25);
-}
-
-.new-thread-hero[data-effect="ascii"] .new-thread-hero-art,
-.new-thread-hero[data-effect="ascii"] .new-thread-hero-hole {
-  filter: grayscale(1) contrast(1.6) brightness(1.1);
-}
-
-/*
- * The cutout hole: white with a blurred black rounded rect at the
- * composer's live box (radius 26 + the 8px hard-transparency clearance,
- * feathered over clamp(0.52·heroHeight, 120, 280)), regenerated every frame
- * from the measured `#composer-surface` — the JS writes the mask-image
- * inline; this class only carries the artwork itself.
- */
-.new-thread-hero-hole {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: 50% 50%;
-  background-repeat: no-repeat;
 }
 
 /*
@@ -3169,6 +3119,19 @@ a:focus-visible,
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   box-shadow: var(--rb-shadow-popover);
+}
+
+/*
+ * The frosted branch (composer.rs:7714 + frost.rs:27-33): under a resolved
+ * frosted surface the pill's background becomes the composer sidebar tint —
+ * a translucent bg-tone wash that moves toward the pane tone while leaving
+ * most of the blurred backdrop visible (theme.rs `composer_sidebar_tint`,
+ * alpha 0.15) — over the retained 16px backdrop blur, instead of the opaque
+ * input flatten. Radius `26 − 4·dockAmount` rides the inline morph.
+ * `--rb-*` tokens only.
+ */
+html[data-surface="frosted"] .composer-pill {
+  background: color-mix(in srgb, var(--rb-bg) 15%, transparent);
 }
 
 /*

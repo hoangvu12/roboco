@@ -467,4 +467,65 @@ frosted tint branch, §2.3.)
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Implemented on `wp2r2/33-new-thread-background-pixel-parity`.
+
+**Rendering shape:** option (a) — both hero passes are `<canvas>` elements
+(`.new-thread-hero-art--reveal/--cutout`); each paint draws the cover-fit
+artwork at the device-pixel ratio (the desktop `paint` fit math) and then
+applies the pure mask grid through `destination-in` (dest alpha ×= mask
+alpha — the shader's mask multiply). No per-frame `toDataURL()` anywhere.
+The grid itself is evaluated at CSS resolution via
+`cutoutMaskRaster(hero, composer, cutout, w, h, scale)` — the ramp is
+scale-invariant, so CSS-resolution evaluation + bilinear upscale to the
+backing store is the same shader with per-commit JS cost capped independent
+of dpr. The grid's out-of-band rows/columns (where the hole is exactly 1)
+are filled with the row-constant fade — mathematically identical to
+per-pixel evaluation (unit-tested for equivalence), only cheaper.
+
+**Kept-but-unconsumed:** `BOTTOM_FADE_GRADIENT` stays exported, untouched
+(the ticket's table keeps it); the component no longer consumes it — both
+passes now paint the exact per-pixel smoothstep fade from the pure
+function (strictly closer to the desktop than the quarter-stop gradient).
+The old SVG Gaussian trio (`heroCutoutHole`/`featherSigma`/
+`cutoutMaskDataUri`) is deleted outright — no reduced-motion fallback kept:
+the mask is static geometry (not motion), and reduced motion already snaps
+only the readiness fade, as before. `.new-thread-hero-hole` (the DOM child
+and its CSS) is gone with it — the min happens inside one canvas mask, so
+the child has no job.
+
+**Worker file added:** the off-main-thread rasterizer lives at
+`web/packages/app/src/lib/new-thread-background-effects-worker.ts`
+(a module Worker; the browser driver falls back to main-thread rasterizing
+if Worker construction fails). The driver seams (`loadLuminance`/
+`rasterize`) are injectable, so the node unit tests drive the cache with
+fakes over the desktop's 60×32 fixture.
+
+**Cold-effect behavior:** while an effect's raster is pending, the hero
+paints NOTHING (both pass canvases cleared) — the desktop's `Empty` until
+warm; the raw artwork never swaps mid-view. The component's on-demand
+`effectRaster` consumption is the only loader wired; the prewarm-on-both-
+routes call site is left for ticket 35, whose store owns the artwork
+identity (`prepareNewThreadBackgroundEffects` is callable without hero
+geometry, as required).
+
+**Cache scope:** keyed `(url, effect, light-normalized)` — one memoized
+promise per key (the one-pending-job semantics), no eviction (per the
+do-not: the 4-entry FIFO is desktop-only). Rejected jobs evict their own
+entry so an offline fetch doesn't poison the cache. Dither/None key
+light=false regardless of the resolved appearance, exactly like
+`raster_image`'s key.
+
+**Pill:** the frosted branch is `html[data-surface="frosted"] .composer-pill
+{ background: color-mix(in srgb, var(--rb-bg) 15%, transparent); }` — the
+`composer_sidebar_tint` recipe (bg-tone wash at the desktop's documented
+0.15 alpha) over the retained 16px backdrop blur; opaque branch untouched.
+The hero's frost leg reads the root's `data-surface` attribute via a
+MutationObserver, so the acceptance's forced-attribute state is honored.
+
+**Not done here:** the §6 screenshot pair (no desktop/browser screenshot
+harness in this session — left for review); `pnpm -r build` and the package
+vitest suite are green (19 mask/opacity cases, 12 effect cases, no
+regressions).
+
