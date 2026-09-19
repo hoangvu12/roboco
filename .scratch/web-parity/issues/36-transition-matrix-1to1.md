@@ -338,3 +338,109 @@ accepted until it lands, which is why 35 blocks this ticket.)
 ## Comments
 
 (empty; appended during implementation)
+
+### Implementer note (2026-09-19)
+
+Landed as `feat(web): ticket 36 transition matrix 1:1 — pane handoff, chat
+swaps, snap rules`. All five §2.4 host wirings; the pure port
+(`lib/composer-dock.ts`) untouched (§5 respected — verified field-for-field
+against `composer_dock.rs`/`panel_handoff.rs` before wiring).
+
+**1. Arming (§2.1) — the two half-fixes, both required.** Feeding the
+synchronous width alone is NOT sufficient: ticket 35's render-phase tick ran
+BEFORE the per-commit layout effect's `observePane`, so `tick`'s
+`#routeChanged` gate saw `pane.progress === null` and `#panelDeparture`/
+`#panelReturn` could never arm (the pump ticks later see
+`frame.docked === docked`, so the arm window never reopens). Both halves now
+match the desktop's paint order (shell.rs:7901-7906 → :7915-7919 → render_main's
+tick at :5882-5885, one `frame_time`): the render body runs
+`observePane → transcriptWidth → tick`, per render (the pump's re-renders are
+the handoff's frame source, the peer of `motion_active` at shell.rs:7907-7909 —
+see 4 below). The width is `right_now`'s peer, computed in the page:
+`hasSelection && pane.open ? resolvePaneWidth(pane, viewport,
+animatedSidebar-now, + pane edge bounce) : 0` — the ANIMATED sidebar (ticket
+34's `animatedSidebar ?? sidebarNow`, matching `sidebar_now()` inside
+`right_target`), the seam bounce via a generalized `readEdgeOffset` helper,
+and `useRightPane(chatId)` for the pane state (the subscription is load-bearing:
+`previous` must carry the pane width painted while docked, or D' reads width
+0→0 after a same-chat pane open and never arms — the page previously did not
+re-render on pane-store changes at all). The old measured-`columnWidth` input
+is gone from `observePane`; the measured value still feeds only the composer's
+width target, as before. Chose the ticket's "or" clause — the page computes
+the pane width itself — so **`app-shell.tsx` is unchanged** (its published
+`paneWidth` is target-based off the settled sidebar, which is NOT
+`right_now`'s animated-sidebar semantics; publishing it would have needed a
+second animated source anyway).
+
+**2. `transcriptWidth` retention (§2.4.3).** Called in the render body
+before the tick (the capture condition `!docked && frame.docked` must see the
+pre-flip frame), target = `conversationWidth(viewport, sidebarTarget(sidebar),
+paneNowWidth)` (shell.rs:7910-7914; the takeover-stable leg never co-occurs
+with a route flip — the chat switch clears `main_takeover_tween`). While
+`departing && paneHandoffLive`, `.chat-body`'s inline width is pinned to the
+retained SOURCE value (`.w(px(transcript_width))`, shell.rs:5932);
+`inset: 0` + width is over-constrained in LTR (left+width win), so no CSS rule
+was needed — documented at `.chat-body` in app.css.
+
+**3. Chat→chat transcript swap (§2.4.4).** Retain-paint, the "previous rows
+stay mounted until the new store's first frame" arm: a `useSyncExternalStore`
+on the new store's `loaded` flag drives the swap; until it flips, the outlet
+keeps painting the LAST PAINTED store (frozen snapshot — its watch is disposed
+or going, which is fine: `dispose` freezes the snapshot), behind the same
+occluding veil as the departing transcript (retained pixels are not an
+interaction surface for the destination chat — a Retry/copy on the old rows
+would otherwise act on the new chatId's handlers). When `loaded` flips, the
+outlet hands `TranscriptView` the new store; its `key={active.docId}` remounts
+with rows already in place — no blank frame. The COMPOSER gets the LIVE new
+store during the window (never the retained one): its target is the
+destination chat, and the wizard must not offer the previous chat's entries.
+A fresh deep-link mount (no previously painted store) paints the new store
+immediately, as today. `app-shell`/`right-pane.tsx` glide machinery untouched
+(§5); note the retained surface is clipped identically on a pane-flag change
+because the pane column itself snapped (see 5).
+
+**4. Pump gate (§2.4.2).** The frame pump's stop condition now includes
+`dockRef.current.paneProgress() !== null`, re-read per pump bump — the peer of
+`if panel_handoff { motion_active.set(true) }` (shell.rs:7907-7909). Without
+it, a handoff whose glide+choreography settled early (D' pins `#phase`, so
+`active` rides only the 0.320 s choreography) could strand the composer at
+opacity < 1. The composer's inline `opacity: dockRef.current.opacity()`
+(chat-page.tsx) and `layoutWidth`/`prepaint` (the p ≥ 0.22 width snap and the
+12/8 px travel) were already wired and now actually move — the host-level
+tests pin all three.
+
+**5. Pane-key snap (§2.4.5).** `RightPane` tracks the previous pane key in a
+ref (updated per commit in a layout effect); on the commit where the key
+changed, `data-pane-snap="1"` + `.right-pane[data-pane-snap="1"] {
+transition: none; }` lands the destination's width immediately (the desktop
+clears `right_tween`/`right_takeover_content_tween`/`main_takeover_tween`
+unconditionally on a chat switch, shell.rs:1837-1862 — so the web suppresses
+on every key change, not only flag changes; when flags match there is no width
+change to suppress anyway). The flag drops on the next commit, so the pane's
+OWN same-chat open/close/takeover glides (§5) are untouched. No literal px
+added.
+
+**Tests** (`tests/composer-dock.test.ts`, +11 cases → 31 total): a `hostPass`
+helper driving the page's exact render-body call order (observePane with the
+synchronous pane width → transcriptWidth → tick → prepaint); case B host case
+(arms on the navigation commit, panel_departure fast dissolve vs the plain
+0.420 channel at p=0.10, opacity 0 + dissolve 1 across p 0.19-0.25, the
+width frozen at 768 before p 0.22 and snapped to the narrow column after,
+progress live through the window, released at p ≥ 1, 12 px travel, mid-flight
+reversal preserving opacity); case D' host case (armed on the reverse, source
+width retained through the window and released after, amount held then 0,
+`return_from_panel` selectors/dissolve finishing, 8 px travel); the
+`ordinary_resizing_and_same_column_navigation_do_not_fade` host table (A/D
+0→0 never arm; same-column chat→chat incl. differing pane flags; same-chat
+pane open/drag; reduced motion resets); and the
+`panel_exit_retains_source_transcript_width_only_until_handoff_ends` host
+case (pre-tick capture + release). The pane-key snap and the swap-retention
+are DOM-level wiring (CSS suppression + retained-store painting) with no node-
+testable pure seam — covered by `tsc --noEmit` (in `pnpm -r build`) and noted
+here per the app-shell-drawer precedent.
+
+**Verification:** `pnpm -r build` green (web workspace, includes `tsc
+--noEmit` for every package); `pnpm test` in `packages/app` green — 81 files,
+1286 tests, no regressions. **Screenshot pairs waived** per the batch's
+verification rule (build + tests only; no dev server / browser / CDP was
+started).

@@ -1121,6 +1121,20 @@ a:focus-visible,
   transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
+/*
+ * The chat-switch snap (shell.rs:1837-1862): when the pane KEY (the owning
+ * chat) changed in this commit, the width lands at the destination's stored
+ * flags immediately — the desktop clears `right_tween` /
+ * `right_takeover_content_tween` / `main_takeover_tween` with "snap, no
+ * tween — the panels belong to the destination chat". The flag is set for
+ * exactly that commit (`RightPane` drops it once the key ref catches up),
+ * so the pane's own same-chat open/close/takeover glides above are
+ * untouched.
+ */
+.right-pane[data-pane-snap="1"] {
+  transition: none;
+}
+
 .right-pane-inner {
   position: absolute;
   top: 0;
@@ -2550,7 +2564,12 @@ a:focus-visible,
   }
 }
 
-/* Chat body holds the transcript column. */
+/* Chat body holds the transcript column. While a departing panel handoff
+ * runs, the page pins this element's inline width to `transcript_width`'s
+ * retained SOURCE value (shell.rs:5917-5938's `.w(px(transcript_width))`) so
+ * the fading rows never reflow into the canvas-wide layout; at desktop
+ * widths `inset: 0` plus a width is over-constrained in LTR — left + width
+ * win — so the pin needs no rule here. */
 .chat-body {
   flex: 1;
   min-height: 0;

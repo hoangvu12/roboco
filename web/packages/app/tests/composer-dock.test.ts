@@ -358,3 +358,285 @@ describe("glide constants (motion.rs:476-484)", () => {
     expect(stage(2, 0, 1)).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Host-level cases (ticket 36 §3/§6) — `ConversationPage`'s render-body
+// sequence, in the desktop's paint order
+// ---------------------------------------------------------------------------
+
+/**
+ * One pass of the page's per-render dock wiring, in the order the desktop
+ * paints it: `observe_pane` (shell.rs:7901-7906) with the pane's SYNCHRONOUS
+ * width, then `transcript_width` (:7915-7919, before the tick so the
+ * retention capture sees the pre-flip frame), then `tick` (render_main,
+ * :5882-5885), then the per-commit `prepaint` (the layout effect's
+ * re-anchor). The suite runs in vitest's node environment with no DOM, so
+ * the host wiring is pinned by driving the dock through this exact call
+ * order with the exact inputs the page computes — the component glue
+ * itself is typechecked by `tsc --noEmit` in `pnpm -r build`.
+ */
+function hostPass(
+  state: DockState,
+  input: {
+    docked: boolean;
+    /** The pane's synchronous width — `right_now`, 0 on the canvas. */
+    paneWidth: number;
+    /** The conversation column's content width (`main_content_width`). */
+    mainWidth: number;
+    now: number;
+    enabled?: boolean;
+  },
+): { handoff: boolean; retained: number; frame: ReturnType<DockState["tick"]> } {
+  const enabled = input.enabled ?? true;
+  const handoff = state.observePane(input.docked, input.paneWidth, enabled, input.now);
+  const retained = state.transcriptWidth(input.mainWidth, input.docked, handoff);
+  const frame = state.tick(input.docked, false, input.now);
+  state.prepaint({ left: 224, top: 700, height: 172 }, 881, false, input.now);
+  return { handoff, retained, frame };
+}
+
+describe("host: new-thread → chat with stored-open pane (case B, shell.rs:7901-7919)", () => {
+  const PANE = 480;
+  const CANVAS = 1040;
+  const NARROW = CANVAS - PANE;
+
+  it("arms on the navigation commit itself and hides the geometry switch", () => {
+    const state = new DockState();
+    // Canvas frames: no selection, the pane forced to width 0.
+    const canvas = hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    expect(canvas.handoff).toBe(false);
+    const flip = 100;
+    // The navigation commit: the docked flip AND the pane width 0→480 in the
+    // SAME sample — the synchronous input that makes the flagship case arm
+    // (the old measured-`columnWidth` input delivered the width one commit
+    // late, after the flip, so it never armed at all).
+    const armed = hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: flip });
+    expect(armed.handoff).toBe(true);
+    expect(state.opacity()).toBe(1);
+    // The composer's width enters frozen at the canvas cap (768, the
+    // stale-measured column at the flip commit)…
+    expect(state.layoutWidth(768, false, flip)).toBeCloseTo(768, 3);
+
+    // p = 0.10 — the panel_departure FAST dissolve: already past half on the
+    // 0.320 s clock, where the plain docking channel would barely have
+    // started (the 0.420 s window) — "a FAST kill, not the 0.420 channel".
+    const early = hostPass(state, {
+      docked: true,
+      paneWidth: PANE,
+      mainWidth: NARROW,
+      now: flip + 0.1 * PANEL_HANDOFF_SECONDS * 1000,
+    });
+    const plainChannel = dockVisualsAdvance(
+      dockVisualsSettled(false),
+      true,
+      (0.1 * PANEL_HANDOFF_SECONDS) / dockGlideSeconds(true),
+    );
+    expect(early.frame.visuals.dissolve).toBeGreaterThan(0.5);
+    expect(early.frame.visuals.dissolve).toBeGreaterThan(plainChannel.dissolve);
+
+    // p ∈ [0.19, 0.25] — the invisible interval: the composer is at opacity
+    // 0, the hero fully dissolved, and the width switch happens only from
+    // p ≥ 0.22 — frozen before, snapped after, while invisible either way.
+    for (const progress of [0.19, 0.22, 0.25]) {
+      const at = flip + progress * PANEL_HANDOFF_SECONDS * 1000;
+      const mid = hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: at });
+      expect(state.opacity()).toBe(0);
+      expect(mid.frame.visuals.dissolve).toBe(1);
+      // The pump gate (shell.rs:7907-7909's motion_active peer): the
+      // handoff keeps frames coming while its clock runs.
+      expect(state.paneProgress()).not.toBe(null);
+    }
+    expect(state.layoutWidth(768, false, flip + 0.19 * PANEL_HANDOFF_SECONDS * 1000)).toBeCloseTo(768, 3);
+    expect(state.layoutWidth(NARROW, false, flip + 0.25 * PANEL_HANDOFF_SECONDS * 1000)).toBeCloseTo(
+      NARROW,
+      3,
+    );
+
+    // p ≥ 1 — settled: the handoff releases and the composer is back.
+    const done = hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: flip + 321 });
+    expect(done.handoff).toBe(false);
+    expect(state.opacity()).toBe(1);
+    expect(state.paneProgress()).toBe(null);
+  });
+
+  it("carries the 12 px docking travel, decaying over stage(p, 0.22, 1)", () => {
+    const state = new DockState();
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: 100 });
+    const at = 100 + 0.25 * PANEL_HANDOFF_SECONDS * 1000;
+    hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: at });
+    const { dy } = state.prepaint({ left: 224, top: 700, height: 172 }, 881, false, at);
+    expect(dy).toBeCloseTo(12 * (1 - stage(0.25, 0.22, 1)), 3);
+  });
+
+  it("a mid-handoff reversal preserves the current opacity", () => {
+    const state = new DockState();
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: 100 });
+    const mid = 100 + 0.1 * PANEL_HANDOFF_SECONDS * 1000;
+    hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: mid });
+    const alpha = state.opacity();
+    expect(alpha).toBeGreaterThan(0);
+    expect(alpha).toBeLessThan(1);
+    // Back to the canvas in the same frame: the reverse sample re-arms with
+    // `from_opacity` set to the CURRENT value — no restart from 1.
+    const reversed = hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: mid });
+    expect(reversed.handoff).toBe(true);
+    expect(state.opacity()).toBeCloseTo(alpha, 5);
+  });
+});
+
+describe("host: chat with pane → new-thread (case D', shell.rs:7915-7919)", () => {
+  const PANE = 480;
+  const CANVAS = 1040;
+  const NARROW = CANVAS - PANE;
+
+  it("retains the source column width, hidden, until the handoff ends", () => {
+    const state = new DockState();
+    // Docked frames on the chat-with-pane: the column is narrow.
+    expect(hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: 0 }).retained).toBe(
+      NARROW,
+    );
+    const flip = 100;
+    // The reverse flip: docked true→false AND pane 480→0 in the same sample.
+    const armed = hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: flip });
+    expect(armed.handoff).toBe(true);
+    // `transcript_width` captured the SOURCE column (560), not the canvas
+    // target — the call runs BEFORE the flip's tick, so the capture sees
+    // the pre-flip `frame.docked`.
+    expect(armed.retained).toBe(NARROW);
+    // `amount` is held at the painted value until p ≥ 0.22, then 0.
+    expect(armed.frame.amount).toBe(1);
+    for (const progress of [0.1, 0.19, 0.25]) {
+      const at = flip + progress * PANEL_HANDOFF_SECONDS * 1000;
+      const mid = hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: at });
+      expect(mid.retained).toBe(NARROW);
+      expect(state.paneProgress()).not.toBe(null);
+    }
+    // The invisible interval: opacity 0 while the geometry switches.
+    for (const progress of [0.19, 0.22, 0.25]) {
+      hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: flip + progress * PANEL_HANDOFF_SECONDS * 1000 });
+      expect(state.opacity()).toBe(0);
+    }
+    // p ≥ 0.22 — the amount released…
+    expect(
+      hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: flip + 0.3 * PANEL_HANDOFF_SECONDS * 1000 })
+        .frame.amount,
+    ).toBe(0);
+    // …and the controls finish with the input (return_from_panel).
+    const done = hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: flip + 321 });
+    expect(done.handoff).toBe(false);
+    expect(done.frame.visuals.selectors).toBe(1);
+    expect(done.frame.visuals.dissolve).toBe(0);
+    // The handoff ended → the retention releases to the canvas width.
+    expect(done.retained).toBe(CANVAS);
+    expect(state.opacity()).toBe(1);
+  });
+
+  it("carries the 8 px undocking travel, decaying over stage(p, 0.22, 1)", () => {
+    const state = new DockState();
+    hostPass(state, { docked: true, paneWidth: PANE, mainWidth: NARROW, now: 0 });
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 100 });
+    const at = 100 + 0.25 * PANEL_HANDOFF_SECONDS * 1000;
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: at });
+    const { dy } = state.prepaint({ left: 224, top: 700, height: 172 }, 881, false, at);
+    const heroY = (881 - 172) * 0.5 + 8;
+    expect(dy).toBeCloseTo(heroY + 8 * (1 - stage(0.25, 0.22, 1)) - 700, 3);
+  });
+});
+
+describe("host: ordinary resizing and same-column navigation do not fade (panel_handoff.rs:92)", () => {
+  const CANVAS = 1040;
+
+  it("cases A and D (no pane on either side) never arm — the pane width is 0→0", () => {
+    const state = new DockState();
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    // new-thread → chat WITHOUT a pane: the docked flip arrives with the
+    // width equal, so no handoff — the plain 0.420 s dock choreography.
+    expect(
+      hostPass(state, { docked: true, paneWidth: 0, mainWidth: CANVAS, now: 100 }).handoff,
+    ).toBe(false);
+    expect(state.opacity()).toBe(1);
+    // and back: chat-without-pane → new-thread.
+    expect(
+      hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 300 }).handoff,
+    ).toBe(false);
+    expect(state.opacity()).toBe(1);
+    expect(state.paneProgress()).toBe(null);
+  });
+
+  it("same-column chat→chat (docked stays true) never arms, whatever the flags", () => {
+    const state = new DockState();
+    hostPass(state, { docked: true, paneWidth: 480, mainWidth: 560, now: 0 });
+    // chat A with pane → chat B with pane: same column, no fade.
+    expect(
+      hostPass(state, { docked: true, paneWidth: 480, mainWidth: 560, now: 100 }).handoff,
+    ).toBe(false);
+    // chat A with pane → chat B WITHOUT: the pane flags differ (the pane
+    // column SNAPS — ticket §2.4.5), but the docked flag does not flip, so
+    // the composer never fades.
+    expect(
+      hostPass(state, { docked: true, paneWidth: 0, mainWidth: CANVAS, now: 300 }).handoff,
+    ).toBe(false);
+    expect(state.opacity()).toBe(1);
+  });
+
+  it("an ordinary pane open/close or drag on the same chat never arms", () => {
+    const state = new DockState();
+    hostPass(state, { docked: true, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    // The pane opens (width 0→480) with docked unchanged.
+    expect(
+      hostPass(state, { docked: true, paneWidth: 480, mainWidth: 560, now: 100 }).handoff,
+    ).toBe(false);
+    // A drag's width stream: continuous changes, docked constant.
+    expect(
+      hostPass(state, { docked: true, paneWidth: 430, mainWidth: 610, now: 116 }).handoff,
+    ).toBe(false);
+    expect(state.opacity()).toBe(1);
+    expect(state.paneProgress()).toBe(null);
+  });
+
+  it("reduced motion disables the handoff entirely — opacity resets to 1", () => {
+    const state = new DockState();
+    hostPass(state, { docked: false, paneWidth: 0, mainWidth: CANVAS, now: 0 });
+    // The flip under `dockReduced` (reduced motion or the phone layer):
+    // `enabled=false` resets the handoff (panel_handoff.rs:32-35).
+    const flip = hostPass(state, {
+      docked: true,
+      paneWidth: 480,
+      mainWidth: 560,
+      now: 100,
+      enabled: false,
+    });
+    expect(flip.handoff).toBe(false);
+    expect(state.opacity()).toBe(1);
+    expect(state.paneProgress()).toBe(null);
+  });
+});
+
+describe("host: panel exit retains source transcript width only until handoff ends (composer_dock.rs:488)", () => {
+  it("the departing column keeps its source width for exactly the handoff window", () => {
+    const state = new DockState();
+    // The chat's column: 560 wide (the pane takes 480 of a 1040 viewport).
+    expect(state.transcriptWidth(560, true, false)).toBe(560);
+    // Establish the docked sample (previous = (true, 480)) and the docked
+    // frame the capture condition reads…
+    expect(state.observePane(true, 480, true, 0)).toBe(false);
+    state.tick(true, false, 0);
+    // …then the undock flip: `transcript_width` runs BEFORE the tick flips
+    // `frame.docked`, so the capture holds the SOURCE column.
+    const handoff = state.observePane(false, 0, true, 100);
+    expect(handoff).toBe(true);
+    expect(state.transcriptWidth(1040, false, handoff)).toBe(560);
+    state.tick(false, false, 100);
+    // Mid-handoff the retention holds (the frame is already undocked).
+    expect(state.transcriptWidth(1040, false, true)).toBe(560);
+    // The handoff ends → the retention releases.
+    state.observePane(false, 0, true, 100 + 321);
+    expect(state.transcriptWidth(1040, false, false)).toBe(1040);
+    // A plain undock (no pane, no handoff) never retains.
+    expect(state.transcriptWidth(1040, true, false)).toBe(1040);
+    state.frame = dockFrameSettled(true);
+    expect(state.transcriptWidth(1040, false, false)).toBe(1040);
+  });
+});
