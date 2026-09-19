@@ -358,6 +358,24 @@ export function rememberTarget(device: string | null, project: string | null, no
   composerDefaults.update({ device, project, noProject });
 }
 
+/**
+ * The canvas's "Don't work in a project" pick — the web peer of the shell's
+ * rule (shell.rs:1767-1774): restore the opt-out target AND take the
+ * sidebar's space filter, because "retaining a project filter would hide
+ * the session on its first send" — a projectless row carries no spaceId,
+ * and the active list is narrowed by the filter. The sidebar store is a
+ * parameter so tests can drive a fresh `SidebarStore`; the footer passes
+ * the app singleton (whose setter persists through ui-settings, so the
+ * clear survives refresh).
+ */
+export function rememberNoProject(
+  device: string | null,
+  sidebar: { setSpaceFilter(spaceId: string | null): void },
+): void {
+  rememberTarget(device, null, true);
+  sidebar.setSpaceFilter(null);
+}
+
 // ---------------------------------------------------------------------------
 // Per-chat text drafts (composer.rs `drafts: HashMap<chat_key, String>`)
 // ---------------------------------------------------------------------------

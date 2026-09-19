@@ -12,6 +12,7 @@
  */
 
 import { COMMENT_BLOCK_HEADER, COMMENT_ONLY_TEXT, REVIEW_COMMENT_BLOCK_HEADER } from "./badges";
+import { mintId } from "./id";
 
 export type { BadgeDetail, Extractor, MessageBadge } from "./badges";
 export {
@@ -40,10 +41,6 @@ export interface ReviewComment {
   readonly line: number;
   readonly body: string;
   readonly source: CommentSource;
-}
-
-function mintId(): string {
-  return crypto.randomUUID();
 }
 
 /** `ReviewComment::new` + `renamed_from` (comments.rs:44-83), one constructor. */

@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { ChatConfig, HarnessDescriptor, Model } from "@roboco/proto";
-import { defaultDraft, draftFromChat, draftsEqual, isHarnessLocked } from "../src/lib/composer-draft";
+import { SidebarStore } from "../src/lib/sidebar-store";
+import {
+  composerDefaults,
+  defaultDraft,
+  draftFromChat,
+  draftsEqual,
+  isHarnessLocked,
+  rememberNoProject,
+} from "../src/lib/composer-draft";
+import type { StorageLike } from "../src/lib/engine-store";
+
+function memoryStorage(): StorageLike {
+  const map = new Map<string, string>();
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key)! : null),
+    setItem: (key, value) => void map.set(key, value),
+    removeItem: (key) => void map.delete(key),
+  };
+}
 
 function chat(overrides: Partial<{ config: ChatConfig | null }> = {}): Parameters<typeof draftFromChat>[0] {
   return {
@@ -111,5 +129,26 @@ describe("draftsEqual", () => {
         { harness: "claude-code", model: "opus", reasoning: "low", modelOptions: {}, sandbox: "workspace-write" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("projectless_new_session_restores_opt_out_and_clears_sidebar_filter", () => {
+  // shell.rs:9191, the web mirror (§2.4 / §3.5): picking "Don't work in a
+  // project" on the canvas restores the opt-out target AND takes the
+  // sidebar's space filter — "retaining a project filter would hide the
+  // session on its first send" (shell.rs:1767-1774): a projectless row
+  // carries no spaceId, and the active list is narrowed by the filter.
+  it("the no-project pick persists the opt-out default and clears the filter", () => {
+    const storage = memoryStorage();
+    const sidebar = new SidebarStore({ storage });
+    sidebar.setSpaceFilter("space-1");
+    rememberNoProject("device-1", sidebar);
+    expect(composerDefaults.getSnapshot().noProject).toBe(true);
+    expect(composerDefaults.getSnapshot().project).toBe(null);
+    expect(composerDefaults.getSnapshot().device).toBe("device-1");
+    expect(sidebar.getSnapshot().spaceFilter).toBe(null);
+    // The clear persists through the ui-settings store, so it survives a
+    // refresh.
+    expect(new SidebarStore({ storage }).getSnapshot().spaceFilter).toBe(null);
   });
 });

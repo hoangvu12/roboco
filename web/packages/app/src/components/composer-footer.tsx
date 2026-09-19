@@ -8,7 +8,8 @@ import { useFleetSnapshot } from "../state/fleet";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
-import { composerDefaults, rememberTarget } from "../lib/composer-draft";
+import { composerDefaults, rememberNoProject, rememberTarget } from "../lib/composer-draft";
+import { sidebarStore } from "../state/sidebar";
 import { ContextUsageIndicator } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
 import { FooterChip, FooterLabel } from "./ui/Chip";
@@ -394,7 +395,10 @@ function ProjectCard({
 
   function pickNoProject(): void {
     const snapshot = composerDefaults.getSnapshot();
-    rememberTarget(snapshot.device, null, true);
+    // The no-project pick ALSO takes the sidebar's space filter (§2.4,
+    // shell.rs:1767-1774): a retained project filter would hide the
+    // projectless session's first send from the active list.
+    rememberNoProject(snapshot.device, sidebarStore);
     onClose();
   }
 
