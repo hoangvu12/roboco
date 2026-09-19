@@ -46,6 +46,16 @@ import { uiSettings } from "./ui-settings";
  * open this surface (the desktop's `open_add_space`).
  */
 
+/**
+ * How long an open palette waits for the routed engine's first device row
+ * before the deviceless error replaces the skeleton (ticket 43). Devices
+ * always exist on a connected engine — the desktop has no deviceless
+ * state — so the wait only covers streaming lag; a named constant, never
+ * an inline literal (family precedent: the registry's 10s identity-call
+ * ceiling).
+ */
+export const ADD_SPACE_DEVICE_WAIT_MS = 10_000;
+
 /** The palette's mount phases, as the component and CSS read them. */
 export type AddSpaceStatus = "closed" | "open" | "closing";
 
@@ -70,6 +80,12 @@ export interface AddSpaceFlow {
   readonly revision: number;
   /** The currently browsed device; null before any device is known. */
   readonly deviceId: string | null;
+  /**
+   * The deviceless-open phase (ticket 43): "waiting" while the flow is
+   * open with no device row and inside the deadline, "timeout" once it
+   * expires — terminal until Retry; null whenever a device is known.
+   */
+  readonly deviceWait: "waiting" | "timeout" | null;
   /** The requested listing path; null = "home, not yet resolved". */
   readonly browserPath: string | null;
   /** The device's resolved home — what the device crumb folds over. */
@@ -126,6 +142,8 @@ export class AddSpaceStore {
   #context: AddSpaceContext | null = null;
   #manualInFlight = false;
   #submitInFlight = false;
+  /** The armed deviceless-wait deadline, if any (ticket 43's state machine). */
+  #deviceWaitTimer: ReturnType<typeof setTimeout> | null = null;
   #snapshot: AddSpaceSnapshot = { status: "closed", flow: null, pendingSpaces: [] };
   readonly #listeners = new Set<() => void>();
 
@@ -145,7 +163,10 @@ export class AddSpaceStore {
    * the local device (else the first registered device), and kick off the
    * home browse and the drives load concurrently. An explicit
    * `startDeviceId` (a device row the caller knows about) wins over the
-   * local default.
+   * local default. No device row streamed yet (the deviceless open,
+   * ticket 43): the flow opens on the armed device wait instead —
+   * `resolveDevice()` finishes the pick when a row lands, and the
+   * deadline turns the wait into the deviceless error.
    */
   open(startDeviceId?: string): void {
     const devices = this.#devices();
@@ -157,10 +178,12 @@ export class AddSpaceStore {
     this.#manualInFlight = false;
     this.#submitInFlight = false;
     this.#pending = [];
+    this.#clearDeviceWait();
     this.#flow = {
       identity: mintId(),
       revision: 0,
       deviceId: device?.id ?? null,
+      deviceWait: device !== null && device !== undefined ? null : "waiting",
       browserPath: null,
       home: null,
       query: "",
@@ -179,6 +202,8 @@ export class AddSpaceStore {
     if (device !== undefined && device !== null) {
       this.#loadFolders(null);
       this.#loadDrives();
+    } else {
+      this.#armDeviceWait();
     }
   }
 
@@ -203,6 +228,7 @@ export class AddSpaceStore {
     this.#flow = null;
     this.#manualInFlight = false;
     this.#submitInFlight = false;
+    this.#clearDeviceWait();
     this.#commit();
   }
 
@@ -434,13 +460,51 @@ export class AddSpaceStore {
     this.#descend(full, isRepo);
   }
 
-  /** The folder-level Retry chip: reload at the current browser path. */
+  /**
+   * The folder-level Retry chip: reload at the current browser path. The
+   * deviceless error's Retry is `retryDeviceWait()`, never this one — a
+   * path reload presumes a device and would silently early-return again.
+   */
   retryLoad(): void {
     const flow = this.#aliveFlow();
     if (flow === null) {
       return;
     }
     this.#loadFolders(flow.browserPath);
+  }
+
+  /**
+   * The deviceless wait's resolve seam (ticket 43): the mounted palette
+   * calls it on every devices frame of the routed session. A waiting flow
+   * finishes `open()`'s pick — the local device, else the first registered
+   * row — and kicks the home browse and the drives load; every other
+   * state no-ops, so a resolved, timed-out, or closed flow is untouched.
+   */
+  resolveDevice(): void {
+    const flow = this.#aliveFlow();
+    if (flow === null || flow.deviceId !== null || flow.deviceWait !== "waiting") {
+      return;
+    }
+    const devices = this.#devices();
+    const local = this.#localDeviceId();
+    const device = devices.find((row) => row.id === local) ?? devices[0];
+    if (device === undefined) {
+      return;
+    }
+    this.#clearDeviceWait();
+    this.#flow = { ...flow, deviceId: device.id, deviceWait: null };
+    this.#commit();
+    this.#loadFolders(null);
+    this.#loadDrives();
+  }
+
+  /**
+   * The deviceless error's Retry: re-run `open()`'s full pick — a fresh
+   * identity and a re-armed wait. Not `retryLoad()`'s current-path reload,
+   * which presumes a device and would silently early-return again.
+   */
+  retryDeviceWait(): void {
+    this.open();
   }
 
   /**
@@ -834,6 +898,43 @@ export class AddSpaceStore {
     }
     this.#flow = { ...flow, browserRepo: isRepo, query: "" };
     this.#loadFolders(full);
+  }
+
+  /**
+   * Arm the deviceless wait's deadline (ticket 43): on expiry, a flow
+   * still open, still deviceless, and from the same open era flips to the
+   * terminal deviceless error — what the palette renders as the error row
+   * with the Retry chip. A re-open, a resolve, or a close clears the timer
+   * first, so a stale fire can only ever meet these guards and no-op.
+   */
+  #armDeviceWait(): void {
+    this.#clearDeviceWait();
+    const identity = this.#flow?.identity;
+    const timer = setTimeout(() => {
+      if (this.#deviceWaitTimer !== timer) {
+        return;
+      }
+      this.#deviceWaitTimer = null;
+      const flow = this.#aliveFlow();
+      if (
+        flow === null ||
+        flow.identity !== identity ||
+        flow.deviceId !== null ||
+        flow.deviceWait !== "waiting"
+      ) {
+        return;
+      }
+      this.#flow = { ...flow, deviceWait: "timeout" };
+      this.#commit();
+    }, ADD_SPACE_DEVICE_WAIT_MS);
+    this.#deviceWaitTimer = timer;
+  }
+
+  #clearDeviceWait(): void {
+    if (this.#deviceWaitTimer !== null) {
+      clearTimeout(this.#deviceWaitTimer);
+      this.#deviceWaitTimer = null;
+    }
   }
 
   #commit(): void {

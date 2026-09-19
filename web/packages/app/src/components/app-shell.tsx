@@ -550,15 +550,17 @@ export function AppShell() {
         `SidebarPane::render`'s route match (shell.rs:993-1008): the sidebar
         COLUMN persists — width, seam, collapse, titlebar pad all stay — and
         only its CONTENT swaps, the settings nav replacing the chat sidebar
-        on `/settings/*`. Keyed by engine on the chat side so menus and
-        dialogs reset on a switch; the settings nav is engine-independent.
+        on `/settings/*`. Never keyed by engine: the desktop's tree never
+        is, the sidebar reads the fleet-merged snapshot, and a remount
+        would force-close an open add-space palette and reset the
+        group-collapse state (ticket 43).
       */}
       <aside className="sidebar">
         <div className="sidebar-inner">
           {route === "settings" ? (
             <SettingsNavBody />
           ) : (
-            <SidebarBody key={fleet.active ?? "none"} />
+            <SidebarBody />
           )}
         </div>
       </aside>

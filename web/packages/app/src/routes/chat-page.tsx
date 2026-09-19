@@ -422,7 +422,17 @@ export function ConversationPage() {
   const row =
     !snapshot.chats.loaded
       ? undefined
-      : chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now, snapshot.devices.rows, engineStatesOf(registry));
+      : chatPageRow(
+          chatId,
+          snapshot.chats.rows,
+          snapshot.spaces.rows,
+          snapshot.statuses.rows,
+          now,
+          snapshot.devices.rows,
+          engineStatesOf(registry),
+          // The same loaded-only dangling gate as the sidebar (ticket 43).
+          snapshot.spaces.loaded,
+        );
 
   // ── The dock: one retargetable clock for the route choreography ────────
   const viewport = useViewportWidth();

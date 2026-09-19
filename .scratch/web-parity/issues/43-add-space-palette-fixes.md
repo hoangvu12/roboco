@@ -336,4 +336,68 @@ clear). The mirroring pipeline itself MATCHES (consolidated row 7).
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19, branch `wp2r2/43-add-space-palette-fixes` @ `24d0e23c`)
+
+- **§2.1 entry points — verified, no code.** All three re-checked at this
+  HEAD (the ticket's `bc3a3945` line numbers hold at `24d0e23c`, none
+  moved): spaces-menu row `space-filter.tsx:223-229` → `pick("new")` at
+  `:144-150` (`setOpen(false); addSpaceStore.open()`); project-popover row
+  `composer-footer.tsx:462-474` (`onClose(); addSpaceStore.open()`);
+  `mod-k` → `add-space-palette` (`shortcuts.ts:549-550`) →
+  `app-shell.tsx:339` → `toggleAddSpace`. Zero-spaces trigger
+  reachability confirmed (`space-filter.tsx:164-166` gates only on
+  `!spaces.loaded`). §2.3 verified as a checklist: `methods.ts:42/45/49`,
+  the store's four wire calls, and the card CSS (680px, radius 14) are all
+  intact — nothing rebuilt.
+- **§2.2 deviceless open.** `ADD_SPACE_DEVICE_WAIT_MS = 10_000` (named
+  constant, exported); `AddSpaceFlow` gains `deviceWait: "waiting" |
+  "timeout" | null`; `open()` arms the wait when no device row exists;
+  new `resolveDevice()` finishes `open()`'s pick (local `??` first) and
+  kicks `#loadFolders(null)` + `#loadDrives()`; the deadline flips a
+  still-waiting flow to the terminal `timeout`. The palette renders the
+  timeout through the SAME `ErrorRow` + Retry chip, message
+  `"This device didn't respond — is it online?"` (the `:132` fallback),
+  and the Retry calls a new `retryDeviceWait()` = `open()` (fresh
+  identity, re-armed wait — never `retryLoad()`'s path reload; a row that
+  landed since the timeout is picked up instantly by that same pick).
+  Resolve seam = the palette's effect over `useWatchSnapshot(session)`'s
+  devices rows (the ticket's second option). The timer is cleared on
+  unmount/re-open/resolve; a stale fire can only meet the guards and
+  no-op. `#loadFolders`' null-device early return stays as the internal
+  invariant — the deviceless Retry no longer routes through it.
+- **§2.4 dangling gate.** `SidebarRowOptions.spacesLoaded` (the RowSet's
+  `loaded` flag); `toChatRow` hides a dangling spaceId only when it is
+  set, else renders the row with the `"?"` project label (folder line
+  follows it). Threaded from the live flag in `chat-list.tsx` (sidebar),
+  `chat-page.tsx` (chat-page lookup), `engine-drawer.tsx` (urgent dot).
+  Default `true` when absent, so the remaining `chatPageRow` callers
+  (changes-page, history panes, surface-picker) keep today's semantics —
+  their not-found handling is ticket 39's call, left untouched.
+- **§2.5 remount key.** `key={fleet.active ?? "none"}` dropped from
+  `<SidebarBody>` (`app-shell.tsx:561`), and the palette's attach effect
+  was split — attach re-runs per session, `forceClose` only on a true
+  host unmount. The split is required for the acceptance item: without
+  it, the old cleanup conflated session change with unmount and would
+  still close an open palette on an engine switch after the key drop.
+  Group-collapse state and an open palette now survive a switch. The
+  stale "keyed by engine" comments in `app-shell.tsx` / `sidebar-body.tsx`
+  were rewritten.
+- **Tests.** `add-space.test.ts`: `openWithoutDeviceRowsWaitsThenResolvesWhenDevicesStream`,
+  `openWithoutDeviceRowsTimesOutToErrorWithWorkingRetry`, plus
+  escape-closes-from-the-wait (fake session = a live mutable devices
+  RowSet + a recording client; fake timers for the deadline; terminal
+  until Retry asserted). `view.test.ts`:
+  `danglingSpaceChatsHiddenOnlyWhenSpacesAreLoaded` (+ errored-stream and
+  `chatPageRow`-gate cases). 1211 passed (1205 base + 6 new);
+  `pnpm -r build` green.
+- **Deviations:** none beyond the flag threading above (call-site args
+  are the mechanical consequence of the gate's new input). Acceptance's
+  screenshot pairs and the manual three-entry-point browser pass need a
+  paired engine — left for human verification; the deviceless states are
+  covered by the fake-session tests, per the ticket's own staging note.
+- **Merger notes:** `app-shell.tsx` is shared with tickets 44/45 — this
+  branch touches only the sidebar render block (`:549-` sidebar
+  `<aside>` / `<SidebarBody>`) and its comment; the shortcut binding at
+  `:339` and everything else is untouched. `chat-list.tsx` /
+  `engine-drawer.tsx` / `chat-page.tsx` changes are one-line option/arg
+  additions at the `chatListRows`/`chatPageRow` call sites.
