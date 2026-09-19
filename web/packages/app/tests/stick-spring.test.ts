@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AT_BOTTOM_PX,
   STICK_THRESHOLD_PX,
+  jumpButtonShown,
   jumpVisibility,
   shouldAnchorLiveStream,
   shouldBreakPin,
@@ -85,5 +86,25 @@ describe("jumpVisibility", () => {
     expect(jumpVisibility(true, 100)).toBe(true);
     expect(jumpVisibility(true, 1)).toBe(false);
     expect(jumpVisibility(false, 100)).toBe(false);
+  });
+});
+
+describe("jumpButtonShown (transcript.rs:3198/:3743-3745, ported)", () => {
+  it("hidden while pinned, hidden while the own-turn hold is live, otherwise hysteresis", () => {
+    // The desktop's jump_button_stays_available_when_scrolling_down_until_
+    // near_bottom (transcript.rs:7748), riding the full gate.
+    let shown = false;
+    for (const distance of [500, 330, 319, 200, 100]) {
+      shown = jumpButtonShown(shown, distance, false, false);
+      expect(shown, `button vanished with ${distance}px remaining`).toBe(true);
+    }
+    expect(jumpButtonShown(shown, AT_BOTTOM_PX, false, false)).toBe(false);
+    expect(jumpButtonShown(false, 319, false, false)).toBe(false);
+    expect(jumpButtonShown(false, 321, false, false)).toBe(true);
+    // Pinned ⇒ hidden (handle_scroll's `&& !this.pinned`, :3198): the pill
+    // never flashes while the bottom spring settles near the end.
+    expect(jumpButtonShown(true, 100, true, false)).toBe(false);
+    // The own-turn hold also suppresses (:3174-3175).
+    expect(jumpButtonShown(true, 100, false, true)).toBe(false);
   });
 });

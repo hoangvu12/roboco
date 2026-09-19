@@ -266,4 +266,56 @@ consolidated table; the S4(d) subagent-pane row is excluded — see §5):
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+Landed on top of ticket 40's restructure (base 24d0e23c); the ticket's line
+numbers were relocated by 40 and all edits were located by symbol.
+
+- **Chip gap (§2.1):** `marginLeft: collapses ? ACTIVITY_TEXT_GAP : undefined`
+  added to the inline style of BOTH `ToolChipRow` card variants in
+  `tool-group.tsx` (the detail-less card and the expandable card), mirroring
+  the desktop's `.when(rail, …)`/`.when(collapses, …)` (transcript.rs:7363,
+  :6233). The label column starts at x = 48 + 8 = 56. The spawn chip's
+  `marginLeft: 12` guide (tool-group.tsx:633, SubagentChip) is untouched;
+  `.tool-chip-card` in CSS is untouched.
+- **Pinned gate (§2.2(a)):** the non-own-turn `#setJumpShown` call in
+  `#onScroll` (stick-controller.ts, the `this.#prevDistance = distance;` tail
+  — :486 post-40) now goes through the new pure helper
+  `jumpButtonShown(jumpShown, distance, pinned, ownTurnHeld)` in
+  `lib/stick-spring.ts` (§3), passing `false` for `ownTurnHeld` (that branch
+  only runs with `#ownTurn === null`). The own-turn branch
+  (`&& this.#ownTurn?.held !== true`) is untouched, exactly as §2.2(a)/§5
+  direct — the desktop's own-turn path (transcript.rs:3174-3175) has no
+  pinned gate and early-returns before :3198, so both halves together are
+  `jump_button_shown()`. One §3 reconciliation: "so both branches call it"
+  was read as the helper being the shared, test-pinnable encoding of the
+  gate; only the non-own-turn call site was rewritten, since changing the
+  own-turn expression would alter ticket 40's landed behavior (forbidden by
+  §5) and deviate from the desktop.
+- **Shadow (§2.2(b)):** new `--rb-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1),
+  0 2px 4px -2px rgb(0 0 0 / 0.1)` in the `:root` block beside
+  `--rb-shadow-popover` — gpui's `shadow_md` copied VERBATIM from the pinned
+  zui fork (hoangvu12/zui @ 86f2ecef…, `crates/gpui_macros/src/styles.rs:441-449`,
+  the Tailwind shadow-md port; verified in the local cargo checkout). Only
+  `.jump-pill` switched to it; `--rb-shadow-popover` is unchanged for real
+  popovers (`.jump-pill` was dropped from the family list in its comment).
+- **Geometry (§2.2(c)) — verified unchanged, no edit:** anchor
+  `top: -36px; left: 0; right: 10px` + centered, pill height 30 / radius 15 /
+  border 1px / blur 16, inner gap 6 + paddings 11/13, `rb-dialog-in` 180ms
+  from `translate: 0 2px`, texts "↓" + "Scroll to bottom" at 13px
+  (app.css:7437-7524; transcript.tsx JumpPill). The anchor's `top: -36px`
+  with the 30px pill leaves the 6px gap above the composer card on BOTH
+  clients — the perceived overlap was the shadow weight, and only the gate +
+  shadow changed.
+- **Unit test (§6):** `jumpButtonShown` suite added to
+  `tests/stick-spring.test.ts` — the desktop's
+  `jump_button_stays_available_when_scrolling_down_until_near_bottom`
+  (transcript.rs:7748) loop plus the pinned-suppression and own-turn-hold
+  cases; the existing `jumpVisibility` suite stays green.
+- **Verification:** `pnpm -r build` green (web, 5/5 projects);
+  `pnpm test` in `packages/app` → 1206 passed (1205 at base + 1 new), 0
+  failures. The screenshot pair (§6) was not produced — headless environment,
+  no running engine/browser; geometry and values are pinned by the
+  unit/CSS-token checks above.
+
+No deviations beyond the §3 reading noted above.
