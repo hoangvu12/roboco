@@ -293,4 +293,97 @@ cards, effect pills) — same content.
 
 ## Comments
 
-(empty; appended during implementation)
+### Implementer note (2026-09-19)
+
+**Landed** (branch `wp2r2/54-mobile-settings-friendly`, one commit):
+
+- `web/packages/app/src/styles/app.css` — three additions, every rule inside
+  `@media (max-width: 768px)` (≥769 untouched, the 220/128/430/360/218
+  literals above them are the parity numbers and stay):
+  - The settings phone block (after the existing
+    `.settings-page`/`.settings-option-row`/`.settings-row` rules): the
+    §2.2 table verbatim — `.settings-font-row { flex-wrap: wrap }` (the
+    file-table's named rule; without it the M6(b) cluster rule would crush
+    the `flex: 1` label instead of stacking under it),
+    `.settings-font-controls { width: 100%; justify-content: flex-start }`,
+    `.settings-select-trigger { width: 100% }`, `.size-trigger { width:
+    50% }` (the pair rides flex-shrink at ~2:1 — the desktop's own
+    220:128 ratio), `.settings-effect-choices { width: 100%; max-width:
+    none; justify-content: flex-start; margin-left: 0 }` (`width: 100%`
+    from M6(b)'s general "every `flex: none` trailing cluster" rule —
+    acceptance's "full-width, left-aligned, below the label").
+  - The `.dialog-card` `min()` backstop, placed in the dialog-primitives
+    region right after the `.dialog-card` base rule.
+  - The RbSelect sheet's menu rules (see below), placed after the
+    `.settings-select-*` family.
+- `web/packages/app/src/components/base/select.tsx` — the `RbSelect` phone
+  arm, 49's explicit deferral: at `useIsPhone()` the popup opens as 49's
+  bottom sheet. Mechanics: `RbSelect` already shadows the open state
+  (Select is controlled through it), so at phone it provides
+  `RbSelectPhoneContext` (module-internal — the open flag plus the SAME
+  `change` path Select's own `onOpenChange` takes); `RbSelectPositioner`'s
+  phone arm renders `RbDrawerSheet` (49's `Drawer.Root/Portal/Backdrop/
+  Viewport/Popup` + `.rb-drawer-card`) with the `Select.Positioner` tree
+  inside, pinned to the sheet's flow via the consumer-style per-key merge
+  (`position: static`, inset keys `auto` — Base UI merges consumer style
+  after its computed coordinates). The trigger is unchanged (its press
+  toggles the Select, whose state drives the sheet); the popup, items,
+  keyboard model, and every Base UI dismissal path (item pick, Escape,
+  outside press) stay the Select's own; sheet swipe/scrim route through
+  `drawerOnOpenChange` into the one `change` path. Supporting CSS: inside
+  `.rb-drawer-card` the menu goes `width: 100%; max-height: none; overflow:
+  visible` (the 220/128 menu widths and the font menu's 320px scroll cap
+  are the floating form's parity numbers; the sheet frame owns the height
+  clamp + scrolling) and the floating form's `rb-menu-in`/`rb-menu-out`
+  yield to the sheet's `rb-dialog-in` (the sheet is the motion source at
+  phone, same as every 49 sheet). The desktop arm is byte-identical to the
+  pre-arm tree; the context Provider renders only at ≤768. No consumer
+  edits — the font and size selects converted with zero changes to
+  `settings-appearance.tsx`.
+
+**Deviations (2, both deliberate):**
+
+1. The `.dialog-card` backstop is scoped
+   `.dialog-card:not(.rb-drawer-card *)` rather than the table's bare
+   `.dialog-card`: a plain global rule would also shrink the 360px card
+   INSIDE 49's sheets (`.dialog-card` renders within `.rb-drawer-card` for
+   every converted dialog site), restyling 49's landed sheet interiors and
+   violating §2.4's own "Where 49's sheet form is active it supersedes the
+   rule; do not do both for one site". The `:not()` makes that sentence
+   literal in CSS — the backstop only catches cards that do not route
+   through the primitive (today: none; it is the safety net for future
+   hardcoded ones). No dialog site needed a per-site edit, as specced.
+2. The sheet's inner-menu rules above are not in the ticket's table but
+   are entailed by "the popup renders in 49's bottom-sheet form" — without
+   them the 220px menu would float narrow inside the viewport-wide sheet
+   and double-animate against the sheet's entrance.
+
+**Recorded per §1/Do-not:** the chat context menu (`chat-menu.tsx:68`,
+`RbContextMenu`) stays floating at phone — 49's deferral to 52/54's wave
+plan, and this ticket's §2.4 explicitly leaves it out of scope. The theme
+family popover is 49's `PickerCard` phone branch (verified by inspection:
+`settings-appearance.tsx:377-415` routes through `PickerCard`, whose phone
+arm renders the 260px menu body as the sheet) — no code here, per the file
+table. The audit's OK rows (Shortcuts, Files/pills/accounts) were
+re-verified by inspection (`.settings-row` wrap covers the shortcut rows;
+`.settings-account-row` composes `settings-row`; `.pill-row` wraps at all
+widths) and left alone, as were `.add-space-card`'s phone override and the
+218px theme-select trigger (fits the 343px content box).
+
+**Verification:** `pnpm -r build` green (5 workspace projects, vite build
+clean); `pnpm test` in `packages/app` green — 81 files / 1276 tests
+passed. One first-run failure in `registry.test.ts`'s
+`reconnectBackoffDoublesAndResetsAfterALongLivedConnection` (a ±15ms
+backoff-timing bound — "expected 65 to be less than 65") reproduced
+nothing: passed on the clean tree, 3/3 in isolation with these changes,
+and green in the full re-run — a pre-existing timing flake under suite
+load, in files this ticket does not touch.
+
+**Screenshot pairs waived** (operator instruction for this session — no
+dev server / browser / `web_smoke` runs): the §6 acceptance walk was
+performed by code inspection against the audit's file:line inventory —
+each M6(a) item maps to a landed rule above, item 4's dialog sites map to
+49's sheet conversion (plus the `min()` backstop), and items 5/6 map to
+the existing phone block. A human pass with the §6 capture list
+(Appearance font row / effect row, rename + theme import dialogs, ≥769
+desktop pair) is the remaining unexecuted step.
