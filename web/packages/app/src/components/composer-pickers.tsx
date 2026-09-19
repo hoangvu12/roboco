@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
+import { catalogLoading, modelsLoading, shouldReload } from "../lib/catalog-loading";
 import {
   applyDraftUpdate,
   composerDefaults,
@@ -202,12 +203,21 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const brand = harnessBrandIcon(effectiveHarness);
   const modelLabel = resolveChipLabel(draft.model, selectedModel, effectiveHarness, modelsList);
   const rememberedLabel = draft.model === null ? null : rememberedLabelFor(draft.model);
+  // `chip_label_loading` (pickers.rs:4220-4221): nothing names the pick yet
+  // AND the catalog is Idle/Loading. An errored harness or model slot is
+  // settled, not loading — the real label (remembered label → configured/
+  // raw id, `model_label` at pickers.rs:4186-4206) renders and the failure
+  // surfaces through the card's ErrorRow, never an eternal skeleton.
   const labelLoading =
     draft.model !== null &&
     modelLabel === draft.model &&
     rememberedLabel === null &&
-    (!harnesses.loaded || modelsList.loading);
-  const iconLoading = !harnesses.loaded && chatConfig === null && defaults.harness === null && !noAgents;
+    harnesses.error === null &&
+    (catalogLoading(harnesses) || modelsLoading(modelsList));
+  // `chip_icon_loading` (pickers.rs:4216-4217): catalog Idle/Loading only —
+  // an errored catalog shows the brand mark with the resolved label.
+  const iconLoading =
+    catalogLoading(harnesses) && chatConfig === null && defaults.harness === null && !noAgents;
   const suffix = traitsSummary(selectedModel, draft.reasoning, draft.modelOptions);
   const suffixActive = traitsCustomized(selectedModel, draft.reasoning, ladder, draft.modelOptions);
 
@@ -223,6 +233,40 @@ export function ComposerPickers(props: ComposerPickersProps) {
       catalog.prefetchModels(true);
     }
   }, [catalog, opened]);
+
+  // The desktop's per-render `ensure_harnesses(false, cx)` kick
+  // (pickers.rs:4164-4168) has no per-frame web peer — port the discipline
+  // instead: React re-renders on every relevant state change, and this
+  // effect re-runs whenever the slot identity moves, which is every Idle
+  // transition (reset, invalidate, a fresh session). A non-forced kick is
+  // a no-op unless the slot is Idle (`shouldReload`'s Idle-only rule), so
+  // Ready/Loading/Error slots never re-fire — and the card's skeleton
+  // takeover can never sit on an Idle slot with nothing scheduled.
+  useEffect(() => {
+    if (shouldReload(harnesses, false)) {
+      void catalog.loadHarnesses();
+    }
+  }, [catalog, harnesses]);
+
+  // A failure that lands while the connection is up (the unary call
+  // timeout, a mid-call teardown) has no status event to heal it — the
+  // offline re-arm only covers pre-dial errors. Window focus re-arms an
+  // errored, row-less slot: reset to Idle, then the non-forced kick above
+  // (the Idle row of `shouldReload`) reloads it. Ready and Loading slots
+  // are never touched; the in-flight guard inside `loadHarnesses` stands.
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      const slot = catalog.getHarnesses();
+      if (slot.error !== null && !slot.loaded && !slot.loading) {
+        catalog.resetHarnesses();
+        void catalog.loadHarnesses();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [catalog]);
 
   return (
     <div className="composer-pickers">
@@ -242,7 +286,6 @@ export function ComposerPickers(props: ComposerPickersProps) {
             type="button"
             id="picker-model"
             className={openChipClass("identity-chip", open)}
-            title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
           >
             {noAgents ? (
               <Icon name="terminal" size={16} className="identity-chip-brand identity-chip-brand-muted" />

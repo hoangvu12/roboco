@@ -20,11 +20,16 @@ class FakeClient {
     return () => this.#statusListeners.delete(listener);
   }
 
+  /** Test seam: any engine status change. */
+  emitStatus(state: string): void {
+    for (const listener of this.#statusListeners) {
+      listener({ state });
+    }
+  }
+
   /** Test seam: the engine finished dialing. */
   emitConnected(): void {
-    for (const listener of this.#statusListeners) {
-      listener({ state: "connected" });
-    }
+    this.emitStatus("connected");
   }
 
   async call<T>(method: string, params?: unknown): Promise<T> {
@@ -176,6 +181,64 @@ describe("PickerCatalog", () => {
     }
     expect(catalog.getHarnesses().loaded).toBe(true);
     expect(catalog.getHarnesses().rows).toHaveLength(1);
+  });
+
+  it("an offline error re-arms on any status change, not only connected", async () => {
+    // The boot race's blind spot: the cache-seeded mount fires the load
+    // while the client is pre-dial, and the dial's "connected" can land
+    // BEFORE the rejection processes — leaving no future event to re-kick
+    // the slot. Any later status change must re-arm it.
+    client.nextError = new RpcError("transport", "Engine is offline; reconnecting");
+    await catalog.loadHarnesses();
+    expect(catalog.getHarnesses().error).toBe("Engine is offline; reconnecting");
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    client.emitStatus("connecting");
+    await Promise.resolve();
+    for (let attempt = 0; attempt < 10 && !catalog.getHarnesses().loaded; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(catalog.getHarnesses().loaded).toBe(true);
+    expect(catalog.getHarnesses().rows).toHaveLength(1);
+  });
+
+  it("a non-offline error is not re-armed by a non-connected status change", async () => {
+    // A failure that landed while the connection was up (the unary call
+    // timeout) heals only through "connected", the focus cadence, or the
+    // card-open force — a mid-reconnect status change must not re-kick it.
+    client.nextError = new RpcError("timeout", "call timed out");
+    await catalog.loadHarnesses();
+    expect(catalog.getHarnesses().error).toBe("call timed out");
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    client.emitStatus("reconnecting");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(catalog.getHarnesses().error).toBe("call timed out");
+    expect(client.calls.filter((call) => call.method === "ListHarnesses")).toHaveLength(1);
+    client.emitConnected();
+    await Promise.resolve();
+    for (let attempt = 0; attempt < 10 && !catalog.getHarnesses().loaded; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(catalog.getHarnesses().loaded).toBe(true);
+  });
+
+  it("a forced open plus the idle cadence fire exactly one ListHarnesses call", async () => {
+    // Card open with an Idle slot: the open effect's forced load and the
+    // cadence's non-forced kick race in one commit — the in-flight guard
+    // keeps them single-flight, so the skeletons never double-load.
+    client.harnesses = [
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+    ];
+    const forced = catalog.loadHarnesses({ force: true });
+    void catalog.loadHarnesses();
+    expect(catalog.getHarnesses().loading).toBe(true);
+    await forced;
+    await catalog.loadHarnesses();
+    expect(client.calls.filter((call) => call.method === "ListHarnesses")).toHaveLength(1);
+    expect(catalog.getHarnesses().loaded).toBe(true);
   });
 
   it("normalizes model rows as they land", async () => {
