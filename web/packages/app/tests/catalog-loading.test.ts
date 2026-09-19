@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { LoadableList } from "../src/state/picker-catalog";
-import { catalogLoading, modelsLoading, shouldReload } from "../src/lib/catalog-loading";
+import {
+  HARNESS_IN_FLIGHT_MS,
+  catalogLoading,
+  inFlightLost,
+  modelsLoading,
+  openForceRefire,
+  shouldReload,
+} from "../src/lib/catalog-loading";
 
 function slot(overrides: Partial<LoadableList<unknown>> = {}): LoadableList<unknown> {
-  return { rows: [], loaded: false, error: null, loading: false, generation: 0, ...overrides };
+  return { rows: [], loaded: false, error: null, errorKind: null, loading: false, generation: 0, ...overrides };
 }
 
 describe("chip loading states", () => {
@@ -116,6 +123,48 @@ describe("shouldReload (ensure_harnesses table, pickers.rs:1037-1041)", () => {
       slot({ rows: [{}], loaded: true, error: "boom" }),
     ]) {
       expect(shouldReload(settled, false)).toBe(false);
+    }
+  });
+});
+
+describe("openForceRefire (the card-open force cadence, ticket 61 hole 1)", () => {
+  it("re-fires when the slot lands Error while the card stays open, and never on a warm slot", () => {
+    // The open transition always forces (stale-while-revalidate); the
+    // RE-fire key is the slot's error arm — a load that fails while the
+    // card is open swaps the body to the ErrorRow with no scheduled
+    // retry unless the force re-runs (the desktop's per-render
+    // `ensure_harnesses`, pickers.rs:4164-4168, never waits for an
+    // event). Keying on anything wider (slot identity, loading) would
+    // loop: every landed reload produces a fresh slot object.
+    const table: Array<[string, LoadableList<unknown>, boolean]> = [
+      ["idle", slot(), false],
+      ["loading (young or wedged flight)", slot({ loading: true }), false],
+      ["warm ready", slot({ rows: [{}], loaded: true }), false],
+      ["error, no rows (the ErrorRow)", slot({ error: "Engine is offline; reconnecting", errorKind: "transport" }), true],
+      ["error that kept its rows (failed revalidation)", slot({ rows: [{}], loaded: true, error: "timeout", errorKind: "timeout" }), true],
+    ];
+    for (const [name, state, expected] of table) {
+      expect(openForceRefire(state), name).toBe(expected);
+    }
+  });
+});
+
+describe("inFlightLost (the in-flight lifetime rule, ticket 61 hole 2)", () => {
+  it("a wedged flight is lost at the 10s family bound, not the 30s unary timeout", () => {
+    // `#harnessesInFlight` used to swallow every re-kick up to the unary
+    // call timeout (30s, client.ts:81) — a hung first message held the
+    // lattice for its full window. The bound follows the registry's
+    // identity-call cap family (client.ts:85, 10s).
+    expect(HARNESS_IN_FLIGHT_MS).toBe(10_000);
+    const started = 1_000_000;
+    const table: Array<[string, number, boolean]> = [
+      ["just started", started, false],
+      ["one tick under the ceiling", started + 9_999, false],
+      ["at the bound", started + 10_000, true],
+      ["wedged well past (the old 30s gate)", started + 29_999, true],
+    ];
+    for (const [name, now, expected] of table) {
+      expect(inFlightLost(started, now), name).toBe(expected);
     }
   });
 });

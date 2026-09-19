@@ -1,6 +1,7 @@
 import type { HarnessDescriptor, HarnessId, Model } from "@roboco/proto";
-import { methods, RpcError } from "@roboco/engine-client";
+import { methods, RpcError, type RpcErrorKind } from "@roboco/engine-client";
 import type { EngineClient } from "@roboco/engine-client";
+import { inFlightLost } from "../lib/catalog-loading";
 import { normalizeModelRows, offeredHarnesses } from "../lib/model-rows";
 
 /**
@@ -38,11 +39,19 @@ import { normalizeModelRows, offeredHarnesses } from "../lib/model-rows";
  * errored slots on every `connected` status so a full page reload heals
  * without user action. The boot race can also emit `connected` BEFORE the
  * rejection lands (the cache-seeded mount flips the app to ready
- * mid-dial), so any OTHER status change re-arms slots still carrying the
- * offline error — the slot never waits for a `connected` that already
- * fired. A failure that lands while the connection is up (the unary call
- * timeout) is not re-armed here: the composer's re-kick cadence, a window
- * focus, or the card-open force heals it.
+ * mid-dial), so any OTHER status change re-arms slots still carrying a
+ * connection-level error — the slot never waits for a `connected` that
+ * already fired. That re-arm keys on the error's TYPED kind, never the
+ * literal message (ticket 61, hole 4): `transport`/`closed` errors died
+ * with the connection state, so a later status change is a fair retry
+ * moment; a `timeout` (the engine stayed silent) is engine-side and keeps
+ * the connected-only heal.
+ *
+ * The harness slot's in-flight guard has a bounded lifetime
+ * (`HARNESS_IN_FLIGHT_MS`, ticket 61, hole 2): a wedged load older than
+ * the bound reads as lost — the slot is re-kickable, a new kick
+ * supersedes the flight (its late landing is dropped by the flight
+ * token), and the 30s unary timeout stops being the only escape.
  *
  * React binding contract (mirrors the watch cache): `getSnapshot` /
  * `subscribe` are identity-stable until an actual change.
@@ -52,6 +61,12 @@ export interface LoadableList<T> {
   readonly rows: readonly T[];
   readonly loaded: boolean;
   readonly error: string | null;
+  /**
+   * The latched error's `RpcError` kind — the STATE the heal's re-arm
+   * keys on (connection-level kinds), never the message text (ticket 61,
+   * hole 4). The message stays display-only.
+   */
+  readonly errorKind: RpcErrorKind | null;
   /** A fetch is in flight for a slot with no rows (the skeleton signal). */
   readonly loading: boolean;
   /** Bumped per fetch attempt; React keys off it for refresh-on-focus. */
@@ -65,46 +80,59 @@ const EMPTY_MODELS: readonly Model[] = [];
  * harness with no slot, so React's `useSyncExternalStore` sees one snapshot
  * identity (a fresh object per call reads as an infinite change loop).
  */
-const EMPTY_MODEL_LIST: LoadableList<Model> = { rows: EMPTY_MODELS, loaded: false, error: null, loading: false, generation: 0 };
+const EMPTY_MODEL_LIST: LoadableList<Model> = {
+  rows: EMPTY_MODELS,
+  loaded: false,
+  error: null,
+  errorKind: null,
+  loading: false,
+  generation: 0,
+};
 
 /** The opencode cold-start retry ladder: two extra attempts at 2s then 4s. */
 const OPENCODE_MAX_ATTEMPTS = 3;
 
 function emptyList<T>(): LoadableList<T> {
-  return { rows: [], loaded: false, error: null, loading: false, generation: 0 };
+  return { rows: [], loaded: false, error: null, errorKind: null, loading: false, generation: 0 };
 }
 
 function listWithRows<T>(prev: LoadableList<T>, rows: readonly T[], generation: number): LoadableList<T> {
-  return { rows, loaded: true, error: null, loading: false, generation };
+  return { rows, loaded: true, error: null, errorKind: null, loading: false, generation };
 }
 
-function listWithError<T>(prev: LoadableList<T>, message: string): LoadableList<T> {
-  return { rows: prev.rows, loaded: prev.loaded, error: message, loading: false, generation: prev.generation };
+function listWithError<T>(prev: LoadableList<T>, message: string, kind: RpcErrorKind): LoadableList<T> {
+  return { rows: prev.rows, loaded: prev.loaded, error: message, errorKind: kind, loading: false, generation: prev.generation };
 }
 
 function listWithLoading<T>(prev: LoadableList<T>): LoadableList<T> {
-  return { rows: prev.rows, loaded: prev.loaded, error: prev.error, loading: true, generation: prev.generation + 1 };
+  return { rows: prev.rows, loaded: prev.loaded, error: prev.error, errorKind: prev.errorKind, loading: true, generation: prev.generation + 1 };
 }
 
-/** The pre-dial transport error (`EngineClient.call`, client.ts:235-242). */
-const OFFLINE_MESSAGE = "Engine is offline; reconnecting";
-
-function isOfflineError(message: string): boolean {
-  return message === OFFLINE_MESSAGE;
+/**
+ * The heal's re-arm family (ticket 61, hole 4): the connection-level
+ * `RpcError` kinds. The pre-dial offline throw is `transport`
+ * (`EngineClient.call`, client.ts:235-242), a failed dial rejects
+ * in-flight calls as `transport`, and a mid-call teardown rejects them
+ * as `closed` — all of them died with the CONNECTION state, so a later
+ * status change is a fair retry moment. `timeout` (the engine stayed
+ * silent) and engine-side failures stay on the connected-only heal.
+ */
+function isConnectionError(kind: RpcErrorKind | null): boolean {
+  return kind === "transport" || kind === "closed";
 }
 
 /**
  * The heal guard both slot families share (`#retryOfflineSlots`): a slot
  * qualifies when it latched an error without rows, nothing is in flight for
- * it, and — when only offline-latched slots are being re-armed — the error
- * is the pre-dial transport error.
+ * it, and — when only connection-latched slots are being re-armed — the
+ * error's KIND is connection-level (state, not message text).
  */
 function slotNeedsRetry(slot: LoadableList<unknown>, inFlight: boolean, offlineOnly: boolean): boolean {
   return (
     slot.error !== null &&
     !slot.loaded &&
     !inFlight &&
-    (!offlineOnly || isOfflineError(slot.error))
+    (!offlineOnly || isConnectionError(slot.errorKind))
   );
 }
 
@@ -137,7 +165,21 @@ export class PickerCatalog {
   readonly #offStatus: (() => void) | null;
 
   #harnesses: LoadableList<HarnessDescriptor> = emptyList<HarnessDescriptor>();
-  #harnessesInFlight = false;
+  /**
+   * The harness slot's current flight, or null when idle. A flight token,
+   * not a boolean (ticket 61, hole 2): a kick that supersedes a lost
+   * flight takes ownership, and the superseded flight's late landing is
+   * dropped by the token check — the 30s unary timeout stops gating the
+   * lattice.
+   */
+  #harnessesInFlight: number | null = null;
+  /** When the current flight started — `inFlightLost`'s clock. */
+  #harnessesInFlightSince = 0;
+  /**
+   * Monotonic flight ids — a superseded flight's token is never reused, so
+   * its late landing stays dropped even after later flights settled.
+   */
+  #harnessesFlightSeq = 0;
   readonly #models = new Map<HarnessId, LoadableList<Model>>();
   readonly #modelsInFlight = new Set<HarnessId>();
   readonly #listeners = new Set<() => void>();
@@ -225,10 +267,17 @@ export class PickerCatalog {
    * Fire one harness fetch. Non-forced (the render loop's eager kick) only
    * loads an `Idle` slot; forced refreshes reload through `Ready`/`Error`
    * too, keeping loaded rows on screen while the fresh catalog lands. An
-   * in-flight load is always reused.
+   * in-flight load is reused — unless it has outlived
+   * `HARNESS_IN_FLIGHT_MS`, in which case it reads as lost (a wedged
+   * call, a hung first message) and this kick supersedes it: the fresh
+   * flight owns the slot and the lost one's late landing is dropped.
    */
   async loadHarnesses(options: LoadOptions = {}): Promise<void> {
-    if (this.#disposed || this.#harnessesInFlight) {
+    if (this.#disposed) {
+      return;
+    }
+    const inFlight = this.#harnessesInFlight;
+    if (inFlight !== null && !inFlightLost(this.#harnessesInFlightSince, Date.now())) {
       return;
     }
     const current = this.#harnesses;
@@ -236,7 +285,9 @@ export class PickerCatalog {
     if (!shouldLoad) {
       return;
     }
-    this.#harnessesInFlight = true;
+    const flight = ++this.#harnessesFlightSeq;
+    this.#harnessesInFlight = flight;
+    this.#harnessesInFlightSince = Date.now();
     const epoch = this.#epoch;
     const generation = current.generation + 1;
     // Stale-while-revalidate: only a row-less slot announces Loading.
@@ -246,14 +297,14 @@ export class PickerCatalog {
     }
     try {
       const rows = await this.#client.call<HarnessDescriptor[]>(methods.LIST_HARNESSES, this.#targetParams());
-      if (this.#disposed || this.#epoch !== epoch) {
+      if (this.#flightStale(flight, epoch)) {
         return;
       }
       const arr = Array.isArray(rows) ? rows : [];
       this.#harnesses = listWithRows(this.#harnesses, arr, generation);
       this.#commitHarnesses();
     } catch (error) {
-      if (this.#disposed || this.#epoch !== epoch) {
+      if (this.#flightStale(flight, epoch)) {
         return;
       }
       const rpcError = error instanceof RpcError ? error : new RpcError("transport", String(error));
@@ -263,11 +314,19 @@ export class PickerCatalog {
         this.#commitHarnesses();
         return;
       }
-      this.#harnesses = listWithError(this.#harnesses, rpcError.message);
+      this.#harnesses = listWithError(this.#harnesses, rpcError.message, rpcError.kind);
       this.#commitHarnesses();
     } finally {
-      this.#harnessesInFlight = false;
+      if (this.#harnessesInFlight === flight) {
+        this.#harnessesInFlight = null;
+        this.#harnessesInFlightSince = 0;
+      }
     }
+  }
+
+  /** True when `flight` no longer owns the harness slot: invalidated or superseded. */
+  #flightStale(flight: number, epoch: number): boolean {
+    return this.#disposed || this.#epoch !== epoch || this.#harnessesInFlight !== flight;
   }
 
   /**
@@ -339,7 +398,7 @@ export class PickerCatalog {
         return;
       }
       const rpcError = error instanceof RpcError ? error : new RpcError("transport", String(error));
-      this.#models.set(harness, listWithError(this.getModels(harness), rpcError.message));
+      this.#models.set(harness, listWithError(this.getModels(harness), rpcError.message, rpcError.kind));
       this.#commitModels(harness);
     } finally {
       this.#modelsInFlight.delete(harness);
@@ -400,7 +459,8 @@ export class PickerCatalog {
   invalidate(): void {
     this.#epoch += 1;
     this.#harnesses = emptyList<HarnessDescriptor>();
-    this.#harnessesInFlight = false;
+    this.#harnessesInFlight = null;
+    this.#harnessesInFlightSince = 0;
     this.#models.clear();
     this.#modelsInFlight.clear();
     this.#commitHarnesses();
@@ -427,19 +487,26 @@ export class PickerCatalog {
   /**
    * The status heal. `connected` re-kicks every errored, not-loaded slot
    * (the plain-refresh heal). Any other status change — the client is, by
-   * definition, not connected — re-arms only slots carrying the pre-dial
-   * offline error: such a slot latched while the client was still dialing,
-   * and a later status change is the next chance to retry ("connected" may
-   * already have fired before the rejection landed). A failure that lands
-   * while the connection is up (the unary call timeout) is NOT re-armed
-   * here — the cadence/focus re-kick or the card-open force heals it, and
-   * the chip shows the real label meanwhile.
+   * definition, not connected — re-arms only slots carrying a
+   * connection-level error: such a slot latched while the client's
+   * connection state was broken, and a later status change is the next
+   * chance to retry ("connected" may already have fired before the
+   * rejection landed). The re-arm keys on the error's typed kind, never
+   * the message text, so a failed dial (`transport`) and a mid-call
+   * teardown (`closed`) re-arm exactly like the pre-dial offline error.
+   * A failure that landed while the connection was up (the unary call
+   * timeout) is NOT re-armed here — the cadence/focus re-kick or the
+   * card-open force heals it, and the chip shows the real label meanwhile.
+   * A harness flight past its lifetime bound reads as lost, so a wedged
+   * load stops blocking the heal (ticket 61, hole 2).
    */
   #retryOfflineSlots(offlineOnly = false): void {
     if (this.#disposed) {
       return;
     }
-    if (slotNeedsRetry(this.#harnesses, this.#harnessesInFlight, offlineOnly)) {
+    const harnessesInFlight =
+      this.#harnessesInFlight !== null && !inFlightLost(this.#harnessesInFlightSince, Date.now());
+    if (slotNeedsRetry(this.#harnesses, harnessesInFlight, offlineOnly)) {
       this.resetHarnesses();
       void this.loadHarnesses();
     }
