@@ -4,7 +4,7 @@
 
 **Blocked by:** None — the diagnosis can start immediately using existing authorized runtime evidence; missing captures remain pending.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-layout-motion.md` §3.73, §4.73, §5.73. The relevant tables are inlined below; the research pointer is optional depth.
 

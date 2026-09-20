@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately; coordinate overlapping files with the other assigned tickets.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-layout-motion.md` §3.76, §4.76, §5.76. The relevant tables are inlined below; the research pointer is optional depth.
 

@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-picker-lifecycle.md` §§3–5. All required contracts and test/gap tables are inlined below; the link is for evidence depth.
 
