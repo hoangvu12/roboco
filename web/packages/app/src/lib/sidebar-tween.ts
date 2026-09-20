@@ -218,8 +218,12 @@ export class HeroRenderScheduler {
       sidebar: options.sidebar ?? sidebarTweenSignal,
       dock: options.dock ?? dockGlideSignal,
       onDockFrame: options.onDockFrame ?? onDockGlideFrame,
-      requestFrame: options.requestFrame ?? requestAnimationFrame,
-      cancelFrame: options.cancelFrame ?? cancelAnimationFrame,
+      // Arrows, never bare natives: a default captured as `requestAnimationFrame`
+      // itself would be invoked as a method of this options object (receiver ≠
+      // window), which the native function rejects with `TypeError: Illegal
+      // invocation` through the signal's notify chain — the sidebar-click crash.
+      requestFrame: options.requestFrame ?? ((callback: () => void) => window.requestAnimationFrame(callback)),
+      cancelFrame: options.cancelFrame ?? ((handle: number) => window.cancelAnimationFrame(handle)),
       frameId: options.frameId ?? (() => 0),
       sample: options.sample,
       render: options.render,
