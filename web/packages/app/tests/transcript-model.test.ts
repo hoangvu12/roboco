@@ -2300,3 +2300,513 @@ describe("chat-switch fold memory (ticket 68)", () => {
     revisitA.unmount();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ticket 71 — tool-fold scroll ownership + the animated thought close. The
+// selected policy (recorded 2026-09-20): explicit group/detail clicks own
+// the viewport (preserve the clicked header, release follow/hold, retain
+// the reservation, cancel on wheel/touch/navigation); an automatic thought
+// completion closes over the EXISTING 140ms EASE_OUT fold tween with the
+// same ownership anchoring the viewport; automatic outer-group closure
+// never moves a manually escaped viewport; the own-send reservation's
+// lifecycle is unchanged. The pure policy lives in lib/tool-fold-scroll.ts;
+// the store's seeding (sync) never fires under a pin, an armed arrival, or
+// a replay baseline.
+// ---------------------------------------------------------------------------
+
+import { ChatArrivalWindow } from "../src/lib/chat-arrival";
+import { TOOL_FOLD_MS, type AutomaticFoldTransition } from "../src/lib/tool-motion";
+import {
+  armToolFoldCompensation,
+  automaticToolFoldCompensationArms,
+  toolFoldCompensationDone,
+  toolFoldCompensationWrite,
+  type ToolFoldCompensation,
+} from "../src/lib/tool-fold-scroll";
+import { CHIP_CARD_HEIGHT, TOOL_TREE_ROW_HEIGHT } from "../src/lib/transcript";
+
+describe("tool-fold scroll ownership + animated thought close (ticket 71)", () => {
+  /** A minimal scroller: only the fields the controller reads and writes. */
+  type MutableScroller = HTMLElement & {
+    scrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+    addEventListener: () => void;
+    removeEventListener: () => void;
+    parentElement: null;
+    fire: (type: string) => void;
+  };
+
+  function fakeScroller(scrollHeight: number, clientHeight: number): MutableScroller {
+    const listeners = new Map<string, Set<() => void>>();
+    const el = {
+      scrollTop: 0,
+      scrollHeight,
+      clientHeight,
+      addEventListener: (type: string, listener: () => void) => {
+        const set = listeners.get(type) ?? new Set();
+        set.add(listener);
+        listeners.set(type, set);
+      },
+      removeEventListener: (type: string, listener: () => void) => {
+        listeners.get(type)?.delete(listener);
+      },
+      parentElement: null,
+      fire: (type: string) => {
+        for (const listener of [...(listeners.get(type) ?? [])]) {
+          listener();
+        }
+      },
+    };
+    return el as unknown as MutableScroller;
+  }
+
+  /** One thought-chip group row, through the real row model. */
+  function thoughtRow(entryId: string, text: string, streaming: boolean): TranscriptRow {
+    const e = entry(
+      entryId,
+      [{ kind: "reasoning", id: "r0", text }],
+      streaming ? { status: "streaming" } : {},
+    );
+    const rows = rowsForEntry(e, { parse });
+    const group = rows.find((row) => row.rowKind.kind === "toolGroup");
+    if (group === undefined) {
+      throw new Error("expected a tool group row");
+    }
+    return group;
+  }
+
+  /** The geometry of one thought row under a motion store, at `now`. */
+  function thoughtGeometry(
+    motion: ToolGroupMotionStore,
+    row: TranscriptRow,
+    now: number,
+    reduced = false,
+  ) {
+    if (row.rowKind.kind !== "toolGroup") {
+      throw new Error("expected toolGroup");
+    }
+    return toolGroupGeometry({
+      rowId: row.id,
+      tools: row.rowKind.tools,
+      autoOpen: row.rowKind.autoOpen,
+      state: motion,
+      now,
+      reduced,
+    });
+  }
+
+  /** A settled entry whose parts are one collapsible tool group. */
+  function ticket71ToolEntry(id: string, commands: string[]): SessionMessageEntry {
+    return entry(
+      id,
+      commands.map((command, ix) => toolPart(`${id}#c${ix}`, exec(command))),
+    );
+  }
+
+  it("tool_fold_preserves_clicked_header_and_reservation", () => {
+    // ── The anchor math (pure): the clicked header stays at its screen
+    // position across the fold tween's drift. ───────────────────────────
+    const comp = armToolFoldCompensation({ rowId: "tools#g0", offsetInRow: 12, screenY: 300, now: 1000 });
+    expect(comp.endsAt).toBe(1000 + TOOL_FOLD_MS);
+    // At the click the anchor already sits where the user clicked it.
+    expect(toolFoldCompensationWrite(comp, { rowTop: 500, scrollTop: 212 })).toBeNull();
+    // A browser clamp near the scroll end moved the viewport 90px: the
+    // write restores the header's position exactly.
+    expect(toolFoldCompensationWrite(comp, { rowTop: 500, scrollTop: 302 })).toBe(212);
+    // Rows spliced above re-target the anchor in content space; the screen
+    // position is still the invariant.
+    expect(toolFoldCompensationWrite(comp, { rowTop: 400, scrollTop: 112 })).toBeNull();
+    expect(toolFoldCompensationWrite(comp, { rowTop: 400, scrollTop: 302 })).toBe(112);
+    // The compensation stands down with the tween, not before.
+    expect(toolFoldCompensationDone(comp, 1000 + TOOL_FOLD_MS - 1)).toBe(false);
+    expect(toolFoldCompensationDone(comp, 1000 + TOOL_FOLD_MS)).toBe(true);
+
+    // ── The runway state matrix on the REAL controller: the click releases
+    // the hold and the pin while RETAINING any live reservation. ─────────
+    const raf = vi.fn(() => 1);
+    vi.stubGlobal("requestAnimationFrame", raf);
+    try {
+      for (const state of ["held", "released", "retired+pinned", "escaped"] as const) {
+        const el = fakeScroller(4000, 600);
+        const stick = new StickController({ onJumpVisibility: () => {} });
+        stick.setGeometry(() => ({ anchor: null, filled: false, positions: [], transient: true }));
+        stick.attach(el);
+        if (state === "held" || state === "released") {
+          stick.onOwnSend("chat", "prompt");
+          expect(stick.ownTurn).not.toBeNull();
+          if (state === "released") {
+            stick.releaseOwnTurnHold();
+            expect(stick.ownTurnHeld).toBe(false);
+          } else {
+            expect(stick.ownTurnHeld).toBe(true);
+          }
+        } else if (state === "retired+pinned") {
+          stick.snapToEnd();
+          expect(stick.ownTurn).toBeNull();
+          expect(stick.pinned).toBe(true);
+        } else {
+          // Escaped: pinned at the end, then a scroll away breaks the pin.
+          stick.snapToEnd();
+          el.scrollTop = 100;
+          el.fire("scroll");
+          expect(stick.pinned).toBe(false);
+        }
+
+        // The click path's controller sequence (transcript.tsx's
+        // onToolFoldNav): release follow/hold first, then arm.
+        stick.beginScrollNavigation();
+        const armed = armToolFoldCompensation({
+          rowId: "tools#g0",
+          offsetInRow: 12,
+          screenY: 300,
+          now: 2000,
+        });
+        expect(armed).not.toBeNull();
+        expect(stick.ownTurnHeld).toBe(false);
+        expect(stick.pinned).toBe(false);
+        expect(
+          stick.ownTurn !== null,
+          `${state}: the reservation survives any release of its hold`,
+        ).toBe(state === "held" || state === "released");
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("thought_completion_obeys_explicit_pin_and_scroll_policy", () => {
+    // ── The animated close: unresolved→resolved with no pin seeds the
+    // detail fold's tween from the renderer-reported card height. ────────
+    const motion = new ToolGroupMotionStore();
+    const transitions: AutomaticFoldTransition[] = [];
+    motion.onAutomaticFoldTransition((transition) => transitions.push(transition));
+    const live = thoughtRow("think", "thinking hard", true);
+    motion.sync([live], false);
+    const openGeometry = thoughtGeometry(motion, live, 1000);
+    expect(openGeometry.detailOpens[0]).toBe(true);
+    const openCardHeight = openGeometry.rowHeights[0]! - TOOL_TREE_ROW_HEIGHT + CHIP_CARD_HEIGHT;
+    expect(openCardHeight).toBeGreaterThan(CHIP_CARD_HEIGHT);
+    // The renderer's per-paint report (the tween's `from`).
+    motion.noteDetailRendered("think#g0#d0", openCardHeight);
+
+    // The completion: the entry settles — the thought chip resolves.
+    const completed = thoughtRow("think", "thinking hard", false);
+    motion.sync([completed], false);
+    const fold = motion.detailFold("think#g0#d0");
+    expect(fold).not.toBeNull();
+    expect(fold!.open, "no pin was invented").toBeNull();
+    expect(fold!.toggledAt, "the close is animated, not a snap").not.toBeNull();
+    expect(fold!.epoch, "the chip body stays mounted through the shrink").toBe(1);
+    expect(fold!.from, "the tween starts from the rendered open height").toBe(openCardHeight);
+    expect(transitions).toEqual([{ rowId: "think#g0", key: "think#g0#d0", toggledAt: fold!.toggledAt }]);
+
+    // Mid-flight the shared geometry tweens; the end state is closed.
+    const at = fold!.toggledAt!;
+    const mid = thoughtGeometry(motion, completed, at + TOOL_FOLD_MS / 2);
+    expect(mid.rowHeights[0]!).toBeGreaterThan(TOOL_TREE_ROW_HEIGHT);
+    expect(mid.rowHeights[0]!).toBeLessThan(openGeometry.rowHeights[0]!);
+    expect(mid.detailOpens[0], "the FINAL open state is closed mid-tween").toBe(false);
+    const end = thoughtGeometry(motion, completed, at + 10_000);
+    expect(end.rowHeights[0]!).toBe(TOOL_TREE_ROW_HEIGHT);
+    expect(end.detailOpens[0]).toBe(false);
+
+    // ── Explicit pins win in every case. ─────────────────────────────────
+    for (const pinnedOpen of [true, false]) {
+      const pinned = new ToolGroupMotionStore();
+      pinned.sync([live], false);
+      pinned.noteDetailRendered("think#g0#d0", openCardHeight);
+      // The default is open (unresolved); one click pins it closed, a
+      // second pins it back open — either way the pin exists.
+      pinned.toggleDetailFold("think#g0#d0", openCardHeight, true);
+      if (pinnedOpen) {
+        pinned.toggleDetailFold("think#g0#d0", openCardHeight, false);
+      }
+      expect(pinned.detailFold("think#g0#d0")!.open).toBe(pinnedOpen);
+      pinned.sync([completed], false);
+      const after = pinned.detailFold("think#g0#d0")!;
+      expect(after.open, "the completion never overrides a pin").toBe(pinnedOpen);
+      expect(after.toggledAt, "the pin keeps its own click clock").not.toBeNull();
+      const geometry = thoughtGeometry(pinned, completed, at + 10_000);
+      expect(geometry.detailOpens[0]).toBe(pinnedOpen);
+    }
+
+    // ── Replay never impersonates a completion: the baseline resets the
+    // tracker, so the resolved frame only re-records. ────────────────────
+    const baseline = new ToolGroupMotionStore();
+    baseline.sync([live], false);
+    baseline.noteDetailRendered("think#g0#d0", openCardHeight);
+    baseline.sync([completed], true);
+    expect(baseline.detailFold("think#g0#d0"), "the replay baseline seeds no tween").toBeNull();
+
+    // ── An armed chat-switch arrival renders the endpoint without a tween. ──
+    const arrival = new ChatArrivalWindow();
+    const arrived = new ToolGroupMotionStore(arrival);
+    arrival.arm(performance.now());
+    arrived.sync([live], false);
+    arrived.noteDetailRendered("think#g0#d0", openCardHeight);
+    arrived.sync([completed], false);
+    expect(arrived.detailFold("think#g0#d0"), "an arrival frame never animates").toBeNull();
+
+    // ── Reduced motion is deterministic: the seeded close snaps. ─────────
+    const snap = thoughtGeometry(motion, completed, at + 1, true);
+    expect(snap.rowHeights[0]!).toBe(TOOL_TREE_ROW_HEIGHT);
+    expect(snap.detailOpens[0]).toBe(false);
+
+    // ── The ownership gate (§2.3): an automatic transition arms only while
+    // no other owner is live. ────────────────────────────────────────────
+    const unowned = {
+      pinned: false,
+      ownTurnHeld: false,
+      userFoldCompensating: false,
+      escapeAnchor: false,
+      pendingViewportRestore: false,
+    };
+    expect(automaticToolFoldCompensationArms(unowned)).toBe(true);
+    for (const owner of [
+      "pinned",
+      "ownTurnHeld",
+      "userFoldCompensating",
+      "escapeAnchor",
+      "pendingViewportRestore",
+    ] as const) {
+      expect(automaticToolFoldCompensationArms({ ...unowned, [owner]: true })).toBe(false);
+    }
+  });
+
+  it("user_scroll_cancels_tool_fold_compensation", () => {
+    const raf = vi.fn(() => 1);
+    vi.stubGlobal("requestAnimationFrame", raf);
+    try {
+      const el = fakeScroller(4000, 600);
+      // The surface's cancellation wiring: user input and navigation both
+      // clear the armed compensation (transcript.tsx's onUserInput /
+      // onNavigation).
+      let comp: ToolFoldCompensation | null = null;
+      const stick = new StickController({
+        onJumpVisibility: () => {},
+        onUserInput: () => {
+          comp = null;
+        },
+        onNavigation: () => {
+          comp = null;
+        },
+      });
+      stick.attach(el);
+      // Reading near the end, escaped (the state with no other owner):
+      // pinned at the end first, then a scroll away breaks the pin.
+      stick.snapToEnd();
+      el.scrollTop = 3200;
+      el.fire("scroll");
+      expect(stick.pinned).toBe(false);
+
+      // An automatic completion armed the reading anchor mid-flight.
+      comp = armToolFoldCompensation({ rowId: "tools#g0", offsetInRow: 20, screenY: 500, now: performance.now() });
+      // The shrink clamped the scroll end (content drifted down 90px): the
+      // step's write restores the anchor exactly.
+      el.scrollTop = 3350;
+      expect(toolFoldCompensationWrite(comp!, { rowTop: 1500, scrollTop: el.scrollTop })).toBe(1020);
+
+      // Wheel mid-fold: the user scroll cancels the compensation
+      // synchronously and does not re-engage the pin.
+      el.scrollTop = 3000;
+      el.fire("scroll");
+      expect(comp, "wheel/touch cancels the compensation immediately").toBeNull();
+      expect(stick.pinned, "cancellation does not re-engage the pin").toBe(false);
+      // A frame queued before the input neither writes nor resurrects: the
+      // loop reads a cleared compensation and stands down before it ticks.
+      expect(comp).toBeNull();
+
+      // Re-arm, then explicit navigation (rail glide / a user fold toggle)
+      // takes the viewport the same way.
+      comp = armToolFoldCompensation({ rowId: "tools#g0", offsetInRow: 20, screenY: 500, now: performance.now() });
+      expect(comp).not.toBeNull();
+      stick.beginScrollNavigation();
+      expect(comp, "navigation cancels the compensation").toBeNull();
+      expect(stick.pinned).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a mounted group click owns the viewport and retains the reservation (integration)", () => {
+    // The mounted replay suite's jsdom stubs, scoped to this test: a
+    // deterministic rAF queue (never auto-run — the compensation's loop
+    // arms but never ticks), matchMedia, and the act environment.
+    const rafQueue = new Map<number, FrameRequestCallback>();
+    let rafSeq = 0;
+    const actEnvironment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const priorMatchMedia = window.matchMedia;
+    const priorRaf = globalThis.requestAnimationFrame;
+    const priorResizeObserver = globalThis.ResizeObserver;
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      rafSeq += 1;
+      rafQueue.set(rafSeq, callback);
+      return rafSeq;
+    }) as typeof requestAnimationFrame;
+    class FakeResizeObserver {
+      readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+
+    // The mounted harness's probe holder (assignment inside the spy closure
+    // must stay visible to the test body).
+    const probe: { stick: StickController | null; el: HTMLElement | null } = { stick: null, el: null };
+    const realBeginNavigation = StickController.prototype.beginScrollNavigation;
+    const beginNavigation = vi
+      .spyOn(StickController.prototype, "beginScrollNavigation")
+      .mockImplementation(function (this: StickController) {
+        return realBeginNavigation.call(this);
+      });
+    const realAttach = StickController.prototype.attach;
+    vi.spyOn(StickController.prototype, "attach").mockImplementation(function (
+      this: StickController,
+      el: HTMLElement,
+    ) {
+      probe.stick = this;
+      probe.el = el;
+      return realAttach.call(this, el);
+    });
+    let container: HTMLDivElement | null = null;
+    let mountedRoot: ReturnType<typeof createRoot> | null = null;
+    let mountedStore: TranscriptStore | null = null;
+    try {
+      // Fresh cross-chat caches: a saved viewport for this docId would
+      // restore over the runway this test installs.
+      echoStore.reset();
+      savedViewportCache.clear();
+      transcriptFoldCache.clear();
+      const client = new FakeWatchClient("e1");
+      const store = new TranscriptStore(client as unknown as EngineClient, "chat-a");
+      mountedStore = store;
+      client.emit({ contextUsage: null, reset: [ticket71ToolEntry("tools", ["pwd"])] });
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      mountedRoot = root;
+      act(() => {
+        root.render(
+          createElement(TranscriptView, {
+            client: client as unknown as EngineClient,
+            docId: "chat-a",
+            deviceId: "dev",
+            store,
+          }),
+        );
+      });
+      if (probe.stick === null || probe.el === null) {
+        throw new Error("the stick controller never attached a scroller");
+      }
+      const stick = probe.stick;
+      const el = probe.el;
+      let scrollTop = 0;
+      Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 600 });
+      Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 4000 });
+      Object.defineProperty(el, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      });
+      // The send lands on the MOUNTED surface (the real flow: the echo
+      // arrives after the scroller, not with the first frame): the pending
+      // echo row installs the own-send runway (the reservation).
+      act(() => {
+        echoStore.pushEcho({
+          chatId: "chat-a",
+          messageId: "prompt",
+          startedAtMs: performance.now() - 100,
+          text: "prompt",
+          attachmentPaths: [],
+        });
+      });
+      expect(stick.ownTurn, "the pending echo installed the runway").not.toBeNull();
+      expect(stick.ownTurnHeld).toBe(true);
+
+      // The click: the settled group's header (auto-open false) opens, and
+      // the click owns the viewport before the fold state flips.
+      const header = document.getElementById("tools#g0-hdr");
+      expect(header).not.toBeNull();
+      expect(beginNavigation).not.toHaveBeenCalled();
+      act(() => {
+        header!.click();
+      });
+      expect(beginNavigation).toHaveBeenCalledTimes(1);
+      // The hold released; the reservation survived; the pin dropped.
+      expect(stick.ownTurn, "the reservation survives the click").not.toBeNull();
+      expect(stick.ownTurnHeld).toBe(false);
+      expect(stick.pinned).toBe(false);
+    } finally {
+      const root = mountedRoot;
+      if (root !== null) {
+        act(() => {
+          root.unmount();
+        });
+      }
+      mountedStore?.dispose();
+      vi.restoreAllMocks();
+      if (container !== null) {
+        container.remove();
+      }
+      document.body.replaceChildren();
+      delete actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+      window.matchMedia = priorMatchMedia;
+      globalThis.requestAnimationFrame = priorRaf;
+      globalThis.ResizeObserver = priorResizeObserver;
+      echoStore.reset();
+      savedViewportCache.clear();
+      transcriptFoldCache.clear();
+      rafQueue.clear();
+    }
+  });
+});
+
+/** A minimal watch client for the mounted ticket-71 harness (jsdom). */
+class FakeWatchClient {
+  readonly status = { state: "connected" } as unknown as EngineStatus;
+  readonly engineKey: string | null;
+  #handlers: { onItem: (item: TranscriptUpdate, ctx: { generation: number }) => void } | null = null;
+
+  constructor(engineKey: string | null) {
+    this.engineKey = engineKey;
+  }
+
+  onStatus(): () => void {
+    return () => {};
+  }
+
+  watch(_method: string, _params: unknown, handlers: { onItem: (item: TranscriptUpdate, ctx: { generation: number }) => void }): { cancel: () => void } {
+    this.#handlers = handlers;
+    return { cancel: () => {} };
+  }
+
+  call(): Promise<never> {
+    return Promise.resolve({} as never);
+  }
+
+  emit(update: TranscriptUpdate, generation = 1): void {
+    if (this.#handlers === null) {
+      throw new Error("no watch registered");
+    }
+    this.#handlers.onItem(update, { generation });
+  }
+}
+

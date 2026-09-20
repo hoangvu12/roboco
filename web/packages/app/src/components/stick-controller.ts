@@ -47,6 +47,14 @@ export interface StickControllerOptions {
   onOwnTurnChange?: () => void;
   /** User scroll input (not ours) — the surface cancels its hold/anim state. */
   onUserInput?: () => void;
+  /**
+   * Explicit navigation began (ticket 71): a fold toggle, the rail glide,
+   * the selection auto-scroll, or a tool-fold click handed the viewport to
+   * navigation. The surface cancels its tool-fold compensation here — the
+   * desktop's `begin_scroll_navigation` clears its compensations the same
+   * way.
+   */
+  onNavigation?: () => void;
   reducedMotion?: MediaQueryList | null;
   /**
    * The chat-switch arrival window (ticket 58): while it is armed, `kick`
@@ -106,6 +114,7 @@ export class StickController {
   readonly #onJumpVisibility: (shown: boolean) => void;
   readonly #onOwnTurnChange: () => void;
   readonly #onUserInput: () => void;
+  readonly #onNavigation: () => void;
   readonly #reduced: MediaQueryList | null;
   readonly #arrival: ChatArrivalWindow | null;
 
@@ -113,6 +122,7 @@ export class StickController {
     this.#onJumpVisibility = options.onJumpVisibility;
     this.#onOwnTurnChange = options.onOwnTurnChange ?? (() => {});
     this.#onUserInput = options.onUserInput ?? (() => {});
+    this.#onNavigation = options.onNavigation ?? (() => {});
     this.#arrival = options.arrival ?? null;
     this.#reduced =
       options.reducedMotion ??
@@ -278,6 +288,9 @@ export class StickController {
     this.#lastTick = null;
     this.#settledAt = null;
     this.#kick = false;
+    // The surface's viewport compensations stand down (ticket 71): a tool
+    // fold compensator arming AFTER this call is the next owner.
+    this.#onNavigation();
   }
 
   /** Cancel a running glide (the scroll-task slot clears; the next

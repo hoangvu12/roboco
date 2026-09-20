@@ -253,4 +253,46 @@ describe("tool-group arrival gates (ticket 58 — folds and shimmer)", () => {
     motion.noteRendered(row.id, true, 34);
     expect(motion.groupFold(row.id)?.toggledAt).not.toBeNull();
   });
+
+  it("a thought completion during the arrival window records, never animates (ticket 71)", () => {
+    // The animated thought close (ticket 71 B) must never impersonate a
+    // completion on the switch's settle frames: the store seeds its close
+    // tween only for a LIVE unresolved→resolved flip, and the armed
+    // arrival window suppresses the tween exactly like the group flip's
+    // gate above.
+    const arrival = new ChatArrivalWindow();
+    const motion = new ToolGroupMotionStore(arrival);
+    arrival.arm(performance.now());
+    motion.sync([thoughtGroupRow("think", "thinking hard", true)], false);
+    motion.noteDetailRendered("think#g0#d0", 312);
+    // The completion lands while the window still covers the settle
+    // cascade: the chip renders its closed endpoint without a tween.
+    motion.sync([thoughtGroupRow("think", "thinking hard", false)], false);
+    expect(motion.detailFold("think#g0#d0")).toBeNull();
+    // The window closed — the same flip on a live frame seeds the animated
+    // close (the completion is genuine now, not a restore artifact).
+    arrival.arm(performance.now() - ARRIVAL_HARD_CAP_MS - 10);
+    motion.sync([thoughtGroupRow("think2", "thinking again", true)], false);
+    motion.noteDetailRendered("think2#g0#d0", 312);
+    motion.sync([thoughtGroupRow("think2", "thinking again", false)], false);
+    expect(motion.detailFold("think2#g0#d0")?.toggledAt).not.toBeNull();
+  });
 });
+
+/** A single thought-chip group row through the real row model (ticket 71). */
+function thoughtGroupRow(entryId: string, text: string, streaming: boolean): TranscriptRow {
+  const e: SessionMessageEntry = {
+    id: entryId,
+    role: "assistant",
+    parts: [{ kind: "reasoning", id: "r0", text }],
+    createdAt: 1758000000000,
+    deviceId: "dev",
+    status: streaming ? "streaming" : null,
+  };
+  const rows = rowsForEntry(e, { parse });
+  const group = rows.find((row) => row.rowKind.kind === "toolGroup");
+  if (group === undefined) {
+    throw new Error("expected a tool group row");
+  }
+  return group;
+}
