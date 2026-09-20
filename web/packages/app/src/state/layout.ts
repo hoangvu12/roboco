@@ -271,6 +271,11 @@ export const TITLEBAR_TOP_PAD = 4;
  * the desktop, not a member of the title row, and the row pads itself past it —
  * which is what lets the identity sit at the sidebar's edge and glide with it.
  */
+// The desktop's cluster is `left_0()` + `.px(TITLEBAR_CLUSTER_PAD)`
+// (shell.rs:4025-4034); the web's `.titlebar-cluster` is the same shape
+// (ticket 66), so this is the cluster's inline padding AND the controls'
+// window-space start — and the island's `left(6).right_0()` resolves against
+// the 20px-wider padding box that padding creates.
 export const TITLEBAR_CLUSTER_PAD = 10;
 export const TITLEBAR_CONTROL_GAP = 2;
 export const TITLEBAR_GROUP_GAP = 8;

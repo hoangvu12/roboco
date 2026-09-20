@@ -130,25 +130,36 @@ export function titlebarIslandVerticalGeometry(progress: number): {
 }
 
 /**
- * The island's horizontal span in window space (ticket 60): the wrapper is
- * `left(6).right_0()` over the cluster's shrink-to-fit content box
- * (shell.rs:4027-4028; taffy measures an absolute child's insets from the
- * parent's padding box, and the web cluster carries no padding), and that
- * box includes the `+`'s 32px slot ONLY while the `+` is in the tree — the
- * desktop's `show_plus.then(...)` (shell.rs:4093-4104) reserves no phantom
- * slot at alpha 0. With the `+` hidden the pill ends at the last visible
- * control — [16, 92], width 76, the desktop's exact span, the icons at the
- * desktop's centers; with it shown the slot extends the span to [16, 124].
+ * The island's horizontal span in window space (tickets 60/66): the wrapper
+ * is `left(6).right_0()` over the cluster (shell.rs:4027-4028), and an
+ * absolute child's insets resolve against the parent's PADDING box — border
+ * removed, padding kept (taffy 0.12.2 flexbox.rs:2164-2167, 2336-2340; CSS
+ * absolute positioning follows the same rule). The desktop's cluster is
+ * `left_0()` with `.px(TITLEBAR_CLUSTER_PAD)` (shell.rs:4025-4034) and the
+ * web's is that same shape since ticket 66 (`.titlebar-cluster`: left 0,
+ * padding-inline 10), so the span is [6, 10 + controls + 10]: [6, 102],
+ * width 96 with the `+` hidden, [6, 134] while shown. The `+`'s 32px slot
+ * exists ONLY while it is in the tree — `show_plus.then(...)`
+ * (shell.rs:4093-4104) reserves no phantom slot at alpha 0 — and the two
+ * states never coexist, so the residual island during a route change still
+ * covers the control row it faded from. The prior research's [16, 92] read
+ * the desktop's CONTENT box [10, 92] as the padding box; the buttons keep
+ * that exact [10, 92] span, now covered 10px past each edge like the
+ * desktop. Ticket 66 also wires this helper to the shipped geometry: the
+ * tests derive the same bounds from app.css itself, so it can no longer
+ * drift from the rendered island.
  */
 export function titlebarIslandHorizontalGeometry(showsNewSession: boolean): {
   readonly left: number;
   readonly right: number;
 } {
-  const clusterWidth =
-    CLUSTER_BUTTONS_WIDTH + (showsNewSession ? TITLEBAR_ACTION_SLOT_WIDTH : 0);
+  const containerWidth =
+    2 * TITLEBAR_CLUSTER_PAD +
+    CLUSTER_BUTTONS_WIDTH +
+    (showsNewSession ? TITLEBAR_ACTION_SLOT_WIDTH : 0);
   return {
-    left: TITLEBAR_CLUSTER_PAD + TITLEBAR_ISLAND_INSET,
-    right: TITLEBAR_CLUSTER_PAD + clusterWidth,
+    left: TITLEBAR_ISLAND_INSET,
+    right: containerWidth,
   };
 }
 
@@ -311,8 +322,9 @@ export function Titlebar({
           The `+` renders only while shown — the desktop's
           `show_plus.then(...)` (shell.rs:4093-4104), gate `plus_alpha >
           0.01` — so at alpha 0 it contributes NO geometry and the island's
-          `right: 0` anchors to the last visible control (ticket 60: the
-          icons center at the desktop's [16, 92]). The appear fade is a
+          `right: 0` anchors just past the last visible control (ticket 60;
+          ticket 66 restored the desktop's padded containing block, so the
+          island covers the [10, 92] controls as [6, 102]). The appear fade is a
           MOUNT animation on the same 200ms resize curve the row's left
           padding rides; the disappear is the unmount itself — the island
           requires "no selected chat" and the `+` requires one, so the two
