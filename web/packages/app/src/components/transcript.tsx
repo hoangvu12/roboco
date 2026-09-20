@@ -49,6 +49,8 @@ import {
   parseForRow,
   resolveViewportAnchor,
   rowsForEntry,
+  selectionDragAutoscrolls,
+  SelectionDragTracker,
   selectionScrollStep,
   sendingBridge,
   SPACE_LG,
@@ -999,38 +1001,42 @@ function TranscriptScroller({
     // ── Selection drag edge auto-scroll (§3.7) ────────────────────────────
     // Native selection is acceptable on the web, but a drag pinned near the
     // top/bottom edge still needs to auto-scroll — the t² ramp at a 24ms
-    // cadence. Armed by a primary-button press on non-interactive content.
-    let drag: { x: number; y: number } | null = null;
+    // cadence. Ticket 78: armed ONLY by a primary-button press on
+    // non-interactive content inside the scroller, tracked by the
+    // `SelectionDragTracker` (window `pointermove` never arms — a hold with
+    // micro-drift on the titlebar/composer/safe-area must not scroll the
+    // chat), cleared on `pointerup` AND `pointercancel`, and the tick steps
+    // only while a real text selection is active (the desktop's
+    // `step_selection_scroll` rides a genuine selection drag).
+    const drag = new SelectionDragTracker();
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0) {
         return;
       }
       const target = event.target as Element | null;
       if (target !== null && target.closest("button, a, [role='button'], input, textarea")) {
-        drag = null;
+        drag.pressInteractive();
         return;
       }
-      drag = { x: event.clientX, y: event.clientY };
+      drag.press(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
-      if (event.buttons === 0) {
-        drag = null;
-        return;
-      }
-      drag = { x: event.clientX, y: event.clientY };
+      drag.move(event.buttons, event.clientX, event.clientY);
     };
     const clearDrag = (): void => {
-      drag = null;
+      drag.clear();
     };
     el.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove, { passive: true });
     window.addEventListener("pointerup", clearDrag, { passive: true });
+    window.addEventListener("pointercancel", clearDrag, { passive: true });
     const selectionTimer = window.setInterval(() => {
-      if (drag === null) {
+      const position = drag.position;
+      if (position === null || !selectionDragAutoscrolls(document.getSelection())) {
         return;
       }
       const rect = el.getBoundingClientRect();
-      const step = selectionScrollStep({ top: rect.top, bottom: rect.bottom }, drag);
+      const step = selectionScrollStep({ top: rect.top, bottom: rect.bottom }, position);
       if (step === 0) {
         return;
       }
@@ -1046,6 +1052,7 @@ function TranscriptScroller({
       el.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", clearDrag);
+      window.removeEventListener("pointercancel", clearDrag);
       window.clearInterval(selectionTimer);
       wrapResize.disconnect();
       resize.disconnect();

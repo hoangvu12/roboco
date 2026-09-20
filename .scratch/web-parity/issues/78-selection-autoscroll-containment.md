@@ -4,7 +4,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## 1. Evidence (web-parity/followup @ c81dd2fe)
 
@@ -41,3 +41,7 @@
 ## Comments
 
 Created 2026-09-20 evening from the live round-2 report (titlebar/bottom hold scroll) plus read-only research of the follow-up branch. Root cause is the app's own selection auto-scroll arming leak, present in both the old and new bundles.
+
+## Comments
+
+**2026-09-21 — implemented and merged to `web-parity/followup`.** `fix(web): ticket 78 selection autoscroll containment`: `SelectionDragTracker` + `selectionDragAutoscrolls` in `lib/transcript.ts` (move-never-arms, `press`/`pressInteractive`, clear on release/cancel), the transcript attach effect rewired to the tracker with a new window `pointercancel` listener, and the 24ms tick gated on a non-collapsed `document.getSelection()`. Tests: 3 new cases in `tests/transcript-model.test.ts` (arm/track/clear matrix + selection gate); full suite **1506/1506** (91 files) and `pnpm -r build` green. Phone re-test pending until the next build is handed over (acceptance rows 1-2).

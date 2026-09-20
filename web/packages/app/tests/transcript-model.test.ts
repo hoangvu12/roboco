@@ -808,6 +808,8 @@ import {
   ownTurnReleasedForRestore,
   parseForRow,
   resolveViewportAnchor,
+  selectionDragAutoscrolls,
+  SelectionDragTracker,
   selectionScrollStep,
   sendingBridge,
   sentMentionDisplay,
@@ -868,6 +870,50 @@ describe("selectionScrollStep (transcript.rs:142)", () => {
     // The edge band is capped at a third of the viewport.
     expect(selectionScrollStep({ top: 0, bottom: 60 }, { x: 0, y: 0 })).toBe(-24);
     expect(selectionScrollStep({ top: 0, bottom: 0 }, { x: 0, y: 0 })).toBe(0);
+  });
+});
+
+describe("selection drag tracker (ticket 78)", () => {
+  it("window pointermove never arms — only a scroller press arms", () => {
+    const drag = new SelectionDragTracker();
+    // The live bug: a hold with micro-drift on the titlebar/composer fires
+    // window pointermoves with buttons held; those must not arm the tracker.
+    drag.move(1, 10, 10);
+    drag.move(1, 12, 14);
+    expect(drag.position).toBeNull();
+    // A primary press on non-interactive content inside the scroller arms.
+    drag.press(5, 5);
+    expect(drag.position).toEqual({ x: 5, y: 5 });
+  });
+
+  it("tracks an armed drag, then clears on release, cancel, and interactive press", () => {
+    const drag = new SelectionDragTracker();
+    drag.press(5, 5);
+    drag.move(1, 40, 40);
+    expect(drag.position).toEqual({ x: 40, y: 40 });
+    // Buttons released: disarm (a stray later move cannot resurrect it).
+    drag.move(0, 41, 41);
+    expect(drag.position).toBeNull();
+    drag.move(1, 60, 60);
+    expect(drag.position).toBeNull();
+    // pointerup / pointercancel clear an armed drag.
+    drag.press(5, 5);
+    drag.clear();
+    expect(drag.position).toBeNull();
+    // A press on interactive content disarms instead of arming.
+    drag.press(5, 5);
+    drag.pressInteractive();
+    expect(drag.position).toBeNull();
+    drag.move(1, 60, 60);
+    expect(drag.position).toBeNull();
+  });
+
+  it("gates the tick on a non-collapsed selection", () => {
+    expect(selectionDragAutoscrolls(null)).toBe(false);
+    expect(selectionDragAutoscrolls({ isCollapsed: true, rangeCount: 1 })).toBe(false);
+    expect(selectionDragAutoscrolls({ isCollapsed: false, rangeCount: 0 })).toBe(false);
+    expect(selectionDragAutoscrolls({ isCollapsed: false, rangeCount: 1 })).toBe(true);
+    expect(selectionDragAutoscrolls({ isCollapsed: false, rangeCount: 2 })).toBe(true);
   });
 });
 
