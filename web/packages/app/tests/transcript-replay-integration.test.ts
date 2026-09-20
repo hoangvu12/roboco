@@ -31,9 +31,11 @@ import { ToolGroupMotionStore } from "../src/lib/tool-motion";
 import type { OwnTurnAnchor, TranscriptRow } from "../src/lib/transcript";
 import {
   echoStore,
+  LIVE_SEED_STREAMING_MS,
   savedViewportCache,
   TranscriptStore,
   type TranscriptCache,
+  type TranscriptSeed,
 } from "../src/state/transcript-store";
 
 // The transcript subtree reads only the resolved appearance (tool chips,
@@ -289,7 +291,7 @@ beforeEach(() => {
 interface Mounted {
   readonly store: TranscriptStore;
   readonly client: FakeClient;
-  readonly cacheLoad: { promise: Promise<readonly SessionMessageEntry[] | null>; resolve: (value: readonly SessionMessageEntry[] | null) => void };
+  readonly cacheLoad: { promise: Promise<TranscriptSeed | null>; resolve: (value: TranscriptSeed | null) => void };
   /** The scroller element, captured via the controller's attach. */
   el(): HTMLElement;
   unmount(): void;
@@ -310,7 +312,7 @@ afterEach(() => {
 
 function mountTranscript(options: { strict?: boolean } = {}): Mounted {
   const client = new FakeClient();
-  const cacheLoad = deferred<readonly SessionMessageEntry[] | null>();
+  const cacheLoad = deferred<TranscriptSeed | null>();
   const cache: TranscriptCache = { load: () => cacheLoad.promise, save: () => Promise.resolve() };
   const store = new TranscriptStore(client as unknown as EngineClient, CHAT, { cache });
   const container = document.createElement("div");
@@ -366,10 +368,18 @@ function stubScrollerGeometry(el: HTMLElement, dims: { clientHeight: number; scr
   });
 }
 
-/** Settle the deferred cache load (the offline seed) through React. */
-async function settleCache(handle: Mounted, entries: readonly SessionMessageEntry[] | null): Promise<void> {
+/**
+ * Settle the deferred cache load (the offline seed) through React. A bare
+ * entry array is the stale shape (`savedAtMs: 0`, ticket 80); a seed object
+ * passes through verbatim (ticket 81's live case stamps `Date.now()`).
+ */
+async function settleCache(
+  handle: Mounted,
+  seed: readonly SessionMessageEntry[] | TranscriptSeed | null,
+): Promise<void> {
+  const value: TranscriptSeed | null = seed === null || "savedAtMs" in seed ? seed : { entries: seed, savedAtMs: 0 };
   await act(async () => {
-    handle.cacheLoad.resolve(entries);
+    handle.cacheLoad.resolve(value);
   });
 }
 
@@ -625,5 +635,55 @@ describe("mounted canvas-arrival artifacts (ticket 80)", () => {
     expect(el.scrollTop).toBe(4600 - 600);
     expect(probe.snaps).toBe(1);
     expect(probe.restores).toBe(0);
+  });
+});
+
+describe("mounted live-seed streaming (ticket 81)", () => {
+  it("a_live_seed_keeps_its_streaming_tail_open_like_the_desktops_state_preserved_switch", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 4000 });
+    // A LIVE mid-run switch: the cache saved seconds ago while the run was
+    // still streaming. The desktop reads the live doc and mounts the chat
+    // with the last tool call OPEN, state preserved, no animation — the
+    // seed must match that until the live frame confirms. (Ticket 80's
+    // unconditional downgrade made this render closed for ~the live
+    // roundtrip, then visibly re-open.)
+    const liveTail: SessionMessageEntry = { ...toolEntry("S", ["pwd", "ls"]), status: "streaming" };
+    await settleCache(handle, { entries: [userEntry("U"), liveTail], savedAtMs: Date.now() });
+
+    // The seed's streaming status survives verbatim: the snapshot claims
+    // streaming (the live-end anchor's tail-follow) and the entries keep it.
+    const snap = handle.store.getSnapshot();
+    expect(snap.entries[snap.entries.length - 1]!.status).toBe("streaming");
+    expect(snap.streaming).toBe(true);
+    // The tail group rendered OPEN (autoOpen rides the streaming status).
+    expect(probe.flips.filter((flip) => flip.rowId === "S#g0").length).toBeGreaterThan(0);
+    expect(probe.flips.filter((flip) => flip.rowId === "S#g0").every((flip) => flip.open)).toBe(true);
+
+    // The authoritative live reset re-affirms the still-streaming tail —
+    // still open, no closed→open flip to see.
+    act(() => {
+      handle.client.emit(
+        { contextUsage: null, reset: [userEntry("U"), { ...toolEntry("S", ["pwd", "ls"]), status: "streaming" }] },
+        2,
+      );
+    });
+    expect(handle.store.getSnapshot().streaming).toBe(true);
+    expect(probe.flips.filter((flip) => flip.rowId === "S#g0").every((flip) => flip.open)).toBe(true);
+  });
+
+  it("a_seed_older_than_the_live_window_falls_back_to_the_stale_downgrade", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 4000 });
+    // Freshly stamped, but past the LIVE window (a long silent tool call):
+    // the seed is treated as a dead session's leftover, ticket 80's rule.
+    const streamingTail: SessionMessageEntry = { ...toolEntry("S", ["pwd"]), status: "streaming" };
+    await settleCache(handle, {
+      entries: [userEntry("U"), streamingTail],
+      savedAtMs: Date.now() - (LIVE_SEED_STREAMING_MS + 1),
+    });
+    const snap = handle.store.getSnapshot();
+    expect(snap.entries[snap.entries.length - 1]!.status).toBe("aborted");
+    expect(snap.streaming).toBe(false);
   });
 });

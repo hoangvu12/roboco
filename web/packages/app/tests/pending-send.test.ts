@@ -9,6 +9,7 @@ import {
   type PendingSend,
   type TranscriptCache,
   type TranscriptClient,
+  type TranscriptSeed,
 } from "../src/state/transcript-store";
 import { sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
@@ -321,9 +322,9 @@ describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
     };
   }
 
-  function deferredCache(): { cache: TranscriptCache; resolve: (entries: readonly SessionMessageEntry[] | null) => void } {
-    let resolve!: (entries: readonly SessionMessageEntry[] | null) => void;
-    const promise = new Promise<readonly SessionMessageEntry[] | null>((res) => {
+  function deferredCache(): { cache: TranscriptCache; resolve: (seed: TranscriptSeed | null) => void } {
+    let resolve!: (seed: TranscriptSeed | null) => void;
+    const promise = new Promise<TranscriptSeed | null>((res) => {
       resolve = res;
     });
     return { cache: { load: () => promise, save: () => Promise.resolve() }, resolve };
@@ -379,7 +380,7 @@ describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
     const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore(), cache: deferred.cache });
     expect(store.getSnapshot().baseline).toBeNull();
 
-    deferred.resolve([userEntry("c")]);
+    deferred.resolve({ entries: [userEntry("c")], savedAtMs: 0 });
     await Promise.resolve();
     const seed = store.getSnapshot().baseline;
     expect(seed?.provenance).toBe("seed");
@@ -407,7 +408,7 @@ describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
 
     // The late cache resolves into a loaded store: dropped entirely — no
     // seed baseline, no entry change.
-    deferred.resolve([userEntry("stale-cache")]);
+    deferred.resolve({ entries: [userEntry("stale-cache")], savedAtMs: 0 });
     await Promise.resolve();
     expect(store.getSnapshot().baseline).toBe(live);
     expect(store.getSnapshot().entries.map((entry) => entry.id)).toEqual(["live"]);

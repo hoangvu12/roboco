@@ -64,6 +64,45 @@ import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
 
 /**
+ * Ticket 81 — WHEN each offline transcript save happened, per
+ * `(engineKey, rawChatId)` key, in one small localStorage JSON map. The
+ * registry cache itself stays entries-in/entries-out (engine-client shape),
+ * so the stamp lives here: `save` records the wall clock alongside the
+ * durable write, `load` reads it back. A seconds-old stamp marks a LIVE
+ * mid-run snapshot (seeded verbatim — the tail group renders open
+ * immediately, like the desktop's state-preserved switch); anything older
+ * or absent is a dead session's leftover (downgraded at seed time, ticket
+ * 80). Absent or unwritable storage reads as unstamped (0 ⇒ stale).
+ */
+const TRANSCRIPT_SEED_STAMPS_KEY = "roboco.transcriptSeedStamps.v1";
+
+function readSeedStamps(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(TRANSCRIPT_SEED_STAMPS_KEY);
+    if (raw === null) {
+      return {};
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function writeSeedStamp(key: string, savedAtMs: number): void {
+  try {
+    const stamps = readSeedStamps();
+    stamps[key] = savedAtMs;
+    window.localStorage.setItem(TRANSCRIPT_SEED_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Unwritable storage: the next load reads the seed as unstamped (stale).
+  }
+}
+
+/**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
  * resolved off the scoped URL id, backed by the fleet registry's cache.
  */
@@ -71,9 +110,20 @@ function transcriptCacheFor(engineKey: string, scopedChatId: string): Transcript
   try {
     const raw = parseScopedId(scopedChatId).rawId;
     const cache = engineRegistry.cache;
+    const stampKey = `${engineKey}:${raw}`;
     return {
-      load: () => cache.loadTranscript(engineKey, raw),
-      save: (entries) => cache.saveTranscript(engineKey, raw, entries),
+      load: async () => {
+        const entries = await cache.loadTranscript(engineKey, raw);
+        if (entries === null) {
+          return null;
+        }
+        const stamp = readSeedStamps()[stampKey];
+        return { entries, savedAtMs: typeof stamp === "number" ? stamp : 0 };
+      },
+      save: async (entries) => {
+        await cache.saveTranscript(engineKey, raw, entries);
+        writeSeedStamp(stampKey, Date.now());
+      },
     };
   } catch {
     return undefined;

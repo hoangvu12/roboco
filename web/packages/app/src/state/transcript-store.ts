@@ -321,14 +321,37 @@ export interface TranscriptClient {
  * chats the user has actually opened, seeded before the live stream's
  * first frame and re-saved (debounced) as frames land. One entry per
  * `(engine, chat)` — the desktop's `chat-<sha256>.json` granularity.
+ *
+ * Ticket 81 — the seed carries WHEN it was saved. A seconds-old save is a
+ * LIVE mid-run snapshot (the run is still streaming; the seed keeps its
+ * `status: "streaming"` so the tail group renders open immediately — the
+ * desktop's state-preserved switch, which reads the live doc). An old or
+ * unstamped save is a DEAD session's leftover: its stale `streaming`
+ * status is downgraded (ticket 80) so interrupted history renders closed.
  */
+export interface TranscriptSeed {
+  readonly entries: readonly SessionMessageEntry[];
+  /** Epoch ms of the save; 0 = unknown (treated as a dead session's). */
+  readonly savedAtMs: number;
+}
+
 export interface TranscriptCache {
-  load(): Promise<readonly SessionMessageEntry[] | null>;
+  load(): Promise<TranscriptSeed | null>;
   save(entries: readonly SessionMessageEntry[]): Promise<void>;
 }
 
 /** Debounce window for cache writes — a burst of frames is one save. */
 const CACHE_SAVE_DEBOUNCE_MS = 300;
+
+/**
+ * Ticket 81 — how old a cache save may be and still count as a live
+ * mid-run snapshot. Streaming runs write frames continuously (the save
+ * debounces at 300 ms), so live-switch seeds are seconds old; a silent
+ * stretch longer than this (a very long tool call with no output)
+ * misclassifies as stale and costs one closed→open transition on the next
+ * switch — the live reset corrects it within its normal roundtrip.
+ */
+export const LIVE_SEED_STREAMING_MS = 300_000;
 
 export class TranscriptStore {
   readonly #client: TranscriptClient;
@@ -375,14 +398,20 @@ export class TranscriptStore {
     this.#snapshot = this.#takeSnapshot();
     if (this.#cache !== undefined) {
       // Seed the last-seen entries while the live stream is still arriving;
-      // the first live frame's reset replaces them wholesale.
+      // the first live frame's reset replaces them wholesale. Ticket 81: a
+      // seconds-old save is a LIVE mid-run snapshot — kept verbatim so the
+      // tail group renders open immediately (the desktop's state-preserved
+      // switch reads the live doc); an old or unstamped save is a dead
+      // session's leftover, downgraded (ticket 80) so interrupted history
+      // renders closed.
       void this.#cache
         .load()
-        .then((entries) => {
-          if (this.#disposed || this.#loaded || entries === null) {
+        .then((seed) => {
+          if (this.#disposed || this.#loaded || seed === null) {
             return;
           }
-          this.seedEntries(entries.map(downgradeStaleStreaming));
+          const live = seed.savedAtMs > 0 && Date.now() - seed.savedAtMs <= LIVE_SEED_STREAMING_MS;
+          this.seedEntries(live ? seed.entries : seed.entries.map(downgradeStaleStreaming));
         })
         .catch(() => {});
     }
