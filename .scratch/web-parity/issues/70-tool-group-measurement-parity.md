@@ -4,7 +4,7 @@
 
 **Blocked by:** None — bounded geometry work is specified. Tickets 68/71 own separate policy choices and are not prerequisites for correcting the verified value.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.3, §4.3, §4.5, §5.3. Relevant tables are copied verbatim below.
 

@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately with ready catalog fixtures. Ticket 67 owns catalog liveness and may be needed to verify a first-pairing runtime case; it is not a semantic dependency for this fix.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-reasoning-selector.md` §§1–5. Required contracts and gap tables are copied below.
 
