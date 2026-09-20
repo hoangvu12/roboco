@@ -68,6 +68,14 @@ describe("buildChatConfig", () => {
 });
 
 describe("buildRunRequest", () => {
+  it("carries the chosen reasoning level to both the wire ChatConfig and the RunRequest", () => {
+    // Ticket 77: the level the picker commits is the level both transports
+    // ship — no transport-side repair exists or is needed.
+    const draft: DraftConfig = { ...DRAFT, reasoning: "low" };
+    expect(buildChatConfig(draft).reasoning).toBe("low");
+    expect(buildRunRequest(draft, "hi", "/tmp").reasoning).toBe("low");
+  });
+
   it("fills every field the engine requires for a Run", () => {
     const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj");
     expect(request.prompt).toBe("hi");

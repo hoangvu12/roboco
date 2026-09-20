@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Model, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, Model, ReasoningLevel } from "@roboco/proto";
 import {
   clampReasoning,
   defaultReasoning,
+  effectiveReasoningLadder,
   offeredOptions,
   reasoningLabel,
   traitsCustomized,
@@ -67,6 +68,66 @@ describe("reasoning ladder helpers", () => {
     expect(reasoningLabel("high")).toBe("High");
     expect(reasoningLabel("xhigh")).toBe("X-High");
     expect(reasoningLabel("ultrathink")).toBe("Ultrathink");
+  });
+});
+
+describe("effective_reasoning_ladder_prefers_model_then_descriptor", () => {
+  const model = (reasoningLevels: ReasoningLevel[]): Model => ({
+    id: "m",
+    label: "M",
+    reasoningLevels,
+    options: [],
+  });
+  const descriptor = (reasoningLevels: ReasoningLevel[]): HarnessDescriptor => ({
+    id: "claude-code",
+    name: "Claude",
+    supportsSteering: true,
+    steeringMode: "step-boundary",
+    reasoningLevels,
+    installed: true,
+    enabled: true,
+  });
+
+  it("uses the model's nonempty ladder in its advertised order — never a union", () => {
+    // pickers.rs:1551-1552: extra harness levels must not merge in.
+    expect(effectiveReasoningLadder(model(["low", "high"]), descriptor(["medium", "max"]))).toEqual([
+      "low",
+      "high",
+    ]);
+  });
+
+  it("falls back to the matching descriptor when the model's list is empty", () => {
+    // pickers.rs:1554-1561: Haiku's [] against Claude's advertised ladder.
+    expect(effectiveReasoningLadder(model([]), descriptor(["low", "medium", "high"]))).toEqual([
+      "low",
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("keeps the model's list when no descriptor matches", () => {
+    expect(effectiveReasoningLadder(model(["low", "medium"]), null)).toEqual(["low", "medium"]);
+    expect(effectiveReasoningLadder(model(["low"]), descriptor([]))).toEqual(["low"]);
+  });
+
+  it("no selected model means no effective ladder, even with a nonempty descriptor", () => {
+    // pickers.rs:1548-1550: nothing resolves before the model does — the
+    // loading UI must not invent model capabilities.
+    expect(effectiveReasoningLadder(undefined, descriptor(["low", "medium", "high"]))).toEqual([]);
+    expect(effectiveReasoningLadder(null, descriptor(["low", "medium", "high"]))).toEqual([]);
+  });
+
+  it("both empty means no ladder (the Reasoning section omits, options render independently)", () => {
+    expect(effectiveReasoningLadder(model([]), descriptor([]))).toEqual([]);
+  });
+
+  it("a null or foreign selection heals to the native default of the resolved ladder", () => {
+    // The composition every consumer relies on: the effective ladder feeds
+    // clamp_reasoning/default_reasoning unchanged.
+    const fallback = effectiveReasoningLadder(model([]), descriptor(["low", "medium", "high"]));
+    expect(clampReasoning(null, fallback)).toBe("high");
+    expect(clampReasoning("ultra", fallback)).toBe("high");
+    expect(clampReasoning("low", fallback)).toBe("low");
   });
 });
 

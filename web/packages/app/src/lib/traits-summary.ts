@@ -1,4 +1,4 @@
-import type { Model, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, Model, ReasoningLevel } from "@roboco/proto";
 
 /** `pickers.rs::reasoning_label` — the ladder's display names. */
 const REASONING_LABELS: Record<ReasoningLevel, string> = {
@@ -45,6 +45,28 @@ export function clampReasoning(
     return level;
   }
   return defaultReasoning(ladder);
+}
+
+/**
+ * `pickers.rs::trait_ladder` — the ladder a reasoning selection resolves
+ * against: the selected model's own levels in their advertised order when
+ * NONEMPTY, else the matching harness descriptor's advertised levels (Haiku's
+ * empty list falls back to Claude's; an OpenCode model with no recognized
+ * variants falls back to OpenCode's). No selected model means no effective
+ * ladder at all — never a union of the two lists, never a descriptor peek
+ * before the model resolves.
+ */
+export function effectiveReasoningLadder(
+  model: Model | null | undefined,
+  descriptor: HarnessDescriptor | null | undefined,
+): readonly ReasoningLevel[] {
+  if (model === null || model === undefined) {
+    return [];
+  }
+  if (model.reasoningLevels.length > 0) {
+    return model.reasoningLevels;
+  }
+  return descriptor?.reasoningLevels ?? [];
 }
 
 /**

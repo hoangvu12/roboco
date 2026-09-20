@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@roboco/icons";
-import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, Model, UserInputAnswer } from "@roboco/proto";
+import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, UserInputAnswer } from "@roboco/proto";
 import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
 import { encodeScopedId, methods, RpcError } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
@@ -22,9 +22,9 @@ import { useFleetSnapshot } from "../state/fleet";
 import { PickerCatalog } from "../state/picker-catalog";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { effectiveIndicator } from "../lib/view";
-import { chatDrafts, composerDefaults, draftFromChat, rememberedModelFor } from "../lib/composer-draft";
+import { chatDrafts, composerDefaults, draftFromChat } from "../lib/composer-draft";
+import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
-import { clampReasoning } from "../lib/traits-summary";
 import {
   ATTACHMENT_ONLY_TEXT,
   AttachmentUploadError,
@@ -451,7 +451,14 @@ export function Composer({
   projectionRef.current = projection;
   const mentionsActive = projection.mentions.length > 0;
   const [draft, setDraft] = useState<DraftConfig>(() =>
-    draftFromChat(chat, harnesses.rows, catalog.getModels(chat.config?.harness ?? "claude-code").rows),
+    // A fresh chat seeds the remembered last-used reasoning as its preference
+    // layer (pickers.rs:762-775); an established chat replays its config.
+    draftFromChat(
+      chat,
+      harnesses.rows,
+      catalog.getModels(chat.config?.harness ?? "claude-code").rows,
+      composerDefaults.getSnapshot().reasoning,
+    ),
   );
   const models = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribeModels(draft.harness, listener), [catalog, draft.harness]),
@@ -604,7 +611,11 @@ export function Composer({
       return {
         harness: next,
         model: null,
-        reasoning: null,
+        // A corrected harness keeps the remembered level as the preference
+        // layer (native falls back to it via effective_reasoning); the
+        // reconciliation below re-derives it against the new harness's
+        // effective ladder once models resolve.
+        reasoning: composerDefaults.getSnapshot().reasoning,
         sandbox: "workspace-write",
         modelOptions: {},
       };
@@ -623,33 +634,13 @@ export function Composer({
     void catalog.loadModels(draft.harness);
   }, [catalog, draft.harness, harnesses.loaded, harnesses.rows.length]);
 
-  useEffect(() => {
-    if (models.rows.length === 0) {
-      return;
-    }
-    setDraft((current) => {
-      if (current.model !== null && models.rows.some((m: Model) => m.id === current.model)) {
-        const clamped = clampReasoning(current.reasoning, current.model === null ? [] : ladderFor(models.rows, current.model));
-        return clamped === current.reasoning
-          ? current
-          : { ...current, reasoning: clamped };
-      }
-      const remembered = rememberedModelFor(current.harness);
-      const seeded =
-        remembered !== null && models.rows.some((m: Model) => m.id === remembered.id)
-          ? remembered.id
-          : models.rows[0]?.id;
-      if (seeded === undefined) {
-        return current;
-      }
-      const model = models.rows.find((m: Model) => m.id === seeded);
-      return {
-        ...current,
-        model: seeded,
-        reasoning: clampReasoning(current.reasoning, model?.reasoningLevels ?? []),
-      };
-    });
-  }, [models.rows]);
+  // Model/descriptor reconciliation: seed the draft's model and re-derive
+  // reasoning against the EFFECTIVE ladder (model levels when nonempty, else
+  // the matching descriptor's) — observing BOTH live inputs so a descriptor
+  // that lands after the models re-resolves the selection instead of leaving
+  // a stale model-only clamp behind. The extracted owner carries the logic;
+  // it returns the prior draft when nothing changed (no setState loop).
+  useDraftModelReconciliation(models.rows, harnesses.rows, setDraft);
 
   // ── The width-driven flip + height morph ───────────────────────────────
   //
@@ -3085,11 +3076,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-/** The seeded model's ladder for the draft-seeding effect (`trait_ladder`). */
-function ladderFor(models: readonly Model[], modelId: string): readonly Model["reasoningLevels"][number][] {
-  return models.find((model) => model.id === modelId)?.reasoningLevels ?? [];
 }
 
 /** `prefers-reduced-motion` at first paint (snap every morph). */
