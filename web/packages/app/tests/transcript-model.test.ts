@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessagePart, SessionMessageEntry, ToolCall, TranscriptFrame } from "@roboco/proto";
 import { parseMarkdown, type InlineRun } from "../src/lib/markdown";
 import { bodyHeight } from "../src/lib/diff";
@@ -1829,5 +1831,472 @@ describe("own-send reservation terms (ticket 40 — transcript.rs:3483-3513)", (
     expect(StickController.ownSendInset(0)).toBe(0);
     expect(StickController.ownSendInset(3)).toBe(OWN_SEND_TOP_INSET_PX);
     expect(TITLEBAR_HEIGHT + SPACE_LG + 10).toBe(64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 68 — chat-switch fold memory (decision option 1): the explicit
+// group/detail pins of a chat survive a REAL A→B→A surface destroy/restore
+// through the bounded per-engine cache; restored pins carry no tween clocks
+// and replay no arrival motion; genuine live arrivals still animate. The
+// regressions mount the REAL TranscriptView against the REAL TranscriptStore
+// (two chat identities, two engines), unmounting between visits — never
+// sync(true) on one retained store (the ticket-40 suite above owns that
+// level). Spies on the motion store and the stick controller record what the
+// mounted consumer actually did; jsdom gaps are stubbed per-suite (the
+// mounted replay suite's idiom): matchMedia, a deterministic rAF queue, a
+// fake ResizeObserver, and a mocked performance.now. No JSX (createElement).
+// ---------------------------------------------------------------------------
+
+vi.mock("../src/state/appearance", () => ({
+  useResolvedAppearance: () => "dark" as const,
+}));
+
+import { act, createElement, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import type { EngineClient, EngineStatus } from "@roboco/engine-client";
+import type { TranscriptUpdate } from "@roboco/proto";
+import { TranscriptView } from "../src/components/transcript";
+import { echoStore, savedViewportCache, TranscriptStore } from "../src/state/transcript-store";
+import { transcriptFoldCache } from "../src/state/transcript-fold-state";
+
+describe("chat-switch fold memory (ticket 68)", () => {
+  /** A settled entry whose parts are one collapsible tool group. */
+  function toolEntry(id: string, commands: string[]): SessionMessageEntry {
+    return entry(
+      id,
+      commands.map((command, ix) => toolPart(`${id}#c${ix}`, exec(command))),
+    );
+  }
+
+  /** A streaming entry — its single group row carries `autoOpen: true`. */
+  function liveToolEntry(id: string, command: string): SessionMessageEntry {
+    return entry(id, [toolPart(`${id}#c0`, exec(command))], { status: "streaming" });
+  }
+
+  /** An exec tool plus an unresolved-look thought (settled: resolved default). */
+  function thoughtToolEntry(id: string, command: string): SessionMessageEntry {
+    return entry(id, [
+      toolPart(`${id}#c0`, exec(command)),
+      { kind: "reasoning", id: `${id}#r0`, text: "thinking\nharder" },
+    ]);
+  }
+
+  /** Resolve one chat's group row through the REAL row model. */
+  function groupRowOf(chat: readonly SessionMessageEntry[], rowId: string): { tools: readonly ToolItem[]; autoOpen: boolean } {
+    const rows: TranscriptRow[] = [];
+    for (const item of chat) {
+      rows.push(...rowsForEntry(item, { parse }));
+    }
+    const row = rows.find((candidate) => candidate.id === rowId);
+    if (row === undefined || row.rowKind.kind !== "toolGroup") {
+      throw new Error(`expected tool group row ${rowId}`);
+    }
+    return { tools: row.rowKind.tools, autoOpen: row.rowKind.autoOpen };
+  }
+
+  /** The shared resolver's verdict for one group row under the mounted store. */
+  function geometryOf(rowId: string, chat: readonly SessionMessageEntry[], motion: ToolGroupMotionStore) {
+    const group = groupRowOf(chat, rowId);
+    return toolGroupGeometry({
+      rowId,
+      tools: group.tools,
+      autoOpen: group.autoOpen,
+      state: motion,
+      now,
+      reduced: false,
+    });
+  }
+
+  // ── Controllable client + jsdom stubs (the mounted replay suite's idiom) ──
+
+  interface WatchSlot {
+    onItem: (item: TranscriptUpdate, ctx: { generation: number }) => void;
+    onEnd?: (error: unknown) => void;
+  }
+
+  class FakeClient {
+    readonly status = { state: "connected" } as unknown as EngineStatus;
+    readonly engineKey: string | null;
+    readonly watches: WatchSlot[] = [];
+    readonly #statusListeners = new Set<(status: EngineStatus) => void>();
+
+    constructor(engineKey: string | null) {
+      this.engineKey = engineKey;
+    }
+
+    onStatus(listener: (status: EngineStatus) => void): () => void {
+      this.#statusListeners.add(listener);
+      return () => {
+        this.#statusListeners.delete(listener);
+      };
+    }
+
+    watch(_method: string, _params: unknown, handlers: WatchSlot): { cancel: () => void } {
+      this.watches.push(handlers);
+      return { cancel: () => {} };
+    }
+
+    call(): Promise<never> {
+      return Promise.resolve({} as never);
+    }
+
+    emit(update: TranscriptUpdate, generation = 1): void {
+      const slot = this.watches[this.watches.length - 1];
+      if (slot === undefined) {
+        throw new Error("no watch registered");
+      }
+      slot.onItem(update, { generation });
+    }
+  }
+
+  class FakeResizeObserver {
+    readonly callback: ResizeObserverCallback;
+    readonly observed = new Set<Element>();
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+    }
+
+    observe(el: Element): void {
+      this.observed.add(el);
+    }
+
+    unobserve(el: Element): void {
+      this.observed.delete(el);
+    }
+
+    disconnect(): void {
+      this.observed.clear();
+    }
+  }
+
+  let now = 10_000;
+  const rafQueue = new Map<number, FrameRequestCallback>();
+  let rafSeq = 0;
+
+  const realSync = ToolGroupMotionStore.prototype.sync;
+  const realRestoreFolds = ToolGroupMotionStore.prototype.restoreExplicitFolds;
+  const realNoteRendered = ToolGroupMotionStore.prototype.noteRendered;
+  const realAttach = StickController.prototype.attach;
+  const realSnapToEnd = StickController.prototype.snapToEnd;
+
+  const probe = {
+    motion: null as ToolGroupMotionStore | null,
+    stick: null as StickController | null,
+    el: null as HTMLElement | null,
+    snaps: 0,
+    /** Call-through order log: "restore" (fold pins) vs "snap" (viewport). */
+    order: [] as string[],
+  };
+
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      rafSeq += 1;
+      rafQueue.set(rafSeq, callback);
+      return rafSeq;
+    }) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = ((handle: number) => {
+      rafQueue.delete(handle);
+    }) as typeof cancelAnimationFrame;
+  });
+
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+    delete (globalThis as { matchMedia?: unknown }).matchMedia;
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  });
+
+  beforeEach(() => {
+    now = 10_000;
+    probe.motion = null;
+    probe.stick = null;
+    probe.el = null;
+    probe.snaps = 0;
+    probe.order = [];
+    transcriptFoldCache.clear();
+    savedViewportCache.clear();
+    echoStore.reset();
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.spyOn(ToolGroupMotionStore.prototype, "sync").mockImplementation(function (
+      this: ToolGroupMotionStore,
+      rows: readonly TranscriptRow[],
+      baseline: boolean,
+      replaying = false,
+    ) {
+      probe.motion = this;
+      return realSync.call(this, rows, baseline, replaying);
+    });
+    vi.spyOn(ToolGroupMotionStore.prototype, "restoreExplicitFolds").mockImplementation(function (
+      this: ToolGroupMotionStore,
+      saved: Parameters<ToolGroupMotionStore["restoreExplicitFolds"]>[0],
+    ) {
+      probe.order.push("restore");
+      return realRestoreFolds.call(this, saved);
+    });
+    vi.spyOn(ToolGroupMotionStore.prototype, "noteRendered").mockImplementation(function (
+      this: ToolGroupMotionStore,
+      rowId: string,
+      open: boolean,
+      bodyHeight: number,
+    ) {
+      return realNoteRendered.call(this, rowId, open, bodyHeight);
+    });
+    vi.spyOn(StickController.prototype, "attach").mockImplementation(function (this: StickController, el: HTMLElement) {
+      probe.stick = this;
+      probe.el = el;
+      return realAttach.call(this, el);
+    });
+    vi.spyOn(StickController.prototype, "snapToEnd").mockImplementation(function (this: StickController) {
+      probe.order.push("snap");
+      probe.snaps += 1;
+      return realSnapToEnd.call(this);
+    });
+  });
+
+  afterEach(() => {
+    while (mounted.length > 0) {
+      mounted.pop()!.unmount();
+    }
+    vi.restoreAllMocks();
+    document.body.replaceChildren();
+    rafQueue.clear();
+    transcriptFoldCache.clear();
+    savedViewportCache.clear();
+    echoStore.reset();
+  });
+
+  // ── The mounted harness ─────────────────────────────────────────────────
+
+  interface MountedChat {
+    readonly store: TranscriptStore;
+    readonly client: FakeClient;
+    el(): HTMLElement;
+    unmount(): void;
+  }
+
+  const mounted: MountedChat[] = [];
+
+  function mountChat(options: {
+    docId: string;
+    engineKey: string | null;
+    /** Pre-seeded history: the outlet hands the view the store only once its
+     *  first frame has landed, so the FIRST render is already the loaded
+     *  commit — the strongest ordering case for restore-before-viewport. */
+    entries?: readonly SessionMessageEntry[];
+    strict?: boolean;
+  }): MountedChat {
+    const client = new FakeClient(options.engineKey);
+    const store = new TranscriptStore(client as unknown as EngineClient, options.docId);
+    if (options.entries !== undefined) {
+      client.emit({ contextUsage: null, reset: [...options.entries] });
+    }
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const tree = createElement(TranscriptView, {
+      client: client as unknown as EngineClient,
+      docId: options.docId,
+      deviceId: "dev",
+      store,
+    });
+    act(() => {
+      root.render(options.strict === true ? createElement(StrictMode, null, tree) : tree);
+    });
+    let unmounted = false;
+    const handle: MountedChat = {
+      store,
+      client,
+      el() {
+        if (probe.el === null) {
+          throw new Error("the stick controller never attached a scroller");
+        }
+        return probe.el;
+      },
+      unmount() {
+        if (unmounted) {
+          return;
+        }
+        unmounted = true;
+        act(() => {
+          root.unmount();
+        });
+        container.remove();
+        store.dispose();
+      },
+    };
+    mounted.push(handle);
+    // Deterministic scroller geometry on the element (jsdom lays out nothing).
+    const el = handle.el();
+    let top = 0;
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 600 });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 4000 });
+    Object.defineProperty(el, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => {
+        top = value;
+      },
+    });
+    return handle;
+  }
+
+  it("explicit_fold_choices_survive_real_chat_switch", () => {
+    const chatA = [thoughtToolEntry("tools-a", "pwd"), liveToolEntry("live-a", "ls")];
+    const chatB = [thoughtToolEntry("tools-b", "cat")];
+
+    // ── Visit A: pins are made through the real mounted motion store. ─────
+    const visitA = mountChat({ docId: "chat-a", engineKey: "e1", entries: chatA });
+    const motionA = probe.motion!;
+    expect(motionA).not.toBeNull();
+    // Before any pin, the streaming tail group follows live auto-open.
+    expect(geometryOf("live-a#g0", chatA, motionA).open).toBe(true);
+    // The user closes the streaming group (a live click clock exists) and
+    // opens the settled thought's detail (its resolved default is closed).
+    act(() => {
+      motionA.toggleGroupFold("live-a#g0", 92, true);
+      motionA.toggleDetailFold("tools-a#g0#d1", 80, false);
+    });
+    expect(motionA.groupFold("live-a#g0")!.open).toBe(false);
+    expect(motionA.groupFold("live-a#g0")!.toggledAt).not.toBeNull();
+    expect(motionA.detailFold("tools-a#g0#d1")!.open).toBe(true);
+    expect(motionA.detailFold("tools-a#g0#d1")!.toggledAt).not.toBeNull();
+
+    // ── A→B: the surface state is destroyed; pins are captured at teardown.
+    visitA.unmount();
+    const savedA = transcriptFoldCache.restore("e1", "chat-a");
+    expect(savedA).not.toBeNull();
+    expect(savedA!.groups.get("live-a#g0")).toBe(false);
+    expect(savedA!.details.get("tools-a#g0#d1")).toBe(true);
+
+    const visitB = mountChat({ docId: "chat-b", engineKey: "e1", entries: chatB });
+    const motionB = probe.motion!;
+    expect(motionB).not.toBe(motionA);
+    act(() => {
+      motionB.toggleGroupFold("tools-b#g0", 26, false);
+    });
+    visitB.unmount();
+    expect(transcriptFoldCache.restore("e1", "chat-b")!.groups.get("tools-b#g0")).toBe(true);
+
+    // ── B→A: a FRESH store and surface restore only A's pins. ────────────
+    // Watch only this mount's call order: the restored pins land BEFORE the
+    // viewport restore's height estimates (the render-phase restore precedes
+    // the scroller's first snap — the outlet's hand-off means the first
+    // render is already the loaded commit).
+    probe.order = [];
+    const revisitA = mountChat({ docId: "chat-a", engineKey: "e1", entries: chatA });
+    expect(probe.order.indexOf("restore")).toBeGreaterThanOrEqual(0);
+    expect(probe.order.indexOf("restore")).toBeLessThan(probe.order.indexOf("snap"));
+    const motionA2 = probe.motion!;
+    expect(motionA2).not.toBe(motionA);
+    const groupFold = motionA2.groupFold("live-a#g0")!;
+    expect(groupFold.open).toBe(false);
+    expect(groupFold.toggledAt).toBeNull();
+    expect(groupFold.disclosureAt).toBeNull();
+    const detailFold = motionA2.detailFold("tools-a#g0#d1")!;
+    expect(detailFold.open).toBe(true);
+    expect(detailFold.toggledAt).toBeNull();
+    // The remembered closed pin overrides the streaming auto-open default
+    // through the ONE shared resolver — no second resolution path.
+    expect(geometryOf("live-a#g0", chatA, motionA2).open).toBe(false);
+    // The restored detail pin overrides the thought's resolved default.
+    expect(geometryOf("tools-a#g0", chatA, motionA2).detailOpens[1]).toBe(true);
+    // History the user never pinned stays auto-following — the replay
+    // baseline manufactures no explicit pin.
+    expect(motionA2.groupFold("tools-a#g0")).toBeNull();
+    expect(geometryOf("tools-a#g0", chatA, motionA2).open).toBe(false);
+    // B's pins never leak into A's namespace.
+    expect(motionA2.groupFold("tools-b#g0")).toBeNull();
+    revisitA.unmount();
+
+    // ── The same doc under another engine: no collision. ──────────────────
+    const otherEngine = mountChat({ docId: "chat-a", engineKey: "e2", entries: chatA });
+    const motionE2 = probe.motion!;
+    expect(motionE2.groupFold("live-a#g0")).toBeNull();
+    expect(motionE2.detailFold("tools-a#g0#d1")).toBeNull();
+    otherEngine.unmount();
+  });
+
+  it("restored_folds_do_not_replay_arrival_motion", () => {
+    const chatA = [toolEntry("tools-a", ["pwd"])];
+
+    // ── Visit A: pin the group closed mid-tween (rapid navigation case). ──
+    const visitA = mountChat({ docId: "chat-a", engineKey: "e1", entries: chatA });
+    const motionA = probe.motion!;
+    act(() => {
+      motionA.toggleGroupFold("tools-a#g0", 0, false); // opens
+      motionA.toggleGroupFold("tools-a#g0", 120, false); // closes with a live tween
+    });
+    expect(motionA.groupFold("tools-a#g0")!.open).toBe(false);
+    expect(motionA.groupFold("tools-a#g0")!.toggledAt).not.toBeNull();
+    visitA.unmount();
+    // The capture stripped the tween clocks.
+    const savedA = transcriptFoldCache.restore("e1", "chat-a")!;
+    expect(savedA.groups.get("tools-a#g0")).toBe(false);
+
+    // ── Revisit A: the pin returns settled; no arrival motion replays. ────
+    const revisitA = mountChat({ docId: "chat-a", engineKey: "e1", entries: chatA });
+    const motion = probe.motion!;
+    const fold = motion.groupFold("tools-a#g0")!;
+    expect(fold.open).toBe(false);
+    expect(fold.toggledAt).toBeNull();
+    expect(fold.disclosureAt).toBeNull();
+    const reveal = motion.revealOf("tools-a#g0")!;
+    expect(reveal.headerStartedAt).toBeNull();
+    expect(reveal.starts.every((start) => start === null)).toBe(true);
+    expect(reveal.shimmerStartedAt).toBeNull();
+    // The mounted render's rendered-open flip seeds no tween (the first
+    // noteRendered only records; the arrival window holds the flip path).
+    act(() => {
+      motion.noteRendered("tools-a#g0", false, 0);
+    });
+    expect(motion.groupFold("tools-a#g0")!.toggledAt).toBeNull();
+
+    // ── A genuinely live arrival after the restore still animates. ───────
+    const grownChat = [toolEntry("tools-a", ["pwd", "ls"]), liveToolEntry("fresh-a", "cat")];
+    act(() => {
+      revisitA.client.emit(
+        {
+          contextUsage: null,
+          upsert: [
+            { after: null, entry: toolEntry("tools-a", ["pwd", "ls"]) },
+            { after: "tools-a", entry: liveToolEntry("fresh-a", "cat") },
+          ],
+          append: [],
+          remove: [],
+          count: 2,
+        },
+        1,
+      );
+    });
+    const starts = motion.revealOf("tools-a#g0")!.starts;
+    // (A baseline start is an array hole — the file's loose `== null`
+    // convention, the same one the resolver normalizes with `?? null`.)
+    expect(starts[0] == null).toBe(true); // the replayed chip stays history
+    expect(starts[1]).not.toBeNull(); // the live-grown chip staggered in
+    expect(starts[1]!).toBeGreaterThan(now - 1);
+    const freshReveal = motion.revealOf("fresh-a#g0")!;
+    expect(freshReveal.headerStartedAt).not.toBeNull();
+    expect(freshReveal.starts.every((start) => start !== null)).toBe(true);
+    // The restored closed pin still governs openness while the arrival is
+    // pending — a remembered false pin overrides the arrival default.
+    const grownGeometry = geometryOf("tools-a#g0", grownChat, motion);
+    expect(grownGeometry.arrivalPending).toBe(true);
+    expect(grownGeometry.open).toBe(false);
+    // An unpinned new group follows the live auto-open behavior.
+    expect(geometryOf("fresh-a#g0", grownChat, motion).open).toBe(true);
+    revisitA.unmount();
   });
 });

@@ -202,6 +202,15 @@ export class EngineClient {
     return this.#info;
   }
 
+  /**
+   * The registry engine key this client routes for (its canonical origin),
+   * or null for an unkeyed client. Presentation caches that must not collide
+   * across engines key off this.
+   */
+  get engineKey(): string | null {
+    return this.#engineKey ?? null;
+  }
+
   /** Increments on every successful (re)connect; the cache swap epoch. */
   get generation(): number {
     return this.#generation;

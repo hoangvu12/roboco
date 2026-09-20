@@ -550,6 +550,18 @@ export type BlobFetch = { state: "loading" } | { state: "failed" } | { state: "r
 const BLOB_TIMEOUT_MS = 20_000;
 
 /**
+ * The explicit fold pins of one chat/doc (ticket 68): group folds and chip
+ * detail folds keyed by the store's existing stable identities (row id;
+ * `"{rowId}#d{ix}"`). Capture keeps ONLY the `open` pins — no tween clocks,
+ * no reveal state, no blob payload — so restoring a choice renders its
+ * endpoint without scheduling any motion.
+ */
+export interface ExplicitFoldSnapshot {
+  readonly groups: ReadonlyMap<string, boolean>;
+  readonly details: ReadonlyMap<string, boolean>;
+}
+
+/**
  * The tool groups' render-local state: group folds, chip detail folds, reveal
  * epochs, and sidecar blob fetches — the desktop's per-Transcript entity
  * fields (`folds`, `tool_details`, `tool_group_reveals`, `blob_details` +
@@ -746,6 +758,48 @@ export class ToolGroupMotionStore {
       }
     }
     this.#bump();
+  }
+
+  /**
+   * Serialize the explicit fold pins for chat-switch memory (ticket 68):
+   * every group/detail fold the user pinned, reduced to its `open` value.
+   * Unpinned entries (auto-following) and tween metadata are dropped — the
+   * replay baseline owns reveal state, and a restored choice must not carry
+   * a click or tween timestamp.
+   */
+  captureExplicitFolds(): ExplicitFoldSnapshot {
+    const groups = new Map<string, boolean>();
+    for (const [key, fold] of this.#folds) {
+      if (fold.open !== null) {
+        groups.set(key, fold.open);
+      }
+    }
+    const details = new Map<string, boolean>();
+    for (const [key, fold] of this.#detailFolds) {
+      if (fold.open !== null) {
+        details.set(key, fold.open);
+      }
+    }
+    return { groups, details };
+  }
+
+  /**
+   * Reinstall saved explicit pins as SETTLED folds (ticket 68): the pin wins
+   * over auto-open and arrival-pending through the shared geometry resolver,
+   * and `toggledAt`/`disclosureAt` stay null so no tween runs. Keys whose
+   * rows vanished since the capture are harmless misses — the maps only
+   * surface through lookups for rows that render.
+   */
+  restoreExplicitFolds(saved: ExplicitFoldSnapshot): void {
+    for (const [key, open] of saved.groups) {
+      this.#folds.set(key, { open, epoch: 1, from: 0, toggledAt: null, disclosureAt: null });
+    }
+    for (const [key, open] of saved.details) {
+      this.#detailFolds.set(key, { open, epoch: 1, from: 0, toggledAt: null, disclosureAt: null });
+    }
+    if (saved.groups.size > 0 || saved.details.size > 0) {
+      this.#bump();
+    }
   }
 
   /**
