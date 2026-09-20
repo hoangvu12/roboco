@@ -420,6 +420,24 @@ describe("the source carries no per-frame pump state (the grep proof)", () => {
     expect(composer).toMatch(/var\(--rb-dock-box-height,/);
   });
 
+  it("the composer's inner geometry channels are written, consumed with fallbacks, and cleared (ticket 74)", () => {
+    // The route-clock inner values ride the same live-var mechanism as the
+    // heights, so an active frame never mixes live heights with stale
+    // published padding/inset/glide — and the settle commit removes every
+    // temporary override (settle, reversal, wizard takeover, reduced motion
+    // all funnel through the same [layout]-commit cleanup).
+    for (const channel of [
+      "--rb-dock-text-pad",
+      "--rb-dock-text-glide",
+      "--rb-dock-cluster-dy",
+      "--rb-dock-cluster-inset",
+    ]) {
+      expect(composer).toContain(`setProperty("${channel}"`);
+      expect(composer).toContain(`var(${channel},`);
+      expect(composer).toContain(`removeProperty("${channel}"`);
+    }
+  });
+
   it("the composer parks its evaluate pass and reads the live frame (the pump's channels)", () => {
     expect(composer).toMatch(/dockEvaluateRef\.current = \(\) => evaluateRef\.current\(\)/);
     expect(composer).toMatch(/liveDockFrame/);

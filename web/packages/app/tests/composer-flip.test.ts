@@ -43,9 +43,11 @@ import {
   pressIntent,
   resizeSettling,
   RESIZE_SETTLE_MS,
+  routeInputGeometry,
   TEXTAREA_PAD_V,
   type FlipMorph,
 } from "../src/lib/composer-flip";
+import { dockHeight } from "../src/lib/composer-dock";
 
 /**
  * The composer's compact↔expanded flip, height morph, and scroll math —
@@ -477,5 +479,226 @@ describe("flip_morph_tracks_live_target_and_drives_fade", () => {
     const mid = flipMorphProgress(m, 90.0);
     expect(mid).toBeGreaterThan(0.0);
     expect(mid).toBeLessThan(1.0);
+  });
+});
+
+/**
+ * Ticket 74 — the pure half of `dock_morph_restores_skinny_height_with_a_
+ * continuous_editor_origin` (composer.rs:8045): the route layout clock, the
+ * one-line input floor and the route text glide at the desktop test's own
+ * samples (0, .2, .6, .98, 1) in both directions. jsdom has no layout
+ * engine: editor origin, textarea identity and the painted footprint are
+ * browser evidence, tracked on the ticket.
+ *
+ * The scenario: a one-line "Hi" draft, no strips — the hero side measures
+ * `composerTotalHeight(22.75)` = 124, the session side COMPACT_TOTAL_HEIGHT
+ * = 49, the pill lerps between them. Docking renders COMPACT from the
+ * navigation commit (`expanded || new_chat` flips with the route); undocking
+ * to the canvas renders EXPANDED the whole way.
+ */
+describe("dock_morph_restores_skinny_height_with_a_continuous_editor_origin (route geometry)", () => {
+  const HERO = COMPOSER_MIN_HEIGHT; // composerTotalHeight(INPUT_LINE_HEIGHT)
+  const SAMPLES = [0.0, 0.2, 0.6, 0.98, 1.0];
+
+  function routeGeometry(
+    amount: number,
+    renderedExpanded: boolean,
+    overrides?: Partial<Parameters<typeof routeInputGeometry>[0]>,
+  ) {
+    const contentHeight = INPUT_LINE_HEIGHT;
+    return routeInputGeometry({
+      renderedExpanded,
+      sessionExpanded: false,
+      dockActive: true,
+      dockAmount: amount,
+      flipProgress: 1,
+      flipFrom: null,
+      pillHeight: dockHeight(amount, contentHeight, false),
+      baseHeight: dockHeight(amount, contentHeight, false),
+      stripHeight: 0,
+      undockedHeight: dockHeight(0, contentHeight, false),
+      ...overrides,
+    });
+  }
+
+  it("the pill lerps 124 → 49 across the route (the desktop's outer clock)", () => {
+    for (const amount of SAMPLES) {
+      expect(dockHeight(amount, INPUT_LINE_HEIGHT, false)).toBeCloseTo(HERO + (COMPACT_TOTAL_HEIGHT - HERO) * amount, 10);
+    }
+    expect(HERO).toBe(124);
+    expect(COMPACT_TOTAL_HEIGHT).toBe(49);
+  });
+
+  it("DOCKING renders compact on the dock clock: layoutProgress IS the amount", () => {
+    for (const amount of [0.0, 0.2, 0.6, 0.98]) {
+      const g = routeGeometry(amount, false);
+      const pill = dockHeight(amount, INPUT_LINE_HEIGHT, false);
+      expect(g.layoutProgress).toBe(amount);
+      expect(g.textPad).toBe(morphTextPad(amount));
+      expect(g.boxHeight).toBe(Math.max(pill - PILL_BORDER_V - ACTIONS_ROW_HEIGHT, INPUT_LINE_HEIGHT + g.textPad + 4));
+      // Compact render: the input viewport is always exactly one line.
+      expect(g.inputHeight).toBe(INPUT_LINE_HEIGHT);
+      expect(g.settledViewport).toBe(INPUT_LINE_HEIGHT);
+      // The route text glide walks down from the undocked hero height…
+      expect(g.textGlide).toBe(collapseTextGlide(HERO, amount));
+      // …and the cluster rides the same clock.
+      expect(g.clusterInset).toBe(morphClusterInset(false, amount));
+      expect(g.clusterDy).toBe(morphClusterDy(amount));
+    }
+  });
+
+  it("the one-line box floor engages as the pill sweeps under it (compact route)", () => {
+    // Early samples: the raw budget still exceeds the floor.
+    for (const amount of [0.0, 0.2]) {
+      const g = routeGeometry(amount, false);
+      const raw = dockHeight(amount, INPUT_LINE_HEIGHT, false) - PILL_BORDER_V - ACTIONS_ROW_HEIGHT;
+      expect(raw).toBeGreaterThan(INPUT_LINE_HEIGHT + g.textPad + 4);
+      expect(g.boxHeight).toBe(raw);
+    }
+    // Late samples: the floor holds at least one line plus its padding.
+    for (const amount of [0.6, 0.98]) {
+      const g = routeGeometry(amount, false);
+      const raw = dockHeight(amount, INPUT_LINE_HEIGHT, false) - PILL_BORDER_V - ACTIONS_ROW_HEIGHT;
+      expect(raw).toBeLessThan(INPUT_LINE_HEIGHT + g.textPad + 4);
+      expect(g.boxHeight).toBe(INPUT_LINE_HEIGHT + g.textPad + 4);
+    }
+  });
+
+  it("UNDOCKING renders expanded on the reversed clock: layoutProgress is 1 − amount", () => {
+    for (const amount of [1.0, 0.98, 0.6, 0.2]) {
+      const g = routeGeometry(amount, true);
+      expect(g.layoutProgress).toBe(1 - amount);
+      expect(g.textPad).toBe(morphTextPad(1 - amount));
+      expect(g.clusterInset).toBe(morphClusterInset(true, 1 - amount));
+      expect(g.clusterDy).toBe(morphClusterDy(1 - amount));
+      // Expanded render has no text glide…
+      expect(g.textGlide).toBe(0);
+      // …and the input never loses its one visible line, even at the
+      // compact extreme (amount 1: the pill is 49, the raw box budget 1).
+      expect(g.inputHeight).toBeGreaterThanOrEqual(INPUT_LINE_HEIGHT);
+      expect(g.settledViewport).toBeGreaterThanOrEqual(INPUT_LINE_HEIGHT);
+    }
+    const atCompact = routeGeometry(1.0, true);
+    expect(atCompact.inputHeight).toBe(INPUT_LINE_HEIGHT);
+    expect(atCompact.settledViewport).toBe(INPUT_LINE_HEIGHT);
+    expect(atCompact.boxHeight).toBe(INPUT_LINE_HEIGHT + morphTextPad(0) + 4);
+    // Back at the canvas the full box is restored.
+    const atCanvas = routeGeometry(0.0, true);
+    expect(atCanvas.boxHeight).toBe(76);
+    expect(atCanvas.inputHeight).toBe(76 - 16 - 4);
+    expect(atCanvas.settledViewport).toBe(76 - 16 - 4);
+  });
+
+  it("endpoint equality: the settle instant matches the route formulas (no hand-off jump)", () => {
+    // Undock endpoint (amount 0, expanded render): EVERY channel agrees
+    // between the active route frame and the settled frame.
+    expect(routeGeometry(0.0, true, { dockActive: true })).toEqual(routeGeometry(0.0, true, { dockActive: false }));
+    // Dock endpoint (amount 1, compact render): every COMPACT-consumed
+    // channel agrees; the box height alone differs (42.75 floored vs 1) and
+    // the compact JSX never consumes it.
+    const active = routeGeometry(1.0, false, { dockActive: true });
+    const settled = routeGeometry(1.0, false, { dockActive: false });
+    expect(active.inputHeight).toBe(settled.inputHeight);
+    expect(active.settledViewport).toBe(settled.settledViewport);
+    expect(active.textPad).toBe(settled.textPad);
+    expect(active.clusterDy).toBe(settled.clusterDy);
+    expect(active.clusterInset).toBe(settled.clusterInset);
+    expect(active.textGlide).toBe(settled.textGlide);
+  });
+
+  it("reversed trajectory: the geometry depends on the frame, not the direction of travel", () => {
+    for (const renderedExpanded of [false, true]) {
+      const ascending = SAMPLES.map((amount) => routeGeometry(amount, renderedExpanded));
+      const descending = [...SAMPLES].reverse().map((amount) => routeGeometry(amount, renderedExpanded));
+      expect(descending.reverse()).toEqual(ascending);
+    }
+  });
+
+  it("an expanded destination keeps the local flip clock — no compact route geometry", () => {
+    const g = routeInputGeometry({
+      renderedExpanded: true,
+      sessionExpanded: true,
+      dockActive: true,
+      dockAmount: 0.5,
+      flipProgress: 0.3,
+      flipFrom: null,
+      pillHeight: 100,
+      baseHeight: 100,
+      stripHeight: 0,
+      undockedHeight: HERO,
+    });
+    // The dock amount must NOT leak into the inner channels…
+    expect(g.layoutProgress).toBe(0.3);
+    expect(g.textPad).toBe(morphTextPad(0.3));
+    // …and no one-line floor is imposed: the raw budget stands.
+    expect(g.boxHeight).toBe(100 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT);
+    expect(g.inputHeight).toBe(100 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - morphTextPad(0.3) - 4);
+    expect(g.settledViewport).toBe(100 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V);
+    // The compact RENDER's route glide, though, keys off the active frame
+    // alone (composer.rs:7793-7795) — even with an expanded session state.
+    const compactRender = routeInputGeometry({
+      renderedExpanded: false,
+      sessionExpanded: true,
+      dockActive: true,
+      dockAmount: 0.5,
+      flipProgress: 0.3,
+      flipFrom: null,
+      pillHeight: 100,
+      baseHeight: 100,
+      stripHeight: 0,
+      undockedHeight: HERO,
+    });
+    expect(compactRender.layoutProgress).toBe(0.3);
+    expect(compactRender.textGlide).toBe(collapseTextGlide(HERO, 0.5));
+    expect(compactRender.boxHeight).toBe(100 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT);
+  });
+
+  it("strips subtract exactly once from the box budget", () => {
+    const stripHeight = 68 + 36; // one attachment row + the comments chip
+    const bare = routeGeometry(0.2, false);
+    const withStrips = routeInputGeometry({
+      renderedExpanded: false,
+      sessionExpanded: false,
+      dockActive: true,
+      dockAmount: 0.2,
+      flipProgress: 1,
+      flipFrom: null,
+      pillHeight: dockHeight(0.2, INPUT_LINE_HEIGHT, false) + stripHeight,
+      baseHeight: dockHeight(0.2, INPUT_LINE_HEIGHT, false),
+      stripHeight,
+      undockedHeight: HERO,
+    });
+    // pill + strips − strips − border − actions ≡ pill − border − actions.
+    expect(withStrips.boxHeight).toBe(bare.boxHeight);
+    expect(withStrips.inputHeight).toBe(bare.inputHeight);
+    expect(withStrips.settledViewport).toBe(bare.settledViewport);
+  });
+
+  it("no one-line floor on the ordinary settled/morphing calculation", () => {
+    const settledSmall = routeInputGeometry({
+      renderedExpanded: true,
+      sessionExpanded: false,
+      dockActive: false,
+      dockAmount: 0,
+      flipProgress: 1,
+      flipFrom: null,
+      pillHeight: 60,
+      baseHeight: 60,
+      stripHeight: 0,
+      undockedHeight: HERO,
+    });
+    expect(settledSmall.boxHeight).toBe(60 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT);
+    expect(settledSmall.settledViewport).toBe(0);
+    // The settled empty canvas: the full 76px box, 56px viewport.
+    const canvas = routeGeometry(0.0, true, { dockActive: false });
+    expect(canvas.boxHeight).toBe(76);
+    expect(canvas.settledViewport).toBe(124 - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V);
+    // The settled compact pill: a 1px box budget, the one-line viewport.
+    const compact = routeGeometry(1.0, false, { dockActive: false });
+    expect(compact.boxHeight).toBe(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V - ACTIONS_ROW_HEIGHT);
+    expect(compact.settledViewport).toBe(INPUT_LINE_HEIGHT);
+    // The local flip glide still walks the compact text down off-route.
+    const flipping = routeGeometry(0.0, false, { dockActive: false, flipProgress: 0.5, flipFrom: 124 });
+    expect(flipping.textGlide).toBe(collapseTextGlide(124, 0.5));
   });
 });

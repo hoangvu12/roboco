@@ -46,7 +46,6 @@ import {
   type DraftConfig,
 } from "../lib/composer-actions";
 import {
-  ACTIONS_ROW_HEIGHT,
   attachmentStripHeight,
   COMPOSER_MAX_WIDTH,
   COMPOSER_WIDTH_EPSILON,
@@ -61,14 +60,10 @@ import {
   inputDragScrollDelta,
   inputOverflowEdges,
   INPUT_LINE_HEIGHT,
-  morphClusterDy,
-  morphClusterInset,
-  morphTextPad,
-  collapseTextGlide,
   PILL_BORDER_V,
   RESIZE_SETTLE_MS,
   ROUTE_SNAP_MS,
-  TEXTAREA_PAD_V,
+  routeInputGeometry,
   type FlipMorph,
 } from "../lib/composer-flip";
 import {
@@ -725,12 +720,14 @@ export function Composer({
   reducedMotionRef.current = reducedMotion;
   const availableWidthRef2 = useRef(availableWidth);
   availableWidthRef2.current = availableWidth;
-  // The glide's height channels write these directly (ticket 57b): the pill
-  // root and the expanded input box carry their animated height/radius as
-  // CSS custom properties — the JSX consumes them with a stale-safe
-  // fallback, so a mid-glide render cannot clobber the live values.
+  // The glide's channels write these directly (ticket 57b heights, ticket 74
+  // inner geometry): the pill root, the input box and the actions row carry
+  // their animated height/radius/padding/offset values as CSS custom
+  // properties — the JSX consumes them with a stale-safe fallback, so a
+  // mid-glide render cannot clobber the live values.
   const pillRef = useRef<HTMLDivElement | null>(null);
   const inputBoxRef = useRef<HTMLDivElement | null>(null);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
   // The morph loop's liveness, render-tracked: a glide that starts mid-morph
   // must still publish the loop's death (the evaluate otherwise skips the
   // state publish while the dock owns the height, which would leave the
@@ -900,11 +897,29 @@ export function Composer({
           ? dockHeight(frame.docked ? 1 : 0, contentHeight, sessionExpandedRef.current) + stripH - pillHeight
           : 0;
     }
-    // The expanded textarea box follows the animated pill height; the
-    // textarea itself fills the box less its paddings (composer.rs:7606).
-    const boxHeight = Math.max(pillHeight - stripH - PILL_BORDER_V - ACTIONS_ROW_HEIGHT, 0);
-    const textPad = morphTextPad(morphT);
-    const inputHeight = mode ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
+    // The frame's inner geometry (ticket 74, composer.rs:7589-7632): ONE
+    // clock drives every inner channel — while the dock frame is active and
+    // the session's own mode is compact, that's the shared dock amount
+    // (`1 − amount` expanded, `amount` compact); otherwise the local flip's.
+    // The compact route floors keep one input line plus its padding alive as
+    // the pill sweeps down to 49px; an expanded destination morphs exactly
+    // like a typing flip.
+    const flipAnimating = flipMorph !== null && !flipMorphDone(flipMorph, nowMs);
+    const geometry = routeInputGeometry({
+      renderedExpanded: mode,
+      sessionExpanded: sessionExpandedRef.current,
+      dockActive: dockDriven,
+      dockAmount,
+      flipProgress: morphT,
+      flipFrom: flipAnimating ? flipMorph.from : null,
+      pillHeight,
+      baseHeight,
+      stripHeight: stripH,
+      // `dock_height(0.0)` (composer.rs:7794) — the undocked hero height,
+      // the route glide's `from` (`lerp` at amount 0 ignores the session).
+      undockedHeight: dockHeight(0, contentHeight, sessionExpandedRef.current),
+    });
+    const { boxHeight, textPad, inputHeight } = geometry;
     el.style.height = `${inputHeight}px`;
     // The scrollability gate, not an inline overflowY: the CSS owns the
     // overflow (`[data-scrollable="true"]` → `overflow-y: auto`, bar
@@ -915,27 +930,31 @@ export function Composer({
     // The scroll fade mask: only SETTLED overflow at an edge gets the ramp —
     // the settled viewport is the committed target's, not the animating
     // box's (`input_overflow_edges`, composer.rs:181-192).
-    const settledViewport = Math.max(baseHeight - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V, 0);
+    const settledViewport = geometry.settledViewport;
     const [fadeTop, fadeBottom] = inputOverflowEdges(contentHeight, settledViewport, inputHeight, el.scrollTop);
     el.dataset["fadeTop"] = mode && fadeTop ? "true" : "false";
     el.dataset["fadeBottom"] = mode && fadeBottom ? "true" : "false";
-    const morphing =
-      (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) ||
-      (flipMorph !== null && !flipMorphDone(flipMorph, nowMs));
+    const morphing = (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) || flipAnimating;
     if (dockDriven) {
-      // The glide's height channels are DOM writes (ticket 57b, §2.3): the
-      // pill's outer height, its radius (`26 − 4·dock_amount`,
-      // composer.rs:7603 — the frost blur's mask follows the radius), and
-      // the expanded box's height ride CSS custom properties the JSX below
-      // consumes with a stale-safe fallback — `set_dock_frame` owns the
-      // height, so nothing re-renders for it. The settle evaluate's
+      // The glide's channels are DOM writes (ticket 57b, §2.3; ticket 74 for
+      // the inner ones): the pill's outer height, its radius
+      // (`26 − 4·dock_amount`, composer.rs:7603 — the frost blur's mask
+      // follows the radius), the box height, and the ROUTE-CLOCK inner
+      // values (text padding, cluster offset/inset, compact text glide) all
+      // ride CSS custom properties the JSX below consumes with a stale-safe
+      // fallback — a single active frame must not mix the live heights with
+      // last publish's padding (composer.rs:7592-7632 derives every channel
+      // from the same frame). All are written in BOTH modes so a mid-glide
+      // mode switch never catches a channel missing. The settle evaluate's
       // republish (the non-driven branch) plus the `[layout]` effect's var
       // removal hand the values back to the state.
       pillRef.current?.style.setProperty("--rb-dock-pill-height", `${pillHeight}px`);
       pillRef.current?.style.setProperty("--rb-dock-pill-radius", `${(26 - 4 * dockAmount).toFixed(2)}px`);
-      if (mode) {
-        inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
-      }
+      inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
+      inputBoxRef.current?.style.setProperty("--rb-dock-text-pad", `${geometry.textPad}px`);
+      inputBoxRef.current?.style.setProperty("--rb-dock-text-glide", `${-geometry.textGlide}px`);
+      actionsRef.current?.style.setProperty("--rb-dock-cluster-dy", `${-geometry.clusterDy}px`);
+      actionsRef.current?.style.setProperty("--rb-dock-cluster-inset", `${geometry.clusterInset}px`);
       if (!morphing && !morphLoopLiveRef.current) {
         // A pure glide frame: the imperative writes above (plus the
         // textarea height and the datasets already applied) carry
@@ -954,14 +973,11 @@ export function Composer({
       pillHeight,
       boxHeight,
       textPad,
-      clusterInset: morphClusterInset(mode, morphT),
-      clusterDy: morphClusterDy(morphT),
-      // Collapse-morph text glide: the decaying offset walks the compact
+      clusterInset: geometry.clusterInset,
+      clusterDy: geometry.clusterDy,
+      // Collapse/route text glide: the decaying offset walks the compact
       // text down from its expanded resting place (composer.rs:7793-7800).
-      textGlide:
-        !mode && flipMorph !== null && !flipMorphDone(flipMorph, nowMs)
-          ? collapseTextGlide(flipMorph.from, morphT)
-          : 0,
+      textGlide: geometry.textGlide,
       morphing,
     };
     setLayout((previous) => (pillLayoutEquals(previous, nextLayout) ? previous : nextLayout));
@@ -989,6 +1005,10 @@ export function Composer({
       pillRef.current?.style.removeProperty("--rb-dock-pill-height");
       pillRef.current?.style.removeProperty("--rb-dock-pill-radius");
       inputBoxRef.current?.style.removeProperty("--rb-dock-box-height");
+      inputBoxRef.current?.style.removeProperty("--rb-dock-text-pad");
+      inputBoxRef.current?.style.removeProperty("--rb-dock-text-glide");
+      actionsRef.current?.style.removeProperty("--rb-dock-cluster-dy");
+      actionsRef.current?.style.removeProperty("--rb-dock-cluster-inset");
     }
     // `dockFrameRef` is render-assigned; the live ref is pump-owned. This
     // effect only needs to run when a publish landed.
@@ -2935,22 +2955,32 @@ export function Composer({
                   style={
                     expandedRender
                       ? {
-                          // Ticket 57b: the glide's box height rides the
-                          // evaluate pass's CSS var (expanded mode only).
+                          // Tickets 57b/74: the glide's box height and text
+                          // padding ride the evaluate pass's CSS vars; the
+                          // fallbacks are the last published layout.
                           height: `var(--rb-dock-box-height, ${layout.boxHeight}px)`,
-                          paddingTop: `${layout.textPad}px`,
+                          paddingTop: `var(--rb-dock-text-pad, ${layout.textPad}px)`,
                         }
-                      : { top: `${-layout.textGlide}px` }
+                      : // The glide var carries the already-negated offset.
+                        { top: `var(--rb-dock-text-glide, ${-layout.textGlide}px)` }
                   }
                 >
                   {inputStack}
                 </div>
                 <div
                   className="composer-actions"
+                  ref={actionsRef}
                   style={
+                    // The glide vars carry the already-negated dy offset.
                     expandedRender
-                      ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
-                      : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+                      ? {
+                          bottom: `var(--rb-dock-cluster-dy, ${-layout.clusterDy}px)`,
+                          paddingRight: `var(--rb-dock-cluster-inset, ${layout.clusterInset}px)`,
+                        }
+                      : {
+                          top: `var(--rb-dock-cluster-dy, ${-layout.clusterDy}px)`,
+                          paddingRight: `var(--rb-dock-cluster-inset, ${layout.clusterInset}px)`,
+                        }
                   }
                 >
                   <div className="composer-utility">
