@@ -25,6 +25,7 @@ import {
   TranscriptStore,
   type PendingSend,
 } from "../state/transcript-store";
+import { transcriptFoldCache } from "../state/transcript-fold-state";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
@@ -341,8 +342,45 @@ function TranscriptSurface({
   // desktop's switch is atomic (state.rs:1740-1792, shell.rs:1837-1862,
   // composer.rs:5849-5874); this window is the web's equivalent gate.
   const chatArrival = useMemo(() => new ChatArrivalWindow(), [store]);
-  const toolMotion = useMemo(() => new ToolGroupMotionStore(chatArrival), [chatArrival]);
-  useEffect(() => () => toolMotion.reset(), [toolMotion]);
+  // Ticket 68 (decision option 1): the chat's remembered explicit fold pins
+  // are reinstalled INTO the fresh motion store during the render that
+  // creates it — before any rows render, before the scroller's first
+  // layout effect, and therefore before the viewport restore's height
+  // estimates read the pins ("restore fold choices before calculating the
+  // restored viewport"). Restored pins are settled (no tween clocks) and
+  // ride the shared geometry resolver, so a remembered closed pin overrides
+  // autoOpen/arrivalPending without forking the effective-open formula.
+  // The outgoing chat's pins are captured at surface teardown, before the
+  // store is reset — the LRU lives in `state/transcript-fold-state.ts`.
+  const engineKey = client.engineKey ?? "";
+  const toolMotion = useMemo(() => {
+    const motion = new ToolGroupMotionStore(chatArrival);
+    if (!alignTop) {
+      const saved = transcriptFoldCache.restore(engineKey, docId);
+      if (saved !== null) {
+        motion.restoreExplicitFolds(saved);
+      }
+    }
+    return motion;
+  }, [chatArrival, engineKey, docId, alignTop]);
+  useEffect(() => {
+    // StrictMode's simulated remount re-runs this effect after the cleanup
+    // below reset the KEPT store instance; re-applying the pins keeps that
+    // double mount as faithful as a real remount (idempotent — the snapshot
+    // re-sets the same keys).
+    if (!alignTop) {
+      const saved = transcriptFoldCache.restore(engineKey, docId);
+      if (saved !== null) {
+        toolMotion.restoreExplicitFolds(saved);
+      }
+    }
+    return () => {
+      if (!alignTop) {
+        transcriptFoldCache.capture(engineKey, docId, toolMotion.captureExplicitFolds());
+      }
+      toolMotion.reset();
+    };
+  }, [toolMotion, engineKey, docId, alignTop]);
   // The reveal baseline (ticket 69) rides the store's durable accepted-reset
   // epoch, never an observed pending render: a generation swap commits the
   // pending window and the reset's populated frame in ONE task, so React may
