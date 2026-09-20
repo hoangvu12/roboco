@@ -2767,15 +2767,20 @@ a:focus-visible,
  * bitmap's dome hole, painted at the pill's pre-flip center, which
  * `margin-inline: auto` keeps at the column's center = the hero's center —
  * tracks the pill for the whole glide with no bitmap scaling and no
- * re-raster. `--rb-hero-raster-width` is written by the remask itself (the
+ * re-raster. `--rb-hero-raster-width` is written by the paint itself (the
  * raster's own CSS width; `100%` fallback ≈ the pre-tween `inset: 0`), so
  * the window is always the true raster's box. The hero's `overflow:
  * hidden` windows it: the clip's edge rides the column exactly while the
  * artwork's crop holds — the settle commit then returns this layer to
  * `inset: 0` and re-rasters at the settled width (the snap the ticket
- * sanctions). Compositor-class motion: no JS, no canvas work per frame.
+ * sanctions).
+ *
+ * CPU FALLBACK ONLY (ticket 65): the `[data-renderer="cpu-fallback"]` gate.
+ * The GPU path re-renders both passes every frame at the sampled live
+ * geometry, so the bitmap TRACKS the glide — no frozen window, no growth
+ * bands, no settle re-crop snap (the 65b fix); this rule never engages.
  */
-.new-thread-hero[data-sidebar-tween="1"] .new-thread-hero-readiness {
+.new-thread-hero[data-sidebar-tween="1"][data-renderer="cpu-fallback"] .new-thread-hero-readiness {
   left: 50%;
   right: auto;
   width: var(--rb-hero-raster-width, 100%);

@@ -19,6 +19,7 @@ import {
   dockGlideActive,
   dockGlideChannels,
   dockGlideSignal,
+  onDockGlideFrame,
   writeDockGlideVars,
 } from "../src/lib/dock-glide";
 
@@ -441,5 +442,42 @@ describe("the source carries no per-frame pump state (the grep proof)", () => {
   it("the composer parks its evaluate pass and reads the live frame (the pump's channels)", () => {
     expect(composer).toMatch(/dockEvaluateRef\.current = \(\) => evaluateRef\.current\(\)/);
     expect(composer).toMatch(/liveDockFrame/);
+  });
+});
+
+describe("DockGlideSignal.subscribe + the post-prepaint frame hook (ticket 65)", () => {
+  it("subscribe hands the arm/settle edges to riders (mirrors SidebarTweenSignal)", () => {
+    const signal = new DockGlideSignal();
+    const edges: boolean[] = [];
+    const unsubscribe = signal.subscribe((active) => edges.push(active));
+    signal.arm();
+    signal.arm(); // a re-arm notifies too (retarget semantics, like the sidebar's)
+    signal.settle();
+    signal.settle();
+    expect(edges).toEqual([true, true, false, false]);
+    unsubscribe();
+    signal.arm();
+    expect(edges).toEqual([true, true, false, false]);
+    signal.settle();
+  });
+
+  it("onDockGlideFrame fires at the end of writeDockGlideVars, never on clear, and unsubscribes", () => {
+    let calls = 0;
+    const unsubscribe = onDockGlideFrame(() => {
+      calls += 1;
+    });
+    const style = recordingStyle();
+    const channels = dockGlideChannels(dockFrameSettled(true), 1, 600, "opaque");
+    writeDockGlideVars(style, channels);
+    expect(calls).toBe(1);
+    // A second frame in the same glide fires again — the hook is per write.
+    writeDockGlideVars(style, channels);
+    expect(calls).toBe(2);
+    // The settle handoff never fires it (the glide has converged).
+    clearDockGlideVars(style);
+    expect(calls).toBe(2);
+    unsubscribe();
+    writeDockGlideVars(style, channels);
+    expect(calls).toBe(2);
   });
 });

@@ -2,13 +2,16 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SurfaceTreatment } from "@roboco/theme";
 import type { NewThreadBackgroundEffect } from "../state/ui-settings";
 import {
-  cutoutMaskRaster,
   newThreadBackgroundElementOpacity,
   newThreadBackgroundHeight,
-  type Rect,
 } from "../lib/new-thread-background";
 import { effectRaster, type RasterData } from "../lib/new-thread-background-effects";
-import { HeroRemaskGate } from "../lib/sidebar-tween";
+import {
+  createHeroBackgroundRenderer,
+  type HeroArtworkSource,
+  type HeroBackgroundRenderer,
+} from "../lib/new-thread-background-renderer";
+import { HeroRenderScheduler, type HeroGeometrySample } from "../lib/sidebar-tween";
 import { useResolvedAppearance } from "../state/appearance";
 
 /**
@@ -214,12 +217,17 @@ export function NewThreadBackground({
   const heroRef = useRef<HTMLDivElement | null>(null);
   const revealCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cutoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const surface = useRootSurfaceTreatment();
   const appearance = useResolvedAppearance();
   const image = useDecodedImage(artwork === null ? null : artwork.url);
   const raster = useEffectRaster(artwork === null ? null : artwork.url, effect, appearance === "light");
   const rasterCanvas = useMemo(() => (raster === null ? null : rasterToCanvas(raster)), [raster]);
+  const rendererRef = useRef<HeroBackgroundRenderer | null>(null);
+  const schedulerRef = useRef<HeroRenderScheduler | null>(null);
+  // The renderer kind lands on the hero root as `data-renderer` — the CPU
+  // fallback's raster-window CSS (ticket 57a) is gated on it; the GPU path
+  // re-renders per frame, so the bitmap is never frozen behind a window.
+  const [rendererKind, setRendererKind] = useState<"webgl" | "cpu-fallback" | null>(null);
 
   const height = newThreadBackgroundHeight(viewportHeight);
   // shell.rs:5893 — artwork_opacity × new_thread_background_opacity(is_frost);
@@ -233,188 +241,127 @@ export function NewThreadBackground({
   // lifecycle) and only a NEW id starts cold. `reduced` still snaps the
   // transition off here.
 
-  // Re-paint both passes from the live composer surface — but only on the
-  // settle conditions (ticket 57a, §2.2): an artwork/effect/surface change
-  // (scheduled via rAF so the dock's transform write in the same commit's
-  // layout effects is already on the element), a real geometry change (the
-  // surface's resize — the typing morph, the dock's pill-height glide; the
-  // hero's resize — viewport resizes, drag takeovers), and the sidebar
-  // tween's settle commit below. NEVER per commit, never per frame: while
-  // the tween runs the gate absorbs the observers' ticks (the raster window
-  // CSS tracks the hole). The cutout pass consumes the single combined
-  // min(hole, fade) mask; the reveal pass the fade alone.
-  const gateRef = useRef<HeroRemaskGate | null>(null);
+  // The renderer + render scheduler (ticket 65): the renderer paints both
+  // passes at a SAMPLED geometry (hero + composer measured together); the
+  // scheduler owns WHEN — geometry notes (both ResizeObservers) coalesce to
+  // one render per frame, motion (the sidebar tween OR the dock glide — the
+  // old gate knew only the sidebar) owns the cadence: the dock pump's
+  // post-prepaint hook samples this frame's composer placement (transform-
+  // only moves included, the exact frames the ResizeObservers cannot see),
+  // the renderer's own rAF rides the sidebar's CSS tween, and the last
+  // settle paints exactly once at the measured end geometry. Mount once:
+  // the canvases commit their context mode here (WebGL vs 2d), so the
+  // renderer lives for the mount, not per source change.
   useLayoutEffect(() => {
-    const remask = (): void => {
-      const hero = heroRef.current;
-      const revealCanvas = revealCanvasRef.current;
-      const cutoutCanvas = cutoutCanvasRef.current;
-      // An installed effect paints its RASTER only — the desktop's hero is
-      // `Empty` while the raster is cold, never the raw artwork swapping
-      // mid-view; `none` paints the decoded raw artwork.
-      const drawable = effect === "none" ? image : rasterCanvas;
-      const clear = (): void => {
-        if (revealCanvas !== null && revealCanvas.width !== 0) {
-          revealCanvas.width = 0;
-        }
-        if (cutoutCanvas !== null && cutoutCanvas.width !== 0) {
-          cutoutCanvas.width = 0;
-        }
-      };
-      if (
-        hero === null ||
-        revealCanvas === null ||
-        cutoutCanvas === null ||
-        drawable === null ||
-        artwork === null
-      ) {
-        clear();
-        return;
-      }
+    const hero = heroRef.current;
+    const revealCanvas = revealCanvasRef.current;
+    const cutoutCanvas = cutoutCanvasRef.current;
+    if (hero === null || revealCanvas === null || cutoutCanvas === null) {
+      return;
+    }
+    const renderer = createHeroBackgroundRenderer(revealCanvas, cutoutCanvas, {
+      // The raster window's width (ticket 57a, CPU fallback only — the GPU
+      // path re-renders per frame, so the bitmap is never frozen).
+      setRasterWidth: (cssWidth) => {
+        hero.style.setProperty("--rb-hero-raster-width", `${cssWidth}px`);
+      },
+    });
+    rendererRef.current = renderer;
+    setRendererKind(renderer.kind);
+    const sample = (): HeroGeometrySample => {
       const composerSurface = document.getElementById("composer-surface");
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
       if (composerSurface === null) {
-        return;
+        return { hero: { x: 0, y: 0, width: 0, height: 0 }, composer: { x: 0, y: 0, width: 0, height: 0 }, dpr };
       }
       const heroRect = hero.getBoundingClientRect();
       const surfaceRect = composerSurface.getBoundingClientRect();
-      if (heroRect.width <= 0 || heroRect.height <= 0 || surfaceRect.width <= 0) {
-        return;
-      }
-      const heroBox: Rect = {
-        x: heroRect.x,
-        y: heroRect.y,
-        width: heroRect.width,
-        height: heroRect.height,
+      return {
+        hero: { x: heroRect.x, y: heroRect.y, width: heroRect.width, height: heroRect.height },
+        composer: { x: surfaceRect.x, y: surfaceRect.y, width: surfaceRect.width, height: surfaceRect.height },
+        dpr,
       };
-      const composerBox: Rect = {
-        x: surfaceRect.x,
-        y: surfaceRect.y,
-        width: surfaceRect.width,
-        height: surfaceRect.height,
-      };
-      const sourceWidth = drawable instanceof HTMLImageElement ? drawable.naturalWidth : drawable.width;
-      const sourceHeight = drawable instanceof HTMLImageElement ? drawable.naturalHeight : drawable.height;
-      if (sourceWidth <= 0 || sourceHeight <= 0) {
-        clear();
-        return;
-      }
-      const paint = (canvas: HTMLCanvasElement, cutout: boolean): void => {
-        const cssWidth = Math.max(1, Math.round(heroBox.width));
-        const cssHeight = Math.max(1, Math.round(heroBox.height));
-        // The raster window's width (ticket 57a): the readiness layer holds
-        // THIS box during a sidebar tween, so the bitmap never scales —
-        // recorded on the hero for the CSS to read back.
-        hero.style.setProperty("--rb-hero-raster-width", `${cssWidth}px`);
-        const scale = Math.max(1, window.devicePixelRatio || 1);
-        const rasterWidth = Math.max(1, Math.round(heroBox.width * scale));
-        const rasterHeight = Math.max(1, Math.round(heroBox.height * scale));
-        if (canvas.width !== rasterWidth) {
-          canvas.width = rasterWidth;
-        }
-        if (canvas.height !== rasterHeight) {
-          canvas.height = rasterHeight;
-        }
-        const context = canvas.getContext("2d");
-        if (context === null) {
-          return;
-        }
-        // Cover fit (mask.rs:59-73): max scale, centered — the peer of the
-        // CSS `background-size: cover; background-position: 50% 50%`.
-        const cover = Math.max(rasterWidth / sourceWidth, rasterHeight / sourceHeight);
-        const fittedWidth = sourceWidth * cover;
-        const fittedHeight = sourceHeight * cover;
-        context.clearRect(0, 0, rasterWidth, rasterHeight);
-        context.drawImage(
-          drawable,
-          (rasterWidth - fittedWidth) / 2,
-          (rasterHeight - fittedHeight) / 2,
-          fittedWidth,
-          fittedHeight,
-        );
-        // The pure shader grid at CSS resolution, applied through
-        // destination-in (dest alpha ×= mask alpha — the desktop's mask
-        // multiply). No per-frame data-URI PNG round-trips.
-        const grid = cutoutMaskRaster(heroBox, composerBox, cutout, cssWidth, cssHeight);
-        let maskCanvas = maskCanvasRef.current;
-        if (maskCanvas === null) {
-          maskCanvas = document.createElement("canvas");
-          maskCanvasRef.current = maskCanvas;
-        }
-        if (maskCanvas.width !== cssWidth) {
-          maskCanvas.width = cssWidth;
-        }
-        if (maskCanvas.height !== cssHeight) {
-          maskCanvas.height = cssHeight;
-        }
-        const maskContext = maskCanvas.getContext("2d");
-        if (maskContext === null) {
-          return;
-        }
-        const maskImageData = new ImageData(cssWidth, cssHeight);
-        const maskData = maskImageData.data;
-        for (let i = 0, offset = 0; i < grid.length; i++, offset += 4) {
-          maskData[offset] = 255;
-          maskData[offset + 1] = 255;
-          maskData[offset + 2] = 255;
-          maskData[offset + 3] = grid[i]! * 255;
-        }
-        maskContext.putImageData(maskImageData, 0, 0);
-        context.globalCompositeOperation = "destination-in";
-        context.drawImage(maskCanvas, 0, 0, rasterWidth, rasterHeight);
-        context.globalCompositeOperation = "source-over";
-      };
-      paint(revealCanvas, false);
-      paint(cutoutCanvas, true);
     };
-    // Every request routes through the settle predicate: while the sidebar
-    // tween is active the geometry ticks are absorbed (the raster window
-    // CSS owns the hole), so nothing below can re-raster mid-glide.
-    const gate = new HeroRemaskGate(remask);
-    gateRef.current = gate;
+    const scheduler = new HeroRenderScheduler({
+      sample,
+      render: (geometry) => renderer.render(geometry),
+    });
+    schedulerRef.current = scheduler;
     // Same-frame contract: rAF fires after this commit's layout effects (the
-    // dock prepaint writes the wrapper transform there) and before paint.
-    const raf = requestAnimationFrame(() => gate.note("artwork"));
+    // dock prepaint writes the wrapper transform there) and before paint —
+    // the source effect below has already uploaded by then.
+    const raf = requestAnimationFrame(() => scheduler.noteArtwork());
     const observer =
       typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => gate.note("surface-geometry"))
+        ? new ResizeObserver(() => scheduler.noteGeometry())
         : null;
     const composerSurface = document.getElementById("composer-surface");
     if (observer !== null && composerSurface !== null) {
       observer.observe(composerSurface);
     }
     // The hero's own geometry (viewport resizes, the seam-drag takeover):
-    // fires per frame during the width transition, which is exactly what the
-    // gate is there to absorb.
+    // absorbed while any motion runs, one coalesced render once settled.
     const heroObserver =
       typeof ResizeObserver !== "undefined" && heroRef.current !== null
-        ? new ResizeObserver(() => gate.note("hero-geometry"))
+        ? new ResizeObserver(() => scheduler.noteGeometry())
         : null;
     if (heroObserver !== null && heroRef.current !== null) {
       heroObserver.observe(heroRef.current);
     }
     return () => {
-      gateRef.current = null;
+      rendererRef.current = null;
+      schedulerRef.current = null;
+      scheduler.dispose();
+      renderer.dispose();
       cancelAnimationFrame(raf);
       observer?.disconnect();
       heroObserver?.disconnect();
     };
-    // Scoped to what actually repaints the hero (ticket 57a): the artwork
-    // and its decoded/rasterized sources, the effect, and the surface
-    // treatment — never per commit, never `dissolve` (the element opacity
-    // rides the render) and never the tween flag (the settle effect below
-    // owns that commit's remask).
+    // The mount owns the renderer/scheduler/observers — source changes ride
+    // the effect below, never a re-mount (the canvases' context modes are
+    // committed for the mount's lifetime).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Source changes (artwork, its decoded/rasterized sources, the effect,
+  // the surface treatment — the same deps the old remask keyed on): upload
+  // the new source into the renderer, then note it — the scheduler renders
+  // at the CURRENT geometry, even mid-motion (the raster re-fixes the
+  // window), with the rAF deferral preserving the same-frame transform
+  // contract. An installed effect paints its RASTER only — the desktop's
+  // hero is `Empty` while the raster is cold, never the raw artwork
+  // swapping mid-view; `none` paints the decoded raw artwork.
+  useLayoutEffect(() => {
+    const renderer = rendererRef.current;
+    if (renderer === null) {
+      return;
+    }
+    const drawable = effect === "none" ? image : rasterCanvas;
+    const source: HeroArtworkSource | null =
+      drawable === null || artwork === null
+        ? null
+        : {
+            drawable,
+            width: drawable instanceof HTMLImageElement ? drawable.naturalWidth : drawable.width,
+            height: drawable instanceof HTMLImageElement ? drawable.naturalHeight : drawable.height,
+          };
+    renderer.setSource(source);
+    const raf = requestAnimationFrame(() => schedulerRef.current?.noteArtwork());
+    return () => {
+      cancelAnimationFrame(raf);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artwork, image, rasterCanvas, effect, surface]);
 
   // The tween's settle (or a drag takeover's disarm): the commit that
   // returns the readiness layer to `inset: 0` has already restored the
-  // canvases' boxes to the hero's settled box, so the settle remask HERE —
+  // canvases' boxes to the hero's settled box, so the settle note HERE —
   // inside the same commit, before paint — snaps the raster to the true
   // geometry with no stretched intermediate frame.
   const wasSidebarTweenRef = useRef(false);
   useLayoutEffect(() => {
     if (wasSidebarTweenRef.current && !sidebarTween) {
-      gateRef.current?.note("settle");
+      schedulerRef.current?.noteSettle();
     }
     wasSidebarTweenRef.current = sidebarTween;
   }, [sidebarTween]);
@@ -429,6 +376,7 @@ export function NewThreadBackground({
       ref={heroRef}
       data-effect={effect}
       data-sidebar-tween={sidebarTween ? "1" : "0"}
+      data-renderer={rendererKind ?? undefined}
       style={{
         width: `${heroWidth}px`,
         height: `${height}px`,
