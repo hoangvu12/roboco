@@ -83,6 +83,9 @@ fn jump_visibility(was_shown: bool, distance: f32) -> bool {
 }
 /// Bound session-local viewport memory independently of total chat history.
 const MAX_SAVED_VIEWPORTS: usize = 256;
+/// Bound remembered explicit fold pins per engine (ticket 68): presentation
+/// state only, in-memory across navigation — nothing persists to disk.
+const MAX_SAVED_FOLD_CHATS: usize = 32;
 /// Bound locally-authored queue ids waiting to become transcript prompts.
 const MAX_PENDING_QUEUED_TURNS: usize = 256;
 /// Text-selection edge scrolling runs only during a drag. A 24 ms cadence is
@@ -2536,6 +2539,57 @@ impl SavedViewportCache {
     }
 }
 
+/// One chat's remembered explicit fold pins (ticket 68, decision option 1):
+/// group folds plus chip detail folds, keyed by the render ids the entity
+/// already uses (`{row_id}` / `"{row_id}#d{ix}"`). Only the `open` pins are
+/// kept — `toggled_at`/`disclosure_at` are stripped at capture, so a
+/// restored choice renders its endpoint and never resumes an old tween.
+/// Vanished rows are harmless key misses; reordering can re-point a key at
+/// a different chip, which the pin then governs.
+#[derive(Default, Clone)]
+struct SavedFoldPins {
+    groups: HashMap<SharedString, bool>,
+    details: HashMap<SharedString, bool>,
+}
+
+/// Memory-only fold preference memory for primary chats visited in this
+/// window, LRU-bounded by [`MAX_SAVED_FOLD_CHATS`] — the entity is one
+/// engine's transcript, so the map is per-engine by construction. The web
+/// peer is `state/transcript-fold-state.ts` (keyed engine + chat/doc).
+#[derive(Default)]
+struct SavedFoldCache {
+    by_chat: HashMap<String, SavedFoldPins>,
+    recency: VecDeque<String>,
+}
+
+impl SavedFoldCache {
+    fn insert(&mut self, chat_id: String, pins: SavedFoldPins) {
+        if self.by_chat.contains_key(&chat_id) {
+            self.recency.retain(|candidate| candidate != &chat_id);
+        }
+        self.recency.push_back(chat_id.clone());
+        self.by_chat.insert(chat_id, pins);
+        while self.by_chat.len() > MAX_SAVED_FOLD_CHATS {
+            let Some(evicted) = self.recency.pop_front() else {
+                break;
+            };
+            self.by_chat.remove(&evicted);
+        }
+    }
+
+    fn get_cloned_and_touch(&mut self, chat_id: &str) -> Option<SavedFoldPins> {
+        let pins = self.by_chat.get(chat_id).cloned()?;
+        self.recency.retain(|candidate| candidate != chat_id);
+        self.recency.push_back(chat_id.to_string());
+        Some(pins)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_chat.len()
+    }
+}
+
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
@@ -2559,6 +2613,11 @@ pub struct Transcript {
     /// A transcript instance is shared across tabs, so the active ListState is
     /// reset on every attach and cannot retain these positions by itself.
     saved_viewports: SavedViewportCache,
+    /// Memory-only explicit fold pins for primary chats visited in this window
+    /// (ticket 68): survives the attach reset that clears `folds` and
+    /// `tool_details`, bounded per chat. The quick deselect-retain path
+    /// never consults it — the retained entity keeps its live folds.
+    saved_folds: SavedFoldCache,
     /// An anchored viewport waiting for the selected chat's async replay.
     pending_viewport: Option<SavedViewport>,
     /// Generation of the selected chat, guarding post-layout restoration
@@ -2853,6 +2912,7 @@ impl Transcript {
             doc_live: doc_override.is_some() && follow,
             doc_override,
             saved_viewports: SavedViewportCache::default(),
+            saved_folds: SavedFoldCache::default(),
             pending_viewport: None,
             viewport_generation: 0,
             viewport_finalize_pending: false,
@@ -2992,6 +3052,32 @@ impl Transcript {
             return;
         };
         self.saved_viewports.insert(chat_id, viewport);
+    }
+
+    /// Snapshot the outgoing primary chat's explicit fold pins (ticket 68)
+    /// before the attach reset clears them. Only pinned folds are kept, with
+    /// their tween clocks stripped; an empty pin set is a no-op so a visit
+    /// that pinned nothing keeps the older memory. Subagent (doc override)
+    /// instances never attach, so they never pass through here.
+    fn remember_current_folds(&mut self) {
+        let Some(chat_id) = self.chat_id.clone() else {
+            return;
+        };
+        let mut pins = SavedFoldPins::default();
+        for (key, fold) in &self.folds {
+            if let Some(open) = fold.open {
+                pins.groups.insert(key.clone(), open);
+            }
+        }
+        for (key, fold) in &self.tool_details {
+            if let Some(open) = fold.open {
+                pins.details.insert(key.clone(), open);
+            }
+        }
+        if pins.groups.is_empty() && pins.details.is_empty() {
+            return;
+        }
+        self.saved_folds.insert(chat_id, pins);
     }
 
     /// Restore an exact optimistic row while replay is pending, enable stable
@@ -3960,7 +4046,14 @@ impl Transcript {
             let saved_viewport = selected
                 .as_ref()
                 .and_then(|chat_id| self.saved_viewports.get_cloned_and_touch(chat_id));
+            // Same eviction discipline for the fold pins (ticket 68): the
+            // incoming chat's remembered pins are cloned out before the
+            // outgoing capture can evict them.
+            let saved_folds = selected
+                .as_ref()
+                .and_then(|chat_id| self.saved_folds.get_cloned_and_touch(chat_id));
             self.remember_current_viewport();
+            self.remember_current_folds();
             let keep_own_turn = self
                 .own_turn
                 .as_ref()
@@ -3976,6 +4069,36 @@ impl Transcript {
             self.live_parsers.clear();
             self.tree_cache.clear();
             self.folds.clear();
+            self.tool_details.clear();
+            // Ticket 68: reinstall the incoming chat's remembered explicit
+            // pins as SETTLED folds — before rows are derived below, so the
+            // render's geometry and the viewport restore read them. The pins
+            // carry no tween clocks, a remembered false pin overrides
+            // auto-open/arrival-pending through `render_tool_group`'s one
+            // open resolution, and keys whose rows vanished are inert
+            // misses. `tool_details` now resets with the attach because this
+            // cache — not stale map entries — is the single cross-chat
+            // memory.
+            if let Some(pins) = saved_folds {
+                for (key, open) in pins.groups {
+                    self.folds.insert(
+                        key,
+                        FoldState {
+                            open: Some(open),
+                            ..Default::default()
+                        },
+                    );
+                }
+                for (key, open) in pins.details {
+                    self.tool_details.insert(
+                        key,
+                        FoldState {
+                            open: Some(open),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
             self.tool_group_reveals.clear();
             self.user_folds.clear();
             self.user_heights.clear();
@@ -7945,6 +8068,232 @@ mod tests {
         });
     }
 
+    /// `select_chat` + a populated transcript in one state update, so the
+    /// attach and its replay coalesce into a single sync (the same shape
+    /// `replay_tool_group` exercises). The ticket-68 regressions use it to
+    /// drive REAL A→B→A attaches — never the retained-entity deselect path.
+    fn select_chat_with(
+        state: &Entity<AppState>,
+        transcript: &Entity<Transcript>,
+        chat: &str,
+        entries: Vec<SessionMessageEntry>,
+        cx: &mut gpui::App,
+    ) {
+        state.update(cx, |state, _| {
+            state.selected_chat = Some(chat.into());
+            state.transcript_replayed = true;
+            state.transcript = entries;
+            state.transcript_revision += 1;
+        });
+        transcript.update(cx, |this, cx| this.sync(cx));
+    }
+
+    #[gpui::test]
+    fn explicit_fold_choices_survive_real_chat_switch(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            let chat_a = || {
+                vec![
+                    assistant(
+                        "tools-a",
+                        MessageStatus::Complete,
+                        vec![tool_part("call-a", "pwd"), reasoning_part("think-a", "planning")],
+                    ),
+                    assistant(
+                        "live-a",
+                        MessageStatus::Streaming,
+                        vec![tool_part("call-live", "ls")],
+                    ),
+                ]
+            };
+            // Visit A: a settled tools+thought group and a still-streaming
+            // tail group (auto-open).
+            select_chat_with(&state, &transcript, "chat-a", chat_a(), cx);
+            // The user's explicit choices, made with LIVE clocks: the
+            // streaming group closed (against its auto-open) and the settled
+            // thought's detail opened (against its resolved-closed default).
+            transcript.update(cx, |this, _| {
+                this.folds.insert(
+                    "live-a#g0".into(),
+                    FoldState {
+                        open: Some(false),
+                        from: 92.0,
+                        toggled_at: Some(Instant::now()),
+                        disclosure_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+                this.tool_details.insert(
+                    "tools-a#g0#d1".into(),
+                    FoldState {
+                        open: Some(true),
+                        from: 80.0,
+                        toggled_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+            });
+            // A→B: the REAL attach captures A's pins with the clocks
+            // stripped, and B starts clean.
+            select_chat_with(&state, &transcript, "chat-b", chat_a(), cx);
+            transcript.update(cx, |this, _| {
+                let saved = this
+                    .saved_folds
+                    .get_cloned_and_touch("chat-a")
+                    .expect("chat-a's pins were captured");
+                assert_eq!(saved.groups.get("live-a#g0"), Some(&false));
+                assert_eq!(saved.details.get("tools-a#g0#d1"), Some(&true));
+                assert!(this.folds.is_empty());
+                assert!(this.tool_details.is_empty());
+            });
+            // B pins the same row id (a different chat's copy of it) open.
+            transcript.update(cx, |this, _| {
+                this.folds.insert(
+                    "tools-a#g0".into(),
+                    FoldState {
+                        open: Some(true),
+                        ..Default::default()
+                    },
+                );
+            });
+            // B→A: a REAL re-attach restores only A's pins, settled.
+            select_chat_with(&state, &transcript, "chat-a", chat_a(), cx);
+            transcript.update(cx, |this, cx| {
+                let fold = this
+                    .folds
+                    .get("live-a#g0")
+                    .expect("A's group pin restored")
+                    .clone();
+                assert_eq!(fold.open, Some(false));
+                assert!(fold.toggled_at.is_none());
+                assert!(fold.disclosure_at.is_none());
+                let detail = this
+                    .tool_details
+                    .get("tools-a#g0#d1")
+                    .expect("A's detail pin restored")
+                    .clone();
+                assert_eq!(detail.open, Some(true));
+                assert!(detail.toggled_at.is_none());
+                // B's pin on the SAME row id never leaks into A's restore.
+                assert!(this.folds.get("tools-a#g0").is_none());
+                // The remembered closed pin overrides the streaming
+                // auto-open through the one open resolution: the render
+                // resolves closed although the group is the live tail.
+                let row = this
+                    .rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == "live-a#g0")
+                    .cloned()
+                    .expect("the streaming group row");
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                assert!(*auto_open);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+                assert_eq!(this.folds[&row.id].open, Some(false));
+                assert_eq!(this.tool_group_reveals[&row.id].rendered_open, Some(false));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn restored_folds_do_not_replay_arrival_motion(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            // chat-a is attached by the harness with one settled tool group.
+            transcript.update(cx, |this, _| {
+                // The user toggles the group open then closed — a live
+                // closing tween (navigate away during the close animation).
+                this.folds.insert(
+                    "tools#g0".into(),
+                    FoldState {
+                        open: Some(false),
+                        from: 120.0,
+                        toggled_at: Some(Instant::now()),
+                        disclosure_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+            });
+            // A→B→A through REAL attaches: the capture strips the tween
+            // clocks; the restore reinstalls the pin settled.
+            replay_tool_group(&state, &transcript, "chat-b", cx);
+            replay_tool_group(&state, &transcript, "chat-a", cx);
+            transcript.update(cx, |this, cx| {
+                let fold = this
+                    .folds
+                    .get("tools#g0")
+                    .expect("the pin returned")
+                    .clone();
+                assert_eq!(fold.open, Some(false));
+                assert!(fold.toggled_at.is_none());
+                assert!(fold.disclosure_at.is_none());
+                // The replay baseline owns the reveal state: no arrival
+                // starts, no header entrance, and the first render records
+                // closed without seeding a tween.
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+                let reveal = &this.tool_group_reveals[&row.id];
+                assert_eq!(reveal.rendered_open, Some(false));
+                assert!(reveal.header_started_at.is_none());
+                assert!(reveal.starts.iter().all(Option::is_none));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+            });
+            // A genuinely NEW live arrival after the restore still animates:
+            // the pinned group grows a tool and a brand-new streaming group
+            // lands.
+            state.update(cx, |state, _| {
+                state.transcript = vec![
+                    assistant(
+                        "tools",
+                        MessageStatus::Complete,
+                        vec![tool_part("call", "pwd"), tool_part("call-2", "ls")],
+                    ),
+                    assistant(
+                        "live-tools",
+                        MessageStatus::Streaming,
+                        vec![tool_part("new-call", "cat")],
+                    ),
+                ];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, cx| {
+                let reveal = this
+                    .tool_group_reveals
+                    .get("tools#g0")
+                    .expect("the grown group's reveal");
+                assert!(reveal.starts[0].is_none()); // the replayed chip stays history
+                assert!(reveal.starts[1].is_some()); // the live-grown chip staggered in
+                // The remembered closed pin still governs openness while the
+                // new chip's arrival is pending — the render resolves shut
+                // and seeds no tween.
+                let row = this
+                    .rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == "tools#g0")
+                    .cloned()
+                    .expect("the grown group row");
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                assert!(!*auto_open);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+                assert_eq!(this.folds[&row.id].open, Some(false));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+                // The fresh streaming group is fully live: header + chips.
+                let fresh = this
+                    .tool_group_reveals
+                    .get("live-tools#g0")
+                    .expect("the fresh group's reveal");
+                assert!(fresh.header_started_at.is_some());
+                assert!(fresh.starts.iter().all(Option::is_some));
+            });
+        });
+    }
+
     #[test]
     fn resizing_details_does_not_restart_group_disclosure() {
         let now = Instant::now();
@@ -8571,6 +8920,35 @@ mod tests {
         assert!(cache.get_cloned_and_touch("chat-0").is_some());
         cache.insert("outgoing-new".into(), SavedViewport::FollowTail);
 
+        assert!(cache.by_chat.contains_key("chat-0"));
+        assert!(!cache.by_chat.contains_key("chat-1"));
+        assert!(cache.by_chat.contains_key("outgoing-new"));
+    }
+
+    #[test]
+    fn fold_pin_cache_is_bounded_and_recency_protected() {
+        let pins = || SavedFoldPins {
+            groups: [("g".into(), false)].into_iter().collect(),
+            details: HashMap::new(),
+        };
+        let mut cache = SavedFoldCache::default();
+        for ix in 0..MAX_SAVED_FOLD_CHATS + 8 {
+            cache.insert(format!("chat-{ix}"), pins());
+        }
+        assert_eq!(cache.len(), MAX_SAVED_FOLD_CHATS);
+        assert!(cache.get_cloned_and_touch("chat-0").is_none());
+        assert!(
+            cache
+                .get_cloned_and_touch(&format!("chat-{}", MAX_SAVED_FOLD_CHATS + 7))
+                .is_some()
+        );
+        // A touch protects the oldest entry from the next eviction.
+        let mut cache = SavedFoldCache::default();
+        for ix in 0..MAX_SAVED_FOLD_CHATS {
+            cache.insert(format!("chat-{ix}"), pins());
+        }
+        assert!(cache.get_cloned_and_touch("chat-0").is_some());
+        cache.insert("outgoing-new".into(), pins());
         assert!(cache.by_chat.contains_key("chat-0"));
         assert!(!cache.by_chat.contains_key("chat-1"));
         assert!(cache.by_chat.contains_key("outgoing-new"));
