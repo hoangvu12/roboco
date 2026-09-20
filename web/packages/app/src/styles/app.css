@@ -7160,6 +7160,12 @@ button.files-save-pill:hover {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* The outlet/gate chain nests this in ROW flex parents, so the automatic
+     content minimum applies: a nowrap chip detail (a long URL is
+     unbreakable) would otherwise push the wrap past a phone viewport and
+     the scroller's overflow clip off-screen ("chat flowing outside the
+     screen"). Zero it — the scroller clips at its own box, as before. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }

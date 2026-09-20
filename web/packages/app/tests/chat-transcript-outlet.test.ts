@@ -2,6 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EngineClient } from "@roboco/engine-client";
 import type { TranscriptUpdate } from "@roboco/proto";
 import { ChatTranscriptOutlet } from "../src/components/chat-transcript-outlet";
@@ -108,5 +110,25 @@ describe("chat transcript outlet", () => {
     render(b.store, true);
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.querySelector<HTMLElement>(".chat-arrival-gate")!.style.opacity).toBe("1");
+  });
+});
+
+describe("the outlet chain's width contracts (the phone-overflow regression)", () => {
+  // jsdom lays out nothing, so the flex chain's min-width discipline is a
+  // CSS contract: the outlet and the arrival gate nest `.transcript-wrap`
+  // in ROW flex parents, so every level from the wrap down must opt out of
+  // the automatic content minimum — a nowrap chip detail (a long URL is
+  // unbreakable) otherwise pushes the wrap past a phone viewport and the
+  // scroller's overflow clip off-screen ("chat flowing outside the screen").
+  const css = readFileSync(join(process.cwd(), "src/styles/app.css"), "utf8");
+
+  it(".transcript-wrap opts out of the content minimum (the scroller clips at its box)", () => {
+    const rule = css.match(/\.transcript-wrap\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/min-width:\s*0/);
+  });
+
+  it("the outlet and the arrival gate opt out of the content minimum", () => {
+    const rule = css.match(/\.chat-transcript-outlet,\s*\r?\n?\.chat-arrival-gate\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/min-width:\s*0/);
   });
 });
