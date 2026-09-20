@@ -2,9 +2,9 @@
 
 **What to build:** After the selected policy is approved, revisiting a chat will consistently handle explicitly opened and closed tool groups on both clients. Replayed history will not animate as newly arrived tools. This ticket records a product decision; it does not authorize removing live tool auto-open or reveal behavior.
 
-**Blocked by:** Product choice in §2.4; no code work until it is recorded. Ticket 69 is independent replay correctness work; ticket 70 supplies geometry correction for final validation.
+**Blocked by:** Resolved — the §2.4 product choice was recorded 2026-09-20 by the user (option 1, with the recommended sub-choices below). Ticket 69's baseline epochs and ticket 70's shared geometry have already merged into the PR branch; build on the current file shapes.
 
-**Status:** needs-info
+**Status:** ready-for-agent
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.1, §4.1, §4.5, §5.1. Relevant tables are copied verbatim below.
 
@@ -76,7 +76,7 @@ Record the user's selection before changing either client:
 
 Additional implementation choices to record with the selection: bounded cache capacity/eviction, whether preferences survive app/browser restart, stable identity for detail pins (current rendering keys use group row plus tool index), vanished/reordered-row handling, and engine/chat identity. Recommended persistence is in-memory across navigation only; do not invent disk persistence.
 
-Decision record: **UNRESOLVED**. No question or approval request is required during this documentation turn.
+Decision record: **Option 1 SELECTED** (user, 2026-09-20) — remember explicit group and detail choices across chats; navigation/replay never replays reveal starts; unpinned groups still follow genuine live auto-open behavior. Recorded sub-choices: persistence is in-memory across navigation only (no disk persistence, nothing survives app/browser restart); cache is a bounded per-engine LRU keyed by engine identity + chat/doc, evicting least-recently-used chats; detail pins use the motion store's existing stable identity (group row + tool index), so vanished/reordered rows are harmless key misses; restored pins carry no reveal/tween timestamps. Apply to both clients; the quick deselect-retain path stays consistent.
 
 ### 2.5 Future implementation sequence
 
