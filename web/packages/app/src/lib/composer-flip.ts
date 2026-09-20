@@ -526,6 +526,108 @@ export function morphClusterDy(progress: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Route-aware inner geometry (composer.rs:7589-7632, 7723, 7767, 7835,
+// 7793-7800) — ticket 74
+// ---------------------------------------------------------------------------
+
+/** The inner channels one render frame resolves — all on the SAME clock. */
+export interface RouteInputGeometry {
+  /** `layout_morph_t` — the dock amount on a compact route, else the flip's. */
+  readonly layoutProgress: number;
+  /** `text_pt` — the expanded text top padding (12→16). */
+  readonly textPad: number;
+  /** `textarea_height` — the animated input box, floored on a compact route. */
+  readonly boxHeight: number;
+  /** The textarea viewport: the box less its padding (expanded) or one line. */
+  readonly inputHeight: number;
+  /** `settled_height` — the scroll/fade viewport measured on the COMMITTED base. */
+  readonly settledViewport: number;
+  /** `cluster_dy` — the control cluster's decaying 2.5px centering delta. */
+  readonly clusterDy: number;
+  /** The cluster's right inset, gliding 8↔12 with the layout clock. */
+  readonly clusterInset: number;
+  /** `text_glide` — the compact text's decaying offset (route or local flip). */
+  readonly textGlide: number;
+}
+
+export interface RouteInputGeometryInputs {
+  /** The RENDERED mode (`expanded || new_chat`), not the session's flip state. */
+  readonly renderedExpanded: boolean;
+  /** `session_expanded` — the composer's OWN expanded state. */
+  readonly sessionExpanded: boolean;
+  /** A dock frame is installed AND active. */
+  readonly dockActive: boolean;
+  /** The shared dock clock's amount, 0..1. */
+  readonly dockAmount: number;
+  /** `morph_t` — the local flip's eased progress (1 when no flip runs). */
+  readonly flipProgress: number;
+  /** The running flip morph's `from` height; null when no flip is animating. */
+  readonly flipFrom: number | null;
+  /** The animated pill height this frame (strips included). */
+  readonly pillHeight: number;
+  /** The settled base height this frame (no strips). */
+  readonly baseHeight: number;
+  /** The attachment + comment strip budget riding on the pill. */
+  readonly stripHeight: number;
+  /** `dock_height(0.0)` — the undocked (hero) height, the route glide's `from`. */
+  readonly undockedHeight: number;
+}
+
+/**
+ * The route layout clock (composer.rs:7592-7601): while the dock frame is
+ * active and the session's own mode is compact, the shared dock amount
+ * drives every inner channel — the expanded render reads `1 − amount`, the
+ * compact render `amount` — so pill, padding, controls and text glide all
+ * describe the SAME frame. Every other case (typing flips, an expanded
+ * destination) keeps the local flip clock.
+ *
+ * The compact-route floors (composer.rs:7604-7632) keep at least one input
+ * line plus its padding alive while the pill sweeps down to 49px: the box
+ * floors at `22.75 + textPad + 4`, the settled viewport at one line. The
+ * compact text glide (composer.rs:7793-7800) walks down from the UNDOCKED
+ * height on an active route, else rides the local flip morph.
+ */
+export function routeInputGeometry(inputs: RouteInputGeometryInputs): RouteInputGeometry {
+  const routeToSingleLine = inputs.dockActive && !inputs.sessionExpanded;
+  const layoutProgress = routeToSingleLine
+    ? inputs.renderedExpanded
+      ? 1 - inputs.dockAmount
+      : inputs.dockAmount
+    : inputs.flipProgress;
+  const textPad = morphTextPad(layoutProgress);
+  const boxHeight = Math.max(
+    inputs.pillHeight - inputs.stripHeight - PILL_BORDER_V - ACTIONS_ROW_HEIGHT,
+    routeToSingleLine ? INPUT_LINE_HEIGHT + textPad + 4 : 0,
+  );
+  const inputHeight = inputs.renderedExpanded ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
+  const settledViewport = inputs.renderedExpanded
+    ? Math.max(
+        inputs.baseHeight - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V,
+        routeToSingleLine ? INPUT_LINE_HEIGHT : 0,
+      )
+    : INPUT_LINE_HEIGHT;
+  const clusterDy = morphClusterDy(layoutProgress);
+  const clusterInset = morphClusterInset(inputs.renderedExpanded, layoutProgress);
+  const textGlide = inputs.renderedExpanded
+    ? 0
+    : inputs.dockActive
+      ? collapseTextGlide(inputs.undockedHeight, inputs.dockAmount)
+      : inputs.flipFrom !== null
+        ? collapseTextGlide(inputs.flipFrom, inputs.flipProgress)
+        : 0;
+  return {
+    layoutProgress,
+    textPad,
+    boxHeight,
+    inputHeight,
+    settledViewport,
+    clusterDy,
+    clusterInset,
+    textGlide,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Layout-pass bookkeeping (web seams for the desktop's gpui-harness tests)
 // ---------------------------------------------------------------------------
 
