@@ -2,10 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { parseScopedId } from "@roboco/engine-client";
-import { engineRegistry, useFleet } from "./fleet";
+import { engineRegistry, useFleet, useFleetRegistry } from "./fleet";
 import { fleetStore } from "./fleet";
 import { useSidebar } from "./sidebar";
-import { createEngineSession, disposeEngineSession, engineSessionKey, type EngineSession } from "./engine-session";
+import { disposeEngineSession, engineSessionKey, reconcileEngineSessions, type EngineSession } from "./engine-session";
+import type { PickerCatalog } from "./picker-catalog";
 import { useWatchSnapshot } from "./hooks";
 import { useUiSettings } from "./ui-settings";
 import { echoStore } from "./transcript-store";
@@ -49,42 +50,42 @@ const EMPTY_SESSIONS: ReadonlyMap<string, EngineSession> = new Map();
 
 export function EngineSessionProvider({ children }: { children: ReactNode }) {
   const fleet = useFleet();
+  const registry = useFleetRegistry();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [sessions, setSessions] = useState<ReadonlyMap<string, EngineSession>>(EMPTY_SESSIONS);
   const sessionsRef = useRef(sessions);
 
-  // Keep one session alive per stored engine. The registry creates the
-  // client and watch cache synchronously with the pairing-store change, so
-  // this only wraps them with the session surface (the composer's catalog)
-  // and disposes the ones that left the fleet or were re-paired.
+  // Keep one session alive per stored engine, bound to the registry's
+  // CURRENT client/cache. The registry snapshot is a reconciliation trigger
+  // alongside `fleet.engines` because an engine-gate Retry replaces the
+  // client/cache without touching pairing metadata. Disposal keys on
+  // CATALOG ownership, never wrapper identity: a metadata-cloned wrapper
+  // (an identity pin rewrites the StoredEngine object) retains its live
+  // catalog, and disposing a retained catalog was the first-pair "loading
+  // forever" defect (ticket 67).
   useEffect(() => {
-    const previous = sessionsRef.current;
-    const next = new Map<string, EngineSession>();
-    for (const engine of fleet.engines) {
-      const existing = previous.get(engine.baseUrl);
-      if (existing !== undefined && existing.engine.credential === engine.credential) {
-        // Registry-owned connection stays; refresh the stored-engine
-        // metadata (a pinned identity rewrites the entry's identity).
-        next.set(engine.baseUrl, existing.engine === engine ? existing : { ...existing, engine });
-        continue;
-      }
-      const client = engineRegistry.clientFor(engine.baseUrl);
-      const cache = engineRegistry.watchCacheFor(engine.baseUrl);
-      if (client === null || cache === null) {
-        continue;
-      }
-      next.set(engine.baseUrl, createEngineSession(engine, client, cache));
-    }
-    for (const [key, session] of previous) {
-      if (next.get(key) !== session) {
+    const plan = reconcileEngineSessions(sessionsRef.current, fleet.engines, (baseUrl) => {
+      const client = engineRegistry.clientFor(baseUrl);
+      const cache = engineRegistry.watchCacheFor(baseUrl);
+      return client === null || cache === null ? null : { client, cache };
+    });
+    // Dispose each displaced catalog exactly once; retained catalogs —
+    // including one carried by a refreshed wrapper — are never disposed.
+    const disposed = new Set<PickerCatalog>();
+    for (const session of plan.displaced) {
+      if (!disposed.has(session.catalog)) {
+        disposed.add(session.catalog);
         disposeEngineSession(session);
       }
     }
-    sessionsRef.current = next;
-    setSessions(next);
-    // `fleet.engines` identity changes per store commit (pinDevice included);
-    // the diff above is what makes this converge, not the dependency.
-  }, [fleet.engines]);
+    // Unchanged reconciliation keeps the previous map identity: frequent
+    // registry row publications must not churn context, recreate catalogs,
+    // or resubscribe the composer.
+    if (plan.sessions !== sessionsRef.current) {
+      sessionsRef.current = plan.sessions;
+      setSessions(plan.sessions);
+    }
+  }, [fleet.engines, registry]);
 
   useEffect(
     () => () => {
