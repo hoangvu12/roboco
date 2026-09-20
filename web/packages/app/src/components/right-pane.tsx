@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
 import { evalWidthTween } from "../state/layout";
-import { useIsPhone } from "../state/media";
+import { useIsPhone, usePrefersReducedMotion } from "../state/media";
 import { resolvedActive, type ChatPaneState } from "../state/right-pane";
 import { renderRightSurface, surfaceEntry } from "./surface-registry";
 import { RightTabStrip } from "./right-tab-strip";
@@ -352,6 +352,7 @@ export function usePhoneExpandedCloseHold(
   asideRef: { readonly current: HTMLElement | null },
 ): boolean {
   const [holdOwner, setHoldOwner] = useState<string | null>(null);
+  const reducedMotion = usePrefersReducedMotion();
   const previous = useRef<PhonePaneSnapshot>({ owner: chatId, phone, open, expanded });
   const now: PhonePaneSnapshot = { owner: chatId, phone, open, expanded };
 
@@ -365,10 +366,7 @@ export function usePhoneExpandedCloseHold(
       if (current !== null && releasesExpandedCloseHold(current, now)) {
         return null;
       }
-      if (
-        current === null &&
-        armsExpandedCloseHold(was, now, window.matchMedia("(prefers-reduced-motion: reduce)").matches)
-      ) {
+      if (current === null && armsExpandedCloseHold(was, now, reducedMotion)) {
         return now.owner;
       }
       return current;
@@ -379,11 +377,10 @@ export function usePhoneExpandedCloseHold(
   // While armed, the hold ends with the drawer's own transform transition —
   // guarded to the aside's `transform` so a child's transitionend bubbling
   // up cannot settle it early — with deterministic releases for everything
-  // the event cannot cover: `transitioncancel`, a reduced-motion flip
-  // mid-close (the CSS kill ends the transition without an end event), and
-  // a fallback clock just past the slide for any silent miss. Reopen, owner
-  // switch and breakpoint flip release on the commit above; unmount runs
-  // this effect's cleanup, so a routed-away hold dies with the component.
+  // the event cannot cover: `transitioncancel`, and a fallback clock just
+  // past the slide for any silent miss. Reopen, owner switch and breakpoint
+  // flip release on the commit above; unmount runs this effect's cleanup,
+  // so a routed-away hold dies with the component.
   useLayoutEffect(() => {
     if (holdOwner === null) {
       return;
@@ -397,22 +394,23 @@ export function usePhoneExpandedCloseHold(
     };
     aside?.addEventListener("transitionend", onTransitionSettle);
     aside?.addEventListener("transitioncancel", onTransitionSettle);
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onReducedFlip = (): void => {
-      if (reduced.matches) {
-        release();
-      }
-    };
-    reduced.addEventListener("change", onReducedFlip);
     const fallback = window.setTimeout(release, MENU_IN_MS + 100);
     return () => {
       aside?.removeEventListener("transitionend", onTransitionSettle);
       aside?.removeEventListener("transitioncancel", onTransitionSettle);
-      reduced.removeEventListener("change", onReducedFlip);
       window.clearTimeout(fallback);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdOwner]);
+
+  // A reduced-motion flip mid-close (the CSS kill ends the transition
+  // without an end event): the shared hook re-renders on the flip, and the
+  // hold must not survive it.
+  useLayoutEffect(() => {
+    if (holdOwner !== null && reducedMotion) {
+      setHoldOwner(null);
+    }
+  }, [holdOwner, reducedMotion]);
 
   // Derived, not raw state: even between a releasing commit's render and
   // its layout effect, the class can never describe a state the release

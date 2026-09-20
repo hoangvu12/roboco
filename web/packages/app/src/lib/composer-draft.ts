@@ -5,6 +5,16 @@ import type { StorageLike } from "./engine-store";
 import { clampReasoning, effectiveReasoningLadder, offeredOptions } from "./traits-summary";
 
 /**
+ * The native reasoning normalization (`pickers.rs:1493-1512`): clamp ONLY
+ * against a NONEMPTY effective ladder. An empty one means the metadata
+ * hasn't resolved — the stored preference is retained verbatim, never
+ * destructively cleared.
+ */
+function normalizeReasoning(level: ReasoningLevel | null, ladder: readonly ReasoningLevel[]): ReasoningLevel | null {
+  return ladder.length > 0 ? clampReasoning(level, ladder) : level;
+}
+
+/**
  * Sensible defaults when a fresh chat has no `ChatConfig` yet, derived from
  * the loaded harness/model catalogs. Picked fields are intentionally
  * narrow: the user's first picker choice is the first enabled harness and
@@ -29,7 +39,7 @@ export function defaultDraft(
   const harnessId: HarnessId = harness?.id ?? "claude-code";
   const model = models[0]?.id ?? null;
   const ladder = effectiveReasoningLadder(models[0] ?? null, harness ?? null);
-  const reasoning = ladder.length > 0 ? clampReasoning(remembered, ladder) : remembered;
+  const reasoning = normalizeReasoning(remembered, ladder);
   return {
     harness: harnessId,
     model,
@@ -474,7 +484,7 @@ export function applyDraftUpdate(
   };
   const model = resolveModel(next.harness, next.model);
   const ladder = effectiveReasoningLadder(model, resolveDescriptor(next.harness));
-  const reasoning = ladder.length > 0 ? clampReasoning(next.reasoning, ladder) : next.reasoning;
+  const reasoning = normalizeReasoning(next.reasoning, ladder);
   const modelOptions = model === null ? next.modelOptions : offeredOptions(model, next.modelOptions);
   return { ...next, reasoning, modelOptions };
 }
@@ -505,11 +515,8 @@ export function reconcileDraftModel(
     current.model === null ? undefined : models.find((model) => model.id === current.model);
   if (found !== undefined) {
     const ladder = effectiveReasoningLadder(found, descriptor);
-    if (ladder.length === 0) {
-      return current;
-    }
-    const clamped = clampReasoning(current.reasoning, ladder);
-    return clamped === current.reasoning ? current : { ...current, reasoning: clamped };
+    const reasoning = normalizeReasoning(current.reasoning, ladder);
+    return reasoning === current.reasoning ? current : { ...current, reasoning };
   }
   const seeded =
     rememberedModel !== null && models.some((model) => model.id === rememberedModel.id)
@@ -520,7 +527,7 @@ export function reconcileDraftModel(
   }
   const model = models.find((row) => row.id === seeded) ?? null;
   const ladder = effectiveReasoningLadder(model, descriptor);
-  const reasoning = ladder.length > 0 ? clampReasoning(current.reasoning, ladder) : current.reasoning;
+  const reasoning = normalizeReasoning(current.reasoning, ladder);
   // The model necessarily changes here (the current one failed to resolve),
   // so this branch is always a real update.
   return { ...current, model: seeded, reasoning };

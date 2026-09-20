@@ -2453,15 +2453,20 @@ export function Composer({
       // PHONE bare Enter is a native newline before the wizard and message
       // submit branches at every saved preference; wizard and
       // modified-submit policy otherwise stays as it is; a desktop-width
-      // bare Enter follows the saved `ComposerSendBehavior`.
+      // bare Enter follows the saved `ComposerSendBehavior`. The modifier
+      // state is read ONCE below and handed to the resolver; the switch
+      // trusts that same state, never re-deriving it from the event.
+      const mod = event.metaKey || event.ctrlKey;
+      const alt = event.altKey;
+      const shift = event.shiftKey;
       const action = resolveEnterAction({
         phone: isPhone,
         composing: event.nativeEvent.isComposing,
         completionSelected: completionOpen && completionHasSelection,
         wizardActive: wizardActiveRef.current,
-        mod: event.metaKey || event.ctrlKey,
-        alt: event.altKey,
-        shift: event.shiftKey,
+        mod,
+        alt,
+        shift,
         sendBehavior,
       });
       switch (action) {
@@ -2479,8 +2484,11 @@ export function Composer({
         case "nativeNewline": {
           // The textarea's NATIVE default performs the newline — mid-text
           // insertion, selection replacement, undo and IME stay correct;
-          // never preventDefault, never set the value manually.
-          if (isPhone && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          // never preventDefault, never set the value manually. The
+          // resolver took this action through its phone bare-Enter branch
+          // exactly when the state it saw (`isPhone`, mod/alt/shift) says
+          // so — the isolation rides that decision.
+          if (isPhone && !mod && !alt && !shift) {
             // Isolate the phone newline from the wizard panel's Enter.
             event.stopPropagation();
           }

@@ -84,9 +84,16 @@ export interface ToolAffordance {
   readonly loading: boolean;
 }
 
-/** The most recently REQUESTED Ready blob wins; else the doc detail. */
-export function effectiveToolDetail(tool: ToolItem, state: ToolGroupGeometryState): ToolDetail | null {
-  let best: { order: number; detail: ToolDetail } | null = null;
+/**
+ * The best READY blob by request order: among the tool's diff and output
+ * refs, the most recently REQUESTED ready fetch wins — the ONE loop both
+ * blob-upgrade resolutions below project onto their own field.
+ */
+function bestReadyBlob(
+  tool: ToolItem,
+  state: ToolGroupGeometryState,
+): { ref: string; detail: ToolDetail } | null {
+  let best: { order: number; ref: string; detail: ToolDetail } | null = null;
   for (const ref of [tool.diffRef, tool.outputRef]) {
     if (ref === null) {
       continue;
@@ -95,28 +102,22 @@ export function effectiveToolDetail(tool: ToolItem, state: ToolGroupGeometryStat
     if (fetch !== null && fetch.state === "ready") {
       const order = state.blobOrderOf(ref);
       if (best === null || order > best.order) {
-        best = { order, detail: fetch.detail };
+        best = { order, ref, detail: fetch.detail };
       }
     }
   }
+  return best;
+}
+
+/** The most recently REQUESTED Ready blob wins; else the doc detail. */
+export function effectiveToolDetail(tool: ToolItem, state: ToolGroupGeometryState): ToolDetail | null {
+  const best = bestReadyBlob(tool, state);
   return best !== null ? best.detail : tool.detail;
 }
 
 /** The ref of the blob whose upgrade is currently showing, if any. */
 function shownBlobRef(tool: ToolItem, state: ToolGroupGeometryState): string | null {
-  let best: { order: number; ref: string } | null = null;
-  for (const ref of [tool.diffRef, tool.outputRef]) {
-    if (ref === null) {
-      continue;
-    }
-    const fetch = state.blobFetchOf(ref);
-    if (fetch !== null && fetch.state === "ready") {
-      const order = state.blobOrderOf(ref);
-      if (best === null || order > best.order) {
-        best = { order, ref };
-      }
-    }
-  }
+  const best = bestReadyBlob(tool, state);
   return best !== null ? best.ref : null;
 }
 
