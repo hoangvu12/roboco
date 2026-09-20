@@ -406,6 +406,17 @@ function TranscriptSurface({
     const baseline = snapshot.baseline;
     if (baseline !== null && baseline.epoch > consumedBaselineRef.current) {
       consumedBaselineRef.current = baseline.epoch;
+      // Ticket 80 — the authoritative reset IS an arrival. On the canvas
+      // route the surface mounts blank, the cache seed's loaded commit arms
+      // the window, and the live reset can land after that window fell —
+      // its settle cascade then armed the stick spring and replayed fold
+      // flips visibly mid-dock-fade. Re-arming on every accepted reset
+      // gives the seed→reset handoff the same atomic settle a chat→chat
+      // switch gets from its mount commit (reconnect resets get it too,
+      // which is equally correct: settling must never visibly glide).
+      if (baseline.provenance === "reset") {
+        chatArrival.arm(performance.now());
+      }
       toolMotion.sync(baselineRows(baseline.entries), true);
       toolMotion.sync(rows, false);
       return;

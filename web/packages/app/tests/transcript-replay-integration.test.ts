@@ -551,3 +551,79 @@ describe("mounted cache→reset replay baseline (ticket 69)", () => {
     expect(startsOf("A#g0").every((start) => start === null)).toBe(true);
   });
 });
+
+describe("mounted canvas-arrival artifacts (ticket 80)", () => {
+  it("cache_seed_downgrades_stale_streaming_so_history_renders_closed", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 4000 });
+    // A chat left mid-run: the cache saved the assistant entry with
+    // `status: "streaming"`. A previous session's save cannot still be
+    // streaming — the stale status would render the last tool group
+    // auto-opened ("old tool calls opening") and then visibly close when
+    // the authoritative reset settles it.
+    const stale: SessionMessageEntry = { ...toolEntry("S", ["pwd", "ls"]), status: "streaming" };
+    await settleCache(handle, [userEntry("U"), stale]);
+
+    // The seed the surface received is downgraded to the interrupted-run
+    // status, and the snapshot never claims streaming.
+    const snap = handle.store.getSnapshot();
+    expect(snap.entries[snap.entries.length - 1]!.status).toBe("aborted");
+    expect(snap.streaming).toBe(false);
+    // The group rendered CLOSED (no autoOpen): the rendered-open records
+    // carry open=false, so there is no flip for the live reset to visibly
+    // close either.
+    expect(probe.flips.filter((flip) => flip.rowId === "S#g0").length).toBeGreaterThan(0);
+    expect(
+      probe.flips.filter((flip) => flip.rowId === "S#g0").every((flip) => !flip.open),
+    ).toBe(true);
+
+    // The authoritative reset lands later and settles the same closed state
+    // — no fold tween is seeded (the thought-completion tracker saw the
+    // resolved status from the seed already).
+    act(() => {
+      handle.client.emit(
+        { contextUsage: null, reset: [userEntry("U"), toolEntry("S", ["pwd", "ls"])] },
+        2,
+      );
+    });
+    expect(
+      probe.flips.filter((flip) => flip.rowId === "S#g0").every((flip) => !flip.open),
+    ).toBe(true);
+  });
+
+  it("reset_after_the_seed_window_fell_settles_pinned_growth_atomically", async () => {
+    const handle = mountTranscript();
+    const el = handle.el();
+    const dims = { clientHeight: 600, scrollHeight: 4000 };
+    stubScrollerGeometry(el, dims);
+    await settleCache(handle, [userEntry("U"), toolEntry("A", ["pwd"])]);
+    // The seed's restore pinned the surface at the end.
+    expect(probe.snaps).toBe(1);
+    expect(el.scrollTop).toBe(3400);
+
+    // The seed's arrival window has long fallen (past the hard cap).
+    now += 60_000;
+
+    // The authoritative reset replaces the seed with grown history: the
+    // baseline consume re-arms the arrival window, so the reset's own
+    // commit hard-writes the end instead of arming the stick spring (the
+    // canvas route's visible "scrolling down" glide).
+    act(() => {
+      handle.client.emit(
+        { contextUsage: null, reset: [userEntry("U"), toolEntry("A", ["pwd", "ls", "cat", "grep"])] },
+        2,
+      );
+    });
+    // The grown content measures taller (the scroll height grows with it).
+    dims.scrollHeight = 4600;
+    act(() => {
+      deliverHeights({ "A#g0": 480 });
+      pumpRaf(2);
+    });
+    // The measurement kick stayed inside the re-armed window: the new end
+    // landed in ONE hard write — no eased partial steps toward it.
+    expect(el.scrollTop).toBe(4600 - 600);
+    expect(probe.snaps).toBe(1);
+    expect(probe.restores).toBe(0);
+  });
+});

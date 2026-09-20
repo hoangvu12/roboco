@@ -4,7 +4,7 @@
 
 **Blocked by:** None (coordinate: ticket 65's integration owns `chat-page.tsx`/`dock-glide.ts`/`composer-dock.ts`/hero files â€” this ticket must stay out of those files).
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## 1. Evidence (web-parity/followup @ c81dd2fe)
 
@@ -38,3 +38,7 @@
 ## Comments
 
 Created 2026-09-20 evening from the live round-2 report ("when moving from the new chat page to an existing chat, the scrolling and the opening old tool calls still seem to happen, it doesnt happen when moving from chat to chat"). Root causes are the blank-mount asymmetry (no retention on the canvas route) plus the stale streaming cache seed; the fixes target the two code-proven triggers without touching the dock choreography.
+
+## Comments
+
+**2026-09-21 — implemented and merged to `web-parity/followup`.** `fix(web): ticket 80 canvas arrival artifacts`: (a) `downgradeStaleStreaming` in `state/transcript-store.ts` maps `status: "streaming"` ? `"aborted"` on the offline-cache load path only (subagent `seedEntries` callers untouched; the cache still saves raw entries); (b) the transcript surface's baseline-consume layout effect re-arms `chatArrival` on every `"reset"`-provenance baseline — the authoritative reset IS an arrival, so the seed?reset handoff settles atomically (hard pre-paint end-writes while pinned, `noteRendered` flips gated) exactly like a chat?chat mount commit. No dock/hero files touched (ticket 65 owns those). Tests: two new mounted cases in `tests/transcript-replay-integration.test.ts` — the stale-streaming seed renders closed (store-level `aborted` downgrade + all rendered-open records false, also across the follow-up reset), and a reset landing after the seed's window fell hard-writes the grown end in one commit (verified to FAIL without the re-arm by stashing the fix). Full suite **1512/1512** (92 files) and `pnpm -r build` green. User re-test on the follow-up build pending.

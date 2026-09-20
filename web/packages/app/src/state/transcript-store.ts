@@ -382,7 +382,7 @@ export class TranscriptStore {
           if (this.#disposed || this.#loaded || entries === null) {
             return;
           }
-          this.seedEntries(entries);
+          this.seedEntries(entries.map(downgradeStaleStreaming));
         })
         .catch(() => {});
     }
@@ -597,4 +597,19 @@ function asFrame(update: TranscriptUpdate): TranscriptFrame | null {
     remove: Array.isArray(delta.remove) ? delta.remove : [],
     count: delta.count,
   };
+}
+
+/**
+ * Ticket 80 — the offline cache saves raw entries, so a chat left mid-run
+ * seeds with `status: "streaming"`. A previous session's save cannot still
+ * be streaming: the run was interrupted when the app closed, and the stale
+ * status would render the last tool group auto-opened, then visibly close
+ * when the authoritative reset settles it — the "old tool calls opening"
+ * replay on the new-chat → chat route. Downgrade at SEED time only
+ * (presentation): the cache keeps saving raw entries, subagent-snapshot
+ * `seedEntries` callers are untouched (their data is fresh from a live
+ * engine), and the live reset reports the engine's truth moments later.
+ */
+function downgradeStaleStreaming(entry: SessionMessageEntry): SessionMessageEntry {
+  return entry.status === "streaming" ? { ...entry, status: "aborted" } : entry;
 }
