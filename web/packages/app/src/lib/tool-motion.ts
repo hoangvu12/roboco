@@ -15,7 +15,7 @@
 
 import { motion } from "@roboco/theme";
 import type { ChatArrivalWindow } from "./chat-arrival";
-import { blobDetail, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
+import { blobDetail, isSpawnLink, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
 
 // ---------------------------------------------------------------------------
 // Catalog curves (proto/motion.rs:215-237) — solved locally so this module
@@ -550,6 +550,21 @@ export type BlobFetch = { state: "loading" } | { state: "failed" } | { state: "r
 const BLOB_TIMEOUT_MS = 20_000;
 
 /**
+ * One AUTOMATIC fold transition (ticket 71): a thought chip completing
+ * (unresolved→resolved, no explicit pin) or the rendered-open flip of a
+ * live group (auto-open expiring). Explicit clicks never emit — they take
+ * the viewport through the component's fold-navigation callback instead.
+ * The scroller subscribes to arm its reading-anchor compensation, gated by
+ * the one-owner rule (lib/tool-fold-scroll.ts).
+ */
+export interface AutomaticFoldTransition {
+  readonly rowId: string;
+  /** The detail fold's key (`"{rowId}#d{ix}"`); null for the group fold. */
+  readonly key: string | null;
+  readonly toggledAt: number;
+}
+
+/**
  * The explicit fold pins of one chat/doc (ticket 68): group folds and chip
  * detail folds keyed by the store's existing stable identities (row id;
  * `"{rowId}#d{ix}"`). Capture keeps ONLY the `open` pins — no tween clocks,
@@ -579,6 +594,20 @@ export class ToolGroupMotionStore {
   readonly #blobs = new Map<string, BlobFetch>();
   readonly #blobOrder = new Map<string, number>();
   readonly #counts = new Map<string, number>();
+  /**
+   * Ticket 71 B — the rendered card height per expandable chip key, as the
+   * renderer reported it: the animated thought-close tween's `from`. A chip
+   * that never rendered open has no entry, so its completion snaps (an
+   * unmounted row's close is invisible anyway).
+   */
+  readonly #detailCardHeights = new Map<string, number>();
+  /**
+   * Ticket 69/71 — the last-seen `resolved` per thought chip key. Only a
+   * LIVE flip Some(false)→true is a genuine completion; the replay baseline
+   * clears this map so a reset/replay never impersonates one.
+   */
+  readonly #thoughtSeenResolved = new Map<string, boolean>();
+  readonly #transitionListeners = new Set<(transition: AutomaticFoldTransition) => void>();
   readonly #arrival: ChatArrivalWindow | null;
   #blobCounter = 0;
   #version = 0;
@@ -602,6 +631,25 @@ export class ToolGroupMotionStore {
       this.#listeners.delete(listener);
     };
   };
+
+  /**
+   * Subscribe to AUTOMATIC fold transitions (ticket 71): a thought chip's
+   * animated completion close, or a live group's rendered-open flip. The
+   * scroller uses this to arm its reading-anchor compensation under the
+   * one-owner gate; clicks never appear here.
+   */
+  onAutomaticFoldTransition = (listener: (transition: AutomaticFoldTransition) => void): (() => void) => {
+    this.#transitionListeners.add(listener);
+    return () => {
+      this.#transitionListeners.delete(listener);
+    };
+  };
+
+  #emitAutomaticFoldTransition(transition: AutomaticFoldTransition): void {
+    for (const listener of [...this.#transitionListeners]) {
+      listener(transition);
+    }
+  }
 
   groupFold(rowId: string): FoldState | null {
     return this.#folds.get(rowId) ?? null;
@@ -664,7 +712,9 @@ export class ToolGroupMotionStore {
    * never fights a click. On a chat-switch ARRIVAL the flip records its
    * endpoint WITHOUT the tween (ticket 58): the arrival predicate is armed,
    * so the render is the destination state — only a same-chat flip (the
-   * chat live again) animates.
+   * chat live again) animates. Ticket 71: the seeded flip also announces
+   * itself so the scroller can preserve the reading anchor through the
+   * shrink (never fighting a pinned tail-follow or a held runway).
    */
   noteRendered(rowId: string, open: boolean, bodyHeight: number): void {
     const reveal = this.#reveals.get(rowId);
@@ -676,11 +726,24 @@ export class ToolGroupMotionStore {
         const prev = this.#folds.get(rowId) ?? DEFAULT_FOLD;
         const now = performance.now();
         this.#folds.set(rowId, { ...prev, from: reveal.renderedHeight, toggledAt: now, disclosureAt: now });
+        this.#emitAutomaticFoldTransition({ rowId, key: null, toggledAt: now });
         this.#bump();
       }
     }
     reveal.renderedOpen = open;
     reveal.renderedHeight = bodyHeight;
+  }
+
+  /**
+   * The renderer's per-paint card-height report for one expandable chip
+   * (ticket 70's measurement key feeds the same geometry): while a thought
+   * streams open this records its settled open height, which the animated
+   * completion close uses as the tween's `from`. Pure recording — seeding
+   * is `sync`'s job, so replay and arrivals can never impersonate a live
+   * completion.
+   */
+  noteDetailRendered(key: string, cardHeight: number): void {
+    this.#detailCardHeights.set(key, cardHeight);
   }
 
   /**
@@ -698,6 +761,13 @@ export class ToolGroupMotionStore {
     const now = performance.now();
     if (baseline) {
       this.#reveals.clear();
+      // Ticket 71/69: the completion tracker resets with the baseline — a
+      // replayed frame re-records its resolved states without ever reading
+      // as an unresolved→resolved flip, and the recorded card heights (the
+      // animated close's `from`) never outlive the transcript they belong
+      // to.
+      this.#thoughtSeenResolved.clear();
+      this.#detailCardHeights.clear();
       // Retain explicit user pins, but never resume an old arrival or
       // closing animation when revisiting the retained transcript.
       for (const [key, fold] of this.#folds) {
@@ -707,11 +777,54 @@ export class ToolGroupMotionStore {
       }
     }
     const live = new Set<string>();
+    const liveDetailKeys = new Set<string>();
+    const transitions: AutomaticFoldTransition[] = [];
     for (const row of rows) {
       if (row.rowKind.kind !== "toolGroup") {
         continue;
       }
       const tools = row.rowKind.tools;
+      // Ticket 71 B — the animated thought completion. Every tool group
+      // (standalone spawn cards included) tracks its thought chips' seen
+      // `resolved`: a LIVE flip to resolved with no explicit pin seeds the
+      // detail fold's close tween from the renderer-reported card height,
+      // so the chip closes over the existing 140ms EASE_OUT fold instead
+      // of snapping. Explicit pins win in every case (the seed never fires
+      // under a pin); a fresh store, an armed arrival, or a baseline frame
+      // never reads as a completion.
+      for (let ix = 0; ix < tools.length; ix += 1) {
+        const tool = tools[ix]!;
+        if (isSpawnLink(tool)) {
+          continue;
+        }
+        const key = `${row.id}#d${ix}`;
+        if (tool.detail !== null || tool.invocation !== null) {
+          liveDetailKeys.add(key);
+        }
+        if (!tool.isThought) {
+          continue;
+        }
+        const previouslyResolved = this.#thoughtSeenResolved.get(key) ?? null;
+        this.#thoughtSeenResolved.set(key, tool.resolved);
+        if (
+          previouslyResolved === false &&
+          tool.resolved &&
+          (tool.detail !== null || tool.invocation !== null) &&
+          (this.#detailFolds.get(key)?.open ?? null) === null &&
+          this.#detailCardHeights.has(key) &&
+          this.#arrival?.isArrival(now) !== true
+        ) {
+          const prev = this.#detailFolds.get(key) ?? DEFAULT_FOLD;
+          this.#detailFolds.set(key, {
+            open: null,
+            epoch: prev.epoch + 1,
+            from: this.#detailCardHeights.get(key)!,
+            toggledAt: now,
+            disclosureAt: null,
+          });
+          transitions.push({ rowId: row.id, key, toggledAt: now });
+        }
+      }
       // Agent/spawn groups are standalone cards, not task trees.
       if (!toolGroupCollapses(tools)) {
         continue;
@@ -755,6 +868,23 @@ export class ToolGroupMotionStore {
     for (const id of [...this.#counts.keys()]) {
       if (!transientEmpty && !live.has(id)) {
         this.#counts.delete(id);
+      }
+    }
+    for (const key of [...this.#thoughtSeenResolved.keys()]) {
+      if (!transientEmpty && !liveDetailKeys.has(key)) {
+        this.#thoughtSeenResolved.delete(key);
+      }
+    }
+    for (const key of [...this.#detailCardHeights.keys()]) {
+      if (!transientEmpty && !liveDetailKeys.has(key)) {
+        this.#detailCardHeights.delete(key);
+      }
+    }
+    if (transitions.length > 0) {
+      // The listener may re-render (arming the scroller's compensation);
+      // deliver it before the store's own bump so both land in one commit.
+      for (const transition of transitions) {
+        this.#emitAutomaticFoldTransition(transition);
       }
     }
     this.#bump();
@@ -851,6 +981,8 @@ export class ToolGroupMotionStore {
     this.#blobs.clear();
     this.#blobOrder.clear();
     this.#counts.clear();
+    this.#detailCardHeights.clear();
+    this.#thoughtSeenResolved.clear();
     this.#blobCounter = 0;
     this.#bump();
   }

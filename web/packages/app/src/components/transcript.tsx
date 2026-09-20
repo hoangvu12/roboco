@@ -69,6 +69,13 @@ import {
   toolGroupGeometry,
   type ToolGroupEstimateContext,
 } from "../lib/tool-group-geometry";
+import {
+  armToolFoldCompensation,
+  automaticToolFoldCompensationArms,
+  toolFoldCompensationDone,
+  toolFoldCompensationWrite,
+  type ToolFoldCompensation,
+} from "../lib/tool-fold-scroll";
 import { railTicks, type RailTick } from "../lib/rail";
 import { OVERDRAW_PX } from "../lib/stick-spring";
 import { ChatArrivalWindow } from "../lib/chat-arrival";
@@ -651,6 +658,15 @@ function TranscriptScroller({
   const measuredTextRef = useRef(new Map<string, number>());
   const holdTimersRef = useRef(new Map<string, number>());
   const collapseScrollRef = useRef<CollapseScroll | null>(null);
+  /**
+   * Ticket 71 — the tool-fold viewport compensation: the clicked header (an
+   * explicit fold) or the top visible row (an automatic closure while no
+   * other owner is live) held at a fixed screen position for the fold
+   * tween's duration. At most one compensator is live; user input and
+   * explicit navigation cancel it synchronously.
+   */
+  const toolFoldScrollRef = useRef<ToolFoldCompensation | null>(null);
+  const [toolFoldTick, bumpToolFold] = useState(0);
   const [, bumpMeasure] = useState(0);
   const [view, setView] = useState({ top: 0, height: 0 });
   const [showJump, setShowJump] = useState(false);
@@ -688,14 +704,21 @@ function TranscriptScroller({
       // The runway's floor is render-derived — install/retire must re-render
       // the virtualizer's height model.
       onOwnTurnChange: () => bumpRunway((tick) => tick + 1),
-      // A user scroll stands down the fold compensation and any pending
+      // A user scroll stands down the fold compensations and any pending
       // long-press (`handle_scroll`'s synchronous cancels).
       onUserInput: () => {
         collapseScrollRef.current = null;
+        toolFoldScrollRef.current = null;
         for (const timer of holdTimersRef.current.values()) {
           window.clearTimeout(timer);
         }
         holdTimersRef.current.clear();
+      },
+      // Explicit navigation (a user-fold toggle, the rail glide, the
+      // selection auto-scroll) owns the viewport: the tool-fold
+      // compensation stands down before it moves the list.
+      onNavigation: () => {
+        toolFoldScrollRef.current = null;
       },
       reducedMotion: reduced,
       arrival: chatArrival,
@@ -1216,7 +1239,10 @@ function TranscriptScroller({
     if (pendingViewportRef.current === null && (stick.ownTurn !== null || stick.pinned)) {
       stick.kick();
     }
-    if (stick.ownTurnHeld || collapseScrollRef.current !== null) {
+    // A tool-fold compensator owns the viewport for its tween's duration
+    // (ticket 71): the escape-anchor preserve below stands down for it —
+    // one owner, no fighting writes.
+    if (stick.ownTurnHeld || collapseScrollRef.current !== null || toolFoldScrollRef.current !== null) {
       return;
     }
     // Escaped (or a released runway): keep the captured anchor row visually
@@ -1274,6 +1300,147 @@ function TranscriptScroller({
     // Armed by the toggle's bump; the loop reads live refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stick, collapseTick]);
+
+  // ── Tool-fold scroll ownership (ticket 71, step_user_collapse_scroll's
+  // tool-group peer) ─────────────────────────────────────────────────────
+  // The compensation keeps ONE anchor at a FIXED screen position for the
+  // fold tween's duration: an explicit group/detail click anchors the
+  // CLICKED header (measured from the click event, before the fold state
+  // flips); an automatic closure (thought completion, auto-open expiry)
+  // anchors the reading position — the top visible row — and only while no
+  // other owner is live. Each frame's write corrects drift only (a browser
+  // clamp near the scroll end, a leftover write), so reduced motion needs
+  // no separate branch: the geometry snaps and the anchor correction land
+  // in the same frame.
+
+  /** `toggle_fold`/chip-toggle's navigation (ticket 71 A): the click owns the viewport. */
+  const onToolFoldNav = useCallback(
+    (nav: { rowId: string; header: HTMLElement }) => {
+      const el = scrollerRef.current;
+      if (el === null) {
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === nav.rowId);
+      if (ix < 0) {
+        return;
+      }
+      // Measured tool-row geometry, never guessed user-row heights: the
+      // clicked header's rect against the scroller's, plus the live row
+      // top from the virtualizer's prefix sums.
+      const scrollerTop = el.getBoundingClientRect().top;
+      const headerScreenY = nav.header.getBoundingClientRect().top - scrollerTop;
+      const offsetInRow = headerScreenY + el.scrollTop - (positionsRef.current[ix] ?? 0);
+      // Release the follow/hold FIRST — the reservation survives as
+      // scrollable space; beginScrollNavigation also cancels any running
+      // compensation (ours included, hence arming after it).
+      stick.beginScrollNavigation();
+      toolFoldScrollRef.current = armToolFoldCompensation({
+        rowId: nav.rowId,
+        offsetInRow,
+        screenY: headerScreenY,
+        now: performance.now(),
+      });
+      bumpToolFold((tick) => tick + 1);
+    },
+    [stick],
+  );
+
+  // An AUTOMATIC fold transition arms the reading-anchor compensation only
+  // while no other owner is live (§2.3): a pinned tail keeps its
+  // tail-follow, a held runway keeps its hold, an escaped reading position
+  // keeps its per-commit preserve, and a pending viewport restore owns the
+  // first frames of an unloaded chat.
+  useEffect(() => {
+    return toolMotion.onAutomaticFoldTransition(() => {
+      if (
+        !automaticToolFoldCompensationArms({
+          pinned: stick.pinned,
+          ownTurnHeld: stick.ownTurnHeld,
+          userFoldCompensating: collapseScrollRef.current !== null,
+          escapeAnchor: anchorRef.current !== null,
+          pendingViewportRestore: pendingViewportRef.current !== null,
+        })
+      ) {
+        return;
+      }
+      const el = scrollerRef.current;
+      if (el === null) {
+        return;
+      }
+      const anchor = captureAnchor(
+        el.scrollTop,
+        rowsRef.current,
+        positionsRef.current,
+        heightsRef.current,
+        toolEstimateContext(),
+      );
+      if (anchor === null) {
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === anchor.id);
+      if (ix < 0) {
+        return;
+      }
+      toolFoldScrollRef.current = armToolFoldCompensation({
+        rowId: anchor.id,
+        offsetInRow: anchor.offset,
+        screenY: (positionsRef.current[ix] ?? 0) + anchor.offset - el.scrollTop,
+        now: performance.now(),
+      });
+      bumpToolFold((tick) => tick + 1);
+    });
+    // The loop reads live refs; the controllers are stable per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolMotion, stick]);
+
+  // The per-frame step: re-resolve the row (splices above it re-target the
+  // index), write the drift correction, yield to a live pin/hold (never
+  // fight tail-follow), and stand down when the tween has played out.
+  useEffect(() => {
+    if (toolFoldScrollRef.current === null) {
+      return;
+    }
+    let raf = 0;
+    const step = (): void => {
+      raf = 0;
+      const comp = toolFoldScrollRef.current;
+      const el = scrollerRef.current;
+      if (comp === null || el === null) {
+        return;
+      }
+      if (stick.pinned || stick.ownTurnHeld) {
+        // A live tail-follow or runway re-engaged mid-tween: it owns the
+        // viewport now — cancel, never fight.
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === comp.rowId);
+      if (ix < 0) {
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      const write = toolFoldCompensationWrite(comp, {
+        rowTop: positionsRef.current[ix] ?? 0,
+        scrollTop: el.scrollTop,
+      });
+      if (write !== null) {
+        stick.writePreserving(write);
+      }
+      if (toolFoldCompensationDone(comp, performance.now())) {
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => {
+      if (raf !== 0) {
+        cancelAnimationFrame(raf);
+      }
+    };
+    // Armed by the bump; the loop reads live refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stick, toolFoldTick]);
 
   /** `toggle_user_fold` (transcript.rs:4380-4440). */
   const toggleUserFold = useCallback(
@@ -1423,6 +1590,7 @@ function TranscriptScroller({
                 onToggleFold={toggleUserFold}
                 onMeasureText={onMeasureText}
                 onHoldTimer={onHoldTimer}
+                onToolFoldNav={onToolFoldNav}
                 reduced={reduced?.matches === true}
               />
               {isLast && <WorkingTrailer state={trailer} />}
@@ -1676,6 +1844,7 @@ function RowContent({
   onToggleFold,
   onMeasureText,
   onHoldTimer,
+  onToolFoldNav,
   reduced,
 }: {
   row: TranscriptRow;
@@ -1689,6 +1858,7 @@ function RowContent({
   onToggleFold: (rowId: string) => void;
   onMeasureText: (rowId: string, height: number) => void;
   onHoldTimer: (rowId: string, timer: number) => void;
+  onToolFoldNav?: (nav: { rowId: string; header: HTMLElement }) => void;
   reduced: boolean;
 }) {
   const kind = row.rowKind;
@@ -1722,6 +1892,7 @@ function RowContent({
           chatId={docId}
           motion={toolMotion}
           onOpenSubagent={onOpenSubagent ?? (() => {})}
+          onFoldNav={onToolFoldNav}
           client={client}
         />
       )}

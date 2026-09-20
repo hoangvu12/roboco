@@ -91,6 +91,20 @@ export interface ToolGroupRowProps {
     call: <T>(method: string, params: unknown) => Promise<T>;
   };
   readonly onOpenSubagent: (payload: SubagentOpen) => void;
+  /**
+   * The explicit fold-navigation callback (ticket 71 A): called with the
+   * CLICKED header element synchronously, BEFORE the fold state flips, so
+   * the scroller can capture the header's screen position, release the
+   * follow/hold (retaining any live reservation), and arm the compensation.
+   */
+  readonly onFoldNav?: (nav: ToolFoldNav) => void;
+}
+
+/** One explicit fold click's navigation payload (ticket 71 A). */
+export interface ToolFoldNav {
+  readonly rowId: string;
+  /** The clicked header button/card head — its rect is the anchor. */
+  readonly header: HTMLElement;
 }
 
 const prefersReducedMotion = (): boolean =>
@@ -101,7 +115,7 @@ const prefersReducedMotion = (): boolean =>
 // The group row (render_tool_group :5837)
 // ---------------------------------------------------------------------------
 
-export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, onOpenSubagent }: ToolGroupRowProps) {
+export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, onOpenSubagent, onFoldNav }: ToolGroupRowProps) {
   // Folds/fetches/reveals live in the surface's store: a virtualized row
   // scrolling back into view is a remount and must find its fold.
   useSyncExternalStore(motion.subscribe, motion.getVersion);
@@ -151,14 +165,34 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
     motion.noteRendered(rowId, open, bodyHeight);
   });
 
+  // Ticket 71 B — the renderer's card-height report per expandable chip:
+  // while a thought streams open this records the settled open height that
+  // the animated completion close tweens from. One effect per group row,
+  // fed by the SHARED geometry (the estimator's numbers agree by contract).
+  useLayoutEffect(() => {
+    for (let ix = 0; ix < tools.length; ix += 1) {
+      if (details[ix] === null && invocations[ix] === null) {
+        continue;
+      }
+      motion.noteDetailRendered(
+        `${rowId}#d${ix}`,
+        (rowHeights[ix] ?? baseRowHeight) - baseRowHeight + CHIP_CARD_HEIGHT,
+      );
+    }
+  });
+
   const disclosure = reduced ? (open ? 1 : 0) : toolDisclosureProgress(open, fold, now);
 
   const onToggleGroup = useCallback(
     (event: React.MouseEvent) => {
       event.stopPropagation();
+      // The click owns the viewport FIRST: the header is measured at its
+      // pre-toggle position and the follow/hold releases before the fold
+      // state flips (ticket 71 A).
+      onFoldNav?.({ rowId, header: event.currentTarget as HTMLElement });
       motion.toggleGroupFold(rowId, revealedHeight, effectiveAutoOpen);
     },
-    [rowId, revealedHeight, effectiveAutoOpen, motion],
+    [rowId, revealedHeight, effectiveAutoOpen, motion, onFoldNav],
   );
 
   const fetchBlob = useCallback(
@@ -210,6 +244,7 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
       motion={motion}
       fetchBlob={fetchBlob}
       onOpenSubagent={onOpenSubagentFor}
+      onFoldNav={onFoldNav}
     />
   ));
 
@@ -292,6 +327,8 @@ interface ToolChipRowProps {
   readonly motion: ToolGroupMotionStore;
   readonly fetchBlob: (ref: string) => void;
   readonly onOpenSubagent: (tool: ToolItem) => void;
+  /** The explicit fold-navigation callback (ticket 71 A). */
+  readonly onFoldNav?: (nav: ToolFoldNav) => void;
 }
 
 function ToolChipRow(props: ToolChipRowProps) {
@@ -352,6 +389,10 @@ function ToolChipRow(props: ToolChipRowProps) {
   const defaultOpen = tool.isThought && !tool.resolved;
   const onToggle = (event: React.MouseEvent): void => {
     event.stopPropagation();
+    // The click owns the viewport FIRST (ticket 71 A): measure the chip
+    // header at its pre-toggle position and release the follow/hold
+    // before the fold state flips.
+    props.onFoldNav?.({ rowId: props.rowId, header: event.currentTarget as HTMLElement });
     props.motion.toggleDetailFold(key, cardHeight, defaultOpen);
   };
   return revealRow(
