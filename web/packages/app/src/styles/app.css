@@ -321,8 +321,11 @@ a:focus-visible,
   align-items: center;
   gap: var(--rb-titlebar-group-gap);
   /* The always-touched chrome (M4, ticket 50): manipulation keeps taps and
-     kills pans and double-tap-zoom; no selection callout on a long-press of
-     the title. A no-op for pointer input at desktop widths. */
+     kills double-tap-zoom — it does NOT gate panning (W3C Pointer Events 3
+     §8.3 defines manipulation as panning plus continuous zooming with the
+     double-tap removed); the phone-scoped `touch-action: none` on this same
+     rule below (ticket 76) is the pan guard. No selection callout on a
+     long-press of the title. A no-op for pointer input at desktop widths. */
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
@@ -386,6 +389,19 @@ a:focus-visible,
   .titlebar {
     height: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
     padding-top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+    /*
+     * The phone pan guard (ticket 76): no direct-manipulation gesture that
+     * starts on the app titlebar may pan the browser. W3C Pointer Events 3
+     * §8.2 intersects the touched element's touch-action with its
+     * ancestors', so this also covers gestures landing on the cluster and
+     * trailing controls — they keep their own `manipulation` and need no
+     * per-button override. Taps are unaffected (`none` gates gestures, not
+     * click activation), as are the transcript's and drawers' own
+     * scrollers — the guard stops at this region. The OS/browser status bar
+     * is outside app DOM: native scroll-to-top there is not this rule's to
+     * promise.
+     */
+    touch-action: none;
   }
 
   .titlebar-cluster {
@@ -457,7 +473,10 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
-  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  /* Taps stay; double-tap-zoom dies (M4's titlebar guards). manipulation
+     itself permits panning (W3C Pointer Events 3 §8.3) — at phone widths
+     the ancestor .titlebar's `touch-action: none` intersects this per §8.2
+     and is the actual pan guard. */
   touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
@@ -500,7 +519,10 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
-  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  /* Taps stay; double-tap-zoom dies (M4's titlebar guards). manipulation
+     itself permits panning (W3C Pointer Events 3 §8.3) — at phone widths
+     the ancestor .titlebar's `touch-action: none` intersects this per §8.2
+     and is the actual pan guard. */
   touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
