@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "@roboco/theme";
 import { Icon, type IconName } from "@roboco/icons";
@@ -13,6 +13,7 @@ import {
   TITLEBAR_ISLAND_INSET,
   TITLEBAR_TOP_PAD,
 } from "../state/layout";
+import { usePrefersReducedMotion } from "../state/media";
 
 /**
  * The unified titlebar — the desktop's `render_titlebar_cluster` (left) and
@@ -166,23 +167,6 @@ export function titlebarIslandHorizontalGeometry(showsNewSession: boolean): {
 /** `motion::RESIZE` — the 200ms ease-out the island's opacity/height tween rides. */
 export const ISLAND_TWEEN_MS =
   motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
-
-/** `prefers-reduced-motion` at first paint, reactive afterwards. */
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReduced(query.matches);
-    onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
-}
 
 /**
  * One island scalar's geometry/opacity write (ticket 64 §2.4): for
