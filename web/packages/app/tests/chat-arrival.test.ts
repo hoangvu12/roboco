@@ -51,16 +51,30 @@ type MutableScroller = HTMLElement & {
   addEventListener: () => void;
   removeEventListener: () => void;
   parentElement: null;
+  /** Deliver an event the controller subscribed (the user-scroll path). */
+  fire(type: string): void;
 };
 
 function fakeScroller(scrollHeight: number, clientHeight: number): MutableScroller {
+  const listeners = new Map<string, Set<() => void>>();
   const el = {
     scrollTop: 0,
     scrollHeight,
     clientHeight,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type: string, listener: () => void) => {
+      const set = listeners.get(type) ?? new Set();
+      set.add(listener);
+      listeners.set(type, set);
+    },
+    removeEventListener: (type: string, listener: () => void) => {
+      listeners.get(type)?.delete(listener);
+    },
     parentElement: null,
+    fire: (type: string) => {
+      for (const listener of [...(listeners.get(type) ?? [])]) {
+        listener();
+      }
+    },
   };
   return el as unknown as MutableScroller;
 }
@@ -161,6 +175,37 @@ describe("StickController arrival (ticket 58 — no spring on a chat switch)", (
       stick.writePreserving(1525);
       expect(el.scrollTop).toBe(1525);
       expect(raf).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a same-chat reset's kick neither re-engages an escaped pin nor moves the viewport", () => {
+    const raf = vi.fn(() => 1);
+    vi.stubGlobal("requestAnimationFrame", raf);
+    try {
+      const arrival = new ChatArrivalWindow();
+      const el = fakeScroller(4000, 600);
+      const stick = new StickController({ onJumpVisibility: () => {}, arrival });
+      stick.attach(el);
+      // The switch's restore landed; the user then escaped upward (a real
+      // scroll event, not a controller write).
+      arrival.arm(performance.now());
+      stick.snapToEnd();
+      expect(el.scrollTop).toBe(3400);
+      el.scrollTop = 1000;
+      el.fire("scroll");
+      expect(stick.pinned).toBe(false);
+
+      // Long past the hard cap, a same-chat reset swaps the content and the
+      // commit kicks: the escaped viewport is NOT re-pinned and NOT moved —
+      // the spring path is scheduled but owns nothing while unpinned.
+      arrival.arm(performance.now() - ARRIVAL_HARD_CAP_MS - 10);
+      el.scrollHeight = 5200;
+      stick.kick();
+      expect(raf).toHaveBeenCalled();
+      expect(el.scrollTop).toBe(1000);
+      expect(stick.pinned).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

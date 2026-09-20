@@ -343,26 +343,31 @@ function TranscriptSurface({
   const chatArrival = useMemo(() => new ChatArrivalWindow(), [store]);
   const toolMotion = useMemo(() => new ToolGroupMotionStore(chatArrival), [chatArrival]);
   useEffect(() => () => toolMotion.reset(), [toolMotion]);
-  const revealBaselineRef = useRef(false);
-  useEffect(() => {
-    // The desktop arms `veil_attach_pending` on every (re)attach and consumes
-    // it on the first populated frame (transcript.rs:3915, :3954, :4063,
-    // :4147-4154). The store's replay returns to "pending" on a resubscribe
-    // (desync, reconnect, engine restart), so the baseline RE-ARMS here and
-    // the next populated frame runs `sync(rows, true)` again — replayed
-    // history never re-animates, whatever reset the stream.
-    if (snapshot.replay === "pending") {
-      revealBaselineRef.current = false;
-    }
-    if (snapshot.replay === "populated" && !revealBaselineRef.current) {
-      revealBaselineRef.current = true;
-      toolMotion.sync(rows, true);
+  // The reveal baseline (ticket 69) rides the store's durable accepted-reset
+  // epoch, never an observed pending render: a generation swap commits the
+  // pending window and the reset's populated frame in ONE task, so React may
+  // never render the intermediate snapshot — and a same-generation resubscribe
+  // resets without the generation moving at all. Each published baseline is
+  // consumed exactly once, in a layout effect so the corrected rows land
+  // before paint: FIRST the reset's own entries as the replay baseline (the
+  // desktop's populated-baseline consume, transcript.rs:4063-4113 — reveal
+  // and tween clocks clear, every reset tool counts as history), THEN the
+  // current rows as the live delta, so a reset coalesced with later deltas in
+  // one React batch still classifies genuinely post-reset tools as arrivals.
+  const consumedBaselineRef = useRef(0);
+  useLayoutEffect(() => {
+    const baseline = snapshot.baseline;
+    if (baseline !== null && baseline.epoch > consumedBaselineRef.current) {
+      consumedBaselineRef.current = baseline.epoch;
+      toolMotion.sync(baselineRows(baseline.entries), true);
+      toolMotion.sync(rows, false);
       return;
     }
-    // `replay === "pending"` marks a transient window: rows are kept through
-    // it, and a genuinely empty pending frame (a fresh mount) is harmless.
+    // `replay === "pending"` marks a transient window (a resubscribe waiting
+    // for its reset): rows are kept through it, and a genuinely empty pending
+    // frame (a fresh mount) is harmless.
     toolMotion.sync(rows, false, snapshot.replay === "pending");
-  }, [rows, snapshot.replay, toolMotion]);
+  }, [rows, snapshot.baseline, snapshot.replay, toolMotion]);
 
   const allRows = useMemo(() => {
     if (pendingSends.length === 0) {
@@ -497,6 +502,23 @@ function echoEntry(send: PendingSend, deviceId: string | null): SessionMessageEn
     createdAt: send.startedAtMs,
     deviceId: deviceId ?? "",
   };
+}
+
+/**
+ * The accepted baseline's rows (ticket 69): derived through the real row
+ * model, but with an empty markdown tree — `rowsForEntry` consults the parser
+ * only for text parts, so tool-group identity and counts (the only thing the
+ * reveal baseline reads) are exact, and the live parse caches are never
+ * perturbed by replayed history.
+ */
+const BASELINE_PARSE_TREE = parseMarkdown("", false);
+
+function baselineRows(entries: readonly SessionMessageEntry[]): TranscriptRow[] {
+  const out: TranscriptRow[] = [];
+  for (const entry of entries) {
+    out.push(...rowsForEntry(entry, { parse: () => BASELINE_PARSE_TREE }));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
