@@ -2,9 +2,9 @@
 
 **What to build:** Define how explicit tool/detail folds and automatic thought completion affect the viewport on both clients. After the policy is selected, a fold should behave consistently while reading, following the tail, or holding a just-sent prompt. This is a shared behavior decision, not a missing desktop compensation port.
 
-**Blocked by:** Product decisions in §2.4; ticket 70 before final web scroll validation, so known estimate drift does not contaminate policy verification. Ticket 68 remains separate switch/pin policy.
+**Blocked by:** Resolved — the §2.4 choices were recorded 2026-09-20 by the user (directive: "make the scrolling stop jumping around"; recorded decisions below). Ticket 70's geometry and ticket 68's fold memory have already merged; build on the current file shapes.
 
-**Status:** needs-info
+**Status:** ready-for-agent
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.4, §4.4, §4.5, §5.4. Relevant tables are copied verbatim below.
 
@@ -82,7 +82,12 @@ Record each choice before implementation; do not silently infer it from the requ
 
 **D. Own-send reservation.** Retain it and its established held/released/fill-retired lifecycle. Removing or redesigning it requires a separate explicit decision and specification. This ticket must not delete it as a shortcut to hiding scroll jumps.
 
-Decision record: **A/B/C UNRESOLVED; D retained pending any explicit separate decision.** No user question is required in the documentation turn.
+Decision record (2026-09-20, user directive: "the scroll shouldn't be jumping around — the jumping messes up the UX"):
+- **A SELECTED (compensated explicit folds):** explicit group/detail clicks own the viewport — preserve the clicked header at its screen position, release active follow/hold while retaining any live reservation, cancel compensation immediately on wheel/touch/navigation, never fight live tail-follow. Reduced motion snaps geometry and anchor together.
+- **B SELECTED (controlled animated close with scroll ownership):** automatic thought completion keeps closing by default, but over the existing 140ms EASE_OUT fold tween with the same scroll ownership anchoring the viewport through the shrink — no snap-jump. Explicit open/closed pins override the default in every case. (Density stays as today; "keep thought open until user closes" was not selected.)
+- **C SELECTED (preserve the reading anchor):** automatic outer-group closure must not move a manually escaped viewport; a pinned tail keeps its existing tail-follow through the same compensated path.
+- **D RETAINED:** own-send reservation and its held/released/fill-retired lifecycle unchanged.
+All four apply to BOTH clients (web + crates/ui/src/transcript.rs).
 
 Thought text currently uses 96-column prewrapping and fixed-height truncated lines on both clients. Responsive prose wrapping is out of scope here because it changes the analytic height model; a future request needs its own geometry spec.
 
