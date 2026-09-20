@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
+  evalWidthTween,
   TITLEBAR_CONTROL_GAP,
   TITLEBAR_GROUP_GAP,
   TITLEBAR_HEIGHT,
   TITLEBAR_TOP_PAD,
 } from "../src/state/layout";
 import {
+  ISLAND_TWEEN_MS,
+  IslandTweenDriver,
   islandTarget,
   titlebarIslandHorizontalGeometry,
   titlebarIslandVerticalGeometry,
@@ -202,6 +205,153 @@ describe("rendered island bounds (ticket 66 — contains the control row)", () =
     expect(buttons).toEqual({ left: 10, right: 124 });
     expect(island.left).toBeLessThanOrEqual(buttons.left);
     expect(island.right).toBeGreaterThanOrEqual(buttons.right);
+  });
+});
+
+/**
+ * Ticket 64 §2.4 — the island's imperative frame owner. The driver holds
+ * the `{from, to, startedAt}` tween ref and writes the scalar per rAF
+ * frame; React hears only the mount-gate crossings. These tests run the
+ * REAL driver on a manual clock/frame queue and record its paint/gate
+ * output — no source greps, no copied arithmetic (the expectations evaluate
+ * the shipped `evalWidthTween`).
+ */
+describe("IslandTweenDriver — the imperative frame owner (ticket 64)", () => {
+  function harness(initialTarget: number) {
+    let now = 1000;
+    const paints: number[] = [];
+    const mounts: boolean[] = [];
+    let pending: (() => void) | null = null;
+    const driver = new IslandTweenDriver(initialTarget, {
+      paint: (p) => {
+        paints.push(p);
+      },
+      publishMounted: (mounted) => {
+        mounts.push(mounted);
+      },
+      now: () => now,
+      requestFrame: (callback) => {
+        pending = callback;
+        return 1;
+      },
+      cancelFrame: () => {
+        pending = null;
+      },
+    });
+    return {
+      driver,
+      paints,
+      mounts,
+      hasPendingFrame: () => pending !== null,
+      /** Advance the clock and run the pending frame, if one is armed. */
+      step: (ms: number): void => {
+        now += ms;
+        const callback = pending;
+        pending = null;
+        callback?.();
+      },
+    };
+  }
+
+  it("the initial presentation is settled — no entrance animation, the panel only above the gate", () => {
+    const shown = harness(1);
+    expect(shown.paints).toEqual([1]);
+    expect(shown.mounts).toEqual([true]);
+    expect(shown.hasPendingFrame()).toBe(false);
+    const hidden = harness(0);
+    expect(hidden.paints).toEqual([0]);
+    expect(hidden.mounts).toEqual([false]);
+    expect(hidden.hasPendingFrame()).toBe(false);
+  });
+
+  it("a flip tweens over the 200ms RESIZE ease-out and lands the exact endpoint", () => {
+    const h = harness(0);
+    h.driver.setTarget(1, false);
+    expect(h.hasPendingFrame()).toBe(true);
+    h.step(50);
+    expect(h.paints.at(-1)).toBe(evalWidthTween(0, 1, 50));
+    // The gate crossed exactly once, on the first frame above 0.001.
+    expect(h.mounts).toEqual([false, true]);
+    // Elapsed 200: the endpoint exactly, and the loop dies with it.
+    h.step(150);
+    expect(h.paints.at(-1)).toBe(1);
+    expect(h.hasPendingFrame()).toBe(false);
+    h.step(50);
+    expect(h.paints).toEqual([0, evalWidthTween(0, 1, 50), 1]);
+  });
+
+  it("a mid-glide reversal starts from the PAINTED progress — no endpoint jump", () => {
+    const h = harness(0);
+    h.driver.setTarget(1, false);
+    h.step(100);
+    const paintedAtFlip = evalWidthTween(0, 1, 100);
+    expect(h.driver.painted).toBe(paintedAtFlip);
+    expect(paintedAtFlip).toBeGreaterThan(0.5);
+    h.driver.setTarget(0, false);
+    // The retarget itself writes nothing; the next frame continues FROM the
+    // painted progress (the desktop's painted-value capture, shell.rs:4013-4024).
+    expect(h.paints.at(-1)).toBe(paintedAtFlip);
+    h.step(16);
+    expect(h.paints.at(-1)).toBe(evalWidthTween(paintedAtFlip, 0, 16));
+    expect(Math.abs(h.paints.at(-1)! - paintedAtFlip)).toBeLessThan(0.2);
+    h.step(200);
+    expect(h.paints.at(-1)).toBe(0);
+    expect(h.hasPendingFrame()).toBe(false);
+    // Two gate crossings over the round trip: up past 0.001, back down.
+    expect(h.mounts).toEqual([false, true, false]);
+  });
+
+  it("reduced motion settles immediately mid-tween — endpoint, gate, no pending frame", () => {
+    const h = harness(0);
+    h.driver.setTarget(1, false);
+    h.step(100);
+    h.driver.setTarget(1, true);
+    // The endpoint, synchronously — the tween is cleared with the frame.
+    expect(h.paints.at(-1)).toBe(1);
+    expect(h.hasPendingFrame()).toBe(false);
+    expect(h.mounts).toEqual([false, true]);
+    h.step(50);
+    expect(h.paints.at(-1)).toBe(1);
+  });
+
+  it("the reduced-motion flip works even when the target is unchanged", () => {
+    const settled = harness(1);
+    settled.driver.setTarget(1, true);
+    expect(settled.paints).toEqual([1, 1]);
+    expect(settled.mounts).toEqual([true]);
+    expect(settled.hasPendingFrame()).toBe(false);
+  });
+
+  it("reduced motion with a target flip writes the new endpoint and the gate at once", () => {
+    const h = harness(1);
+    h.driver.setTarget(0, true);
+    expect(h.paints).toEqual([1, 0]);
+    expect(h.mounts).toEqual([true, false]);
+    expect(h.hasPendingFrame()).toBe(false);
+  });
+
+  it("dispose cancels the pending frame — teardown paints nothing more", () => {
+    const h = harness(0);
+    h.driver.setTarget(1, false);
+    h.driver.dispose();
+    h.step(50);
+    expect(h.paints).toEqual([0]);
+  });
+
+  it("a repeated arm toward the running target does not restart the curve", () => {
+    const h = harness(0);
+    h.driver.setTarget(1, false);
+    h.step(100);
+    const painted = h.driver.painted;
+    h.driver.setTarget(1, false);
+    // No re-arm: the running tween is untouched, so no paint and no reset.
+    expect(h.paints.at(-1)).toBe(painted);
+    h.step(100);
+    expect(h.paints.at(-1)).toBe(1);
+  });
+
+  it("rides the motion catalog's 200ms resize spec", () => {
+    expect(ISLAND_TWEEN_MS).toBe(200);
   });
 });
 

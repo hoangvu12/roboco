@@ -163,8 +163,8 @@ export function titlebarIslandHorizontalGeometry(showsNewSession: boolean): {
   };
 }
 
-/** `motion::RESIZE` — the curve the island's opacity/height tween rides. */
-const ISLAND_TWEEN_MS =
+/** `motion::RESIZE` — the 200ms ease-out the island's opacity/height tween rides. */
+export const ISLAND_TWEEN_MS =
   motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
 
 /** `prefers-reduced-motion` at first paint, reactive afterwards. */
@@ -185,69 +185,187 @@ function usePrefersReducedMotion(): boolean {
 }
 
 /**
- * The island's manual scalar tween (shell.rs:3995-4012): a persistent
- * tween over the target — 200ms RESIZE ease-out, reversal from the PAINTED
- * value, the initial presentation SETTLED (a fresh mount at target 1 does
- * not animate in), reduced motion snaps. `evalWidthTween` is the eased lerp
- * (a scalar is a width that happens to end at 0 or 1); the rAF pump
- * re-arms per frame exactly like the hero's sidebar loop in
- * `routes/chat-page.tsx`.
+ * One island scalar's geometry/opacity write (ticket 64 §2.4): for
+ * p = clamp(progress, 0, 1) the height runs 28→32 centered on the padded
+ * row's center 21 (`titlebar_island_vertical_geometry`, shell.rs:829-835),
+ * the cluster-local top is the row's top less the cluster's own 4px pad,
+ * and the opacity is p. Written straight to the element — from the driver's
+ * rAF tick and snap paths, always before paint — never through React state.
  */
-function useIslandTween(target: number, reduced: boolean): number {
-  const [painted, setPainted] = useState(target);
-  const tweenRef = useRef<{ from: number; to: number; startedAt: number } | null>(null);
-  const previousTargetRef = useRef(target);
-  const [pump, setPump] = useState(0);
+function paintIslandGeometry(el: HTMLElement, p: number): void {
+  const progress = Math.min(Math.max(p, 0), 1);
+  const geometry = titlebarIslandVerticalGeometry(progress);
+  el.style.top = `${geometry.top - TITLEBAR_TOP_PAD}px`;
+  el.style.height = `${geometry.height}px`;
+  el.style.opacity = `${progress}`;
+}
 
+export interface IslandTweenDriverOptions {
+  /** One frame's scalar write (the island element's geometry/opacity). */
+  readonly paint: (p: number) => void;
+  /**
+   * The mount gate (the desktop's `(island > 0.001)` content gate): fires on
+   * CROSSINGS only, plus the settled initial presentation — never per frame.
+   */
+  readonly publishMounted: (mounted: boolean) => void;
+  readonly now?: () => number;
+  readonly requestFrame?: (callback: () => void) => number;
+  readonly cancelFrame?: (handle: number) => void;
+}
+
+/**
+ * The island's scalar tween, DOM-owned (ticket 64 §2.4 — the desktop's
+ * persistent `island` tween, shell.rs:3995-4024): ONE imperative rAF loop
+ * over a `{from, to, startedAt}` tween ref evaluating the existing
+ * `evalWidthTween` (the 200ms RESIZE ease-out), writing geometry/opacity to
+ * the element per frame — the `setPainted`/`setPump` per-frame React loop
+ * this replaces. A retarget reads the running tween at that instant and
+ * starts from the PAINTED progress (a reversal never jumps back to an
+ * endpoint); the initial presentation is settled (a fresh mount at target 1
+ * starts expanded with its panel; target 0 has no panel — no entrance); a
+ * reduced-motion activation writes the endpoint immediately, synchronizes
+ * the mount gate, and cancels the frame — even when the target is
+ * unchanged. React hears from the scalar only through the gate crossings.
+ */
+export class IslandTweenDriver {
+  #tween: { from: number; to: number; startedAt: number } | null = null;
+  #painted: number;
+  #mounted: boolean;
+  #raf: number | null = null;
+  readonly #paint: (p: number) => void;
+  readonly #publishMounted: (mounted: boolean) => void;
+  readonly #now: () => number;
+  readonly #requestFrame: (callback: () => void) => number;
+  readonly #cancelFrame: (handle: number) => void;
+
+  constructor(target: number, options: IslandTweenDriverOptions) {
+    this.#paint = options.paint;
+    this.#publishMounted = options.publishMounted;
+    this.#now = options.now ?? (() => performance.now());
+    this.#requestFrame = options.requestFrame ?? ((callback) => requestAnimationFrame(callback));
+    this.#cancelFrame = options.cancelFrame ?? ((handle) => cancelAnimationFrame(handle));
+    this.#painted = target;
+    this.#mounted = target > 0.001;
+    // The settled initial presentation, written before first paint: target
+    // 1 starts with p 1 and a mounted panel; target 0 has no panel.
+    this.#paint(target);
+    options.publishMounted(this.#mounted);
+  }
+
+  /** The painted scalar — the reversal's read-back (shell.rs:4013-4024). */
+  get painted(): number {
+    return this.#painted;
+  }
+
+  /**
+   * Retarget (or re-snap) the tween. A flip with a running tween starts
+   * from the painted value; reduced motion — or already sitting on the
+   * target — writes the endpoint immediately and clears the frame, whatever
+   * the target's change state (a preference flip with an unchanged target
+   * still lands the endpoint).
+   */
+  setTarget(target: number, reduced: boolean): void {
+    if (reduced || (this.#tween === null && this.#painted === target)) {
+      this.#cancelPendingFrame();
+      this.#tween = null;
+      this.#paintTo(target);
+      return;
+    }
+    if (this.#tween !== null && this.#tween.to === target) {
+      // Already gliding there: the running tween continues — re-arming
+      // would restart the ease curve from the painted value.
+      return;
+    }
+    const nowMs = this.#now();
+    const tween = this.#tween;
+    const from =
+      tween === null ? this.#painted : evalWidthTween(tween.from, tween.to, nowMs - tween.startedAt);
+    this.#tween = { from, to: target, startedAt: nowMs };
+    // The pending frame (if any) reads `#tween` at fire time, so a retarget
+    // never leaves an obsolete callback evaluating the OLD tween, and the
+    // loop stays armed exactly once.
+    if (this.#raf === null) {
+      this.#raf = this.#requestFrame(this.#frame);
+    }
+  }
+
+  /** Teardown: cancel any pending callback and drop the tween. */
+  dispose(): void {
+    this.#cancelPendingFrame();
+    this.#tween = null;
+  }
+
+  #cancelPendingFrame(): void {
+    if (this.#raf !== null) {
+      this.#cancelFrame(this.#raf);
+      this.#raf = null;
+    }
+  }
+
+  readonly #frame = (): void => {
+    this.#raf = null;
+    const tween = this.#tween;
+    if (tween === null) {
+      return;
+    }
+    const elapsed = this.#now() - tween.startedAt;
+    if (elapsed >= ISLAND_TWEEN_MS) {
+      // Settle on the EXACT endpoint — no residue past the duration.
+      this.#tween = null;
+      this.#paintTo(tween.to);
+      return;
+    }
+    this.#paintTo(evalWidthTween(tween.from, tween.to, elapsed));
+    this.#raf = this.#requestFrame(this.#frame);
+  };
+
+  #paintTo(p: number): void {
+    this.#painted = p;
+    this.#paint(p);
+    const mounted = p > 0.001;
+    if (mounted !== this.#mounted) {
+      this.#mounted = mounted;
+      this.#publishMounted(mounted);
+    }
+  }
+}
+
+/**
+ * The island's tween, wired to the element (shell.rs:3995-4012): the driver
+ * owns the scalar and its per-frame DOM writes; React holds ONLY the
+ * mount-gate boolean (the frosted panel mounts iff the painted value clears
+ * 0.001), published on crossings and the discrete target/preference
+ * lifecycle — the frame scalar never becomes React state.
+ */
+function useIslandTween(
+  target: number,
+  reduced: boolean,
+  islandRef: { readonly current: HTMLElement | null },
+): boolean {
+  const [panelMounted, setPanelMounted] = useState(target > 0.001);
+  const driverRef = useRef<IslandTweenDriver | null>(null);
   useLayoutEffect(() => {
-    if (previousTargetRef.current === target) {
-      return;
-    }
-    previousTargetRef.current = target;
-    if (reduced || painted === target) {
-      // Reduced motion: the endpoint, directly. Already there: nothing to
-      // arm (the initial presentation is settled by construction).
-      tweenRef.current = null;
-      setPainted(target);
-      return;
-    }
-    // A flip: re-arm from the painted value — a reversal mid-glide starts
-    // from what is painted, never back at an endpoint.
-    tweenRef.current = { from: painted, to: target, startedAt: performance.now() };
-    setPump((value) => value + 1);
-    // `painted`/`reduced` are read from this render's closure on purpose:
-    // only a target flip re-arms, never their own changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target]);
-
-  useEffect(() => {
-    if (tweenRef.current === null) {
-      return;
-    }
-    const raf = requestAnimationFrame(() => {
-      const tween = tweenRef.current;
-      if (tween === null) {
-        return;
-      }
-      if (reduced) {
-        tweenRef.current = null;
-        setPainted(tween.to);
-        return;
-      }
-      const elapsed = performance.now() - tween.startedAt;
-      setPainted(evalWidthTween(tween.from, tween.to, elapsed));
-      if (elapsed < ISLAND_TWEEN_MS) {
-        setPump((value) => value + 1);
-      } else {
-        tweenRef.current = null;
-      }
+    const driver = new IslandTweenDriver(target, {
+      paint: (p) => {
+        const el = islandRef.current;
+        if (el !== null) {
+          paintIslandGeometry(el, p);
+        }
+      },
+      publishMounted: setPanelMounted,
     });
-    return () => cancelAnimationFrame(raf);
-    // `reduced` rides along so a mid-tween flip to reduced motion snaps.
+    driverRef.current = driver;
+    return () => {
+      driverRef.current = null;
+      driver.dispose();
+    };
+    // One driver per mount; the target/preference lifecycle rides below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pump, reduced]);
-
-  return painted;
+  }, []);
+  useLayoutEffect(() => {
+    driverRef.current?.setTarget(target, reduced);
+  }, [target, reduced]);
+  return panelMounted;
 }
 
 export function Titlebar({
@@ -268,8 +386,8 @@ export function Titlebar({
 }: TitlebarProps) {
   const takeover = paneOpen && paneExpanded;
   const reduced = usePrefersReducedMotion();
-  const island = useIslandTween(islandTarget, reduced);
-  const islandGeometry = titlebarIslandVerticalGeometry(island);
+  const islandRef = useRef<HTMLDivElement | null>(null);
+  const islandPanelMounted = useIslandTween(islandTarget, reduced, islandRef);
   // The identity freeze (ticket 63): while the sidebar tween runs the row's
   // free space slides (its two inputs animate on one curve but from
   // endpoint deltas that do not cancel when the pane is width-clamped),
@@ -296,22 +414,15 @@ export function Titlebar({
           beneath. The wrapper is the cluster row's FIRST child, left 6 /
           right 0 like the desktop's, painted BEHIND the controls
           (`z-index: -1`) — pure chrome behind existing controls, no hit
-          area. `top`/`height`/`opacity` are inline from the tween; the top
-          is row-space less the cluster's own top pad, since this row's
+          area. `top`/`height`/`opacity` are the tween driver's imperative
+          writes (ticket 64 — before paint, never React state); the top is
+          row-space less the cluster's own top pad, since this row's
           containing block starts `TITLEBAR_TOP_PAD` down. The frosted panel
-          itself unmounts at ~0, exactly the desktop's `(island > 0.001)`
-          content gate.
+          itself mounts only while the painted scalar clears 0.001, exactly
+          the desktop's `(island > 0.001)` content gate.
         */}
-        <div
-          className="titlebar-island"
-          aria-hidden="true"
-          style={{
-            top: `${islandGeometry.top - TITLEBAR_TOP_PAD}px`,
-            height: `${islandGeometry.height}px`,
-            opacity: island,
-          }}
-        >
-          {island > 0.001 && <div className="titlebar-island-panel" />}
+        <div className="titlebar-island" aria-hidden="true" ref={islandRef}>
+          {islandPanelMounted && <div className="titlebar-island-panel" />}
         </div>
         <WindowControl icon="sidebarMinimalisticLeft" label="Toggle sidebar" onClick={onToggleSidebar} />
         <div className="titlebar-group titlebar-nav">

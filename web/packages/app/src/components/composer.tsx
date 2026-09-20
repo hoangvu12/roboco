@@ -201,6 +201,24 @@ const REST_LAYOUT: PillLayout = {
   morphing: false,
 };
 
+/**
+ * The evaluate pass's no-op gate (ticket 64 §2.4): `setLayout` returns the
+ * PRIOR state only when every PillLayout field is equal, so observer ticks
+ * and repeated evaluates that resolve the same geometry publish nothing —
+ * real height/mode/morph changes still land.
+ */
+function pillLayoutEquals(a: PillLayout, b: PillLayout): boolean {
+  return (
+    a.pillHeight === b.pillHeight &&
+    a.boxHeight === b.boxHeight &&
+    a.textPad === b.textPad &&
+    a.clusterInset === b.clusterInset &&
+    a.clusterDy === b.clusterDy &&
+    a.textGlide === b.textGlide &&
+    a.morphing === b.morphing
+  );
+}
+
 interface ComposerProps {
   readonly session: EngineSession;
   readonly chat: Chat;
@@ -217,6 +235,14 @@ interface ComposerProps {
    * `set_available_width` feed. Null before the first measurement.
    */
   readonly availableWidth: number | null;
+  /**
+   * Ticket 64 §2.4's live width channel: the page's clamped composer
+   * target, fed by the column's ResizeObserver on EVERY geometry tick —
+   * outside React, so a deferred page publication (the blank-canvas sidebar
+   * glide) never starves the evaluate pass. The strip width budget reads it
+   * ahead of the published `availableWidth` prop.
+   */
+  readonly liveAvailableWidth?: { readonly current: number | null };
   /**
    * The queue panel (ticket 16 owns the body), rendered in the column's
    * tray slot — tucked 18px behind the pill per `QUEUE_COMPOSER_OVERLAP`.
@@ -304,6 +330,7 @@ export function Composer({
   catalog,
   transcript,
   availableWidth,
+  liveAvailableWidth,
   queueSlot,
   footerSlot,
   editingMessage,
@@ -804,8 +831,11 @@ export function Composer({
       setExpanded(nextMode);
     }
     // `strip_width_hint` (composer.rs:7511): the pill's content width, in
-    // both modes.
-    const stripWidthHint = (availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
+    // both modes. Ticket 64 §2.4: the page's LIVE clamped target leads (the
+    // column observer feeds it per tick, even while the published
+    // `availableWidth` prop defers); the prop-parked ref is the fallback.
+    const stripWidthHint =
+      (liveAvailableWidth?.current ?? availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
     // `comment_strip_height` (composer.rs:7524): the comments chip rides the
     // same arithmetic strip budget as the attachments.
     const stripH =
@@ -921,7 +951,11 @@ export function Composer({
         return;
       }
     }
-    setLayout({
+    // Ticket 64 §2.4's unchanged-layout bailout: publish only when a field
+    // actually moved — the observer/evaluate cadence may run freely, and an
+    // identical resolution returns the PRIOR state (no React publish). Real
+    // height/mode/morph changes still land: every PillLayout field compared.
+    const nextLayout: PillLayout = {
       pillHeight,
       boxHeight,
       textPad,
@@ -934,7 +968,8 @@ export function Composer({
           ? collapseTextGlide(flipMorph.from, morphT)
           : 0,
       morphing,
-    });
+    };
+    setLayout((previous) => (pillLayoutEquals(previous, nextLayout) ? previous : nextLayout));
   };
 
   useLayoutEffect(() => {
