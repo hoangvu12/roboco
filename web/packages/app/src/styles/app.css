@@ -6915,8 +6915,16 @@ button.files-save-pill:hover {
 
   /* Expanded (takeover) at phone: the drawer at full width — the same
      toggle semantics, no separate phone state; the drawer covers the
-     chat instead of the stacked layout's `display: none` handoff. */
-  .right-pane.right-pane-expanded {
+     chat instead of the stacked layout's `display: none` handoff. The
+     closing variant is ticket 72's presentation hold: `toggle`/`close`
+     clear the logical `expanded` in the same commit that starts the
+     slide, so `RightPane` carries `right-pane-closing-expanded` on the
+     aside until the transform settles — the drawer slides away at the
+     width the user was viewing instead of narrowing first. Transient
+     only: the hold's release (transitionend, reopen, owner switch,
+     breakpoint flip, reduced motion, fallback clock) removes it. */
+  .right-pane.right-pane-expanded,
+  .right-pane.right-pane-closing-expanded {
     width: 100vw !important;
   }
 
