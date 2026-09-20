@@ -6,11 +6,13 @@ import {
   messageEnterBindings,
   modifiedSubmitTarget,
   platformModifierCombo,
+  resolveEnterAction,
   resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
   sendButtonMode,
   shouldPublishOptimisticEcho,
+  type EnterKeyContext,
 } from "../src/lib/composer-send";
 import { buildRunRequest, sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
@@ -132,6 +134,101 @@ describe("message_enter_never_adds_extra_modifier_bindings", () => {
         ["ctrl-enter", "shift-cmd-enter", "alt-cmd-enter", "shift-enter"].includes(binding.keystroke),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * Ticket 75 §3 — the phone Enter policy matrix against `resolveEnterAction`,
+ * the Enter branch's single decision owner. `nativeNewline`/`imeNative`
+ * leave the event's default to the textarea (the app never injects a
+ * newline); every other action consumes the event exactly once. Vitest runs
+ * node here: no synthetic KeyboardEvent can prove a browser's native
+ * newline insertion, so these pin the DECISION only.
+ */
+const enterKey = (overrides: Partial<EnterKeyContext>): EnterKeyContext => ({
+  phone: false,
+  composing: false,
+  completionSelected: false,
+  wizardActive: false,
+  mod: false,
+  alt: false,
+  shift: false,
+  sendBehavior: "enter",
+  ...overrides,
+});
+
+describe("phone_bare_enter_is_always_a_native_newline", () => {
+  it("phone bare Enter is native at either saved preference — the setting is never overridden", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "enter" }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "modEnter" }))).toBe("nativeNewline");
+  });
+
+  it("phone bare Enter in the focused wizard input is a newline — no advance, no response", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, wizardActive: true }))).toBe("nativeNewline");
+  });
+
+  it("phone bare Enter in a queue-edit draft is a newline — the edit stays open", () => {
+    // Queue-edit state never reaches the resolver: a native newline can
+    // never finish the edit; only the explicit finish/submit controls do.
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "enter" }))).toBe("nativeNewline");
+  });
+
+  it("phone Shift/Alt Enter stays native; Mod+Enter keeps ModifiedSubmit at any width", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, shift: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, alt: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true }))).toBe("modifiedSubmit");
+    expect(resolveEnterAction(enterKey({ phone: false, mod: true }))).toBe("modifiedSubmit");
+    // Alt drops the modified-submit binding (never Stop); Shift does not.
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true, alt: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true, shift: true }))).toBe("modifiedSubmit");
+  });
+});
+
+describe("phone_enter_keeps_composition_and_completion_precedence", () => {
+  it("an IME composition owns the event at any width — no app action", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, composing: true }))).toBe("imeNative");
+    expect(resolveEnterAction(enterKey({ phone: false, composing: true }))).toBe("imeNative");
+  });
+
+  it("a selected completion is accepted exactly once, before the phone newline", () => {
+    // `enter_accepts_a_completion_before_submit_or_newline` (composer.rs:8384).
+    expect(resolveEnterAction(enterKey({ phone: true, completionSelected: true }))).toBe("acceptCompletion");
+    expect(resolveEnterAction(enterKey({ phone: false, completionSelected: true }))).toBe("acceptCompletion");
+    expect(
+      resolveEnterAction(enterKey({ phone: true, completionSelected: true, wizardActive: true })),
+    ).toBe("acceptCompletion");
+  });
+});
+
+describe("phone_wizard_enter_policy", () => {
+  it("the wizard's Mod+Enter suppression is preserved at any width", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, wizardActive: true, mod: true }))).toBe("wizardSuppress");
+    expect(resolveEnterAction(enterKey({ phone: false, wizardActive: true, mod: true }))).toBe(
+      "wizardSuppress",
+    );
+  });
+
+  it("desktop wizard bare Enter still submits the page; Shift/Alt stay native", () => {
+    expect(resolveEnterAction(enterKey({ wizardActive: true }))).toBe("wizardSubmit");
+    expect(resolveEnterAction(enterKey({ wizardActive: true, shift: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ wizardActive: true, alt: true }))).toBe("nativeNewline");
+  });
+});
+
+describe("desktop_enter_policy_is_unchanged", () => {
+  it("saved enter submits; saved modEnter inserts a newline", () => {
+    expect(resolveEnterAction(enterKey({ sendBehavior: "enter" }))).toBe("submit");
+    expect(resolveEnterAction(enterKey({ sendBehavior: "modEnter" }))).toBe("nativeNewline");
+  });
+
+  it("the saved preference survives a live 768↔769 media crossing", () => {
+    // The policy flips with the live `phone` input while the stored setting
+    // object is untouched — nothing is persisted across the boundary.
+    const behavior: EnterKeyContext["sendBehavior"] = "enter";
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: behavior }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: false, sendBehavior: behavior }))).toBe("submit");
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: behavior }))).toBe("nativeNewline");
+    expect(behavior).toBe("enter");
   });
 });
 
