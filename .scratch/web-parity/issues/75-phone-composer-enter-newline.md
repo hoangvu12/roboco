@@ -6,7 +6,7 @@
 
 **Blocked by:** None — can start immediately. Coordinate the shared `composer.tsx` file with 74; this ticket owns only Enter handling, phone policy and the textarea keyboard hint.
 
-**Status:** ready-for-agent
+**Status:** done
 **Type:** task
 **Baseline:** `web-parity/wave-2` @ `37c354ff`.
 **Research:** `../research-2026-09-20/followup-composer-input.md` §§1–5. Required tables are copied below.

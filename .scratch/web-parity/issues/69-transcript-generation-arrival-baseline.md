@@ -4,7 +4,7 @@
 
 **Blocked by:** None for diagnosis and the specified regression; implementation remains future work under the current documentation-only request. Manual fold persistence is ticket 68, not a dependency for this fix.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.2, §4.2, §4.5, §5.2. Relevant tables are copied verbatim below.
 
