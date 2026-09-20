@@ -6,7 +6,7 @@
 
 **Blocked by:** None — can start immediately. Coordinate edits in `composer.tsx` with 64 (measurement cadence) and 75 (keyboard handler); these are ownership overlaps, not semantic blockers.
 
-**Status:** ready-for-agent
+**Status:** done
 **Type:** task — confirmed route-parity repair with a diagnosis gate for the reported overlap
 **Baseline:** `web-parity/wave-2` @ `37c354ff`.
 **Research:** `../research-2026-09-20/followup-composer-input.md` §§1–5. All required tables are copied below; the reader need not load that file.
