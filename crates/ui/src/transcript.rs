@@ -2700,6 +2700,14 @@ pub struct Transcript {
     tool_fold_scroll: Option<ToolFoldScroll>,
     /// Tracks the queued frame, even when its animation is canceled/replaced.
     tool_fold_scroll_scheduled: bool,
+    /// Ticket 71 C crash fix (2026-09-20) — the render-side auto-close
+    /// detection runs INSIDE the list's prepaint, where the `ListState`
+    /// `RefCell` is already mutably borrowed; reading it there panics
+    /// (`RefCell already mutably borrowed`, the live crash). The detection
+    /// only sets this flag; `render` consumes it BEFORE building the list
+    /// element, one frame after detection (the tween's canvas repaint driver
+    /// guarantees that frame).
+    pending_auto_fold_arm: bool,
     /// Ticket 71 B — the last-rendered card height per expandable chip key
     /// (`"{row}#d{ix}"`): the animated thought-close tween's `from`. A chip
     /// that never rendered open has no entry, so its completion snaps (an
@@ -2986,6 +2994,7 @@ impl Transcript {
             tool_details: HashMap::new(),
             tool_fold_scroll: None,
             tool_fold_scroll_scheduled: false,
+            pending_auto_fold_arm: false,
             detail_card_heights: HashMap::new(),
             thought_seen_resolved: HashMap::new(),
             user_folds: HashMap::new(),
@@ -4856,6 +4865,21 @@ impl Transcript {
         self.arm_tool_fold_scroll(scroll_top.item_ix, f32::from(scroll_top.offset_in_item));
     }
 
+    /// Ticket 71 C crash fix (2026-09-20) — drain the render-side auto-close
+    /// arm request. The flag is set inside the list's prepaint (where the
+    /// `ListState` `RefCell` is mutably borrowed — reading it there is the
+    /// live `RefCell already mutably borrowed` panic), so `render` calls
+    /// this BEFORE building the list element: the arm's `ListState` reads
+    /// then run outside the borrow, one frame after detection, and the frame
+    /// scheduling below picks the compensation up exactly as the sync-side
+    /// arm does.
+    fn drain_pending_auto_fold_arm(&mut self) {
+        if self.pending_auto_fold_arm {
+            self.pending_auto_fold_arm = false;
+            self.arm_automatic_tool_fold_scroll();
+        }
+    }
+
     /// One frame of the tool-fold compensation (ticket 71): correct the
     /// drift that moved the anchor off its captured position, then stand
     /// down when the fold tween has played out.
@@ -6244,8 +6268,13 @@ impl Transcript {
             if auto_closed {
                 // Ticket 71 C — a genuine auto-close anchors the reading
                 // position through the shrink, but only while no other
-                // owner is live (the one-owner gate).
-                self.arm_automatic_tool_fold_scroll();
+                // owner is live (the one-owner gate). Render-side detection
+                // may only SET THE FLAG: this code runs inside the list's
+                // prepaint (the `ListState` `RefCell` is mutably borrowed),
+                // so reading it here panics — `render` drains the flag
+                // outside the element, the `user_collapse_scroll`
+                // discipline the file documents at the top.
+                self.pending_auto_fold_arm = true;
             }
         }
         let active = collapses && auto_open;
@@ -8044,6 +8073,15 @@ impl Render for Transcript {
                     .ok();
             });
         }
+        // Ticket 71 C crash fix (2026-09-20): the auto-close detection in
+        // `render_tool_group` runs inside the list's prepaint and can only
+        // set the flag. Drain it HERE — before the list element is built, so
+        // the arm's `ListState` reads happen while the list does NOT hold
+        // its borrow. The tween's canvas repaint driver guarantees this
+        // render runs within one frame of detection, and the block below
+        // then schedules the compensation step exactly as the sync-side arm
+        // does.
+        self.drain_pending_auto_fold_arm();
         // A tool fold owns the viewport for its tween's duration (ticket 71):
         // advance the anchor's drift correction once per frame so the clicked
         // header (or the automatic closure's reading anchor) stays put.
@@ -9815,6 +9853,58 @@ mod tests {
                         .and_then(|fold| fold.open)
                         .is_none(),
                     "the completion invented no pin"
+                );
+                // Ticket 71 C crash fix (2026-09-20): drive the render-side
+                // auto-close for real — age the group's reveal past its
+                // connector window so the settled group's open resolves
+                // closed at the next render (the second render above kept
+                // it open through arrival-pending). The detection may only
+                // REQUEST the arm: the flag is the only state it touches
+                // inside the prepaint's `borrow_mut` (the in-render arm read
+                // `ListState` there and panicked in live use). `render`'s
+                // drain performs the arm outside the list element; the
+                // headless list has no bounds, so the drained arm transfers
+                // ownership without a correction, exactly like the
+                // sync-side arm above.
+                if let Some(reveal) = this.tool_group_reveals.get_mut(&row.id) {
+                    for start in reveal.starts.iter_mut() {
+                        *start = Some(
+                            Instant::now()
+                                - TOOL_CONNECTOR_REVEAL.total()
+                                - Duration::from_millis(1),
+                        );
+                    }
+                }
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(
+                    this.pending_auto_fold_arm,
+                    "the render-side auto-close requested the deferred arm"
+                );
+                assert!(
+                    this.tool_fold_scroll.is_none(),
+                    "no ListState read armed during the render"
+                );
+                this.drain_pending_auto_fold_arm();
+                assert!(
+                    !this.pending_auto_fold_arm,
+                    "the drain consumes the request exactly once"
+                );
+                // A second drain is a no-op, and the one-owner gate still
+                // refuses while another compensator owns the viewport.
+                this.pending_auto_fold_arm = true;
+                this.tool_fold_scroll = Some(ToolFoldScroll {
+                    row_ix: 0,
+                    anchor_offset: 64.0,
+                    initial_anchor_y: 400.0,
+                    started_at: Instant::now(),
+                });
+                this.drain_pending_auto_fold_arm();
+                assert!(!this.pending_auto_fold_arm);
+                assert!(
+                    this.tool_fold_scroll
+                        .as_ref()
+                        .is_some_and(|state| state.row_ix == 0),
+                    "the gate leaves the live compensator untouched"
                 );
             });
         });
