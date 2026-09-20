@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MessagePart, SessionMessageEntry, ToolCall, TranscriptFrame } from "@roboco/proto";
 import { parseMarkdown, type InlineRun } from "../src/lib/markdown";
 import { bodyHeight } from "../src/lib/diff";
@@ -1212,8 +1212,19 @@ import {
   SPACE_LG,
   TITLEBAR_HEIGHT,
   TOOL_GROUP_HEADER_HEIGHT,
+  type ToolDetail,
+  type ToolItem,
 } from "../src/lib/transcript";
-import { ToolGroupMotionStore, TOOL_CONNECTOR_REVEAL_MS } from "../src/lib/tool-motion";
+import { ToolGroupMotionStore, TOOL_CONNECTOR_REVEAL_MS, type FoldState } from "../src/lib/tool-motion";
+import {
+  computeToolMeasurementKeys,
+  effectiveToolDetail,
+  EMPTY_TOOL_GEOMETRY_STATE,
+  pruneStaleToolMeasurements,
+  toolGroupGeometry,
+  type ToolGroupEstimateContext,
+  type ToolGroupGeometryState,
+} from "../src/lib/tool-group-geometry";
 
 /** One collapsible tool-group row, built through the real row model. */
 function toolGroupRow(entryId: string, commands: string[], streamingTail = false): TranscriptRow {
@@ -1349,26 +1360,105 @@ describe("replay baseline re-arms per replay (ticket 40)", () => {
   });
 });
 
-describe("open-group height estimate (ticket 40 — transcript.rs:96-136)", () => {
+// ---------------------------------------------------------------------------
+// Ticket 70 — the shared tool-group geometry contract: the estimator and the
+// renderer resolve ONE analytic height (32px rail rows, never the 38px
+// standalone chip), and cached tool-row measurements are bounded by the
+// semantic inputs they were taken under.
+// ---------------------------------------------------------------------------
+
+/** A fabricated tool item — the shared resolver's input grain. */
+function toolItem(fields: Partial<ToolItem> = {}): ToolItem {
+  return {
+    call: exec("pwd"),
+    isError: false,
+    resolved: true,
+    detail: null,
+    invocation: null,
+    outputRef: null,
+    outputBytes: null,
+    diffRef: null,
+    subagentRef: null,
+    subagentStatus: null,
+    subagentTail: null,
+    isThought: false,
+    ...fields,
+  };
+}
+
+function outputDetail(lines: readonly string[]): ToolDetail {
+  return { kind: "output", lines, truncatedBy: 0 };
+}
+
+/** A fabricated collapsible tool-group row. */
+function toolGroupRowFrom(id: string, tools: readonly ToolItem[], autoOpen: boolean): TranscriptRow {
+  return {
+    id,
+    version: 1,
+    turnStart: false,
+    rowKind: { kind: "toolGroup", tools, autoOpen },
+    entryId: id,
+    timestamp: null,
+    copyText: null,
+  };
+}
+
+/** An aged fold (no tween clock) — the settled pin. */
+function settledFold(open: boolean): FoldState {
+  return { open, epoch: 1, from: 0, toggledAt: null, disclosureAt: null };
+}
+
+/** A geometry-state stub with the group fold pinned (aged — no tween clock). */
+function pinnedGroupState(open: boolean, overrides: Partial<ToolGroupGeometryState> = {}): ToolGroupGeometryState {
+  return { ...EMPTY_TOOL_GEOMETRY_STATE, groupFold: () => settledFold(open), ...overrides };
+}
+
+function estimateWith(row: TranscriptRow, state: ToolGroupGeometryState, now = 0, reduced = false): number {
+  const ctx: ToolGroupEstimateContext = { state, now, reduced };
+  return estimateRowHeight(row, ctx);
+}
+
+describe("open-group height estimate (tickets 40 + 70 — transcript.rs:96-136, :6000-6023)", () => {
   it("a closed group estimates its header only", () => {
     expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"]))).toBe(TOOL_GROUP_HEADER_HEIGHT);
   });
 
-  it("an auto-open group estimates the open height (header + chips)", () => {
-    const row = toolGroupRow("t", ["pwd"], true);
-    // Resolved tools keep their chip details closed by default, so the open
-    // estimate is the header plus the analytic chips height.
-    expect(estimateRowHeight(row)).toBe(TOOL_GROUP_HEADER_HEIGHT + chipsHeight(1));
-    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"], true))).toBe(
-      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2),
-    );
+  it("an auto-open group estimates the open height (header + rail rows)", () => {
+    // Independent rail geometry: 26 header + 2 body top pad + 32 per rail
+    // row — the old chipsHeight-based expectation (38px standalone rows)
+    // self-confirmed the +6px/tool error this ticket removes.
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd"], true))).toBe(60);
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"], true))).toBe(92);
+  });
+
+  it("rail_group_estimate_matches_rendered_geometry", () => {
+    // The settled open collapsible group is header 26 + body pad 2 + 32 per
+    // rail row; closed is the header. The renderer's own resolver agrees.
+    const oneOpen = toolGroupRow("t", ["pwd"], true);
+    const threeOpen = toolGroupRow("t", ["pwd", "ls", "cat"], true);
+    expect(estimateRowHeight(oneOpen)).toBe(60); // 26 + 2 + 32
+    expect(estimateRowHeight(threeOpen)).toBe(124); // 26 + 2 + 96
+    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls", "cat"]))).toBe(26);
+    if (threeOpen.rowKind.kind !== "toolGroup") {
+      throw new Error("expected toolGroup");
+    }
+    expect(
+      toolGroupGeometry({
+        rowId: threeOpen.id,
+        tools: threeOpen.rowKind.tools,
+        autoOpen: threeOpen.rowKind.autoOpen,
+        state: EMPTY_TOOL_GEOMETRY_STATE,
+        now: 0,
+        reduced: false,
+      }).totalHeight,
+    ).toBe(124);
   });
 
   it("a user-pinned-open group estimates the open height; a pinned-closed one the header", () => {
     const row = toolGroupRow("t", ["pwd", "ls"]);
-    expect(estimateRowHeight(row, () => true)).toBe(TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2));
+    expect(estimateWith(row, pinnedGroupState(true))).toBe(92);
     // A user pin CLOSED overrides the auto-open rule.
-    expect(estimateRowHeight(toolGroupRow("t", ["pwd", "ls"], true), () => false)).toBe(
+    expect(estimateWith(toolGroupRow("t", ["pwd", "ls"], true), pinnedGroupState(false))).toBe(
       TOOL_GROUP_HEADER_HEIGHT,
     );
   });
@@ -1388,14 +1478,11 @@ describe("open-group height estimate (ticket 40 — transcript.rs:96-136)", () =
     expect(thought.isThought).toBe(true);
     expect(thought.resolved).toBe(false);
     expect(thought.detail).not.toBeNull();
-    // A live thought opens its detail by default (tool-group.tsx:153-158).
-    expect(estimateRowHeight(group, () => true)).toBe(
-      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2) + detailHeight(thought.detail!),
-    );
+    // A live thought opens its detail by default; the rail rows are 32px.
+    const expected = 26 + 2 + 32 * 2 + detailHeight(thought.detail!);
+    expect(estimateWith(group, pinnedGroupState(true))).toBe(expected);
     // Without the pin the group still auto-opens (streaming tail).
-    expect(estimateRowHeight(group)).toBe(
-      TOOL_GROUP_HEADER_HEIGHT + chipsHeight(2) + detailHeight(thought.detail!),
-    );
+    expect(estimateRowHeight(group)).toBe(expected);
   });
 
   it("a spawn-only group still estimates its unwrapped chips", () => {
@@ -1403,6 +1490,250 @@ describe("open-group height estimate (ticket 40 — transcript.rs:96-136)", () =
     const e = entry("t", [toolPart("c0", spawn)]);
     const rows = rowsForEntry(e, { parse });
     expect(estimateRowHeight(rows[0]!)).toBe(chipsHeight(1));
+  });
+});
+
+describe("tool-group shared geometry (ticket 70)", () => {
+  it("group_geometry_resolves_pins_arrivals_and_effective_details", () => {
+    const one = [toolItem()];
+    const base = { rowId: "g", tools: one, autoOpen: false };
+
+    // Default: closed header only.
+    const closed = toolGroupGeometry({ ...base, state: EMPTY_TOOL_GEOMETRY_STATE, now: 0, reduced: false });
+    expect(closed.open).toBe(false);
+    expect(closed.totalHeight).toBe(26);
+
+    // Explicit pins win over row data, both ways.
+    expect(
+      toolGroupGeometry({ ...base, state: pinnedGroupState(true), now: 0, reduced: false }).totalHeight,
+    ).toBe(60); // 26 + 2 + 32
+    expect(
+      toolGroupGeometry({ ...base, autoOpen: true, state: pinnedGroupState(false), now: 0, reduced: false })
+        .totalHeight,
+    ).toBe(26);
+
+    // Detail pin open: invocation (1 line → 31) + doc detail (1 line → 31) +
+    // the unfetched blob affordance (24) ride the 32px rail row.
+    const withRefs = [
+      toolItem({ invocation: outputDetail(["pwd"]), detail: outputDetail(["summary"]), outputRef: "g/out" }),
+    ];
+    const detailPinned = pinnedGroupState(true, {
+      detailFold: (key) => (key === "g#d0" ? settledFold(true) : null),
+    });
+    const openDetail = toolGroupGeometry({ rowId: "g", tools: withRefs, autoOpen: false, state: detailPinned, now: 0, reduced: false });
+    expect(openDetail.detailOpens).toEqual([true]);
+    expect(openDetail.rowHeights).toEqual([32 + 31 + 31 + 24]);
+    expect(openDetail.totalHeight).toBe(26 + 2 + 118);
+    // The estimator resolves the SAME state to the SAME height.
+    expect(estimateWith(toolGroupRowFrom("g", withRefs, false), detailPinned)).toBe(openDetail.totalHeight);
+
+    // Unresolved thought: detail open by default; a pinned-closed detail
+    // fold overrides the default (the 2-line thought detail adds 49).
+    const thought = [toolItem({ isThought: true, resolved: false, detail: outputDetail(["a", "b"]) })];
+    const thoughtOpen = toolGroupGeometry({ rowId: "g", tools: thought, autoOpen: false, state: pinnedGroupState(true), now: 0, reduced: false });
+    expect(thoughtOpen.detailOpens).toEqual([true]);
+    expect(thoughtOpen.totalHeight).toBe(26 + 2 + 32 + 49);
+    const thoughtClosed = toolGroupGeometry({
+      rowId: "g",
+      tools: thought,
+      autoOpen: false,
+      state: pinnedGroupState(true, { detailFold: () => settledFold(false) }),
+      now: 0,
+      reduced: false,
+    });
+    expect(thoughtClosed.detailOpens).toEqual([false]);
+    expect(thoughtClosed.totalHeight).toBe(60);
+
+    // Fetched payload + affordance: the ready blob is the effective detail
+    // (3 lines → 67) and the shown affordance slot empties.
+    const fetched = outputDetail(["l1", "l2", "l3"]);
+    const fetchedState = pinnedGroupState(true, {
+      detailFold: () => settledFold(true),
+      blobFetchOf: (ref) => (ref === "g/out" ? { state: "ready", detail: fetched } : null),
+      blobOrderOf: (ref) => (ref === "g/out" ? 1 : 0),
+    });
+    const fetchedGeometry = toolGroupGeometry({ rowId: "g", tools: withRefs, autoOpen: false, state: fetchedState, now: 0, reduced: false });
+    expect(effectiveToolDetail(withRefs[0]!, fetchedState)).toBe(fetched);
+    expect(fetchedGeometry.affordances).toEqual([null]);
+    expect(fetchedGeometry.totalHeight).toBe(26 + 2 + 32 + 31 + 67);
+
+    // Arrival-only open: no autoOpen, no pin, but a live reveal start holds
+    // the group open (here past the 360ms row reveal, mid connector draw).
+    const arrivalState: ToolGroupGeometryState = {
+      ...EMPTY_TOOL_GEOMETRY_STATE,
+      revealOf: () => ({ headerStartedAt: null, starts: [1000], shimmerStartedAt: null, renderedOpen: null, renderedHeight: 0 }),
+    };
+    const arrival = toolGroupGeometry({ ...base, state: arrivalState, now: 1400, reduced: false });
+    expect(arrival.arrivalPending).toBe(true);
+    expect(arrival.open).toBe(true);
+    expect(arrival.totalHeight).toBe(60);
+    expect(arrival.motionActive).toBe(true);
+    // A FUTURE start still reads as pending, with the row reveal at 0.
+    const future = toolGroupGeometry({ ...base, state: arrivalState, now: 500, reduced: false });
+    expect(future.open).toBe(true);
+    expect(future.totalHeight).toBe(26 + 2);
+    // Reduced motion: no arrival, no reveal — the pin-less group stays shut.
+    const reducedArrival = toolGroupGeometry({ ...base, state: arrivalState, now: 1400, reduced: true });
+    expect(reducedArrival.arrivalPending).toBe(false);
+    expect(reducedArrival.open).toBe(false);
+    expect(reducedArrival.totalHeight).toBe(26);
+
+    // Timestamped mid-tween: the fold clock lerps the body toward the open
+    // target; past TOOL_FOLD it saturates. Reduced motion snaps.
+    const tweenState = pinnedGroupState(true);
+    const tweenFold: FoldState = { open: true, epoch: 1, from: 0, toggledAt: 1000, disclosureAt: null };
+    const liveTween: ToolGroupGeometryState = { ...tweenState, groupFold: () => tweenFold };
+    const mid = toolGroupGeometry({ ...base, state: liveTween, now: 1070, reduced: false });
+    expect(mid.totalHeight).toBeGreaterThan(26);
+    expect(mid.totalHeight).toBeLessThan(60);
+    expect(mid.motionActive).toBe(true);
+    expect(toolGroupGeometry({ ...base, state: liveTween, now: 1140, reduced: false }).totalHeight).toBe(60);
+    expect(toolGroupGeometry({ ...base, state: liveTween, now: 1070, reduced: true }).totalHeight).toBe(60);
+  });
+
+  it("fetched_detail_geometry_is_read_only_and_respects_request_recency", async () => {
+    // beginBlobFetch's 20s timeout timer reads `window`.
+    vi.stubGlobal("window", globalThis);
+    try {
+      const motion = new ToolGroupMotionStore();
+      const tool = toolItem({
+        detail: outputDetail(["summary"]),
+        outputRef: "g/out",
+        outputBytes: 2048,
+        diffRef: "g/d.diff",
+      });
+      const input = { rowId: "g", tools: [tool], autoOpen: true, now: 0, reduced: false };
+
+      // Repeated geometry reads of unchanged state: no fetch, no order churn,
+      // no version bump, and the doc detail stays effective. The affordance
+      // offers the DIFF first (the richer upgrade).
+      const version0 = motion.getVersion();
+      const g0 = toolGroupGeometry({ ...input, state: motion });
+      toolGroupGeometry({ ...input, state: motion });
+      toolGroupGeometry({ ...input, state: motion });
+      expect(motion.getVersion()).toBe(version0);
+      expect(motion.blobFetchOf("g/out")).toBeNull();
+      expect(effectiveToolDetail(tool, motion)).toBe(tool.detail);
+      expect(g0.affordances[0]).toEqual({ ref: "g/d.diff", label: "Show full diff", loading: false });
+
+      // The user's fetch is IN FLIGHT: the doc detail still shows, the
+      // affordance reports loading — still no geometry side effects.
+      let releaseDiff!: (text: string) => void;
+      motion.beginBlobFetch("g/d.diff", () => new Promise<string>((resolve) => { releaseDiff = resolve; }));
+      const loading = toolGroupGeometry({ ...input, state: motion });
+      expect(loading.affordances[0]).toEqual({ ref: "g/d.diff", label: "Loading full diff…", loading: true });
+      expect(effectiveToolDetail(tool, motion)).toBe(tool.detail);
+
+      // Deferred completion: the fetched payload becomes effective, the
+      // affordance slot hands over to the unfetched output — and reads STILL
+      // do not mutate the store.
+      releaseDiff(JSON.stringify({ path: "a.ts", oldText: "before", newText: "after" }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const diffFetch = motion.blobFetchOf("g/d.diff");
+      if (diffFetch?.state !== "ready") {
+        throw new Error("expected ready diff");
+      }
+      const versionReady = motion.getVersion();
+      const g1 = toolGroupGeometry({ ...input, state: motion });
+      toolGroupGeometry({ ...input, state: motion });
+      expect(motion.getVersion()).toBe(versionReady);
+      expect(effectiveToolDetail(tool, motion)).toBe(diffFetch.detail);
+      expect(g1.affordances[0]).toEqual({ ref: "g/out", label: "Show full output (2 KB)", loading: false });
+
+      // The output fetch completes: requested LATER, it wins the effective
+      // detail; the ready-but-not-shown diff re-arms as the recency toggle.
+      let releaseOutput!: (text: string) => void;
+      motion.beginBlobFetch("g/out", () => new Promise<string>((resolve) => { releaseOutput = resolve; }));
+      releaseOutput("l1\nl2\nl3");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const outFetch = motion.blobFetchOf("g/out");
+      if (outFetch?.state !== "ready") {
+        throw new Error("expected ready output");
+      }
+      expect(effectiveToolDetail(tool, motion)).toBe(outFetch.detail);
+      const toggled = toolGroupGeometry({ ...input, state: motion });
+      expect(toggled.affordances[0]).toEqual({ ref: "g/d.diff", label: "Show full diff", loading: false });
+
+      // The ready-recency click: re-"fetching" the READY diff ref re-orders
+      // it WITHOUT a new fetch, and the effective detail follows the recency.
+      let fetchedAgain = false;
+      motion.beginBlobFetch("g/d.diff", () => {
+        fetchedAgain = true;
+        return Promise.resolve("unused");
+      });
+      expect(fetchedAgain).toBe(false);
+      expect(motion.blobOrderOf("g/d.diff")).toBeGreaterThan(motion.blobOrderOf("g/out"));
+      expect(effectiveToolDetail(tool, motion)).toBe(diffFetch.detail);
+      expect(toolGroupGeometry({ ...input, state: motion }).affordances[0]).toEqual({
+        ref: "g/out",
+        label: "Show full output",
+        loading: false,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("late_blob_completion_invalidates_only_affected_tool_measurement", async () => {
+    vi.stubGlobal("window", globalThis);
+    try {
+      const motion = new ToolGroupMotionStore();
+      const rowA = toolGroupRowFrom("a#g0", [toolItem({ detail: outputDetail(["summary"]), outputRef: "a/out" })], true);
+      const rowB = toolGroupRowFrom("b#g0", [toolItem()], true);
+      const mdRow: TranscriptRow = {
+        id: "m",
+        version: 1,
+        turnStart: false,
+        rowKind: { kind: "markdown", tree: { blocks: [] }, blockIx: 0 },
+        entryId: "m",
+        timestamp: null,
+        copyText: null,
+      };
+      const rows = [rowA, rowB, mdRow];
+
+      // Both tool rows + the markdown row hold cached measurements, tagged
+      // under the CURRENT semantic inputs (the observer's write shape).
+      const heights = new Map<string, number>([["a#g0", 150], ["b#g0", 92], ["m", 33]]);
+      const measuredKeys = new Map<string, string>();
+      for (const [id, key] of computeToolMeasurementKeys(rows, motion)) {
+        measuredKeys.set(id, key);
+      }
+
+      // Unchanged inputs: nothing is invalidated, nothing is notified.
+      const version0 = motion.getVersion();
+      expect(pruneStaleToolMeasurements(heights, measuredKeys, computeToolMeasurementKeys(rows, motion))).toEqual([]);
+      expect(heights.get("a#g0")).toBe(150);
+      expect(motion.getVersion()).toBe(version0);
+
+      // The UNMOUNTED row's in-flight fetch completes: no DOM, no observer —
+      // the semantic key is what notices. Only row A's cached height drops.
+      let release!: (text: string) => void;
+      motion.beginBlobFetch("a/out", () => new Promise<string>((resolve) => { release = resolve; }));
+      release("l1\nl2\nl3");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(motion.blobFetchOf("a/out")?.state).toBe("ready");
+      const dropped = pruneStaleToolMeasurements(heights, measuredKeys, computeToolMeasurementKeys(rows, motion));
+      expect(dropped).toEqual(["a#g0"]);
+      expect(heights.has("a#g0")).toBe(false);
+      expect(heights.get("b#g0")).toBe(92); // unrelated tool row survives
+      expect(heights.get("m")).toBe(33); // non-tool rows never carry keys
+      // The analytic replacement already reflects the fetched payload
+      // selection (the detail stays closed until pinned — renderer parity).
+      expect(estimateRowHeight(rowA, { state: motion, now: 0, reduced: false })).toBe(60);
+
+      // Unchanged follow-up inputs stop the invalidation: a second pass is a
+      // no-op and the store was never notified by any of it.
+      expect(pruneStaleToolMeasurements(heights, measuredKeys, computeToolMeasurementKeys(rows, motion))).toEqual([]);
+
+      // The remount's fresh measurement re-tags under the current inputs and
+      // is retained from then on.
+      heights.set("a#g0", 127);
+      measuredKeys.set("a#g0", computeToolMeasurementKeys(rows, motion).get("a#g0")!);
+      expect(pruneStaleToolMeasurements(heights, measuredKeys, computeToolMeasurementKeys(rows, motion))).toEqual([]);
+      expect(heights.get("a#g0")).toBe(127);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -1462,6 +1793,33 @@ describe("own-send reservation terms (ticket 40 — transcript.rs:3483-3513)", (
     const closing = fold({ open: false, toggledAt: 0 });
     expect(userFoldExpansionHeight(closing, 0, false)).toBe(220);
     expect(userFoldExpansionHeight(closing, 400, false)).toBe(0);
+  });
+
+  it("unmeasured_rail_group_does_not_prematurely_fill_runway", () => {
+    // The reservation's fill predicate (transcript.tsx's `reservationFilled`):
+    // the held runway retires once the reply's natural content end reaches
+    // `anchorTop + viewport − inset + 0.5`. For an UNMEASURED rail group the
+    // estimate feeds that arithmetic — near the threshold, the removed
+    // +6px/tool excess alone decides between retiring and holding. (This is
+    // the ARITHMETIC proof; runtime retirement evidence needs a browser —
+    // see the ticket's Comments.)
+    const viewport = 800;
+    const inset = StickController.ownSendInset(3);
+    const anchorTop = 100;
+    const threshold = anchorTop + viewport - inset + 0.5;
+    const tools = ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10"];
+    const group = toolGroupRow("reply", tools, true); // auto-open, unmeasured
+    const lastNatural = estimateRowHeight(group);
+    expect(lastNatural).toBe(26 + 2 + 32 * tools.length); // 348
+    // Near the threshold: the corrected estimate does NOT fill the runway.
+    const lastTop = threshold - lastNatural - 10;
+    expect(lastTop + lastNatural >= threshold).toBe(false);
+    // …where the old 38px/chip estimate (408) would have read as filled.
+    const oldEstimate = 26 + 2 + 38 * tools.length;
+    expect(lastTop + oldEstimate >= threshold).toBe(true);
+    // After measurement the estimate IS the settled render height, so the
+    // fill state does not flip when the measurement lands.
+    expect(lastTop + 348 >= threshold).toBe(false);
   });
 
   it("a first send in an empty chat parks row 0 at 64 (echo start)", () => {
