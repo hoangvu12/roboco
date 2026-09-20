@@ -239,3 +239,32 @@ Copied verbatim from research §5.
 ## Comments
 
 Research/ticket preparation only. No implementation, dependency installation, test execution, runtime reproduction, or screenshot capture has occurred at authoring time.
+
+### 2026-09-20 — implementation (branch wp-fu/67, commit 0b629d36)
+
+Landed:
+
+- `web/packages/app/src/state/engine-session.ts` — added the pure `reconcileEngineSessions` planner (reuse only on credential AND current client/cache identity match; metadata-only wrapper refresh retains the catalog; displaced = previous sessions whose catalog no next entry retains; unchanged keeps the previous map identity) and corrected the `EngineSession` lifecycle comment to name the wrapper-versus-catalog distinction. `createEngineSession`/`disposeEngineSession` resource boundaries unchanged.
+- `web/packages/app/src/state/session-provider.tsx` — the reconciliation effect now subscribes `useFleetRegistry()` alongside `useFleet()`, looks up CURRENT resources via `clientFor`/`watchCacheFor` before the reuse decision, disposes each displaced catalog exactly once (catalog-ownership keyed, deduped per reconciliation), and only publishes when the reconciled map identity actually changed. Routing, Retry (`useEngineRetry`), and the notification-driver keying are untouched.
+- `web/packages/app/tests/session-provider.test.ts` — new mounted-provider suite (9 tests), per-file `// @vitest-environment jsdom` pragma, `React.createElement` only, `createRoot` + `act`, real `EngineStore` with in-memory storage + fake redeem, controllable registry double with replaceable client/cache and a restart that publishes only a registry snapshot (leaving `fleet.engines` identity untouched), narrow stubs for routing/notifications/settings/sounds. React act-environment flag set/restored in this file only.
+- `web/packages/app/package.json` + `web/pnpm-lock.yaml` — `jsdom ^30.1.0` dev dependency added via `pnpm --filter @roboco/app add -D jsdom` (resolved 30.1.0; engines `^22.22.2 || ^24.15.0 || >=26.0.0`, runtime was node v24.18.0). `vitest.config.ts` untouched: node stays the default environment, `tests/*.test.ts` discovery unchanged, no testing-library.
+
+Baseline failing-test demonstration: with the two critical tests (`first identity pin preserves the live mounted picker catalog`, `registry restart replaces session resources without a fleet metadata change`) run against the unmodified baseline provider, both failed — the pin disposed the retained catalog (`dispose` called 1 time on the still-published catalog) and the restart left the session bound to the old client. After the fix, all 9 mounted regressions pass.
+
+Verification (exact commands + results):
+
+- `pnpm install` in `web/` — clean (lockfile up to date at the time).
+- `pnpm vitest run tests/session-provider.test.ts` in `web/packages/app` — 9/9 passed.
+- `pnpm test` in `web/packages/app` — 87 files, 1370 tests, all passed (includes the untouched `picker-catalog.test.ts` 18 and `catalog-loading.test.ts` 10; `registry.test.ts` slow reconnect cases green).
+- `pnpm -r build` in `web/` — proto, engine-client, app (tsc --noEmit + vite build) all succeeded.
+
+Skipped / out of scope per the Do-not list:
+
+- The offered-harness completion prefetch gap (desktop `pickers.rs:1080` vs web `picker-catalog.ts:299-305`) is NOT fixed here — follow-up only.
+- No polling/timers/forced-render refreshes added; no disposed-catalog revival; no registry client teardown from the provider; no `Ready([])` presentation change; no 10s in-flight bound redesign; no desktop Rust changes.
+
+Pending runtime evidence (parent agent owns; unit tests cannot provide it):
+
+- §3.3 real first pairing against a current engine (rows settle or real retryable error without refresh), pin-with-request-in-flight timing, explicit engine-gate Retry against a live engine, re-pair/removal against live engines, backend discovery failure surface.
+- Desktop/web screenshot pairs (cold open, loaded models, error/Retry at desktop widths) and phone first-pair smoke.
+- No dev servers, browsers, `cargo run`, or `web_smoke` were started from this worktree; no live first-pair reproduction is claimed. The ownership repair is code-proven by the mounted suite; any remaining backend discovery/empty-success loading symptoms are explicitly not claimed solved by this ticket.
