@@ -27,6 +27,25 @@ import {
  */
 export type TranscriptReplayState = "pending" | "empty" | "populated";
 
+/**
+ * One accepted replay baseline (ticket 69): the durable, store-owned identity
+ * of a reset boundary. Published ONLY when a reset has actually been accepted
+ * and applied — the offline cache seed and each authoritative live reset
+ * frame (same- or new-generation alike). Stale generations, malformed frames,
+ * deltas, and bare resubscribe windows never publish one. The surface
+ * consumes each epoch exactly once, so baseline recognition no longer depends
+ * on React ever rendering an intermediate `pending` snapshot (a generation
+ * swap commits pending and populated in one task).
+ */
+export interface TranscriptBaseline {
+  /** Store-local monotonic identity — 1, 2, 3… in acceptance order. */
+  readonly epoch: number;
+  /** `seed`: the offline cache's last-seen entries; `reset`: an authoritative live reset frame. */
+  readonly provenance: "seed" | "reset";
+  /** The entries exactly as accepted — the surface re-derives the baseline rows from these. */
+  readonly entries: readonly SessionMessageEntry[];
+}
+
 export interface TranscriptSnapshot {
   /** The transcript entries in document order (immutable, identity-preserving). */
   readonly entries: readonly SessionMessageEntry[];
@@ -42,6 +61,8 @@ export interface TranscriptSnapshot {
   readonly generation: number;
   /** Where the replay stands (`TranscriptReplayState`). */
   readonly replay: TranscriptReplayState;
+  /** The latest accepted replay baseline (`TranscriptBaseline`), if any. */
+  readonly baseline: TranscriptBaseline | null;
 }
 
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
@@ -322,6 +343,8 @@ export class TranscriptStore {
   #error: string | null = null;
   #generation = 0;
   #replay: TranscriptReplayState = "pending";
+  #baselineEpoch = 0;
+  #baseline: TranscriptBaseline | null = null;
   #snapshot: TranscriptSnapshot;
   #handle: WatchHandle | null = null;
   readonly #listeners = new Set<() => void>();
@@ -420,6 +443,11 @@ export class TranscriptStore {
     this.#loaded = true;
     this.#error = null;
     this.#replay = "populated";
+    // The cache seed IS a baseline (cached history must not animate), but a
+    // distinguishable one: the live stream's first accepted reset publishes
+    // the next epoch, so an authoritative reset is never mistaken for a
+    // continuation of the cache.
+    this.#publishBaseline("seed");
     this.#commit();
   }
 
@@ -490,6 +518,11 @@ export class TranscriptStore {
     // any delta means real rows exist.
     if ("reset" in frame) {
       this.#replay = frame.reset.length === 0 ? "empty" : "populated";
+      // The ACCEPTED reset is the replay baseline (ticket 69) — published only
+      // here, after the frame applied, so stale/malformed frames and bare
+      // resubscribe windows never advance it. An authoritative empty reset is
+      // a baseline too (empty stays authoritative).
+      this.#publishBaseline("reset");
     } else {
       this.#replay = "populated";
     }
@@ -504,6 +537,11 @@ export class TranscriptStore {
     this.#commit();
   }
 
+  #publishBaseline(provenance: TranscriptBaseline["provenance"]): void {
+    this.#baselineEpoch += 1;
+    this.#baseline = { epoch: this.#baselineEpoch, provenance, entries: this.#entries };
+  }
+
   #takeSnapshot(): TranscriptSnapshot {
     const last = this.#entries[this.#entries.length - 1];
     return {
@@ -514,6 +552,7 @@ export class TranscriptStore {
       error: this.#error,
       generation: this.#generation,
       replay: this.#replay,
+      baseline: this.#baseline,
     };
   }
 
