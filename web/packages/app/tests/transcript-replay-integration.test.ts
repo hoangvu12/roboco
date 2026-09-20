@@ -898,3 +898,49 @@ describe("mounted warm-chat return", () => {
     });
   }
 });
+
+describe("mounted momentum-safe anchor preserve (ticket 85)", () => {
+  it("a measurement correction during a fast fling adds the content delta only — never a teleport back", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 4000 });
+    await settleCache(handle, [userEntry("U"), toolEntry("A", ["pwd"]), toolEntry("B", ["ls", "cat"])]);
+    const el = handle.el();
+    // Mount the whole (short) list and give it known geometry:
+    // U [0,200), A [200,600), B [600,2000).
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+    act(() => {
+      pumpRaf(1);
+    });
+    act(() => {
+      deliverHeights({ U: 200, "A#g0": 400, "B#g0": 1400 });
+      pumpRaf(2);
+    });
+
+    // The user escapes upward; the scroll event captures the escape anchor
+    // at scrollTop 700 (row B, offset 100).
+    el.scrollTop = 700;
+    el.dispatchEvent(new Event("scroll"));
+    act(() => {
+      pumpRaf(1);
+    });
+
+    // A touch fling's compositor momentum advances the viewport PAST the
+    // capture before the next scroll event — the commit (a measurement
+    // batch landing mid-fling) sees the advanced position.
+    el.scrollTop = 900;
+    // A row ABOVE the anchor re-measures taller: B's position shifts
+    // 600 → 800 (content delta +200).
+    act(() => {
+      deliverHeights({ "A#g0": 600 });
+      pumpRaf(2);
+    });
+
+    // The preserve added ONLY the content delta (900 + 200 = 1100): the
+    // fling's own motion was never yanked back to the capture-time
+    // position (the old absolute write landed at 800 + 100 = 900 — erasing
+    // the user's momentum; at real fling speeds this was the mobile
+    // "content jumping up and down" every frame).
+    expect(el.scrollTop).toBe(1100);
+  });
+});

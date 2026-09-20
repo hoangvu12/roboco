@@ -674,7 +674,7 @@ function TranscriptScroller({
   // keys refreshed every render (toolKeysRef, also the observer's tag source).
   const heightKeysRef = useRef(new Map<string, string>());
   const toolKeysRef = useRef(new Map<string, string>());
-  const anchorRef = useRef<{ id: string; offset: number } | null>(null);
+  const anchorRef = useRef<{ id: string; offset: number; top: number } | null>(null);
   const rowsRef = useRef(rows);
   const positionsRef = useRef<readonly number[]>([]);
   const rowHeightsRef = useRef<readonly number[]>([]);
@@ -1175,15 +1175,17 @@ function TranscriptScroller({
       const offset = resolveViewportAnchor(saved.anchor, rowsRef.current, replay === "populated");
       if (offset !== null) {
         const scrollTop = positionsRef.current[offset.itemIx]! + offset.offsetInItem;
-        // The restored row anchor doubles as the escape anchor: the
-        // per-commit preserve keeps it stationary while late measurements
-        // land (the desktop's viewport-finalize token).
-        anchorRef.current = { id: saved.anchor.rowId, offset: offset.offsetInItem };
         stick.restoreViewport(
           scrollTop,
           saved.ownTurn === null ? null : ownTurnReleasedForRestore(saved.ownTurn),
           saved.distanceFromBottom,
         );
+        // The restored row anchor doubles as the escape anchor: the
+        // per-commit preserve keeps it stationary while late measurements
+        // land (the desktop's viewport-finalize token). `top` is the
+        // position the clamped write actually landed on — the delta
+        // correction's zero point.
+        anchorRef.current = { id: saved.anchor.rowId, offset: offset.offsetInItem, top: el.scrollTop };
         setView({ top: el.scrollTop, height: el.clientHeight });
         pendingViewportRef.current = null;
         return;
@@ -1274,7 +1276,14 @@ function TranscriptScroller({
       return;
     }
     // Escaped (or a released runway): keep the captured anchor row visually
-    // stationary across splices and measures.
+    // stationary across splices and measures. The correction is the CONTENT
+    // DELTA — how far the anchor row's own position moved since capture —
+    // added to the CURRENT scrollTop, never a teleport back to the capture
+    // position: between a touch fling's scroll events the compositor keeps
+    // advancing scrollTop, and a commit landing there would otherwise yank
+    // the viewport back every frame (the mobile "content jumping up and
+    // down" during fast swipes). With the user's own motion left untouched,
+    // a still viewport gets exactly the old absolute correction.
     const anchor = anchorRef.current;
     if (stick.pinned || anchor === null) {
       return;
@@ -1283,9 +1292,10 @@ function TranscriptScroller({
     if (ix < 0) {
       return;
     }
-    const target = positions[ix]! + anchor.offset;
-    if (Math.abs(el.scrollTop - target) > 0.5) {
-      stick.writePreserving(target);
+    const contentDelta = positions[ix]! + anchor.offset - anchor.top;
+    if (Math.abs(contentDelta) > 0.5) {
+      stick.writePreserving(el.scrollTop + contentDelta);
+      anchorRef.current = { ...anchor, top: anchor.top + contentDelta };
     }
   });
 
@@ -1674,12 +1684,12 @@ function captureAnchor(
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
   toolGeometry: ToolGroupEstimateContext | null = null,
-): { id: string; offset: number } | null {
+): { id: string; offset: number; top: number } | null {
   for (let ix = 0; ix < rows.length; ix++) {
     const rowTop = positions[ix]!;
     const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, toolGeometry));
     if (bottom > top + 1) {
-      return { id: rows[ix]!.id, offset: top - rowTop };
+      return { id: rows[ix]!.id, offset: top - rowTop, top };
     }
   }
   return null;
