@@ -115,6 +115,34 @@ function hexOf(color: Rgba): string {
   return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}${channel(color.a)}`;
 }
 
+/**
+ * `Theme::flatten` (crates/ui/src/theme.rs:1785): the opaque composite of a
+ * possibly-translucent `fg` over an opaque `bg` — the color the eye actually
+ * receives, returned at alpha 1. Ticket 79: the desktop's opaque-mode
+ * `input_glass_bg()` is `flatten(input, bg)`; the web's former
+ * `color-mix(input 82%, bg)` interpolated alpha instead of compositing,
+ * leaving the composer pill ~23% see-through in every dark variant (their
+ * `input` role carries authored alpha, e.g. `#343438b8`). Unparseable input
+ * falls back to the raw `fg` string.
+ */
+function flattenHex(fg: string, bg: string): string {
+  const front = rgbaOf(fg);
+  const back = rgbaOf(bg);
+  if (front === null || back === null) {
+    return fg;
+  }
+  const a = front.a / 255;
+  const channel = (f: number, b: number): number => Math.round(f * a + b * (1 - a));
+  // Opaque by construction — emit the 6-digit form like the artifact's
+  // opaque roles (bg is `#060606`, not `#060606ff`).
+  return hexOf({
+    r: channel(front.r, back.r),
+    g: channel(front.g, back.g),
+    b: channel(front.b, back.b),
+    a: 255,
+  }).slice(0, 7);
+}
+
 function mix(a: Rgba, b: Rgba, amount: number): Rgba {
   const t = Math.min(Math.max(amount, 0), 1);
   const channel = (front: number, back: number): number => Math.round(front + (back - front) * t);
@@ -247,6 +275,13 @@ export function variantCssVars(
   for (const [key, suffix] of Object.entries(COLOR_VARS) as [keyof ThemeColors, string][]) {
     vars[`--rb-${suffix}`] = variant.colors[key];
   }
+  // Ticket 79 — the opaque input plate: the web port of the desktop's
+  // `input_glass_bg()` (`flatten(input, bg)`, theme.rs:968-980). Dark
+  // variants author `input` with alpha (`#343438b8`); flattened over the
+  // variant background it yields the opaque plate the desktop paints in
+  // opaque mode — the composer pill, the wizard, form inputs, and the
+  // comment draft consume it.
+  vars["--rb-input-plate"] = flattenHex(variant.colors.input, variant.colors.background);
   const accent = accentForVariant(variant, options.accent);
   vars["--rb-accent"] = accent.primary;
   vars["--rb-accent-strong"] = accent.strong;

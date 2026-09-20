@@ -145,7 +145,9 @@ a:focus-visible,
 .input {
   width: 100%;
   padding: 6px 10px;
-  background: var(--rb-input);
+  /* The desktop paints `input_glass_bg()`'s flatten(input, bg) here — the
+     opaque plate, not the raw (dark-alpha) input role (ticket 79). */
+  background: var(--rb-input-plate);
   color: var(--rb-text);
   border: 1px solid var(--rb-border);
   border-radius: var(--rb-radius-control);
@@ -3365,7 +3367,10 @@ a:focus-visible,
  * Its bottom edge is stationary: growth moves the TOP edge, so the controls
  * pin to the bottom and only the text glides with the reveal. The web is
  * forced opaque (the 2026-09-17 defrost decision), so the pill takes the
- * desktop's opaque branch — `flatten(input, bg)`.
+ * desktop's opaque branch — `flatten(input, bg)` — as the
+ * `--rb-input-plate` token (ticket 79: the former `color-mix(input 82%,
+ * bg)` interpolated the input's authored alpha instead of compositing it,
+ * leaving the pill ~23% see-through in dark variants).
  *
  * ONE DOM shape for both modes: the compact row and the expanded column
  * are the same tree re-laid-out by `[data-mode]`; the height (and the
@@ -3378,7 +3383,7 @@ a:focus-visible,
   overflow: hidden;
   border-radius: 26px;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  background: var(--rb-input-plate);
   box-shadow: var(--rb-shadow-popover);
 }
 
@@ -3850,7 +3855,7 @@ a:focus-visible,
   flex-direction: column;
   border-radius: 26px;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  background: var(--rb-input-plate);
   box-shadow: var(--rb-shadow-popover);
   outline: none;
   animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
@@ -14116,7 +14121,9 @@ button.segmented-option:hover {
   resize: none;
   border-radius: 7px;
   border: 1px solid var(--rb-border);
-  background: var(--rb-input);
+  /* The input-glass plate (ticket 79) — the desktop's opaque-mode
+     `input_glass_bg()` flatten, not the raw alpha-carrying input role. */
+  background: var(--rb-input-plate);
   padding: 5px 8px;
   color: var(--rb-text);
   font-size: 12px;

@@ -4,7 +4,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## 1. Evidence (web-parity/followup @ c81dd2fe)
 
@@ -42,3 +42,7 @@
 ## Comments
 
 Created 2026-09-20 evening from the live round-2 report ("composers and stuff have opacity") and the full web-vs-desktop opaque audit. The see-through family is exactly the input-glass set above; the rest of the web already matches desktop opaque mode.
+
+## Comments
+
+**2026-09-21 — implemented and merged to `web-parity/followup`.** `fix(web): ticket 79 opaque input plate`: `flattenHex` (the theme.rs:1785 source-over port, 6-digit opaque) in `@roboco/theme` emits `--rb-input-plate` from every variant (`variantCssVars`); `.composer-pill`, `.wizard-panel`, `.input`, and `.editor-comment-input` in app.css paint it; the misleading color-mix comments corrected. Oracle: dark plate = `#27272a` (input `#343438b8` over background `#060606`), light = `#ffffff`. Tests: `theme-vars.test.ts` plate assertions + new `tests/opaque-input-plate.test.ts` (stylesheet contract: the four rules use the plate; no alpha-interpolating color-mix or raw input-role background remains). Full suite **1510/1510** (92 files) and `pnpm -r build` (all workspace packages) green. User visual confirmation on the follow-up build pending.
