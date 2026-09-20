@@ -30,6 +30,7 @@ import {
   SIDEBAR_GLIDE_MS,
   SIDEBAR_SETTLE_CAP_MS,
   sidebarTweenSignal,
+  type SidebarTweenSignal,
 } from "../lib/sidebar-tween";
 import {
   DockMountSequencer,
@@ -76,6 +77,98 @@ function transcriptCacheFor(engineKey: string, scopedChatId: string): Transcript
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The column width's publication policy (ticket 64 §2.4). The column's
+ * ResizeObserver fires per geometry tick — per animation FRAME while the
+ * sidebar's 200ms CSS width transition runs — and only a fraction of those
+ * ticks are React news. Every tick updates the live channels outside React
+ * (the mutable measured width below, plus the clamped composer width target
+ * the dock pump reads per frame), while the published `columnWidth` state
+ * defers exactly one window: the blank canvas under an active sidebar tween
+ * (those frames are the shell's own motion, not semantic change). The
+ * signal's settle edge — `transitionend`, the settle cap, the drag/reduce
+ * disarms; they all funnel through `settle()` — publishes the current final
+ * measurement once. Selected-chat publication stays responsive: QueuePanel
+ * reads `columnWidth` too, and its layout is not part of this canvas-scoped
+ * deferral.
+ */
+export interface ColumnWidthPublicationOptions {
+  /** The shared sidebar tween signal — the ONLY defer window (no second clock). */
+  readonly signal: SidebarTweenSignal;
+  /** A chat is selected: publication stays responsive (the defer is canvas-scoped). */
+  readonly hasSelection: boolean;
+  /** The clamped live composer target, written on EVERY tick (the dock pump's per-frame read). */
+  readonly liveTarget: { current: number };
+  /** The React publication (`setColumnWidth`). */
+  readonly publish: (width: number) => void;
+}
+
+export class ColumnWidthPublication {
+  readonly #signal: SidebarTweenSignal;
+  readonly #hasSelection: boolean;
+  readonly #liveTarget: { current: number };
+  readonly #publish: (width: number) => void;
+  readonly #unsubscribe: () => void;
+  // §2.4's mutable measured-width ref: every observer tick lands here first.
+  #measured: number | null = null;
+  #published: number | null = null;
+  #deferred = false;
+
+  constructor(options: ColumnWidthPublicationOptions) {
+    this.#signal = options.signal;
+    this.#hasSelection = options.hasSelection;
+    this.#liveTarget = options.liveTarget;
+    this.#publish = options.publish;
+    this.#unsubscribe = options.signal.subscribe((active) => {
+      if (!active) {
+        this.#flush();
+      }
+    });
+  }
+
+  /**
+   * One column geometry tick: the live channels update unconditionally (the
+   * measured width, the clamped composer target — no React commit), then
+   * the publication policy decides whether React hears about the width.
+   */
+  note(width: number): void {
+    this.#measured = width;
+    this.#liveTarget.current = Math.min(Math.max(width, 0), COMPOSER_MAX_WIDTH);
+    if (width === this.#published) {
+      // Unchanged (the observer's initial duplicate, a settled re-tick):
+      // never a publication — and a deferred window whose measurement has
+      // returned to the published width has nothing left to flush.
+      this.#deferred = false;
+      return;
+    }
+    if (!this.#hasSelection && this.#signal.isActive()) {
+      this.#deferred = true;
+      return;
+    }
+    this.#publishNow(width);
+  }
+
+  /** The settle edge: the current final measurement, published once. */
+  #flush(): void {
+    const measured = this.#measured;
+    this.#deferred = false;
+    if (measured === null || measured === this.#published) {
+      return;
+    }
+    this.#publishNow(measured);
+  }
+
+  #publishNow(width: number): void {
+    this.#published = width;
+    this.#deferred = false;
+    this.#publish(width);
+  }
+
+  dispose(): void {
+    this.#unsubscribe();
   }
 }
 
@@ -722,6 +815,12 @@ export function ConversationPage() {
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
   const bottomStackRef = useRef<HTMLDivElement | null>(null);
   const [columnWidth, setColumnWidth] = useState<number | null>(null);
+  // Ticket 64 §2.4: the LIVE clamped composer width target — the column
+  // observer feeds it on EVERY tick through `ColumnWidthPublication` (the
+  // dock pump reads it per frame), and render must not overwrite it with
+  // the published `columnWidth`, which is stale through the defer window.
+  // The published value only seeds the pre-measurement initial (null → cap).
+  const composerWidthTargetRef = useRef<number>(COMPOSER_MAX_WIDTH);
   const dockCorrectionRef = useRef(0);
   const [measuredHasComposer, setMeasuredHasComposer] = useState(false);
   const expectedHasComposer = session !== null && hasSelection;
@@ -732,12 +831,26 @@ export function ConversationPage() {
     if (column === null || typeof ResizeObserver === "undefined") {
       return;
     }
+    // Ticket 64 §2.4: every tick updates the live channels (the publisher's
+    // measured width and the clamped `composerWidthTargetRef` the dock pump
+    // reads per frame) WITHOUT a React commit; the React publication defers
+    // only for the blank canvas while the sidebar tween signal is active
+    // and re-publishes the current final measurement on its settle edge.
+    const publication = new ColumnWidthPublication({
+      signal: sidebarTweenSignal,
+      hasSelection,
+      liveTarget: composerWidthTargetRef,
+      publish: (width) => setColumnWidth(width),
+    });
     const observer = new ResizeObserver(() => {
-      setColumnWidth(column.getBoundingClientRect().width);
+      publication.note(column.getBoundingClientRect().width);
     });
     observer.observe(column);
-    setColumnWidth(column.getBoundingClientRect().width);
-    return () => observer.disconnect();
+    publication.note(column.getBoundingClientRect().width);
+    return () => {
+      observer.disconnect();
+      publication.dispose();
+    };
     // The early returns above gate the refs; re-arm once the tree lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, row?.chat.id, session]);
@@ -799,9 +912,9 @@ export function ConversationPage() {
   // desktop's `layout_width(main_content_width.min(COMPOSER_MAX_WIDTH))`,
   // fed back through `set_available_width` so the pill re-wraps mid-glide.
   // `layoutWidth` with a ~0 dt is a no-op, so render-path calls are safe.
+  // The render path reads the PUBLISHED width (the JSX fallback between
+  // glides); the pump reads the observer-fed `composerWidthTargetRef` live.
   const composerWidthTarget = Math.min(Math.max(columnWidth ?? COMPOSER_MAX_WIDTH, 0), COMPOSER_MAX_WIDTH);
-  const composerWidthTargetRef = useRef(composerWidthTarget);
-  composerWidthTargetRef.current = composerWidthTarget;
   const composerWidth = dockRef.current.layoutWidth(composerWidthTarget, dockReduced, performance.now());
 
   // The frame pump, de-Reacted (ticket 57b, §2.3): one rAF loop while
@@ -1218,6 +1331,10 @@ export function ConversationPage() {
                 // rows must not offer the previous chat's entries.
                 transcript={liveTranscript}
                 availableWidth={composerWidth}
+                // Ticket 64 §2.4: the observer-fed live target — the
+                // evaluate pass's strip budget reads it even while the
+                // published prop defers through the sidebar glide.
+                liveAvailableWidth={composerWidthTargetRef}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
                 onEditCancel={onEditCancel}

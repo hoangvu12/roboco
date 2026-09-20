@@ -9,6 +9,8 @@ import {
   type DockFrame,
 } from "../src/lib/composer-dock";
 import { newThreadBackgroundElementOpacity } from "../src/lib/new-thread-background";
+import { SidebarTweenSignal } from "../src/lib/sidebar-tween";
+import { ColumnWidthPublication } from "../src/routes/chat-page";
 import {
   DOCK_GLIDE_VARS,
   DockGlideSignal,
@@ -290,6 +292,85 @@ describe("DockGlideSignal — the 59/63 defer signal", () => {
     expect(dockGlideActive()).toBe(true);
     dockGlideSignal.settle();
     expect(dockGlideActive()).toBe(false);
+  });
+});
+
+/**
+ * Ticket 64 §2.4 — the observer/publication integration at the dock pump's
+ * width read. The column observer feeds the pump's live composer target on
+ * EVERY tick (no React commit), the page publication defers to the sidebar
+ * signal's settle edge, and the glide's discrete-write contract (mount
+ * crossings + one settle publish) is unchanged by the moving target. The
+ * sidebar's 200ms window rides INSIDE the 420ms dock glide here, the
+ * co-occurring case the live-ref feed exists for.
+ */
+describe("the observer-fed composer target (ticket 64 §2.4)", () => {
+  it("the pump reads the live target per frame while page publication defers to one settle publish", () => {
+    const signal = new SidebarTweenSignal();
+    const published: number[] = [];
+    const liveTarget = { current: 0 };
+    const publication = new ColumnWidthPublication({
+      signal,
+      hasSelection: false,
+      liveTarget,
+      publish: (width) => {
+        published.push(width);
+      },
+    });
+    const dock = new DockState();
+    const mounts = new DockMountSequencer();
+    let stateWrites = 0;
+    let t = 1000;
+    // The shell's first pass (the page's first commit), then the flip.
+    dock.tick(false, false, t);
+    dock.prepaint({ left: 100, top: 370, height: 76 }, 800, false, t);
+    let measured = 640;
+    publication.note(measured); // the initial measurement publishes (idle signal)
+    expect(published).toEqual([640]);
+    t += FRAME_MS;
+    dock.tick(true, false, t); // the navigation commit arms the glide
+    signal.arm(); // the sidebar flip rides the same window
+    let width = dock.layoutWidth(liveTarget.current, false, t);
+    const sidebarFrames = Math.ceil(200 / FRAME_MS); // the sidebar's 200ms window
+    let frameCount = 0;
+    for (;;) {
+      t += FRAME_MS;
+      frameCount += 1;
+      if (frameCount <= sidebarFrames) {
+        // The column observer ticks mid-glide: the live target moves with
+        // EVERY frame, with zero React publication while the signal is armed.
+        measured -= 6;
+        publication.note(measured);
+      } else if (signal.isActive()) {
+        // The sidebar's `transitionend`: ONE flush of the final measurement.
+        signal.settle();
+      }
+      const frame = dock.tick(true, false, t);
+      // The pump's width read (chat-page.tsx): the live ref, this frame.
+      width = dock.layoutWidth(liveTarget.current, false, t);
+      if (mounts.crossing(frame)) {
+        stateWrites += 1;
+      }
+      if (!frame.active && dock.paneProgress() === null) {
+        stateWrites += 1; // the settle publish
+        break;
+      }
+    }
+    // The sidebar window deferred every one of its ticks...
+    expect(signal.isActive()).toBe(false);
+    expect(published).toEqual([640, 640 - sidebarFrames * 6]);
+    // ...while the pump's per-frame read saw each one...
+    expect(liveTarget.current).toBe(measured);
+    // ...and the width glide visibly followed the moving target (a stale,
+    // render-fed target would have pinned the width at 640).
+    expect(width).toBeLessThan(640);
+    // The glide ran its full course with the moving target, and the React
+    // writes stayed discrete (the 57b contract): crossings + ONE settle.
+    expect(frameCount).toBeGreaterThanOrEqual(20);
+    expect(stateWrites).toBeLessThanOrEqual(3);
+    // Settled with a static target, the width has converged onto it.
+    expect(dock.layoutWidth(liveTarget.current, false, t + FRAME_MS)).toBe(measured);
+    publication.dispose();
   });
 });
 

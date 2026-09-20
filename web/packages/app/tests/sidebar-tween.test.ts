@@ -9,6 +9,7 @@ import {
   sidebarTweenActive,
   sidebarTweenSignal,
 } from "../src/lib/sidebar-tween";
+import { ColumnWidthPublication } from "../src/routes/chat-page";
 
 /**
  * The sidebar tween's settle contract (ticket 57a), the same three layers
@@ -143,6 +144,117 @@ describe("HeroRemaskGate — zero remasks during the tween, exactly one on settl
     expect(sidebarTweenActive()).toBe(false);
     gate.note("hero-geometry");
     expect(remasks).toBe(1);
+  });
+});
+
+/**
+ * Ticket 64 §2.4 — the column width's publication policy: every observer
+ * tick updates the live channels outside React (the publisher's measured
+ * width and the clamped composer target the dock pump reads per frame),
+ * while the page's React publication defers exactly one window — the blank
+ * canvas under an active sidebar tween — and re-publishes the current final
+ * measurement once on settle. The widths below stay under the 768px
+ * composer cap so the clamped live target tracks them exactly.
+ */
+describe("column geometry ticks do not publish page state during shell motion (ticket 64)", () => {
+  function harness(hasSelection: boolean) {
+    const signal = new SidebarTweenSignal();
+    const published: number[] = [];
+    const liveTarget = { current: 0 };
+    const publication = new ColumnWidthPublication({
+      signal,
+      hasSelection,
+      liveTarget,
+      publish: (width) => {
+        published.push(width);
+      },
+    });
+    return { signal, published, liveTarget, publication };
+  }
+
+  it("defers the blank canvas's ticks while the tween runs, then publishes the final width once on settle", () => {
+    const h = harness(false);
+    // The initial measurement publishes (idle signal) — the baseline width.
+    h.publication.note(700);
+    expect(h.published).toEqual([700]);
+    expect(h.liveTarget.current).toBe(700);
+    h.signal.arm();
+    // One tick per animation frame of the 200ms glide: EVERY tick reaches
+    // the live target; NONE reaches React.
+    const frames = Math.ceil(SIDEBAR_GLIDE_MS / 16);
+    for (let frame = 1; frame <= frames; frame += 1) {
+      h.publication.note(700 - frame * 10);
+    }
+    expect(h.liveTarget.current).toBe(700 - frames * 10);
+    expect(h.published).toEqual([700]);
+    // `transitionend`: exactly one publication, the current final width.
+    h.signal.settle();
+    expect(h.published).toEqual([700, 700 - frames * 10]);
+    // Settled: publication is responsive again.
+    h.publication.note(1100);
+    expect(h.published).toEqual([700, 700 - frames * 10, 1100]);
+    expect(h.liveTarget.current).toBe(768); // clamped to the composer cap
+    h.publication.dispose();
+  });
+
+  it("a mid-glide reversal keeps the deferral; one settle publishes the current measurement", () => {
+    const h = harness(false);
+    h.publication.note(700);
+    h.signal.arm();
+    h.publication.note(660);
+    h.publication.note(620);
+    // The reversal re-arms — the window stays open, the deferral continues.
+    h.signal.arm();
+    h.publication.note(650);
+    expect(h.liveTarget.current).toBe(650);
+    expect(h.published).toEqual([700]);
+    h.signal.settle();
+    expect(h.published).toEqual([700, 650]);
+    h.publication.dispose();
+  });
+
+  it("a drag takeover's settle publishes the drag geometry at once, then tracks responsively", () => {
+    const h = harness(false);
+    h.publication.note(700);
+    h.signal.arm();
+    h.publication.note(660);
+    // The seam drag takes the clock over: the page settles the signal...
+    h.signal.settle();
+    expect(h.published).toEqual([700, 660]);
+    // ...and the drag's own ticks publish as they land.
+    h.publication.note(648);
+    h.publication.note(636);
+    expect(h.published).toEqual([700, 660, 648, 636]);
+    h.publication.dispose();
+  });
+
+  it("selected-chat publication stays responsive under the armed signal (QueuePanel's feed)", () => {
+    const h = harness(true);
+    h.publication.note(600);
+    h.signal.arm();
+    h.publication.note(560);
+    h.publication.note(520);
+    expect(h.published).toEqual([600, 560, 520]);
+    // The settle adds nothing — nothing was deferred.
+    h.signal.settle();
+    expect(h.published).toEqual([600, 560, 520]);
+    h.publication.dispose();
+  });
+
+  it("redundant ticks never publish — and a glide back to the published width flushes nothing", () => {
+    const h = harness(false);
+    h.publication.note(700);
+    // The observer's initial duplicate (ResizeObserver fires on observe()).
+    h.publication.note(700);
+    expect(h.published).toEqual([700]);
+    h.signal.arm();
+    h.publication.note(660);
+    // Reversed all the way back before settle: the endpoint IS the
+    // published width, so the settle has nothing to flush.
+    h.publication.note(700);
+    h.signal.settle();
+    expect(h.published).toEqual([700]);
+    h.publication.dispose();
   });
 });
 
