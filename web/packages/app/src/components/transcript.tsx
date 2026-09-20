@@ -40,12 +40,10 @@ import {
   USER_LINE_HEIGHT,
   captureSavedViewport,
   chipsHeight,
-  detailHeight,
   flavourSeed,
   flavourWord,
   formatElapsed,
   formatTimestamp,
-  isSpawnLink,
   ownTurnReleasedForRestore,
   parseForRow,
   resolveViewportAnchor,
@@ -53,7 +51,6 @@ import {
   selectionScrollStep,
   sendingBridge,
   SPACE_LG,
-  TOOL_GROUP_HEADER_HEIGHT,
   topGapFor,
   toolGroupCollapses,
   userMessageNeedsCollapse,
@@ -64,6 +61,13 @@ import {
   type SentMentionSpan,
   type TranscriptRow,
 } from "../lib/transcript";
+import {
+  computeToolMeasurementKeys,
+  EMPTY_TOOL_GEOMETRY_STATE,
+  pruneStaleToolMeasurements,
+  toolGroupGeometry,
+  type ToolGroupEstimateContext,
+} from "../lib/tool-group-geometry";
 import { railTicks, type RailTick } from "../lib/rail";
 import { OVERDRAW_PX } from "../lib/stick-spring";
 import { ChatArrivalWindow } from "../lib/chat-arrival";
@@ -575,6 +579,11 @@ function TranscriptScroller({
     }
   }, []);
   const heightsRef = useRef(new Map<string, number>());
+  // Ticket 70's bounded cache boundary: the semantic geometry key each cached
+  // tool-row measurement was taken UNDER (heightKeysRef), and the current
+  // keys refreshed every render (toolKeysRef, also the observer's tag source).
+  const heightKeysRef = useRef(new Map<string, string>());
+  const toolKeysRef = useRef(new Map<string, string>());
   const anchorRef = useRef<{ id: string; offset: number } | null>(null);
   const rowsRef = useRef(rows);
   const positionsRef = useRef<readonly number[]>([]);
@@ -642,9 +651,22 @@ function TranscriptScroller({
     for (const id of heights.keys()) {
       if (!live.has(id)) {
         heights.delete(id);
+        heightKeysRef.current.delete(id);
       }
     }
   }
+
+  // Bounded tool-row measurement validity (ticket 70 §2.4): a cached tool
+  // measurement is valid only for the semantic geometry inputs it was taken
+  // under — fold pins, the effective detail/invocation heights, the payload
+  // selection, the affordance slot. A change in those inputs (an UNMOUNTED
+  // row's in-flight blob fetch completing is the motivating case) drops ONLY
+  // that row's cached height, so the analytic-exact estimate stands in until
+  // the row remounts and re-measures. Unchanged inputs keep their
+  // measurements; this pass fetches nothing and notifies no one.
+  const toolKeys = computeToolMeasurementKeys(rows, toolMotion);
+  toolKeysRef.current = toolKeys;
+  pruneStaleToolMeasurements(heights, heightKeysRef.current, toolKeys);
 
   // ── Height model ─────────────────────────────────────────────────────────
   // Row 0's gap carries the titlebar chrome (the primary instance spans
@@ -680,7 +702,16 @@ function TranscriptScroller({
   const lastIx = rows.length - 1;
   const viewportHeight = view.height;
   const trailerLive = trailer.kind !== "none";
-  const groupFoldOpen = (rowId: string): boolean | null => toolMotion.groupFold(rowId)?.open ?? null;
+  // The estimator's geometry inputs (ticket 70): the motion store through its
+  // read-only view plus ONE caller-provided timestamp and the reduced flag,
+  // so an estimate and the row's own render of the same state agree — time
+  // is never read twice. Event handlers call this for a fresh timestamp.
+  const toolEstimateContext = (): ToolGroupEstimateContext => ({
+    state: toolMotion,
+    now: performance.now(),
+    reduced: reduced?.matches === true,
+  });
+  const estimateCtx = toolEstimateContext();
   const anchorFold = anchorIx >= 0 ? userFolds.get(rows[anchorIx]!.id) ?? null : null;
   const anchorExpansion =
     anchorFold !== null
@@ -703,7 +734,7 @@ function TranscriptScroller({
     const isLast = ix === lastIx;
     const natural =
       heights.get(rows[ix]!.id) ??
-      estimateRowHeight(rows[ix]!, groupFoldOpen) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
+      estimateRowHeight(rows[ix]!, estimateCtx) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
     naturalHeights[ix] = natural;
     rowHeights[ix] = natural;
     total += natural;
@@ -742,7 +773,7 @@ function TranscriptScroller({
   const lastNatural =
     lastIx >= 0
       ? (heights.get(rows[lastIx]!.id) ??
-        estimateRowHeight(rows[lastIx]!, groupFoldOpen) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
+        estimateRowHeight(rows[lastIx]!, estimateCtx) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
       : 0;
   const reservationFilled =
     anchorIx >= 0 &&
@@ -781,6 +812,14 @@ function TranscriptScroller({
         const height = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
         if (Math.abs((heightsRef.current.get(id) ?? 0) - height) > 0.5) {
           heightsRef.current.set(id, height);
+          // Tag tool rows with the semantic inputs this measurement
+          // corresponds to (ticket 70's cache boundary).
+          const toolKey = toolKeysRef.current.get(id);
+          if (toolKey === undefined) {
+            heightKeysRef.current.delete(id);
+          } else {
+            heightKeysRef.current.set(id, toolKey);
+          }
           changed = true;
         }
       }
@@ -793,6 +832,21 @@ function TranscriptScroller({
     });
   }
   const rowElsRef = useRef(new Map<string, HTMLDivElement>());
+  // The bounded height update's trigger (ticket 70 §2.4): a motion-store bump
+  // can change an UNMOUNTED tool row's effective geometry (an in-flight blob
+  // fetch completing, a ready-recency click) with no row-prop or DOM change
+  // the scroller would otherwise observe. Re-key on the bump and re-render
+  // only when some tool row's semantic inputs actually moved — the render
+  // pass above then drops exactly the stale cached measurements.
+  useEffect(() => {
+    return toolMotion.subscribe(() => {
+      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion);
+      const prev = toolKeysRef.current;
+      if (next.size !== prev.size || [...next].some(([id, key]) => prev.get(id) !== key)) {
+        bumpMeasure((tick) => tick + 1);
+      }
+    });
+  }, [toolMotion]);
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
     const observer = observerRef.current;
     const els = rowElsRef.current;
@@ -837,7 +891,7 @@ function TranscriptScroller({
     }
     let raf = 0;
     const onScroll = (): void => {
-      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current, groupFoldOpen);
+      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current, toolEstimateContext());
       if (alignTop) {
         // The override instance's top fade is gated on real overflow
         // (transcript.rs:7648-7651): max_offset − distance_from_bottom > 1.
@@ -1257,7 +1311,7 @@ function TranscriptScroller({
   // exactly at that inset, so crediting the raw top row kept the previous
   // tick lit for the whole runway (rail.rs:437-457). Unmeasured rows stop
   // the walk.
-  const topRow = readingTopRow(rows, positions, heights, view.top, groupFoldOpen);
+  const topRow = readingTopRow(rows, positions, heights, view.top, estimateCtx);
   const topPad = rows.length === 0 ? layoutTotal : (positions[first] ?? total);
   // The spacer covers everything below the last MOUNTED row — the unmounted
   // rows' arithmetic heights plus the reservation floor, minus the mounted
@@ -1363,11 +1417,11 @@ function captureAnchor(
   rows: readonly TranscriptRow[],
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
-  groupFoldOpen: (rowId: string) => boolean | null = () => null,
+  toolGeometry: ToolGroupEstimateContext | null = null,
 ): { id: string; offset: number } | null {
   for (let ix = 0; ix < rows.length; ix++) {
     const rowTop = positions[ix]!;
-    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, groupFoldOpen));
+    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, toolGeometry));
     if (bottom > top + 1) {
       return { id: rows[ix]!.id, offset: top - rowTop };
     }
@@ -1386,11 +1440,11 @@ function readingTopRow(
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
   scrollTop: number,
-  groupFoldOpen: (rowId: string) => boolean | null = () => null,
+  toolGeometry: ToolGroupEstimateContext | null = null,
 ): number {
   let topRow = Math.max(rows.length - 1, 0);
   for (let ix = 0; ix < rows.length; ix++) {
-    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, groupFoldOpen));
+    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, toolGeometry));
     if (bottom > scrollTop + 0.5) {
       topRow = ix;
       break;
@@ -1407,21 +1461,30 @@ function readingTopRow(
   return topRow;
 }
 
+/** No-store estimate context: no folds, reveals, or blobs — bare row data. */
+const DEFAULT_TOOL_ESTIMATE_CONTEXT: ToolGroupEstimateContext = {
+  state: EMPTY_TOOL_GEOMETRY_STATE,
+  now: 0,
+  reduced: false,
+};
+
 /**
  * First-frame estimate per row kind; measurement corrects on render. The
  * `toolGroup` branch is analytic (the desktop needs no estimation at all —
- * its rows are analytic, transcript.rs:96-136): a collapsed group is its
- * 26px header, a spawn-only group is its unwrapped chips, and a group that
- * will render OPEN (a user pin or `autoOpen`) estimates its open height —
- * header + chips + the open chips' details — so mounting or replaying a long
- * group does not lurch 26 → full body. `groupFoldOpen` resolves the surface's
- * group-fold pin (null = follow the auto-open rule); a chip's detail is open
- * when the chip itself opens it by default (a live thought,
- * tool-group.tsx:153-158).
+ * its rows are analytic, transcript.rs:96-136) and, since ticket 70, shares
+ * the renderer's ONE geometry resolver (`toolGroupGeometry`): a collapsed
+ * group is its 26px header, a spawn-only group is its unwrapped chips (the
+ * standalone 38px CHIP_HEIGHT is preserved), and a group that will render
+ * OPEN — the explicit pin, else `autoOpen` OR an in-flight arrival —
+ * estimates header + the 32px rail rows + each open chip's effective
+ * detail/invocation/affordance additions, so mounting or replaying a long
+ * group does not lurch 26 → full body. `toolGeometry` carries the surface's
+ * read-only motion state and ONE timestamp per pass; null (pure callers)
+ * reads bare row data.
  */
 export function estimateRowHeight(
   row: TranscriptRow,
-  groupFoldOpen: (rowId: string) => boolean | null = () => null,
+  toolGeometry: ToolGroupEstimateContext | null = null,
 ): number {
   const kind = row.rowKind;
   switch (kind.kind) {
@@ -1439,24 +1502,18 @@ export function estimateRowHeight(
       return 30;
     }
     case "toolGroup": {
-      const collapses = toolGroupCollapses(kind.tools);
-      if (!collapses) {
+      if (!toolGroupCollapses(kind.tools)) {
         return chipsHeight(kind.tools.length);
       }
-      if ((groupFoldOpen(row.id) ?? kind.autoOpen) !== true) {
-        return TOOL_GROUP_HEADER_HEIGHT;
-      }
-      let open = TOOL_GROUP_HEADER_HEIGHT + chipsHeight(kind.tools.length);
-      for (const tool of kind.tools) {
-        if (isSpawnLink(tool)) {
-          continue;
-        }
-        if ((tool.detail !== null || tool.invocation !== null) && tool.isThought && !tool.resolved) {
-          open += (tool.invocation !== null ? detailHeight(tool.invocation) : 0) +
-            (tool.detail !== null ? detailHeight(tool.detail) : 0);
-        }
-      }
-      return open;
+      const ctx = toolGeometry ?? DEFAULT_TOOL_ESTIMATE_CONTEXT;
+      return toolGroupGeometry({
+        rowId: row.id,
+        tools: kind.tools,
+        autoOpen: kind.autoOpen,
+        state: ctx.state,
+        now: ctx.now,
+        reduced: ctx.reduced,
+      }).totalHeight;
     }
     case "inputChip":
     case "errorChip":
