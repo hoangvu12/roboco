@@ -343,12 +343,24 @@ a:focus-visible,
  * The window-control cluster overlays the row's left end rather than sitting
  * in it (`render_titlebar_cluster` is mounted at the shell root on the
  * desktop), so the row's inset is free to follow the sidebar independently.
+ *
+ * Ticket 66: the containing block is the desktop's exact shape — `left_0()`
+ * with `.px(TITLEBAR_CLUSTER_PAD)` (shell.rs:4025-4034): left 0 plus 10px
+ * padding-inline, so the controls still start at x10 while the cluster's
+ * PADDING box runs [0, 102] without the `+` ([0, 134] with it). The island's
+ * `left 6 / right 0` below resolves against that padding box, producing the
+ * desktop's [6, 102] island. The earlier unpadded cluster at left 10 shrank
+ * it to [16, 92] — 20px too narrow — because the prior research read the
+ * desktop's CONTENT box [10, 92] as the box its absolute insets resolve
+ * against; absolute offsets resolve against the padding box (border
+ * removed, padding kept).
  */
 .titlebar-cluster {
   position: absolute;
-  left: var(--rb-titlebar-pad);
+  left: 0;
   top: var(--rb-titlebar-top-pad);
   bottom: 0;
+  padding-inline: var(--rb-titlebar-pad);
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -399,7 +411,12 @@ a:focus-visible,
  * the canvas route with the sidebar collapsed and a background RESOLVING
  * beneath (installed or the bundled default — ticket 48's predicate; the
  * gate is wired in app-shell, never the raw setting). The wrapper is the
- * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028) and
+ * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028). Its
+ * insets resolve against the cluster's PADDING box — on the desktop taffy
+ * 0.12.2 subtracts borders but keeps padding (flexbox.rs:2164-2167,
+ * 2336-2340), and CSS absolute positioning follows the same rule — so over
+ * the ticket-66 cluster that box is [0, 102] and the island spans the
+ * desktop's [6, 102], width 96, covering every control's hover box. It
  * carries the tween's inline `top`/`height`/`opacity` (200ms resize
  * ease-out, reversal from the painted value, initial presentation
  * settled, reduced motion snaps). `z-index: -1` paints it BEHIND the
