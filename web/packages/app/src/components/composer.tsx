@@ -74,9 +74,8 @@ import {
 import {
   beginInterrupt,
   composerHasContent,
-  messageEnterBindings,
   modifiedSubmitTarget,
-  platformModifierCombo,
+  resolveEnterAction,
   resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
@@ -88,7 +87,7 @@ import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/compose
 import { createChat, waitForChatRow } from "../lib/chat-actions";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
-import { isMacPlatform } from "../state/shortcuts";
+import { useIsPhone } from "../state/media";
 import {
   seedAttachment,
   beginUploadProgress,
@@ -116,10 +115,10 @@ import {
   COMPOSER_REST_PLACEHOLDER,
   WIZARD_SAFETY_NET_MS,
   Wizard,
-  enterOutcome,
   escapeDismissesCompletion,
   inputRequestResolved,
   pendingInputRequest,
+  wizardCommitThenAdvance,
   wizardEscapeGoesBack,
   wizardPlaceholder,
 } from "../lib/wizard";
@@ -353,6 +352,11 @@ export function Composer({
   // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
   // Enter sends, Mod+Enter is `ModifiedSubmit`.
   const sendBehavior = useUiSettings().composerSendBehavior;
+  // The phone layer (≤768px, state/media.ts) flips a bare Enter to a native
+  // newline (ticket 75) — a LIVE media match read at render, so a viewport
+  // crossing re-arms the key policy without remounting the input, clearing
+  // the draft, or touching the saved preference.
+  const isPhone = useIsPhone();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The text-width mirror: a hidden `white-space: pre` twin whose offsetWidth
   // is the unwrapped width of the widest line — the desktop's
@@ -1834,9 +1838,19 @@ export function Composer({
     if (wizard === null) {
       return;
     }
-    wizard.setTyped(textRef.current.trim());
-    wizardAdvance();
+    wizardCommitThenAdvance(wizard, textRef.current, wizardAdvance);
   }, [wizardAdvance]);
+
+  /** The PHONE explicit advance (ticket 75 §2.2.1) — the panel's Next/Submit
+   * button and the unfocused panel Enter: bare Enter is a newline on the
+   * phone layer, so these paths own the commit. Cancelling any pending
+   * option auto-advance timer first keeps the action to exactly one page
+   * move; the commit runs even when the input is empty so a stale typed
+   * override cannot leak into an option-only answer. */
+  const wizardAdvanceCommit = useCallback((): void => {
+    clearAdvanceTimer();
+    wizardSubmitFromInput();
+  }, [clearAdvanceTimer, wizardSubmitFromInput]);
 
   // `on_state_changed`'s question lifecycle (composer.rs:5879-5928): open on
   // a fresh unresolved request, latch until it resolves or a newer
@@ -2279,14 +2293,13 @@ export function Composer({
     await send(text, mode === "queue");
   }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
 
-  // ── Key policy: completions → wizard → Enter bindings (§2.7) ───────────
-  // Exactly two Enter bindings; Shift+Enter is always a native newline. While
-  // an IME composition is active, Enter is never a submit.
-  const modifierCombo = platformModifierCombo(isMacPlatform());
-  const bindings = useMemo(
-    () => messageEnterBindings(sendBehavior, modifierCombo),
-    [sendBehavior, modifierCombo],
-  );
+  // ── Key policy: completions → phone newline → wizard → Enter (§2.7) ────
+  // `resolveEnterAction` (lib/composer-send.ts) is the Enter branch's single
+  // decision owner, per ticket 75 §2.2's order. Exactly two Enter bindings
+  // on the desktop (`messageEnterBindings`); Shift+Enter is always a native
+  // newline. While an IME composition is active, Enter is never a submit.
+  // On the phone layer a bare Enter is a native newline at EVERY saved
+  // preference — the `ComposerSendBehavior` setting is read, never mutated.
 
   /** The atomic-motion keys a chip projection intercepts (Left/Right/
    * Backspace/Delete at a chip boundary — one press steps over or removes
@@ -2415,57 +2428,75 @@ export function Composer({
     }
 
     if (event.key === "Enter") {
-      // 4. `enter_outcome` (composer.rs:1407): a live completion selection
-      // always wins over submit or newline.
-      if (enterOutcome(completionOpen && completionHasSelection, "submit") === "acceptCompletion") {
-        event.preventDefault();
-        event.stopPropagation();
-        acceptCompletion();
-        return;
-      }
-      // 5. The wizard borrows the input's context (`"Composer"`): bare
-      // Enter always submits the page; ModifiedSubmit is dropped; Shift+Enter
-      // stays a native newline.
-      if (wizardActiveRef.current) {
-        if (event.metaKey || event.ctrlKey) {
+      // 4. `resolveEnterAction` (lib/composer-send.ts) owns the decision —
+      // ticket 75 §2.2's order: a selected completion wins exactly once; a
+      // PHONE bare Enter is a native newline before the wizard and message
+      // submit branches at every saved preference; wizard and
+      // modified-submit policy otherwise stays as it is; a desktop-width
+      // bare Enter follows the saved `ComposerSendBehavior`.
+      const action = resolveEnterAction({
+        phone: isPhone,
+        composing: event.nativeEvent.isComposing,
+        completionSelected: completionOpen && completionHasSelection,
+        wizardActive: wizardActiveRef.current,
+        mod: event.metaKey || event.ctrlKey,
+        alt: event.altKey,
+        shift: event.shiftKey,
+        sendBehavior,
+      });
+      switch (action) {
+        case "imeNative":
+          // Unreachable (the handler's first guard owns compositions) — an
+          // IME event is never consumed here either.
+          return;
+        case "acceptCompletion":
+          // `enter_outcome` (composer.rs:1407): a live completion selection
+          // always wins over submit or newline.
           event.preventDefault();
+          event.stopPropagation();
+          acceptCompletion();
+          return;
+        case "nativeNewline": {
+          // The textarea's NATIVE default performs the newline — mid-text
+          // insertion, selection replacement, undo and IME stay correct;
+          // never preventDefault, never set the value manually.
+          if (isPhone && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+            // Isolate the phone newline from the wizard panel's Enter.
+            event.stopPropagation();
+          }
           return;
         }
-        if (!event.shiftKey && !event.altKey) {
+        case "wizardSuppress":
+          // The borrowed `"Composer"` context drops ModifiedSubmit.
+          event.preventDefault();
+          return;
+        case "wizardSubmit":
+          // The borrowed input's bare Enter submits the page
+          // (composer.rs:5984-5992).
           event.preventDefault();
           event.stopPropagation();
           wizardSubmitFromInput();
+          return;
+        case "modifiedSubmit": {
+          // Mod+Enter: `ModifiedSubmit` — submits content, activates the
+          // most recently queued row on a truly empty composer, never Stop.
+          event.preventDefault();
+          const content = composerHasContent(text, staged.length, commentCount);
+          if (modifiedSubmitTarget(content) === "submitContent") {
+            void submit();
+          } else {
+            activateLatestQueued?.();
+          }
+          return;
         }
-        return;
-      }
-      // 6. The `ComposerSendBehavior` policy (ticket 13).
-      const mod = event.metaKey || event.ctrlKey;
-      const bareEnter = !mod && !event.altKey && !event.shiftKey;
-      if (mod && !event.altKey) {
-        // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
-        // recently queued row on a truly empty composer, never Stop.
-        event.preventDefault();
-        const content = composerHasContent(text, staged.length, commentCount);
-        if (modifiedSubmitTarget(content) === "submitContent") {
+        case "submit":
+          event.preventDefault();
           void submit();
-        } else {
-          activateLatestQueued?.();
-        }
-        return;
+          return;
       }
-      if (
-        bareEnter &&
-        bindings.some((binding) => binding.keystroke === "enter" && binding.action === "submit")
-      ) {
-        event.preventDefault();
-        void submit();
-      }
-      // Everything else — Shift+Enter, Alt+Enter, bare Enter under
-      // "modEnter" — is a newline, native.
-      return;
     }
 
-    // 7. Atomic chip motion (only when the projection has chips).
+    // 5. Atomic chip motion (only when the projection has chips).
     if (handleAtomicMotion(event)) {
       return;
     }
@@ -2498,7 +2529,15 @@ export function Composer({
       if (!inputFocusedNow) {
         event.preventDefault();
         event.stopPropagation();
-        wizardAdvance();
+        // Phone: the same commit-then-advance as the panel's button (ticket
+        // 75 §2.2.1) — a bare Enter key is a newline on the phone layer, so
+        // the explicit paths own committing the shared draft. The desktop
+        // path is unchanged.
+        if (isPhone) {
+          wizardAdvanceCommit();
+        } else {
+          wizardAdvance();
+        }
       }
       return;
     }
@@ -2767,6 +2806,10 @@ export function Composer({
         spellCheck={false}
         autoComplete="off"
         aria-label={placeholder}
+        // The phone soft keyboard's return key labels a line break (MDN
+        // enterkeyhint — a LABEL hint; the key policy above is the behavior
+        // change). Desktop renders no attribute, as before.
+        enterKeyHint={isPhone ? "enter" : undefined}
         data-mentions={mentionsActive && !composing ? "true" : "false"}
       />
       {mirrorNodes !== null && !composing && (
@@ -2848,7 +2891,7 @@ export function Composer({
             typedEmpty={text.length === 0}
             inputSlot={inputStack}
             onSelect={wizardSelect}
-            onAdvance={wizardAdvance}
+            onAdvance={isPhone ? wizardAdvanceCommit : wizardAdvance}
             onBack={wizardBack}
             onKeyDown={onWizardKeyDown}
             panelRef={wizardPanelRef}

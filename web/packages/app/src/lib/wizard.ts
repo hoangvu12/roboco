@@ -178,6 +178,23 @@ export function inputRequestResolved(
 }
 
 /**
+ * The commit-then-advance sequence of the wizard's borrowed-input Enter
+ * (composer.rs:5984-5992's `on_submit` wizard arm) — and, on the phone
+ * layer, of the explicit advance button and unfocused panel Enter (ticket
+ * 75 §2.2.1): the trimmed text becomes the CURRENT page's typed answer,
+ * committed even when EMPTY so a stale typed override cannot leak into an
+ * option-only answer, and only then does the host's advance run — exactly
+ * once per call. Internal newlines are preserved (`answers` trims only the
+ * edges). The host's advance owns the done/stay tail (finish, render tick,
+ * input clear); the phone caller additionally cancels any pending option
+ * auto-advance timer first so the page moves once.
+ */
+export function wizardCommitThenAdvance<T>(wizard: Wizard, typedText: string, advance: () => T): T {
+  wizard.setTyped(typedText.trim());
+  return advance();
+}
+
+/**
  * `enter_outcome` (composer.rs:1407): a live completion selection always
  * wins over the send-behavior fallback.
  */

@@ -8,6 +8,7 @@ import {
   inputRequestResolved,
   messageInputContext,
   pendingInputRequest,
+  wizardCommitThenAdvance,
   wizardEscapeGoesBack,
   Wizard,
 } from "../src/lib/wizard";
@@ -124,6 +125,71 @@ describe("wizard_typed_answer_overrides_and_back_pages", () => {
     }
     expect(step.answers[0]?.labels).toEqual(["a"]);
     expect(step.answers[1]?.labels).toEqual(["custom answer"]);
+  });
+});
+
+/**
+ * Ticket 75 §2.2.1 — the production phone explicit-advance action's commit
+ * sequence (`wizardCommitThenAdvance`, the helper the composer's
+ * `wizardSubmitFromInput` runs; the phone panel button and the unfocused
+ * panel Enter both route through it). Bare Enter is a newline on the phone
+ * layer, so these explicit paths own committing the shared draft; the
+ * component additionally cancels any pending auto-advance timer before
+ * invoking it, so the page moves exactly once.
+ */
+describe("wizard_phone_explicit_advance_commits_then_advances", () => {
+  it("commits a trimmed multiline draft to the CURRENT page, then advances once — internal newlines preserved", () => {
+    const wizard = new Wizard("req", [question("q1", ["a"], false), question("q2", ["x"], false)]);
+    let advances = 0;
+    const step = wizardCommitThenAdvance(wizard, "  line one\nline two  ", () => {
+      advances += 1;
+      return wizard.advance();
+    });
+    expect(advances).toBe(1);
+    expect(step.kind).toBe("stay");
+    expect(wizard.page).toBe(1);
+    const answers = wizard.answers();
+    expect(answers[0]?.labels).toEqual(["line one\nline two"]);
+    // The commit landed before the page moved — nothing leaks forward.
+    expect(answers[1]?.labels).toEqual([]);
+  });
+
+  it("a typed override wins over the picked option on the same page", () => {
+    const wizard = new Wizard("req", [question("q1", ["a", "b"], false)]);
+    wizard.select(1);
+    const step = wizardCommitThenAdvance(wizard, "typed instead", () => wizard.advance());
+    if (step.kind !== "done") {
+      throw new Error("expected Done");
+    }
+    expect(step.answers[0]?.labels).toEqual(["typed instead"]);
+  });
+
+  it("an emptied commit clears a stale typed override, so the picked option answers", () => {
+    const wizard = new Wizard("req", [question("q1", ["a", "b"], false)]);
+    wizard.select(0);
+    wizard.setTyped("stale override");
+    const step = wizardCommitThenAdvance(wizard, "   ", () => wizard.advance());
+    if (step.kind !== "done") {
+      throw new Error("expected Done");
+    }
+    expect(step.answers[0]?.labels).toEqual(["a"]);
+  });
+
+  it("moves exactly one page even when an option auto-advance is pending", () => {
+    const wizard = new Wizard("req", [question("q1", ["a", "b"], false), question("q2", ["x"], false)]);
+    // The app schedules the auto-advance timer on this return value; the
+    // phone explicit advance cancels it before committing.
+    expect(wizard.select(1).kind).toBe("autoAdvance");
+    let advances = 0;
+    const step = wizardCommitThenAdvance(wizard, "", () => {
+      advances += 1;
+      return wizard.advance();
+    });
+    expect(advances).toBe(1);
+    expect(step.kind).toBe("stay");
+    expect(wizard.page).toBe(1);
+    // The empty commit left no typed override: page one answers by option.
+    expect(wizard.answers()[0]?.labels).toEqual(["b"]);
   });
 });
 
