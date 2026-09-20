@@ -4,7 +4,7 @@
 
 **Blocked by:** Resolved — the §2.4 product choice was recorded 2026-09-20 by the user (option 1, with the recommended sub-choices below). Ticket 69's baseline epochs and ticket 70's shared geometry have already merged into the PR branch; build on the current file shapes.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.1, §4.1, §4.5, §5.1. Relevant tables are copied verbatim below.
 
