@@ -4,7 +4,7 @@
 
 **Blocked by:** Resolved — the §2.4 choices were recorded 2026-09-20 by the user (directive: "make the scrolling stop jumping around"; recorded decisions below). Ticket 70's geometry and ticket 68's fold memory have already merged; build on the current file shapes.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Research:** `../research-2026-09-20/followup-transcript-state-geometry.md` §3.4, §4.4, §4.5, §5.4. Relevant tables are copied verbatim below.
 
