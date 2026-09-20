@@ -51,6 +51,9 @@ import { RightTabStrip } from "./right-tab-strip";
 /** `motion::RESIZE` — the same 200ms the stylesheet transitions on. */
 const RESIZE_MS = motion.specs.find((spec) => spec.name === "resize")?.durationMs ?? 200;
 
+/** `motion::MENU_IN` — the phone drawer slide's 140ms (app.css's `.right-pane` phone block). */
+const MENU_IN_MS = motion.specs.find((spec) => spec.name === "menuIn")?.durationMs ?? 140;
+
 export function RightPane({
   chatId,
   pane,
@@ -67,6 +70,10 @@ export function RightPane({
   const active = resolvedActive(pane);
   const closing = !pane.open;
   const phone = useIsPhone();
+  const asideRef = useRef<HTMLElement | null>(null);
+  // Ticket 72: an expanded close slides away at the width the user was
+  // viewing — the logical flags already reset, this holds only the width.
+  const holdExpandedClose = usePhoneExpandedCloseHold(chatId, phone, pane.open, pane.expanded, asideRef);
   // The Files family stays unmounted throughout the closing animation after
   // its resources are suspended (`shell.rs:6455-6459`); everything else
   // renders until the glide finishes.
@@ -142,7 +149,8 @@ export function RightPane({
 
   return (
     <aside
-      className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}`}
+      ref={asideRef}
+      className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}${holdExpandedClose ? " right-pane-closing-expanded" : ""}`}
       data-pane-snap={paneKeyChanged ? "1" : "0"}
       // At phone the drawer's width is CSS-owned (`min(30rem, 88vw)`, and
       // `100vw` expanded) — the inline column width is the desktop glide's
@@ -257,3 +265,157 @@ export function usePaneGlide(
 }
 
 export type PaneGlide = ReturnType<typeof usePaneGlide>;
+
+/**
+ * Ticket 72 — the phone drawer's expanded-close width hold.
+ *
+ * The phone drawer slides shut on a 140ms transform transition, but
+ * `toggle`/`close` reset `open:false, expanded:false` in the SAME commit
+ * that starts the slide (right-pane.ts:250-254,303-304), and the aside's
+ * width class read the logical flag directly — so an expanded close
+ * narrowed 100vw → `min(30rem, 88vw)` on the slide's first frame. The
+ * desktop's close holds stable inner geometry while its outer width glides
+ * (`shell.rs:3850-3875`, and the takeover reset at `:1987-1995`); this hold
+ * is the phone drawer's corresponding presentation-continuity contract.
+ *
+ * The hold is deliberately NOT pane state: the logical flags still clear
+ * immediately (a reopen lands in normal mode — §5), and nothing here is
+ * persisted. It is a transient, component-local presentation value keyed to
+ * the pane owner, armed only on the expanded-open → closed edge, released
+ * by the drawer's own transform `transitionend` (or a deterministic
+ * fallback), and canceled by reopen, owner switch, breakpoint flip, or
+ * reduced motion. The two decision functions below are the pure core the
+ * node-environment tests drive (`tests/phone-pane-close.test.ts`); the
+ * hook wires them to commits and the DOM settle events.
+ */
+
+/** The inputs the hold decision reads: owner, width layer, logical flags. */
+export interface PhonePaneSnapshot {
+  /** The pane's owner — the chat (or panel key) the drawer belongs to. */
+  readonly owner: string;
+  /** The phone width layer (`useIsPhone`'s arm). */
+  readonly phone: boolean;
+  readonly open: boolean;
+  readonly expanded: boolean;
+}
+
+/**
+ * Arm iff this commit is the expanded-open → closed edge at phone width:
+ * the same owner on both sides, the phone layer on both sides, and the
+ * logical flags going open+expanded → shut. Every close entry point funnels
+ * through the store, so this one edge covers toggle, Escape and backdrop
+ * alike. A normal-width close never arms (no width would change), and
+ * reduced motion never arms — the CSS snaps the transform
+ * (`transition: none`), so there are no frames to hold through and a hold
+ * would only be a stale 100vw closed state.
+ */
+export function armsExpandedCloseHold(
+  was: PhonePaneSnapshot,
+  now: PhonePaneSnapshot,
+  reducedMotion: boolean,
+): boolean {
+  return (
+    !reducedMotion &&
+    was.phone &&
+    now.phone &&
+    was.owner === now.owner &&
+    was.open &&
+    was.expanded &&
+    !now.open
+  );
+}
+
+/**
+ * Release iff the held close can no longer settle as captured: the owner
+ * changed (another chat's pane state now drives the drawer — the
+ * destination's state wins), the viewport left the phone layer (the
+ * desktop width/glide rules take over), or the pane reopened (a reopen is
+ * a fresh open in normal mode — a stale completion must not narrow or
+ * hide it). A still-closed commit on the same owner releases nothing: the
+ * hold ends with the slide, not with a stray re-render.
+ */
+export function releasesExpandedCloseHold(holdOwner: string, now: PhonePaneSnapshot): boolean {
+  return holdOwner !== now.owner || !now.phone || now.open;
+}
+
+/**
+ * The hold as a hook: `true` while the aside must keep the expanded
+ * presentation width (`right-pane-closing-expanded`) although the logical
+ * `expanded` has already cleared. Phone-only by construction — the class
+ * has no rule outside the `@media (max-width: 768px)` block regardless.
+ */
+export function usePhoneExpandedCloseHold(
+  chatId: string,
+  phone: boolean,
+  open: boolean,
+  expanded: boolean,
+  asideRef: { readonly current: HTMLElement | null },
+): boolean {
+  const [holdOwner, setHoldOwner] = useState<string | null>(null);
+  const previous = useRef<PhonePaneSnapshot>({ owner: chatId, phone, open, expanded });
+  const now: PhonePaneSnapshot = { owner: chatId, phone, open, expanded };
+
+  // Arm/release on commit — a layout effect so the close's first painted
+  // frame already carries the held width; arming a frame late would paint
+  // the narrowed width once and then yank it back.
+  useLayoutEffect(() => {
+    const was = previous.current;
+    previous.current = now;
+    setHoldOwner((current) => {
+      if (current !== null && releasesExpandedCloseHold(current, now)) {
+        return null;
+      }
+      if (
+        current === null &&
+        armsExpandedCloseHold(was, now, window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+      ) {
+        return now.owner;
+      }
+      return current;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, phone, open, expanded]);
+
+  // While armed, the hold ends with the drawer's own transform transition —
+  // guarded to the aside's `transform` so a child's transitionend bubbling
+  // up cannot settle it early — with deterministic releases for everything
+  // the event cannot cover: `transitioncancel`, a reduced-motion flip
+  // mid-close (the CSS kill ends the transition without an end event), and
+  // a fallback clock just past the slide for any silent miss. Reopen, owner
+  // switch and breakpoint flip release on the commit above; unmount runs
+  // this effect's cleanup, so a routed-away hold dies with the component.
+  useLayoutEffect(() => {
+    if (holdOwner === null) {
+      return;
+    }
+    const aside = asideRef.current;
+    const release = (): void => setHoldOwner(null);
+    const onTransitionSettle = (event: TransitionEvent): void => {
+      if (event.target === aside && event.propertyName === "transform") {
+        release();
+      }
+    };
+    aside?.addEventListener("transitionend", onTransitionSettle);
+    aside?.addEventListener("transitioncancel", onTransitionSettle);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onReducedFlip = (): void => {
+      if (reduced.matches) {
+        release();
+      }
+    };
+    reduced.addEventListener("change", onReducedFlip);
+    const fallback = window.setTimeout(release, MENU_IN_MS + 100);
+    return () => {
+      aside?.removeEventListener("transitionend", onTransitionSettle);
+      aside?.removeEventListener("transitioncancel", onTransitionSettle);
+      reduced.removeEventListener("change", onReducedFlip);
+      window.clearTimeout(fallback);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdOwner]);
+
+  // Derived, not raw state: even between a releasing commit's render and
+  // its layout effect, the class can never describe a state the release
+  // rule already condemns.
+  return holdOwner !== null && !releasesExpandedCloseHold(holdOwner, now);
+}

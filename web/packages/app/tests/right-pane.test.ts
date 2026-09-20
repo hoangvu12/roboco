@@ -102,6 +102,40 @@ describe("session_panels_both_flags_coexist_per_chat", () => {
   });
 });
 
+describe("close_resets_logical_flags_immediately (ticket 72)", () => {
+  it("close and toggle clear open+expanded in the same commit — no presentation state in the store", () => {
+    const { store } = fresh();
+    store.addFilesSurface("chat-1");
+    store.toggleExpanded("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, expanded: true });
+
+    // `close()` (Escape / backdrop): the flags reset synchronously — the
+    // phone close's width hold is component presentation, never a delayed
+    // or deferred flag here.
+    store.close("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: false, expanded: false });
+
+    // `toggle()` out of takeover resets the same way, and the reopen after
+    // either close lands in normal mode.
+    store.toggle("chat-1");
+    store.toggleExpanded("chat-1");
+    store.toggle("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: false, expanded: false });
+    store.toggle("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, expanded: false });
+
+    // The state shape is exactly the logical model — the transient close
+    // presentation lives in `RightPane`, not in the pane store.
+    expect(Object.keys(store.stateFor("chat-1")).sort()).toEqual([
+      "active",
+      "expanded",
+      "open",
+      "tabs",
+      "width",
+    ]);
+  });
+});
+
 describe("session_panels_update_tracks_right_surfaces", () => {
   it("resolvedActive follows the live tab list and falls back to the picker", () => {
     const { store } = fresh();
