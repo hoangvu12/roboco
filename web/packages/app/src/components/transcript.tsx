@@ -388,8 +388,14 @@ function TranscriptSurface({
         transcriptFoldCache.capture(engineKey, docId, toolMotion.captureExplicitFolds());
       }
       toolMotion.reset();
+      // StrictMode reuses this surface after its simulated cleanup. Its
+      // emptied motion store needs the same current-history baseline as a
+      // real return to a warm chat.
+      consumedBaselineRef.current = 0;
+      const current = store.getSnapshot();
+      mountBaselineEntriesRef.current = current.loaded ? current.entries : null;
     };
-  }, [toolMotion, engineKey, docId, alignTop]);
+  }, [toolMotion, engineKey, docId, alignTop, store]);
   // The reveal baseline (ticket 69) rides the store's durable accepted-reset
   // epoch, never an observed pending render: a generation swap commits the
   // pending window and the reset's populated frame in ONE task, so React may
@@ -402,6 +408,9 @@ function TranscriptSurface({
   // current rows as the live delta, so a reset coalesced with later deltas in
   // one React batch still classifies genuinely post-reset tools as arrivals.
   const consumedBaselineRef = useRef(0);
+  // A warm store can contain deltas newer than its last reset. Everything
+  // already present at mount is history; only subsequent deltas arrive.
+  const mountBaselineEntriesRef = useRef(snapshot.loaded ? snapshot.entries : null);
   useLayoutEffect(() => {
     const baseline = snapshot.baseline;
     if (baseline !== null && baseline.epoch > consumedBaselineRef.current) {
@@ -417,7 +426,8 @@ function TranscriptSurface({
       if (baseline.provenance === "reset") {
         chatArrival.arm(performance.now());
       }
-      toolMotion.sync(baselineRows(baseline.entries), true);
+      toolMotion.sync(baselineRows(mountBaselineEntriesRef.current ?? baseline.entries), true);
+      mountBaselineEntriesRef.current = null;
       toolMotion.sync(rows, false);
       return;
     }

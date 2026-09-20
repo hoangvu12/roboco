@@ -27,7 +27,9 @@ import type { EngineClient, EngineStatus } from "@roboco/engine-client";
 import type { MessagePart, SessionMessageEntry, TranscriptUpdate } from "@roboco/proto";
 import { TranscriptView } from "../src/components/transcript";
 import { StickController } from "../src/components/stick-controller";
-import { ToolGroupMotionStore } from "../src/lib/tool-motion";
+import { ToolGroupMotionStore, type AutomaticFoldTransition, type FoldState } from "../src/lib/tool-motion";
+import { ChatArrivalWindow } from "../src/lib/chat-arrival";
+import { transcriptFoldCache } from "../src/state/transcript-fold-state";
 import type { OwnTurnAnchor, TranscriptRow } from "../src/lib/transcript";
 import {
   echoStore,
@@ -208,6 +210,13 @@ const realNoteRendered = ToolGroupMotionStore.prototype.noteRendered;
 const realAttach = StickController.prototype.attach;
 const realSnapToEnd = StickController.prototype.snapToEnd;
 const realRestoreViewport = StickController.prototype.restoreViewport;
+const realArrivalArm = ChatArrivalWindow.prototype.arm;
+
+type ArrivalTrace =
+  | { event: "sync"; now: number; baseline: boolean; replaying: boolean; groups: [string, number][] }
+  | { event: "arm"; now: number }
+  | { event: "render"; now: number; rowId: string; open: boolean; bodyHeight: number;
+      before: boolean | null | undefined; fold: FoldState | null };
 
 interface SyncRecord {
   readonly baseline: boolean;
@@ -224,6 +233,7 @@ const probe = {
   motion: null as ToolGroupMotionStore | null,
   stick: null as StickController | null,
   el: null as HTMLElement | null,
+  trace: [] as ArrivalTrace[],
 };
 
 beforeEach(() => {
@@ -235,10 +245,16 @@ beforeEach(() => {
   probe.motion = null;
   probe.stick = null;
   probe.el = null;
+  probe.trace = [];
+  transcriptFoldCache.clear();
   FakeResizeObserver.instances = [];
   savedViewportCache.clear();
   echoStore.reset();
   vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.spyOn(ChatArrivalWindow.prototype, "arm").mockImplementation(function (this: ChatArrivalWindow, time: number) {
+    probe.trace.push({ event: "arm", now: time });
+    realArrivalArm.call(this, time);
+  });
   vi.spyOn(ToolGroupMotionStore.prototype, "sync").mockImplementation(function (
     this: ToolGroupMotionStore,
     rows: readonly TranscriptRow[],
@@ -253,6 +269,7 @@ beforeEach(() => {
       }
     }
     probe.syncs.push({ baseline, replaying, groups });
+    probe.trace.push({ event: "sync", now, baseline, replaying, groups });
     return realSync.call(this, rows, baseline, replaying);
   });
   vi.spyOn(ToolGroupMotionStore.prototype, "noteRendered").mockImplementation(function (
@@ -264,7 +281,9 @@ beforeEach(() => {
     if (rowId.includes("#g")) {
       probe.flips.push({ rowId, open });
     }
-    return realNoteRendered.call(this, rowId, open, bodyHeight);
+    const before = this.revealOf(rowId)?.renderedOpen;
+    realNoteRendered.call(this, rowId, open, bodyHeight);
+    probe.trace.push({ event: "render", now, rowId, open, bodyHeight, before, fold: this.groupFold(rowId) });
   });
   vi.spyOn(StickController.prototype, "attach").mockImplementation(function (this: StickController, el: HTMLElement) {
     probe.stick = this;
@@ -294,7 +313,7 @@ interface Mounted {
   readonly cacheLoad: { promise: Promise<TranscriptSeed | null>; resolve: (value: TranscriptSeed | null) => void };
   /** The scroller element, captured via the controller's attach. */
   el(): HTMLElement;
-  unmount(): void;
+  unmount(disposeStore?: boolean): void;
 }
 
 const mounted: Mounted[] = [];
@@ -310,11 +329,11 @@ afterEach(() => {
   savedViewportCache.clear();
 });
 
-function mountTranscript(options: { strict?: boolean } = {}): Mounted {
-  const client = new FakeClient();
+function mountTranscript(options: { strict?: boolean; reuse?: Mounted } = {}): Mounted {
+  const client = options.reuse?.client ?? new FakeClient();
   const cacheLoad = deferred<TranscriptSeed | null>();
   const cache: TranscriptCache = { load: () => cacheLoad.promise, save: () => Promise.resolve() };
-  const store = new TranscriptStore(client as unknown as EngineClient, CHAT, { cache });
+  const store = options.reuse?.store ?? new TranscriptStore(client as unknown as EngineClient, CHAT, { cache });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -338,7 +357,7 @@ function mountTranscript(options: { strict?: boolean } = {}): Mounted {
       }
       return probe.el;
     },
-    unmount() {
+    unmount(disposeStore = true) {
       if (unmounted) {
         return;
       }
@@ -347,7 +366,7 @@ function mountTranscript(options: { strict?: boolean } = {}): Mounted {
         root.unmount();
       });
       container.remove();
-      store.dispose();
+      if (disposeStore) store.dispose();
     },
   };
   mounted.push(handle);
@@ -686,4 +705,196 @@ describe("mounted live-seed streaming (ticket 81)", () => {
     expect(snap.entries[snap.entries.length - 1]!.status).toBe("aborted");
     expect(snap.streaming).toBe(false);
   });
+});
+
+/**
+ * Ticket 82 diagnosis characterizations, promoted from scratch probes.
+ * Synthetic protocol inputs prove these mechanisms, not which frames the
+ * user's live run delivered. DOM endpoints and effect order are observable;
+ * jsdom does not prove browser paint, dock opacity, or measured scroll geometry.
+ * The late-reset event is CURRENT behavior, not the desired parity contract.
+ */
+describe("mounted live-arrival diagnosis (ticket 82)", () => {
+  function groupEndpoint(): { open: string | null; height: string } {
+    const header = document.getElementById("S#g0-hdr");
+    const body = document.querySelector<HTMLElement>('[data-rid="S#g0"] .tool-group-fold');
+    expect(header).not.toBeNull();
+    expect(body).not.toBeNull();
+    return { open: header!.getAttribute("aria-expanded"), height: body!.style.height };
+  }
+
+  const textPart: MessagePart = { kind: "text", id: "text", text: "Still working" };
+
+  for (const resetKind of ["text-tail", "settled-entry", "thought-completed"] as const) {
+    for (const delay of [25, 1_000]) {
+      it(`${resetKind} reset at +${delay}ms closes the seed, with a pre-baseline event only after expiry`, async () => {
+        const handle = mountTranscript();
+        stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 600 });
+        const commits: ReturnType<TranscriptStore["getSnapshot"]>[] = [];
+        handle.store.subscribe(() => commits.push(handle.store.getSnapshot()));
+        const tail: SessionMessageEntry = {
+          ...toolEntry("S", ["pwd", "ls"]), status: "streaming",
+          ...(resetKind === "thought-completed"
+            ? { parts: [{ kind: "reasoning" as const, id: "r", text: "Thinking through the next step" }] }
+            : {}),
+        };
+        await settleCache(handle, { entries: [tail], savedAtMs: Date.now() });
+        expect(groupEndpoint().open).toBe("true");
+        expect(parseFloat(groupEndpoint().height)).toBeGreaterThan(0);
+        const transitions: AutomaticFoldTransition[] = [];
+        probe.motion!.onAutomaticFoldTransition(t => transitions.push(t));
+        probe.trace = [];
+        now += delay;
+        const reset: SessionMessageEntry[] = resetKind === "settled-entry"
+          ? [{ ...tail, status: "complete" }, { ...toolEntry("T", ["next"]), status: "streaming" }]
+          : [{ ...tail, parts: [...tail.parts, textPart] }];
+        act(() => { handle.client.emit({ contextUsage: null, reset }, 1); });
+
+        expect(commits.map(s => [s.replay, s.baseline?.epoch, s.baseline?.provenance, s.streaming])).toEqual([
+          ["populated", 1, "seed", true], ["pending", 1, "seed", true], ["populated", 2, "reset", true],
+        ]);
+        expect(commits.at(-1)!.entries).toEqual(reset);
+        expect(probe.syncs.at(-2)?.baseline).toBe(true);
+        expect(groupEndpoint()).toEqual({ open: "false", height: "0px" });
+        expect(handle.client.watches).toHaveLength(1); // no desync/resubscribe needed
+        expect(transitions).toEqual(delay > 500 ? [{ rowId: "S#g0", key: null, toggledAt: now }] : []);
+        // The child row's layout effect precedes the parent's arm + sync.
+        const closedIx = probe.trace.findIndex(e => e.event === "render" && e.rowId === "S#g0" && !e.open);
+        const armIx = probe.trace.findIndex(e => e.event === "arm");
+        const baselineIx = probe.trace.findIndex(e => e.event === "sync" && e.baseline);
+        expect(closedIx).toBeGreaterThanOrEqual(0);
+        expect(armIx).toBeGreaterThan(closedIx);
+        expect(baselineIx).toBeGreaterThan(armIx);
+        const firstClosed = probe.trace[closedIx];
+        if (firstClosed?.event !== "render") { throw new Error("missing close render"); }
+        expect(firstClosed.fold?.toggledAt ?? null).toBe(delay > 500 ? now : null);
+        // The baseline strips that clock before act returns; it is NOT a
+        // surviving 140ms reset-close tween. No thought-detail completion event.
+        expect(probe.motion!.groupFold("S#g0")?.toggledAt ?? null).toBeNull();
+        expect(probe.motion!.detailFold("S#g0#d0")?.toggledAt ?? null).toBeNull();
+        expect(probe.motion!.captureExplicitFolds().groups.size).toBe(0);
+        expect(probe.snaps).toBe(1);
+      });
+    }
+  }
+
+  it("identical late reset and tail-tool growth stay open beyond the arrival cap", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 600 });
+    const tail = { ...toolEntry("S", ["pwd"]), status: "streaming" as const };
+    await settleCache(handle, { entries: [tail], savedAtMs: Date.now() });
+    const transitions: AutomaticFoldTransition[] = [];
+    probe.motion!.onAutomaticFoldTransition(t => transitions.push(t));
+    now += 1_000;
+    act(() => { handle.client.emit({ contextUsage: null, reset: [tail] }, 1); });
+    now += 100;
+    act(() => { handle.client.emit({ contextUsage: null, upsert: [{ after: null,
+      entry: { ...tail, parts: [...tail.parts, toolPart("new", "ls")] },
+    }], append: [], remove: [], count: 1 }, 1); });
+    now += 1_000;
+    act(() => { pumpRaf(); });
+    expect(groupEndpoint()).toEqual({ open: "true", height: "66px" });
+    expect(transitions).toEqual([]);
+    expect(probe.flips.filter(f => f.rowId === "S#g0").every(f => f.open)).toBe(true);
+  });
+
+  it("post-reset tool growth followed by text stays open until reveal expiry, then tweens closed without a store commit", async () => {
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 600 });
+    const tail = { ...toolEntry("S", ["pwd"]), status: "streaming" as const };
+    await settleCache(handle, { entries: [tail], savedAtMs: Date.now() });
+    act(() => { handle.client.emit({ contextUsage: null, reset: [tail] }, 1); });
+    const transitions: AutomaticFoldTransition[] = [];
+    probe.motion!.onAutomaticFoldTransition(t => transitions.push(t));
+    now += 100;
+    act(() => { handle.client.emit({ contextUsage: null, upsert: [{ after: null, entry: {
+      ...tail, parts: [...tail.parts, toolPart("new", "ls"), textPart],
+    } }], append: [], remove: [], count: 1 }, 1); });
+    expect(groupEndpoint().open).toBe("true");
+    expect(startsOf("S#g0")[1]).toBe(now);
+    // Ordinary animation frames (not a 600ms main-thread stall).
+    for (let i = 0; i < 29; i += 1) {
+      now += 16;
+      act(() => { pumpRaf(); });
+    }
+    expect(groupEndpoint()).toEqual({ open: "true", height: "66px" });
+    const beforeExpiry = handle.store.getSnapshot();
+    now += 16; // connector reveal ends at 480ms; reset window is now 580ms old
+    act(() => { pumpRaf(); });
+    expect(handle.store.getSnapshot()).toBe(beforeExpiry);
+    expect(beforeExpiry.streaming).toBe(true);
+    expect(transitions).toEqual([{ rowId: "S#g0", key: null, toggledAt: now }]);
+    expect(groupEndpoint()).toEqual({ open: "false", height: "66px" });
+    now += 70;
+    act(() => { pumpRaf(); });
+    expect(parseFloat(groupEndpoint().height)).toBeGreaterThan(0);
+    expect(parseFloat(groupEndpoint().height)).toBeLessThan(66);
+    now += 80;
+    act(() => { pumpRaf(); });
+    expect(groupEndpoint()).toEqual({ open: "false", height: "0px" });
+  });
+
+  it("remembered closed pins apply on the first seed render, not after a delay", async () => {
+    transcriptFoldCache.capture("", CHAT, { groups: new Map([["S#g0", false]]), details: new Map() });
+    const handle = mountTranscript();
+    stubScrollerGeometry(handle.el(), { clientHeight: 600, scrollHeight: 600 });
+    const tail = { ...toolEntry("S", ["pwd"]), status: "streaming" as const };
+    await settleCache(handle, { entries: [tail], savedAtMs: Date.now() });
+    expect(groupEndpoint()).toEqual({ open: "false", height: "0px" });
+    now += 1_000;
+    act(() => { handle.client.emit({ contextUsage: null, reset: [tail] }, 1); });
+    expect(probe.flips.filter(f => f.rowId === "S#g0").every(f => !f.open)).toBe(true);
+  });
+
+  for (const elapsed of [25, 501]) {
+    it(`measured growth at +${elapsed}ms ${elapsed > 500 ? "springs" : "hard-writes"} even with streaming true`, async () => {
+      const handle = mountTranscript();
+      const dims = { clientHeight: 600, scrollHeight: 4000 };
+      stubScrollerGeometry(handle.el(), dims);
+      const tail = { ...toolEntry("S", ["pwd"]), status: "streaming" as const };
+      await settleCache(handle, { entries: [tail], savedAtMs: Date.now() });
+      act(() => { handle.client.emit({ contextUsage: null, reset: [tail] }, 1); });
+      expect(handle.el().scrollTop).toBe(3400);
+      now += elapsed;
+      dims.scrollHeight += 600;
+      act(() => { deliverHeights({ "S#g0": 480 }); pumpRaf(); });
+      expect(handle.store.getSnapshot().streaming).toBe(true);
+      expect(probe.stick!.pinned).toBe(true);
+      if (elapsed > 500) {
+        expect(handle.el().scrollTop).toBeGreaterThan(3400);
+        expect(handle.el().scrollTop).toBeLessThan(4000);
+      } else {
+        expect(handle.el().scrollTop).toBe(4000);
+      }
+    });
+  }
+});
+
+describe("mounted warm-chat return", () => {
+  for (const strict of [false, true]) {
+    it(`baselines updates received while away, then reveals new live tools (StrictMode=${strict})`, async () => {
+      const first = mountTranscript();
+      stubScrollerGeometry(first.el(), { clientHeight: 600, scrollHeight: 600 });
+      await settleCache(first, null);
+      act(() => first.client.emit({ contextUsage: null, reset: [toolEntry("A", ["pwd"])] }));
+      first.unmount(false);
+      now += 1_000;
+      act(() => first.client.emit({ contextUsage: null, upsert: [
+        { after: null, entry: toolEntry("A", ["pwd", "ls"]) },
+        { after: "A", entry: toolEntry("B", ["cat"]) },
+      ], append: [], remove: [], count: 2 }));
+      probe.flips = [];
+      const returned = mountTranscript({ reuse: first, strict });
+      expect(returned.client.watches).toHaveLength(1);
+      expect(startsOf("A#g0").every(start => start === null)).toBe(true);
+      expect(startsOf("B#g0").every(start => start === null)).toBe(true);
+      expect(probe.motion!.revealOf("B#g0")!.headerStartedAt).toBeNull();
+      expect(probe.flips.every(flip => !flip.open)).toBe(true);
+      now += 1_000;
+      act(() => returned.client.emit({ contextUsage: null,
+        upsert: [{ after: "B", entry: toolEntry("C", ["new live tool"]) }],
+        append: [], remove: [], count: 3 }));
+      expect(probe.motion!.revealOf("C#g0")!.headerStartedAt).not.toBeNull();
+    });
+  }
 });

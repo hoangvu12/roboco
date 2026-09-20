@@ -6,6 +6,7 @@ import {
   UNDELIVERED_GRACE_MS,
   chatDeliveryDegraded,
   pendingSendStatus,
+  transcriptSnapshotIsLive,
   type PendingSend,
   type TranscriptCache,
   type TranscriptClient,
@@ -302,6 +303,34 @@ describe("TranscriptStore reset without the empty window (ticket 40)", () => {
 });
 
 describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
+  it("arrival waits for a live reset even when a seed is loaded (ticket 82)", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    store.seedEntries([userEntry("cached")]);
+    expect(store.getSnapshot().loaded).toBe(true);
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    emit({ contextUsage: null, reset: [userEntry("live")] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    // Empty authoritative history also releases the gate.
+    emit({ contextUsage: null, reset: [] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    store.dispose();
+  });
+
+  it("a terminal error releases cached or unloaded content (ticket 82)", () => {
+    const { client } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    store.seedEntries([userEntry("cached")]);
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    // The contract is non-null, even if the engine supplies an empty message.
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "" })).toBe(true);
+    store.dispose();
+  });
+
   function fakeClient(): {
     client: TranscriptClient;
     emit: (update: TranscriptUpdate, generation?: number) => void;

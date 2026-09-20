@@ -65,6 +65,11 @@ export interface TranscriptSnapshot {
   readonly baseline: TranscriptBaseline | null;
 }
 
+/** Seeds hydrate offscreen; an accepted live reset or offline error permits presentation. */
+export function transcriptSnapshotIsLive(snapshot: TranscriptSnapshot): boolean {
+  return snapshot.baseline?.provenance === "reset" || snapshot.error !== null;
+}
+
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
 
 // ---------------------------------------------------------------------------

@@ -1,19 +1,20 @@
 import { EngineClient, EngineWatchCache } from "@roboco/engine-client";
 import type { StoredEngine } from "../lib/engine-store";
 import { PickerCatalog } from "./picker-catalog";
+import { TranscriptPool } from "./transcript-pool";
 
 /**
  * One supervised connection: the `EngineClient` and its watch cache for one
- * stored engine, plus the composer's picker catalog. The fleet registry
+ * stored engine, plus the picker catalog and recent transcripts. The fleet registry
  * (ticket 31) owns the client and watch cache — it keeps one alive for
  * EVERY paired engine simultaneously — so creating a session composes the
  * registry entry's pieces rather than dialing; disposal releases only what
- * the session layer owns (the catalog). A re-pair or a gate Retry replaces
- * the registry entry, which lands here as a new session. A metadata-only
+ * the session layer owns (catalog and recent transcripts). A re-pair or a
+ * gate Retry replaces the registry entry, which lands here as a new session. A metadata-only
  * StoredEngine replacement (the identity pin rewrites the stored object)
  * does NOT: the wrapper's `engine` field refreshes in place while the live
- * catalog is retained — the wrapper is metadata, the catalog is the owned
- * resource (`reconcileEngineSessions`, ticket 67).
+ * catalog and transcript pool are retained — the wrapper is metadata;
+ * those resources share the session lifetime (`reconcileEngineSessions`, ticket 67).
  */
 export interface EngineSession {
   readonly engine: StoredEngine;
@@ -21,6 +22,8 @@ export interface EngineSession {
   readonly cache: EngineWatchCache;
   /** Picker catalog (harnesses + models) for the composer. Disposed alongside the session. */
   readonly catalog: PickerCatalog;
+  /** Recent live transcripts; retained across routes, released with this connection. */
+  readonly transcripts: TranscriptPool;
 }
 
 export function engineSessionKey(engine: StoredEngine): string {
@@ -38,12 +41,13 @@ export function createEngineSession(
   cache: EngineWatchCache,
 ): EngineSession {
   const catalog = new PickerCatalog(client);
-  return { engine, client, cache, catalog };
+  return { engine, client, cache, catalog, transcripts: new TranscriptPool(client) };
 }
 
 /** Release the session layer's own resources; the registry closes the client. */
 export function disposeEngineSession(session: EngineSession): void {
   session.catalog.dispose();
+  session.transcripts.dispose();
 }
 
 /**

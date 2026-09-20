@@ -1,10 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import type { MessagePart, SessionMessageEntry, ToolCall } from "@roboco/proto";
 import { parseMarkdown } from "../src/lib/markdown";
 import { rowsForEntry, type TranscriptRow } from "../src/lib/transcript";
 import { ToolGroupMotionStore } from "../src/lib/tool-motion";
 import { ARRIVAL_HARD_CAP_MS, ARRIVAL_QUIESCE_MS, ChatArrivalWindow } from "../src/lib/chat-arrival";
 import { StickController } from "../src/components/stick-controller";
+
+// Behavior lives in the mounted outlet suite. Keep route wiring and the
+// shared layout contract covered here; neither proves browser paint.
+describe("live arrival outlet wiring", () => {
+  const source = readFileSync(new URL("../src/routes/chat-page.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+
+  it("passes the selected store to the outlet and leaves the departing veil outside", () => {
+    expect(source).toMatch(/<ChatTranscriptOutlet store=\{liveTranscript\} departing=\{departing\}>[\s\S]*?<TranscriptView[\s\S]*?store=\{activeStore\}[\s\S]*?<\/ChatTranscriptOutlet>[\s\S]*?className="departing-veil"/);
+    expect(source).not.toContain("lastPaintedTranscriptRef");
+  });
+
+  it("preserves flex sizing on both axes and transitions only the arrival wrapper", () => {
+    const gate = [...css.matchAll(/\.chat-arrival-gate\s*\{[^}]*\}/g)].map(match => match[0]).join("\n");
+    expect(gate).toBeDefined();
+    expect(gate).toMatch(/flex:\s*1;/);
+    expect(gate).toMatch(/min-width:\s*0;/);
+    expect(gate).toMatch(/min-height:\s*0;/);
+    expect(gate).toMatch(/display:\s*flex;/);
+    expect(gate).toMatch(/flex-direction:\s*row;/);
+    expect(gate).toMatch(/transition:\s*opacity 120ms ease-out;/);
+    for (const body of css.matchAll(/\.chat-body\s*\{[^}]*\}/g)) {
+      expect(body[0]).not.toMatch(/transition:/);
+    }
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion: reduce\)\s*\{\s*\.chat-arrival-gate\s*\{\s*transition: none;/);
+  });
+});
 
 /**
  * Ticket 58 — the chat-switch arrival. The desktop's switch is atomic

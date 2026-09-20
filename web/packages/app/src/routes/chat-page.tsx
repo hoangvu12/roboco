@@ -12,6 +12,7 @@ import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
+import { ChatTranscriptOutlet } from "../components/chat-transcript-outlet";
 import type { SubagentOpen } from "../components/tool-group";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
@@ -342,46 +343,22 @@ export function ConversationPage() {
 
   // The chat's ONE transcript store: the transcript view and the composer's
   // question wizard both read it, so an open chat carries a single
-  // `WatchDocMessages` stream. The canvas has none; a DEPARTING transcript
-  // (undocking back to the canvas) keeps the source store until the route
-  // finishes its exit (`finish_route_exit`, shell.rs:5901-5904).
+  // `WatchDocMessages` stream. The session keeps a bounded set of recent
+  // stores live, so revisiting a chat has current rows on its first render.
   const transcriptStore = useMemo(() => {
     if (session === null || chatId === "") {
       return null;
     }
-    return new TranscriptStore(session.client, chatId, {
-      // §2.3's per-chat offline cache: last-seen entries for chats the user
-      // has actually opened, keyed `(engine, raw chat id)`.
-      cache: transcriptCacheFor(session.engine.baseUrl, chatId),
-    });
+    return session.transcripts.get(chatId, transcriptCacheFor(session.engine.baseUrl, chatId));
   }, [session, chatId]);
   // The LIVE store: the departing transcript (undocking back to the canvas)
   // keeps painting from the source chat's stream until the route finishes
-  // its exit (`finish_route_exit`, shell.rs:5901-5904). `dispose` is
-  // idempotent, so the exit and a later replacement can both call it.
+  // its exit (`finish_route_exit`, shell.rs:5901-5904). The session pool
+  // owns disposal; switching routes only releases this presentation ref.
   const storeRef = useRef<TranscriptStore | null>(null);
-  const previousStoreRef = useRef<TranscriptStore | null>(null);
   if (transcriptStore !== null) {
     storeRef.current = transcriptStore;
   }
-  // A chat switch replaces the stream: the old chat's store is disposed once
-  // the new one has committed.
-  useEffect(() => {
-    if (transcriptStore === null) {
-      return;
-    }
-    const previous = previousStoreRef.current;
-    if (previous !== null && previous !== transcriptStore) {
-      previous.dispose();
-    }
-    previousStoreRef.current = transcriptStore;
-  }, [transcriptStore]);
-
-  useEffect(() => () => {
-    storeRef.current?.dispose();
-    storeRef.current = null;
-  }, []);
-
   // A spawn chip's "Open subagent" registers the right-pane tab under this
   // chat (`add_subagent_surface`, shell.rs:2682) — the pane opens on it.
   const onOpenSubagent = useCallback(
@@ -1097,54 +1074,14 @@ export function ConversationPage() {
   // release the retained store.
   useEffect(() => {
     if (!hasSelection && !departing && storeRef.current !== null) {
-      storeRef.current.dispose();
       storeRef.current = null;
     }
   }, [hasSelection, departing]);
   const liveTranscript = hasSelection ? transcriptStore : departing ? storeRef.current : null;
 
-  // ── The chat→chat transcript swap (§2.4.4) ───────────────────────────────
-  // The desktop's ONE `Transcript` entity swaps its doc synchronously on a
-  // chat switch (shell.rs:5914-5945); the web keeps per-chat stores whose
-  // first frame is async, so a swap would paint a blank frame between
-  // chats. The previous chat's rows stay mounted — frozen at their last
-  // snapshot, the store's watch gone or going — until the newly selected
-  // store's first frame lands (the live reset or the offline cache seed,
-  // whichever arrives first). The occluding veil below keeps the retained
-  // pixels from being an interaction surface for the destination chat
-  // (the departing transcript's own rule, shell.rs:5940-5944). The surface
-  // swap happens when `loaded` flips: the outlet then hands the view the
-  // new store, whose `key={active.docId}` remounts with rows already in
-  // place — no blank frame.
-  const subscribeTranscriptLoad = useCallback(
-    (listener: () => void) =>
-      transcriptStore === null ? () => {} : transcriptStore.subscribe(listener),
-    [transcriptStore],
-  );
-  const getTranscriptLoaded = useCallback(
-    () => transcriptStore?.getSnapshot().loaded ?? true,
-    [transcriptStore],
-  );
-  const newTranscriptLoaded = useSyncExternalStore(
-    subscribeTranscriptLoad,
-    getTranscriptLoaded,
-    () => true,
-  );
-  // The last store the outlet PAINTED — written during render like
-  // `storeRef` above (idempotent: the swap window keeps writing the same
-  // frozen store).
-  const lastPaintedTranscriptRef = useRef<TranscriptStore | null>(null);
-  const swappingTranscript =
-    hasSelection &&
-    !newTranscriptLoaded &&
-    lastPaintedTranscriptRef.current !== null &&
-    lastPaintedTranscriptRef.current !== transcriptStore;
-  const transcriptForOutlet = swappingTranscript
-    ? lastPaintedTranscriptRef.current
-    : liveTranscript;
-  if (transcriptForOutlet !== null) {
-    lastPaintedTranscriptRef.current = transcriptForOutlet;
-  }
+  // Existing-chat navigation switches the outlet immediately. The outlet
+  // keeps the destination's seed hidden until live arrival, with loading
+  // feedback instead of retaining an unrelated chat for the roundtrip.
   const transcriptOpacity = departing || transcriptGeometryReady ? dockFrame.visuals.transcript : 0;
   const transcriptRise = 8 * (1 - dockFrame.visuals.transcript);
 
@@ -1321,29 +1258,32 @@ export function ConversationPage() {
             ...(departing && paneHandoffLive ? { width: `${retainedTranscriptWidth}px` } : {}),
           }}
         >
-          {transcriptForOutlet !== null && session !== null ? (
-            <TranscriptView
-              client={session.client}
-              docId={chatId}
-              deviceId={deviceId}
-              store={transcriptForOutlet}
-              markdownSurface={markdownSurface}
-              onContextUsage={setContextUsage}
-              onRetryDelivery={onRetryDelivery}
-              onJumpChange={onJumpChange}
-              indicator={row?.status ?? "idle"}
-              turnStartedAt={turnStartedAt}
-              onOpenSubagent={onOpenSubagent}
-              deliveryDegraded={deliveryDegraded}
-            />
+          {liveTranscript !== null && session !== null ? (
+            <ChatTranscriptOutlet store={liveTranscript} departing={departing}>
+              {(activeStore) => (
+                <TranscriptView
+                  client={session.client}
+                  docId={chatId}
+                  deviceId={deviceId}
+                  store={activeStore}
+                  markdownSurface={markdownSurface}
+                  onContextUsage={setContextUsage}
+                  onRetryDelivery={onRetryDelivery}
+                  onJumpChange={onJumpChange}
+                  indicator={row?.status ?? "idle"}
+                  turnStartedAt={turnStartedAt}
+                  onOpenSubagent={onOpenSubagent}
+                  deliveryDegraded={deliveryDegraded}
+                />
+              )}
+            </ChatTranscriptOutlet>
           ) : null}
           {/*
             A departing transcript is visual history, not an active
             interaction surface bound to the newly blank route
-            (shell.rs:5940-5944) — and a chat→chat swap's retained rows get
-            the same occlusion for the frames they outlive their chat.
+            (shell.rs:5940-5944).
           */}
-          {(departing || swappingTranscript) && <div className="departing-veil" aria-hidden="true" />}
+          {departing && <div className="departing-veil" aria-hidden="true" />}
         </div>
         {/*
           The bottom chrome stack (`render_main`'s flex-none bottom section):

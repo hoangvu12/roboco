@@ -2674,6 +2674,41 @@ a:focus-visible,
   flex-direction: row;
 }
 
+/* Seed hydration stays mounted; only the first live arrival fades in.
+   Keep this off .chat-body, whose opacity follows the dock pump per frame.
+   min-height also lets the gate shrink in the phone's column layout. */
+.chat-transcript-outlet,
+.chat-arrival-gate {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.chat-transcript-outlet {
+  position: relative;
+}
+
+.chat-arrival-gate {
+  transition: opacity 120ms ease-out;
+}
+
+.chat-transcript-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--rb-text-muted);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-arrival-gate {
+    transition: none;
+  }
+}
+
 /*
  * `render_main`'s bottom chrome stack (shell.rs:6073-6125): flex-none,
  * relative, column. The chat page measures it live into
