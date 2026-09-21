@@ -46,6 +46,7 @@ jobs:
       - name: Engine-local storage and recovery
         run: |
           cargo test --locked -p roboco-sync --lib
+          cargo test --locked -p roboco-update --lib
           cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles
 
   ui-tests:

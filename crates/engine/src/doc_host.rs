@@ -259,6 +259,9 @@ pub struct ChatDocHandle {
     /// True when the doc changed while nobody watched: the mirror rebuild is
     /// deferred to the next `watch_messages` attach instead of paid per commit.
     mirror_dirty: AtomicBool,
+    /// Coalesced snapshot persister: every open doc routes persistence through
+    /// the blocking pool, never an async worker.
+    persistence: Option<Arc<crate::chat_persistence::ChatPersistence>>,
     /// Epoch ms of the last open/watch touch — the LRU eviction key.
     last_access: AtomicI64,
     /// Last known snapshot blob size — the eviction budget estimate's input.
@@ -446,8 +449,11 @@ impl ChatDocHandle {
 
     /// Rough resident cost for the LRU budget.
     fn resident_estimate(&self) -> usize {
-        (self.snapshot_bytes.load(Ordering::Relaxed) * RESIDENT_BYTES_PER_SNAPSHOT_BYTE)
-            .max(DOC_RESIDENT_FLOOR_BYTES)
+        let bytes = self
+            .snapshot_bytes
+            .load(Ordering::Relaxed)
+            .max(self.persistence.as_ref().map_or(0, |p| p.snapshot_bytes()));
+        (bytes * RESIDENT_BYTES_PER_SNAPSHOT_BYTE).max(DOC_RESIDENT_FLOOR_BYTES)
     }
 }
 
@@ -544,7 +550,10 @@ impl DocHost {
         self.inner.tasks.wait().await;
         // Snapshot open docs BEFORE releasing their handles: the handles map
         // holds the only strong doc refs, and an unflushed doc dies with it.
-        self.flush_all();
+        let host = self.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || host.flush_all()).await {
+            tracing::error!(%error, "shutdown snapshot flush failed");
+        }
         // Take the map under the lock, drop the handles outside it.
         let handles = std::mem::take(&mut *lock(&self.inner.handles));
         drop(handles);
@@ -646,6 +655,15 @@ impl DocHost {
 
         let (changed_tx, changed_rx) = watch::channel(0u64);
         let (messages_tx, _) = watch::channel(TranscriptSnapshot::default());
+        // Roboco has no chat2 room-adoption gate: every open doc owns a
+        // coalescing persister from the start.
+        let persistence = Some(crate::chat_persistence::ChatPersistence::new(
+            &doc,
+            self.inner.store.clone(),
+            chat_id.to_string(),
+            0,
+        ));
+        let changed_persistence = persistence.clone();
         let transcript_history = Arc::new(Mutex::new(
             crate::transcript_history::TranscriptHistory::default(),
         ));
@@ -662,6 +680,9 @@ impl DocHost {
                 }
             } else {
                 *lock(&history) = Default::default();
+            }
+            if let Some(persistence) = &changed_persistence {
+                persistence.dirty(false);
             }
             changed_tx.send_modify(|v| *v = v.wrapping_add(1));
         }));
@@ -687,6 +708,7 @@ impl DocHost {
             drain_lock: tokio::sync::Mutex::new(()),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
+            persistence,
             last_access: AtomicI64::new(now_ms()),
             snapshot_bytes: AtomicUsize::new(snapshot_len),
             _sub: sub,
@@ -2564,6 +2586,10 @@ impl DocHost {
     }
 
     fn save_snapshot(&self, handle: &ChatDocHandle) {
+        if let Some(persistence) = &handle.persistence {
+            persistence.flush_sync();
+            return;
+        }
         match handle.doc.export_snapshot() {
             Ok(bytes) => {
                 handle.snapshot_bytes.store(bytes.len(), Ordering::Relaxed);
@@ -2782,8 +2808,12 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                     break; // doc handle (and its change sender) is gone
                 }
                 let Some(handle) = weak.upgrade() else { break };
-                handle.publish_messages_if_watched();
-                handle.publish_queue();
+                let publishing = handle.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    publishing.publish_messages_if_watched();
+                    publishing.publish_queue();
+                })
+                .await;
                 host.drain_commands(&handle).await;
                 host.drain_queue(&handle).await;
                 if save_deadline.is_none() {
@@ -2796,9 +2826,12 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
             _ = tokio::time::sleep_until(sleep_until), if save_deadline.is_some() => {
                 save_deadline = None;
                 let Some(handle) = weak.upgrade() else { break };
-                host.save_snapshot(&handle);
-                // chat2 host duties ride the same quiesce tick (C3):
-                // threshold checkpoints + the tail sidecar publish.
+                // The coalescing persister owns snapshotting for every open
+                // doc; the legacy synchronous save only remains for docs
+                // without one. The quiesce tick still refreshes LRU sizes.
+                if handle.persistence.is_none() {
+                    host.save_snapshot(&handle);
+                }
                 // Post-quiesce eviction pass: sizes just refreshed.
                 host.evict_over_budget();
             }
