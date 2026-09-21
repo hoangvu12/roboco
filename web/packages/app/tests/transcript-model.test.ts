@@ -833,11 +833,24 @@ describe("working trailer helpers (transcript.rs:1886-1952)", () => {
     expect(flavourWord(seed, -30)).toBe(flavourWord(seed, 0));
   });
 
-  it("format_elapsed matches the desktop shape", () => {
-    expect(formatElapsed(0)).toBe("0s");
-    expect(formatElapsed(42)).toBe("42s");
-    expect(formatElapsed(92)).toBe("1m 32s");
-    expect(formatElapsed(-5)).toBe("0s");
+  it("elapsed_format_scales_from_seconds_to_days (transcript.rs)", () => {
+    const cases: Array<[number, string]> = [
+      [-5, "0s"],
+      [0, "0s"],
+      [59, "59s"],
+      [60, "1m 0s"],
+      [92, "1m 32s"],
+      [3_599, "59m 59s"],
+      [3_600, "1h 0m"],
+      [4_800, "1h 20m"],
+      [6_000, "1h 40m"],
+      [86_399, "23h 59m"],
+      [86_400, "1d 0h"],
+      [183_845, "2d 3h"],
+    ];
+    for (const [secs, expected] of cases) {
+      expect(formatElapsed(secs), `elapsed seconds: ${secs}`).toBe(expected);
+    }
   });
 
   it("sending_bridge_holds_until_the_turn_outdates_the_send", () => {

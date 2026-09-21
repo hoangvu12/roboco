@@ -1236,13 +1236,20 @@ export function flavourSeed(chatId: string): number {
   return fnv1a(chatId);
 }
 
-/** "1m 32s"-style elapsed formatting (transcript.rs:1945). */
+/** Compact elapsed formatting (transcript.rs `format_elapsed`): at most
+ *  two units, scaling seconds → minutes → hours → days. */
 export function formatElapsed(secs: number): string {
   const clamped = Math.max(0, Math.floor(secs));
   if (clamped < 60) {
     return `${clamped}s`;
   }
-  return `${Math.floor(clamped / 60)}m ${clamped % 60}s`;
+  if (clamped < 3_600) {
+    return `${Math.floor(clamped / 60)}m ${clamped % 60}s`;
+  }
+  if (clamped < 86_400) {
+    return `${Math.floor(clamped / 3_600)}h ${Math.floor((clamped % 3_600) / 60)}m`;
+  }
+  return `${Math.floor(clamped / 86_400)}d ${Math.floor((clamped % 86_400) / 3_600)}h`;
 }
 
 /**

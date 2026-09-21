@@ -8218,6 +8218,10 @@ button.files-save-pill:hover {
 }
 
 .working-elapsed {
+  /* The desktop nudges the timer 1px down to sit on the indicator text's
+     baseline (transcript.rs, 7f73ad79). */
+  position: relative;
+  top: 1px;
   color: var(--rb-text-faint);
 }
 
