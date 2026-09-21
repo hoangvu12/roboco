@@ -13472,11 +13472,11 @@ button.segmented-option:hover {
   }
 }
 
-/* `palette_card` (popover.rs:820-836) at the add-space geometry: explicit
-   width, caller's radius, border 1px hairline(0.10), no padding. */
+/* `palette_card` (popover.rs) at the add-space geometry: explicit width,
+   caller's radius, border 1px hairline(0.10), no padding. */
 .add-space-card {
   box-sizing: border-box;
-  width: 680px;
+  width: 600px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -13488,58 +13488,31 @@ button.segmented-option:hover {
   color: var(--rb-text);
 }
 
-/* -- Input row (spaces.rs:2694-2734) ----------------------------------- */
+/* -- Header: search icon · input · esc (spaces.rs) ---------------------- */
 
-/*
- * The recessed band header (and footer): translucent black over the glass,
- * framed from the body by a 1px hairline.
- */
-.add-space-input-row {
+.add-space-header {
   flex: none;
-  height: 46px;
+  height: 58px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 10px 0 12px;
-  border-radius: 14px 14px 0 0;
+  gap: 12px;
+  padding: 0 18px;
   border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  background: rgb(0 0 0 / var(--rb-band-alpha));
 }
 
-/* The local `key_chip` recipe (spaces.rs:2625-2639): h 22, px 6, radius 5,
-   gap 2, ink(0.05), 11px mono, text_muted@0.7. */
-.add-space-chip {
+/* `palette_search_icon`: the 16px magnifier in a stable 20px slot. */
+.add-space-search-icon {
   flex: none;
-  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  display: flex;
   align-items: center;
-  gap: 2px;
-  height: 22px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 5px;
-  background: rgb(var(--rb-ink) / 0.05);
-}
-
-.add-space-chip-text {
-  font-size: 0.6875rem;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-chip-icon {
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-chip-click {
-  cursor: pointer;
-}
-
-.add-space-chip-click:hover {
-  background: rgb(var(--rb-ink) / 0.09);
+  justify-content: center;
+  color: var(--rb-text-muted);
 }
 
 /* The search field: transparent input over a ghost layer that paints the
-   ? completion suffix (the faint remainder ahead of the caret). */
+   ⇥ completion suffix (the faint remainder ahead of the caret). */
 .add-space-search {
   position: relative;
   flex: 1;
@@ -13553,7 +13526,7 @@ button.segmented-option:hover {
   border: none;
   background: transparent;
   color: var(--rb-text);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   outline: none;
 }
 
@@ -13569,7 +13542,7 @@ button.segmented-option:hover {
   overflow: hidden;
   white-space: nowrap;
   pointer-events: none;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .add-space-ghost-query {
@@ -13580,100 +13553,132 @@ button.segmented-option:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
-/* The ?Enter add chip: btn_primary's text-colored fill at the key-caps'
-   geometry (h 22, px 8, radius 5 — btn_primary's own 8px radius would read
-   as a different component next to them). */
+/* The footer's Add action: `btn_ghost` (transparent → ink 0.06 hover) with
+   the ⌘↵ key-cap nested. */
 .add-space-submit {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   height: 22px;
-  padding: 0 8px;
+  padding: 0 4px 0 8px;
   border: none;
-  border-radius: 5px;
-  background: var(--rb-text);
-  color: var(--rb-on-solid);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
   font-size: 0.75rem;
-  font-weight: 500;
   cursor: pointer;
-  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+  transition:
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.add-space-submit:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+  color: var(--rb-text);
 }
 
 .add-space-submit[data-rb-dim] {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
-.add-space-submit-icon {
-  color: color-mix(in srgb, var(--rb-on-solid) 80%, transparent);
-}
+/* -- Breadcrumbs: back + the step trail (spaces.rs) --------------------- */
 
-/* -- Body (spaces.rs:3196-3210) ----------------------------------------- */
-
-/* FIXED height so sparse folders, skeletons, and device switches never
-   resize the card. */
-.add-space-body {
+.add-space-crumbs {
   flex: none;
-  height: 330px;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 0.75rem;
 }
 
-.add-space-main {
+.add-space-back {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.add-space-back:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumbs-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin-top: 5px;
+  background: rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+}
+
+.add-space-trail {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-}
-
-/* -- Breadcrumbs (spaces.rs:2736-2882) ---------------------------------- */
-
-.add-space-crumbs {
-  display: flex;
   flex-wrap: wrap;
   align-items: center;
-  padding: 10px 13px 2px;
-  font-size: 0.6875rem;
-  font-family: "Geist Mono", ui-monospace, monospace;
+  gap: 2px;
 }
 
-.add-space-crumbs-empty {
-  padding-top: 6px;
-}
-
+/* The crumb chip: h-26 px-7 rounded-6, muted until settled-current (wash)
+   or hovered. The label caps at 140px with ellipsis. */
 .add-space-crumb {
-  padding: 0 3px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 7px;
   border: none;
+  border-radius: 6px;
   background: transparent;
+  color: var(--rb-text-muted);
   font: inherit;
+  cursor: pointer;
 }
 
+.add-space-crumb:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumb-current {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumb-icon {
+  flex: none;
+}
+
+.add-space-crumb-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chevron stays with its destination when a long path wraps. */
 .add-space-crumb-sep {
-  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
+  color: var(--rb-text-faint);
 }
 
 .add-space-crumb-pair {
   display: inline-flex;
   align-items: center;
+  gap: 2px;
 }
 
-.add-space-crumb-click {
-  cursor: pointer;
-  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
-  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
-}
-
-.add-space-crumb-click:hover {
-  color: var(--rb-text);
-}
-
-/* The current folder is never clickable. */
-.add-space-crumb-current {
-  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
-}
-
-/* -- Folder list (spaces.rs:2884-3003) ---------------------------------- */
+/* -- The step's rows (spaces.rs) ---------------------------------------- */
 
 .add-space-list-state {
   padding: 6px 8px;
@@ -13684,26 +13689,23 @@ button.segmented-option:hover {
 }
 
 .add-space-list-empty {
-  padding: 16px 14px;
+  padding: 24px;
   font-size: 0.78125rem;
   color: var(--rb-text-faint);
 }
 
-/* The 6px gutters live on a WRAPPER outside the scroll viewport — the
-   wheel's max offset eats in-content padding and keyboard scroll-pinning
-   ignores it. */
+/* The desktop caps the results viewport at 424px (viewport − 220, floored
+   at 100) and scrolls; the 10px gutters live on the list itself. */
 .add-space-list-wrap {
-  flex: 1;
-  min-height: 0;
-  padding-block: 6px;
+  flex: none;
+  padding-block: 8px;
 }
 
-/* The app-wide list rhythm (sidebar rows, menu rows): px 8, gap 2. */
 .add-space-list {
-  height: 100%;
+  max-height: min(424px, 100vh - 220px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 8px;
+  padding: 0 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -13714,89 +13716,34 @@ button.segmented-option:hover {
   box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
 }
 
-.add-space-folder-icon {
+.add-space-row-icon {
   flex: none;
   color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
 }
 
-.add-space-folder-name {
-  flex: 1;
+.add-space-row-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.add-space-row-rest {
+  flex: 1;
+  min-width: 0;
+}
+
+/* `search_highlight`'s match wash: mention-style rounded marks. */
+.add-space-hl {
+  border-radius: 3px;
+  background: rgb(var(--rb-ink) / 0.08);
+  color: var(--rb-text);
 }
 
 /* Repos announce themselves — the row you're usually hunting for. */
 .add-space-repo-icon {
   flex: none;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
-}
-
-/* -- The devices + locations rail (spaces.rs:3005-3191) ----------------- */
-
-.add-space-rail {
-  flex: none;
-  width: 196px;
-  border-left: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  /* Locations can outgrow the fixed body on mount-happy machines. */
-  overflow-y: auto;
-}
-
-.add-space-rail-label {
-  padding: 0 8px 4px;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
-}
-
-.add-space-rail-label-first {
-  padding-top: 2px;
-}
-
-/* The tab recipe: h-28 rounded-8 washes, vertical. */
-.add-space-rail-row {
-  width: 100%;
-  height: 28px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 0.78125rem;
-  text-align: left;
-  cursor: pointer;
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-rail-row:not(.add-space-rail-row-active):hover {
-  background: var(--rb-hover);
-}
-
-/* The floating-card selection language: wash + ring-only inset outline. */
-.add-space-rail-row-active {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
-  box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
-  color: var(--rb-text);
-}
-
-.add-space-rail-icon {
-  flex: none;
-  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
-}
-
-.add-space-rail-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Presence: the same signal the sidebar space rows use. */
@@ -13813,53 +13760,34 @@ button.segmented-option:hover {
   box-shadow: 0 0 6px color-mix(in srgb, var(--rb-success) 55%, transparent);
 }
 
-.add-space-rail-divider {
-  flex: none;
-  height: 1px;
-  margin: 6px 2px;
-  background: rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-}
-
-.add-space-rail-info {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 0 8px;
+.add-space-locations-loading {
+  padding: 6px 8px;
   font-size: 0.6875rem;
-  line-height: 15px;
-  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  color: var(--rb-text-muted);
 }
 
-.add-space-rail-info-icon {
+/* The submit/probe failure line between the list and the footer. */
+.add-space-error {
   flex: none;
-  margin-top: 1px;
-  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  padding: 0 18px 8px;
+  font-size: 0.75rem;
+  color: var(--rb-danger);
 }
-
-.add-space-rail-info-text {
-  min-width: 0;
-}
-
-/* -- Footer (spaces.rs:3212-3243) --------------------------------------- */
+/* -- Footer: the key-hint legend + the Add action (spaces.rs) ------------ */
 
 .add-space-footer {
   flex: none;
   border-radius: 0 0 14px 14px;
   border-top: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  background: rgb(0 0 0 / var(--rb-band-alpha));
-  padding: 8px 12px;
+  padding: 12px 18px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 18px;
 }
 
-.add-space-footer-error {
+.add-space-footer-rest {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.6875rem;
-  color: var(--rb-danger);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -13879,7 +13807,7 @@ button.segmented-option:hover {
   /* Phones: the card fits the viewport instead of overflowing it. */
   .add-space-card {
     width: 100%;
-    max-width: 680px;
+    max-width: 600px;
   }
 }
 
@@ -13913,7 +13841,6 @@ button.segmented-option:hover {
 .md-table-wrap,
 .diff-view,
 .add-space-list,
-.add-space-rail,
 .queue-panel-list,
 .history-list {
   scrollbar-width: none;
@@ -13931,7 +13858,6 @@ button.segmented-option:hover {
 .md-table-wrap::-webkit-scrollbar,
 .diff-view::-webkit-scrollbar,
 .add-space-list::-webkit-scrollbar,
-.add-space-rail::-webkit-scrollbar,
 .queue-panel-list::-webkit-scrollbar,
 .history-list::-webkit-scrollbar {
   display: none;
