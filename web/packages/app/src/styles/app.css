@@ -9620,7 +9620,7 @@ button.files-save-pill:hover {
   flex: none;
   display: flex;
   flex-direction: column;
-  padding-top: 12px;
+  /* da041aab: the active list already provides the spacing above Archived. */
 }
 
 .archived-list {
