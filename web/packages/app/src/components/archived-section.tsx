@@ -88,6 +88,7 @@ export function ArchivedSection() {
         id="archived-toggle"
         label={open ? "Archived" : `Archived (${rows.length})`}
         open={open}
+        withRule={false}
         chevronRef={chevronRef}
         onToggle={onToggle}
       />

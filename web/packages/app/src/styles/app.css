@@ -2443,6 +2443,90 @@ a:focus-visible,
 }
 
 /*
+ * The pinned section (`render_pinned_section`, 38a8f013): a collapsible
+ * disclosure — header row (shared `sidebar-disclosure-header`), a body whose
+ * height tweens to 0 (the rows stay mounted, clipped), and the divider
+ * frame below it. The frame clips the hairline box AND its 2px top gap so
+ * neither survives a collapse; its height/opacity ride the same tween as
+ * the body. While a reorder drag is live, rows ride `transform` on the
+ * tab-slide tween; commit/cancel drops the class and the transform
+ * together so the drop lands instantly.
+ */
+.sidebar-pinned-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-pinned-pad {
+  padding-top: 4px;
+}
+
+.sidebar-pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pinned-row {
+  position: relative;
+}
+
+.pinned-row[data-dragging="1"] {
+  transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
+}
+
+/*
+ * Drag transfers (6851fc34): while a pinned row's drag previews a transfer
+ * out, the row lifts instead of sliding a slot; a regular row under a
+ * transfer drag dims at its source; and with no regular rows left, the
+ * "Drop here to unpin" strip stands in as the destination. (0f152647
+ * removed the drag-over highlights on the sections themselves.)
+ */
+.pinned-row[data-transfer="1"] {
+  opacity: 0.6;
+  transform: scale(1.01);
+}
+
+.regular-row {
+  position: relative;
+}
+
+.regular-row[data-sidebar-dragging="1"] {
+  opacity: 0.6;
+}
+
+.sidebar-drop-unpin {
+  flex: none;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--rb-text-muted);
+  font-size: 12px;
+}
+
+.sidebar-pinned-divider-frame {
+  overflow: hidden;
+  flex: none;
+}
+
+.sidebar-pinned-divider {
+  height: 13px;
+  margin-top: 2px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.sidebar-pinned-divider-rule {
+  height: 1px;
+  width: 100%;
+  background: var(--rb-border);
+  opacity: 0.6;
+}
+
+/*
  * One chat card — `shell.rs::render_chat_row`. Three lines on a 2px internal
  * gap, 8px radius, 8px/6px padding; the row hover fades the wash and the
  * title brighten together over `motion.hoverFade`. No selection ring: the
@@ -9581,6 +9665,11 @@ button.files-save-pill:hover {
   background: rgb(var(--rb-hairline) / calc(0.6 * var(--rb-hairline-scale)));
 }
 
+/* The rule-less headers' invisible spring (7c7b574b). */
+.sidebar-disclosure-spacer {
+  flex: 1;
+}
+
 .sidebar-disclosure-chevron {
   flex: none;
   display: inline-flex;
@@ -9608,7 +9697,7 @@ button.files-save-pill:hover {
   flex: none;
   display: flex;
   flex-direction: column;
-  padding-top: 12px;
+  /* da041aab: the active list already provides the spacing above Archived. */
 }
 
 .archived-list {
