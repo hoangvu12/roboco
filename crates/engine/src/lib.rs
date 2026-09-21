@@ -19,6 +19,7 @@ pub mod agent_accounts;
 pub mod change_requests;
 pub mod diff_sync;
 pub mod doc_host;
+mod http_error;
 pub mod instance_lock;
 pub mod listener;
 pub mod pairing;
