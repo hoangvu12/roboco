@@ -2403,6 +2403,42 @@ a:focus-visible,
 }
 
 /*
+ * The pinned section (`render_pinned_session_group`): the locally ordered
+ * pinned rows in one 2px-gap column, a 13px divider box with a 1px hairline
+ * (10px inline inset, 60% border tone) below them. While a reorder drag is
+ * live, rows ride `transform` on the tab-slide tween; commit/cancel drops
+ * the class and the transform together so the drop lands instantly.
+ */
+.sidebar-pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pinned-row {
+  position: relative;
+}
+
+.pinned-row[data-dragging="1"] {
+  transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
+}
+
+.sidebar-pinned-divider {
+  height: 13px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.sidebar-pinned-divider-rule {
+  height: 1px;
+  width: 100%;
+  background: var(--rb-border);
+  opacity: 0.6;
+}
+
+/*
  * One chat card — `shell.rs::render_chat_row`. Three lines on a 2px internal
  * gap, 8px radius, 8px/6px padding; the row hover fades the wash and the
  * title brighten together over `motion.hoverFade`. No selection ring: the

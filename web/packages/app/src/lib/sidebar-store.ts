@@ -1,4 +1,5 @@
 import type { StorageLike } from "./engine-store";
+import { retainKnownPins } from "./sidebar-pins";
 import { UiSettingsStore, uiSettings, type SidebarOrganization, type SidebarSort, type UiSettings } from "../state/ui-settings";
 
 /**
@@ -26,6 +27,8 @@ export interface SidebarState {
   readonly lastSpaceId: string | null;
   /** The archived shelf's disclosure (in-memory, like the desktop). */
   readonly archivedOpen: boolean;
+  /** Device-local pinned sessions in visual order (ui-settings, never synced). */
+  readonly pinnedSessionIds: readonly string[];
   /** ByDevice buckets the list under per-device disclosures; InOneList is flat. */
   readonly organization: SidebarOrganization;
   /** The comparator the active list, jump order, and archived shelf share. */
@@ -92,11 +95,56 @@ export class SidebarStore {
     this.#emit(this.#project(this.#settings.getSnapshot()));
   }
 
+  /**
+   * `Shell::set_chat_pinned`: pins append in click order, unpins leave the
+   * rest untouched. A no-op writes nothing (and notifies nobody).
+   */
+  setChatPinned(chatId: string, pinned: boolean): void {
+    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
+    let next: string[];
+    if (pinned) {
+      if (current.includes(chatId)) {
+        return;
+      }
+      next = [...current, chatId];
+    } else {
+      if (!current.includes(chatId)) {
+        return;
+      }
+      next = current.filter((id) => id !== chatId);
+    }
+    this.#settings.update({ sidebarPinnedSessionIds: next }, "immediate");
+  }
+
+  /** Replace the whole pin order (a committed drag reorder). */
+  replacePinnedSessionIds(pinnedSessionIds: string[]): void {
+    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
+    if (current.length === pinnedSessionIds.length && current.every((id, ix) => id === pinnedSessionIds[ix])) {
+      return;
+    }
+    this.#settings.update({ sidebarPinnedSessionIds: pinnedSessionIds }, "immediate");
+  }
+
+  /**
+   * `retain_known_pins` on the desktop's synced-chats tick: archived ids
+   * survive (unarchiving restores the pin); only a chat the loaded list
+   * confirms deleted loses its pin. A prune is a settings write like any
+   * other; a no-op notifies nobody.
+   */
+  pruneUnknownPins(knownChatIds: ReadonlySet<string>): void {
+    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
+    const next = retainKnownPins([...current], knownChatIds);
+    if (next !== null) {
+      this.#settings.update({ sidebarPinnedSessionIds: next }, "immediate");
+    }
+  }
+
   #project(settings: UiSettings): SidebarState {
     return {
       spaceFilter: settings.spaceFilter,
       lastSpaceId: settings.lastSpaceId,
       archivedOpen: this.#archivedOpen,
+      pinnedSessionIds: settings.sidebarPinnedSessionIds,
       organization: settings.sidebarOrganization,
       sort: settings.sidebarSort,
       showHarness: settings.sidebarShowHarness,
@@ -110,6 +158,9 @@ export class SidebarStore {
       state.spaceFilter === this.#state.spaceFilter &&
       state.lastSpaceId === this.#state.lastSpaceId &&
       state.archivedOpen === this.#state.archivedOpen &&
+      // Healed snapshots allocate a fresh array per write — compare contents.
+      state.pinnedSessionIds.length === this.#state.pinnedSessionIds.length &&
+      state.pinnedSessionIds.every((id, ix) => id === this.#state.pinnedSessionIds[ix]) &&
       state.organization === this.#state.organization &&
       state.sort === this.#state.sort &&
       state.showHarness === this.#state.showHarness &&

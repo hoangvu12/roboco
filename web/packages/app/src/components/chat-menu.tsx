@@ -6,6 +6,7 @@ import type { Chat } from "@roboco/proto";
 import { useEngineSessions } from "../state/session-provider";
 import type { EngineSession } from "../state/engine-session";
 import { sidebarNotice } from "../state/notice";
+import { sidebarStore, useSidebar } from "../state/sidebar";
 import { reviewCommentStore } from "../state/review-comments";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
@@ -145,6 +146,8 @@ function ChatMenuPages({
   // Mounts per open (the popup's content unmounts once the exit has
   // drained), so the page resets to "root" on every open, as before.
   const [page, setPage] = useState<"root" | "copy">("root");
+  // The Pin row reads the device-local pin list (shell.rs's chat menu).
+  const isPinned = useSidebar().pinnedSessionIds.includes(chat.id);
 
   const codexLink = codexConversationLink(chat);
   const harnessSessionId =
@@ -184,6 +187,18 @@ function ChatMenuPages({
       <MenuRow fadeKey="rename" onClick={onRename}>
         <Icon name="pen" size={16} className="chat-menu-row-icon" />
         <span className="menu-row-label">Rename…</span>
+      </MenuRow>
+      <MenuRow
+        fadeKey="pin"
+        onClick={() => {
+          // `set_chat_pinned`: device-local, no engine roundtrip; the click
+          // closes the menu like the desktop's `close_chat_menu`.
+          onClose();
+          sidebarStore.setChatPinned(chat.id, !isPinned);
+        }}
+      >
+        <Icon name="pin" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">{isPinned ? "Unpin" : "Pin"}</span>
       </MenuRow>
       <MenuRow fadeKey="archive" onClick={onArchive}>
         <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />

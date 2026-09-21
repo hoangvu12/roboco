@@ -18,6 +18,7 @@ describe("SidebarStore", () => {
       spaceFilter: null,
       lastSpaceId: null,
       archivedOpen: false,
+      pinnedSessionIds: [],
       // The five view options ride along at their desktop defaults
       // (settings.rs:658-665) — ticket 10's menu writes them.
       organization: "inOneList",
@@ -70,5 +71,55 @@ describe("SidebarStore", () => {
     store.setArchivedOpen(true);
     store.setArchivedOpen(true);
     expect(fired).toBe(2);
+  });
+
+  it("set_chat_pinned: pins append in click order, unpins leave the rest", () => {
+    const store = new SidebarStore({ storage: memoryStorage() });
+    store.setChatPinned("a", true);
+    store.setChatPinned("b", true);
+    store.setChatPinned("c", true);
+    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a", "b", "c"]);
+    store.setChatPinned("b", false);
+    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a", "c"]);
+  });
+
+  it("pin no-ops write nothing and notify nobody", () => {
+    const store = new SidebarStore({ storage: memoryStorage() });
+    store.setChatPinned("a", true);
+    let fired = 0;
+    store.subscribe(() => {
+      fired += 1;
+    });
+    store.setChatPinned("a", true);
+    store.setChatPinned("ghost", false);
+    store.replacePinnedSessionIds(["a"]);
+    expect(fired).toBe(0);
+    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a"]);
+  });
+
+  it("persists the pin order across reloads, device-local only", () => {
+    const storage = memoryStorage();
+    const first = new SidebarStore({ storage });
+    first.setChatPinned("a", true);
+    first.setChatPinned("b", true);
+    first.replacePinnedSessionIds(["b", "a"]);
+    const second = new SidebarStore({ storage });
+    expect(second.getSnapshot().pinnedSessionIds).toEqual(["b", "a"]);
+  });
+
+  it("retain_known_pins: archived ids survive, deletions prune, a no-op stays silent", () => {
+    const store = new SidebarStore({ storage: memoryStorage() });
+    store.setChatPinned("active", true);
+    store.setChatPinned("archived", true);
+    store.setChatPinned("deleted", true);
+    let fired = 0;
+    store.subscribe(() => {
+      fired += 1;
+    });
+    store.pruneUnknownPins(new Set(["active", "archived"]));
+    expect(store.getSnapshot().pinnedSessionIds).toEqual(["active", "archived"]);
+    expect(fired).toBe(1);
+    store.pruneUnknownPins(new Set(["active", "archived"]));
+    expect(fired).toBe(1);
   });
 });

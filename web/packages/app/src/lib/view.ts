@@ -2,6 +2,7 @@ import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { parseScopedId } from "@roboco/engine-client";
 import type { SidebarOrganization, SidebarSort } from "../state/ui-settings";
+import { projectPinnedFirst } from "./sidebar-pins";
 
 /**
  * The desktop's view derivations, ported 1:1 from `roboco_proto::view` and
@@ -336,18 +337,21 @@ export function sidebarGroups(
 
 /**
  * The flat, top-to-bottom chat ids exactly as the sidebar draws them —
- * grouping and local-device promotion applied, headers not counted
- * (`spaces.rs::sidebar_visible_order`). The jump shortcuts and session
- * cycling read THIS order so keyboard order never drifts from the screen.
+ * pins first, then grouping and local-device promotion applied, headers not
+ * counted (`spaces.rs::sidebar_visible_order`). The jump shortcuts and
+ * session cycling read THIS order so keyboard order never drifts from the
+ * screen.
  */
 export function sidebarVisibleOrder(
   rows: readonly ChatRow[],
   organization: SidebarOrganization,
   localDeviceId: string | null,
+  pinnedIds: readonly string[] = [],
 ): string[] {
-  return sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
+  const flat = sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
     bucket.rows.map((row) => row.chat.id),
   );
+  return projectPinnedFirst(flat, pinnedIds);
 }
 
 /**

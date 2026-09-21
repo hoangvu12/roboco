@@ -174,6 +174,15 @@ describe("heal", () => {
       "sha",
     ]);
   });
+
+  it("sidebarPinnedSessionIds — a list of chat ids, healed per entry", () => {
+    expect(storedWith({ sidebarPinnedSessionIds: ["a", "a", 7, "", "b"] }).sidebarPinnedSessionIds).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(storedWith({ sidebarPinnedSessionIds: "a" }).sidebarPinnedSessionIds).toEqual([]);
+    expect(storedWith({}).sidebarPinnedSessionIds).toEqual([]);
+  });
 });
 
 describe("migration", () => {

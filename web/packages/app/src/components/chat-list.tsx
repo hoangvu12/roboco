@@ -25,6 +25,13 @@ import {
 } from "../lib/view";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
+import { PinnedSection } from "./pinned-section";
+import {
+  pinOrderedRows,
+  SIDEBAR_PINNED_DIVIDER_HEIGHT,
+  SIDEBAR_PINNED_DIVIDER_KEY,
+} from "../lib/sidebar-pins";
+import { sidebarStore } from "../state/sidebar";
 import { GlyphSpinner } from "./glyph-spinner";
 import {
   SidebarDisclosureBody,
@@ -86,12 +93,20 @@ const RESORT_NONE: ResortState = { epoch: 0, offsets: new Map(), newKeys: new Se
  * animates; a height-only change (a disclosure opening) is not a reorder;
  * removals just go (their survivors glide up to close the gap).
  */
-function useSidebarResort(keyed: readonly SidebarKeyed[]): ResortState {
+function useSidebarResort(keyed: readonly SidebarKeyed[], resetEpoch = 0): ResortState {
   const prev = useRef<readonly SidebarKeyed[]>([]);
+  const prevReset = useRef(resetEpoch);
   const [state, setState] = useState<ResortState>(RESORT_NONE);
   useLayoutEffect(() => {
     const old = prev.current;
     prev.current = keyed;
+    if (prevReset.current !== resetEpoch) {
+      // A pin-drag commit placed the rows visually already — adopt the new
+      // order without a glide (`commit_pinned_session_drag` clears the
+      // desktop's resort bookkeeping the same way).
+      prevReset.current = resetEpoch;
+      return;
+    }
     if (old.length === 0 || !sidebarKeyOrderChanged(old, keyed)) {
       return;
     }
@@ -104,7 +119,7 @@ function useSidebarResort(keyed: readonly SidebarKeyed[]): ResortState {
       return;
     }
     setState((current) => ({ epoch: current.epoch + 1, offsets, newKeys }));
-  }, [keyed]);
+  }, [keyed, resetEpoch]);
   return state;
 }
 
@@ -166,6 +181,9 @@ export function ChatList() {
   // The device-group collapse keys — in-memory only, exactly like the
   // desktop's `sidebar_collapsed_groups` (a reload re-expands every group).
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  // Bumped by a pin-drag commit: the drop leaves every row at its final slot,
+  // so the FLIP diff adopts the new order without gliding it.
+  const [pinResetEpoch, setPinResetEpoch] = useState(0);
 
   const rows =
     chats.error === null && chats.loaded
@@ -182,12 +200,24 @@ export function ChatList() {
         })
       : [];
 
-  const groups = sidebarGroups(rows, sidebar.organization, localDeviceId);
+  // `retain_known_pins` on the desktop's synced-chats tick: archived ids
+  // survive (unarchiving restores the pin); only a confirmed deletion prunes.
+  useEffect(() => {
+    if (!chats.loaded || chats.error !== null) {
+      return;
+    }
+    sidebarStore.pruneUnknownPins(new Set(chats.rows.map((chat) => chat.id)));
+  }, [chats.loaded, chats.error, chats.rows]);
+
+  // The pinned section leads; regular rows keep the existing grouping.
+  const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, sidebar.pinnedSessionIds);
+  const hasPinnedDivider = pinnedRows.length > 0 && regularRows.length > 0;
+  const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
   // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
   // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
   // jump-hint chips all read, so keyboard order never drifts from the screen.
-  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId);
+  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId, sidebar.pinnedSessionIds);
 
   // The chips: while the hints are visible, the first nine rows carry the
   // slot's `badgeCombo` text in the corner — ticket 08's `.chat-row-jump`
@@ -259,6 +289,23 @@ export function ChatList() {
 
   const keyed: SidebarKeyed[] = [];
   const sections: React.ReactNode[] = [];
+  // The pinned section leads (`render_active_rows`'s pin split) — rows keyed
+  // individually so the resort glide still reaches them, then the divider.
+  for (const row of pinnedRows) {
+    keyed.push({
+      key: `c:${row.chat.id}`,
+      height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
+    });
+    sections.push(<ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />);
+  }
+  if (hasPinnedDivider) {
+    keyed.push({ key: SIDEBAR_PINNED_DIVIDER_KEY, height: SIDEBAR_PINNED_DIVIDER_HEIGHT });
+    sections.push(
+      <div className="sidebar-pinned-divider" key={SIDEBAR_PINNED_DIVIDER_KEY}>
+        <div className="sidebar-pinned-divider-rule" />
+      </div>,
+    );
+  }
   for (const bucket of groups) {
     if (bucket.group === null) {
       for (const row of bucket.rows) {
@@ -302,7 +349,7 @@ export function ChatList() {
 
   // Hooks stay unconditional across the early returns below: an unconnected
   // first render must not register fewer hooks than the connected ones.
-  const resort = useSidebarResort(keyed);
+  const resort = useSidebarResort(keyed, pinResetEpoch);
 
   if (fleet.engines.length === 0) {
     return <p className="sidebar-note">Pair an engine to see its chats.</p>;
@@ -342,7 +389,28 @@ export function ChatList() {
     }
     return child;
   });
-  return <div className="chat-list">{decorated}</div>;
+  // The decorated list splits back into the pinned group (its drag container
+  // is the drop target), the divider, and the regular sections.
+  const pinnedItems = decorated.slice(0, pinnedRows.length);
+  const dividerItem = hasPinnedDivider ? decorated[pinnedRows.length] : null;
+  const regularItems = decorated.slice(pinnedRows.length + (hasPinnedDivider ? 1 : 0));
+  return (
+    <div className="chat-list">
+      {pinnedRows.length > 0 && (
+        <PinnedSection
+          rows={pinnedRows}
+          pinnedIds={sidebar.pinnedSessionIds}
+          items={pinnedItems}
+          onCommit={(nextPinnedIds) => {
+            sidebarStore.replacePinnedSessionIds(nextPinnedIds);
+            setPinResetEpoch((epoch) => epoch + 1);
+          }}
+        />
+      )}
+      {dividerItem}
+      {regularItems}
+    </div>
+  );
 }
 
 /** A keyed wrapper that glides a displaced child (row or whole section). */
