@@ -228,6 +228,19 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
     // A pin on a chat that is gone never disturbs the rest.
     expect(sidebarVisibleOrder(rows, "inOneList", null, ["gone", "r1"])).toEqual(["r1", "l1", "r2"]);
   });
+
+  it("a collapsed pinned section holds no slot (sidebar_visible_order)", () => {
+    const rows = chatRows([
+      chat("r1", { deviceId: "remote-1" }),
+      chat("l1", { deviceId: "local" }),
+      chat("r2", { deviceId: "remote-2" }),
+    ]);
+    // Collapsed, the hidden pins drop out and the regular rows take slots
+    // from 0 — `spaces.rs`'s `!pinned_open` retain.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", ["r2", "l1"], false)).toEqual(["r1"]);
+    // An empty pin list is indifferent to the disclosure.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], false)).toEqual(["l1", "r1", "r2"]);
+  });
 });
 
 describe("disclosure motion", () => {

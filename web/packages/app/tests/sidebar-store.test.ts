@@ -12,12 +12,15 @@ function memoryStorage(): StorageLike {
 }
 
 describe("SidebarStore", () => {
-  it("starts unfiltered with the archived shelf closed", () => {
+  it("starts unfiltered with the archived shelf closed and pins open", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
     expect(store.getSnapshot()).toEqual({
       spaceFilter: null,
       lastSpaceId: null,
       archivedOpen: false,
+      // `Shell::pinned_open`: pins are visible by default (a hidden pin
+      // would be pointless), session-transient like the archived shelf.
+      pinnedOpen: true,
       pinnedByProfile: {},
       // The five view options ride along at their desktop defaults
       // (settings.rs:658-665) — ticket 10's menu writes them.
@@ -50,6 +53,19 @@ describe("SidebarStore", () => {
     expect(new SidebarStore({ storage }).getSnapshot().archivedOpen).toBe(false);
   });
 
+  it("keeps the pinned disclosure in memory only, open by default", () => {
+    const storage = memoryStorage();
+    const first = new SidebarStore({ storage });
+    first.setChatPinned("local", "a", true);
+    first.setPinnedOpen(false);
+    expect(first.getSnapshot().pinnedOpen).toBe(false);
+    // `Shell::pinned_open` never reaches storage: a fresh store over the
+    // same storage re-expands (and the pins themselves survive).
+    const second = new SidebarStore({ storage });
+    expect(second.getSnapshot().pinnedOpen).toBe(true);
+    expect(second.getSnapshot().pinnedByProfile).toEqual({ local: ["a"] });
+  });
+
   it("ignores corrupted legacy state without destroying it", () => {
     // Storage moved to the consolidated ui-settings key; the legacy key is a
     // one-time migration source now, so a corrupt one heals to the default and
@@ -70,7 +86,9 @@ describe("SidebarStore", () => {
     store.setSpaceFilter("space-1");
     store.setArchivedOpen(true);
     store.setArchivedOpen(true);
-    expect(fired).toBe(2);
+    store.setPinnedOpen(false);
+    store.setPinnedOpen(false);
+    expect(fired).toBe(3);
   });
 
   it("set_chat_pinned: pins append in click order under their profile, unpins leave the rest", () => {

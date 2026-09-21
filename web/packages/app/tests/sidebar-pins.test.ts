@@ -5,6 +5,8 @@ import {
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
   pinnedDragSnapshotIsValid,
+  pinnedSectionBodyHeight,
+  pinnedHeaderKeyedHeight,
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   pinnedSessionIsDraggable,
@@ -12,6 +14,7 @@ import {
   reorderVisiblePins,
   retainKnownPins,
   sidebarPinProfileKey,
+  SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
   SIDEBAR_SESSION_SLOT,
 } from "../src/lib/sidebar-pins";
 import type { ChatRow } from "../src/lib/view";
@@ -120,6 +123,40 @@ describe("sidebarPinProfileKey", () => {
     expect(sidebarPinProfileKey("development", null)).toBe(null);
     // A local profile needs no device id, exactly like the desktop.
     expect(sidebarPinProfileKey("local", null)).toBe("local");
+  });
+});
+
+describe("pinned disclosure geometry (38a8f013)", () => {
+  it("pinned_section_body_height is inset + rows + gaps — the tween's target", () => {
+    // The Rust window test's fixture: two 61px rows → 4 + 61 + 2 + 61 = 128.
+    expect(pinnedSectionBodyHeight([61, 61])).toBe(128);
+    expect(pinnedSectionBodyHeight([61])).toBe(65);
+    expect(pinnedSectionBodyHeight([])).toBe(4);
+  });
+
+  it("the header's keyed height carries the open body's inset, minus one gap", () => {
+    // 28 closed; 28 + (4 - 2) open — the phantom entry that keeps the rows
+    // below accounting for the section (`render_chat_sidebar`'s order vec).
+    expect(pinnedHeaderKeyedHeight(true)).toBe(30);
+    expect(pinnedHeaderKeyedHeight(false)).toBe(28);
+  });
+
+  it("pinned_drag_accounts_for_disclosure_header_and_scroll: slot 0 sits 36px down", () => {
+    // The desktop's drag y is viewport-relative and subtracts the 4px list
+    // padding, the 28px header, and the 4px body inset, so the first row is
+    // 36px below the viewport top; the web arms drags off the rows group's
+    // own rect, which lands the same 36px in. The group-relative probe of
+    // the desktop's fixture:
+    const viewportTop = 100;
+    const firstRowTop = 136;
+    const rel = (pointerY: number): number => pointerY - viewportTop - 36;
+    expect(pinnedSessionDropIndex(rel(firstRowTop), 3)).toBe(0);
+    // A pointer 11px into the section (still inside the header) is no drop.
+    expect(pinnedSessionDropIndex(rel(125), 3)).toBe(null);
+    // A 63px scroll displacement moves the pointer one slot down the rows.
+    expect(pinnedSessionDropIndex(rel(firstRowTop) + 63, 3)).toBe(1);
+    // The divider frame is the hairline box plus its 2px top gap.
+    expect(SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT).toBe(15);
   });
 });
 

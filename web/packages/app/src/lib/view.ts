@@ -340,18 +340,25 @@ export function sidebarGroups(
  * pins first, then grouping and local-device promotion applied, headers not
  * counted (`spaces.rs::sidebar_visible_order`). The jump shortcuts and
  * session cycling read THIS order so keyboard order never drifts from the
- * screen.
+ * screen. While the pinned disclosure is collapsed the hidden pins hold no
+ * slot (they are not on the screen).
  */
 export function sidebarVisibleOrder(
   rows: readonly ChatRow[],
   organization: SidebarOrganization,
   localDeviceId: string | null,
   pinnedIds: readonly string[] = [],
+  pinnedOpen = true,
 ): string[] {
   const flat = sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
     bucket.rows.map((row) => row.chat.id),
   );
-  return projectPinnedFirst(flat, pinnedIds);
+  const visible = projectPinnedFirst(flat, pinnedIds);
+  if (!pinnedOpen) {
+    const pins = new Set(pinnedIds);
+    return visible.filter((id) => !pins.has(id));
+  }
+  return visible;
 }
 
 /**

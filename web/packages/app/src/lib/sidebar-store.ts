@@ -28,6 +28,11 @@ export interface SidebarState {
   /** The archived shelf's disclosure (in-memory, like the desktop). */
   readonly archivedOpen: boolean;
   /**
+   * The pinned section's disclosure — `Shell::pinned_open`: OPEN by default,
+   * session-transient (in-memory, like the desktop's Archived shelf).
+   */
+  readonly pinnedOpen: boolean;
+  /**
    * Device-local pinned sessions per workspace profile, in visual order
    * (`UiSettings::sidebar_pinned_session_ids_by_profile`; ui-settings, never
    * synced). Callers resolve the active bucket(s) off the fleet registry.
@@ -52,6 +57,9 @@ export interface SidebarStoreOptions {
 export class SidebarStore {
   readonly #settings: UiSettingsStore;
   #archivedOpen = false;
+  // `Shell::pinned_open`: pins are visible by default (a pin the section
+  // hides would be pointless), and the flag never reaches storage.
+  #pinnedOpen = true;
   #state: SidebarState;
   readonly #listeners = new Set<() => void>();
 
@@ -96,6 +104,15 @@ export class SidebarStore {
       return;
     }
     this.#archivedOpen = open;
+    this.#emit(this.#project(this.#settings.getSnapshot()));
+  }
+
+  /** `Shell::pinned_open`'s toggle: in-memory only, a no-op notifies nobody. */
+  setPinnedOpen(open: boolean): void {
+    if (open === this.#pinnedOpen) {
+      return;
+    }
+    this.#pinnedOpen = open;
     this.#emit(this.#project(this.#settings.getSnapshot()));
   }
 
@@ -184,6 +201,7 @@ export class SidebarStore {
       spaceFilter: settings.spaceFilter,
       lastSpaceId: settings.lastSpaceId,
       archivedOpen: this.#archivedOpen,
+      pinnedOpen: this.#pinnedOpen,
       pinnedByProfile: settings.sidebarPinnedSessionIdsByProfile,
       organization: settings.sidebarOrganization,
       sort: settings.sidebarSort,
@@ -198,6 +216,7 @@ export class SidebarStore {
       state.spaceFilter === this.#state.spaceFilter &&
       state.lastSpaceId === this.#state.lastSpaceId &&
       state.archivedOpen === this.#state.archivedOpen &&
+      state.pinnedOpen === this.#state.pinnedOpen &&
       // Healed snapshots allocate fresh containers per write — compare contents.
       pinMapsEqual(state.pinnedByProfile, this.#state.pinnedByProfile) &&
       state.organization === this.#state.organization &&

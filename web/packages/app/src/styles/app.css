@@ -2403,12 +2403,24 @@ a:focus-visible,
 }
 
 /*
- * The pinned section (`render_pinned_session_group`): the locally ordered
- * pinned rows in one 2px-gap column, a 13px divider box with a 1px hairline
- * (10px inline inset, 60% border tone) below them. While a reorder drag is
- * live, rows ride `transform` on the tab-slide tween; commit/cancel drops
- * the class and the transform together so the drop lands instantly.
+ * The pinned section (`render_pinned_section`, 38a8f013): a collapsible
+ * disclosure — header row (shared `sidebar-disclosure-header`), a body whose
+ * height tweens to 0 (the rows stay mounted, clipped), and the divider
+ * frame below it. The frame clips the hairline box AND its 2px top gap so
+ * neither survives a collapse; its height/opacity ride the same tween as
+ * the body. While a reorder drag is live, rows ride `transform` on the
+ * tab-slide tween; commit/cancel drops the class and the transform
+ * together so the drop lands instantly.
  */
+.sidebar-pinned-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-pinned-pad {
+  padding-top: 4px;
+}
+
 .sidebar-pinned {
   display: flex;
   flex-direction: column;
@@ -2423,8 +2435,14 @@ a:focus-visible,
   transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
 }
 
+.sidebar-pinned-divider-frame {
+  overflow: hidden;
+  flex: none;
+}
+
 .sidebar-pinned-divider {
   height: 13px;
+  margin-top: 2px;
   padding: 0 10px;
   display: flex;
   align-items: center;

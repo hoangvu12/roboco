@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { parseScopedId } from "@roboco/engine-client";
@@ -29,9 +29,11 @@ import { PinnedSection } from "./pinned-section";
 import {
   commitVisiblePinReorder,
   pinOrderedRows,
+  pinnedHeaderKeyedHeight,
   sidebarPinProfileKey,
   SIDEBAR_PINNED_DIVIDER_HEIGHT,
   SIDEBAR_PINNED_DIVIDER_KEY,
+  SIDEBAR_PINNED_HEADER_KEY,
 } from "../lib/sidebar-pins";
 import { sidebarStore } from "../state/sidebar";
 import { GlyphSpinner } from "./glyph-spinner";
@@ -232,12 +234,20 @@ export function ChatList() {
   // The pinned section leads; regular rows keep the existing grouping.
   const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, pinnedIds);
   const hasPinnedDivider = pinnedRows.length > 0 && regularRows.length > 0;
+  const pinnedOpen = sidebar.pinnedOpen;
   const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
   // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
   // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
   // jump-hint chips all read, so keyboard order never drifts from the screen.
-  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId, pinnedIds);
+  // A collapsed pinned section hides its rows, so they hold no slot here.
+  const order = sidebarVisibleOrder(
+    rows,
+    sidebar.organization,
+    localDeviceId,
+    pinnedIds,
+    pinnedOpen,
+  );
 
   // The chips: while the hints are visible, the first nine rows carry the
   // slot's `badgeCombo` text in the corner — ticket 08's `.chat-row-jump`
@@ -308,32 +318,42 @@ export function ChatList() {
   }, [navigate]);
 
   const keyed: SidebarKeyed[] = [];
-  const sections: React.ReactNode[] = [];
-  // The pinned section leads (`render_active_rows`'s pin split) — rows keyed
-  // individually so the resort glide still reaches them, then the divider.
+  const entries: { key: string; element: React.ReactNode }[] = [];
+  // The pinned section leads (`render_active_rows`'s pin split). The FLIP
+  // diff's order vec carries the section's PHANTOM entries — the disclosure
+  // header (28px + the open body's inset) and the divider — which hold no
+  // element of their own; only the pinned ROWS carry elements so the resort
+  // glide still reaches them. Collapsed, the pinned rows hold no slot at
+  // all (the desktop's `if ix < pinned_count && !self.pinned_open` skip).
+  if (pinnedRows.length > 0) {
+    keyed.push({ key: SIDEBAR_PINNED_HEADER_KEY, height: pinnedHeaderKeyedHeight(pinnedOpen) });
+  }
   for (const row of pinnedRows) {
+    const key = `c:${row.chat.id}`;
     keyed.push({
-      key: `c:${row.chat.id}`,
+      key,
       height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
     });
-    sections.push(<ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />);
+    entries.push({
+      key,
+      element: <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />,
+    });
   }
-  if (hasPinnedDivider) {
+  if (hasPinnedDivider && pinnedOpen) {
     keyed.push({ key: SIDEBAR_PINNED_DIVIDER_KEY, height: SIDEBAR_PINNED_DIVIDER_HEIGHT });
-    sections.push(
-      <div className="sidebar-pinned-divider" key={SIDEBAR_PINNED_DIVIDER_KEY}>
-        <div className="sidebar-pinned-divider-rule" />
-      </div>,
-    );
   }
   for (const bucket of groups) {
     if (bucket.group === null) {
       for (const row of bucket.rows) {
+        const key = `c:${row.chat.id}`;
         keyed.push({
-          key: `c:${row.chat.id}`,
+          key,
           height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
         });
-        sections.push(<ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />);
+        entries.push({
+          key,
+          element: <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />,
+        });
       }
       continue;
     }
@@ -344,27 +364,30 @@ export function ChatList() {
       height:
         SIDEBAR_DISCLOSURE_SECTION_HEIGHT + (collapsed ? 0 : sidebarGroupBodyHeight(bucket.rows)),
     });
-    sections.push(
-      <DeviceGroupSection
-        key={collapseKey}
-        collapseKey={collapseKey}
-        label={bucket.group.deviceName}
-        rows={bucket.rows}
-        collapsed={collapsed}
-        jumpLabelFor={jumpLabelFor}
-        onToggle={() => {
-          setCollapsedGroups((current) => {
-            const next = new Set(current);
-            if (next.has(collapseKey)) {
-              next.delete(collapseKey);
-            } else {
-              next.add(collapseKey);
-            }
-            return next;
-          });
-        }}
-      />,
-    );
+    entries.push({
+      key: `g:${collapseKey}`,
+      element: (
+        <DeviceGroupSection
+          key={collapseKey}
+          collapseKey={collapseKey}
+          label={bucket.group.deviceName}
+          rows={bucket.rows}
+          collapsed={collapsed}
+          jumpLabelFor={jumpLabelFor}
+          onToggle={() => {
+            setCollapsedGroups((current) => {
+              const next = new Set(current);
+              if (next.has(collapseKey)) {
+                next.delete(collapseKey);
+              } else {
+                next.add(collapseKey);
+              }
+              return next;
+            });
+          }}
+        />
+      ),
+    });
   }
 
   // Hooks stay unconditional across the early returns below: an unconnected
@@ -389,13 +412,14 @@ export function ChatList() {
   }
 
   // The offsets/newKeys arrive one commit after the new order — re-wrap the
-  // already-keyed children with their glide/fade state before paint.
-  const decorated = sections.map((child, index) => {
-    const key = keyed[index]!.key;
+  // already-keyed children with their glide/fade state before paint. Only
+  // element-bearing entries decorate (the FLIP order vec's phantom entries
+  // — the pinned header and divider — contribute heights, not elements).
+  const decorated = entries.map(({ key, element }) => {
     if (resort.newKeys.has(key)) {
       return (
         <div className="chat-row-in" key={key}>
-          {child}
+          {element}
         </div>
       );
     }
@@ -403,23 +427,31 @@ export function ChatList() {
     if (dy !== undefined) {
       return (
         <ResortGlideBox key={key} dy={dy} epoch={resort.epoch}>
-          {child}
+          {element}
         </ResortGlideBox>
       );
     }
-    return child;
+    return <Fragment key={key}>{element}</Fragment>;
   });
-  // The decorated list splits back into the pinned group (its drag container
-  // is the drop target), the divider, and the regular sections.
+  // The decorated list splits back into the pinned section (its own drag
+  // container and disclosure) and the regular sections.
   const pinnedItems = decorated.slice(0, pinnedRows.length);
-  const dividerItem = hasPinnedDivider ? decorated[pinnedRows.length] : null;
-  const regularItems = decorated.slice(pinnedRows.length + (hasPinnedDivider ? 1 : 0));
+  const regularItems = decorated.slice(pinnedRows.length);
   return (
     <div className="chat-list">
       {pinnedRows.length > 0 && (
         <PinnedSection
           rows={pinnedRows}
           items={pinnedItems}
+          open={pinnedOpen}
+          hasDivider={hasPinnedDivider}
+          onToggle={() => {
+            // The disclosure owns this movement: adopt the new order without
+            // a second (FLIP) glide of it — the desktop's header click
+            // clears its resort bookkeeping the same way.
+            setPinResetEpoch((epoch) => epoch + 1);
+            sidebarStore.setPinnedOpen(!pinnedOpen);
+          }}
           onCommit={(from, to) => {
             // `commit_pinned_session_drag` over the profile buckets: reorder
             // the visible projection, settle every id back into its own
@@ -434,7 +466,6 @@ export function ChatList() {
           }}
         />
       )}
-      {dividerItem}
       {regularItems}
     </div>
   );

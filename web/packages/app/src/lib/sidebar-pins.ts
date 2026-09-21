@@ -49,6 +49,43 @@ export const SIDEBAR_LIST_PAD_TOP = 4;
 /** `shell.rs::SIDEBAR_PINNED_DIVIDER_*` — the hairline box between sections. */
 export const SIDEBAR_PINNED_DIVIDER_HEIGHT = 13;
 export const SIDEBAR_PINNED_DIVIDER_KEY = "sidebar-pinned-divider";
+/**
+ * `render_pinned_divider`'s animated frame: the hairline box plus its 2px
+ * top gap, both clipped by the frame so neither survives a collapse.
+ */
+export const SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT =
+  SIDEBAR_PINNED_DIVIDER_HEIGHT + SIDEBAR_LIST_GAP;
+/** `spaces.rs::SIDEBAR_DISCLOSURE_HEADER_HEIGHT` — the section header row. */
+export const SIDEBAR_DISCLOSURE_HEADER_HEIGHT = 28;
+/** `spaces.rs::SIDEBAR_DISCLOSURE_BODY_INSET` — the body's handoff padding. */
+export const SIDEBAR_DISCLOSURE_BODY_INSET = 4;
+/** The pinned disclosure's keyed header entry (the FLIP diff's phantom). */
+export const SIDEBAR_PINNED_HEADER_KEY = "sidebar-pinned-header";
+
+/**
+ * `shell.rs`'s `pinned_body_height`: inset + rows + intra-list gaps — the
+ * height the disclosure tween collapses to 0. Pure.
+ */
+export function pinnedSectionBodyHeight(rowHeights: readonly number[]): number {
+  let total = SIDEBAR_DISCLOSURE_BODY_INSET;
+  for (const height of rowHeights) {
+    total += height;
+  }
+  return total + SIDEBAR_LIST_GAP * Math.max(rowHeights.length - 1, 0);
+}
+
+/**
+ * The header's keyed height for the FLIP diff (`render_chat_sidebar`'s order
+ * vec): the header row, plus the body inset minus one list gap while open —
+ * the phantom entry that keeps the rows below accounting for the section.
+ * Pure.
+ */
+export function pinnedHeaderKeyedHeight(open: boolean): number {
+  return (
+    SIDEBAR_DISCLOSURE_HEADER_HEIGHT +
+    (open ? SIDEBAR_DISCLOSURE_BODY_INSET - SIDEBAR_LIST_GAP : 0)
+  );
+}
 
 /**
  * `spaces.rs::project_pinned_first` — promote the locally ordered pins above

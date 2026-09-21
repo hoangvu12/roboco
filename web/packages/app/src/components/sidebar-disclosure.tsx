@@ -212,6 +212,60 @@ export function useSidebarDisclosure(motionKey: string, open: boolean, fullHeigh
 }
 
 /**
+ * `render_pinned_divider` (38a8f013): a sibling of the disclosure body whose
+ * whole frame — hairline box plus its top gap — rides the SAME tween as the
+ * body, so neither the line nor an empty gap survives a collapse. The reveal
+ * is the body's normalized progress (current height / full height), and the
+ * resting render is the open/closed height pair.
+ */
+export function useSidebarDisclosureDivider(
+  motionKey: string,
+  open: boolean,
+  frameHeight: number,
+  fullHeight: number,
+) {
+  const dividerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const divider = dividerRef.current;
+    if (divider === null) {
+      return;
+    }
+    const rest = (): void => {
+      divider.style.height = `${open ? frameHeight : 0}px`;
+      divider.style.opacity = open ? "1" : "0";
+    };
+    const motion = motions.get(motionKey);
+    const now = performance.now();
+    if (motion === undefined || !disclosureAnimating(motion, now)) {
+      rest();
+      return;
+    }
+    let raf = 0;
+    const tick = (): void => {
+      const frame = performance.now();
+      const live = motions.get(motionKey);
+      const el = dividerRef.current;
+      if (el === null || live === undefined || !disclosureAnimating(live, frame)) {
+        if (el !== null) {
+          rest();
+        }
+        return;
+      }
+      const height = disclosureCurrent(live, frame);
+      const reveal = fullHeight > 0 ? clamp01(height / fullHeight) : 1;
+      el.style.height = `${frameHeight * reveal}px`;
+      el.style.opacity = `${reveal}`;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [motionKey, open, frameHeight, fullHeight]);
+
+  return { dividerRef };
+}
+
+/**
  * `sidebar_disclosure_header`: muted 12px MEDIUM label, a hairline filling
  * the middle, the chevron at the end. 28px tall, 8px inline padding.
  */

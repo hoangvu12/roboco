@@ -1,30 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatRow } from "../lib/view";
+import { chatRowHeight, type ChatRow } from "../lib/view";
 import { slideOffset } from "../lib/queue-row-logic";
 import {
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
+  pinnedSectionBodyHeight,
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   pinnedSessionIsDraggable,
   SIDEBAR_DRAG_SCROLL_FRAME_MS,
+  SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
+  SIDEBAR_PINNED_DIVIDER_KEY,
   SIDEBAR_SESSION_SLOT,
 } from "../lib/sidebar-pins";
+import {
+  SidebarDisclosureBody,
+  SidebarDisclosureHeader,
+  useSidebarDisclosure,
+  useSidebarDisclosureDivider,
+} from "./sidebar-disclosure";
 
 /**
  * The pinned section of the sidebar's session list — the desktop's
- * `render_pinned_session_group` + drag machinery (upstream zeron fd42e2ab…,
- * ported local-only: NO registry sync). The locally ordered pinned rows sit
- * above the divider, reorderable by dragging a row between slots: siblings
- * slide one slot toward the vacated space on the tab-slide tween and the
- * dragged row rides the pointer's slot. A drop commits the reordered pins to
- * device-local settings; a drag that leaves the sidebar's column (or Escape)
- * cancels, and a commit lands without a resort glide — the rows are already
- * visually in place.
+ * `render_pinned_section` (upstream zeron fd42e2ab…38a8f013, ported
+ * local-only: NO registry sync). A collapsible disclosure ("Pinned" open,
+ * "Pinned (N)" collapsed) whose body and divider ride the shared disclosure
+ * tween; the locally ordered pinned rows sit above the divider, reorderable
+ * by dragging a row between slots: siblings slide one slot toward the
+ * vacated space on the tab-slide tween and the dragged row rides the
+ * pointer's slot. A drop commits the reordered pins to device-local
+ * settings; a drag that leaves the sidebar's column (or Escape) cancels, and
+ * a commit lands without a resort glide — the rows are already visually in
+ * place.
  *
  * The parent renders and keys the rows (so the list-wide FLIP diff still
  * reaches them); this component wraps each in the drag-offset box and owns
- * the gesture, the edge autoscroll, and the commit.
+ * the disclosure, the gesture, the edge autoscroll, and the commit.
  */
 
 /** A pointer must travel this far before the press reads as a drag. */
@@ -41,12 +52,21 @@ interface PinDrag {
 export function PinnedSection({
   rows,
   items,
+  open,
+  hasDivider,
+  onToggle,
   onCommit,
 }: {
   /** The visible pinned rows, in display order. */
   readonly rows: readonly ChatRow[];
   /** The parent's keyed element per row, aligned with `rows`. */
   readonly items: readonly React.ReactNode[];
+  /** `Shell::pinned_open` — the disclosure's live state (the parent's store). */
+  readonly open: boolean;
+  /** The hairline divider renders only when regular rows follow. */
+  readonly hasDivider: boolean;
+  /** The header's flip: the parent owns the in-memory open flag. */
+  readonly onToggle: () => void;
   /**
    * A drop's commit: the from/to slots in the CURRENT visible order — the
    * parent owns the saved-order math (`commit_pinned_session_drag`), since
@@ -73,7 +93,19 @@ export function PinnedSection({
   const suppressClickRef = useRef(false);
 
   const count = rows.length;
-  const draggable = pinnedSessionIsDraggable(count);
+  const bodyHeight = pinnedSectionBodyHeight(
+    rows.map((row) => chatRowHeight(row.branch !== null, row.changeRequest !== null)),
+  );
+  const { bodyRef, chevronRef, toggle } = useSidebarDisclosure("pinned", open, bodyHeight);
+  const { dividerRef } = useSidebarDisclosureDivider(
+    "pinned",
+    open,
+    SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
+    bodyHeight,
+  );
+  // A collapsed section hides its rows (the body clips at height 0), so no
+  // press inside it can arm a drag (`render_active_rows`'s pinned_open gate).
+  const draggable = open && pinnedSessionIsDraggable(count);
 
   // A teardown outliving its gesture (unmount mid-drag — the space filter
   // flipped) is a cancel, exactly like `set_space_filter`'s guard.
@@ -218,32 +250,66 @@ export function PinnedSection({
 
   const draggedIndex = drag === null ? -1 : rows.findIndex((row) => row.chat.id === drag.chatId);
   return (
-    <div className="sidebar-pinned" ref={groupRef} data-testid="sidebar-pinned-sessions">
-      {rows.map((row, index) => {
-        const offset =
-          drag === null || draggedIndex < 0
-            ? 0
-            : index === draggedIndex
-              ? (drag.over - drag.from) * SIDEBAR_SESSION_SLOT
-              : slideOffset(index, drag.from, drag.over) * SIDEBAR_SESSION_SLOT;
-        return (
-          <div
-            key={row.chat.id}
-            className="pinned-row"
-            data-dragging={drag !== null ? "1" : undefined}
-            style={offset === 0 ? undefined : { transform: `translateY(${offset}px)` }}
-            onPointerDown={(event) => armDrag(event, row.chat.id, index)}
-            onClickCapture={(event) => {
-              if (suppressClickRef.current) {
-                event.preventDefault();
-                event.stopPropagation();
-              }
-            }}
-          >
-            {items[index]}
+    <section className="sidebar-pinned-section" data-testid="sidebar-pinned-section">
+      <SidebarDisclosureHeader
+        id="pinned-toggle"
+        label={open ? "Pinned" : `Pinned (${count})`}
+        open={open}
+        chevronRef={chevronRef}
+        onToggle={() => {
+          // The header click kills any live drag before the section moves —
+          // the desktop's toggle leads with `cancel_pinned_session_drag`.
+          teardownRef.current?.();
+          setDragState(null);
+          // The motion begins on the CURRENT height before the flip; the
+          // parent bumps the resort reset epoch so the rows below adopt the
+          // new order without a second (FLIP) animation of this movement.
+          toggle();
+          onToggle();
+        }}
+      />
+      <SidebarDisclosureBody bodyRef={bodyRef}>
+        <div className="sidebar-pinned-pad">
+          <div className="sidebar-pinned" ref={groupRef} data-testid="sidebar-pinned-sessions">
+            {rows.map((row, index) => {
+              const offset =
+                drag === null || draggedIndex < 0
+                  ? 0
+                  : index === draggedIndex
+                    ? (drag.over - drag.from) * SIDEBAR_SESSION_SLOT
+                    : slideOffset(index, drag.from, drag.over) * SIDEBAR_SESSION_SLOT;
+              return (
+                <div
+                  key={row.chat.id}
+                  className="pinned-row"
+                  data-dragging={drag !== null ? "1" : undefined}
+                  style={offset === 0 ? undefined : { transform: `translateY(${offset}px)` }}
+                  onPointerDown={(event) => armDrag(event, row.chat.id, index)}
+                  onClickCapture={(event) => {
+                    if (suppressClickRef.current) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }
+                  }}
+                >
+                  {items[index]}
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
-    </div>
+        </div>
+      </SidebarDisclosureBody>
+      {hasDivider ? (
+        <div
+          ref={dividerRef}
+          className="sidebar-pinned-divider-frame"
+          data-testid={SIDEBAR_PINNED_DIVIDER_KEY}
+        >
+          <div className="sidebar-pinned-divider">
+            <div className="sidebar-pinned-divider-rule" />
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
