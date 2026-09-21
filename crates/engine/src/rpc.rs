@@ -875,6 +875,46 @@ fn doc_messages_stream(
     .boxed()
 }
 
+/// First paint reads only the local tail; full history is deferred until the
+/// next stream poll. No network dependency or persisted truncation.
+async fn opening_doc_messages_stream(
+    host: crate::doc_host::DocHost,
+    chat_id: String,
+) -> Result<BoxStream<'static, serde_json::Value>, RpcError> {
+    let (handle, preview) = tokio::task::spawn_blocking(move || {
+        let handle = host.open(&chat_id)?;
+        let entries = handle.doc().read_opening_tail(128)?;
+        let mut preview = serde_json::to_value(roboco_doc::TranscriptUpdate {
+            frame: roboco_doc::TranscriptFrame::reset(&entries),
+            context_usage: handle.doc().context_usage(),
+            replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
+        })
+        .map_err(|e| crate::EngineError::Other(e.to_string()))?;
+        preview["historyPending"] = serde_json::Value::Bool(true);
+        Ok::<_, crate::EngineError>((handle, preview))
+    })
+    .await
+    .map_err(|e| RpcError::Failed(e.to_string()))?
+    .map_err(|e| RpcError::Failed(e.to_string()))?;
+    // Do not build the full mirror before yielding the preview.
+    // The next poll attaches normally and begins with a complete
+    // authoritative reset; subsequent frames use normal deltas.
+    let full = futures::stream::once(async move {
+        match tokio::task::spawn_blocking(move || (handle.watch_messages(), handle.doc_arc())).await
+        {
+            Ok((rx, doc)) => doc_messages_stream(rx, doc),
+            Err(error) => {
+                tracing::warn!(%error, "transcript opening failed");
+                futures::stream::empty().boxed()
+            }
+        }
+    })
+    .flatten();
+    Ok(futures::stream::once(async move { preview })
+        .chain(full)
+        .boxed())
+}
+
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -980,7 +1020,17 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&serde_json::json!({ "outcome": outcome }))
             }
             methods::WATCH_DOC_MESSAGES => {
+                // Opt-in: older viewports retain the full-reset contract.
+                let opening_tail = params
+                    .get("openingTail")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let p: ChatParams = parse_params(params)?;
+                if opening_tail {
+                    return Ok(RpcReply::Stream(
+                        opening_doc_messages_stream(self.doc_host.clone(), p.chat_id).await?,
+                    ));
+                }
                 let handle = self
                     .doc_host
                     .open(&p.chat_id)
@@ -1946,6 +1996,88 @@ impl RpcService for EngineRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_opening_tail_arrives_before_full_mirror_and_keeps_all_history() {
+        use crate::doc_host::{DocHost, DocHostConfig};
+        use futures::StreamExt;
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "viewer".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        let handle = host.open("whale").unwrap();
+        handle
+            .doc()
+            .push_message(&roboco_doc::SessionMessageEntry {
+                id: "turn".into(),
+                role: roboco_doc::MessageRole::Assistant,
+                parts: (0..500)
+                    .map(|i| roboco_doc::MessagePart::Text {
+                        id: format!("part-{i}"),
+                        text: "local text".into(),
+                    })
+                    .collect(),
+                created_at: 0,
+                device_id: "host".into(),
+                status: None,
+                continuation_of: None,
+            })
+            .unwrap();
+        // Hold publication blocked: the opening must not await the full mirror.
+        let held = handle.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            held.import_transcript(|| {
+                locked_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        locked_rx.recv().unwrap();
+        let opening = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            opening_doc_messages_stream(host.clone(), "whale".into()),
+        )
+        .await;
+        release_tx.send(()).unwrap();
+        blocker.join().unwrap();
+        let mut stream = opening
+            .expect("first paint must not wait for publication")
+            .unwrap();
+        let preview = stream.next().await.unwrap();
+        assert_eq!(preview["historyPending"], true);
+        assert_eq!(preview["reset"][0]["parts"].as_array().unwrap().len(), 128);
+        assert_eq!(preview["reset"][0]["parts"][0]["id"], "part-372");
+        // Changes between preview and subscribe must appear in the full reset.
+        handle
+            .write_user_message("arrived", "new local message", 1)
+            .unwrap();
+        let full = stream.next().await.unwrap();
+        assert!(full.get("historyPending").is_none());
+        assert_eq!(full["reset"][0]["parts"].as_array().unwrap().len(), 500);
+        assert_eq!(full["reset"][1]["id"], "arrived");
+        handle
+            .write_user_message("live", "after attach", 2)
+            .unwrap();
+        let live = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut entries = Vec::new();
+        for value in [full, live] {
+            let update: roboco_doc::TranscriptUpdate = serde_json::from_value(value).unwrap();
+            roboco_doc::apply_transcript_frame(&mut entries, update.frame).unwrap();
+        }
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.last().unwrap().id, "live");
+        host.shutdown_workers().await;
+    }
 
     /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
     /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.
