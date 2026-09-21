@@ -121,6 +121,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Two strings name the same checkout root. Windows git writes
+/// forward-slash gitdir links while specs carry backslash paths (and either
+/// side may be a symlinked alias), so a raw string compare misses real reuse;
+/// canonical forms settle it, falling back to the raw compare.
+fn is_same_checkout(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Owns local chat documents and their command workers.
 #[derive(Clone)]
 pub struct DocHost {
@@ -2475,8 +2489,8 @@ impl DocHost {
             && let Ok(Some(chat)) = ws.chat(chat_id)
             && let Some(cwd) = chat.cwd
             && cwd != spec.repo_path
-            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd)).as_deref()
-                == Some(spec.repo_path.as_str())
+            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd))
+                .is_some_and(|root| is_same_checkout(&root, &spec.repo_path))
         {
             tracing::info!(chat = %chat_id, cwd = %cwd, "worktree spec: reusing the chat's existing worktree");
             return Ok((cwd, None));
@@ -2576,10 +2590,10 @@ impl DocHost {
         })
     }
 
-    /// A steer-turned-run with no in-process `last_request` (engine restarted
-    /// since the last turn): rebuild the run config from the chat's workspace
-    /// row — cwd from the row, model/reasoning/options/sandbox from its config
-    /// (composer defaults otherwise). `None` without a workspace host or row.
+/// A steer-turned-run with no in-process `last_request` (engine restarted
+/// since the last turn): rebuild the run config from the chat's workspace
+/// row — cwd from the row, model/reasoning/options/sandbox from its config
+/// (composer defaults otherwise). `None` without a workspace host or row.
     // (Also the RespondInput dead-run fallback's config source.)
     pub(crate) fn request_from_chat_row(
         &self,
