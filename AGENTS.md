@@ -41,7 +41,7 @@ gh pr create -R zeronsh/zeron --base main --head hoangvu12:fix/whatever
 
 GPUI comes from our forks, pinned by rev in the root `Cargo.toml`:
 
-- `hoangvu12/zui` (rev `aa009411…`) — currently identical to `zeronsh/zui` main
+- `hoangvu12/zui` (rev `c2d273dc…`) — audited Windows backdrop renderer (zeronsh/zui#10), pinned from branch `fix/windows-nested-frosted-blur`
 - `hoangvu12/gpui-component` (rev `94c1bbaf…`)
 
 `gpui-component` still declares its gpui crates against `zeronsh/zui`, so the `[patch."https://github.com/zeronsh/zui"]` section redirects them to `hoangvu12/zui`. **Rule: the patch rev must always equal the top-level `gpui` pin rev**, otherwise you get two GPUI copies and ~50 type-mismatch errors. To bump: push/verify the rev exists in `hoangvu12/zui`, then update the pins and the patch revs together.
