@@ -88,7 +88,7 @@ jobs:
       - name: Harness catalog tests
         run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
-        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles -P ci
+        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles --test project_actions_rpc -P ci
       - name: UI tests
         # Serial on purpose: the gpui test scheduler is not safe under
         # intra-process parallelism (same constraint as the old
