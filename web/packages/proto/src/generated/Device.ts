@@ -12,6 +12,10 @@ createdAt: string | null,
  */
 version?: string | null, 
 /**
+ * Cursor SDK selected by the owning engine; absent on older engines.
+ */
+cursorSdkVersion?: string | null, 
+/**
  * Protocol/document features supported by the engine currently owning
  * this device row. Missing on older builds.
  */

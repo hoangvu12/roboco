@@ -421,6 +421,7 @@ impl Engine {
         Ok(EngineInfo {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
+            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
             capabilities: roboco_proto::capabilities::current(),
         })
     }

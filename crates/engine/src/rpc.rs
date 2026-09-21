@@ -527,6 +527,7 @@ impl EngineRpc {
         let engine_info = EngineInfo {
             device_id: doc_host.device_id().to_string(),
             workspace_scope,
+            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
             capabilities: roboco_proto::capabilities::current(),
         };
         Self {
