@@ -211,12 +211,9 @@ async fn handle(
     let upgraded = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let Ok(io) = upgraded.await else { return };
-        let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
-            TokioIo::new(io),
-            Role::Server,
-            None,
-        )
-        .await;
+        let (io, progress) = roboco_rpc::ProgressIo::new(TokioIo::new(io));
+        let mut ws =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(io, Role::Server, None).await;
         if first_frame_auth {
             let authenticated = tokio::select! {
                 _ = cancel.cancelled() => false,
@@ -228,7 +225,10 @@ async fn handle(
         }
         tokio::select! {
             _ = cancel.cancelled() => {},
-            _ = roboco_rpc::serve_websocket(ws, service) => {},
+            _ = roboco_rpc::serve_websocket(
+                roboco_rpc::Connection { socket: ws, progress },
+                service,
+            ) => {},
         }
     });
     Ok(Response::builder()

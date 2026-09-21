@@ -15,3 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# start_paused tests for the bounded pump's lease behavior.
+tokio = { workspace = true, features = ["test-util"] }
