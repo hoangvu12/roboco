@@ -9588,6 +9588,11 @@ button.files-save-pill:hover {
   background: rgb(var(--rb-hairline) / calc(0.6 * var(--rb-hairline-scale)));
 }
 
+/* The rule-less headers' invisible spring (7c7b574b). */
+.sidebar-disclosure-spacer {
+  flex: 1;
+}
+
 .sidebar-disclosure-chevron {
   flex: none;
   display: inline-flex;

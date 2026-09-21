@@ -1072,6 +1072,7 @@ fn sidebar_disclosure_header(
         .when(with_rule, |el| {
             el.child(div().h(px(1.0)).flex_1().bg(theme.border.opacity(0.6)))
         })
+        .when(!with_rule, |el| el.child(div().flex_1()))
         .child(chevron)
 }
 
@@ -3566,7 +3567,7 @@ impl Shell {
             } else {
                 0.0
             };
-        // Match Pinned: a muted label with its disclosure chevron beside it.
+        // Match Pinned: a muted label with a right-aligned disclosure chevron.
         // The count only shows while collapsed.
         let label: SharedString = if open {
             "Archived".into()

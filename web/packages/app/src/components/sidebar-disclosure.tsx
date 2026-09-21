@@ -290,7 +290,13 @@ export function SidebarDisclosureHeader({
   return (
     <button type="button" id={id} className="sidebar-disclosure-header" aria-expanded={open} onClick={onToggle}>
       <span className="sidebar-disclosure-label">{label}</span>
-      {withRule ? <span className="sidebar-disclosure-rule" /> : null}
+      {withRule ? (
+        <span className="sidebar-disclosure-rule" />
+      ) : (
+        // No rule: an invisible spring keeps the chevron right-aligned
+        // (7c7b574b — the rule did that job on the device-group headers).
+        <span className="sidebar-disclosure-spacer" />
+      )}
       <span ref={chevronRef} className="sidebar-disclosure-chevron">
         <Icon name="altArrowRight" size={12} />
       </span>
