@@ -915,6 +915,17 @@ impl Theme {
         self.element_hover
     }
 
+    /// Muted popup text is the theme foreground composited onto the glass.
+    /// Fixed opaque grays turn muddy over colorful or bright backgrounds.
+    pub fn for_popup(&self) -> Self {
+        let mut popup = self.clone();
+        if self.is_frost() {
+            popup.text_muted = self.text.opacity(0.64);
+            popup.text_faint = self.text.opacity(0.48);
+        }
+        popup
+    }
+
     /// The theme-owned tint floating cards paint over their backdrop blur (see
     /// [`crate::frost::frosted`]). Light coverage stays heavier because dark
     /// text is more vulnerable to unpredictable content behind a popover.
