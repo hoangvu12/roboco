@@ -1,6 +1,6 @@
-//! Shell glue for host-owned project Actions (titlebar control + setup
-//! attach). The control/editor surface arrives with the ticket-27 port; this
-//! file starts with the worktree-setup terminal attach.
+//! Shell glue for host-owned project Actions. The worktree-setup terminal
+//! attaches to the chat's bottom drawer; the titlebar control + editor
+//! surface arrives with the ticket-27 port.
 
 use super::*;
 
@@ -23,15 +23,11 @@ impl Shell {
             return;
         };
 
-        let panel = self.right_terminal_panel(cx);
+        let panel = self.terminal_panel(cx);
         let title = format!("{} (setup)", run.action_name);
         let tab = panel.update(cx, |panel, cx| {
             panel.reserve_tab_for_chat(chat_id.clone(), title, cx)
         });
-        self.right_tabs
-            .entry(chat_id.clone())
-            .or_default()
-            .push(RightSurface::Terminal(tab));
         let attached = panel.update(cx, |panel, cx| {
             panel.attach_reserved_session(&chat_id, tab, run.terminal, target_device_id, cx)
         });
@@ -40,12 +36,14 @@ impl Shell {
                 Some("Setup action started, but its terminal could not be attached".into());
         }
 
-        if self.active_chat == chat_id {
+        let selected = self.active_chat == chat_id;
+        self.panels
+            .update(&chat_id, |panels| panels.terminal_open = true);
+        if selected {
+            self.terminal_tween = None;
+            self.terminal_tween_task = None;
             panel.update(cx, |panel, cx| panel.set_open(true, cx));
-            if !self.right_pane_open(cx) {
-                self.toggle_right_pane(cx);
-            }
-            self.set_right_active(RightSurface::Terminal(tab), cx);
+            panel.update(cx, |panel, cx| panel.select_tab_by_key(tab, cx));
         }
         cx.notify();
     }
