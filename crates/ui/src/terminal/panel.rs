@@ -299,6 +299,7 @@ struct TerminalTab {
     key: u64,
     title: SharedString,
     terminal_id: Option<String>,
+    target_device_id: Option<String>,
     emulator: Emulator,
     exited: Option<i32>,
     last_seq: u64,
@@ -459,8 +460,9 @@ impl TerminalPanel {
         }
     }
 
-    // ---- embedded (right-pane surface) API — the shell's tab strip drives
-    // ---- these; keys are stable across reorders/closes.
+    // ---- externally managed session API. Project Actions use these helpers
+    // ---- in the bottom drawer; the right-pane host also uses the keyed tab
+    // ---- operations because its surface strip lives in Shell.
 
     /// `(key, title, exited)` for the selected chat's tabs, in tab order.
     pub fn tab_summaries(&self, cx: &App) -> Vec<(u64, SharedString, bool)> {
@@ -499,6 +501,66 @@ impl TerminalPanel {
             return;
         };
         self.select_tab(&chat, ix, cx);
+    }
+
+    /// Create a named placeholder tab without opening a PTY. Project Actions
+    /// use this before their host-side run RPC completes.
+    pub fn reserve_tab_for_chat(
+        &mut self,
+        chat: String,
+        title: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.tab_seq += 1;
+        let key = self.tab_seq;
+        let entry = self.chats.entry(chat).or_default();
+        entry.tabs.push(TerminalTab {
+            key,
+            title: title.into(),
+            terminal_id: None,
+            target_device_id: None,
+            emulator: Emulator::new(80, 24),
+            exited: None,
+            last_seq: 0,
+            coalescer: InputCoalescer::default(),
+            flush_task: None,
+            resize_task: None,
+            _run: None,
+        });
+        entry.active = entry.tabs.len() - 1;
+        cx.notify();
+        key
+    }
+
+    /// Attach and stream a PTY that was already opened by the owning engine.
+    pub fn attach_reserved_session(
+        &mut self,
+        chat: &str,
+        key: u64,
+        session: TerminalSession,
+        target_device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.tab_mut(chat, key).is_none() {
+            return false;
+        }
+        let Some(engine) = self.engine(chat, cx) else {
+            return false;
+        };
+        let run = Self::spawn_session(
+            chat.to_string(),
+            key,
+            engine,
+            target_device_id,
+            Some(session),
+            cx,
+        );
+        if let Some(tab) = self.tab_mut(chat, key) {
+            tab._run = Some(run);
+            true
+        } else {
+            false
+        }
     }
 
     /// Close the selected chat's tab `key` (surface-tab ✕).
@@ -578,26 +640,13 @@ impl TerminalPanel {
         let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
-        self.tab_seq += 1;
-        let key = self.tab_seq;
-        let entry = self.chats.entry(chat.clone()).or_default();
-        let tab_no = entry.tabs.len() + 1;
-        entry.tabs.push(TerminalTab {
-            key,
-            title: format!("Terminal {tab_no}").into(),
-            terminal_id: None,
-            emulator: Emulator::new(80, 24),
-            exited: None,
-            last_seq: 0,
-            coalescer: InputCoalescer::default(),
-            flush_task: None,
-            resize_task: None,
-            _run: None,
-        });
-        entry.active = entry.tabs.len() - 1;
-
+        let tab_no = self
+            .chats
+            .get(&chat)
+            .map_or(1, |entry| entry.tabs.len() + 1);
+        let key = self.reserve_tab_for_chat(chat.clone(), format!("Terminal {tab_no}"), cx);
         let target = self.chat_target(&chat, cx);
-        let run = Self::spawn_session(chat.clone(), key, engine, target, cx);
+        let run = Self::spawn_session(chat.clone(), key, engine, target, None, cx);
         if let Some(tab) = self.tab_mut(&chat, key) {
             tab._run = Some(run);
         }
@@ -610,6 +659,7 @@ impl TerminalPanel {
         key: u64,
         engine: EngineTarget,
         target: Option<String>,
+        existing_session: Option<TerminalSession>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
@@ -622,37 +672,41 @@ impl TerminalPanel {
                 })
                 .unwrap_or((80, 24));
 
-            let opened = engine
-                .call_as::<TerminalSession>(
-                    methods::OPEN_TERMINAL,
-                    with_target(
-                        serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows }),
-                        &target,
-                    ),
-                )
-                .await;
-            let session = match opened {
-                Ok(session) => session,
-                Err(err) => {
-                    tracing::warn!(error = %err, "OpenTerminal failed");
-                    let _ = this.update(cx, |panel, cx| {
-                        if let Some(tab) = panel.tab_mut(&chat, key) {
-                            tab.emulator.feed(
-                                format!("\x1b[31mfailed to open terminal: {err}\x1b[0m\r\n")
-                                    .as_bytes(),
-                            );
-                            tab.exited = Some(-1);
-                            cx.notify();
-                        }
-                    });
-                    return;
-                }
+            let session = match existing_session {
+                Some(session) => session,
+                None => match engine
+                    .call_as::<TerminalSession>(
+                        methods::OPEN_TERMINAL,
+                        with_target(
+                            serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows }),
+                            &target,
+                        ),
+                    )
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "OpenTerminal failed");
+                        let _ = this.update(cx, |panel, cx| {
+                            if let Some(tab) = panel.tab_mut(&chat, key) {
+                                tab.emulator.feed(
+                                    format!("\x1b[31mfailed to open terminal: {err}\x1b[0m\r\n")
+                                        .as_bytes(),
+                                );
+                                tab.exited = Some(-1);
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                },
             };
             let terminal_id = session.id.clone();
             let attached = this
                 .update(cx, |panel, cx| {
                     if let Some(tab) = panel.tab_mut(&chat, key) {
                         tab.terminal_id = Some(terminal_id.clone());
+                        tab.target_device_id = target.clone();
                         cx.notify();
                         true
                     } else {
@@ -748,10 +802,10 @@ impl TerminalPanel {
         event: TerminalEvent,
         cx: &mut Context<Self>,
     ) -> StreamDisposition {
-        let target = self.chat_target(chat, cx);
         let Some(tab) = self.tab_mut(chat, key) else {
             return StreamDisposition::Stop;
         };
+        let target = tab.target_device_id.clone();
         match event {
             TerminalEvent::Data { seq, data } => {
                 tab.last_seq = seq;
@@ -828,10 +882,10 @@ impl TerminalPanel {
         let Some(engine) = self.engine(&chat, cx) else {
             return;
         };
-        let target = self.chat_target(&chat, cx);
         let Some(tab) = self.tab_mut(&chat, key) else {
             return;
         };
+        let target = tab.target_device_id.clone();
         if tab.coalescer.is_empty() {
             return;
         }
@@ -926,8 +980,8 @@ impl TerminalPanel {
         }
         tab.emulator.resize(cols, rows);
         let key = tab.key;
+        let target = tab.target_device_id.clone();
         let engine = self.engine(&chat, cx);
-        let target = self.chat_target(&chat, cx);
         if let (Some(engine), Some(tab)) = (engine, self.tab_mut(&chat, key)) {
             let id = tab.terminal_id.clone();
             tab.resize_task = Some(cx.spawn(async move |this, cx| {
@@ -1326,8 +1380,7 @@ impl TerminalPanel {
     }
 
     fn close_tab(&mut self, chat: &str, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let engine = self.engine(&chat, cx);
-        let target = self.chat_target(chat, cx);
+        let engine = self.engine(chat, cx);
         let Some(tabs) = self.chats.get_mut(chat) else {
             return;
         };
@@ -1335,6 +1388,7 @@ impl TerminalPanel {
             return;
         };
         let tab = tabs.tabs.remove(ix);
+        let target = tab.target_device_id.clone();
         tabs.active = active_after_close(tabs.active, ix, tabs.tabs.len());
         let now_empty = tabs.tabs.is_empty();
         self.drag = None;

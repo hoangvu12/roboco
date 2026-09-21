@@ -28,6 +28,7 @@ export * from "./Connectivity";
 export * from "./ConnectivityState";
 export * from "./ContextUsage";
 export * from "./ConversationSourceContext";
+export * from "./CreateWorktreeOutcome";
 export * from "./Device";
 export * from "./DiffFileSummary";
 export * from "./DoneStatus";

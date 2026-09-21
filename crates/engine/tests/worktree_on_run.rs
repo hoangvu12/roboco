@@ -3,7 +3,9 @@
 //! (the durable replacement for the composer's old blocking CreateWorktree
 //! relay RPC), runs there, and stamps the chat row's cwd + `roboco/<name>`
 //! branch. A second spec-carrying Run for the same chat REUSES the checkout
-//! instead of minting another.
+//! instead of minting another. A space-scoped spec also launches the space's
+//! setup Action in the fresh worktree — keyed by the space's ORIGINAL path,
+//! never a canonicalized alias — and publishes the handoff the sender polls.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,8 +20,8 @@ use roboco_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessa
 use roboco_engine::{EngineCore, HarnessRegistry};
 use roboco_harness::{Harness, HarnessError, RunControls};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode, WorktreeSpec,
+    AgentEvent, DoneStatus, HarnessId, Model, ProjectActionDraft, ProjectActionIcon,
+    ReasoningLevel, RunRequest, SandboxLevel, SteeringMode, WorktreeSpec,
 };
 
 const CHAT: &str = "chat-worktree-run";
@@ -105,7 +107,7 @@ fn complete_assistant_count(core: &EngineCore) -> usize {
         .count()
 }
 
-fn run_payload(message_id: &str, repo_path: &str) -> SessionCommandPayload {
+fn run_payload(message_id: &str, repo_path: &str, space_id: Option<&str>) -> SessionCommandPayload {
     SessionCommandPayload::Run {
         request: RunRequest {
             prompt: "isolated please".into(),
@@ -122,6 +124,7 @@ fn run_payload(message_id: &str, repo_path: &str) -> SessionCommandPayload {
             worktree: Some(WorktreeSpec {
                 repo_path: repo_path.into(),
                 base: "main".into(),
+                space_id: space_id.map(str::to_string),
             }),
         },
         message_id: message_id.into(),
@@ -141,12 +144,45 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
     );
 }
 
+/// The setup Action's command, resolved per shell: it records the env values
+/// roboco injects so the test can pin project identity.
+fn setup_command() -> String {
+    if cfg!(windows) {
+        concat!(
+            "echo %ROBOCO_PROJECT_ROOT%>setup-project-root&& ",
+            "echo %ROBOCO_WORKTREE_PATH%>setup-worktree-path&& ",
+            "echo setup>setup-marker"
+        )
+        .to_string()
+    } else {
+        concat!(
+            "printf '%s' \"$ROBOCO_PROJECT_ROOT\" > setup-project-root; ",
+            "printf '%s' \"$ROBOCO_WORKTREE_PATH\" > setup-worktree-path; ",
+            "printf setup > setup-marker"
+        )
+        .to_string()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
+    check_worktree_setup_and_reuse(false).await;
+    #[cfg(unix)]
+    check_worktree_setup_and_reuse(true).await;
+}
+
+async fn check_worktree_setup_and_reuse(use_project_symlink: bool) {
     let tmp = tempfile::tempdir().unwrap();
     // Canonicalize: git records canonical paths in worktree gitdir links, and
     // macOS tempdirs live behind the /var → /private/var symlink.
-    let tmp_path = tmp.path().canonicalize().unwrap();
+    let mut tmp_path = tmp.path().canonicalize().unwrap();
+    // Windows: git rejects \\?\-prefixed verbatim paths passed as arguments,
+    // so the plain drive form feeds every git call and the worktrees root.
+    #[cfg(windows)]
+    {
+        let plain = tmp_path.to_string_lossy().to_string();
+        tmp_path = PathBuf::from(plain.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(plain));
+    }
     let worktrees_root = tmp_path.join("worktrees");
     unsafe { std::env::set_var("ROBOCO_WORKTREES_DIR", &worktrees_root) };
 
@@ -159,16 +195,63 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
     git(&repo_dir, &["add", "."]);
     git(&repo_dir, &["commit", "-m", "init"]);
     let repo_path = repo_dir.to_string_lossy().to_string();
+    // The env value the host injects is the canonical root (on Windows the
+    // \\?\ form; identical to repo_path on unix, where the test pre-canonicalized).
+    let expected_project_root = std::fs::canonicalize(&repo_dir)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    #[cfg(unix)]
+    let project_dir = if use_project_symlink {
+        let project_dir = tmp_path.join("project-link");
+        std::os::unix::fs::symlink(&repo_dir, &project_dir).unwrap();
+        assert_ne!(project_dir, repo_dir);
+        assert_eq!(project_dir.canonicalize().unwrap(), repo_dir);
+        project_dir
+    } else {
+        repo_dir.clone()
+    };
+    #[cfg(not(unix))]
+    let project_dir = {
+        assert!(!use_project_symlink);
+        repo_dir.clone()
+    };
 
     let cwds: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(RecordingHarness { cwds: cwds.clone() }));
     let core = EngineCore::assemble(&tmp_path.join("data"), Arc::new(registry), HarnessId::Mock)
         .expect("engine core assembles");
+    core.workspace
+        .create_space(
+            "space-worktree-run",
+            &core.device_id,
+            &project_dir.to_string_lossy(),
+            Some("Repo".into()),
+            true,
+        )
+        .expect("create project");
+    // Save through the same RPC as the editor: the Space may use an alias
+    // while the queued WorktreeSpec carries the canonical repository path.
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            roboco_rpc::methods::UPSERT_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-worktree-run",
+                "action": ProjectActionDraft {
+                    name: "Setup".into(),
+                    command: setup_command(),
+                    icon: ProjectActionIcon::Configure,
+                    run_on_worktree_create: true,
+                }
+            }),
+        )
+        .await
+        .expect("save setup Action");
 
     // Mirror the composer: createChat lands first (cwd-less; the engine
     // resolves the project folder), then the queued Run carries the spec.
-    let client = roboco_rpc::memory_client(core.rpc_service());
     client
         .call(
             roboco_rpc::methods::MUTATE,
@@ -185,8 +268,12 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         .rename_chat(CHAT, "Pre-titled")
         .expect("rename chat");
 
-    core.doc_host
-        .queue_command(CHAT, run_payload("msg-wt-1", &repo_path))
+    let first_command = core
+        .doc_host
+        .queue_command(
+            CHAT,
+            run_payload("msg-wt-1", &repo_path, Some("space-worktree-run")),
+        )
         .expect("queue run command");
     wait_for(|| complete_assistant_count(&core) == 1, "first turn").await;
 
@@ -204,6 +291,31 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         first.join(".git").is_file(),
         "a linked worktree has a .git FILE"
     );
+    let setup = core
+        .project_actions
+        .take_setup_handoff(&first_command, CHAT)
+        .expect("fresh worktree setup handoff");
+    assert!(
+        setup.setup_error.is_none(),
+        "setup failed: {:?}",
+        setup.setup_error
+    );
+    assert!(setup.setup_action.is_some());
+    wait_for(|| first.join("setup-marker").is_file(), "setup Action").await;
+    assert_eq!(
+        std::fs::read_to_string(first.join("setup-project-root"))
+            .unwrap()
+            .trim_end(),
+        expected_project_root
+    );
+    assert_eq!(
+        std::fs::read_to_string(first.join("setup-worktree-path"))
+            .unwrap()
+            .trim_end(),
+        first_cwd
+    );
+    // Reusing this checkout must not execute setup a second time.
+    std::fs::remove_file(first.join("setup-marker")).unwrap();
 
     // The chat row follows: cwd repointed at the worktree, branch stamped
     // with the actual roboco/<name> (the composer only knew the base).
@@ -220,8 +332,12 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
     );
 
     // A duplicate spec-carrying Run (client retry) REUSES the checkout.
-    core.doc_host
-        .queue_command(CHAT, run_payload("msg-wt-2", &repo_path))
+    let second_command = core
+        .doc_host
+        .queue_command(
+            CHAT,
+            run_payload("msg-wt-2", &repo_path, Some("space-worktree-run")),
+        )
         .expect("queue second run");
     wait_for(|| complete_assistant_count(&core) == 2, "second turn").await;
     let second_cwd = cwds.lock().unwrap().get(1).cloned().expect("second run");
@@ -233,6 +349,13 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(minted, 1, "exactly one worktree minted for the chat");
+    let reused = core
+        .project_actions
+        .take_setup_handoff(&second_command, CHAT)
+        .expect("reuse completion handoff");
+    assert!(reused.setup_action.is_none(), "setup must not run on reuse");
+    assert!(reused.setup_error.is_none());
+    assert!(!first.join("setup-marker").exists());
 
     core.shutdown().await;
 }

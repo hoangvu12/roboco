@@ -20,9 +20,12 @@ use roboco_doc::{
 use roboco_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInputQuestion};
 use roboco_sync::DocsStore;
 
+use crate::project_actions::{
+    ProjectActionSetupHandoff, ProjectActionsStore, launch_project_setup_action,
+};
 use crate::sessions::{SessionsEngine, SteerOutcome};
 use crate::workspace_host::WorkspaceHost;
-use crate::{EngineError, new_id, now_ms};
+use crate::{EngineError, Terminals, new_id, now_ms};
 
 /// Debounce window for local snapshot saves after a doc change.
 const SNAPSHOT_DEBOUNCE_MS: u64 = 1_000;
@@ -80,6 +83,10 @@ struct DocHostInner {
     workspace: OnceLock<WorkspaceHost>,
     /// Worktree materialization for Run commands (see `set_repos`).
     repos: OnceLock<crate::repos::Repos>,
+    /// Project Actions + terminals (engine assembly) — worktree setup launch
+    /// and handoff publication for Run commands carrying a
+    /// [`roboco_proto::WorktreeSpec`].
+    project_action_runtime: OnceLock<(ProjectActionsStore, Terminals)>,
     /// Cancels every worker spawned through `spawn_worker` — the loops'
     /// own exit conditions (weak handle death, closed channels) don't cover
     /// runtime replacement, where Edge-capable tasks must stop doing
@@ -112,6 +119,20 @@ struct DocHostInner {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Two strings name the same checkout root. Windows git writes
+/// forward-slash gitdir links while specs carry backslash paths (and either
+/// side may be a symlinked alias), so a raw string compare misses real reuse;
+/// canonical forms settle it, falling back to the raw compare.
+fn is_same_checkout(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Owns local chat documents and their command workers.
@@ -420,6 +441,7 @@ impl DocHost {
                 sessions: Mutex::new(None),
                 workspace: OnceLock::new(),
                 repos: OnceLock::new(),
+                project_action_runtime: OnceLock::new(),
                 shutdown: CancellationToken::new(),
                 tasks: TaskTracker::new(),
                 handles: Mutex::new(HashMap::new()),
@@ -534,6 +556,19 @@ impl DocHost {
     /// Run commands carrying a [`roboco_proto::WorktreeSpec`].
     pub fn set_repos(&self, repos: crate::repos::Repos) {
         let _ = self.inner.repos.set(repos);
+    }
+
+    /// Wire the project-actions store + terminals (engine assembly) — the
+    /// setup Action launched while draining a worktree-carrying Run command.
+    pub fn set_project_action_runtime(
+        &self,
+        project_actions: ProjectActionsStore,
+        terminals: Terminals,
+    ) {
+        let _ = self
+            .inner
+            .project_action_runtime
+            .set((project_actions, terminals));
     }
 
     /// Wire the uploads store (engine assembly) — `pending://` ref resolution
@@ -2123,9 +2158,10 @@ impl DocHost {
                 // `take()` resolves the request before dispatch, so the journal
                 // and steer→new-turn fallbacks reuse the created path instead of
                 // minting another checkout.
-                let fresh_worktree = match request.worktree.take() {
+                let worktree_spec = request.worktree.take();
+                let fresh_worktree = match worktree_spec.as_ref() {
                     Some(spec) => {
-                        let (cwd, fresh) = self.materialize_worktree(chat_id, &spec).await?;
+                        let (cwd, fresh) = self.materialize_worktree(chat_id, spec).await?;
                         request.cwd = cwd;
                         fresh
                     }
@@ -2147,6 +2183,16 @@ impl DocHost {
                             tracing::warn!(chat = %chat_id, error = %err, "worktree branch stamp failed");
                         }
                     }
+                }
+                if let Some(spec) = worktree_spec.as_ref()
+                    && spec.space_id.is_some()
+                {
+                    self.complete_worktree_setup_handoff(
+                        &entry.id,
+                        chat_id,
+                        spec,
+                        fresh_worktree.as_ref(),
+                    );
                 }
                 let harness = self.harness_for_request(chat_id, &request);
                 // A row with no config renders no harness glyph (and every
@@ -2443,8 +2489,8 @@ impl DocHost {
             && let Ok(Some(chat)) = ws.chat(chat_id)
             && let Some(cwd) = chat.cwd
             && cwd != spec.repo_path
-            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd)).as_deref()
-                == Some(spec.repo_path.as_str())
+            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd))
+                .is_some_and(|root| is_same_checkout(&root, &spec.repo_path))
         {
             tracing::info!(chat = %chat_id, cwd = %cwd, "worktree spec: reusing the chat's existing worktree");
             return Ok((cwd, None));
@@ -2466,10 +2512,88 @@ impl DocHost {
         Ok((worktree.path.clone(), Some(worktree)))
     }
 
-    /// A steer-turned-run with no in-process `last_request` (engine restarted
-    /// since the last turn): rebuild the run config from the chat's workspace
-    /// row — cwd from the row, model/reasoning/options/sandbox from its config
-    /// (composer defaults otherwise). `None` without a workspace host or row.
+    fn complete_worktree_setup_handoff(
+        &self,
+        command_id: &str,
+        chat_id: &str,
+        spec: &roboco_proto::WorktreeSpec,
+        fresh_worktree: Option<&roboco_proto::Worktree>,
+    ) {
+        let Some((project_actions, terminals)) = self.inner.project_action_runtime.get() else {
+            return;
+        };
+        let outcome = match (spec.space_id.as_deref(), fresh_worktree) {
+            (Some(space_id), Some(worktree)) => self
+                .resolve_and_launch_worktree_setup(
+                    project_actions,
+                    terminals,
+                    space_id,
+                    spec,
+                    worktree,
+                )
+                .unwrap_or_else(|err| ProjectActionSetupHandoff {
+                    setup_action: None,
+                    setup_error: Some(err.to_string()),
+                }),
+            _ => ProjectActionSetupHandoff {
+                setup_action: None,
+                setup_error: None,
+            },
+        };
+        project_actions.complete_setup_handoff(command_id, chat_id, outcome);
+    }
+
+    fn resolve_and_launch_worktree_setup(
+        &self,
+        project_actions: &ProjectActionsStore,
+        terminals: &Terminals,
+        space_id: &str,
+        spec: &roboco_proto::WorktreeSpec,
+        worktree: &roboco_proto::Worktree,
+    ) -> Result<ProjectActionSetupHandoff, EngineError> {
+        let workspace = self
+            .workspace()
+            .ok_or_else(|| EngineError::Other("workspace host not wired".into()))?;
+        let space = workspace
+            .space(space_id)?
+            .ok_or_else(|| EngineError::Other("Project not found".into()))?;
+        if space.device_id != self.inner.config.device_id {
+            return Err(EngineError::Other(
+                "Project belongs to another device".into(),
+            ));
+        }
+        let project_root = std::fs::canonicalize(&space.path)?;
+        let requested_root = std::fs::canonicalize(&spec.repo_path)?;
+        if project_root != requested_root {
+            return Err(EngineError::Other(
+                "Project path does not match worktree repository".into(),
+            ));
+        }
+        // The store keys configuration by the original Space path, which may
+        // be a symlink. Keep canonical paths for validation and execution only.
+        let setup_action = project_actions
+            .setup_action(space_id, Path::new(&space.path))?
+            .map(|action| {
+                launch_project_setup_action(
+                    terminals,
+                    &action,
+                    &project_root,
+                    Path::new(&worktree.path),
+                    120,
+                    32,
+                )
+            })
+            .transpose()?;
+        Ok(ProjectActionSetupHandoff {
+            setup_action,
+            setup_error: None,
+        })
+    }
+
+/// A steer-turned-run with no in-process `last_request` (engine restarted
+/// since the last turn): rebuild the run config from the chat's workspace
+/// row — cwd from the row, model/reasoning/options/sandbox from its config
+/// (composer defaults otherwise). `None` without a workspace host or row.
     // (Also the RespondInput dead-run fallback's config source.)
     pub(crate) fn request_from_chat_row(
         &self,

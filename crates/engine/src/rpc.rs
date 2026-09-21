@@ -17,12 +17,16 @@
 //! - `LocalDevice` → `{deviceId}` — legacy engine identity (never forwarded)
 //! - Repos (§3.5): `ListRepos`, `AddRepo {path}`, `CloneRepo {url}`,
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
-//!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch}`, `DeleteWorktree
-//!   {repoPath, worktreePath}`; `WatchCheckoutDiffs` → stream of `CheckoutDiff[]`
+//!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch, spaceId?}` →
+//!   `CreateWorktreeOutcome` (flattened worktree + optional setup fields),
+//!   `DeleteWorktree {repoPath, worktreePath}`; `WatchCheckoutDiffs` → stream
+//!   of `CheckoutDiff[]`
 //! - Project Actions: `ListProjectActions {spaceId}` → `ProjectActionsSnapshot`
 //!   (saved actions + `roboco.json` import offers), `UpsertProjectAction
 //!   {spaceId, actionId?, action}` / `DeleteProjectAction {spaceId, actionId}`
-//!   replying with the fresh snapshot. Private to the engine owning the space
+//!   replying with the fresh snapshot, and `RunProjectAction {spaceId, chatId,
+//!   actionId, cols, rows}` → `ProjectActionRun` (a managed terminal on the
+//!   chat's checkout). Private to the engine owning the space
 //!   row — stored in its profile store root, never the workspace registry.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
 //!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
@@ -211,6 +215,8 @@ struct CreateWorktreeParams {
     #[serde(alias = "repo")]
     repo_path: String,
     branch: String,
+    #[serde(default)]
+    space_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +248,23 @@ struct UpsertProjectActionParams {
 struct DeleteProjectActionParams {
     space_id: String,
     action_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunProjectActionParams {
+    space_id: String,
+    chat_id: String,
+    action_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TakeProjectActionSetupParams {
+    chat_id: String,
+    command_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,6 +1001,20 @@ impl RpcService for EngineRpc {
                     .queue_command_with_transfers(&p.chat_id, p.command, p.transfers)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
+            }
+            methods::TAKE_PROJECT_ACTION_SETUP => {
+                let p: TakeProjectActionSetupParams = parse_params(params)?;
+                let outcome = self
+                    .project_actions
+                    .take_setup_handoff(&p.command_id, &p.chat_id);
+                match outcome {
+                    Some(outcome) => RpcReply::value(&serde_json::json!({
+                        "ready": true,
+                        "setupAction": outcome.setup_action,
+                        "setupError": outcome.setup_error,
+                    })),
+                    None => RpcReply::value(&serde_json::json!({ "ready": false })),
+                }
             }
             methods::RETRY_DELIVERY => {
                 let p: ChatParams = parse_params(params)?;
@@ -1815,12 +1852,73 @@ impl RpcService for EngineRpc {
             }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
+                let setup_space = match p.space_id.as_deref() {
+                    Some(space_id) => {
+                        let space = self.local_project_action_space(space_id)?;
+                        let space_root = std::fs::canonicalize(&space.path)
+                            .map_err(|_| RpcError::Failed("Project root is unavailable".into()))?;
+                        let repo_root = std::fs::canonicalize(&p.repo_path).map_err(|_| {
+                            RpcError::Failed("Worktree repository is unavailable".into())
+                        })?;
+                        if space_root != repo_root {
+                            return Err(RpcError::Failed(
+                                "Worktree repository does not match project space".into(),
+                            ));
+                        }
+                        Some((space, space_root))
+                    }
+                    None => None,
+                };
                 let worktree = self
                     .repos
                     .create_worktree(std::path::Path::new(&p.repo_path), &p.branch)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&worktree)
+                let mut outcome = roboco_proto::CreateWorktreeOutcome {
+                    worktree,
+                    setup_action: None,
+                    setup_error: None,
+                };
+                if let Some((space, project_root)) = setup_space {
+                    match self
+                        .project_actions
+                        .setup_action(&space.id, std::path::Path::new(&space.path))
+                    {
+                        Ok(Some(action)) => {
+                            let worktree_root = std::fs::canonicalize(&outcome.worktree.path)
+                                .unwrap_or_else(|_| outcome.worktree.path.clone().into());
+                            match crate::project_actions::launch_project_setup_action(
+                                &self.terminals,
+                                &action,
+                                &project_root,
+                                &worktree_root,
+                                80,
+                                24,
+                            ) {
+                                Ok(run) => outcome.setup_action = Some(run),
+                                Err(err) => {
+                                    tracing::warn!(
+                                        space_id = %space.id,
+                                        worktree = %outcome.worktree.path,
+                                        error = %err,
+                                        "failed to start project setup Action"
+                                    );
+                                    outcome.setup_error = Some(err.to_string());
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                space_id = %space.id,
+                                error = %err,
+                                "failed to resolve project setup Action"
+                            );
+                            outcome.setup_error = Some(err.to_string());
+                        }
+                    }
+                }
+                RpcReply::value(&outcome)
             }
             methods::DELETE_WORKTREE => {
                 let p: DeleteWorktreeParams = parse_params(params)?;
@@ -1836,34 +1934,92 @@ impl RpcService for EngineRpc {
             methods::LIST_PROJECT_ACTIONS => {
                 let p: ListProjectActionsParams = parse_params(params)?;
                 let space = self.local_project_action_space(&p.space_id)?;
-                let snapshot = self
-                    .project_actions
-                    .snapshot(&space.id, std::path::Path::new(&space.path))
-                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                let actions = self.project_actions.clone();
+                // Snapshots discover repository files; keep all filesystem work
+                // (including mutation persistence below) off the async worker.
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    actions.snapshot(&space.id, std::path::Path::new(&space.path))
+                })
+                .await
+                .map_err(|err| RpcError::Failed(err.to_string()))?
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&snapshot)
             }
             methods::UPSERT_PROJECT_ACTION => {
                 let p: UpsertProjectActionParams = parse_params(params)?;
                 let space = self.local_project_action_space(&p.space_id)?;
-                let snapshot = self
-                    .project_actions
-                    .upsert(
+                let actions = self.project_actions.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    actions.upsert(
                         &space.id,
                         std::path::Path::new(&space.path),
                         p.action_id.as_deref(),
                         p.action,
                     )
-                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                })
+                .await
+                .map_err(|err| RpcError::Failed(err.to_string()))?
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&snapshot)
             }
             methods::DELETE_PROJECT_ACTION => {
                 let p: DeleteProjectActionParams = parse_params(params)?;
                 let space = self.local_project_action_space(&p.space_id)?;
-                let snapshot = self
-                    .project_actions
-                    .delete(&space.id, std::path::Path::new(&space.path), &p.action_id)
-                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                let actions = self.project_actions.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    actions.delete(&space.id, std::path::Path::new(&space.path), &p.action_id)
+                })
+                .await
+                .map_err(|err| RpcError::Failed(err.to_string()))?
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::RUN_PROJECT_ACTION => {
+                let p: RunProjectActionParams = parse_params(params)?;
+                let space = self.local_project_action_space(&p.space_id)?;
+                let chat = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("Project chat not found".into()))?;
+                if chat.device_id != self.doc_host.device_id() {
+                    return Err(RpcError::Failed(
+                        "Project chat belongs to another device".into(),
+                    ));
+                }
+                if chat.space_id.as_deref() != Some(space.id.as_str()) {
+                    return Err(RpcError::Failed(
+                        "Project chat belongs to another space".into(),
+                    ));
+                }
+                let cwd = chat
+                    .cwd
+                    .map(std::path::PathBuf::from)
+                    .ok_or_else(|| RpcError::Failed("Project chat has no checkout".into()))?;
+                let checkout = self
+                    .repos
+                    .workspace_checkout(std::path::Path::new(&space.path), &cwd)
+                    .await
+                    .ok_or_else(|| {
+                        RpcError::Failed("Project chat checkout is unavailable".into())
+                    })?;
+                let project_root = std::fs::canonicalize(&space.path)
+                    .map_err(|_| RpcError::Failed("Project root is unavailable".into()))?;
+                let action = self
+                    .project_actions
+                    .action(&space.id, std::path::Path::new(&space.path), &p.action_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("Project action not found".into()))?;
+                let run = crate::project_actions::launch_project_action(
+                    &self.terminals,
+                    &action,
+                    &project_root,
+                    &checkout,
+                    p.cols,
+                    p.rows,
+                )
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
