@@ -48,6 +48,84 @@ export interface FileTreeSnapshot {
    * loaded (mod.rs:213-247).
    */
   readonly rootError: string | null;
+  /**
+   * Git status decorations joined onto the rows (files/git_status.rs):
+   * workspace path → classified color kind. Empty while no status has
+   * arrived; `null`-free — a partial status simply contributes no rows.
+   */
+  readonly gitStatus: ReadonlyMap<string, GitDecorationKind>;
+}
+
+/**
+ * The row-level Git color kinds (`DecorationKind`): staged/unstaged edits
+ * collapse to `modified`, adds to `added`, deletions and unmerged entries to
+ * `deleted`, untracked to `untracked`, renames to `renamed`.
+ */
+export type GitDecorationKind = "modified" | "added" | "deleted" | "renamed" | "untracked";
+
+/**
+ * `Decorations::from_snapshot` (b25dd404, files/git_status.rs): join a
+ * `CheckoutGitStatus` onto workspace paths — direct matches classify by
+ * their combined columns, and every ANCESTOR directory of a touched path
+ * aggregates its descendants (a directory row shows the union, preferring
+ * the stronger signal). Partial/incomplete statuses still classify the
+ * paths they carry: incomplete is never reported as clean, it simply
+ * decorates less.
+ */
+export function decorationsFromStatus(
+  files: readonly { readonly path: string; readonly index: string; readonly worktree: string }[],
+): Map<string, GitDecorationKind> {
+  const rank: Record<GitDecorationKind, number> = {
+    untracked: 1,
+    added: 2,
+    renamed: 3,
+    modified: 4,
+    deleted: 5,
+  };
+  const out = new Map<string, GitDecorationKind>();
+  const stronger = (a: GitDecorationKind, b: GitDecorationKind): GitDecorationKind =>
+    rank[a] >= rank[b] ? a : b;
+  for (const file of files) {
+    const index = stateKind(file.index);
+    const worktree = stateKind(file.worktree);
+    if (index === null && worktree === null) {
+      continue;
+    }
+    // Untracked dominates; otherwise the worktree column wins the row.
+    const kind =
+      file.worktree === "untracked" || file.index === "untracked"
+        ? "untracked"
+        : stronger(worktree ?? index ?? "modified", index ?? worktree ?? "modified");
+    out.set(file.path, kind);
+    // Ancestor aggregation: every directory on the path inherits the row.
+    let slash = file.path.lastIndexOf("/");
+    while (slash > 0) {
+      const dir = file.path.slice(0, slash);
+      out.set(dir, stronger(out.get(dir) ?? kind, kind));
+      slash = dir.lastIndexOf("/");
+    }
+  }
+  return out;
+}
+
+function stateKind(state: string): GitDecorationKind | null {
+  switch (state) {
+    case "added":
+    case "copied":
+      return "added";
+    case "modified":
+    case "typeChanged":
+      return "modified";
+    case "deleted":
+    case "unmerged":
+      return "deleted";
+    case "renamed":
+      return "renamed";
+    case "untracked":
+      return "untracked";
+    default:
+      return null;
+  }
 }
 
 /** Watch outcomes the open document cares about (watch.rs parity). */
@@ -82,6 +160,7 @@ export class FileTreeModel {
   #watchError: string | null = null;
   #watchHandle: { cancel(): void } | null = null;
   #snapshot: FileTreeSnapshot;
+  #gitStatus: ReadonlyMap<string, GitDecorationKind> = new Map();
   #disposed = false;
 
   constructor(options: FileTreeModelOptions) {
@@ -97,7 +176,20 @@ export class FileTreeModel {
       selected: null,
       rootLoaded: false,
       rootError: null,
+      gitStatus: this.#gitStatus,
     };
+  }
+
+  /**
+   * `apply_git_status` (files/git_status.rs ensure/release): join the frame's
+   * status onto the snapshot. An unavailable (null) status clears — never
+   * reports clean, the rows simply stop carrying color.
+   */
+  applyGitStatus(
+    status: { readonly path: string; readonly index: string; readonly worktree: string }[] | null,
+  ): void {
+    this.#gitStatus = status === null ? new Map() : decorationsFromStatus(status);
+    this.#commit();
   }
 
   getSnapshot(): FileTreeSnapshot {
@@ -630,6 +722,7 @@ export class FileTreeModel {
       selected: this.#selected,
       rootLoaded: this.#nodes.get(ROOT)?.hasLoaded === true,
       rootError: this.#rootError,
+      gitStatus: this.#gitStatus,
     };
     for (const listener of this.#listeners) {
       listener();

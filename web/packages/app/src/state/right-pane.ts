@@ -3,7 +3,13 @@ import { rightPaneMaxWidth, rightPaneTakeoverWidth } from "./layout";
 import { changesSurfaceStore } from "./changes-surface";
 import { disposeHistoryStore } from "./history-store";
 import { fileDocuments } from "./file-documents";
-import { RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, uiSettings } from "./ui-settings";
+import {
+  FILES_PANEL_MAX,
+  FILES_PANEL_MIN,
+  RIGHT_PANE_DEFAULT,
+  RIGHT_PANE_MIN,
+  uiSettings,
+} from "./ui-settings";
 
 /**
  * The pane's embedded terminal host — `terminal/store.tsx`'s
@@ -27,13 +33,18 @@ export interface PaneTerminalSource {
  *
  * Tabs are **created on demand** from the surface picker or the `+` menu; the
  * list starts empty and `resolvedActive` falls back to the picker when it
- * empties. N file tabs, N diff tabs, subagent tabs, one Files, one Terminal
- * — surfaces compare by value, so each tab carries a stable minted id.
+ * empties. N file tabs, N diff tabs, subagent tabs, one Terminal.
+ *
+ * The file EXPLORER is no longer a surface tab (tickets 22/23 parity): it is
+ * a docked portion of the one right pane, owned by the per-chat `filesOpen`
+ * flag — the pane toggle drives only the surface host, the explorer toggle
+ * opens the pane alone when it was closed, and closing the last surface tab
+ * collapses the pane unless the explorer is docked.
  *
  * Open/expanded/active/tabs are **per chat, in memory, all-defaults-closed**
- * (`ChatPanels` is never persisted on the desktop either). The *width* is the
- * one piece that persists — globally, through ticket 03's settings store
- * (`settings.right_pane_width`), not per chat.
+ * (`ChatPanels` is never persisted on the desktop either). The *widths* are
+ * the pieces that persist — globally, through ticket 03's settings store
+ * (`settings.right_pane_width`, `settings.files_panel_width`), not per chat.
  *
  * `Browser(u64)` is deliberately absent: a web client cannot host arbitrary
  * cross-origin pages in a pane (research §6), and the desktop's preview list
@@ -43,7 +54,6 @@ export interface PaneTerminalSource {
 /** `shell.rs::RightSurface` minus the desktop-only `Browser(u64)` variant. */
 export type RightSurface =
   | { kind: "picker" }
-  | { kind: "files" }
   | { kind: "file"; id: string }
   | { kind: "diff"; id: string }
   | { kind: "terminal"; id: string }
@@ -52,6 +62,18 @@ export type RightSurface =
 /** Surfaces compare by value (kind + id); the key makes that one string. */
 export function surfaceKey(surface: RightSurface): string {
   return "id" in surface ? `${surface.kind}:${surface.id}` : surface.kind;
+}
+
+/**
+ * `collapse_surfaces_if_empty` (fe45a1cd): with the last surface tab gone,
+ * the surface host collapses — unless the docked explorer keeps the pane
+ * alive. Pure, so the node-environment tests drive it directly.
+ */
+export function collapseSurfacesIfEmpty(pane: ChatPaneState): ChatPaneState {
+  if (!pane.open || pane.tabs.length > 0 || pane.filesOpen) {
+    return pane;
+  }
+  return { ...pane, open: false, expanded: false, active: { kind: "picker" } };
 }
 
 /** Value equality — the tab list's `retain`/`contains` predicate. */
@@ -128,6 +150,8 @@ export interface ChatPaneState {
   readonly open: boolean;
   /** Takeover: the pane's width derives from the viewport, not the drag. */
   readonly expanded: boolean;
+  /** The docked explorer portion — independent of the surface host. */
+  readonly filesOpen: boolean;
   /** The stored pick — may be stale; read through `resolvedActive`. */
   readonly active: RightSurface;
   /** Tab order, drag-reorderable. Starts EMPTY (`shell.rs::493-532`). */
@@ -145,6 +169,7 @@ function initial(): ChatPaneState {
   return {
     open: false,
     expanded: false,
+    filesOpen: false,
     active: { kind: "picker" },
     tabs: [],
     // The persisted global width — what was last dragged, healed to its floor.
@@ -207,6 +232,8 @@ export class RightPaneStore {
   readonly #files = new Map<string, { path: string; panel: string }>();
   /** `file_surface_keys` — `${panel}\u{0}${path}` → id (one tab per path). */
   readonly #fileKeys = new Map<string, string>();
+  /** The RevealFile request the docked explorer column consumes. */
+  #pendingReveal: { chatId: string; path: string; seq: number } | null = null;
   /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
   readonly #diffMeta = new Map<string, DiffMeta>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
@@ -245,7 +272,9 @@ export class RightPaneStore {
   /**
    * The titlebar's one trailing control (`toggle-changes`). Closing always
    * leaves takeover mode (`toggle_right_pane`, `shell.rs:1970-1975`) —
-   * reopening after a takeover close lands in normal mode.
+   * reopening after a takeover close lands in normal mode. The pane toggle
+   * drives ONLY the surface host (fe45a1cd): the docked explorer portion is
+   * independent and stays as it was.
    */
   toggle(chatId: string): void {
     this.#update(chatId, (current) =>
@@ -269,21 +298,24 @@ export class RightPaneStore {
   }
 
   /**
-   * A shortcut's way in (`Mod+J`): the first tab of this kind, minting one
+   * A shortcut's way in (`Mod+R`): the first tab of this kind, minting one
    * if none exists, then `show` — so the chord toggles the surface it opened.
    * The minting runs through the add paths so the tab list and the stored
    * pick move together (a bare `#mint` would open the pane onto a surface
-   * `resolvedActive` cannot see).
+   * `resolvedActive` cannot see). The Files chord opens the docked explorer
+   * portion, not a tab.
    */
   revealSurface(chatId: string, kind: "files" | "terminal" | "diff"): void {
+    if (kind === "files") {
+      this.openFilesPanel(chatId);
+      return;
+    }
     const existing = this.stateFor(chatId).tabs.find((tab) => tab.kind === kind);
     if (existing !== undefined) {
       this.show(chatId, existing);
       return;
     }
-    if (kind === "files") {
-      this.addFilesSurface(chatId);
-    } else if (kind === "terminal") {
+    if (kind === "terminal") {
       this.addTerminalSurface(chatId);
     } else {
       this.addDiffSurface(chatId, "diff");
@@ -304,10 +336,7 @@ export class RightPaneStore {
     this.#update(chatId, (current) => ({ ...current, open: false, expanded: false }));
   }
 
-  #mint(kind: "files" | "terminal" | "diff", flavor: DiffFlavor | null): RightSurface {
-    if (kind === "files") {
-      return { kind: "files" };
-    }
+  #mint(kind: "terminal" | "diff", flavor: DiffFlavor | null): RightSurface {
     if (kind === "terminal") {
       this.#terminalSeq += 1;
       return { kind: "terminal", id: `t${this.#terminalSeq}` };
@@ -317,13 +346,58 @@ export class RightPaneStore {
     return { kind: "diff", id: `d${this.#diffSeq}` };
   }
 
-  /** `add_files_surface` — single instance: both picker and `+` focus it. */
-  addFilesSurface(chatId: string): void {
+  /**
+   * The explorer toggle (`toggle_files_panel`, 1de3b4ba/fe45a1cd): opens the
+   * pane with only the explorer portion when the pane was closed, and closes
+   * just that portion when open. `set_surfaces_open(false)` keeps the host's
+   * state untouched — programmatic opens never close a pane the user has open.
+   */
+  toggleFilesPanel(chatId: string): void {
     const current = this.stateFor(chatId);
-    if (!current.tabs.some((tab) => tab.kind === "files")) {
-      this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "files" }] }));
+    if (!current.filesOpen) {
+      this.openFilesPanel(chatId);
+      return;
     }
-    this.setActive(chatId, { kind: "files" });
+    this.#update(chatId, (pane) => ({ ...pane, filesOpen: false }));
+  }
+
+  /** `add_files_surface` — dock the explorer portion, opening nothing else. */
+  openFilesPanel(chatId: string): void {
+    this.#update(chatId, (pane) => ({ ...pane, filesOpen: true }));
+  }
+
+  /** `close_files_panel` — programmatic close of the explorer portion only. */
+  closeFilesPanel(chatId: string): void {
+    this.#update(chatId, (pane) => ({ ...pane, filesOpen: false }));
+  }
+
+  /**
+   * `set_surfaces_open` (1de3b4ba): programmatic surface opens (file links,
+   * subagent chips) open the HOST without ever closing it, and without
+   * touching the explorer portion.
+   */
+  setSurfacesOpen(chatId: string, open: boolean): void {
+    this.#update(chatId, (pane) => (pane.open === open ? pane : { ...pane, open }));
+  }
+
+  /**
+   * `FilesEvent::RevealFile` → `add_files_surface` + `reveal_file_explicit`:
+   * dock the explorer portion and ask its tree to reveal the path. The docked
+   * column consumes the pending reveal on its model.
+   */
+  revealInFilesPanel(chatId: string, path: string): void {
+    this.#pendingReveal = { chatId, path, seq: (this.#pendingReveal?.seq ?? 0) + 1 };
+    this.openFilesPanel(chatId);
+  }
+
+  /** The docked column's reveal request (consumed on render). */
+  pendingFilesReveal(): { chatId: string; path: string; seq: number } | null {
+    return this.#pendingReveal;
+  }
+
+  /** The docked column clears its consumed reveal. */
+  clearFilesReveal(): void {
+    this.#pendingReveal = null;
   }
 
   /**
@@ -478,7 +552,7 @@ export class RightPaneStore {
       const nextActive: RightSurface = surfaceEqual(current.active, surface)
         ? { kind: "picker" }
         : current.active;
-      return { ...current, tabs, active: nextActive };
+      return collapseSurfacesIfEmpty({ ...current, tabs, active: nextActive });
     });
     // Per-kind teardown: drop the backing entity so a stale id never
     // resolves again (`diffs.remove`, `subagent_tabs.remove`, …). A diff
@@ -514,7 +588,7 @@ export class RightPaneStore {
       const nextActive: RightSurface = surfaceEqual(current.active, surface)
         ? { kind: "picker" }
         : current.active;
-      return { ...current, tabs, active: nextActive };
+      return collapseSurfacesIfEmpty({ ...current, tabs, active: nextActive });
     });
     if (surface.kind === "file") {
       this.#dropFileEntity(surface.id);
@@ -596,8 +670,6 @@ export class RightPaneStore {
     switch (surface.kind) {
       case "picker":
         return { title: "Picker", detail: null, isHistory: false, isDirty: false };
-      case "files":
-        return { title: "Files", detail: null, isHistory: false, isDirty: false };
       case "file": {
         const entry = this.#files.get(surface.id);
         if (entry === undefined) {
@@ -668,6 +740,16 @@ export class RightPaneStore {
   resetWidth(chatId: string): void {
     this.#update(chatId, (current) => ({ ...current, width: RIGHT_PANE_DEFAULT }));
     uiSettings.update({ rightPaneWidth: RIGHT_PANE_DEFAULT }, "immediate");
+  }
+
+  /**
+   * The docked explorer column's drag (`on_files_panel_drag`): clamped into
+   * [FILES_PANEL_MIN, FILES_PANEL_MAX] and coalesced into the settings store.
+   */
+  setFilesPanelWidth(width: number): void {
+    const clamped = Math.min(FILES_PANEL_MAX, Math.max(FILES_PANEL_MIN, width));
+    uiSettings.update({ filesPanelWidth: clamped }, "debounced");
+    this.#notify();
   }
 
   /** Drag-reorder in the tab strip. */

@@ -15127,3 +15127,69 @@ button.segmented-option:hover {
     max-width: 120px;
   }
 }
+
+/* ── Tickets 22/23 (web parity): the docked explorer column ─────────── */
+
+/*
+ * `render_files_panel` (shell/files_panel.rs): one portion of the one right
+ * pane — a full-height column right of the surface host, hairline-separated
+ * on its left edge, padding down past the titlebar band like the host does.
+ * Its width is the persisted files-panel width; the seam in app-shell parks
+ * on its left edge.
+ */
+.files-pane-column {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  width: var(--rb-files-now, 0px);
+  border-left: 1px solid var(--rb-border);
+  background: var(--rb-bg);
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--rb-titlebar-height, 38px);
+  transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+.pane-seam-files {
+  right: 0;
+  transform: translateX(calc((var(--rb-files-now, 0px) - 10px) * -1));
+  transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/* Git status entry colors (files/git_status.rs decorations, theme tokens):
+   staged/unstaged edits read as warning, additions as success, deletions
+   and conflicts as danger, untracked as the muted accent. Directories
+   aggregate their descendants (the ancestor rule). */
+.files-row[data-git="modified"] .files-row-name,
+.files-row[data-git="renamed"] .files-row-name {
+  color: var(--rb-warning, #b8860b);
+}
+.files-row[data-git="added"] .files-row-name {
+  color: var(--rb-success, #2f9e44);
+}
+.files-row[data-git="deleted"] .files-row-name,
+.files-row[data-git="conflicted"] .files-row-name {
+  color: var(--rb-danger, #d9480f);
+}
+.files-row[data-git="untracked"] .files-row-name {
+  color: var(--rb-warning, #b8860b);
+  font-style: italic;
+}
+
+/* Theme-aware indentation guides (tree.rs with_indent_guides): one hairline
+   per depth level, the border tone at low alpha, so deep paths stay
+   scannable in light and dark themes. */
+.files-row-guides {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  pointer-events: none;
+}
+.files-row-guide {
+  width: 14px;
+  flex: none;
+  border-left: 1px solid color-mix(in srgb, var(--rb-border, #888) 55%, transparent);
+}

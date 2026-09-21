@@ -1247,6 +1247,39 @@ impl RpcService for EngineRpc {
             methods::WATCH_CHECKOUT_DIFFS => {
                 Ok(RpcReply::Stream(watch_stream(self.diff_sync.watch_diffs())))
             }
+            methods::WATCH_WORKSPACE_GIT_STATUS => {
+                let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
+                let workspace = self.workspace_files.resolve_target(&request.target).await?;
+                let rx = self.diff_sync.watch_git_statuses();
+                // Only this authorized checkout crosses the connection. None means
+                // unavailable, including plain folders and initial/restarting engines.
+                let stream = futures::stream::unfold(
+                    (rx, workspace.checkout_id, None, false),
+                    |(mut rx, checkout_id, mut previous, mut emitted)| async move {
+                        loop {
+                            if emitted {
+                                rx.changed().await.ok()?;
+                            }
+                            let next = rx
+                                .borrow_and_update()
+                                .iter()
+                                .find(|s| s.checkout_id == checkout_id)
+                                .cloned();
+                            if !emitted || previous != next {
+                                emitted = true;
+                                previous = next.clone();
+                                let value =
+                                    serde_json::to_value(roboco_proto::WorkspaceGitStatusFrame {
+                                        status: next,
+                                    })
+                                    .ok()?;
+                                return Some((value, (rx, checkout_id, previous, emitted)));
+                            }
+                        }
+                    },
+                );
+                Ok(RpcReply::Stream(stream.boxed()))
+            }
             methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
                 let p: CheckoutChangeRequestParams = parse_params(params)?;
                 let cwd = self.change_request_root(&p.cwd).await?;

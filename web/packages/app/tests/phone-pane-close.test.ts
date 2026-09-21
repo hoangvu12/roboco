@@ -55,7 +55,7 @@ describe("expanded close retains presentation width while resetting logical mode
   it("the store flags clear in the close commit while the hold arms on the same edge", () => {
     // The REAL store drives the logical half: open expanded, then close.
     const store = new RightPaneStore(null);
-    store.addFilesSurface("chat-1");
+    store.setSurfacesOpen("chat-1", true);
     store.toggleExpanded("chat-1");
     expect(store.stateFor("chat-1")).toMatchObject({ open: true, expanded: true });
 

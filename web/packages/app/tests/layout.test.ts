@@ -48,6 +48,7 @@ function pane(over: Partial<ChatPaneState> = {}): ChatPaneState {
   return {
     open: true,
     expanded: false,
+    filesOpen: false,
     active: { kind: "diff", id: "d1" },
     tabs: [{ kind: "diff", id: "d1" }],
     width: RIGHT_PANE_DEFAULT,

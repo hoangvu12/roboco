@@ -10,7 +10,6 @@ import { TranscriptStore } from "../state/transcript-store";
 import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
 import { HistoryPane } from "./history/history-pane";
 import { HistoryToolbar } from "./history/history-toolbar";
-import { FilesSurface } from "../routes/files-page";
 import { FileSurface } from "./files/file-viewer";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { paneTerminalStore } from "../terminal/store";
@@ -212,13 +211,6 @@ function registerDefaults(): void {
     icon: () => "plus",
     isClosable: () => false,
     render: (_s, ctx) => <SurfacePicker chatId={ctx.chatId} />,
-  });
-
-  registerRightSurface({
-    kind: "files",
-    title: titleOf("Files"),
-    icon: () => "folderWithFiles",
-    render: (_s, ctx) => <FilesSurface chatId={ctx.chatId} />,
   });
 
   registerRightSurface({

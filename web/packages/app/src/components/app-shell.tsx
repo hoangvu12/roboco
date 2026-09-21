@@ -50,7 +50,7 @@ import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
-import { uiSettings } from "../state/ui-settings";
+import { uiSettings, FILES_PANEL_MAX, FILES_PANEL_MIN, FILES_PANEL_DEFAULT } from "../state/ui-settings";
 import {
   RIGHT_PANE_MIN,
   panelKey,
@@ -65,6 +65,7 @@ import { SidebarBody } from "./sidebar-body";
 import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
+import { FilesPaneColumn } from "./files/files-pane-column";
 import { RightTabStrip } from "./right-tab-strip";
 import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
@@ -302,7 +303,7 @@ export function AppShell() {
           // the live pane state so a tab switch mid-listener still guards.
           if (route === "chat" && paneChatId !== null && pane.open) {
             const active = resolvedActive(rightPaneStore.stateFor(paneChatId));
-            if (active.kind === "files" || active.kind === "file") {
+            if (active.kind === "file") {
               emitShortcut("save-file");
             }
           }
@@ -580,6 +581,8 @@ export function AppShell() {
           "--rb-sidebar-content": `${sidebar.width}px`,
           "--rb-pane-now": `${paneWidth}px`,
           "--rb-pane-open": `${hasPane ? paneOpenWidth : 0}px`,
+          // The docked explorer column's laid-out width (zero when shut).
+          "--rb-files-now": `${hasPane && pane.filesOpen ? uiSettings.getSnapshot().filesPanelWidth : 0}px`,
           // The title row's left inset, which tracks the sidebar so the
           // identity sits on the conversation's own edge and glides with a
           // collapse — `render_session_title_bar`'s `row_left`.
@@ -746,7 +749,15 @@ export function AppShell() {
           — their per-chat open flags survive the round trip untouched.
         */}
         {hasPane && (
-          <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+          <>
+            <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+            {/*
+              The docked explorer portion of the one right pane
+              (`render_files_panel`): independent of the surface host, sharing
+              its height with a left hairline, resized through its own seam.
+            */}
+            <FilesPaneColumn chatId={paneChatId} pane={pane} />
+          </>
         )}
       </TerminalProvider>
       {/*
@@ -777,6 +788,16 @@ export function AppShell() {
           // wins and the pane yields.
           bounds={{ min: RIGHT_PANE_MIN, max: rightPaneMaxWidth(viewport, sidebarWidth) }}
           bounceVar="--rb-pane-edge-offset"
+        />
+      )}
+      {hasPane && pane.filesOpen && (
+        <PaneSeam
+          label="Resize files"
+          widthAt={(clientX) => viewport - clientX}
+          onWidth={(width) => rightPaneStore.setFilesPanelWidth(width)}
+          onReset={() => uiSettings.updateImmediate({ filesPanelWidth: FILES_PANEL_DEFAULT })}
+          className="pane-seam-files"
+          bounds={{ min: FILES_PANEL_MIN, max: FILES_PANEL_MAX }}
         />
       )}
       {/*
