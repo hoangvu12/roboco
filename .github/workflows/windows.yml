@@ -73,6 +73,11 @@ jobs:
         run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --lib --test codex_availability --test windows_native -P ci
       - name: Build application
         run: cargo build --release --locked -p roboco
+      - name: Verify portable packaging
+        # Exercise the release packaging script on every PR. -SkipWebBuild:
+        # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
+        # and the real web bundle is built by web-codegen/release workflows.
+        run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Shader layout tests
         run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
       - name: Application and updater tests
