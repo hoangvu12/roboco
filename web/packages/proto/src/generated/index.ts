@@ -92,6 +92,7 @@ export * from "./TodoItem";
 export * from "./ToolCall";
 export * from "./ToolDiff";
 export * from "./ToolDiffStat";
+export * from "./TranscriptBaseline";
 export * from "./TranscriptFrame";
 export * from "./TranscriptUpdate";
 export * from "./TranscriptUpsert";
