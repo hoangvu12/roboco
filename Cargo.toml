@@ -12,6 +12,7 @@ members = [
     "crates/update",
     "crates/ui",
     "crates/syntax",
+    "crates/wiregen",
     "apps/roboco",
 ]
 
@@ -93,6 +94,9 @@ serde_json = "1"
 json5 = "0.4"
 plist = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+# TS bindings for the web client (wiregen). chrono-impl maps DateTime to
+# `string`; large ints are configured to `number` by wiregen (JSON wire).
+ts-rs = { version = "12", features = ["chrono-impl"] }
 
 # storage
 rusqlite = { version = "0.32", features = ["bundled"] }

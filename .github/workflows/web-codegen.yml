@@ -1,0 +1,68 @@
+# Web wire-type gate: `wiregen --check` fails when a Rust wire type changed
+# without regenerating web/packages/proto/src/generated, and a pnpm typecheck
+# proves the generated package compiles. First JS toolchain in CI — node 24 +
+# pnpm via corepack (pinned by web/package.json's packageManager field).
+name: Web codegen
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/proto/**'
+      - 'crates/doc/**'
+      - 'crates/update/**'
+      - 'crates/wiregen/**'
+      # Engine files carrying wire types (registry/uploads/doc_host/pairing/rpc).
+      - 'crates/engine/src/registry.rs'
+      - 'crates/engine/src/uploads.rs'
+      - 'crates/engine/src/doc_host.rs'
+      - 'crates/engine/src/pairing.rs'
+      - 'crates/engine/src/rpc.rs'
+      - 'web/**'
+      - '.github/workflows/web-codegen.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/proto/**'
+      - 'crates/doc/**'
+      - 'crates/update/**'
+      - 'crates/wiregen/**'
+      - 'crates/engine/src/registry.rs'
+      - 'crates/engine/src/uploads.rs'
+      - 'crates/engine/src/doc_host.rs'
+      - 'crates/engine/src/pairing.rs'
+      - 'crates/engine/src/rpc.rs'
+      - 'web/**'
+      - '.github/workflows/web-codegen.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: web-codegen-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_INCREMENTAL: '0'
+jobs:
+  freshness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: wire types are fresh
+        run: cargo run --locked -p wiregen -- --check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: enable pnpm
+        run: corepack enable
+      - name: install web workspace
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: generated package compiles
+        run: pnpm -r build
+        working-directory: web

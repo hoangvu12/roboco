@@ -776,6 +776,10 @@ impl TerminalColors {
 
 impl Theme {
     // ---- numbers drive layout (px) ----
+    //
+    // The values live in `roboco_proto::layout` (gpui-free) so the web
+    // client's generated theme artifact shares one source of truth; the
+    // associated constants here forward to it.
     /// Frost translucency over the blurred window background (macOS vibrancy
     /// or Windows Acrylic). Linux stays opaque because compositor blur is not
     /// guaranteed; a merely transparent window would expose the raw desktop.
@@ -784,11 +788,7 @@ impl Theme {
     /// `under-window` vibrancy MATERIAL, which pre-darkens the blur; our bare
     /// backdrop blur has no material layer, so the scrim runs heavier to land
     /// on the same perceived tone (see [`Theme::glass`]).
-    pub const GLASS_ALPHA: f32 = if cfg!(any(target_os = "macos", target_os = "windows")) {
-        0.80
-    } else {
-        1.0
-    };
+    pub const GLASS_ALPHA: f32 = roboco_proto::layout::GLASS_ALPHA;
     /// Light-mode frost alpha — glass-forward, like dark mode.
     ///
     /// A light tint controls the blur less than a dark one: the desktop's
@@ -798,44 +798,40 @@ impl Theme {
     /// vibrancy material is mostly white). Floating cards compensate further:
     /// see [`Self::glass_overlay`], where light coverage steps up to keep menu
     /// text legible over an unknown backdrop.
-    pub const GLASS_ALPHA_LIGHT: f32 = if cfg!(any(target_os = "macos", target_os = "windows")) {
-        0.80
-    } else {
-        1.0
-    };
+    pub const GLASS_ALPHA_LIGHT: f32 = roboco_proto::layout::GLASS_ALPHA_LIGHT;
     /// Main-panel header height (roboco `h-11`) — in-card headers (changes pane).
-    pub const HEADER_HEIGHT: f32 = 44.0;
+    pub const HEADER_HEIGHT: f32 = roboco_proto::layout::HEADER_HEIGHT;
     /// The unified window titlebar (traffic lights + cluster + tabs). Content
     /// rides [`Self::TITLEBAR_TOP_PAD`] lower than center so the air above
     /// matches the perceived gap to the inset card below (border + card body).
-    pub const TITLEBAR_HEIGHT: f32 = 38.0;
+    pub const TITLEBAR_HEIGHT: f32 = roboco_proto::layout::TITLEBAR_HEIGHT;
     /// Top-only padding moves the flex center by half this value. On macOS,
     /// 38 / 2 + 4 / 2 = 21 matches the native traffic lights' center.
-    pub const TITLEBAR_TOP_PAD: f32 = 4.0;
+    pub const TITLEBAR_TOP_PAD: f32 = roboco_proto::layout::TITLEBAR_TOP_PAD;
     /// Reserved status strip under the content outlet (roboco `h-6`) — the
     /// WorkingIndicator row; reserving it keeps the composer from shifting.
-    pub const STATUS_STRIP_HEIGHT: f32 = 24.0;
+    pub const STATUS_STRIP_HEIGHT: f32 = roboco_proto::layout::STATUS_STRIP_HEIGHT;
     /// Height of the gradient that fades the transcript into the panel
     /// background at its bottom edge. The transcript's last row must pad
     /// itself past this band so settled content (message text, the
     /// hover-revealed timestamp) never sits inside the fade when scrolled
     /// to the bottom.
-    pub const TRANSCRIPT_FADE_BAND: f32 = 24.0;
+    pub const TRANSCRIPT_FADE_BAND: f32 = roboco_proto::layout::TRANSCRIPT_FADE_BAND;
     /// Message bubble corner radius.
-    pub const BUBBLE_RADIUS: f32 = 16.0;
+    pub const BUBBLE_RADIUS: f32 = roboco_proto::layout::BUBBLE_RADIUS;
     /// Panel / card corner radius.
-    pub const PANEL_RADIUS: f32 = 10.0;
+    pub const PANEL_RADIUS: f32 = roboco_proto::layout::PANEL_RADIUS;
     /// Small control radius (buttons, chips).
-    pub const CONTROL_RADIUS: f32 = 6.0;
+    pub const CONTROL_RADIUS: f32 = roboco_proto::layout::CONTROL_RADIUS;
     /// Base spacing steps.
-    pub const SPACE_XS: f32 = 4.0;
-    pub const SPACE_SM: f32 = 8.0;
-    pub const SPACE_MD: f32 = 12.0;
-    pub const SPACE_LG: f32 = 16.0;
+    pub const SPACE_XS: f32 = roboco_proto::layout::SPACE_XS;
+    pub const SPACE_SM: f32 = roboco_proto::layout::SPACE_SM;
+    pub const SPACE_MD: f32 = roboco_proto::layout::SPACE_MD;
+    pub const SPACE_LG: f32 = roboco_proto::layout::SPACE_LG;
     /// Optical separation for a tightly coupled title/description stack.
     /// This is intentionally outside the base spacing ladder: it corrects
     /// line-box whitespace rather than separating layout regions.
-    pub const TEXT_STACK_GAP: f32 = 1.0;
+    pub const TEXT_STACK_GAP: f32 = roboco_proto::layout::TEXT_STACK_GAP;
 
     /// The selected theme's shell tint painted over the blurred window
     /// background (macOS glass). Keeping the hue theme-owned matters when a
@@ -918,8 +914,12 @@ impl Theme {
     /// text is more vulnerable to unpredictable content behind a popover.
     pub fn glass_overlay(&self) -> Hsla {
         let base = match self.appearance {
-            Appearance::Dark => self.surface_overlay.opacity(0.50),
-            Appearance::Light => self.surface_overlay.opacity(0.85),
+            Appearance::Dark => self
+                .surface_overlay
+                .opacity(roboco_proto::layout::GLASS_OVERLAY_ALPHA_DARK),
+            Appearance::Light => self
+                .surface_overlay
+                .opacity(roboco_proto::layout::GLASS_OVERLAY_ALPHA_LIGHT),
         };
         if !self.is_frost() {
             return self.surface_overlay;
@@ -970,7 +970,7 @@ impl Theme {
             return flatten(self.input_bg, self.bg);
         }
         let base = if matches!(self.appearance, Appearance::Light) {
-            0.30
+            roboco_proto::layout::INPUT_GLASS_ALPHA_LIGHT
         } else {
             self.input_bg.a
         };
@@ -988,8 +988,11 @@ impl Theme {
             return self.surface;
         }
         let window = flatten(self.glass(), self.adverse_backdrop());
-        self.surface
-            .opacity(self.contrast_checked_tint_alpha(self.surface, 0.40, window))
+        self.surface.opacity(self.contrast_checked_tint_alpha(
+            self.surface,
+            roboco_proto::layout::CARD_GLASS_ALPHA,
+            window,
+        ))
     }
 
     /// The standard modal backdrop — see [`scrim`].

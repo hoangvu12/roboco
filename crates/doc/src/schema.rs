@@ -16,6 +16,7 @@
 
 use loro::{ExportMode, LoroDoc, LoroError, LoroList, LoroMap, LoroText, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::commands::{SessionCommandEntry, SessionCommandStatus};
 use crate::constants::{SESSION_SCHEMA_VERSION, TAIL_MESSAGE_COUNT};
@@ -31,7 +32,7 @@ pub enum DocError {
     Json(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
@@ -40,7 +41,7 @@ pub enum MessageRole {
 }
 
 /// One entry in the doc's `messages` list (`SessionMessageEntry` in TS).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMessageEntry {
     pub id: String,
@@ -1156,7 +1157,7 @@ pub(crate) fn loro_value_from_json(v: &serde_json::Value) -> LoroValue {
 }
 
 /// Tail sidecar shape (`SessionTail` in TS).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTail {
     pub chat_id: String,

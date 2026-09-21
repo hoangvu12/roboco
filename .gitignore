@@ -9,3 +9,5 @@
 node_modules
 .wrangler
 build/
+# Staged web bundle for rust-embed — written by crates/engine/build.rs.
+crates/engine/web-staging/

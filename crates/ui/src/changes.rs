@@ -53,7 +53,7 @@ use crate::history::{
     GitHistoryViewButton,
 };
 use crate::markdown::render;
-use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
+use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE, MotionSpecExt};
 use crate::popover::{self, Popup};
 use crate::state::AppState;
 use crate::engine_registry::EngineTarget;

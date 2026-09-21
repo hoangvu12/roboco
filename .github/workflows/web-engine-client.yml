@@ -1,0 +1,103 @@
+name: Web engine client
+
+# The engine-client connection core is verified against a REAL engine: the
+# job builds the conformance example (remote listener + pair code on an
+# ephemeral port), then the vitest suite spawns it, redeems, dials,
+# watches, drops, and revokes against it — plus codec and scripted
+# fake-server suites for reconnect/park behavior.
+#
+# A second job runs the browser end-to-end smoke (ticket 18): pair +
+# watch + send against the seeded `web_smoke` example. Both run against
+# the real engine listener, so CI proves the wire path the web client
+# actually takes in production.
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/engine/**'
+      - 'crates/rpc/**'
+      - 'crates/proto/**'
+      - 'crates/doc/**'
+      - 'web/packages/engine-client/**'
+      - 'web/pnpm-lock.yaml'
+      - 'web/pnpm-workspace.yaml'
+      - '.github/workflows/web-engine-client.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/engine/**'
+      - 'crates/rpc/**'
+      - 'crates/proto/**'
+      - 'crates/doc/**'
+      - 'web/packages/engine-client/**'
+      - 'web/pnpm-lock.yaml'
+      - 'web/pnpm-workspace.yaml'
+      - '.github/workflows/web-engine-client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-engine-client-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  engine-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+      - name: build the conformance engine
+        run: cargo build --locked -p roboco-engine --example web_conformance
+        working-directory: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: enable pnpm
+        run: corepack enable
+      - name: install web workspace
+        run: pnpm install --frozen-lockfile
+      - name: test @roboco/engine-client
+        run: pnpm --filter "@roboco/engine-client" run test
+
+  web-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Rust
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+      - name: build the web_smoke engine
+        run: cargo build --locked -p roboco-engine --example web_smoke
+        working-directory: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: enable pnpm
+        run: corepack enable
+      - name: install web workspace
+        run: pnpm install --frozen-lockfile
+      - name: browser end-to-end smoke (pair, watch, send)
+        run: pnpm --filter "@roboco/engine-client" run test:smoke

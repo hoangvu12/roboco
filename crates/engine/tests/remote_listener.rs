@@ -48,7 +48,17 @@ async fn paired_bind_enforces_sessions_and_preserves_rpc_capabilities() {
             .status(),
         401
     );
-    assert!(connect_ws(&url).await.is_err());
+    // A credential-less dial now passes the HTTP upgrade — browsers
+    // authenticate with a first-frame Auth envelope instead — but the engine
+    // refuses RPC until a session credential arrives.
+    let unauthenticated = connect_ws(&url).await.unwrap();
+    assert!(
+        unauthenticated
+            .call(methods::ENGINE_INFO, json!({}))
+            .await
+            .is_err()
+    );
+    drop(unauthenticated);
     assert!(connect_ws_authenticated(&url, "wrong").await.is_err());
     let code = store.create_code("remote", 300).unwrap();
     let grant: Value = http
