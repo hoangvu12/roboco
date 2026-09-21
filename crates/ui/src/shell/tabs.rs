@@ -275,6 +275,10 @@ impl Shell {
         let _available_titlebar_width =
             (self.viewport_width - row_left - right_pad - trailing_width - row_gap * 3.0).max(0.0);
 
+        let actions = (!takeover && !on_canvas)
+            .then(|| self.render_project_actions_control(cx))
+            .flatten();
+
         let trailing: Option<gpui::AnyElement> = if on_canvas {
             None
         } else {
@@ -436,6 +440,7 @@ impl Shell {
                         }),
                 )
             })
+            .children(actions)
             .child(div().flex_1())
             .children(trailing);
 
