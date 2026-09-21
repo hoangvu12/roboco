@@ -185,6 +185,12 @@ export interface UiSettings {
   readonly sidebarShowBranch: boolean;
   readonly sidebarShowPullRequest: boolean;
   readonly lastSpaceId: string | null;
+  /**
+   * Last successfully launched Action per space in this viewport
+   * (`last_project_action_by_space_id`, settings.rs): the titlebar control's
+   * preferred action. Keys are engine-scoped space ids.
+   */
+  readonly lastProjectActionBySpaceId: Record<string, string>;
   readonly spaceFilter: string | null;
   readonly soundEnabled: boolean;
   readonly soundCompletionEnabled: boolean;
@@ -280,6 +286,7 @@ export function defaultUiSettings(): UiSettings {
     sidebarShowBranch: true,
     sidebarShowPullRequest: true,
     lastSpaceId: null,
+    lastProjectActionBySpaceId: {},
     spaceFilter: null,
     soundEnabled: true,
     soundCompletionEnabled: true,
@@ -394,6 +401,17 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** `last_project_action_by_space_id`: keep only non-empty string values. */
+function healStringMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(record(value))) {
+    if (typeof entry === "string" && entry.length > 0) {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
 function healUiFontFamily(value: unknown): UiFontFamily {
   if (value === "geist" || value === "geistMono" || value === "system") {
     return value;
@@ -471,6 +489,7 @@ export function healUiSettings(value: unknown): UiSettings {
     sidebarShowBranch: bool(raw.sidebarShowBranch, true),
     sidebarShowPullRequest: bool(raw.sidebarShowPullRequest, true),
     lastSpaceId: nullableString(raw.lastSpaceId),
+    lastProjectActionBySpaceId: healStringMap(raw.lastProjectActionBySpaceId),
     spaceFilter: nullableString(raw.spaceFilter),
     soundEnabled: bool(raw.soundEnabled, true),
     soundCompletionEnabled: bool(raw.soundCompletionEnabled, true),

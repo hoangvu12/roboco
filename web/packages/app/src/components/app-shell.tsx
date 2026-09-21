@@ -39,6 +39,7 @@ import {
   rightPaneMaxWidth,
   sidebarLayout,
   sidebarTarget,
+  titlebarAvailableTitlebarWidth,
   titlebarNewSessionAlpha,
   titlebarPaneBandWidth,
   titlebarRowLeft,
@@ -69,6 +70,7 @@ import { FilesPaneColumn } from "./files/files-pane-column";
 import { RightTabStrip } from "./right-tab-strip";
 import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
+import { ProjectActionsControl } from "./project-actions-control";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
 
 /**
@@ -516,6 +518,19 @@ export function AppShell() {
         takeover,
       })
     : TITLEBAR_CONTENT_START;
+  // ── The project-Actions control (tabs.rs:316-320) ─────────────────────
+  // The desktop's `!takeover && !on_canvas` gate: the chat route with a
+  // selected chat. `available_titlebar_width` (b1484015) measures the room
+  // the control may claim after the trailing strip — the trailing group is
+  // the pane's band plus its fixed 28px toggle slot, or just the toggle
+  // while the pane is shut.
+  const paneBandWidth = titlebarPaneBandWidth({ viewport, paneWidth, rowLeft, takeover });
+  const showActionsControl = isChatRoute && paneChatId !== null && !takeover;
+  const actionsTitlebarWidth = titlebarAvailableTitlebarWidth({
+    viewport,
+    rowLeft,
+    trailingWidth: paneWidth > 0 ? paneBandWidth + 28 : 28,
+  });
   const shellClass = [
     "shell",
     sidebar.collapsed ? "shell-sidebar-collapsed" : "",
@@ -590,12 +605,7 @@ export function AppShell() {
           // The header strip rides the pane's animated width, capped to the
           // room the row has left — `animated_width`. Never `auto`: that made
           // it snap to full width in takeover while the column glided.
-          "--rb-pane-band": `${titlebarPaneBandWidth({
-            viewport,
-            paneWidth,
-            rowLeft,
-            takeover,
-          })}px`,
+          "--rb-pane-band": `${paneBandWidth}px`,
           // Auto outside a takeover glide, so the column is plain flex again.
           "--rb-main-stable": conversationStable === null ? "auto" : `${conversationStable}px`,
         } as CSSProperties
@@ -613,6 +623,13 @@ export function AppShell() {
         // one (a selected chat), exactly `titlebar_plus_alpha`'s gate.
         onNewSession={chrome.onNewSession}
         identity={chrome.identity}
+        // The project-Actions control (tabs.rs:316-320): the desktop's
+        // `!takeover && !on_canvas` gate, sized to the titlebar room left.
+        actions={
+          showActionsControl && paneChatId !== null ? (
+            <ProjectActionsControl chatId={paneChatId} availableTitlebarWidth={actionsTitlebarWidth} />
+          ) : undefined
+        }
         // Every pane control is shell-owned and synchronous with the store, so
         // the toggle, the strip and the column all move on the same frame.
         onTogglePane={hasPane ? () => rightPaneStore.toggle(paneChatId) : null}

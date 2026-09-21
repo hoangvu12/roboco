@@ -397,4 +397,39 @@ describe("TerminalSessionController", () => {
     expect(sink.text()).toContain("terminal stream lost");
     expect(rpc.watchCancelled).toBe(1);
   });
+
+  // ── The Actions attach path (`attach_reserved_session`, panel.rs:536) ──
+
+  it("attach adopts the engine-opened PTY without an OpenTerminal call", async () => {
+    const rpc = new FakeRpc();
+    const sink = new FakeSink();
+    const controller = new TerminalSessionController({ client: rpc, chatId: "chat-1", sink });
+
+    controller.attach({ id: "run-9", cwd: "/work", shell: "bash" });
+    // No OpenTerminal — the run RPC already opened the PTY on the owner.
+    expect(rpc.callsFor("OpenTerminal")).toHaveLength(0);
+    expect(controller.terminalId).toBe("run-9");
+    expect(controller.shell).toBe("bash");
+    expect(rpc.watchMethod).toBe("SubscribeTerminal");
+    expect(rpc.watchParams).toEqual({ terminalId: "run-9", afterSeq: 0 });
+
+    // The replay-then-live stream feeds the tab like an opened one.
+    rpc.watchHandlers!.onItem({ type: "data", seq: 2, data: encodeBase64(new TextEncoder().encode("remote-action")) }, { generation: 1 });
+    expect(sink.text()).toBe("remote-action");
+    expect(rpc.watchParams!.afterSeq).toBe(2);
+  });
+
+  it("attach onto a closed tab releases the engine-opened PTY", async () => {
+    const rpc = new FakeRpc();
+    const sink = new FakeSink();
+    const controller = new TerminalSessionController({ client: rpc, chatId: "chat-1", sink });
+    controller.close();
+
+    controller.attach({ id: "run-9", cwd: "/work", shell: "bash" });
+    // The tab closed while the action's run was in flight — the PTY the
+    // engine opened for it is released, never streamed.
+    expect(rpc.callsFor("CloseTerminal")).toHaveLength(1);
+    expect(rpc.callsFor("CloseTerminal")[0]!.params).toEqual({ terminalId: "run-9" });
+    expect(rpc.watchMethod).toBeNull();
+  });
 });
