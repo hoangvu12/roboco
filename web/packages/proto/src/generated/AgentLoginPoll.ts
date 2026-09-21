@@ -3,4 +3,9 @@
 
 import type { AgentLoginStatus } from "./AgentLoginStatus";
 
-export type AgentLoginPoll = { status: AgentLoginStatus, message?: string | null, };
+export type AgentLoginPoll = { status: AgentLoginStatus, message?: string | null, 
+/**
+ * a sign-in page that only became known after the start reply (the
+ * agent had to install first); the app opens it once.
+ */
+url?: string | null, };

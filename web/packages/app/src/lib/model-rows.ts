@@ -41,12 +41,17 @@ export function visibleHarnesses(list: readonly HarnessDescriptor[]): HarnessDes
   return visibleHarnessesImpl(list, false);
 }
 
-/** `registry.rs::descriptor_enabled` — a null flag falls back to detection. */
+/**
+ * `registry.rs::descriptor_enabled` — a null flag falls back to detection,
+ * which keeps the opt-in harnesses OFF: enabling antigravity downloads a
+ * large server and runs a browser sign-in, so detection alone must never
+ * set it off (registry.rs `opt_in`).
+ */
 export function descriptorEnabled(descriptor: HarnessDescriptor): boolean {
   if (descriptor.enabled !== null && descriptor.enabled !== undefined) {
     return descriptor.enabled;
   }
-  return descriptor.installed && descriptor.id !== "mock";
+  return descriptor.installed && descriptor.id !== "mock" && descriptor.id !== "antigravity";
 }
 
 /**

@@ -1,5 +1,5 @@
 import { methods, type EngineClient } from "@roboco/engine-client";
-import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
+import type { AgentLoginPoll, HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
 import type { EngineSession } from "../state/engine-session";
 import { descriptorEnabled, offeredHarnesses, visibleHarnesses } from "./model-rows";
 
@@ -115,6 +115,8 @@ export function blurb(harness: HarnessId): string {
       return "The pi coding agent (pi CLI).";
     case "opencode":
       return "SST's opencode agent (opencode CLI).";
+    case "antigravity":
+      return "Google's Antigravity agent (Antigravity ACP server).";
     case "mock":
       return "Scripted test harness.";
   }
@@ -139,9 +141,68 @@ export function cliName(harness: HarnessId): string {
       return "pi";
     case "opencode":
       return "opencode";
+    case "antigravity":
+      return "agy";
     case "mock":
       return "mock";
   }
+}
+
+// ── Antigravity sign-in (harnesses.rs SignInPhase + signs_in_on_enable) ──
+
+/**
+ * Harnesses whose toggle runs the agent's own sign-in before switching on
+ * (`signs_in_on_enable`, harnesses.rs): antigravity only — its ACP server's
+ * google sign-in runs from Settings, never mid-chat.
+ */
+export function signsInOnEnable(harness: HarnessId): boolean {
+  return harness === "antigravity";
+}
+
+/** The milestones of an enable-with-sign-in (harnesses.rs `SignInPhase`). */
+export type SignInPhase = "starting" | "installing" | "authenticating" | "enabling";
+
+/** The in-progress row copy (harnesses.rs `pending_label`), verbatim. */
+export function signInPendingLabel(phase: SignInPhase): string {
+  switch (phase) {
+    case "starting":
+      return "Preparing Antigravity…";
+    case "installing":
+      return "Installing Antigravity…";
+    case "authenticating":
+      return "Finish signing in in your browser.";
+    case "enabling":
+      return "Enabling Antigravity…";
+  }
+}
+
+/** The failure row copy (harnesses.rs `failure_label`), verbatim. */
+export function signInFailureLabel(phase: SignInPhase): string {
+  switch (phase) {
+    case "starting":
+      return "Setup failed";
+    case "installing":
+      return "Installation failed";
+    case "authenticating":
+      return "Sign-in failed";
+    case "enabling":
+      return "Enable failed";
+  }
+}
+
+/**
+ * The phase a poll moves an in-flight sign-in to, or `null` to keep the
+ * current one (a pending poll without a url). `done` lands as the enabling
+ * step — the toggle itself still has to run once the sign-in succeeded.
+ */
+export function nextSignInPhase(poll: AgentLoginPoll): SignInPhase | null {
+  if (poll.status === "done") {
+    return "enabling";
+  }
+  if (poll.status === "pending" && poll.url != null) {
+    return "authenticating";
+  }
+  return null;
 }
 
 /**

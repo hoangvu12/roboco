@@ -1,6 +1,6 @@
 # Roboco
 
-在自己的机器上运行和管理编码 agent，包括 Claude Code、Codex、Cursor、Grok、Hermes 和 Pi。会话和文件由运行它们的引擎保存。
+在自己的机器上运行和管理编码 agent，包括 Claude Code、Codex、Cursor、Grok、Hermes、Pi 和 Antigravity。会话和文件由运行它们的引擎保存。
 
 *[English](README.md) | 简体中文*
 

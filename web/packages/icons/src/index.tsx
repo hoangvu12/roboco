@@ -70,6 +70,7 @@ export type HarnessId =
   | "hermes"
   | "pi"
   | "opencode"
+  | "antigravity"
   | "mock";
 
 /**
@@ -99,6 +100,9 @@ export function harnessBrandIcon(harness: string): { name: IconName; tint: strin
       return { name: "piMark", tint: null };
     case "opencode":
       return { name: "opencodeMark", tint: null };
+    // Google's Antigravity mark, monochrome like every other agent mark.
+    case "antigravity":
+      return { name: "antigravityMark", tint: null };
     default:
       return { name: "bot", tint: null };
   }

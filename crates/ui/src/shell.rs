@@ -3200,6 +3200,7 @@ impl Shell {
     /// save must never publish the Shell's older values over those selections.
     fn sync_independent_settings(&mut self, cx: &App) {
         let current = settings::current(cx);
+        self.settings.window_geometry = current.window_geometry;
         self.settings.new_thread_composer_background = current.new_thread_composer_background;
         self.settings.new_thread_background_effect = current.new_thread_background_effect;
         self.settings.open_web_links_in_roboco = current.open_web_links_in_roboco;
@@ -9029,6 +9030,13 @@ mod exit_regressions {
             .enumerate()
         {
             let open_links_in_roboco = index % 2 == 0;
+            let geometry = Some(settings::WindowGeometry {
+                display_uuid: Some(uuid::Uuid::from_u128(7)),
+                x: 80.0 + index as f32,
+                y: 60.0,
+                width: 1100.0,
+                height: 750.0,
+            });
             window
                 .update(cx, |shell, _, cx| {
                     // Selection changes in Appearance, independently of the shell's
@@ -9037,6 +9045,7 @@ mod exit_regressions {
                     shell.schedule_save(cx);
                     settings::set_new_thread_background_effect(effect, cx);
                     settings::update(settings::SavePolicy::Immediate, cx, |settings| {
+                        settings.window_geometry = geometry;
                         settings.open_web_links_in_roboco = open_links_in_roboco;
                     });
                     for step in 0..3 {
@@ -9044,6 +9053,7 @@ mod exit_regressions {
                         shell.settings.right_pane_width = 540.0 + step as f32;
                         shell.settings.terminal_height = 300.0 + step as f32;
                         shell.schedule_save(cx);
+                        assert_eq!(settings::current(cx).window_geometry, geometry);
                         assert_eq!(settings::current(cx).new_thread_background_effect, effect);
                         assert_eq!(
                             settings::current(cx).open_web_links_in_roboco,
@@ -9052,6 +9062,7 @@ mod exit_regressions {
                     }
                     settings::flush(cx);
                     let loaded = settings::UiSettings::load(dir.path());
+                    assert_eq!(loaded.window_geometry, geometry);
                     assert_eq!(loaded.new_thread_background_effect, effect);
                     assert_eq!(loaded.open_web_links_in_roboco, open_links_in_roboco);
                     assert_eq!(loaded.sidebar_width, 292.0);

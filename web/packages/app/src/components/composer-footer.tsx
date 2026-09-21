@@ -10,7 +10,7 @@ import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberNoProject, rememberTarget } from "../lib/composer-draft";
 import { sidebarStore } from "../state/sidebar";
-import { ContextUsageIndicator } from "./context-usage";
+import { ContextUsageIndicator, hasWindow } from "./context-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
 import { FooterChip, FooterLabel } from "./ui/Chip";
 import { PickerSearchField, useCursorList } from "./ui/CursorList";
@@ -175,7 +175,7 @@ export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooter
       )}
       <span className="footer-spring" />
       {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
-      <ContextUsageIndicator usage={contextUsage} />
+      {hasWindow(contextUsage) && <ContextUsageIndicator usage={contextUsage} />}
     </div>
   );
 }
