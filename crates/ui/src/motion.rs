@@ -151,13 +151,22 @@ fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
             // its wakes are foreign-thread scheduling, which gpui's
             // deterministic test scheduler forbids — a tick landing after a
             // test's scheduler finished panics inside the oneshot drop path
-            // and the double-panic aborts the whole test process. Tests take
-            // the executor-timer path, exactly as non-Windows platforms do.
+            // and the double-panic aborts the whole test process. A
+            // deterministic scheduler takes the executor-timer path, exactly
+            // as non-Windows platforms do.
             #[cfg(windows)]
-            let mut precise_clock = if cfg!(test) {
-                None
-            } else {
+            let mut precise_clock = if cx
+                .background_executor()
+                .scheduler_executor()
+                .scheduler()
+                .as_test()
+                .is_none()
+            {
                 windows_pulse::Clock::new(PULSE_TICK)
+            } else {
+                // A deterministic scheduler must own its timers and wakeups;
+                // an OS thread cannot schedule its thread-local tasks safely.
+                None
             };
             loop {
                 #[cfg(windows)]
