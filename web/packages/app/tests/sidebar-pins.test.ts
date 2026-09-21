@@ -11,10 +11,12 @@ import {
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   projectPinnedFirst,
+  projectSidebarPinChange,
   reorderVisiblePins,
   retainKnownPins,
   sidebarGapOffset,
   sidebarPinProfileKey,
+  sidebarSessionDropChange,
   sidebarSessionDropPins,
   SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
   SIDEBAR_SESSION_SLOT,
@@ -41,16 +43,90 @@ describe("projectPinnedFirst", () => {
 });
 
 describe("reorderVisiblePins", () => {
-  it("filtered_pin_reorder_preserves_hidden_slots", () => {
+  it("filtered_pin_reorder_preserves_every_other_pins_relative_order", () => {
     const saved = ["a1", "b1", "a2", "archived", "b2"];
     const visible = ["a1", "a2"];
-    expect(reorderVisiblePins(saved, visible, 0, 1)).toEqual(["a2", "b1", "a1", "archived", "b2"]);
+    // Only the dragged pin moves; the hidden/archived pins and every other
+    // pin keep their relative order (68306a17's per-item moves).
+    expect(reorderVisiblePins(saved, visible, 0, 1)).toEqual([
+      "b1",
+      "a2",
+      "a1",
+      "archived",
+      "b2",
+    ]);
   });
 
   it("pin_reorder_rejects_invalid_or_noop_moves", () => {
     const saved = ["a", "b"];
     expect(reorderVisiblePins(saved, saved, 0, 0)).toEqual(saved);
     expect(reorderVisiblePins(saved, saved, 8, 0)).toEqual(saved);
+  });
+});
+
+describe("projectSidebarPinChange", () => {
+  it("pending_move_does_not_revive_unpinned_item", () => {
+    expect(
+      projectSidebarPinChange(["remote"], {
+        action: "move",
+        sessionId: "gone",
+        after: null,
+        before: null,
+      }),
+    ).toEqual(["remote"]);
+  });
+
+  it("intents_rebase_onto_the_latest_projection", () => {
+    // Pin between the two; a surviving right anchor wins over the left.
+    expect(
+      projectSidebarPinChange(["a", "b"], {
+        action: "pin",
+        sessionId: "mid",
+        after: "a",
+        before: "b",
+      }),
+    ).toEqual(["a", "mid", "b"]);
+    // Both anchors gone: append.
+    expect(
+      projectSidebarPinChange(["a", "mid", "b"], {
+        action: "pin",
+        sessionId: "tail",
+        after: "gone",
+        before: "also-gone",
+      }),
+    ).toEqual(["a", "mid", "b", "tail"]);
+    // Unpin removes.
+    expect(
+      projectSidebarPinChange(["a", "mid", "b", "tail"], {
+        action: "unpin",
+        sessionId: "mid",
+      }),
+    ).toEqual(["a", "b", "tail"]);
+  });
+});
+
+describe("sidebarSessionDropChange", () => {
+  it("a drop becomes one per-item intent anchored to its neighbors", () => {
+    const saved = ["hidden", "a", "b", "hidden-tail"];
+    // An existing pin moving: Move with the drop's neighbors.
+    expect(sidebarSessionDropChange(saved, ["hidden", "b", "a", "hidden-tail"], "a")).toEqual({
+      action: "move",
+      sessionId: "a",
+      after: "b",
+      before: "hidden-tail",
+    });
+    // A new pin: Pin with its neighbors.
+    expect(sidebarSessionDropChange(saved, ["hidden", "normal", "a", "b", "hidden-tail"], "normal")).toEqual({
+      action: "pin",
+      sessionId: "normal",
+      after: "hidden",
+      before: "a",
+    });
+    // An absent id: Unpin.
+    expect(sidebarSessionDropChange(saved, ["hidden", "b", "hidden-tail"], "a")).toEqual({
+      action: "unpin",
+      sessionId: "a",
+    });
   });
 });
 

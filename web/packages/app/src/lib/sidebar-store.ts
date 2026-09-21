@@ -1,5 +1,5 @@
 import type { StorageLike } from "./engine-store";
-import { retainKnownPins } from "./sidebar-pins";
+import { projectSidebarPinChange, retainKnownPins, type SidebarPinChange } from "./sidebar-pins";
 import { UiSettingsStore, uiSettings, type SidebarOrganization, type SidebarSort, type UiSettings } from "../state/ui-settings";
 
 /**
@@ -117,10 +117,11 @@ export class SidebarStore {
   }
 
   /**
-   * `Shell::set_chat_pinned`: pins append in click order under their profile,
-   * unpins leave the rest untouched, and an emptied bucket drops out of the
-   * map. A null profile key is the desktop's "identity not ready" early
-   * return; a no-op writes nothing (and notifies nobody).
+   * `Shell::set_chat_pinned` (68306a17): one per-item intent — a Pin anchored
+   * after the current last pin, or an Unpin — projected onto the profile's
+   * bucket. An emptied bucket drops out of the map. A null profile key is
+   * the desktop's "identity not ready" early return; a no-op writes nothing
+   * (and notifies nobody).
    */
   setChatPinned(profileKey: string | null, chatId: string, pinned: boolean): void {
     if (profileKey === null) {
@@ -128,18 +129,18 @@ export class SidebarStore {
     }
     const current = this.#settings.getSnapshot().sidebarPinnedSessionIdsByProfile;
     const bucket = current[profileKey] ?? [];
-    let next: readonly string[];
-    if (pinned) {
-      if (bucket.includes(chatId)) {
-        return;
-      }
-      next = [...bucket, chatId];
-    } else {
-      if (!bucket.includes(chatId)) {
-        return;
-      }
-      next = bucket.filter((id) => id !== chatId);
+    if (bucket.includes(chatId) === pinned) {
+      return;
     }
+    const change: SidebarPinChange = pinned
+      ? {
+          action: "pin",
+          sessionId: chatId,
+          after: bucket.length > 0 ? (bucket[bucket.length - 1] ?? null) : null,
+          before: null,
+        }
+      : { action: "unpin", sessionId: chatId };
+    const next = projectSidebarPinChange(bucket, change);
     const map: Record<string, readonly string[]> = { ...current };
     if (next.length === 0) {
       delete map[profileKey];

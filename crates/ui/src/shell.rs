@@ -58,6 +58,7 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 use crate::workspace_links::resolve_workspace_file_link;
 
+mod sidebar_pins;
 mod spaces;
 mod tabs;
 
@@ -1273,6 +1274,11 @@ pub struct Shell {
     pinned_session_drag_generation: u64,
     sidebar_session_transfer: Option<SidebarSessionTransfer>,
     sidebar_session_return: Option<SidebarSessionReturn>,
+    /// Pending pin intents are scoped to the active profile (68306a17's
+    /// ui-local port: no engine roundtrip, the ledger orders rapid drops).
+    sidebar_pin_write: Option<sidebar_pins::PendingSidebarPins>,
+    sidebar_pin_write_generation: u64,
+    sidebar_pin_write_notice: Option<SharedString>,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
     /// Last seen session status per chat — the chime trigger compares against
@@ -1619,6 +1625,9 @@ impl Shell {
             pinned_session_drag_generation: 0,
             sidebar_session_transfer: None,
             sidebar_session_return: None,
+            sidebar_pin_write: None,
+            sidebar_pin_write_generation: 0,
+            sidebar_pin_write_notice: None,
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             connectivity_notifications: Default::default(),
@@ -1962,7 +1971,9 @@ impl Shell {
         }
         // Pins belong to one device-local workspace profile. Never judge a
         // profile before both its identity and first complete chat frame have
-        // landed; another profile's absent chats are not deletions.
+        // landed; another profile's absent chats are not deletions. (Roboco
+        // has no remote pin records: `UiSettings` is the only pin authority,
+        // and the per-item intent queue never leaves this device.)
         let profile_key = self.active_sidebar_pin_profile_key(cx);
         let known_chat_ids = state.read(cx).chats_synced.then(|| {
             state
@@ -3868,6 +3879,18 @@ impl Shell {
         sidebar_pin_profile_key(state.workspace_scope, state.local_device_id.as_deref())
     }
 
+    /// The pins the sidebar should draw: the committed profile bucket with
+    /// the current write burst's intents projected on top (upstream read the
+    /// synced registry state here; locally `UiSettings` is the authority).
+    pub(super) fn active_sidebar_pins(&self, cx: &App) -> Vec<String> {
+        if let Some(pins) = self.optimistic_sidebar_pins(cx) {
+            return pins;
+        }
+        self.active_sidebar_pin_profile_key(cx)
+            .map(|key| self.settings.sidebar_pins(&key).to_vec())
+            .unwrap_or_default()
+    }
+
     fn set_chat_pinned(&mut self, chat_id: String, pinned: bool, cx: &mut Context<Self>) {
         self.close_chat_menu(cx);
         self.cancel_pinned_session_drag(cx);
@@ -3883,31 +3906,72 @@ impl Shell {
         {
             return;
         }
-        let (changed, empty) = {
-            let pinned_ids = self.settings.sidebar_pins_mut(profile_key.clone());
-            let changed = if pinned {
-                if pinned_ids.iter().any(|id| id == &chat_id) {
-                    false
-                } else {
-                    pinned_ids.push(chat_id);
-                    true
-                }
-            } else {
-                let before = pinned_ids.len();
-                pinned_ids.retain(|id| id != &chat_id);
-                pinned_ids.len() != before
-            };
-            (changed, pinned_ids.is_empty())
-        };
-        if changed {
-            if empty {
-                self.settings
-                    .sidebar_pinned_session_ids_by_profile
-                    .remove(&profile_key);
-            }
-            self.schedule_save(cx);
+        let pins = self.active_sidebar_pins(cx);
+        if pins.contains(&chat_id) == pinned {
+            return;
         }
+        let change = if pinned {
+            sidebar_pins::SidebarPinChange::Pin {
+                session_id: chat_id,
+                after: pins.last().cloned(),
+                before: None,
+            }
+        } else {
+            sidebar_pins::SidebarPinChange::Unpin { session_id: chat_id }
+        };
+        self.apply_sidebar_pin_change(profile_key, change, cx);
         cx.notify();
+    }
+
+    /// Validate a projected pin list before it lands: identity, uniqueness,
+    /// and the 200-pin admission limit for NEW pins (upstream checked the
+    /// sync layer's readiness here; the local store is always ready).
+    fn validate_sidebar_pin_change(
+        &self,
+        profile_key: &str,
+        pinned_session_ids: &[String],
+        cx: &App,
+    ) -> Result<(), &'static str> {
+        if self.active_sidebar_pin_profile_key(cx).as_deref() != Some(profile_key) {
+            return Err("Pins changed for another workspace profile");
+        }
+        let current = self.active_sidebar_pins(cx);
+        sidebar_pins::validate_sidebar_pin_update(&current, pinned_session_ids)
+    }
+
+    /// Apply ONE per-item pin intent to the engine-local store (upstream
+    /// routed synced profiles through the registry; roboco writes
+    /// `UiSettings` and records the intent in the burst ledger).
+    fn apply_sidebar_pin_change(
+        &mut self,
+        profile_key: String,
+        change: sidebar_pins::SidebarPinChange,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut pinned_session_ids = self.active_sidebar_pins(cx);
+        change.project(&mut pinned_session_ids);
+        if let Err(message) =
+            self.validate_sidebar_pin_change(&profile_key, &pinned_session_ids, cx)
+        {
+            self.sidebar_notice = Some(message.into());
+            cx.notify();
+            return false;
+        }
+        if self.active_sidebar_pins(cx) == pinned_session_ids {
+            return false;
+        }
+        if pinned_session_ids.is_empty() {
+            self.settings
+                .sidebar_pinned_session_ids_by_profile
+                .remove(&profile_key);
+        } else {
+            self.settings
+                .sidebar_pinned_session_ids_by_profile
+                .insert(profile_key.clone(), pinned_session_ids);
+        }
+        self.schedule_save(cx);
+        self.queue_sidebar_pin_write(profile_key, change, cx);
+        true
     }
 
     /// A jump shortcut: open the sidebar row at `slot`. A slot past the end of

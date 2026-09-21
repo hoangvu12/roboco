@@ -581,7 +581,8 @@ pub struct UiSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
     /// Device-local pinned sessions in visual order, isolated by workspace
-    /// profile. This preference is presentation-only and never synchronized.
+    /// profile. Per-item pin intents (shell/sidebar_pins.rs) write this map
+    /// directly — the ordering never leaves this device.
     #[serde(
         default,
         skip_serializing_if = "std::collections::HashMap::is_empty"

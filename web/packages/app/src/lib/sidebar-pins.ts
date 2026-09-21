@@ -113,8 +113,9 @@ export function projectPinnedFirst(recencyIds: readonly string[], pinnedIds: rea
 }
 
 /**
- * `spaces.rs::reorder_visible_pins` — reorder the visible pinned projection
- * while preserving hidden or archived pins in their existing global slots.
+ * `spaces.rs::reorder_visible_pins` (68306a17's per-item moves): move ONLY
+ * the dragged pin — every other pin, including hidden/archived pins, keeps
+ * its relative order; no other position is written.
  */
 export function reorderVisiblePins(
   pinnedIds: readonly string[],
@@ -125,12 +126,73 @@ export function reorderVisiblePins(
   if (from >= visibleIds.length || to >= visibleIds.length || from === to) {
     return [...pinnedIds];
   }
-  const reordered = [...visibleIds];
-  const [moved] = reordered.splice(from, 1);
-  reordered.splice(to, 0, moved!);
-  const visible = new Set(visibleIds);
-  const replacements = reordered.values();
-  return pinnedIds.map((id) => (visible.has(id) ? (replacements.next().value ?? id) : id));
+  const moved = visibleIds[from]!;
+  const anchor = visibleIds[to]!;
+  const result = pinnedIds.filter((id) => id !== moved);
+  const index = result.indexOf(anchor);
+  if (index < 0) {
+    return [...pinnedIds];
+  }
+  result.splice(index + (from < to ? 1 : 0), 0, moved);
+  return result;
+}
+
+/**
+ * `shell/sidebar_pins.rs::SidebarPinChange` — one per-item pin intent,
+ * anchored to neighbor session ids. Upstream fed these to the engine's
+ * registry op; roboco's web projects them onto the ui-local store, so the
+ * type never crosses a wire.
+ */
+export type SidebarPinChange =
+  | { readonly action: "pin"; readonly sessionId: string; readonly after: string | null; readonly before: string | null }
+  | { readonly action: "move"; readonly sessionId: string; readonly after: string | null; readonly before: string | null }
+  | { readonly action: "unpin"; readonly sessionId: string };
+
+/**
+ * `SidebarPinChange::project` — rebase an intent on the latest committed
+ * projection. A stale move never resurrects an unpinned item. A surviving
+ * right anchor wins; otherwise use the left anchor, or append when both
+ * disappeared.
+ */
+export function projectSidebarPinChange(ids: readonly string[], change: SidebarPinChange): string[] {
+  if (change.action === "move" && !ids.includes(change.sessionId)) {
+    return [...ids];
+  }
+  const next = ids.filter((id) => id !== change.sessionId);
+  if (change.action === "unpin") {
+    return next;
+  }
+  const beforeIndex = change.before === null ? -1 : next.indexOf(change.before);
+  const afterIndex = change.after === null ? -1 : next.indexOf(change.after);
+  const index =
+    beforeIndex >= 0 ? beforeIndex : afterIndex >= 0 ? afterIndex + 1 : next.length;
+  next.splice(index, 0, change.sessionId);
+  return next;
+}
+
+/**
+ * `finish_sidebar_session_transfer`'s intent construction: the drop's next
+ * list becomes ONE per-item change — a Move for an existing pin, a Pin for
+ * a new one, an Unpin when the id is absent — anchored to the drop's
+ * neighbors.
+ */
+export function sidebarSessionDropChange(
+  saved: readonly string[],
+  next: readonly string[],
+  chatId: string,
+): SidebarPinChange {
+  const index = next.indexOf(chatId);
+  if (index < 0) {
+    return { action: "unpin", sessionId: chatId };
+  }
+  const after = index > 0 ? (next[index - 1] ?? null) : null;
+  const before = next[index + 1] ?? null;
+  return {
+    action: saved.includes(chatId) ? "move" : "pin",
+    sessionId: chatId,
+    after,
+    before,
+  };
 }
 
 /**

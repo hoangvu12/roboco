@@ -57,8 +57,8 @@ pub(super) fn project_pinned_first(recency_ids: &[String], pinned_ids: &[String]
         .collect()
 }
 
-/// Reorder the visible pinned projection while preserving hidden or archived
-/// pins in their existing global slots.
+/// Move only the dragged pin. Every other pin, including hidden/archived pins,
+/// keeps its relative order; no other position needs to be written.
 pub(super) fn reorder_visible_pins(
     pinned_ids: &[String],
     visible_ids: &[String],
@@ -69,21 +69,18 @@ pub(super) fn reorder_visible_pins(
         return pinned_ids.to_vec();
     }
 
-    let mut reordered = visible_ids.to_vec();
-    let moved = reordered.remove(from);
-    reordered.insert(to, moved);
-    let visible: HashSet<&str> = visible_ids.iter().map(String::as_str).collect();
-    let mut replacements = reordered.into_iter();
-    pinned_ids
+    let moved = &visible_ids[from];
+    let anchor = &visible_ids[to];
+    let mut result: Vec<_> = pinned_ids
         .iter()
-        .map(|id| {
-            if visible.contains(id.as_str()) {
-                replacements.next().unwrap_or_else(|| id.clone())
-            } else {
-                id.clone()
-            }
-        })
-        .collect()
+        .filter(|id| *id != moved)
+        .cloned()
+        .collect();
+    let Some(index) = result.iter().position(|id| id == anchor) else {
+        return pinned_ids.to_vec();
+    };
+    result.insert(index + usize::from(from < to), moved.clone());
+    result
 }
 
 /// Remove only ids absent from the workspace. Archived sessions remain known
@@ -215,6 +212,92 @@ mod pinned_session_tests {
         );
     }
 
+    #[gpui::test]
+    fn pin_intents_queue_and_finish_in_order(cx: &mut gpui::TestAppContext) {
+        use super::sidebar_pins::SidebarPinChange;
+        use super::*;
+        use gpui::AppContext as _;
+        // The local port of 68306a17's write-queue tests: each interaction
+        // queues ONE per-item intent, the bucket already carries the landed
+        // state, and draining the ledger never rolls a newer drop back.
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            crate::settings::init(Default::default(), dir.path(), cx);
+        });
+        let shell = cx.new(|cx| {
+            let state = cx.new(|_| AppState::new());
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    default_harness: roboco_proto::HarnessId::Mock,
+                },
+                cx,
+            );
+            shell.state.update(cx, |state, _| {
+                state.workspace_scope = Some(roboco_proto::WorkspaceScope::Local);
+                state.chats = ["pin", "regular"]
+                    .into_iter()
+                    .map(|id| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": id, "deviceId": "local", "archived": false,
+                            "createdAt": Utc::now(),
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+            });
+            shell
+        });
+        shell.update(cx, |shell, cx| {
+            shell.set_chat_pinned("pin".into(), true, cx);
+            shell.set_chat_pinned("regular".into(), true, cx);
+            // Each menu interaction queued one intent, in order.
+            assert_eq!(shell.settings.sidebar_pins("local"), ids(&["pin", "regular"]));
+            let pending = shell.sidebar_pin_write.as_ref().unwrap();
+            assert_eq!(pending.queue.len(), 2);
+            assert!(matches!(
+                pending.queue.front(),
+                Some(SidebarPinChange::Pin { session_id, .. }) if session_id == "pin"
+            ));
+            let id = pending.id;
+            // The overlay never double-applies landed intents.
+            assert_eq!(shell.active_sidebar_pins(cx), ids(&["pin", "regular"]));
+            // Draining: finish hands back the next intent until empty; the
+            // bucket is untouched by the drain.
+            assert!(shell.finish_sidebar_pin_write(id, Ok(()), cx).is_some());
+            assert!(shell.finish_sidebar_pin_write(id, Ok(()), cx).is_none());
+            assert!(shell.sidebar_pin_write.is_none());
+            assert_eq!(shell.active_sidebar_pins(cx), ids(&["pin", "regular"]));
+            // An unconfirmed burst cancels queued intents and blocks new ones.
+            shell.set_chat_pinned("pin".into(), false, cx);
+            let id = shell.sidebar_pin_write.as_ref().unwrap().id;
+            shell.set_chat_pinned("regular".into(), false, cx);
+            shell.mark_pin_write_unconfirmed(id, cx);
+            assert!(shell.sidebar_pin_write.as_ref().unwrap().unconfirmed);
+            assert!(shell.sidebar_pin_write.as_ref().unwrap().queue.is_empty());
+            // The landed unpins survive the cancelled queue (no rollback —
+            // removing the overlay reveals the committed bucket).
+            assert!(shell.active_sidebar_pins(cx).is_empty());
+            assert!(!shell.apply_sidebar_pin_change(
+                "local".into(),
+                SidebarPinChange::Unpin { session_id: "regular".into() },
+                cx,
+            ), "an unconfirmed burst rejects new intents");
+        });
+    }
+
     #[test]
     fn missing_duplicate_and_archived_pins_do_not_disturb_regular_rows() {
         let recency = ids(&["b", "a", "c"]);
@@ -225,12 +308,14 @@ mod pinned_session_tests {
     }
 
     #[test]
-    fn filtered_pin_reorder_preserves_hidden_slots() {
+    fn filtered_pin_reorder_preserves_every_other_pins_relative_order() {
         let saved = ids(&["a1", "b1", "a2", "archived", "b2"]);
         let visible = ids(&["a1", "a2"]);
+        // Only the dragged pin moves; the hidden/archived pins and every
+        // other pin keep their relative order (68306a17's per-item moves).
         assert_eq!(
             reorder_visible_pins(&saved, &visible, 0, 1),
-            ids(&["a2", "b1", "a1", "archived", "b2"])
+            ids(&["b1", "a2", "a1", "archived", "b2"])
         );
     }
 
@@ -2885,26 +2970,39 @@ impl Shell {
             self.pinned_open = true;
         }
         // Only pin preferences change. Regular rows keep their live activity sort.
-        self.replace_sidebar_pins(payload.profile_key.clone(), next, cx);
-        cx.notify();
-    }
-
-    /// The engine-local write the sync-layer commit stood in for upstream:
-    /// swap the profile's pin list, drop the FLIP bookkeeping (the drop
-    /// already placed every row visually), and save.
-    fn replace_sidebar_pins(
-        &mut self,
-        profile_key: String,
-        next: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings
-            .sidebar_pinned_session_ids_by_profile
-            .insert(profile_key, next);
+        // One per-item intent, anchored to the drop's neighbors (68306a17):
+        // a Move for an existing pin, a Pin for a new one, an Unpin otherwise.
+        let change = if let Some(index) = next.iter().position(|id| id == &payload.chat_id) {
+            let after = index.checked_sub(1).and_then(|i| next.get(i)).cloned();
+            let before = next.get(index + 1).cloned();
+            if saved.contains(&payload.chat_id) {
+                sidebar_pins::SidebarPinChange::Move {
+                    session_id: payload.chat_id.clone(),
+                    after,
+                    before,
+                }
+            } else {
+                sidebar_pins::SidebarPinChange::Pin {
+                    session_id: payload.chat_id.clone(),
+                    after,
+                    before,
+                }
+            }
+        } else {
+            sidebar_pins::SidebarPinChange::Unpin {
+                session_id: payload.chat_id.clone(),
+            }
+        };
+        if !self.apply_sidebar_pin_change(payload.profile_key.clone(), change, cx) {
+            self.cancel_sidebar_session_transfer(cx);
+            return;
+        }
+        // The drop left every row visually in place: the FLIP diff adopts the
+        // new order without gliding it (`commit_pinned_session_drag`'s reset).
         self.sidebar_prev_order.clear();
         self.sidebar_resort.clear();
         self.sidebar_new_keys.clear();
-        self.schedule_save(cx);
+        cx.notify();
     }
 
     /// The sidebar's Sessions list. Unpinned sessions preserve the existing
