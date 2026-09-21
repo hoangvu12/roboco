@@ -1621,6 +1621,15 @@ a:focus-visible,
   flex-direction: column;
 }
 
+/* The relative host the floating rail positions against (popover.rs rail). */
+.spaces-menu-scroll-host {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .spaces-menu-list {
   flex: none;
   display: flex;
@@ -3294,41 +3303,116 @@ a:focus-visible,
 }
 
 /*
- * The failure notice (composer.rs:7381-7411, the transcript ErrorChip
- * palette): `mx-1 mt-1.5 flex items-start gap-2 rounded-xl border px-3 py-2
- * text-[12px] leading-4` with a 14px DangerTriangle — a subtle tinted wash,
- * not a bare red stroke. Amber for the offline-ish case ("Engine not
- * connected"), red for send/run failures. Click dismisses.
+ * The shared stacked notice chip (notice.rs `notice_chip`; composer failure +
+ * transcript ErrorChip): a tinted rounded chip — `border <accent>/[0.16]`
+ * over a `<accent>/[0.05]` wash — with a header row (DangerTriangle + medium
+ * label + copy button pinned top-right) and the wrapping message below.
+ * Amber for the offline-ish case ("Engine not connected"), red for send/run
+ * failures. The composer chip dismisses on click.
  */
-.composer-failure {
+.notice-chip {
   display: flex;
-  align-items: flex-start;
-  gap: var(--rb-space-sm);
-  margin: 6px 4px 0;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
-  border-radius: 12px;
   background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
   font-size: 12px;
   line-height: 16px;
   color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
-  cursor: pointer;
 }
 
-.composer-failure-amber {
+.notice-chip-plain {
+  margin: 6px 4px 0;
+  border-radius: 12px;
+}
+
+.notice-chip-tile {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: inherit;
+}
+
+.notice-chip-warning {
   border-color: color-mix(in srgb, var(--rb-warning) 16%, transparent);
   background: color-mix(in srgb, var(--rb-warning) 5%, transparent);
   color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
 }
 
-.composer-failure-icon {
+.notice-chip-dismissible {
+  cursor: pointer;
+}
+
+.notice-chip-header {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.notice-chip-icon {
   flex: none;
-  margin-top: 2px;
   color: inherit;
 }
 
-.composer-failure-text {
+.notice-chip-header > .notice-chip-tile-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+}
+
+.notice-chip-label {
+  flex: none;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+}
+
+.notice-chip-warning .notice-chip-label {
+  color: color-mix(in srgb, var(--rb-warning-muted) 80%, transparent);
+}
+
+.notice-chip-copy {
+  flex: none;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+  cursor: pointer;
+}
+
+.notice-chip-copy:hover {
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+}
+
+.notice-chip-warning .notice-chip-copy {
+  color: color-mix(in srgb, var(--rb-warning-muted) 80%, transparent);
+}
+
+.notice-chip-warning .notice-chip-copy:hover {
+  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+}
+
+.notice-chip-text {
   min-width: 0;
+  width: 100%;
+}
+
+.notice-chip-tile .notice-chip-text {
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
 }
 
 /*
@@ -9295,45 +9379,6 @@ button.files-save-pill:hover {
 .error-chip-row {
   padding-block: 4px;
   width: 100%;
-}
-
-.error-chip {
-  /* min-height, not fixed — the message WRAPS (transcript.rs:6531-6534). */
-  min-height: 34px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  overflow: hidden;
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
-  background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
-  padding: 7px var(--rb-space-sm);
-  font-size: 12px;
-}
-
-.error-chip-tile {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--rb-radius-control);
-  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
-}
-
-.error-chip-label {
-  flex: none;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
-}
-
-.error-chip-text {
-  min-width: 0;
-  flex: 1;
-  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
 }
 
 /* ── Transcript responsive + reduced motion ─────────────────────────── */

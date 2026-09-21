@@ -26,6 +26,7 @@ import {
   type PendingSend,
 } from "../state/transcript-store";
 import { transcriptFoldCache } from "../state/transcript-fold-state";
+import { NoticeChip } from "./notice-chip";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
@@ -2415,17 +2416,12 @@ function InputChipRow({ header, resolved }: { header: string; resolved: boolean 
 }
 
 function ErrorChipRow({ message }: { message: string }) {
+  // The shared stacked notice chip in its tile treatment (notice.rs). The
+  // message WRAPS: a one-line ellipsis made a startup-crash report
+  // undiagnosable (zeronsh/comet#95).
   return (
     <div className="error-chip-row">
-      <div className="error-chip" role="alert">
-        <span className="error-chip-tile" aria-hidden>
-          <Icon name="dangerTriangle" size={12} />
-        </span>
-        <span className="error-chip-label">Error</span>
-        {/* The message WRAPS: a one-line ellipsis made a startup-crash report
-            undiagnosable (transcript.rs:6531-6534). */}
-        <span className="error-chip-text">{message}</span>
-      </div>
+      <NoticeChip tone="danger" variant="tile" label="Error" message={message} role="alert" />
     </div>
   );
 }

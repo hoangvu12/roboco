@@ -1,9 +1,11 @@
 /**
  * The floating menu scrollbar — port of `popover.rs:1170-1397` (and its
- * horizontal twin, `:1406-1546`): an on-demand rail hidden until the list
- * is hovered or a drag holds it, with a 3px resting thumb expanding to 5px
- * when active. Any list that mounts one must hide its native scrollbar
- * (`.menu-scroll-area`), since this rail replaces it visually.
+ * horizontal twin, `:1406-1546`): an on-demand rail shown by scroll motion
+ * or a track-hover/drag, lingering `MENU_SCROLLBAR_LINGER_MS` after the last
+ * motion and fading over `MENU_SCROLLBAR_FADE_MS` (the visibility state
+ * machine lives in `lib/menu-scrollbar.ts`, the web peer of the desktop's
+ * `MenuScrollbarState`). Any list that mounts one must hide its native
+ * scrollbar (`.menu-scroll-area`), since this rail replaces it visually.
  *
  * The rail must sit inside a `position: relative` wrapper that spans the
  * scroll area; it positions itself against that wrapper. Drags use pointer
@@ -11,7 +13,20 @@
  * ported).
  */
 
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type RefObject } from "react";
+
+import {
+  createMenuScrollbarVisibility,
+  nextWakeMs,
+  noteScrollOffset,
+  railActive,
+  railFade,
+  railVisible,
+  setBarHovered,
+  setGrabbing,
+  setListHovered,
+  type MenuScrollbarVisibility,
+} from "../../lib/menu-scrollbar";
 
 /** Track inset top/bottom; the thumb travels inside it. */
 export const MENU_SCROLLBAR_TRACK_INSET = 4;
@@ -71,10 +86,83 @@ function travelOf(metrics: MenuScrollbarMetrics): number {
   return Math.max(0, metrics.trackLength - metrics.thumbLength);
 }
 
-interface ScrollbarState {
-  readonly hovered: boolean;
-  readonly active: boolean;
-  readonly dragging: boolean;
+/**
+ * One rail's interaction with the visibility model: owns the timers that
+ * land the linger/fade without further input (the desktop's
+ * `schedule_scrollbar_hide` wake chain — one wake in flight, re-armed per
+ * render while the countdown runs).
+ */
+const verticalOffset = (el: HTMLElement): number => el.scrollTop;
+const horizontalOffset = (el: HTMLElement): number => el.scrollLeft;
+
+function useMenuScrollbarVisibility(
+  scrollRef: RefObject<HTMLElement | null>,
+  offsetOf: (el: HTMLElement) => number = verticalOffset,
+) {
+  const model = useRef<MenuScrollbarVisibility>(createMenuScrollbarVisibility());
+  const [, bump] = useReducer((tick: number) => tick + 1, 0);
+  const wakeTimer = useRef<number | null>(null);
+
+  const armWake = useCallback(() => {
+    if (wakeTimer.current !== null) {
+      clearTimeout(wakeTimer.current);
+      wakeTimer.current = null;
+    }
+    const delay = nextWakeMs(model.current, Date.now());
+    if (delay === null) {
+      return;
+    }
+    wakeTimer.current = window.setTimeout(() => {
+      wakeTimer.current = null;
+      bump();
+    }, delay);
+  }, []);
+
+  // Every commit re-arms for whatever the countdown needs then, so resumed
+  // scrolling or a refreshed linger converges on the next wake.
+  useEffect(() => {
+    armWake();
+  });
+
+  useEffect(
+    () => () => {
+      if (wakeTimer.current !== null) {
+        clearTimeout(wakeTimer.current);
+      }
+    },
+    [],
+  );
+
+  // Scroll/hover feeds. A changed offset marks fresh motion; the first
+  // observation only establishes the baseline.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) {
+      return;
+    }
+    const onScroll = (): void => {
+      if (noteScrollOffset(model.current, offsetOf(el), Date.now())) {
+        bump();
+      }
+    };
+    const enter = (): void => {
+      setListHovered(model.current, true, Date.now());
+    };
+    const leave = (): void => {
+      setListHovered(model.current, false, Date.now());
+      bump();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("pointerenter", enter);
+    el.addEventListener("pointerleave", leave);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("pointerenter", enter);
+      el.removeEventListener("pointerleave", leave);
+    };
+  }, [scrollRef, offsetOf]);
+
+  return { model, poke: bump };
 }
 
 /**
@@ -84,8 +172,8 @@ interface ScrollbarState {
 export function MenuScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLElement | null> }) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const grab = useRef<number | null>(null);
-  const [state, setState] = useState<ScrollbarState>({ hovered: false, active: false, dragging: false });
   const [metrics, setMetrics] = useState<MenuScrollbarMetrics | null>(null);
+  const { model, poke } = useMenuScrollbarVisibility(scrollRef);
 
   const measure = useCallback((): void => {
     const el = scrollRef.current;
@@ -142,7 +230,8 @@ export function MenuScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLElement 
       inTrack >= metrics.thumbStart && inTrack <= metrics.thumbStart + metrics.thumbLength;
     grab.current = onThumb ? inTrack - metrics.thumbStart : metrics.thumbLength / 2;
     event.currentTarget.setPointerCapture(event.pointerId);
-    setState((current) => ({ ...current, dragging: true, active: true }));
+    setGrabbing(model.current, true, Date.now());
+    poke();
     dragTo(event.clientY);
   };
 
@@ -160,44 +249,33 @@ export function MenuScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLElement 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    setState((current) => ({ ...current, dragging: false, active: current.hovered }));
+    setGrabbing(model.current, false, Date.now());
+    poke();
   };
 
-  // List hover — listeners on the scroll element itself, so the consumer's
-  // markup stays unchanged.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null) {
-      return;
-    }
-    const enter = (): void => setState((current) => ({ ...current, hovered: true }));
-    const leave = (): void =>
-      setState((current) => ({ ...current, hovered: false, active: current.dragging }));
-    el.addEventListener("pointerenter", enter);
-    el.addEventListener("pointerleave", leave);
-    return () => {
-      el.removeEventListener("pointerenter", enter);
-      el.removeEventListener("pointerleave", leave);
-    };
-  }, [scrollRef]);
-
-  const visible = state.hovered || state.dragging;
-  if (!visible || metrics === null) {
+  const now = Date.now();
+  if (!railVisible(model.current, now) || metrics === null) {
     return null;
   }
-  const thumbWidth = state.active ? MENU_SCROLLBAR_HOVER_THUMB_WIDTH : MENU_SCROLLBAR_THUMB_WIDTH;
+  const active = railActive(model.current);
+  const thumbWidth = active ? MENU_SCROLLBAR_HOVER_THUMB_WIDTH : MENU_SCROLLBAR_THUMB_WIDTH;
   return (
     <div
       ref={railRef}
-      className={`menu-scrollbar-rail ${state.active ? "menu-scrollbar-rail-active" : ""}`}
+      className={`menu-scrollbar-rail ${active ? "menu-scrollbar-rail-active" : ""}`}
+      style={{ opacity: railFade(model.current, now) }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPress}
       onPointerCancel={endPress}
-      onPointerEnter={() => setState((current) => ({ ...current, active: true }))}
-      onPointerLeave={() =>
-        setState((current) => ({ ...current, active: current.dragging }))
-      }
+      onPointerEnter={() => {
+        setBarHovered(model.current, true, Date.now());
+        poke();
+      }}
+      onPointerLeave={() => {
+        setBarHovered(model.current, false, Date.now());
+        poke();
+      }}
       aria-hidden
     >
       <div
@@ -221,8 +299,8 @@ export function MenuScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLElement 
 export function HorizontalScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLElement | null> }) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const grab = useRef<number | null>(null);
-  const [state, setState] = useState<ScrollbarState>({ hovered: false, active: false, dragging: false });
   const [metrics, setMetrics] = useState<MenuScrollbarMetrics | null>(null);
+  const { model, poke } = useMenuScrollbarVisibility(scrollRef, horizontalOffset);
 
   const measure = useCallback((): void => {
     const el = scrollRef.current;
@@ -277,7 +355,8 @@ export function HorizontalScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLEl
       inTrack >= metrics.thumbStart && inTrack <= metrics.thumbStart + metrics.thumbLength;
     grab.current = onThumb ? inTrack - metrics.thumbStart : metrics.thumbLength / 2;
     event.currentTarget.setPointerCapture(event.pointerId);
-    setState((current) => ({ ...current, dragging: true, active: true }));
+    setGrabbing(model.current, true, Date.now());
+    poke();
     dragTo(event.clientX);
   };
 
@@ -295,42 +374,33 @@ export function HorizontalScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLEl
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    setState((current) => ({ ...current, dragging: false, active: current.hovered }));
+    setGrabbing(model.current, false, Date.now());
+    poke();
   };
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null) {
-      return;
-    }
-    const enter = (): void => setState((current) => ({ ...current, hovered: true }));
-    const leave = (): void =>
-      setState((current) => ({ ...current, hovered: false, active: current.dragging }));
-    el.addEventListener("pointerenter", enter);
-    el.addEventListener("pointerleave", leave);
-    return () => {
-      el.removeEventListener("pointerenter", enter);
-      el.removeEventListener("pointerleave", leave);
-    };
-  }, [scrollRef]);
-
-  const visible = state.hovered || state.dragging;
-  if (!visible || metrics === null) {
+  const now = Date.now();
+  if (!railVisible(model.current, now) || metrics === null) {
     return null;
   }
-  const thumbHeight = state.active ? MENU_SCROLLBAR_HOVER_THUMB_WIDTH : MENU_SCROLLBAR_THUMB_WIDTH;
+  const active = railActive(model.current);
+  const thumbHeight = active ? MENU_SCROLLBAR_HOVER_THUMB_WIDTH : MENU_SCROLLBAR_THUMB_WIDTH;
   return (
     <div
       ref={railRef}
-      className={`menu-scrollbar-rail-x ${state.active ? "menu-scrollbar-rail-active" : ""}`}
+      className={`menu-scrollbar-rail-x ${active ? "menu-scrollbar-rail-active" : ""}`}
+      style={{ opacity: railFade(model.current, now) }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPress}
       onPointerCancel={endPress}
-      onPointerEnter={() => setState((current) => ({ ...current, active: true }))}
-      onPointerLeave={() =>
-        setState((current) => ({ ...current, active: current.dragging }))
-      }
+      onPointerEnter={() => {
+        setBarHovered(model.current, true, Date.now());
+        poke();
+      }}
+      onPointerLeave={() => {
+        setBarHovered(model.current, false, Date.now());
+        poke();
+      }}
       aria-hidden
     >
       <div

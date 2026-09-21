@@ -15,6 +15,7 @@ use roboco_rpc::methods;
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::engine_registry::{EngineConnectionState, EngineKey, ScopedId};
 use crate::popover;
+use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
 use gpui_tokio::Tokio;
@@ -87,6 +88,7 @@ struct RenameDialog {
 
 pub struct DevicesPage {
     state: Entity<AppState>,
+    scroll: widgets::PageScroll,
     rename: Option<RenameDialog>,
     pairing: Entity<ComposerInput>,
     _pairing_events: Subscription,
@@ -113,6 +115,7 @@ impl DevicesPage {
             _pairing_events: pairing_events,
             pairing_busy: false,
             state,
+            scroll: widgets::PageScroll::default(),
             rename: None,
             copied: None,
             error: None,
@@ -280,6 +283,22 @@ impl DevicesPage {
             .into_any_element();
         Some(popover::modal("rename-device-dialog", viewport, card))
     }
+
+    fn on_scroll_hovered(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
+        if self.scroll.set_list_hovered(*hovered) {
+            cx.notify();
+        }
+    }
+}
+
+impl popover::ScrollRailHost for DevicesPage {
+    fn rail_bar(&mut self) -> &mut popover::MenuScrollbarState {
+        self.scroll.rail_bar()
+    }
+
+    fn rail_scroll(&self) -> Option<gpui::ScrollHandle> {
+        self.scroll.rail_scroll()
+    }
 }
 
 /// Human platform label (roboco settings.devices.tsx `platformLabel`).
@@ -306,7 +325,6 @@ pub fn short_id(id: &str) -> String {
 
 impl Render for DevicesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
         let (devices, local_id, workspace_scope) = {
@@ -529,95 +547,105 @@ impl Render for DevicesPage {
             card.children(rows)
         };
 
+        let scrollbar = popover::rail(self, "devices-page-scrollbar", &theme, cx);
         div()
-            .id("devices-page")
+            .id("devices-page-host")
+            .relative()
             .size_full()
-            .overflow_y_scroll()
+            .on_hover(cx.listener(Self::on_scroll_hovered))
             .child(
-                widgets::page_column()
-                    .child(widgets::page_header(
-                        &theme,
-                        "Devices",
-                        (count > 0).then_some(count),
-                    ))
-                    .child(widgets::page_subtitle(
-                        &theme,
-                        if self.state.read(cx).registry().is_some() {
-                            "Connect and manage engines."
-                        } else {
-                            devices_subtitle(workspace_scope)
-                        },
-                    ))
-                    .when_some(
-                        self.error.clone().or_else(|| {
-                            self.state
-                                .read(cx)
-                                .registry_snapshot
-                                .configuration_error
-                                .clone()
-                                .map(Into::into)
-                        }),
-                        |el, message| {
-                            el.child(
-                                widgets::error_strip(&theme, message)
-                                    .id("devices-error")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.error = None;
-                                        cx.notify();
-                                    })),
-                            )
-                        },
-                    )
+                div()
+                    .id("devices-page")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll.scroll)
                     .child(
-                        widgets::section_card(&theme).child(
-                            div()
-                                .px(px(16.0))
-                                .py(px(10.0))
-                                .flex()
-                                .flex_col()
-                                .child(
+                        widgets::page_column()
+                            .child(widgets::page_header(
+                                &theme,
+                                "Devices",
+                                (count > 0).then_some(count),
+                            ))
+                            .child(widgets::page_subtitle(
+                                &theme,
+                                if self.state.read(cx).registry().is_some() {
+                                    "Connect and manage engines."
+                                } else {
+                                    devices_subtitle(workspace_scope)
+                                },
+                            ))
+                            .when_some(
+                                self.error.clone().or_else(|| {
+                                    self.state
+                                        .read(cx)
+                                        .registry_snapshot
+                                        .configuration_error
+                                        .clone()
+                                        .map(Into::into)
+                                }),
+                                |el, message| {
+                                    el.child(
+                                        widgets::error_strip(&theme, message)
+                                            .id("devices-error")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.error = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                },
+                            )
+                            .child(
+                                widgets::section_card(&theme).child(
                                     div()
+                                        .px(px(16.0))
+                                        .py(px(10.0))
                                         .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(12.0))
+                                        .flex_col()
                                         .child(
                                             div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .child(popover::dialog_field(
-                                                    self.pairing.clone().into_any_element(),
-                                                )),
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap(px(12.0))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .child(popover::dialog_field(
+                                                            self.pairing.clone().into_any_element(),
+                                                        )),
+                                                )
+                                                .child(
+                                                    popover::btn_primary(
+                                                        &theme,
+                                                        if self.pairing_busy {
+                                                            "Connecting…"
+                                                        } else {
+                                                            "Connect"
+                                                        },
+                                                    )
+                                                    .id("pair-engine")
+                                                    .on_click(cx.listener(
+                                                        |this, _, _, cx| this.pair(cx),
+                                                    )),
+                                                ),
                                         )
                                         .child(
-                                            popover::btn_primary(
-                                                &theme,
-                                                if self.pairing_busy {
-                                                    "Connecting…"
-                                                } else {
-                                                    "Connect"
-                                                },
-                                            )
-                                            .id("pair-engine")
-                                            .on_click(cx.listener(
-                                                |this, _, _, cx| this.pair(cx),
-                                            )),
+                                            div()
+                                                .mt(px(6.0))
+                                                .text_size(crate::typography::ui_rems(11.0))
+                                                .text_color(theme.text_muted.opacity(0.65))
+                                                .child(SharedString::from(
+                                                    "Create a pairing link in the engine's Remote access settings, then paste it here.",
+                                                )),
                                         ),
-                                )
-                                .child(
-                                    div()
-                                        .mt(px(6.0))
-                                        .text_size(crate::typography::ui_rems(11.0))
-                                        .text_color(theme.text_muted.opacity(0.65))
-                                        .child(SharedString::from(
-                                            "Create a pairing link in the engine's Remote access settings, then paste it here.",
-                                        )),
                                 ),
-                        ),
-                    )
-                    .child(card),
+                            )
+                            .child(card),
+                    ),
             )
+            .children(scrollbar)
             .when_some(dialog, |el, dialog| el.child(dialog))
     }
 }

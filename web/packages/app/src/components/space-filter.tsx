@@ -24,6 +24,7 @@ import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
 import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
+import { MenuScrollbar } from "./ui/Scrollbar";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 
 /**
@@ -203,7 +204,8 @@ export function SpaceFilter() {
           placeholder="Search projects…"
           ariaLabel="Search projects"
         />
-        <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
+        <div className="spaces-menu-scroll-host">
+          <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
           {rows.map((row, ix) => {
             if (row === "all") {
               return (
@@ -266,6 +268,8 @@ export function SpaceFilter() {
               />
             );
           })}
+          </div>
+          <MenuScrollbar scrollRef={listRef} />
         </div>
       </PickerCard>
       {spaceOverlay !== null && spaceOverlaySession(sessions, spaceOverlay.space) !== null && (
