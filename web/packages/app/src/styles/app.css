@@ -145,7 +145,9 @@ a:focus-visible,
 .input {
   width: 100%;
   padding: 6px 10px;
-  background: var(--rb-input);
+  /* The desktop paints `input_glass_bg()`'s flatten(input, bg) here — the
+     opaque plate, not the raw (dark-alpha) input role (ticket 79). */
+  background: var(--rb-input-plate);
   color: var(--rb-text);
   border: 1px solid var(--rb-border);
   border-radius: var(--rb-radius-control);
@@ -321,8 +323,11 @@ a:focus-visible,
   align-items: center;
   gap: var(--rb-titlebar-group-gap);
   /* The always-touched chrome (M4, ticket 50): manipulation keeps taps and
-     kills pans and double-tap-zoom; no selection callout on a long-press of
-     the title. A no-op for pointer input at desktop widths. */
+     kills double-tap-zoom — it does NOT gate panning (W3C Pointer Events 3
+     §8.3 defines manipulation as panning plus continuous zooming with the
+     double-tap removed); the phone-scoped `touch-action: none` on this same
+     rule below (ticket 76) is the pan guard. No selection callout on a
+     long-press of the title. A no-op for pointer input at desktop widths. */
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
@@ -343,12 +348,24 @@ a:focus-visible,
  * The window-control cluster overlays the row's left end rather than sitting
  * in it (`render_titlebar_cluster` is mounted at the shell root on the
  * desktop), so the row's inset is free to follow the sidebar independently.
+ *
+ * Ticket 66: the containing block is the desktop's exact shape — `left_0()`
+ * with `.px(TITLEBAR_CLUSTER_PAD)` (shell.rs:4025-4034): left 0 plus 10px
+ * padding-inline, so the controls still start at x10 while the cluster's
+ * PADDING box runs [0, 102] without the `+` ([0, 134] with it). The island's
+ * `left 6 / right 0` below resolves against that padding box, producing the
+ * desktop's [6, 102] island. The earlier unpadded cluster at left 10 shrank
+ * it to [16, 92] — 20px too narrow — because the prior research read the
+ * desktop's CONTENT box [10, 92] as the box its absolute insets resolve
+ * against; absolute offsets resolve against the padding box (border
+ * removed, padding kept).
  */
 .titlebar-cluster {
   position: absolute;
-  left: var(--rb-titlebar-pad);
+  left: 0;
   top: var(--rb-titlebar-top-pad);
   bottom: 0;
+  padding-inline: var(--rb-titlebar-pad);
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -386,6 +403,19 @@ a:focus-visible,
   .titlebar {
     height: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
     padding-top: calc(var(--rb-titlebar-top-pad) + env(safe-area-inset-top));
+    /*
+     * The phone pan guard (ticket 76): no direct-manipulation gesture that
+     * starts on the app titlebar may pan the browser. W3C Pointer Events 3
+     * §8.2 intersects the touched element's touch-action with its
+     * ancestors', so this also covers gestures landing on the cluster and
+     * trailing controls — they keep their own `manipulation` and need no
+     * per-button override. Taps are unaffected (`none` gates gestures, not
+     * click activation), as are the transcript's and drawers' own
+     * scrollers — the guard stops at this region. The OS/browser status bar
+     * is outside app DOM: native scroll-to-top there is not this rule's to
+     * promise.
+     */
+    touch-action: none;
   }
 
   .titlebar-cluster {
@@ -399,7 +429,12 @@ a:focus-visible,
  * the canvas route with the sidebar collapsed and a background RESOLVING
  * beneath (installed or the bundled default — ticket 48's predicate; the
  * gate is wired in app-shell, never the raw setting). The wrapper is the
- * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028) and
+ * cluster row's FIRST child at left 6 / right 0 (shell.rs:4027-4028). Its
+ * insets resolve against the cluster's PADDING box — on the desktop taffy
+ * 0.12.2 subtracts borders but keeps padding (flexbox.rs:2164-2167,
+ * 2336-2340), and CSS absolute positioning follows the same rule — so over
+ * the ticket-66 cluster that box is [0, 102] and the island spans the
+ * desktop's [6, 102], width 96, covering every control's hover box. It
  * carries the tween's inline `top`/`height`/`opacity` (200ms resize
  * ease-out, reversal from the painted value, initial presentation
  * settled, reduced motion snaps). `z-index: -1` paints it BEHIND the
@@ -457,7 +492,10 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
-  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  /* Taps stay; double-tap-zoom dies (M4's titlebar guards). manipulation
+     itself permits panning (W3C Pointer Events 3 §8.3) — at phone widths
+     the ancestor .titlebar's `touch-action: none` intersects this per §8.2
+     and is the actual pan guard. */
   touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
@@ -500,7 +538,10 @@ a:focus-visible,
   background: transparent;
   color: var(--rb-text-muted);
   cursor: pointer;
-  /* Taps stay, pans and double-tap-zoom die (M4's titlebar guards). */
+  /* Taps stay; double-tap-zoom dies (M4's titlebar guards). manipulation
+     itself permits panning (W3C Pointer Events 3 §8.3) — at phone widths
+     the ancestor .titlebar's `touch-action: none` intersects this per §8.2
+     and is the actual pan guard. */
   touch-action: manipulation;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
     color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
@@ -2633,6 +2674,41 @@ a:focus-visible,
   flex-direction: row;
 }
 
+/* Seed hydration stays mounted; only the first live arrival fades in.
+   Keep this off .chat-body, whose opacity follows the dock pump per frame.
+   min-height also lets the gate shrink in the phone's column layout. */
+.chat-transcript-outlet,
+.chat-arrival-gate {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.chat-transcript-outlet {
+  position: relative;
+}
+
+.chat-arrival-gate {
+  transition: opacity 120ms ease-out;
+}
+
+.chat-transcript-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--rb-text-muted);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-arrival-gate {
+    transition: none;
+  }
+}
+
 /*
  * `render_main`'s bottom chrome stack (shell.rs:6073-6125): flex-none,
  * relative, column. The chat page measures it live into
@@ -2726,15 +2802,20 @@ a:focus-visible,
  * bitmap's dome hole, painted at the pill's pre-flip center, which
  * `margin-inline: auto` keeps at the column's center = the hero's center —
  * tracks the pill for the whole glide with no bitmap scaling and no
- * re-raster. `--rb-hero-raster-width` is written by the remask itself (the
+ * re-raster. `--rb-hero-raster-width` is written by the paint itself (the
  * raster's own CSS width; `100%` fallback ≈ the pre-tween `inset: 0`), so
  * the window is always the true raster's box. The hero's `overflow:
  * hidden` windows it: the clip's edge rides the column exactly while the
  * artwork's crop holds — the settle commit then returns this layer to
  * `inset: 0` and re-rasters at the settled width (the snap the ticket
- * sanctions). Compositor-class motion: no JS, no canvas work per frame.
+ * sanctions).
+ *
+ * CPU FALLBACK ONLY (ticket 65): the `[data-renderer="cpu-fallback"]` gate.
+ * The GPU path re-renders both passes every frame at the sampled live
+ * geometry, so the bitmap TRACKS the glide — no frozen window, no growth
+ * bands, no settle re-crop snap (the 65b fix); this rule never engages.
  */
-.new-thread-hero[data-sidebar-tween="1"] .new-thread-hero-readiness {
+.new-thread-hero[data-sidebar-tween="1"][data-renderer="cpu-fallback"] .new-thread-hero-readiness {
   left: 50%;
   right: auto;
   width: var(--rb-hero-raster-width, 100%);
@@ -3326,7 +3407,10 @@ a:focus-visible,
  * Its bottom edge is stationary: growth moves the TOP edge, so the controls
  * pin to the bottom and only the text glides with the reveal. The web is
  * forced opaque (the 2026-09-17 defrost decision), so the pill takes the
- * desktop's opaque branch — `flatten(input, bg)`.
+ * desktop's opaque branch — `flatten(input, bg)` — as the
+ * `--rb-input-plate` token (ticket 79: the former `color-mix(input 82%,
+ * bg)` interpolated the input's authored alpha instead of compositing it,
+ * leaving the pill ~23% see-through in dark variants).
  *
  * ONE DOM shape for both modes: the compact row and the expanded column
  * are the same tree re-laid-out by `[data-mode]`; the height (and the
@@ -3339,7 +3423,7 @@ a:focus-visible,
   overflow: hidden;
   border-radius: 26px;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  background: var(--rb-input-plate);
   box-shadow: var(--rb-shadow-popover);
 }
 
@@ -3811,7 +3895,7 @@ a:focus-visible,
   flex-direction: column;
   border-radius: 26px;
   border: 1px solid var(--rb-border);
-  background: color-mix(in srgb, var(--rb-input) 82%, var(--rb-bg));
+  background: var(--rb-input-plate);
   box-shadow: var(--rb-shadow-popover);
   outline: none;
   animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
@@ -6915,8 +6999,16 @@ button.files-save-pill:hover {
 
   /* Expanded (takeover) at phone: the drawer at full width — the same
      toggle semantics, no separate phone state; the drawer covers the
-     chat instead of the stacked layout's `display: none` handoff. */
-  .right-pane.right-pane-expanded {
+     chat instead of the stacked layout's `display: none` handoff. The
+     closing variant is ticket 72's presentation hold: `toggle`/`close`
+     clear the logical `expanded` in the same commit that starts the
+     slide, so `RightPane` carries `right-pane-closing-expanded` on the
+     aside until the transform settles — the drawer slides away at the
+     width the user was viewing instead of narrowing first. Transient
+     only: the hold's release (transitionend, reopen, owner switch,
+     breakpoint flip, reduced motion, fallback clock) removes it. */
+  .right-pane.right-pane-expanded,
+  .right-pane.right-pane-closing-expanded {
     width: 100vw !important;
   }
 
@@ -7068,6 +7160,12 @@ button.files-save-pill:hover {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* The outlet/gate chain nests this in ROW flex parents, so the automatic
+     content minimum applies: a nowrap chip detail (a long URL is
+     unbreakable) would otherwise push the wrap past a phone viewport and
+     the scroller's overflow clip off-screen ("chat flowing outside the
+     screen"). Zero it — the scroller clips at its own box, as before. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -14069,7 +14167,9 @@ button.segmented-option:hover {
   resize: none;
   border-radius: 7px;
   border: 1px solid var(--rb-border);
-  background: var(--rb-input);
+  /* The input-glass plate (ticket 79) — the desktop's opaque-mode
+     `input_glass_bg()` flatten, not the raw alpha-carrying input role. */
+  background: var(--rb-input-plate);
   padding: 5px 8px;
   color: var(--rb-text);
   font-size: 12px;

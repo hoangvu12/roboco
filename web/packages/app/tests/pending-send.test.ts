@@ -6,8 +6,11 @@ import {
   UNDELIVERED_GRACE_MS,
   chatDeliveryDegraded,
   pendingSendStatus,
+  transcriptSnapshotIsLive,
   type PendingSend,
+  type TranscriptCache,
   type TranscriptClient,
+  type TranscriptSeed,
 } from "../src/state/transcript-store";
 import { sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
@@ -295,6 +298,149 @@ describe("TranscriptStore reset without the empty window (ticket 40)", () => {
     const after = store.getSnapshot();
     expect(after.replay).toBe("populated");
     expect(after.entries[0]).toBe(a);
+    store.dispose();
+  });
+});
+
+describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
+  it("arrival waits for a live reset even when a seed is loaded (ticket 82)", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    store.seedEntries([userEntry("cached")]);
+    expect(store.getSnapshot().loaded).toBe(true);
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    emit({ contextUsage: null, reset: [userEntry("live")] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    // Empty authoritative history also releases the gate.
+    emit({ contextUsage: null, reset: [] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    store.dispose();
+  });
+
+  it("a terminal error releases cached or unloaded content (ticket 82)", () => {
+    const { client } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    store.seedEntries([userEntry("cached")]);
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    // The contract is non-null, even if the engine supplies an empty message.
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "" })).toBe(true);
+    store.dispose();
+  });
+
+  function fakeClient(): {
+    client: TranscriptClient;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
+  } {
+    let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
+    return {
+      client: {
+        watch<T>(
+          _method: string,
+          _params: unknown,
+          handlers: { onItem: (item: T, ctx: { generation: number }) => void },
+        ) {
+          onItem = handlers.onItem as (item: TranscriptUpdate, ctx: { generation: number }) => void;
+          return { cancel: () => {} };
+        },
+      } as TranscriptClient,
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
+    };
+  }
+
+  function deferredCache(): { cache: TranscriptCache; resolve: (seed: TranscriptSeed | null) => void } {
+    let resolve!: (seed: TranscriptSeed | null) => void;
+    const promise = new Promise<TranscriptSeed | null>((res) => {
+      resolve = res;
+    });
+    return { cache: { load: () => promise, save: () => Promise.resolve() }, resolve };
+  }
+
+  it("accepted resets advance the epoch; stale and malformed frames do not", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(store.getSnapshot().baseline).toBeNull();
+
+    // The first accepted reset publishes the first baseline.
+    emit({ contextUsage: null, reset: [userEntry("a")] }, 1);
+    const first = store.getSnapshot().baseline;
+    expect(first?.provenance).toBe("reset");
+    expect(first?.entries.map((entry) => entry.id)).toEqual(["a"]);
+
+    // A delta is not a reset boundary: no advance.
+    emit({ contextUsage: null, upsert: [{ after: "a", entry: userEntry("b") }], append: [], remove: [], count: 2 }, 1);
+    expect(store.getSnapshot().baseline).toBe(first);
+
+    // A stale generation's reset is dropped before it can publish.
+    emit({ contextUsage: null, reset: [userEntry("zzz")] }, 0);
+    expect(store.getSnapshot().baseline).toBe(first);
+    expect(store.getSnapshot().entries.map((entry) => entry.id)).toEqual(["a", "b"]);
+
+    // Malformed frames are dropped (logged) without advancing the baseline.
+    emit({ contextUsage: null, reset: "nope" } as unknown as TranscriptUpdate, 1);
+    emit({ contextUsage: null, upsert: [], append: [], remove: [] } as unknown as TranscriptUpdate, 1);
+    expect(store.getSnapshot().baseline).toBe(first);
+
+    // A same-generation resubscribe: the resubscribe itself publishes
+    // nothing — only the accepted reset that follows advances the epoch.
+    store.resubscribe();
+    expect(store.getSnapshot().baseline).toBe(first);
+    emit({ contextUsage: null, reset: [userEntry("a"), userEntry("b")] }, 1);
+    const second = store.getSnapshot().baseline;
+    expect(second).not.toBe(first);
+    expect(second!.epoch).toBeGreaterThan(first!.epoch);
+    expect(second!.entries.map((entry) => entry.id)).toEqual(["a", "b"]);
+
+    // An authoritative empty reset stays authoritative — its own baseline.
+    emit({ contextUsage: null, reset: [] }, 1);
+    const third = store.getSnapshot().baseline;
+    expect(third!.epoch).toBeGreaterThan(second!.epoch);
+    expect(third!.entries).toEqual([]);
+    expect(store.getSnapshot().replay).toBe("empty");
+    store.dispose();
+  });
+
+  it("the cache seed is a distinguishable baseline; the live reset supersedes it", async () => {
+    const { client, emit } = fakeClient();
+    const deferred = deferredCache();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore(), cache: deferred.cache });
+    expect(store.getSnapshot().baseline).toBeNull();
+
+    deferred.resolve({ entries: [userEntry("c")], savedAtMs: 0 });
+    await Promise.resolve();
+    const seed = store.getSnapshot().baseline;
+    expect(seed?.provenance).toBe("seed");
+    expect(seed?.entries.map((entry) => entry.id)).toEqual(["c"]);
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // The authoritative live reset is a NEW baseline, not a continuation of
+    // the cache — a later reset must never be skipped as "already baselined".
+    emit({ contextUsage: null, reset: [userEntry("c"), userEntry("d")] }, 1);
+    const live = store.getSnapshot().baseline;
+    expect(live?.provenance).toBe("reset");
+    expect(live!.epoch).toBeGreaterThan(seed!.epoch);
+    expect(live?.entries.map((entry) => entry.id)).toEqual(["c", "d"]);
+    store.dispose();
+  });
+
+  it("a cache load resolving after the first live frame never mints a seed baseline", async () => {
+    const { client, emit } = fakeClient();
+    const deferred = deferredCache();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore(), cache: deferred.cache });
+
+    emit({ contextUsage: null, reset: [userEntry("live")] }, 1);
+    const live = store.getSnapshot().baseline;
+    expect(live?.provenance).toBe("reset");
+
+    // The late cache resolves into a loaded store: dropped entirely — no
+    // seed baseline, no entry change.
+    deferred.resolve({ entries: [userEntry("stale-cache")], savedAtMs: 0 });
+    await Promise.resolve();
+    expect(store.getSnapshot().baseline).toBe(live);
+    expect(store.getSnapshot().entries.map((entry) => entry.id)).toEqual(["live"]);
     store.dispose();
   });
 });

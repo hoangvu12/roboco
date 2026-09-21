@@ -2,20 +2,44 @@ import type { Chat, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "
 import type { DraftConfig, DraftConfigUpdate } from "./composer-actions";
 import { buildChatConfig } from "./composer-actions";
 import type { StorageLike } from "./engine-store";
-import { clampReasoning, offeredOptions } from "./traits-summary";
+import { clampReasoning, effectiveReasoningLadder, offeredOptions } from "./traits-summary";
+
+/**
+ * The native reasoning normalization (`pickers.rs:1493-1512`): clamp ONLY
+ * against a NONEMPTY effective ladder. An empty one means the metadata
+ * hasn't resolved — the stored preference is retained verbatim, never
+ * destructively cleared.
+ */
+function normalizeReasoning(level: ReasoningLevel | null, ladder: readonly ReasoningLevel[]): ReasoningLevel | null {
+  return ladder.length > 0 ? clampReasoning(level, ladder) : level;
+}
 
 /**
  * Sensible defaults when a fresh chat has no `ChatConfig` yet, derived from
  * the loaded harness/model catalogs. Picked fields are intentionally
  * narrow: the user's first picker choice is the first enabled harness and
- * its first model, with `medium` reasoning and `workspace-write` sandbox.
- * The composer only invokes this when the catalog has actually loaded.
+ * its first model, with `workspace-write` sandbox. The composer only
+ * invokes this when the catalog has actually loaded.
+ *
+ * Reasoning follows the native precedence (`pickers.rs::effective_reasoning`,
+ * 762-775): a fresh chat has NO explicit draft value, so the new-chat
+ * `remembered` last-used level is the preference layer — kept verbatim while
+ * no effective ladder has resolved (retained, never destructively cleared),
+ * and once one has, clamped against it (an offered level stays; anything else
+ * heals to the native default: High, else Medium, else the first advertised
+ * level). The old first-level-or-"medium" seed invented an explicit value
+ * that bypassed that default selection; it is gone.
  */
-export function defaultDraft(catalog: readonly HarnessDescriptor[], models: readonly Model[]): DraftConfig {
+export function defaultDraft(
+  catalog: readonly HarnessDescriptor[],
+  models: readonly Model[],
+  remembered: ReasoningLevel | null = null,
+): DraftConfig {
   const harness = catalog.find((row) => row.enabled !== false) ?? catalog[0];
   const harnessId: HarnessId = harness?.id ?? "claude-code";
   const model = models[0]?.id ?? null;
-  const reasoning = models[0]?.reasoningLevels[0] ?? "medium";
+  const ladder = effectiveReasoningLadder(models[0] ?? null, harness ?? null);
+  const reasoning = normalizeReasoning(remembered, ladder);
   return {
     harness: harnessId,
     model,
@@ -25,15 +49,21 @@ export function defaultDraft(catalog: readonly HarnessDescriptor[], models: read
   };
 }
 
-/** Initialize the composer's draft from the chat's persisted ChatConfig (may be null). */
+/**
+ * Initialize the composer's draft from the chat's persisted ChatConfig (may
+ * be null). `remembered` is the sticky last-used reasoning level — consulted
+ * only for a fresh chat (an established chat's persisted config is the
+ * explicit layer and wins outright, matching the native precedence).
+ */
 export function draftFromChat(
   chat: Chat,
   catalog: readonly HarnessDescriptor[],
   models: readonly Model[],
+  remembered: ReasoningLevel | null = null,
 ): DraftConfig {
   const config = chat.config;
   if (config === null) {
-    return defaultDraft(catalog, models);
+    return defaultDraft(catalog, models, remembered);
   }
   const harnessId: HarnessId = config.harness;
   const reasoning = config.reasoning;
@@ -423,16 +453,26 @@ export const chatDrafts = new ChatDraftStore();
 
 /**
  * `update_chat_config`'s local half: apply a picker's update to the draft,
- * then re-clamp reasoning to the (possibly just-changed) model's ladder and
- * re-run `offeredOptions` so a model switch can't carry picks the new model
- * doesn't offer (e.g. a 1M-context pick surviving a switch to a model
- * without that option). `resolveModel` looks up the catalog row for
- * (harness, model id).
+ * then re-clamp reasoning to the (possibly just-changed) selection's
+ * EFFECTIVE ladder and re-run `offeredOptions` so a model switch can't
+ * carry picks the new model doesn't offer (e.g. a 1M-context pick surviving
+ * a switch to a model without that option). `resolveModel` looks up the
+ * catalog row for (harness, model id); `resolveDescriptor` the harness
+ * descriptor — both resolved for the NEXT draft's harness, so a harness
+ * switch never clamps against the harness being left.
+ *
+ * The clamp mirrors the native persisted-config normalization
+ * (`pickers.rs:1493-1512`): only a NONEMPTY effective ladder re-derives the
+ * level. An empty model list falls back to the descriptor's advertised
+ * levels (`trait_ladder`), and while neither is available the stored
+ * preference is retained verbatim — never destructively nulled just because
+ * the metadata hasn't resolved.
  */
 export function applyDraftUpdate(
   draft: DraftConfig,
   update: DraftConfigUpdate,
   resolveModel: (harness: HarnessId, modelId: string | null) => Model | null,
+  resolveDescriptor: (harness: HarnessId) => HarnessDescriptor | null,
 ): DraftConfig {
   const next: DraftConfig = {
     harness: update.harness ?? draft.harness,
@@ -443,8 +483,52 @@ export function applyDraftUpdate(
     modelOptions: update.modelOptions !== undefined ? { ...update.modelOptions } : draft.modelOptions,
   };
   const model = resolveModel(next.harness, next.model);
-  const ladder = model?.reasoningLevels ?? [];
-  const reasoning = clampReasoning(next.reasoning, ladder);
+  const ladder = effectiveReasoningLadder(model, resolveDescriptor(next.harness));
+  const reasoning = normalizeReasoning(next.reasoning, ladder);
   const modelOptions = model === null ? next.modelOptions : offeredOptions(model, next.modelOptions);
   return { ...next, reasoning, modelOptions };
+}
+
+/**
+ * The composer reconciliation effect's pure core — the sticky-default model
+ * seeding (`pickers.rs:748-796`) plus the descriptor-aware reasoning
+ * normalization (`pickers.rs:1493-1512`), run against the harness's loaded
+ * model rows and its MATCHING descriptor:
+ *
+ * - The draft's model still resolves in the list: only reasoning re-derives,
+ *   and only against a nonempty effective ladder — a model whose own list is
+ *   empty falls back to the descriptor's, and an empty effective ladder
+ *   retains the stored preference rather than erasing it.
+ * - Otherwise seed the remembered model when the list still offers it, else
+ *   the harness default (first row), re-deriving reasoning the same way.
+ *
+ * Returns the PRIOR draft when nothing changed — the effect's setState-loop
+ * guard, so an equivalent catalog refresh is observationally a no-op.
+ */
+export function reconcileDraftModel(
+  current: DraftConfig,
+  models: readonly Model[],
+  descriptor: HarnessDescriptor | null,
+  rememberedModel: RememberedModel | null,
+): DraftConfig {
+  const found =
+    current.model === null ? undefined : models.find((model) => model.id === current.model);
+  if (found !== undefined) {
+    const ladder = effectiveReasoningLadder(found, descriptor);
+    const reasoning = normalizeReasoning(current.reasoning, ladder);
+    return reasoning === current.reasoning ? current : { ...current, reasoning };
+  }
+  const seeded =
+    rememberedModel !== null && models.some((model) => model.id === rememberedModel.id)
+      ? rememberedModel.id
+      : models[0]?.id;
+  if (seeded === undefined) {
+    return current;
+  }
+  const model = models.find((row) => row.id === seeded) ?? null;
+  const ladder = effectiveReasoningLadder(model, descriptor);
+  const reasoning = normalizeReasoning(current.reasoning, ladder);
+  // The model necessarily changes here (the current one failed to resolve),
+  // so this branch is always a real update.
+  return { ...current, model: seeded, reasoning };
 }

@@ -23,6 +23,13 @@ on:
 permissions:
   contents: read
 
+# Test builds never serve the React app: stage the placeholder pages so
+# `--release` engine builds pass on a clean checkout (build.rs forbids its
+# debug-only fallback under release, and web/packages/app/dist is not
+# committed). The browser fixture renders its own pages, not the bundle.
+env:
+  ROBOCO_WEB_DIST: ${{ github.workspace }}/crates/engine/assets/web
+
 concurrency:
   group: ui-tests-${{ github.ref }}
   cancel-in-progress: true

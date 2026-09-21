@@ -27,6 +27,25 @@ import {
  */
 export type TranscriptReplayState = "pending" | "empty" | "populated";
 
+/**
+ * One accepted replay baseline (ticket 69): the durable, store-owned identity
+ * of a reset boundary. Published ONLY when a reset has actually been accepted
+ * and applied — the offline cache seed and each authoritative live reset
+ * frame (same- or new-generation alike). Stale generations, malformed frames,
+ * deltas, and bare resubscribe windows never publish one. The surface
+ * consumes each epoch exactly once, so baseline recognition no longer depends
+ * on React ever rendering an intermediate `pending` snapshot (a generation
+ * swap commits pending and populated in one task).
+ */
+export interface TranscriptBaseline {
+  /** Store-local monotonic identity — 1, 2, 3… in acceptance order. */
+  readonly epoch: number;
+  /** `seed`: the offline cache's last-seen entries; `reset`: an authoritative live reset frame. */
+  readonly provenance: "seed" | "reset";
+  /** The entries exactly as accepted — the surface re-derives the baseline rows from these. */
+  readonly entries: readonly SessionMessageEntry[];
+}
+
 export interface TranscriptSnapshot {
   /** The transcript entries in document order (immutable, identity-preserving). */
   readonly entries: readonly SessionMessageEntry[];
@@ -42,6 +61,13 @@ export interface TranscriptSnapshot {
   readonly generation: number;
   /** Where the replay stands (`TranscriptReplayState`). */
   readonly replay: TranscriptReplayState;
+  /** The latest accepted replay baseline (`TranscriptBaseline`), if any. */
+  readonly baseline: TranscriptBaseline | null;
+}
+
+/** Seeds hydrate offscreen; an accepted live reset or offline error permits presentation. */
+export function transcriptSnapshotIsLive(snapshot: TranscriptSnapshot): boolean {
+  return snapshot.baseline?.provenance === "reset" || snapshot.error !== null;
 }
 
 const EMPTY_ENTRIES: readonly SessionMessageEntry[] = [];
@@ -300,14 +326,37 @@ export interface TranscriptClient {
  * chats the user has actually opened, seeded before the live stream's
  * first frame and re-saved (debounced) as frames land. One entry per
  * `(engine, chat)` — the desktop's `chat-<sha256>.json` granularity.
+ *
+ * Ticket 81 — the seed carries WHEN it was saved. A seconds-old save is a
+ * LIVE mid-run snapshot (the run is still streaming; the seed keeps its
+ * `status: "streaming"` so the tail group renders open immediately — the
+ * desktop's state-preserved switch, which reads the live doc). An old or
+ * unstamped save is a DEAD session's leftover: its stale `streaming`
+ * status is downgraded (ticket 80) so interrupted history renders closed.
  */
+export interface TranscriptSeed {
+  readonly entries: readonly SessionMessageEntry[];
+  /** Epoch ms of the save; 0 = unknown (treated as a dead session's). */
+  readonly savedAtMs: number;
+}
+
 export interface TranscriptCache {
-  load(): Promise<readonly SessionMessageEntry[] | null>;
+  load(): Promise<TranscriptSeed | null>;
   save(entries: readonly SessionMessageEntry[]): Promise<void>;
 }
 
 /** Debounce window for cache writes — a burst of frames is one save. */
 const CACHE_SAVE_DEBOUNCE_MS = 300;
+
+/**
+ * Ticket 81 — how old a cache save may be and still count as a live
+ * mid-run snapshot. Streaming runs write frames continuously (the save
+ * debounces at 300 ms), so live-switch seeds are seconds old; a silent
+ * stretch longer than this (a very long tool call with no output)
+ * misclassifies as stale and costs one closed→open transition on the next
+ * switch — the live reset corrects it within its normal roundtrip.
+ */
+export const LIVE_SEED_STREAMING_MS = 300_000;
 
 export class TranscriptStore {
   readonly #client: TranscriptClient;
@@ -322,6 +371,8 @@ export class TranscriptStore {
   #error: string | null = null;
   #generation = 0;
   #replay: TranscriptReplayState = "pending";
+  #baselineEpoch = 0;
+  #baseline: TranscriptBaseline | null = null;
   #snapshot: TranscriptSnapshot;
   #handle: WatchHandle | null = null;
   readonly #listeners = new Set<() => void>();
@@ -352,14 +403,20 @@ export class TranscriptStore {
     this.#snapshot = this.#takeSnapshot();
     if (this.#cache !== undefined) {
       // Seed the last-seen entries while the live stream is still arriving;
-      // the first live frame's reset replaces them wholesale.
+      // the first live frame's reset replaces them wholesale. Ticket 81: a
+      // seconds-old save is a LIVE mid-run snapshot — kept verbatim so the
+      // tail group renders open immediately (the desktop's state-preserved
+      // switch reads the live doc); an old or unstamped save is a dead
+      // session's leftover, downgraded (ticket 80) so interrupted history
+      // renders closed.
       void this.#cache
         .load()
-        .then((entries) => {
-          if (this.#disposed || this.#loaded || entries === null) {
+        .then((seed) => {
+          if (this.#disposed || this.#loaded || seed === null) {
             return;
           }
-          this.seedEntries(entries);
+          const live = seed.savedAtMs > 0 && Date.now() - seed.savedAtMs <= LIVE_SEED_STREAMING_MS;
+          this.seedEntries(live ? seed.entries : seed.entries.map(downgradeStaleStreaming));
         })
         .catch(() => {});
     }
@@ -420,6 +477,11 @@ export class TranscriptStore {
     this.#loaded = true;
     this.#error = null;
     this.#replay = "populated";
+    // The cache seed IS a baseline (cached history must not animate), but a
+    // distinguishable one: the live stream's first accepted reset publishes
+    // the next epoch, so an authoritative reset is never mistaken for a
+    // continuation of the cache.
+    this.#publishBaseline("seed");
     this.#commit();
   }
 
@@ -490,6 +552,11 @@ export class TranscriptStore {
     // any delta means real rows exist.
     if ("reset" in frame) {
       this.#replay = frame.reset.length === 0 ? "empty" : "populated";
+      // The ACCEPTED reset is the replay baseline (ticket 69) — published only
+      // here, after the frame applied, so stale/malformed frames and bare
+      // resubscribe windows never advance it. An authoritative empty reset is
+      // a baseline too (empty stays authoritative).
+      this.#publishBaseline("reset");
     } else {
       this.#replay = "populated";
     }
@@ -504,6 +571,11 @@ export class TranscriptStore {
     this.#commit();
   }
 
+  #publishBaseline(provenance: TranscriptBaseline["provenance"]): void {
+    this.#baselineEpoch += 1;
+    this.#baseline = { epoch: this.#baselineEpoch, provenance, entries: this.#entries };
+  }
+
   #takeSnapshot(): TranscriptSnapshot {
     const last = this.#entries[this.#entries.length - 1];
     return {
@@ -514,6 +586,7 @@ export class TranscriptStore {
       error: this.#error,
       generation: this.#generation,
       replay: this.#replay,
+      baseline: this.#baseline,
     };
   }
 
@@ -558,4 +631,19 @@ function asFrame(update: TranscriptUpdate): TranscriptFrame | null {
     remove: Array.isArray(delta.remove) ? delta.remove : [],
     count: delta.count,
   };
+}
+
+/**
+ * Ticket 80 — the offline cache saves raw entries, so a chat left mid-run
+ * seeds with `status: "streaming"`. A previous session's save cannot still
+ * be streaming: the run was interrupted when the app closed, and the stale
+ * status would render the last tool group auto-opened, then visibly close
+ * when the authoritative reset settles it — the "old tool calls opening"
+ * replay on the new-chat → chat route. Downgrade at SEED time only
+ * (presentation): the cache keeps saving raw entries, subagent-snapshot
+ * `seedEntries` callers are untouched (their data is fresh from a live
+ * engine), and the live reset reports the engine's truth moments later.
+ */
+function downgradeStaleStreaming(entry: SessionMessageEntry): SessionMessageEntry {
+  return entry.status === "streaming" ? { ...entry, status: "aborted" } : entry;
 }

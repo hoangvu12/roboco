@@ -12,6 +12,7 @@ import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
+import { ChatTranscriptOutlet } from "../components/chat-transcript-outlet";
 import type { SubagentOpen } from "../components/tool-group";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
@@ -30,6 +31,7 @@ import {
   SIDEBAR_GLIDE_MS,
   SIDEBAR_SETTLE_CAP_MS,
   sidebarTweenSignal,
+  type SidebarTweenSignal,
 } from "../lib/sidebar-tween";
 import {
   DockMountSequencer,
@@ -63,6 +65,45 @@ import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
 
 /**
+ * Ticket 81 — WHEN each offline transcript save happened, per
+ * `(engineKey, rawChatId)` key, in one small localStorage JSON map. The
+ * registry cache itself stays entries-in/entries-out (engine-client shape),
+ * so the stamp lives here: `save` records the wall clock alongside the
+ * durable write, `load` reads it back. A seconds-old stamp marks a LIVE
+ * mid-run snapshot (seeded verbatim — the tail group renders open
+ * immediately, like the desktop's state-preserved switch); anything older
+ * or absent is a dead session's leftover (downgraded at seed time, ticket
+ * 80). Absent or unwritable storage reads as unstamped (0 ⇒ stale).
+ */
+const TRANSCRIPT_SEED_STAMPS_KEY = "roboco.transcriptSeedStamps.v1";
+
+function readSeedStamps(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(TRANSCRIPT_SEED_STAMPS_KEY);
+    if (raw === null) {
+      return {};
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function writeSeedStamp(key: string, savedAtMs: number): void {
+  try {
+    const stamps = readSeedStamps();
+    stamps[key] = savedAtMs;
+    window.localStorage.setItem(TRANSCRIPT_SEED_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Unwritable storage: the next load reads the seed as unstamped (stale).
+  }
+}
+
+/**
  * The chat transcript's offline cache handle: `(engineKey, rawChatId)`
  * resolved off the scoped URL id, backed by the fleet registry's cache.
  */
@@ -70,12 +111,115 @@ function transcriptCacheFor(engineKey: string, scopedChatId: string): Transcript
   try {
     const raw = parseScopedId(scopedChatId).rawId;
     const cache = engineRegistry.cache;
+    const stampKey = `${engineKey}:${raw}`;
     return {
-      load: () => cache.loadTranscript(engineKey, raw),
-      save: (entries) => cache.saveTranscript(engineKey, raw, entries),
+      load: async () => {
+        const entries = await cache.loadTranscript(engineKey, raw);
+        if (entries === null) {
+          return null;
+        }
+        const stamp = readSeedStamps()[stampKey];
+        return { entries, savedAtMs: typeof stamp === "number" ? stamp : 0 };
+      },
+      save: async (entries) => {
+        await cache.saveTranscript(engineKey, raw, entries);
+        writeSeedStamp(stampKey, Date.now());
+      },
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The column width's publication policy (ticket 64 §2.4). The column's
+ * ResizeObserver fires per geometry tick — per animation FRAME while the
+ * sidebar's 200ms CSS width transition runs — and only a fraction of those
+ * ticks are React news. Every tick updates the live channels outside React
+ * (the mutable measured width below, plus the clamped composer width target
+ * the dock pump reads per frame), while the published `columnWidth` state
+ * defers exactly one window: the blank canvas under an active sidebar tween
+ * (those frames are the shell's own motion, not semantic change). The
+ * signal's settle edge — `transitionend`, the settle cap, the drag/reduce
+ * disarms; they all funnel through `settle()` — publishes the current final
+ * measurement once. Selected-chat publication stays responsive: QueuePanel
+ * reads `columnWidth` too, and its layout is not part of this canvas-scoped
+ * deferral.
+ */
+export interface ColumnWidthPublicationOptions {
+  /** The shared sidebar tween signal — the ONLY defer window (no second clock). */
+  readonly signal: SidebarTweenSignal;
+  /** A chat is selected: publication stays responsive (the defer is canvas-scoped). */
+  readonly hasSelection: boolean;
+  /** The clamped live composer target, written on EVERY tick (the dock pump's per-frame read). */
+  readonly liveTarget: { current: number };
+  /** The React publication (`setColumnWidth`). */
+  readonly publish: (width: number) => void;
+}
+
+export class ColumnWidthPublication {
+  readonly #signal: SidebarTweenSignal;
+  readonly #hasSelection: boolean;
+  readonly #liveTarget: { current: number };
+  readonly #publish: (width: number) => void;
+  readonly #unsubscribe: () => void;
+  // §2.4's mutable measured-width ref: every observer tick lands here first.
+  #measured: number | null = null;
+  #published: number | null = null;
+  #deferred = false;
+
+  constructor(options: ColumnWidthPublicationOptions) {
+    this.#signal = options.signal;
+    this.#hasSelection = options.hasSelection;
+    this.#liveTarget = options.liveTarget;
+    this.#publish = options.publish;
+    this.#unsubscribe = options.signal.subscribe((active) => {
+      if (!active) {
+        this.#flush();
+      }
+    });
+  }
+
+  /**
+   * One column geometry tick: the live channels update unconditionally (the
+   * measured width, the clamped composer target — no React commit), then
+   * the publication policy decides whether React hears about the width.
+   */
+  note(width: number): void {
+    this.#measured = width;
+    this.#liveTarget.current = Math.min(Math.max(width, 0), COMPOSER_MAX_WIDTH);
+    if (width === this.#published) {
+      // Unchanged (the observer's initial duplicate, a settled re-tick):
+      // never a publication — and a deferred window whose measurement has
+      // returned to the published width has nothing left to flush.
+      this.#deferred = false;
+      return;
+    }
+    if (!this.#hasSelection && this.#signal.isActive()) {
+      this.#deferred = true;
+      return;
+    }
+    this.#publishNow(width);
+  }
+
+  /** The settle edge: the current final measurement, published once. */
+  #flush(): void {
+    const measured = this.#measured;
+    this.#deferred = false;
+    if (measured === null || measured === this.#published) {
+      return;
+    }
+    this.#publishNow(measured);
+  }
+
+  #publishNow(width: number): void {
+    this.#published = width;
+    this.#deferred = false;
+    this.#publish(width);
+  }
+
+  dispose(): void {
+    this.#unsubscribe();
   }
 }
 
@@ -199,46 +343,22 @@ export function ConversationPage() {
 
   // The chat's ONE transcript store: the transcript view and the composer's
   // question wizard both read it, so an open chat carries a single
-  // `WatchDocMessages` stream. The canvas has none; a DEPARTING transcript
-  // (undocking back to the canvas) keeps the source store until the route
-  // finishes its exit (`finish_route_exit`, shell.rs:5901-5904).
+  // `WatchDocMessages` stream. The session keeps a bounded set of recent
+  // stores live, so revisiting a chat has current rows on its first render.
   const transcriptStore = useMemo(() => {
     if (session === null || chatId === "") {
       return null;
     }
-    return new TranscriptStore(session.client, chatId, {
-      // §2.3's per-chat offline cache: last-seen entries for chats the user
-      // has actually opened, keyed `(engine, raw chat id)`.
-      cache: transcriptCacheFor(session.engine.baseUrl, chatId),
-    });
+    return session.transcripts.get(chatId, transcriptCacheFor(session.engine.baseUrl, chatId));
   }, [session, chatId]);
   // The LIVE store: the departing transcript (undocking back to the canvas)
   // keeps painting from the source chat's stream until the route finishes
-  // its exit (`finish_route_exit`, shell.rs:5901-5904). `dispose` is
-  // idempotent, so the exit and a later replacement can both call it.
+  // its exit (`finish_route_exit`, shell.rs:5901-5904). The session pool
+  // owns disposal; switching routes only releases this presentation ref.
   const storeRef = useRef<TranscriptStore | null>(null);
-  const previousStoreRef = useRef<TranscriptStore | null>(null);
   if (transcriptStore !== null) {
     storeRef.current = transcriptStore;
   }
-  // A chat switch replaces the stream: the old chat's store is disposed once
-  // the new one has committed.
-  useEffect(() => {
-    if (transcriptStore === null) {
-      return;
-    }
-    const previous = previousStoreRef.current;
-    if (previous !== null && previous !== transcriptStore) {
-      previous.dispose();
-    }
-    previousStoreRef.current = transcriptStore;
-  }, [transcriptStore]);
-
-  useEffect(() => () => {
-    storeRef.current?.dispose();
-    storeRef.current = null;
-  }, []);
-
   // A spawn chip's "Open subagent" registers the right-pane tab under this
   // chat (`add_subagent_surface`, shell.rs:2682) — the pane opens on it.
   const onOpenSubagent = useCallback(
@@ -722,6 +842,12 @@ export function ConversationPage() {
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
   const bottomStackRef = useRef<HTMLDivElement | null>(null);
   const [columnWidth, setColumnWidth] = useState<number | null>(null);
+  // Ticket 64 §2.4: the LIVE clamped composer width target — the column
+  // observer feeds it on EVERY tick through `ColumnWidthPublication` (the
+  // dock pump reads it per frame), and render must not overwrite it with
+  // the published `columnWidth`, which is stale through the defer window.
+  // The published value only seeds the pre-measurement initial (null → cap).
+  const composerWidthTargetRef = useRef<number>(COMPOSER_MAX_WIDTH);
   const dockCorrectionRef = useRef(0);
   const [measuredHasComposer, setMeasuredHasComposer] = useState(false);
   const expectedHasComposer = session !== null && hasSelection;
@@ -732,12 +858,26 @@ export function ConversationPage() {
     if (column === null || typeof ResizeObserver === "undefined") {
       return;
     }
+    // Ticket 64 §2.4: every tick updates the live channels (the publisher's
+    // measured width and the clamped `composerWidthTargetRef` the dock pump
+    // reads per frame) WITHOUT a React commit; the React publication defers
+    // only for the blank canvas while the sidebar tween signal is active
+    // and re-publishes the current final measurement on its settle edge.
+    const publication = new ColumnWidthPublication({
+      signal: sidebarTweenSignal,
+      hasSelection,
+      liveTarget: composerWidthTargetRef,
+      publish: (width) => setColumnWidth(width),
+    });
     const observer = new ResizeObserver(() => {
-      setColumnWidth(column.getBoundingClientRect().width);
+      publication.note(column.getBoundingClientRect().width);
     });
     observer.observe(column);
-    setColumnWidth(column.getBoundingClientRect().width);
-    return () => observer.disconnect();
+    publication.note(column.getBoundingClientRect().width);
+    return () => {
+      observer.disconnect();
+      publication.dispose();
+    };
     // The early returns above gate the refs; re-arm once the tree lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, row?.chat.id, session]);
@@ -799,9 +939,9 @@ export function ConversationPage() {
   // desktop's `layout_width(main_content_width.min(COMPOSER_MAX_WIDTH))`,
   // fed back through `set_available_width` so the pill re-wraps mid-glide.
   // `layoutWidth` with a ~0 dt is a no-op, so render-path calls are safe.
+  // The render path reads the PUBLISHED width (the JSX fallback between
+  // glides); the pump reads the observer-fed `composerWidthTargetRef` live.
   const composerWidthTarget = Math.min(Math.max(columnWidth ?? COMPOSER_MAX_WIDTH, 0), COMPOSER_MAX_WIDTH);
-  const composerWidthTargetRef = useRef(composerWidthTarget);
-  composerWidthTargetRef.current = composerWidthTarget;
   const composerWidth = dockRef.current.layoutWidth(composerWidthTarget, dockReduced, performance.now());
 
   // The frame pump, de-Reacted (ticket 57b, §2.3): one rAF loop while
@@ -934,54 +1074,14 @@ export function ConversationPage() {
   // release the retained store.
   useEffect(() => {
     if (!hasSelection && !departing && storeRef.current !== null) {
-      storeRef.current.dispose();
       storeRef.current = null;
     }
   }, [hasSelection, departing]);
   const liveTranscript = hasSelection ? transcriptStore : departing ? storeRef.current : null;
 
-  // ── The chat→chat transcript swap (§2.4.4) ───────────────────────────────
-  // The desktop's ONE `Transcript` entity swaps its doc synchronously on a
-  // chat switch (shell.rs:5914-5945); the web keeps per-chat stores whose
-  // first frame is async, so a swap would paint a blank frame between
-  // chats. The previous chat's rows stay mounted — frozen at their last
-  // snapshot, the store's watch gone or going — until the newly selected
-  // store's first frame lands (the live reset or the offline cache seed,
-  // whichever arrives first). The occluding veil below keeps the retained
-  // pixels from being an interaction surface for the destination chat
-  // (the departing transcript's own rule, shell.rs:5940-5944). The surface
-  // swap happens when `loaded` flips: the outlet then hands the view the
-  // new store, whose `key={active.docId}` remounts with rows already in
-  // place — no blank frame.
-  const subscribeTranscriptLoad = useCallback(
-    (listener: () => void) =>
-      transcriptStore === null ? () => {} : transcriptStore.subscribe(listener),
-    [transcriptStore],
-  );
-  const getTranscriptLoaded = useCallback(
-    () => transcriptStore?.getSnapshot().loaded ?? true,
-    [transcriptStore],
-  );
-  const newTranscriptLoaded = useSyncExternalStore(
-    subscribeTranscriptLoad,
-    getTranscriptLoaded,
-    () => true,
-  );
-  // The last store the outlet PAINTED — written during render like
-  // `storeRef` above (idempotent: the swap window keeps writing the same
-  // frozen store).
-  const lastPaintedTranscriptRef = useRef<TranscriptStore | null>(null);
-  const swappingTranscript =
-    hasSelection &&
-    !newTranscriptLoaded &&
-    lastPaintedTranscriptRef.current !== null &&
-    lastPaintedTranscriptRef.current !== transcriptStore;
-  const transcriptForOutlet = swappingTranscript
-    ? lastPaintedTranscriptRef.current
-    : liveTranscript;
-  if (transcriptForOutlet !== null) {
-    lastPaintedTranscriptRef.current = transcriptForOutlet;
-  }
+  // Existing-chat navigation switches the outlet immediately. The outlet
+  // keeps the destination's seed hidden until live arrival, with loading
+  // feedback instead of retaining an unrelated chat for the roundtrip.
   const transcriptOpacity = departing || transcriptGeometryReady ? dockFrame.visuals.transcript : 0;
   const transcriptRise = 8 * (1 - dockFrame.visuals.transcript);
 
@@ -1158,29 +1258,32 @@ export function ConversationPage() {
             ...(departing && paneHandoffLive ? { width: `${retainedTranscriptWidth}px` } : {}),
           }}
         >
-          {transcriptForOutlet !== null && session !== null ? (
-            <TranscriptView
-              client={session.client}
-              docId={chatId}
-              deviceId={deviceId}
-              store={transcriptForOutlet}
-              markdownSurface={markdownSurface}
-              onContextUsage={setContextUsage}
-              onRetryDelivery={onRetryDelivery}
-              onJumpChange={onJumpChange}
-              indicator={row?.status ?? "idle"}
-              turnStartedAt={turnStartedAt}
-              onOpenSubagent={onOpenSubagent}
-              deliveryDegraded={deliveryDegraded}
-            />
+          {liveTranscript !== null && session !== null ? (
+            <ChatTranscriptOutlet store={liveTranscript} departing={departing}>
+              {(activeStore) => (
+                <TranscriptView
+                  client={session.client}
+                  docId={chatId}
+                  deviceId={deviceId}
+                  store={activeStore}
+                  markdownSurface={markdownSurface}
+                  onContextUsage={setContextUsage}
+                  onRetryDelivery={onRetryDelivery}
+                  onJumpChange={onJumpChange}
+                  indicator={row?.status ?? "idle"}
+                  turnStartedAt={turnStartedAt}
+                  onOpenSubagent={onOpenSubagent}
+                  deliveryDegraded={deliveryDegraded}
+                />
+              )}
+            </ChatTranscriptOutlet>
           ) : null}
           {/*
             A departing transcript is visual history, not an active
             interaction surface bound to the newly blank route
-            (shell.rs:5940-5944) — and a chat→chat swap's retained rows get
-            the same occlusion for the frames they outlive their chat.
+            (shell.rs:5940-5944).
           */}
-          {(departing || swappingTranscript) && <div className="departing-veil" aria-hidden="true" />}
+          {departing && <div className="departing-veil" aria-hidden="true" />}
         </div>
         {/*
           The bottom chrome stack (`render_main`'s flex-none bottom section):
@@ -1218,6 +1321,10 @@ export function ConversationPage() {
                 // rows must not offer the previous chat's entries.
                 transcript={liveTranscript}
                 availableWidth={composerWidth}
+                // Ticket 64 §2.4: the observer-fed live target — the
+                // evaluate pass's strip budget reads it even while the
+                // published prop defers through the sidebar glide.
+                liveAvailableWidth={composerWidthTargetRef}
                 editingMessage={editingRow}
                 onEditFinish={onEditFinish}
                 onEditCancel={onEditCancel}

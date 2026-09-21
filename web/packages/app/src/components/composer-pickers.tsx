@@ -15,7 +15,7 @@ import {
   rememberReasoning,
   toggleModelFavorite,
 } from "../lib/composer-draft";
-import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import { defaultReasoning, effectiveReasoningLadder, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform } from "../state/shortcuts";
@@ -131,8 +131,10 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const selectedModel =
     (modelsList.loaded ? models.find((model) => model.id === draft.model) : undefined) ??
     (models.length > 0 ? models[0] : undefined);
-  // `trait_ladder`: the model's ladder, falling back to the descriptor's own.
-  const ladder: readonly ReasoningLevel[] = selectedModel?.reasoningLevels ?? descriptor?.reasoningLevels ?? [];
+  // `trait_ladder`: the model's NONEMPTY ladder, else the descriptor's own —
+  // an empty model list falls back (Haiku → Claude's advertised levels);
+  // before any model resolves there is no effective ladder at all.
+  const ladder: readonly ReasoningLevel[] = effectiveReasoningLadder(selectedModel, descriptor);
 
   const favorites = defaults.favorites;
 
@@ -146,15 +148,23 @@ export function ComposerPickers(props: ComposerPickersProps) {
     [catalog],
   );
 
+  // The descriptor lookup `applyDraftUpdate` clamps against — resolved per
+  // call for the NEXT draft's harness, never a captured previous one.
+  const resolveDescriptor = useCallback(
+    (harness: HarnessId): HarnessDescriptor | null =>
+      catalog.getHarnesses().rows.find((row) => row.id === harness) ?? null,
+    [catalog],
+  );
+
   const commit = useCallback(
     (update: DraftConfigUpdate) => {
-      const next = applyDraftUpdate(draft, update, resolveModel);
+      const next = applyDraftUpdate(draft, update, resolveModel, resolveDescriptor);
       onDraft(next);
       if (chatConfig !== null) {
         onPersist(next);
       }
     },
-    [draft, resolveModel, onDraft, onPersist, chatConfig],
+    [draft, resolveModel, resolveDescriptor, onDraft, onPersist, chatConfig],
   );
 
   function pickHarness(harness: HarnessId): void {
@@ -168,7 +178,11 @@ export function ComposerPickers(props: ComposerPickersProps) {
     rememberHarness(harness);
     // The remembered model for this harness takes over via the defaults
     // fallback; a foreign pick must not linger (pickers.rs:1380-1394).
-    commit({ harness, model: null, reasoning: null });
+    // Reasoning clears to the REMEMBERED level (native `pick_harness` clears
+    // the draft value and `effective_reasoning` falls back to the remembered
+    // default); the reconciliation re-derives it against the new harness's
+    // effective ladder once the models resolve.
+    commit({ harness, model: null, reasoning: composerDefaults.getSnapshot().reasoning });
   }
 
   function pickModel(harness: HarnessId, model: Model): void {

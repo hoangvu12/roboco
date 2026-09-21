@@ -116,6 +116,12 @@ export function writeDockGlideVars(target: CustomPropertyTarget | null, channels
   target.setProperty("--rb-dock-hero-opacity", `${channels.heroOpacity}`);
   target.setProperty("--rb-dock-chrome-new", `${channels.chromeNewThread}`);
   target.setProperty("--rb-dock-chrome-session", `${channels.chromeSession}`);
+  // Ticket 65 §3.2 — the post-prepaint frame hook, invoked at the END of
+  // the channel write: the pump calls this after `dock.prepaint(...)` and
+  // the composer wrapper's transform write, so a registered listener's
+  // `getBoundingClientRect` samples observe THIS frame's placement
+  // (transform-only movement included — the observers cannot see those).
+  notifyDockFrameListeners();
 }
 
 /**
@@ -171,6 +177,30 @@ export class DockMountSequencer {
 // The signal (tickets 59/63 defer work while the glide runs)
 // ---------------------------------------------------------------------------
 
+const dockFrameListeners = new Set<() => void>();
+
+/** Invoke the registered post-prepaint frame listeners (writeDockGlideVars only). */
+function notifyDockFrameListeners(): void {
+  for (const listener of dockFrameListeners) {
+    listener();
+  }
+}
+
+/**
+ * Ticket 65 §3.2 — observe the pump's per-frame channel write. The listener
+ * is invoked SYNCHRONOUSLY at the end of every `writeDockGlideVars` call
+ * (which the pump makes after prepaint and the wrapper transform write), so
+ * geometry sampled inside the listener sees this frame's composer
+ * placement. `clearDockGlideVars` never fires it (the glide has converged).
+ * Returns the unsubscribe.
+ */
+export function onDockGlideFrame(listener: () => void): () => void {
+  dockFrameListeners.add(listener);
+  return () => {
+    dockFrameListeners.delete(listener);
+  };
+}
+
 /**
  * The dock glide's armed/settled flag: armed when the pump's loop starts
  * (the navigation commit's frame is in flight), settled when the glide —
@@ -178,19 +208,42 @@ export class DockMountSequencer {
  */
 export class DockGlideSignal {
   #active = false;
+  #listeners = new Set<(active: boolean) => void>();
 
   /** The navigation's frame is in flight; the loop is writing channels. */
   arm(): void {
     this.#active = true;
+    this.#notify();
   }
 
   /** The glide converged (or the loop was torn down mid-flight). */
   settle(): void {
     this.#active = false;
+    this.#notify();
   }
 
   isActive(): boolean {
     return this.#active;
+  }
+
+  /**
+   * Ticket 65 — the arm/settle edge contract, mirroring
+   * `SidebarTweenSignal.subscribe`: the hero render scheduler (and any later
+   * boundary rider) attaches once and rides every settle path — the
+   * converged frame AND the mid-flight teardown both funnel through
+   * `settle()`. Synchronous; fires on every arm/settle call.
+   */
+  subscribe(listener: (active: boolean) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  #notify(): void {
+    for (const listener of this.#listeners) {
+      listener(this.#active);
+    }
   }
 }
 

@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@roboco/icons";
-import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, Model, UserInputAnswer } from "@roboco/proto";
+import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, UserInputAnswer } from "@roboco/proto";
 import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
 import { encodeScopedId, methods, RpcError } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
@@ -22,9 +22,9 @@ import { useFleetSnapshot } from "../state/fleet";
 import { PickerCatalog } from "../state/picker-catalog";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { effectiveIndicator } from "../lib/view";
-import { chatDrafts, composerDefaults, draftFromChat, rememberedModelFor } from "../lib/composer-draft";
+import { chatDrafts, composerDefaults, draftFromChat } from "../lib/composer-draft";
+import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
-import { clampReasoning } from "../lib/traits-summary";
 import {
   ATTACHMENT_ONLY_TEXT,
   AttachmentUploadError,
@@ -46,7 +46,6 @@ import {
   type DraftConfig,
 } from "../lib/composer-actions";
 import {
-  ACTIONS_ROW_HEIGHT,
   attachmentStripHeight,
   COMPOSER_MAX_WIDTH,
   COMPOSER_WIDTH_EPSILON,
@@ -61,22 +60,17 @@ import {
   inputDragScrollDelta,
   inputOverflowEdges,
   INPUT_LINE_HEIGHT,
-  morphClusterDy,
-  morphClusterInset,
-  morphTextPad,
-  collapseTextGlide,
   PILL_BORDER_V,
   RESIZE_SETTLE_MS,
   ROUTE_SNAP_MS,
-  TEXTAREA_PAD_V,
+  routeInputGeometry,
   type FlipMorph,
 } from "../lib/composer-flip";
 import {
   beginInterrupt,
   composerHasContent,
-  messageEnterBindings,
   modifiedSubmitTarget,
-  platformModifierCombo,
+  resolveEnterAction,
   resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
@@ -88,7 +82,7 @@ import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/compose
 import { createChat, waitForChatRow } from "../lib/chat-actions";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings } from "../state/ui-settings";
-import { isMacPlatform } from "../state/shortcuts";
+import { useIsPhone } from "../state/media";
 import {
   seedAttachment,
   beginUploadProgress,
@@ -116,10 +110,10 @@ import {
   COMPOSER_REST_PLACEHOLDER,
   WIZARD_SAFETY_NET_MS,
   Wizard,
-  enterOutcome,
   escapeDismissesCompletion,
   inputRequestResolved,
   pendingInputRequest,
+  wizardCommitThenAdvance,
   wizardEscapeGoesBack,
   wizardPlaceholder,
 } from "../lib/wizard";
@@ -201,6 +195,24 @@ const REST_LAYOUT: PillLayout = {
   morphing: false,
 };
 
+/**
+ * The evaluate pass's no-op gate (ticket 64 §2.4): `setLayout` returns the
+ * PRIOR state only when every PillLayout field is equal, so observer ticks
+ * and repeated evaluates that resolve the same geometry publish nothing —
+ * real height/mode/morph changes still land.
+ */
+function pillLayoutEquals(a: PillLayout, b: PillLayout): boolean {
+  return (
+    a.pillHeight === b.pillHeight &&
+    a.boxHeight === b.boxHeight &&
+    a.textPad === b.textPad &&
+    a.clusterInset === b.clusterInset &&
+    a.clusterDy === b.clusterDy &&
+    a.textGlide === b.textGlide &&
+    a.morphing === b.morphing
+  );
+}
+
 interface ComposerProps {
   readonly session: EngineSession;
   readonly chat: Chat;
@@ -217,6 +229,14 @@ interface ComposerProps {
    * `set_available_width` feed. Null before the first measurement.
    */
   readonly availableWidth: number | null;
+  /**
+   * Ticket 64 §2.4's live width channel: the page's clamped composer
+   * target, fed by the column's ResizeObserver on EVERY geometry tick —
+   * outside React, so a deferred page publication (the blank-canvas sidebar
+   * glide) never starves the evaluate pass. The strip width budget reads it
+   * ahead of the published `availableWidth` prop.
+   */
+  readonly liveAvailableWidth?: { readonly current: number | null };
   /**
    * The queue panel (ticket 16 owns the body), rendered in the column's
    * tray slot — tucked 18px behind the pill per `QUEUE_COMPOSER_OVERLAP`.
@@ -304,6 +324,7 @@ export function Composer({
   catalog,
   transcript,
   availableWidth,
+  liveAvailableWidth,
   queueSlot,
   footerSlot,
   editingMessage,
@@ -326,6 +347,11 @@ export function Composer({
   // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
   // Enter sends, Mod+Enter is `ModifiedSubmit`.
   const sendBehavior = useUiSettings().composerSendBehavior;
+  // The phone layer (≤768px, state/media.ts) flips a bare Enter to a native
+  // newline (ticket 75) — a LIVE media match read at render, so a viewport
+  // crossing re-arms the key policy without remounting the input, clearing
+  // the draft, or touching the saved preference.
+  const isPhone = useIsPhone();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The text-width mirror: a hidden `white-space: pre` twin whose offsetWidth
   // is the unwrapped width of the widest line — the desktop's
@@ -451,7 +477,14 @@ export function Composer({
   projectionRef.current = projection;
   const mentionsActive = projection.mentions.length > 0;
   const [draft, setDraft] = useState<DraftConfig>(() =>
-    draftFromChat(chat, harnesses.rows, catalog.getModels(chat.config?.harness ?? "claude-code").rows),
+    // A fresh chat seeds the remembered last-used reasoning as its preference
+    // layer (pickers.rs:762-775); an established chat replays its config.
+    draftFromChat(
+      chat,
+      harnesses.rows,
+      catalog.getModels(chat.config?.harness ?? "claude-code").rows,
+      composerDefaults.getSnapshot().reasoning,
+    ),
   );
   const models = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribeModels(draft.harness, listener), [catalog, draft.harness]),
@@ -604,7 +637,11 @@ export function Composer({
       return {
         harness: next,
         model: null,
-        reasoning: null,
+        // A corrected harness keeps the remembered level as the preference
+        // layer (native falls back to it via effective_reasoning); the
+        // reconciliation below re-derives it against the new harness's
+        // effective ladder once models resolve.
+        reasoning: composerDefaults.getSnapshot().reasoning,
         sandbox: "workspace-write",
         modelOptions: {},
       };
@@ -623,33 +660,13 @@ export function Composer({
     void catalog.loadModels(draft.harness);
   }, [catalog, draft.harness, harnesses.loaded, harnesses.rows.length]);
 
-  useEffect(() => {
-    if (models.rows.length === 0) {
-      return;
-    }
-    setDraft((current) => {
-      if (current.model !== null && models.rows.some((m: Model) => m.id === current.model)) {
-        const clamped = clampReasoning(current.reasoning, current.model === null ? [] : ladderFor(models.rows, current.model));
-        return clamped === current.reasoning
-          ? current
-          : { ...current, reasoning: clamped };
-      }
-      const remembered = rememberedModelFor(current.harness);
-      const seeded =
-        remembered !== null && models.rows.some((m: Model) => m.id === remembered.id)
-          ? remembered.id
-          : models.rows[0]?.id;
-      if (seeded === undefined) {
-        return current;
-      }
-      const model = models.rows.find((m: Model) => m.id === seeded);
-      return {
-        ...current,
-        model: seeded,
-        reasoning: clampReasoning(current.reasoning, model?.reasoningLevels ?? []),
-      };
-    });
-  }, [models.rows]);
+  // Model/descriptor reconciliation: seed the draft's model and re-derive
+  // reasoning against the EFFECTIVE ladder (model levels when nonempty, else
+  // the matching descriptor's) — observing BOTH live inputs so a descriptor
+  // that lands after the models re-resolves the selection instead of leaving
+  // a stale model-only clamp behind. The extracted owner carries the logic;
+  // it returns the prior draft when nothing changed (no setState loop).
+  useDraftModelReconciliation(models.rows, harnesses.rows, setDraft);
 
   // ── The width-driven flip + height morph ───────────────────────────────
   //
@@ -703,12 +720,14 @@ export function Composer({
   reducedMotionRef.current = reducedMotion;
   const availableWidthRef2 = useRef(availableWidth);
   availableWidthRef2.current = availableWidth;
-  // The glide's height channels write these directly (ticket 57b): the pill
-  // root and the expanded input box carry their animated height/radius as
-  // CSS custom properties — the JSX consumes them with a stale-safe
-  // fallback, so a mid-glide render cannot clobber the live values.
+  // The glide's channels write these directly (ticket 57b heights, ticket 74
+  // inner geometry): the pill root, the input box and the actions row carry
+  // their animated height/radius/padding/offset values as CSS custom
+  // properties — the JSX consumes them with a stale-safe fallback, so a
+  // mid-glide render cannot clobber the live values.
   const pillRef = useRef<HTMLDivElement | null>(null);
   const inputBoxRef = useRef<HTMLDivElement | null>(null);
+  const actionsRef = useRef<HTMLDivElement | null>(null);
   // The morph loop's liveness, render-tracked: a glide that starts mid-morph
   // must still publish the loop's death (the evaluate otherwise skips the
   // state publish while the dock owns the height, which would leave the
@@ -804,8 +823,11 @@ export function Composer({
       setExpanded(nextMode);
     }
     // `strip_width_hint` (composer.rs:7511): the pill's content width, in
-    // both modes.
-    const stripWidthHint = (availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
+    // both modes. Ticket 64 §2.4: the page's LIVE clamped target leads (the
+    // column observer feeds it per tick, even while the published
+    // `availableWidth` prop defers); the prop-parked ref is the fallback.
+    const stripWidthHint =
+      (liveAvailableWidth?.current ?? availableWidthRef2.current ?? COMPOSER_MAX_WIDTH) - 2 * 16 - 2;
     // `comment_strip_height` (composer.rs:7524): the comments chip rides the
     // same arithmetic strip budget as the attachments.
     const stripH =
@@ -875,11 +897,29 @@ export function Composer({
           ? dockHeight(frame.docked ? 1 : 0, contentHeight, sessionExpandedRef.current) + stripH - pillHeight
           : 0;
     }
-    // The expanded textarea box follows the animated pill height; the
-    // textarea itself fills the box less its paddings (composer.rs:7606).
-    const boxHeight = Math.max(pillHeight - stripH - PILL_BORDER_V - ACTIONS_ROW_HEIGHT, 0);
-    const textPad = morphTextPad(morphT);
-    const inputHeight = mode ? Math.max(boxHeight - textPad - 4, 0) : INPUT_LINE_HEIGHT;
+    // The frame's inner geometry (ticket 74, composer.rs:7589-7632): ONE
+    // clock drives every inner channel — while the dock frame is active and
+    // the session's own mode is compact, that's the shared dock amount
+    // (`1 − amount` expanded, `amount` compact); otherwise the local flip's.
+    // The compact route floors keep one input line plus its padding alive as
+    // the pill sweeps down to 49px; an expanded destination morphs exactly
+    // like a typing flip.
+    const flipAnimating = flipMorph !== null && !flipMorphDone(flipMorph, nowMs);
+    const geometry = routeInputGeometry({
+      renderedExpanded: mode,
+      sessionExpanded: sessionExpandedRef.current,
+      dockActive: dockDriven,
+      dockAmount,
+      flipProgress: morphT,
+      flipFrom: flipAnimating ? flipMorph.from : null,
+      pillHeight,
+      baseHeight,
+      stripHeight: stripH,
+      // `dock_height(0.0)` (composer.rs:7794) — the undocked hero height,
+      // the route glide's `from` (`lerp` at amount 0 ignores the session).
+      undockedHeight: dockHeight(0, contentHeight, sessionExpandedRef.current),
+    });
+    const { boxHeight, textPad, inputHeight } = geometry;
     el.style.height = `${inputHeight}px`;
     // The scrollability gate, not an inline overflowY: the CSS owns the
     // overflow (`[data-scrollable="true"]` → `overflow-y: auto`, bar
@@ -890,27 +930,31 @@ export function Composer({
     // The scroll fade mask: only SETTLED overflow at an edge gets the ramp —
     // the settled viewport is the committed target's, not the animating
     // box's (`input_overflow_edges`, composer.rs:181-192).
-    const settledViewport = Math.max(baseHeight - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V, 0);
+    const settledViewport = geometry.settledViewport;
     const [fadeTop, fadeBottom] = inputOverflowEdges(contentHeight, settledViewport, inputHeight, el.scrollTop);
     el.dataset["fadeTop"] = mode && fadeTop ? "true" : "false";
     el.dataset["fadeBottom"] = mode && fadeBottom ? "true" : "false";
-    const morphing =
-      (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) ||
-      (flipMorph !== null && !flipMorphDone(flipMorph, nowMs));
+    const morphing = (heightMorph !== null && !flipMorphDone(heightMorph, nowMs)) || flipAnimating;
     if (dockDriven) {
-      // The glide's height channels are DOM writes (ticket 57b, §2.3): the
-      // pill's outer height, its radius (`26 − 4·dock_amount`,
-      // composer.rs:7603 — the frost blur's mask follows the radius), and
-      // the expanded box's height ride CSS custom properties the JSX below
-      // consumes with a stale-safe fallback — `set_dock_frame` owns the
-      // height, so nothing re-renders for it. The settle evaluate's
+      // The glide's channels are DOM writes (ticket 57b, §2.3; ticket 74 for
+      // the inner ones): the pill's outer height, its radius
+      // (`26 − 4·dock_amount`, composer.rs:7603 — the frost blur's mask
+      // follows the radius), the box height, and the ROUTE-CLOCK inner
+      // values (text padding, cluster offset/inset, compact text glide) all
+      // ride CSS custom properties the JSX below consumes with a stale-safe
+      // fallback — a single active frame must not mix the live heights with
+      // last publish's padding (composer.rs:7592-7632 derives every channel
+      // from the same frame). All are written in BOTH modes so a mid-glide
+      // mode switch never catches a channel missing. The settle evaluate's
       // republish (the non-driven branch) plus the `[layout]` effect's var
       // removal hand the values back to the state.
       pillRef.current?.style.setProperty("--rb-dock-pill-height", `${pillHeight}px`);
       pillRef.current?.style.setProperty("--rb-dock-pill-radius", `${(26 - 4 * dockAmount).toFixed(2)}px`);
-      if (mode) {
-        inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
-      }
+      inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
+      inputBoxRef.current?.style.setProperty("--rb-dock-text-pad", `${geometry.textPad}px`);
+      inputBoxRef.current?.style.setProperty("--rb-dock-text-glide", `${-geometry.textGlide}px`);
+      actionsRef.current?.style.setProperty("--rb-dock-cluster-dy", `${-geometry.clusterDy}px`);
+      actionsRef.current?.style.setProperty("--rb-dock-cluster-inset", `${geometry.clusterInset}px`);
       if (!morphing && !morphLoopLiveRef.current) {
         // A pure glide frame: the imperative writes above (plus the
         // textarea height and the datasets already applied) carry
@@ -921,20 +965,22 @@ export function Composer({
         return;
       }
     }
-    setLayout({
+    // Ticket 64 §2.4's unchanged-layout bailout: publish only when a field
+    // actually moved — the observer/evaluate cadence may run freely, and an
+    // identical resolution returns the PRIOR state (no React publish). Real
+    // height/mode/morph changes still land: every PillLayout field compared.
+    const nextLayout: PillLayout = {
       pillHeight,
       boxHeight,
       textPad,
-      clusterInset: morphClusterInset(mode, morphT),
-      clusterDy: morphClusterDy(morphT),
-      // Collapse-morph text glide: the decaying offset walks the compact
+      clusterInset: geometry.clusterInset,
+      clusterDy: geometry.clusterDy,
+      // Collapse/route text glide: the decaying offset walks the compact
       // text down from its expanded resting place (composer.rs:7793-7800).
-      textGlide:
-        !mode && flipMorph !== null && !flipMorphDone(flipMorph, nowMs)
-          ? collapseTextGlide(flipMorph.from, morphT)
-          : 0,
+      textGlide: geometry.textGlide,
       morphing,
-    });
+    };
+    setLayout((previous) => (pillLayoutEquals(previous, nextLayout) ? previous : nextLayout));
   };
 
   useLayoutEffect(() => {
@@ -959,6 +1005,10 @@ export function Composer({
       pillRef.current?.style.removeProperty("--rb-dock-pill-height");
       pillRef.current?.style.removeProperty("--rb-dock-pill-radius");
       inputBoxRef.current?.style.removeProperty("--rb-dock-box-height");
+      inputBoxRef.current?.style.removeProperty("--rb-dock-text-pad");
+      inputBoxRef.current?.style.removeProperty("--rb-dock-text-glide");
+      actionsRef.current?.style.removeProperty("--rb-dock-cluster-dy");
+      actionsRef.current?.style.removeProperty("--rb-dock-cluster-inset");
     }
     // `dockFrameRef` is render-assigned; the live ref is pump-owned. This
     // effect only needs to run when a publish landed.
@@ -1808,9 +1858,19 @@ export function Composer({
     if (wizard === null) {
       return;
     }
-    wizard.setTyped(textRef.current.trim());
-    wizardAdvance();
+    wizardCommitThenAdvance(wizard, textRef.current, wizardAdvance);
   }, [wizardAdvance]);
+
+  /** The PHONE explicit advance (ticket 75 §2.2.1) — the panel's Next/Submit
+   * button and the unfocused panel Enter: bare Enter is a newline on the
+   * phone layer, so these paths own the commit. Cancelling any pending
+   * option auto-advance timer first keeps the action to exactly one page
+   * move; the commit runs even when the input is empty so a stale typed
+   * override cannot leak into an option-only answer. */
+  const wizardAdvanceCommit = useCallback((): void => {
+    clearAdvanceTimer();
+    wizardSubmitFromInput();
+  }, [clearAdvanceTimer, wizardSubmitFromInput]);
 
   // `on_state_changed`'s question lifecycle (composer.rs:5879-5928): open on
   // a fresh unresolved request, latch until it resolves or a newer
@@ -2253,14 +2313,13 @@ export function Composer({
     await send(text, mode === "queue");
   }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
 
-  // ── Key policy: completions → wizard → Enter bindings (§2.7) ───────────
-  // Exactly two Enter bindings; Shift+Enter is always a native newline. While
-  // an IME composition is active, Enter is never a submit.
-  const modifierCombo = platformModifierCombo(isMacPlatform());
-  const bindings = useMemo(
-    () => messageEnterBindings(sendBehavior, modifierCombo),
-    [sendBehavior, modifierCombo],
-  );
+  // ── Key policy: completions → phone newline → wizard → Enter (§2.7) ────
+  // `resolveEnterAction` (lib/composer-send.ts) is the Enter branch's single
+  // decision owner, per ticket 75 §2.2's order. Exactly two Enter bindings
+  // on the desktop (`messageEnterBindings`); Shift+Enter is always a native
+  // newline. While an IME composition is active, Enter is never a submit.
+  // On the phone layer a bare Enter is a native newline at EVERY saved
+  // preference — the `ComposerSendBehavior` setting is read, never mutated.
 
   /** The atomic-motion keys a chip projection intercepts (Left/Right/
    * Backspace/Delete at a chip boundary — one press steps over or removes
@@ -2389,57 +2448,83 @@ export function Composer({
     }
 
     if (event.key === "Enter") {
-      // 4. `enter_outcome` (composer.rs:1407): a live completion selection
-      // always wins over submit or newline.
-      if (enterOutcome(completionOpen && completionHasSelection, "submit") === "acceptCompletion") {
-        event.preventDefault();
-        event.stopPropagation();
-        acceptCompletion();
-        return;
-      }
-      // 5. The wizard borrows the input's context (`"Composer"`): bare
-      // Enter always submits the page; ModifiedSubmit is dropped; Shift+Enter
-      // stays a native newline.
-      if (wizardActiveRef.current) {
-        if (event.metaKey || event.ctrlKey) {
+      // 4. `resolveEnterAction` (lib/composer-send.ts) owns the decision —
+      // ticket 75 §2.2's order: a selected completion wins exactly once; a
+      // PHONE bare Enter is a native newline before the wizard and message
+      // submit branches at every saved preference; wizard and
+      // modified-submit policy otherwise stays as it is; a desktop-width
+      // bare Enter follows the saved `ComposerSendBehavior`. The modifier
+      // state is read ONCE below and handed to the resolver; the switch
+      // trusts that same state, never re-deriving it from the event.
+      const mod = event.metaKey || event.ctrlKey;
+      const alt = event.altKey;
+      const shift = event.shiftKey;
+      const action = resolveEnterAction({
+        phone: isPhone,
+        composing: event.nativeEvent.isComposing,
+        completionSelected: completionOpen && completionHasSelection,
+        wizardActive: wizardActiveRef.current,
+        mod,
+        alt,
+        shift,
+        sendBehavior,
+      });
+      switch (action) {
+        case "imeNative":
+          // Unreachable (the handler's first guard owns compositions) — an
+          // IME event is never consumed here either.
+          return;
+        case "acceptCompletion":
+          // `enter_outcome` (composer.rs:1407): a live completion selection
+          // always wins over submit or newline.
           event.preventDefault();
+          event.stopPropagation();
+          acceptCompletion();
+          return;
+        case "nativeNewline": {
+          // The textarea's NATIVE default performs the newline — mid-text
+          // insertion, selection replacement, undo and IME stay correct;
+          // never preventDefault, never set the value manually. The
+          // resolver took this action through its phone bare-Enter branch
+          // exactly when the state it saw (`isPhone`, mod/alt/shift) says
+          // so — the isolation rides that decision.
+          if (isPhone && !mod && !alt && !shift) {
+            // Isolate the phone newline from the wizard panel's Enter.
+            event.stopPropagation();
+          }
           return;
         }
-        if (!event.shiftKey && !event.altKey) {
+        case "wizardSuppress":
+          // The borrowed `"Composer"` context drops ModifiedSubmit.
+          event.preventDefault();
+          return;
+        case "wizardSubmit":
+          // The borrowed input's bare Enter submits the page
+          // (composer.rs:5984-5992).
           event.preventDefault();
           event.stopPropagation();
           wizardSubmitFromInput();
+          return;
+        case "modifiedSubmit": {
+          // Mod+Enter: `ModifiedSubmit` — submits content, activates the
+          // most recently queued row on a truly empty composer, never Stop.
+          event.preventDefault();
+          const content = composerHasContent(text, staged.length, commentCount);
+          if (modifiedSubmitTarget(content) === "submitContent") {
+            void submit();
+          } else {
+            activateLatestQueued?.();
+          }
+          return;
         }
-        return;
-      }
-      // 6. The `ComposerSendBehavior` policy (ticket 13).
-      const mod = event.metaKey || event.ctrlKey;
-      const bareEnter = !mod && !event.altKey && !event.shiftKey;
-      if (mod && !event.altKey) {
-        // Mod+Enter: `ModifiedSubmit` — submits content, activates the most
-        // recently queued row on a truly empty composer, never Stop.
-        event.preventDefault();
-        const content = composerHasContent(text, staged.length, commentCount);
-        if (modifiedSubmitTarget(content) === "submitContent") {
+        case "submit":
+          event.preventDefault();
           void submit();
-        } else {
-          activateLatestQueued?.();
-        }
-        return;
+          return;
       }
-      if (
-        bareEnter &&
-        bindings.some((binding) => binding.keystroke === "enter" && binding.action === "submit")
-      ) {
-        event.preventDefault();
-        void submit();
-      }
-      // Everything else — Shift+Enter, Alt+Enter, bare Enter under
-      // "modEnter" — is a newline, native.
-      return;
     }
 
-    // 7. Atomic chip motion (only when the projection has chips).
+    // 5. Atomic chip motion (only when the projection has chips).
     if (handleAtomicMotion(event)) {
       return;
     }
@@ -2472,7 +2557,15 @@ export function Composer({
       if (!inputFocusedNow) {
         event.preventDefault();
         event.stopPropagation();
-        wizardAdvance();
+        // Phone: the same commit-then-advance as the panel's button (ticket
+        // 75 §2.2.1) — a bare Enter key is a newline on the phone layer, so
+        // the explicit paths own committing the shared draft. The desktop
+        // path is unchanged.
+        if (isPhone) {
+          wizardAdvanceCommit();
+        } else {
+          wizardAdvance();
+        }
       }
       return;
     }
@@ -2741,6 +2834,10 @@ export function Composer({
         spellCheck={false}
         autoComplete="off"
         aria-label={placeholder}
+        // The phone soft keyboard's return key labels a line break (MDN
+        // enterkeyhint — a LABEL hint; the key policy above is the behavior
+        // change). Desktop renders no attribute, as before.
+        enterKeyHint={isPhone ? "enter" : undefined}
         data-mentions={mentionsActive && !composing ? "true" : "false"}
       />
       {mirrorNodes !== null && !composing && (
@@ -2822,7 +2919,7 @@ export function Composer({
             typedEmpty={text.length === 0}
             inputSlot={inputStack}
             onSelect={wizardSelect}
-            onAdvance={wizardAdvance}
+            onAdvance={isPhone ? wizardAdvanceCommit : wizardAdvance}
             onBack={wizardBack}
             onKeyDown={onWizardKeyDown}
             panelRef={wizardPanelRef}
@@ -2866,22 +2963,32 @@ export function Composer({
                   style={
                     expandedRender
                       ? {
-                          // Ticket 57b: the glide's box height rides the
-                          // evaluate pass's CSS var (expanded mode only).
+                          // Tickets 57b/74: the glide's box height and text
+                          // padding ride the evaluate pass's CSS vars; the
+                          // fallbacks are the last published layout.
                           height: `var(--rb-dock-box-height, ${layout.boxHeight}px)`,
-                          paddingTop: `${layout.textPad}px`,
+                          paddingTop: `var(--rb-dock-text-pad, ${layout.textPad}px)`,
                         }
-                      : { top: `${-layout.textGlide}px` }
+                      : // The glide var carries the already-negated offset.
+                        { top: `var(--rb-dock-text-glide, ${-layout.textGlide}px)` }
                   }
                 >
                   {inputStack}
                 </div>
                 <div
                   className="composer-actions"
+                  ref={actionsRef}
                   style={
+                    // The glide vars carry the already-negated dy offset.
                     expandedRender
-                      ? { bottom: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
-                      : { top: `${-layout.clusterDy}px`, paddingRight: `${layout.clusterInset}px` }
+                      ? {
+                          bottom: `var(--rb-dock-cluster-dy, ${-layout.clusterDy}px)`,
+                          paddingRight: `var(--rb-dock-cluster-inset, ${layout.clusterInset}px)`,
+                        }
+                      : {
+                          top: `var(--rb-dock-cluster-dy, ${-layout.clusterDy}px)`,
+                          paddingRight: `var(--rb-dock-cluster-inset, ${layout.clusterInset}px)`,
+                        }
                   }
                 >
                   <div className="composer-utility">
@@ -3085,11 +3192,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-/** The seeded model's ladder for the draft-seeding effect (`trait_ladder`). */
-function ladderFor(models: readonly Model[], modelId: string): readonly Model["reasoningLevels"][number][] {
-  return models.find((model) => model.id === modelId)?.reasoningLevels ?? [];
 }
 
 /** `prefers-reduced-motion` at first paint (snap every morph). */

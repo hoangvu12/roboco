@@ -83,6 +83,9 @@ fn jump_visibility(was_shown: bool, distance: f32) -> bool {
 }
 /// Bound session-local viewport memory independently of total chat history.
 const MAX_SAVED_VIEWPORTS: usize = 256;
+/// Bound remembered explicit fold pins per engine (ticket 68): presentation
+/// state only, in-memory across navigation — nothing persists to disk.
+const MAX_SAVED_FOLD_CHATS: usize = 32;
 /// Bound locally-authored queue ids waiting to become transcript prompts.
 const MAX_PENDING_QUEUED_TURNS: usize = 256;
 /// Text-selection edge scrolling runs only during a drag. A 24 ms cadence is
@@ -2259,6 +2262,48 @@ struct UserCollapseScroll {
     target_top: f32,
 }
 
+/// Ticket 71 — the tool-fold viewport compensation: keep one anchor (the
+/// CLICKED header for an explicit fold, the scroll-top item for an automatic
+/// closure) at its captured absolute y while the fold tweens. The anchor is
+/// CONSTANT: each frame's write only corrects drift (a list clamp near the
+/// scroll end, a leftover write), never interpolates, so reduced motion
+/// needs no separate branch — the geometry snaps and the anchor correction
+/// land in the same frame.
+struct ToolFoldScroll {
+    row_ix: usize,
+    /// The anchor's offset from the item's top (top gap + in-group offset).
+    anchor_offset: f32,
+    /// The anchor's captured absolute y (window space, like item bounds).
+    initial_anchor_y: f32,
+    started_at: Instant,
+}
+
+/// The per-frame drift correction for [`ToolFoldScroll`]: how far the anchor
+/// moved from its captured position. Positive means the content drifted
+/// down; `scroll_by` with this value restores it. `None` when the item's
+/// bounds are unavailable (the list has not laid the row out yet).
+fn tool_fold_scroll_correction(state: &ToolFoldScroll, item_top: Option<f32>) -> Option<f32> {
+    item_top.map(|top| top + state.anchor_offset - state.initial_anchor_y)
+}
+
+/// The compensation stands down with the fold tween, not before.
+fn tool_fold_scroll_finished(state: &ToolFoldScroll, now: Instant) -> bool {
+    now.saturating_duration_since(state.started_at) >= TOOL_FOLD.total()
+}
+
+/// §2.3's ownership gate for an AUTOMATIC fold transition (thought
+/// completion, auto-open expiry): arm only while no other owner is live —
+/// never fighting the tail-follow pin, a held runway, or the user-prompt
+/// fold compensation. An explicitly CLICKED fold never consults this gate:
+/// it takes ownership by releasing the follow/hold first.
+fn automatic_tool_fold_compensation_arms(
+    pinned: bool,
+    own_turn_held: bool,
+    user_fold_compensating: bool,
+) -> bool {
+    !pinned && !own_turn_held && !user_fold_compensating
+}
+
 /// A locally-sent turn reserves the viewport below its prompt. The last row
 /// has a minimum height, so streaming content and the working trailer consume
 /// or release space in the same layout pass. Only changes to the preceding
@@ -2536,6 +2581,57 @@ impl SavedViewportCache {
     }
 }
 
+/// One chat's remembered explicit fold pins (ticket 68, decision option 1):
+/// group folds plus chip detail folds, keyed by the render ids the entity
+/// already uses (`{row_id}` / `"{row_id}#d{ix}"`). Only the `open` pins are
+/// kept — `toggled_at`/`disclosure_at` are stripped at capture, so a
+/// restored choice renders its endpoint and never resumes an old tween.
+/// Vanished rows are harmless key misses; reordering can re-point a key at
+/// a different chip, which the pin then governs.
+#[derive(Default, Clone)]
+struct SavedFoldPins {
+    groups: HashMap<SharedString, bool>,
+    details: HashMap<SharedString, bool>,
+}
+
+/// Memory-only fold preference memory for primary chats visited in this
+/// window, LRU-bounded by [`MAX_SAVED_FOLD_CHATS`] — the entity is one
+/// engine's transcript, so the map is per-engine by construction. The web
+/// peer is `state/transcript-fold-state.ts` (keyed engine + chat/doc).
+#[derive(Default)]
+struct SavedFoldCache {
+    by_chat: HashMap<String, SavedFoldPins>,
+    recency: VecDeque<String>,
+}
+
+impl SavedFoldCache {
+    fn insert(&mut self, chat_id: String, pins: SavedFoldPins) {
+        if self.by_chat.contains_key(&chat_id) {
+            self.recency.retain(|candidate| candidate != &chat_id);
+        }
+        self.recency.push_back(chat_id.clone());
+        self.by_chat.insert(chat_id, pins);
+        while self.by_chat.len() > MAX_SAVED_FOLD_CHATS {
+            let Some(evicted) = self.recency.pop_front() else {
+                break;
+            };
+            self.by_chat.remove(&evicted);
+        }
+    }
+
+    fn get_cloned_and_touch(&mut self, chat_id: &str) -> Option<SavedFoldPins> {
+        let pins = self.by_chat.get(chat_id).cloned()?;
+        self.recency.retain(|candidate| candidate != chat_id);
+        self.recency.push_back(chat_id.to_string());
+        Some(pins)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_chat.len()
+    }
+}
+
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
@@ -2559,6 +2655,11 @@ pub struct Transcript {
     /// A transcript instance is shared across tabs, so the active ListState is
     /// reset on every attach and cannot retain these positions by itself.
     saved_viewports: SavedViewportCache,
+    /// Memory-only explicit fold pins for primary chats visited in this window
+    /// (ticket 68): survives the attach reset that clears `folds` and
+    /// `tool_details`, bounded per chat. The quick deselect-retain path
+    /// never consults it — the retained entity keeps its live folds.
+    saved_folds: SavedFoldCache,
     /// An anchored viewport waiting for the selected chat's async replay.
     pending_viewport: Option<SavedViewport>,
     /// Generation of the selected chat, guarding post-layout restoration
@@ -2591,6 +2692,32 @@ pub struct Transcript {
     /// group fold. Render-local like `folds` — never part of the row
     /// fingerprint.
     tool_details: HashMap<SharedString, FoldState>,
+    /// Ticket 71 — the tool-fold viewport compensation: the clicked header
+    /// (an explicit fold) or the scroll-top item (an automatic closure)
+    /// held at a fixed screen position while the fold tweens. At most one
+    /// is live; wheel/touch and explicit navigation cancel it
+    /// synchronously, and it yields to a live pin or held runway.
+    tool_fold_scroll: Option<ToolFoldScroll>,
+    /// Tracks the queued frame, even when its animation is canceled/replaced.
+    tool_fold_scroll_scheduled: bool,
+    /// Ticket 71 C crash fix (2026-09-20) — the render-side auto-close
+    /// detection runs INSIDE the list's prepaint, where the `ListState`
+    /// `RefCell` is already mutably borrowed; reading it there panics
+    /// (`RefCell already mutably borrowed`, the live crash). The detection
+    /// only sets this flag; `render` consumes it BEFORE building the list
+    /// element, one frame after detection (the tween's canvas repaint driver
+    /// guarantees that frame).
+    pending_auto_fold_arm: bool,
+    /// Ticket 71 B — the last-rendered card height per expandable chip key
+    /// (`"{row}#d{ix}"`): the animated thought-close tween's `from`. A chip
+    /// that never rendered open has no entry, so its completion snaps (an
+    /// unmounted row's close is invisible anyway).
+    detail_card_heights: HashMap<SharedString, f32>,
+    /// Ticket 69/71 — the last-seen `resolved` per thought chip key. Only a
+    /// LIVE flip Some(false)→true is a genuine completion; the replay
+    /// baseline and the attach reset clear this map, so a reset/replay
+    /// frame never impersonates one.
+    thought_seen_resolved: HashMap<SharedString, bool>,
     /// Expand/collapse state for user bubbles past [`USER_COLLAPSED_LINES`],
     /// keyed by row id. Render-local like `folds` — never part of the row
     /// fingerprint, so toggling one costs a repaint, not a rebuild.
@@ -2853,6 +2980,7 @@ impl Transcript {
             doc_live: doc_override.is_some() && follow,
             doc_override,
             saved_viewports: SavedViewportCache::default(),
+            saved_folds: SavedFoldCache::default(),
             pending_viewport: None,
             viewport_generation: 0,
             viewport_finalize_pending: false,
@@ -2864,6 +2992,11 @@ impl Transcript {
             folds: HashMap::new(),
             tool_group_reveals: HashMap::new(),
             tool_details: HashMap::new(),
+            tool_fold_scroll: None,
+            tool_fold_scroll_scheduled: false,
+            pending_auto_fold_arm: false,
+            detail_card_heights: HashMap::new(),
+            thought_seen_resolved: HashMap::new(),
             user_folds: HashMap::new(),
             user_heights: HashMap::new(),
             user_hold_task: None,
@@ -2994,6 +3127,32 @@ impl Transcript {
         self.saved_viewports.insert(chat_id, viewport);
     }
 
+    /// Snapshot the outgoing primary chat's explicit fold pins (ticket 68)
+    /// before the attach reset clears them. Only pinned folds are kept, with
+    /// their tween clocks stripped; an empty pin set is a no-op so a visit
+    /// that pinned nothing keeps the older memory. Subagent (doc override)
+    /// instances never attach, so they never pass through here.
+    fn remember_current_folds(&mut self) {
+        let Some(chat_id) = self.chat_id.clone() else {
+            return;
+        };
+        let mut pins = SavedFoldPins::default();
+        for (key, fold) in &self.folds {
+            if let Some(open) = fold.open {
+                pins.groups.insert(key.clone(), open);
+            }
+        }
+        for (key, fold) in &self.tool_details {
+            if let Some(open) = fold.open {
+                pins.details.insert(key.clone(), open);
+            }
+        }
+        if pins.groups.is_empty() && pins.details.is_empty() {
+            return;
+        }
+        self.saved_folds.insert(chat_id, pins);
+    }
+
     /// Restore an exact optimistic row while replay is pending, enable stable
     /// fallbacks only after a populated reset, and retire snapshots proven
     /// absent by an empty reset. `scroll_to` remains valid while the virtual
@@ -3063,6 +3222,11 @@ impl Transcript {
         self.discard_pending_viewport();
         self.cancel_user_hold();
         self.user_collapse_scroll = None;
+        // Ticket 71: navigation owns the viewport — the tool-fold
+        // compensation stands down before the navigation moves the list.
+        // `toggle_fold`/`toggle_detail_fold` arm AFTER this call, so their
+        // fresh anchor survives.
+        self.tool_fold_scroll = None;
         self.stop_automatic_scrolling();
     }
 
@@ -3118,6 +3282,7 @@ impl Transcript {
         // Cancel synchronously, before a queued animation frame can undo the
         // wheel/touch input. Neither operation reads the borrowed ListState.
         self.user_collapse_scroll = None;
+        self.tool_fold_scroll = None;
         self.cancel_user_hold();
         let released_own_turn = self.own_turn.as_ref().is_some_and(|anchor| anchor.held);
         self.release_own_turn_hold();
@@ -3322,6 +3487,9 @@ impl Transcript {
     /// its top inset. Replacing a previous anchor starts a new glide.
     pub fn on_own_send(&mut self, chat_id: String, message_id: String, cx: &mut Context<Self>) {
         self.user_collapse_scroll = None;
+        // Ticket 71: a new send's runway owns the viewport — the tool-fold
+        // compensation stands down.
+        self.tool_fold_scroll = None;
         self.cancel_user_hold();
         self.discard_pending_viewport();
         self.pinned = false;
@@ -3747,6 +3915,9 @@ impl Transcript {
     /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
     pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
         self.user_collapse_scroll = None;
+        // Ticket 71: the jump button is explicit navigation — the tool-fold
+        // compensation stands down before the pin's spring owns the viewport.
+        self.tool_fold_scroll = None;
         self.cancel_user_hold();
         self.discard_pending_viewport();
         // An expanded prompt can be taller than the viewport. Its reservation
@@ -3960,7 +4131,14 @@ impl Transcript {
             let saved_viewport = selected
                 .as_ref()
                 .and_then(|chat_id| self.saved_viewports.get_cloned_and_touch(chat_id));
+            // Same eviction discipline for the fold pins (ticket 68): the
+            // incoming chat's remembered pins are cloned out before the
+            // outgoing capture can evict them.
+            let saved_folds = selected
+                .as_ref()
+                .and_then(|chat_id| self.saved_folds.get_cloned_and_touch(chat_id));
             self.remember_current_viewport();
+            self.remember_current_folds();
             let keep_own_turn = self
                 .own_turn
                 .as_ref()
@@ -3976,12 +4154,48 @@ impl Transcript {
             self.live_parsers.clear();
             self.tree_cache.clear();
             self.folds.clear();
+            self.tool_details.clear();
+            // Ticket 68: reinstall the incoming chat's remembered explicit
+            // pins as SETTLED folds — before rows are derived below, so the
+            // render's geometry and the viewport restore read them. The pins
+            // carry no tween clocks, a remembered false pin overrides
+            // auto-open/arrival-pending through `render_tool_group`'s one
+            // open resolution, and keys whose rows vanished are inert
+            // misses. `tool_details` now resets with the attach because this
+            // cache — not stale map entries — is the single cross-chat
+            // memory.
+            if let Some(pins) = saved_folds {
+                for (key, open) in pins.groups {
+                    self.folds.insert(
+                        key,
+                        FoldState {
+                            open: Some(open),
+                            ..Default::default()
+                        },
+                    );
+                }
+                for (key, open) in pins.details {
+                    self.tool_details.insert(
+                        key,
+                        FoldState {
+                            open: Some(open),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
             self.tool_group_reveals.clear();
             self.user_folds.clear();
             self.user_heights.clear();
             self.user_hold_token = self.user_hold_token.wrapping_add(1);
             self.user_hold_task = None;
             self.user_collapse_scroll = None;
+            self.tool_fold_scroll = None;
+            // Ticket 69/71: the attach resets the detail-state trackers with
+            // the detail folds themselves — the incoming chat's first frame
+            // re-records without ever reading as a completion.
+            self.detail_card_heights.clear();
+            self.thought_seen_resolved.clear();
             self.veils.clear();
             self.render_cache.borrow_mut().clear();
             self.highlights.entries.clear();
@@ -4069,6 +4283,13 @@ impl Transcript {
                 fold.toggled_at = None;
                 fold.disclosure_at = None;
             }
+            // Ticket 71/69: the completion tracker resets with the baseline —
+            // a replayed frame re-records its resolved states without ever
+            // reading as an unresolved→resolved flip, and the recorded card
+            // heights (the animated close's `from`) never outlive the
+            // transcript they belong to.
+            self.thought_seen_resolved.clear();
+            self.detail_card_heights.clear();
         }
         let previous_tool_counts: HashMap<SharedString, usize> = self
             .rows
@@ -4080,10 +4301,49 @@ impl Transcript {
             .collect();
         let now = Instant::now();
         let mut live_tool_groups = HashSet::new();
+        let mut live_detail_keys = HashSet::new();
+        let mut automatic_folds = 0usize;
         for row in &new_rows {
             let RowKind::ToolGroup { tools, .. } = &row.kind else {
                 continue;
             };
+            // Ticket 71 B — the animated thought completion. Every tool group
+            // (standalone spawn cards included) tracks its thought chips'
+            // seen `resolved`: a LIVE flip to resolved with no explicit pin
+            // seeds the detail fold's close tween from the renderer-reported
+            // card height, so the chip closes over the existing 140ms
+            // EASE_OUT fold instead of snapping. Explicit pins win in every
+            // case (the seed never fires under a pin); the attach reset and
+            // the replay baseline clear the tracker, so a reset or replay
+            // frame never reads as a completion.
+            for (ix, tool) in tools.iter().enumerate() {
+                if is_spawn_link(tool) {
+                    continue;
+                }
+                let key = SharedString::from(format!("{}#d{ix}", row.id));
+                if tool.detail.is_some() || tool.invocation.is_some() {
+                    live_detail_keys.insert(key.clone());
+                }
+                if !tool.is_thought {
+                    continue;
+                }
+                let previously_resolved = self.thought_seen_resolved.insert(key.clone(), tool.resolved);
+                let pin = self.tool_details.get(&key).and_then(|fold| fold.open);
+                if previously_resolved == Some(false)
+                    && tool.resolved
+                    && (tool.detail.is_some() || tool.invocation.is_some())
+                    && pin.is_none()
+                    && let Some(from) = self.detail_card_heights.get(&key).copied()
+                {
+                    let entry = self.tool_details.entry(key).or_default();
+                    entry.epoch += 1;
+                    entry.from = from;
+                    entry.open = None;
+                    entry.toggled_at = Some(now);
+                    entry.disclosure_at = None;
+                    automatic_folds += 1;
+                }
+            }
             // Agent/spawn groups are standalone cards, not task trees.
             if !tool_group_collapses(tools) {
                 continue;
@@ -4114,6 +4374,16 @@ impl Transcript {
         }
         self.tool_group_reveals
             .retain(|row_id, _| live_tool_groups.contains(row_id));
+        self.detail_card_heights
+            .retain(|key, _| live_detail_keys.contains(key));
+        self.thought_seen_resolved
+            .retain(|key, _| live_detail_keys.contains(key));
+        // Ticket 71 B/C — a genuine completion anchors the reading position
+        // through the shrink, but only while no other owner is live (a
+        // pinned tail keeps its tail-follow; a held runway keeps its hold).
+        if automatic_folds > 0 {
+            self.arm_automatic_tool_fold_scroll();
+        }
 
         // Runtime scroll handles follow the stable code rows exactly. A live
         // block keeps its handle through completion; deleted/reindexed tail
@@ -4515,7 +4785,20 @@ impl Transcript {
         cx.notify();
     }
 
-    fn toggle_fold(&mut self, row_id: SharedString, open_height: f32, auto_open: bool) {
+    fn toggle_fold(
+        &mut self,
+        row_id: SharedString,
+        row_ix: usize,
+        header_offset: f32,
+        open_height: f32,
+        auto_open: bool,
+    ) {
+        // Ticket 71 A — the click owns the viewport: release the follow/hold
+        // (the reservation survives as scrollable space) BEFORE arming the
+        // clicked header's anchor; `begin_scroll_navigation` also cancels any
+        // running compensation, including a stale one from a previous fold,
+        // so arming after it is the handoff.
+        self.begin_scroll_navigation();
         let entry = self.folds.entry(row_id).or_default();
         let currently_open = entry.open.unwrap_or(auto_open);
         entry.from = if currently_open { open_height } else { 0.0 };
@@ -4523,6 +4806,112 @@ impl Transcript {
         entry.epoch += 1;
         entry.toggled_at = Some(Instant::now());
         entry.disclosure_at = entry.toggled_at;
+        self.arm_tool_fold_scroll(row_ix, header_offset);
+    }
+
+    /// The expandable chip's header click (ticket 71 A) — the detail fold's
+    /// peer of [`Self::toggle_fold`]. `card_height` is the card's rendered
+    /// height at the toggle; `header_offset` is the clicked chip header's
+    /// offset from the item's top.
+    fn toggle_detail_fold(
+        &mut self,
+        key: SharedString,
+        row_ix: usize,
+        header_offset: f32,
+        card_height: f32,
+        default_open: bool,
+    ) {
+        self.begin_scroll_navigation();
+        let entry = self.tool_details.entry(key).or_default();
+        let currently_open = entry.open.unwrap_or(default_open);
+        entry.from = card_height;
+        entry.open = Some(!currently_open);
+        entry.epoch += 1;
+        entry.toggled_at = Some(Instant::now());
+        self.arm_tool_fold_scroll(row_ix, header_offset);
+    }
+
+    /// Capture the anchor for a fold that owns the viewport (ticket 71 A):
+    /// `anchor_offset` is the clicked header's offset from the item's top
+    /// (the row's top gap, plus the in-group offset for a chip header).
+    /// Armed AFTER `begin_scroll_navigation` so the release wins; a row
+    /// whose bounds are not laid out yet still transfers ownership, it just
+    /// does not compensate (the same contract as `toggle_user_fold`).
+    fn arm_tool_fold_scroll(&mut self, row_ix: usize, anchor_offset: f32) {
+        let Some(bounds) = self.list.bounds_for_item(row_ix) else {
+            return;
+        };
+        self.tool_fold_scroll = Some(ToolFoldScroll {
+            row_ix,
+            anchor_offset,
+            initial_anchor_y: f32::from(bounds.top()) + anchor_offset,
+            started_at: Instant::now(),
+        });
+    }
+
+    /// Arm the READING anchor for an automatic closure (tickets 71 B/C): the
+    /// scroll-top item's position — only while no other owner is live. A
+    /// pinned tail keeps its existing tail-follow through the shrink; a
+    /// manually escaped viewport is preserved by the anchor, not dragged.
+    fn arm_automatic_tool_fold_scroll(&mut self) {
+        if !automatic_tool_fold_compensation_arms(
+            self.pinned,
+            self.own_turn.as_ref().is_some_and(|turn| turn.held),
+            self.user_collapse_scroll.is_some() || self.tool_fold_scroll.is_some(),
+        ) {
+            return;
+        }
+        let scroll_top = self.list.logical_scroll_top();
+        self.arm_tool_fold_scroll(scroll_top.item_ix, f32::from(scroll_top.offset_in_item));
+    }
+
+    /// Ticket 71 C crash fix (2026-09-20) — drain the render-side auto-close
+    /// arm request. The flag is set inside the list's prepaint (where the
+    /// `ListState` `RefCell` is mutably borrowed — reading it there is the
+    /// live `RefCell already mutably borrowed` panic), so `render` calls
+    /// this BEFORE building the list element: the arm's `ListState` reads
+    /// then run outside the borrow, one frame after detection, and the frame
+    /// scheduling below picks the compensation up exactly as the sync-side
+    /// arm does.
+    fn drain_pending_auto_fold_arm(&mut self) {
+        if self.pending_auto_fold_arm {
+            self.pending_auto_fold_arm = false;
+            self.arm_automatic_tool_fold_scroll();
+        }
+    }
+
+    /// One frame of the tool-fold compensation (ticket 71): correct the
+    /// drift that moved the anchor off its captured position, then stand
+    /// down when the fold tween has played out.
+    fn step_tool_fold_scroll(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.tool_fold_scroll.as_ref() else {
+            return;
+        };
+        // Never fight a live tail-follow: a re-engaged pin or runway owns
+        // the viewport now — cancel, do not correct.
+        if self.pinned || self.own_turn.as_ref().is_some_and(|turn| turn.held) {
+            self.tool_fold_scroll = None;
+            cx.notify();
+            return;
+        }
+        let item_top = self
+            .list
+            .bounds_for_item(state.row_ix)
+            .map(|bounds| f32::from(bounds.top()));
+        if let Some(correction) = tool_fold_scroll_correction(state, item_top)
+            && correction.abs() > 0.1
+        {
+            // `scroll_by(+x)` moves content up, so applying the drift puts
+            // the anchor back at its captured screen position.
+            self.list.scroll_by(px(correction));
+        }
+        if tool_fold_scroll_finished(state, Instant::now()) {
+            self.tool_fold_scroll = None;
+            self.last_scroll_distance = self.distance_from_bottom();
+            self.show_jump_button =
+                jump_visibility(self.show_jump_button, self.last_scroll_distance);
+        }
+        cx.notify();
     }
 
     // ---- attachment read-back (user-attachments.tsx + transcript cache) ----
@@ -5547,7 +5936,10 @@ impl Transcript {
                 el
             }
             RowKind::ToolGroup { tools, auto_open } => {
-                self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
+                // Ticket 71 — the row index and the top gap feed the fold
+                // compensation's item-space anchor (the clicked header's
+                // offset from the item's top).
+                self.render_tool_group(&row.id, tools, *auto_open, ix, top_gap, &theme, cx)
             }
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
@@ -5839,6 +6231,8 @@ impl Transcript {
         row_id: &SharedString,
         tools: &Arc<Vec<ToolItem>>,
         auto_open: bool,
+        row_ix: usize,
+        content_offset: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -5859,6 +6253,7 @@ impl Transcript {
         let open = !collapses || fold.open.unwrap_or(effective_auto_open);
         if collapses {
             let reveal = self.tool_group_reveals.entry(row_id.clone()).or_default();
+            let mut auto_closed = false;
             if reveal
                 .rendered_open
                 .is_some_and(|previous| previous != open)
@@ -5867,8 +6262,20 @@ impl Transcript {
                 fold.toggled_at = Some(Instant::now());
                 fold.disclosure_at = fold.toggled_at;
                 self.folds.insert(row_id.clone(), fold);
+                auto_closed = true;
             }
             reveal.rendered_open = Some(open);
+            if auto_closed {
+                // Ticket 71 C — a genuine auto-close anchors the reading
+                // position through the shrink, but only while no other
+                // owner is live (the one-owner gate). Render-side detection
+                // may only SET THE FLAG: this code runs inside the list's
+                // prepaint (the `ListState` `RefCell` is mutably borrowed),
+                // so reading it here panics — `render` drains the flag
+                // outside the element, the `user_collapse_scroll`
+                // discipline the file documents at the top.
+                self.pending_auto_fold_arm = true;
+            }
         }
         let active = collapses && auto_open;
         // Chips render their EFFECTIVE detail: the precomputed doc-resident
@@ -6077,6 +6484,32 @@ impl Transcript {
         {
             motion_active = true;
         }
+        // Ticket 71 — the renderer's card-height report per expandable chip
+        // (the animated thought close tweens from the last OPEN height), and
+        // each chip header's offset from the item's top (the click
+        // compensation anchors the clicked header; the offsets mirror the
+        // rendered geometry: header reveal, top pad, per-row reveal clips,
+        // and the card's vertical centering margin).
+        let mut chip_header_offsets = Vec::with_capacity(tools.len());
+        for ix in 0..tools.len() {
+            if details[ix].is_some() || invocations[ix].is_some() {
+                let key = SharedString::from(format!("{row_id}#d{ix}"));
+                self.detail_card_heights
+                    .insert(key, row_heights[ix] - base_row_height + CHIP_CARD_HEIGHT);
+            }
+            let prefix: f32 = (0..ix).map(|j| row_heights[j] * reveal_progress[j]).sum();
+            chip_header_offsets.push(
+                content_offset
+                    + if collapses {
+                        TOOL_GROUP_HEADER_HEIGHT * header_reveal
+                    } else {
+                        0.0
+                    }
+                    + CHIPS_TOP_PAD
+                    + prefix
+                    + (base_row_height - CHIP_CARD_HEIGHT) / 2.0,
+            );
+        }
         let revealed_height = CHIPS_TOP_PAD
             + row_heights
                 .iter()
@@ -6125,7 +6558,13 @@ impl Transcript {
             .hover(|s| s.text_color(theme.text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
-                this.toggle_fold(toggle_id.clone(), viewport_height, effective_auto_open);
+                this.toggle_fold(
+                    toggle_id.clone(),
+                    row_ix,
+                    content_offset,
+                    viewport_height,
+                    effective_auto_open,
+                );
                 cx.notify();
             }))
             .child(
@@ -6228,6 +6667,12 @@ impl Transcript {
                         .toggled_at
                         .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
                 let toggle_key = key.clone();
+                // Ticket 71 A — the click compensation anchors the CLICKED
+                // chip header (its offset from the item's top) and the tween
+                // starts from the card's rendered height.
+                let toggle_row_ix = row_ix;
+                let toggle_header_offset = chip_header_offsets[ix];
+                let toggle_card_height = row_height - base_row_height + CHIP_CARD_HEIGHT;
                 let mut card = div()
                     .my(px((base_row_height - CHIP_CARD_HEIGHT) / 2.0))
                     .when(collapses, |el| el.ml(px(ACTIVITY_TEXT_GAP)))
@@ -6256,13 +6701,13 @@ impl Transcript {
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                let entry =
-                                    this.tool_details.entry(toggle_key.clone()).or_default();
-                                let currently_open = entry.open.unwrap_or(open);
-                                entry.from = row_height - base_row_height + CHIP_CARD_HEIGHT;
-                                entry.open = Some(!currently_open);
-                                entry.epoch += 1;
-                                entry.toggled_at = Some(Instant::now());
+                                this.toggle_detail_fold(
+                                    toggle_key.clone(),
+                                    toggle_row_ix,
+                                    toggle_header_offset,
+                                    toggle_card_height,
+                                    open,
+                                );
                                 cx.notify();
                             }))
                             .child(chip_header(tool, open, theme, cx.entity_id(), cx)),
@@ -7628,6 +8073,30 @@ impl Render for Transcript {
                     .ok();
             });
         }
+        // Ticket 71 C crash fix (2026-09-20): the auto-close detection in
+        // `render_tool_group` runs inside the list's prepaint and can only
+        // set the flag. Drain it HERE — before the list element is built, so
+        // the arm's `ListState` reads happen while the list does NOT hold
+        // its borrow. The tween's canvas repaint driver guarantees this
+        // render runs within one frame of detection, and the block below
+        // then schedules the compensation step exactly as the sync-side arm
+        // does.
+        self.drain_pending_auto_fold_arm();
+        // A tool fold owns the viewport for its tween's duration (ticket 71):
+        // advance the anchor's drift correction once per frame so the clicked
+        // header (or the automatic closure's reading anchor) stays put.
+        if self.tool_fold_scroll.is_some() && !self.tool_fold_scroll_scheduled {
+            self.tool_fold_scroll_scheduled = true;
+            let entity = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                entity
+                    .update(cx, |this: &mut Transcript, cx| {
+                        this.tool_fold_scroll_scheduled = false;
+                        this.step_tool_fold_scroll(cx);
+                    })
+                    .ok();
+            });
+        }
         let rail = self.render_rail(cx);
         // The scroll-to-bottom pill is rendered by the SHELL (conversation
         // region overlay): it must float just above the composer and paint
@@ -7831,7 +8300,7 @@ mod tests {
                 unreachable!()
             };
             assert!(!auto_open);
-            let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+            let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
             let reveal = &this.tool_group_reveals[&row.id];
             assert_eq!(
                 reveal.rendered_open,
@@ -7911,7 +8380,7 @@ mod tests {
                 let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
                     panic!("expected tools")
                 };
-                let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
                 assert_eq!(this.folds[&row.id].open, Some(true));
                 assert_eq!(this.tool_group_reveals[&row.id].rendered_open, Some(true));
                 assert!(
@@ -7936,11 +8405,607 @@ mod tests {
                     panic!("expected tools")
                 };
                 assert!(*auto_open);
-                let _ = this.render_tool_group(&row.id, tools, *auto_open, &Theme::dark(), cx);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
                 let reveal = &this.tool_group_reveals[&row.id];
                 assert!(reveal.header_started_at.is_some());
                 assert!(reveal.starts.iter().all(Option::is_some));
                 assert_eq!(reveal.rendered_open, Some(true));
+            });
+        });
+    }
+
+    /// `select_chat` + a populated transcript in one state update, so the
+    /// attach and its replay coalesce into a single sync (the same shape
+    /// `replay_tool_group` exercises). The ticket-68 regressions use it to
+    /// drive REAL A→B→A attaches — never the retained-entity deselect path.
+    fn select_chat_with(
+        state: &Entity<AppState>,
+        transcript: &Entity<Transcript>,
+        chat: &str,
+        entries: Vec<SessionMessageEntry>,
+        cx: &mut gpui::App,
+    ) {
+        state.update(cx, |state, _| {
+            state.selected_chat = Some(chat.into());
+            state.transcript_replayed = true;
+            state.transcript = entries;
+            state.transcript_revision += 1;
+        });
+        transcript.update(cx, |this, cx| this.sync(cx));
+    }
+
+    #[gpui::test]
+    fn explicit_fold_choices_survive_real_chat_switch(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            let chat_a = || {
+                vec![
+                    assistant(
+                        "tools-a",
+                        MessageStatus::Complete,
+                        vec![tool_part("call-a", "pwd"), reasoning_part("think-a", "planning")],
+                    ),
+                    assistant(
+                        "live-a",
+                        MessageStatus::Streaming,
+                        vec![tool_part("call-live", "ls")],
+                    ),
+                ]
+            };
+            // Visit A: a settled tools+thought group and a still-streaming
+            // tail group (auto-open).
+            select_chat_with(&state, &transcript, "chat-a", chat_a(), cx);
+            // The user's explicit choices, made with LIVE clocks: the
+            // streaming group closed (against its auto-open) and the settled
+            // thought's detail opened (against its resolved-closed default).
+            transcript.update(cx, |this, _| {
+                this.folds.insert(
+                    "live-a#g0".into(),
+                    FoldState {
+                        open: Some(false),
+                        from: 92.0,
+                        toggled_at: Some(Instant::now()),
+                        disclosure_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+                this.tool_details.insert(
+                    "tools-a#g0#d1".into(),
+                    FoldState {
+                        open: Some(true),
+                        from: 80.0,
+                        toggled_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+            });
+            // A→B: the REAL attach captures A's pins with the clocks
+            // stripped, and B starts clean.
+            select_chat_with(&state, &transcript, "chat-b", chat_a(), cx);
+            transcript.update(cx, |this, _| {
+                let saved = this
+                    .saved_folds
+                    .get_cloned_and_touch("chat-a")
+                    .expect("chat-a's pins were captured");
+                assert_eq!(saved.groups.get("live-a#g0"), Some(&false));
+                assert_eq!(saved.details.get("tools-a#g0#d1"), Some(&true));
+                assert!(this.folds.is_empty());
+                assert!(this.tool_details.is_empty());
+            });
+            // B pins the same row id (a different chat's copy of it) open.
+            transcript.update(cx, |this, _| {
+                this.folds.insert(
+                    "tools-a#g0".into(),
+                    FoldState {
+                        open: Some(true),
+                        ..Default::default()
+                    },
+                );
+            });
+            // B→A: a REAL re-attach restores only A's pins, settled.
+            select_chat_with(&state, &transcript, "chat-a", chat_a(), cx);
+            transcript.update(cx, |this, cx| {
+                let fold = this
+                    .folds
+                    .get("live-a#g0")
+                    .expect("A's group pin restored")
+                    .clone();
+                assert_eq!(fold.open, Some(false));
+                assert!(fold.toggled_at.is_none());
+                assert!(fold.disclosure_at.is_none());
+                let detail = this
+                    .tool_details
+                    .get("tools-a#g0#d1")
+                    .expect("A's detail pin restored")
+                    .clone();
+                assert_eq!(detail.open, Some(true));
+                assert!(detail.toggled_at.is_none());
+                // B's pin on the SAME row id never leaks into A's restore.
+                assert!(this.folds.get("tools-a#g0").is_none());
+                // The remembered closed pin overrides the streaming
+                // auto-open through the one open resolution: the render
+                // resolves closed although the group is the live tail.
+                let row = this
+                    .rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == "live-a#g0")
+                    .cloned()
+                    .expect("the streaming group row");
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                assert!(*auto_open);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert_eq!(this.folds[&row.id].open, Some(false));
+                assert_eq!(this.tool_group_reveals[&row.id].rendered_open, Some(false));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn restored_folds_do_not_replay_arrival_motion(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            // chat-a is attached by the harness with one settled tool group.
+            transcript.update(cx, |this, _| {
+                // The user toggles the group open then closed — a live
+                // closing tween (navigate away during the close animation).
+                this.folds.insert(
+                    "tools#g0".into(),
+                    FoldState {
+                        open: Some(false),
+                        from: 120.0,
+                        toggled_at: Some(Instant::now()),
+                        disclosure_at: Some(Instant::now()),
+                        ..Default::default()
+                    },
+                );
+            });
+            // A→B→A through REAL attaches: the capture strips the tween
+            // clocks; the restore reinstalls the pin settled.
+            replay_tool_group(&state, &transcript, "chat-b", cx);
+            replay_tool_group(&state, &transcript, "chat-a", cx);
+            transcript.update(cx, |this, cx| {
+                let fold = this
+                    .folds
+                    .get("tools#g0")
+                    .expect("the pin returned")
+                    .clone();
+                assert_eq!(fold.open, Some(false));
+                assert!(fold.toggled_at.is_none());
+                assert!(fold.disclosure_at.is_none());
+                // The replay baseline owns the reveal state: no arrival
+                // starts, no header entrance, and the first render records
+                // closed without seeding a tween.
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                let reveal = &this.tool_group_reveals[&row.id];
+                assert_eq!(reveal.rendered_open, Some(false));
+                assert!(reveal.header_started_at.is_none());
+                assert!(reveal.starts.iter().all(Option::is_none));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+            });
+            // A genuinely NEW live arrival after the restore still animates:
+            // the pinned group grows a tool and a brand-new streaming group
+            // lands.
+            state.update(cx, |state, _| {
+                state.transcript = vec![
+                    assistant(
+                        "tools",
+                        MessageStatus::Complete,
+                        vec![tool_part("call", "pwd"), tool_part("call-2", "ls")],
+                    ),
+                    assistant(
+                        "live-tools",
+                        MessageStatus::Streaming,
+                        vec![tool_part("new-call", "cat")],
+                    ),
+                ];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, cx| {
+                let reveal = this
+                    .tool_group_reveals
+                    .get("tools#g0")
+                    .expect("the grown group's reveal");
+                assert!(reveal.starts[0].is_none()); // the replayed chip stays history
+                assert!(reveal.starts[1].is_some()); // the live-grown chip staggered in
+                // The remembered closed pin still governs openness while the
+                // new chip's arrival is pending — the render resolves shut
+                // and seeds no tween.
+                let row = this
+                    .rows
+                    .iter()
+                    .find(|row| row.id.as_ref() == "tools#g0")
+                    .cloned()
+                    .expect("the grown group row");
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                assert!(!*auto_open);
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert_eq!(this.folds[&row.id].open, Some(false));
+                assert!(this.folds[&row.id].toggled_at.is_none());
+                // The fresh streaming group is fully live: header + chips.
+                let fresh = this
+                    .tool_group_reveals
+                    .get("live-tools#g0")
+                    .expect("the fresh group's reveal");
+                assert!(fresh.header_started_at.is_some());
+                assert!(fresh.starts.iter().all(Option::is_some));
+            });
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Ticket 71 — tool-fold scroll ownership + the animated thought close.
+    // The selected policy (recorded 2026-09-20): explicit group/detail clicks
+    // own the viewport (preserve the clicked header, release follow/hold,
+    // retain the reservation, cancel on wheel/touch/navigation); an automatic
+    // thought completion closes over the EXISTING 140ms EASE_OUT fold tween
+    // with the same ownership anchoring the viewport; automatic outer-group
+    // closure never moves a manually escaped viewport; the own-send
+    // reservation's lifecycle is unchanged.
+    // -----------------------------------------------------------------------
+
+    /// A live streaming thought entry (its reasoning part is the unresolved
+    /// tail) and its settled completion.
+    fn thought_entries(id: &str, text: &str) -> (SessionMessageEntry, SessionMessageEntry) {
+        (
+            assistant(id, MessageStatus::Streaming, vec![reasoning_part("r0", text)]),
+            assistant(id, MessageStatus::Complete, vec![reasoning_part("r0", text)]),
+        )
+    }
+
+    #[gpui::test]
+    fn tool_fold_preserves_clicked_header_and_reservation(cx: &mut gpui::TestAppContext) {
+        // ── The anchor math (pure): the clicked header stays at its captured
+        // screen position across the fold tween's drift. ───────────────────
+        let state = ToolFoldScroll {
+            row_ix: 3,
+            anchor_offset: 64.0,
+            initial_anchor_y: 400.0,
+            started_at: Instant::now(),
+        };
+        // No drift → no write.
+        assert_eq!(tool_fold_scroll_correction(&state, Some(336.0)), Some(0.0));
+        // The list clamped the shrink (content drifted down 90px): the
+        // write restores the anchor exactly.
+        assert_eq!(tool_fold_scroll_correction(&state, Some(426.0)), Some(90.0));
+        // The list has not laid the row out yet: ownership already
+        // transferred, there is just nothing to correct.
+        assert_eq!(tool_fold_scroll_correction(&state, None), None);
+        assert!(!tool_fold_scroll_finished(&state, Instant::now()));
+        assert!(tool_fold_scroll_finished(
+            &state,
+            state.started_at + TOOL_FOLD.total() + Duration::from_millis(1)
+        ));
+
+        // ── The runway state matrix: the click releases the hold and the pin
+        // while RETAINING any live reservation. ────────────────────────────
+        with_tool_group_navigation(cx, |_state, transcript, cx| {
+            for own_turn in [
+                Some(OwnTurnAnchor {
+                    chat_id: "chat-a".into(),
+                    message_id: "prompt".into(),
+                    held: true,
+                    positioned: true,
+                    seen_prompt: true,
+                }),
+                Some(OwnTurnAnchor {
+                    chat_id: "chat-a".into(),
+                    message_id: "prompt".into(),
+                    held: false,
+                    positioned: true,
+                    seen_prompt: true,
+                }),
+                None,
+            ] {
+                transcript.update(cx, |this, _| {
+                    this.own_turn = own_turn.clone();
+                    this.pinned = true;
+                    this.spring_kick = true;
+                    this.own_turn_last_tick = Some(Instant::now());
+                    this.folds.remove("tools#g0");
+                });
+                transcript.update(cx, |this, cx| {
+                    this.toggle_fold("tools#g0".into(), 0, 0.0, 120.0, false);
+                    cx.notify();
+                });
+                transcript.update(cx, |this, _| {
+                    let fold = this.folds.get("tools#g0").cloned().unwrap();
+                    assert_eq!(fold.open, Some(true), "the fold state flipped");
+                    assert!(fold.toggled_at.is_some());
+                    if own_turn.is_some() {
+                        assert!(
+                            !this.own_turn.as_ref().unwrap().held,
+                            "the click released the hold"
+                        );
+                    }
+                    assert_eq!(
+                        this.own_turn.is_some(),
+                        own_turn.is_some(),
+                        "the reservation survives any release of its hold"
+                    );
+                    assert!(!this.pinned, "the click dropped the pin");
+                    assert!(!this.spring_kick);
+                    assert!(this.own_turn_last_tick.is_none());
+                    // No window → no bounds: ownership transferred, the
+                    // compensation just could not arm (the toggle_user_fold
+                    // contract).
+                    assert!(this.tool_fold_scroll.is_none());
+                });
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn thought_completion_obeys_explicit_pin_and_scroll_policy(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            let (live, complete) = thought_entries("think", "thinking hard");
+
+            // ── The animated close: a LIVE unresolved→resolved flip with no
+            // pin seeds the detail fold's tween from the rendered card
+            // height — no snap. ────────────────────────────────────────────
+            select_chat_with(&state, &transcript, "chat-a", vec![live.clone()], cx);
+            transcript.update(cx, |this, cx| {
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                assert!(*auto_open);
+                assert!(!tools[0].resolved, "the live tail thought is open");
+                // The render records the open card height (the tween's
+                // `from`); a second render confirms it is stable.
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(this.detail_card_heights.contains_key("think#g0#d0"));
+                assert_eq!(
+                    this.thought_seen_resolved.get("think#g0#d0"),
+                    Some(&false)
+                );
+            });
+
+            // The completion: the entry settles — the thought chip resolves.
+            state.update(cx, |state, _| {
+                state.transcript = vec![complete.clone()];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, _| {
+                let fold = this
+                    .tool_details
+                    .get("think#g0#d0")
+                    .cloned()
+                    .expect("the completion seeded the detail fold");
+                assert!(fold.open.is_none(), "no pin was invented");
+                assert!(
+                    fold.toggled_at.is_some(),
+                    "the close is animated, not a snap"
+                );
+                assert!(fold.epoch > 0, "the chip body stays mounted through the shrink");
+                assert!(
+                    fold.from > 0.0,
+                    "the tween starts from the rendered open height"
+                );
+                assert!(fold.disclosure_at.is_none());
+            });
+
+            // ── Explicit pins win in every case. ───────────────────────────
+            for pinned_open in [true, false] {
+                let (live_b, complete_b) = thought_entries("think-pins", "pinned thoughts");
+                select_chat_with(&state, &transcript, "chat-a", vec![live_b.clone()], cx);
+                transcript.update(cx, |this, cx| {
+                    let row = this.rows[0].clone();
+                    let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                        panic!("expected tools")
+                    };
+                    let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                    // The default is open (unresolved); one click pins it
+                    // closed, a second pins it back open — either way the
+                    // pin exists.
+                    this.toggle_detail_fold("think-pins#g0#d0".into(), 0, 0.0, 400.0, true);
+                    if pinned_open {
+                        this.toggle_detail_fold("think-pins#g0#d0".into(), 0, 0.0, 400.0, false);
+                    }
+                    assert_eq!(
+                        this.tool_details[&SharedString::from("think-pins#g0#d0")].open,
+                        Some(pinned_open)
+                    );
+                });
+                state.update(cx, |state, _| {
+                    state.transcript = vec![complete_b];
+                    state.transcript_revision += 1;
+                });
+                transcript.update(cx, |this, cx| this.sync(cx));
+                transcript.update(cx, |this, _| {
+                    let fold = this.tool_details[&SharedString::from("think-pins#g0#d0")];
+                    assert_eq!(
+                        fold.open,
+                        Some(pinned_open),
+                        "the completion never overrides a pin"
+                    );
+                    assert!(
+                        fold.toggled_at.is_some(),
+                        "the pin keeps its own click clock"
+                    );
+                });
+            }
+
+            // ── Replay never impersonates a completion: the attach resets
+            // the tracker with the detail folds themselves, so the incoming
+            // chat's resolved thoughts only re-record. ─────────────────────
+            let (live_c, complete_c) = thought_entries("think-c", "replayed thoughts");
+            select_chat_with(&state, &transcript, "chat-a", vec![live_c.clone()], cx);
+            transcript.update(cx, |this, cx| {
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(this.detail_card_heights.contains_key("think-c#g0#d0"));
+            });
+            // A→B with the SAME thought already completed: the attach clears
+            // the trackers, the replay's resolved frame records only.
+            select_chat_with(&state, &transcript, "chat-b", vec![complete_c.clone()], cx);
+            transcript.update(cx, |this, _| {
+                assert!(!this.tool_details.contains_key("think-c#g0#d0"));
+                assert!(
+                    !this.detail_card_heights.contains_key("think-c#g0#d0"),
+                    "the attach reset the card heights with the folds"
+                );
+            });
+
+            // ── The ownership gate (§2.3): an automatic transition arms only
+            // while no other owner is live. ────────────────────────────────
+            assert!(automatic_tool_fold_compensation_arms(false, false, false));
+            assert!(!automatic_tool_fold_compensation_arms(true, false, false));
+            assert!(!automatic_tool_fold_compensation_arms(false, true, false));
+            assert!(!automatic_tool_fold_compensation_arms(false, false, true));
+
+            // ── Reduced motion is deterministic: the seeded auto-close's
+            // geometry snaps. A genuine group auto-close (the live streaming
+            // group completing) seeds its tween clock, and under reduce
+            // motion the very first flip frame reads the ENDPOINT — no
+            // tween is honored, no drift correction is interpolated.
+            // ──────────────────────────────────────────────────────────────
+            let (live_d, complete_d) = thought_entries("think-d", "reduced thoughts");
+            select_chat_with(&state, &transcript, "chat-b", vec![live_d], cx);
+            transcript.update(cx, |this, cx| {
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert_eq!(this.tool_group_reveals[&row.id].rendered_open, Some(true));
+                assert!(
+                    this.tool_group_reveals[&row.id].rendered_height > 0.0,
+                    "the live group rendered open"
+                );
+            });
+            state.update(cx, |state, _| {
+                state.transcript = vec![complete_d];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, cx| {
+                cx.set_reduce_motion(true);
+                let row = this.rows[0].clone();
+                // Age the fresh group's reveal starts past their window so
+                // the completion render resolves on the fold, not the
+                // arrival-pending default (the flip is the point here).
+                if let Some(reveal) = this.tool_group_reveals.get_mut(&row.id) {
+                    let aged =
+                        Instant::now() - TOOL_CONNECTOR_REVEAL.total() - Duration::from_millis(10);
+                    for start in reveal.starts.iter_mut() {
+                        *start = Some(aged);
+                    }
+                }
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert_eq!(
+                    this.tool_group_reveals[&row.id].rendered_open,
+                    Some(false),
+                    "the completed group renders closed"
+                );
+                assert_eq!(
+                    this.tool_group_reveals[&row.id].rendered_height, 0.0,
+                    "reduced motion honors no tween clock — the endpoint lands immediately"
+                );
+                cx.set_reduce_motion(false);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn user_scroll_cancels_tool_fold_compensation(cx: &mut gpui::TestAppContext) {
+        with_tool_group_navigation(cx, |_state, transcript, cx| {
+            // Wheel/touch mid-fold: the list's user-scroll path cancels the
+            // compensation synchronously, before a queued frame can undo
+            // the input.
+            transcript.update(cx, |this, _| {
+                this.tool_fold_scroll = Some(ToolFoldScroll {
+                    row_ix: 0,
+                    anchor_offset: 64.0,
+                    initial_anchor_y: 400.0,
+                    started_at: Instant::now(),
+                });
+                this.tool_fold_scroll_scheduled = true;
+                this.pinned = false;
+            });
+            transcript.update(cx, |this, cx| {
+                this.handle_scroll(
+                    &ListScrollEvent {
+                        visible_range: 0..0,
+                        count: 0,
+                        is_scrolled: true,
+                        is_following_tail: false,
+                    },
+                    cx,
+                );
+            });
+            transcript.update(cx, |this, cx| {
+                assert!(this.tool_fold_scroll.is_none(), "wheel/touch cancels");
+                assert!(
+                    !this.pinned,
+                    "cancellation does not re-engage the pin"
+                );
+                assert!(
+                    this.tool_fold_scroll_scheduled,
+                    "the queued-frame guard is kept"
+                );
+                // A frame queued before the input neither moves the viewport
+                // nor resurrects the compensation (the same contract the
+                // user-fold suite pins).
+                this.tool_fold_scroll_scheduled = false;
+                this.step_tool_fold_scroll(cx);
+                assert!(this.tool_fold_scroll.is_none());
+            });
+
+            // Explicit navigation (a user-fold toggle, the rail glide, the
+            // jump button, a new send) owns the viewport the same way: each
+            // cancels the compensation before moving the list.
+            for navigation in ["rail", "bottom", "send"] {
+                transcript.update(cx, |this, _| {
+                    this.tool_fold_scroll = Some(ToolFoldScroll {
+                        row_ix: 0,
+                        anchor_offset: 64.0,
+                        initial_anchor_y: 400.0,
+                        started_at: Instant::now(),
+                    });
+                });
+                transcript.update(cx, |this, cx| match navigation {
+                    "rail" => this.begin_scroll_navigation(),
+                    "bottom" => this.jump_to_bottom(cx),
+                    "send" => this.on_own_send("chat-a".into(), "prompt".into(), cx),
+                    _ => unreachable!(),
+                });
+                transcript.update(cx, |this, _| {
+                    assert!(this.tool_fold_scroll.is_none(), "{navigation}");
+                });
+            }
+
+            // A re-engaged pin or held runway owns the viewport mid-tween:
+            // the step YIELDS instead of fighting the live tail-follow.
+            transcript.update(cx, |this, _| {
+                this.tool_fold_scroll = Some(ToolFoldScroll {
+                    row_ix: 0,
+                    anchor_offset: 64.0,
+                    initial_anchor_y: 400.0,
+                    started_at: Instant::now(),
+                });
+                this.pinned = true;
+            });
+            transcript.update(cx, |this, cx| this.step_tool_fold_scroll(cx));
+            transcript.update(cx, |this, _| {
+                assert!(
+                    this.tool_fold_scroll.is_none(),
+                    "the compensator yields to a live pin"
+                );
             });
         });
     }
@@ -8577,6 +9642,35 @@ mod tests {
     }
 
     #[test]
+    fn fold_pin_cache_is_bounded_and_recency_protected() {
+        let pins = || SavedFoldPins {
+            groups: [("g".into(), false)].into_iter().collect(),
+            details: HashMap::new(),
+        };
+        let mut cache = SavedFoldCache::default();
+        for ix in 0..MAX_SAVED_FOLD_CHATS + 8 {
+            cache.insert(format!("chat-{ix}"), pins());
+        }
+        assert_eq!(cache.len(), MAX_SAVED_FOLD_CHATS);
+        assert!(cache.get_cloned_and_touch("chat-0").is_none());
+        assert!(
+            cache
+                .get_cloned_and_touch(&format!("chat-{}", MAX_SAVED_FOLD_CHATS + 7))
+                .is_some()
+        );
+        // A touch protects the oldest entry from the next eviction.
+        let mut cache = SavedFoldCache::default();
+        for ix in 0..MAX_SAVED_FOLD_CHATS {
+            cache.insert(format!("chat-{ix}"), pins());
+        }
+        assert!(cache.get_cloned_and_touch("chat-0").is_some());
+        cache.insert("outgoing-new".into(), pins());
+        assert!(cache.by_chat.contains_key("chat-0"));
+        assert!(!cache.by_chat.contains_key("chat-1"));
+        assert!(cache.by_chat.contains_key("outgoing-new"));
+    }
+
+    #[test]
     fn viewport_finalization_waits_for_current_generation_and_stable_layout() {
         let token = ViewportFinalizeToken {
             generation: 7,
@@ -8674,8 +9768,8 @@ mod tests {
         assert!(rows_for_entry(&entry, false, &mut parse).is_empty());
     }
 
-    #[test]
-    fn live_thought_streams_open_and_settles_closed() {
+    #[gpui::test]
+    fn live_thought_streams_open_and_settles_closed(cx: &mut gpui::TestAppContext) {
         let entry = assistant(
             "a1",
             MessageStatus::Streaming,
@@ -8703,6 +9797,117 @@ mod tests {
             panic!("expected a tool group");
         };
         assert!(tools[0].resolved, "a followed thought is settled");
+
+        // Ticket 71 (decision B): the settled close is now ANIMATED and
+        // compensated, not a snap. Mid-flight the completion owns the
+        // viewport's anchor; the end state stays closed.
+        with_tool_group_navigation(cx, |state, transcript, cx| {
+            let (live, complete) = thought_entries("live-thought", "thinking hard");
+            select_chat_with(&state, &transcript, "chat-a", vec![live], cx);
+            transcript.update(cx, |this, cx| {
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                // Mid-flight: the live thought renders open and the renderer
+                // reports the card height the tween will close from.
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(this.detail_card_heights.contains_key("live-thought#g0#d0"));
+            });
+            state.update(cx, |state, _| {
+                state.transcript = vec![complete];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, cx| {
+                let fold = this
+                    .tool_details
+                    .get("live-thought#g0#d0")
+                    .cloned()
+                    .expect("the completion seeded the animated close");
+                // Mid-flight: the tween clock is armed — the detail body
+                // stays mounted while the fold shrinks over TOOL_FOLD, and
+                // the reading anchor owns the viewport (the ownership gate
+                // admits it only while no pin/hold/other compensator is
+                // live; the headless list has no bounds, so ownership
+                // transfers without a correction — the toggle_user_fold
+                // contract).
+                assert!(fold.toggled_at.is_some());
+                assert!(fold.epoch > 0);
+                assert!(
+                    fold.toggled_at.unwrap().elapsed() < TOOL_FOLD.total() + FOLD_TWEEN_WINDOW
+                );
+                assert!(fold.from > 0.0);
+                assert!(fold.open.is_none(), "no pin was invented");
+                assert!(automatic_tool_fold_compensation_arms(false, false, false));
+                // The end state stays CLOSED: the render resolves the chip
+                // shut (the default is resolved-closed) with no pin.
+                let row = this.rows[0].clone();
+                let RowKind::ToolGroup { tools, auto_open } = &row.kind else {
+                    panic!("expected tools")
+                };
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(
+                    this.tool_details
+                        .get("live-thought#g0#d0")
+                        .and_then(|fold| fold.open)
+                        .is_none(),
+                    "the completion invented no pin"
+                );
+                // Ticket 71 C crash fix (2026-09-20): drive the render-side
+                // auto-close for real — age the group's reveal past its
+                // connector window so the settled group's open resolves
+                // closed at the next render (the second render above kept
+                // it open through arrival-pending). The detection may only
+                // REQUEST the arm: the flag is the only state it touches
+                // inside the prepaint's `borrow_mut` (the in-render arm read
+                // `ListState` there and panicked in live use). `render`'s
+                // drain performs the arm outside the list element; the
+                // headless list has no bounds, so the drained arm transfers
+                // ownership without a correction, exactly like the
+                // sync-side arm above.
+                if let Some(reveal) = this.tool_group_reveals.get_mut(&row.id) {
+                    for start in reveal.starts.iter_mut() {
+                        *start = Some(
+                            Instant::now()
+                                - TOOL_CONNECTOR_REVEAL.total()
+                                - Duration::from_millis(1),
+                        );
+                    }
+                }
+                let _ = this.render_tool_group(&row.id, tools, *auto_open, 0, 0.0, &Theme::dark(), cx);
+                assert!(
+                    this.pending_auto_fold_arm,
+                    "the render-side auto-close requested the deferred arm"
+                );
+                assert!(
+                    this.tool_fold_scroll.is_none(),
+                    "no ListState read armed during the render"
+                );
+                this.drain_pending_auto_fold_arm();
+                assert!(
+                    !this.pending_auto_fold_arm,
+                    "the drain consumes the request exactly once"
+                );
+                // A second drain is a no-op, and the one-owner gate still
+                // refuses while another compensator owns the viewport.
+                this.pending_auto_fold_arm = true;
+                this.tool_fold_scroll = Some(ToolFoldScroll {
+                    row_ix: 0,
+                    anchor_offset: 64.0,
+                    initial_anchor_y: 400.0,
+                    started_at: Instant::now(),
+                });
+                this.drain_pending_auto_fold_arm();
+                assert!(!this.pending_auto_fold_arm);
+                assert!(
+                    this.tool_fold_scroll
+                        .as_ref()
+                        .is_some_and(|state| state.row_ix == 0),
+                    "the gate leaves the live compensator untouched"
+                );
+            });
+        });
     }
 
     fn thought_of(text: &str) -> Vec<Vec<InlineRun>> {
