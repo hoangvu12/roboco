@@ -250,6 +250,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_doc::QueuedMessage,
         roboco_doc::QueueDeliveryGate,
         roboco_doc::TranscriptUpdate,
+        roboco_doc::TranscriptBaseline,
         roboco_doc::TranscriptFrame,
         roboco_doc::TranscriptUpsert,
         roboco_doc::TextAppend,
