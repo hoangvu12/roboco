@@ -2783,16 +2783,33 @@ impl Shell {
                 Duration::from_secs(20),
             )
             .await;
-            let mut entries: Option<Vec<roboco_doc::SessionMessageEntry>> = reply.ok().and_then(|v| {
-                let text = v.get("text")?.as_str()?.to_owned();
-                serde_json::from_str(&text).ok()
-            });
-            if let Some(entries) = entries.as_mut() {
-                crate::engine_registry::scope_transcript_entries(engine.key(), entries);
-            }
+            let engine_key = engine.key().clone();
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move {
+                    let value = reply.ok()?;
+                    let mut entries: Vec<roboco_doc::SessionMessageEntry> =
+                        serde_json::from_str(value.get("text")?.as_str()?).ok()?;
+                    crate::engine_registry::scope_transcript_entries(&engine_key, &mut entries);
+                    let update = roboco_doc::TranscriptUpdate {
+                        replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
+                        frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
+                        context_usage: None,
+                    };
+                    let prepared = crate::transcript::TranscriptPreparation::default()
+                        .prepare(&update)
+                        .ok()?;
+                    let roboco_doc::TranscriptFrame::Reset { reset } = update.frame else {
+                        unreachable!()
+                    };
+                    Some((reset, prepared))
+                })
+                .await;
             state.update(cx, |s, cx| {
-                match entries {
-                    Some(entries) => s.set_subagent_snapshot(doc_id, entries),
+                match snapshot {
+                    Some((entries, prepared)) => {
+                        s.set_prepared_subagent_snapshot(doc_id, entries, prepared);
+                    }
                     None => s.watch_subagent_doc(doc_id, cx),
                 }
                 cx.notify();

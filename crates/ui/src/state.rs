@@ -49,10 +49,42 @@ const TRANSCRIPT_CACHE_CAP: usize = 12;
 const TRANSCRIPT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 struct CachedTranscript {
+    prepared: Option<Arc<crate::transcript::PreparedTranscript>>,
     chat_id: String,
     entries: Vec<SessionMessageEntry>,
     context_usage: Option<roboco_proto::ContextUsage>,
     bytes: usize,
+}
+
+// A cancelled GPUI watch may own a whale's mirror between updates. Its
+// destructor must not free that entire object graph on the UI thread either.
+struct WatchPreparation {
+    worker: Option<crate::transcript::TranscriptPreparation>,
+    executor: gpui::BackgroundExecutor,
+}
+impl WatchPreparation {
+    fn new(executor: gpui::BackgroundExecutor) -> Self {
+        Self {
+            worker: Some(Default::default()),
+            executor,
+        }
+    }
+    fn prepare(
+        &mut self,
+        update: &roboco_doc::TranscriptUpdate,
+    ) -> Result<Arc<crate::transcript::PreparedTranscript>, TranscriptDesync> {
+        self.worker.as_mut().unwrap().prepare(update)
+    }
+}
+impl Drop for WatchPreparation {
+    fn drop(&mut self) {
+        let worker = self.worker.take();
+        self.executor
+            .spawn(async move {
+                drop(worker);
+            })
+            .detach();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +608,7 @@ pub struct AppState {
     pub transcript_replayed: bool,
     transcript_baselines: HashMap<String, Arc<roboco_doc::TranscriptBaseline>>,
     transcript_cache: std::collections::VecDeque<CachedTranscript>,
+    pub(crate) prepared_transcripts: HashMap<String, Arc<crate::transcript::PreparedTranscript>>,
     /// Changes only when transcript/optimistic content changes. Presence,
     /// catalogs and other app-state notifications need no row derivation.
     pub(crate) transcript_revision: u64,
@@ -670,6 +703,7 @@ impl AppState {
             transcript_replayed: false,
             transcript_baselines: HashMap::new(),
             transcript_cache: Default::default(),
+            prepared_transcripts: HashMap::new(),
             transcript_revision: 0,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
@@ -810,6 +844,7 @@ impl AppState {
         {
             // Selected chat vanished (deleted elsewhere): drop selection + transcript.
             self.transcript_baselines.remove(selected);
+            self.prepared_transcripts.remove(selected);
             self.selected_chat = None;
             self.transcript.clear();
             self.context_usage = None;
@@ -1029,6 +1064,9 @@ impl AppState {
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
+        if let Some(id) = &self.selected_chat {
+            self.prepared_transcripts.remove(id);
+        }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         // Doc frames supersede optimistic echoes carrying the same id.
         if let Some(chat_id) = self.selected_chat.as_deref()
@@ -1047,6 +1085,9 @@ impl AppState {
         &mut self,
         frame: TranscriptFrame,
     ) -> Result<(), TranscriptDesync> {
+        if let Some(id) = &self.selected_chat {
+            self.prepared_transcripts.remove(id);
+        }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
         roboco_doc::apply_transcript_frame(&mut self.transcript, frame)?;
@@ -1122,6 +1163,20 @@ impl AppState {
         if history_pending && self.transcript_replayed {
             return Ok(());
         }
+        let old_prepared = self
+            .selected_chat
+            .as_ref()
+            .and_then(|id| self.prepared_transcripts.remove(id));
+        let old_entries = if matches!(&update.frame, TranscriptFrame::Reset { .. }) {
+            std::mem::take(&mut self.transcript)
+        } else {
+            Vec::new()
+        };
+        cx.background_executor()
+            .spawn(async move {
+                drop((old_prepared, old_entries));
+            })
+            .detach();
         self.receive_transcript_update(update, cx)?;
         if history_pending {
             self.transcript_replayed = false;
@@ -1159,18 +1214,34 @@ impl AppState {
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.sub_watch_tasks.remove(doc_id);
         self.sub_transcripts.remove(doc_id);
+        self.prepared_transcripts.remove(doc_id);
         self.transcript_baselines.remove(doc_id);
     }
 
     /// Frozen-blob path: the finished subagent's uploaded transcript, no
     /// watch needed (and any in-flight watch is superseded).
     pub fn set_subagent_snapshot(&mut self, doc_id: String, entries: Vec<SessionMessageEntry>) {
+        self.prepared_transcripts.remove(&doc_id);
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.sub_watch_tasks.remove(&doc_id);
         self.transcript_baselines.insert(
             doc_id.clone(),
             Arc::new(roboco_doc::TranscriptBaseline::capture(&entries)),
         );
+        self.sub_transcripts.insert(doc_id, entries);
+    }
+
+    pub(crate) fn set_prepared_subagent_snapshot(
+        &mut self,
+        doc_id: String,
+        entries: Vec<SessionMessageEntry>,
+        prepared: Arc<crate::transcript::PreparedTranscript>,
+    ) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.sub_watch_tasks.remove(&doc_id);
+        self.transcript_baselines
+            .insert(doc_id.clone(), prepared.navigation_baseline.clone());
+        self.prepared_transcripts.insert(doc_id.clone(), prepared);
         self.sub_transcripts.insert(doc_id, entries);
     }
 
@@ -1617,6 +1688,7 @@ impl AppState {
         self.transcript.clear();
         self.transcript_baselines.clear();
         self.transcript_cache.clear();
+        self.prepared_transcripts.clear();
         self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
@@ -1822,24 +1894,37 @@ impl AppState {
             .position(|cached| Some(&cached.chat_id) == chat_id.as_ref())
             .and_then(|index| self.transcript_cache.remove(index));
         if let Some(previous) = &self.selected_chat {
-            self.transcript_baselines.remove(previous);
+            let old_baseline = self.transcript_baselines.remove(previous);
+            cx.background_executor()
+                .spawn(async move {
+                    drop(old_baseline);
+                })
+                .detach();
+            let prepared = self.prepared_transcripts.remove(previous);
             if self.transcript_replayed {
                 let entries = std::mem::take(&mut self.transcript);
-                let bytes = entries
-                    .iter()
-                    .map(|entry| {
-                        std::mem::size_of::<SessionMessageEntry>()
-                            + entry.id.len()
-                            + entry
-                                .parts
-                                .iter()
-                                .map(|part| {
-                                    std::mem::size_of::<roboco_doc::MessagePart>() + part.byte_len()
-                                })
-                                .sum::<usize>()
-                    })
-                    .sum();
+                let bytes = prepared.as_ref().map_or_else(
+                    || {
+                        entries
+                            .iter()
+                            .map(|entry| {
+                                std::mem::size_of::<SessionMessageEntry>()
+                                    + entry.id.len()
+                                    + entry
+                                        .parts
+                                        .iter()
+                                        .map(|part| {
+                                            std::mem::size_of::<roboco_doc::MessagePart>()
+                                                + part.byte_len()
+                                        })
+                                        .sum::<usize>()
+                            })
+                            .sum()
+                    },
+                    |p| p.bytes,
+                );
                 self.transcript_cache.push_back(CachedTranscript {
+                    prepared,
                     chat_id: previous.clone(),
                     entries,
                     context_usage: self.context_usage,
@@ -1853,7 +1938,12 @@ impl AppState {
                         .sum::<usize>()
                         > TRANSCRIPT_CACHE_BYTES
                 {
-                    self.transcript_cache.pop_front();
+                    let evicted = self.transcript_cache.pop_front();
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop(evicted);
+                        })
+                        .detach();
                 }
             }
         }
@@ -1865,9 +1955,18 @@ impl AppState {
         self.transcript_replayed = false;
         if let Some(cached) = cached {
             self.transcript_baselines.insert(
-                cached.chat_id,
-                Arc::new(roboco_doc::TranscriptBaseline::capture(&cached.entries)),
+                cached.chat_id.clone(),
+                cached
+                    .prepared
+                    .as_ref()
+                    .map(|p| p.navigation_baseline.clone())
+                    .unwrap_or_else(|| {
+                        Arc::new(roboco_doc::TranscriptBaseline::capture(&cached.entries))
+                    }),
             );
+            if let Some(prepared) = cached.prepared {
+                self.prepared_transcripts.insert(cached.chat_id, prepared);
+            }
             self.transcript = cached.entries;
             self.context_usage = cached.context_usage;
             self.transcript_replayed = true;
@@ -2341,16 +2440,27 @@ fn spawn_transcript_watch(
                     continue 'resubscribe;
                 }
             };
+            let mut preparation = WatchPreparation::new(cx.background_executor().clone());
             while let Some(value) = rx.recv().await {
                 let history_pending = value
                     .get("historyPending")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let frame_engine_key = handle.key().clone();
                 let decoded = cx
                     .background_executor()
-                    .spawn(async move { serde_json::from_value(value) })
+                    .spawn(async move {
+                        let mut update: roboco_doc::TranscriptUpdate =
+                            serde_json::from_value(value).map_err(|e| e.to_string())?;
+                        crate::engine_registry::scope_transcript_frame(
+                            &frame_engine_key,
+                            &mut update,
+                        );
+                        let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
+                        Ok::<_, String>((update, prepared, preparation))
+                    })
                     .await;
-                let mut update: roboco_doc::TranscriptUpdate = match decoded {
+                let (update, prepared, next_preparation) = match decoded {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -2362,16 +2472,21 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
-                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
+                preparation = next_preparation;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        if history_pending && state.transcript_replayed {
+                            return None;
+                        }
                         if let Err(err) =
                             state.receive_opening_transcript_update(update, history_pending, cx)
                         {
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
+                        } else {
+                            state.prepared_transcripts.insert(chat_id.clone(), prepared);
                         }
                         let complete = state.transcript.last().is_none_or(|entry| {
                             entry.status != Some(roboco_doc::MessageStatus::Streaming)
@@ -2518,8 +2633,23 @@ fn spawn_subagent_watch(
                     continue 'resubscribe;
                 }
             };
+            let mut preparation = WatchPreparation::new(cx.background_executor().clone());
             while let Some(value) = rx.recv().await {
-                let mut update: roboco_doc::TranscriptUpdate = match serde_json::from_value(value) {
+                let frame_engine_key = handle.key().clone();
+                let decoded = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let mut update: roboco_doc::TranscriptUpdate =
+                            serde_json::from_value(value).map_err(|e| e.to_string())?;
+                        crate::engine_registry::scope_transcript_frame(
+                            &frame_engine_key,
+                            &mut update,
+                        );
+                        let prepared = preparation.prepare(&update).map_err(|e| e.to_string())?;
+                        Ok::<_, String>((update, prepared, preparation))
+                    })
+                    .await;
+                let (update, prepared, next_preparation) = match decoded {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(error = %err, "malformed subagent frame; resubscribing");
@@ -2527,7 +2657,7 @@ fn spawn_subagent_watch(
                         continue 'resubscribe;
                     }
                 };
-                crate::engine_registry::scope_transcript_frame(handle.key(), &mut update);
+                preparation = next_preparation;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // A stale pump racing a snapshot/unwatch finds no key.
@@ -2538,6 +2668,9 @@ fn spawn_subagent_watch(
                         if let Err(err) = roboco_doc::apply_transcript_frame(rows, frame) {
                             tracing::warn!(%doc_id, error = %err, "resubscribing subagent watch");
                             desync = true;
+                        }
+                        if !desync {
+                            state.prepared_transcripts.insert(doc_id.clone(), prepared);
                         }
                         if !desync && let Some(baseline) = update.replay_baseline {
                             state
