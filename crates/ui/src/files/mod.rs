@@ -140,6 +140,7 @@ pub(crate) fn workspace_path_drag_ghost(
 pub enum FilesEvent {
     OpenFile(String),
     OpenWebLink(crate::markdown::render::LinkActivation),
+    RevealFile(String),
     TitleChanged,
     FileRenamed { old_path: String, new_path: String },
     WordWrapChanged(bool),
@@ -157,7 +158,6 @@ pub enum FilesCloseDisposition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FilesPresentation {
-    Browser,
     Explorer,
     Editor,
 }
@@ -208,97 +208,16 @@ pub struct FilesSurface {
 impl Render for FilesSurface {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = crate::theme::Theme::of(cx).clone();
-        let split_editor = self.presentation.is_editor() && self.preview.has_active();
-        let tree_pane = self.render_explorer(&theme, !split_editor, cx);
         let is_editor = self.presentation.is_editor();
-        let mut header = None;
-        let mut preview_split_right = None;
-        let body = if split_editor {
-            let wide = self.preview.is_wide();
-            let tree_width = if wide {
-                self.preview.tree_width_frame(window, cx)
-            } else {
-                self.preview.narrow_tree_width()
-            };
-            let openness = self.preview.tree_sidebar_frame(window, cx);
-            if wide && self.preview.tree_sidebar_visible() {
-                preview_split_right =
-                    Some(tree_width * openness - preview::TREE_SPLIT_HITBOX_HALF_WIDTH);
-            }
-            // Same arrangement as the outer right-sidebar toggle: the trigger
-            // is outside the animated controls, in a permanently mounted slot.
-            let toggle_width =
-                crate::surface_chrome::CONTROL_SIZE + crate::surface_chrome::EDGE_INSET;
-            let tree_header = self
-                .render_header(&theme, cx)
-                .pr(px(crate::surface_chrome::CONTROL_GAP))
-                .border_l_1()
-                .border_color(theme.border);
-            header = Some(
-                div()
-                    .w_full()
-                    .h(px(crate::surface_chrome::HEADER_HEIGHT))
-                    .flex_none()
-                    .flex()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .children(self.render_editor_header(&theme, cx)),
-                    )
-                    .child(
-                        div()
-                            .w(px((tree_width * openness - toggle_width).max(0.0)))
-                            .h_full()
-                            .flex_none()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .w(px(tree_width - toggle_width))
-                                    .h_full()
-                                    .child(tree_header),
-                            ),
-                    )
-                    .child(self.render_tree_toggle(&theme, cx)),
-            );
-
-            div()
-                .size_full()
-                .min_w_0()
-                .flex()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(self.render_preview(window, cx)),
-                )
-                .child(
-                    div()
-                        .w(px(tree_width * openness))
-                        .h_full()
-                        .flex_none()
-                        .relative()
-                        .child(
-                            div().size_full().overflow_hidden().child(
-                                div()
-                                    .w(px(tree_width))
-                                    .h_full()
-                                    .relative()
-                                    .border_l_1()
-                                    .border_color(theme.border)
-                                    .child(tree_pane),
-                            ),
-                        ),
-                )
-                .into_any_element()
+        let header = is_editor
+            .then(|| self.render_editor_header(&theme, cx))
+            .flatten();
+        let body = if is_editor {
+            self.render_preview(window, cx)
         } else {
-            tree_pane.into_any_element()
+            self.render_explorer(&theme, cx).into_any_element()
         };
-        let measured_width = self.preview.width_cell();
-        let entity = cx.entity();
         let editor_context_menu = self.render_editor_context_menu(&theme, cx);
-        let preview_split_handle =
-            preview_split_right.map(|right| self.preview_split_handle(right, cx));
         div()
             .id(SharedString::from(format!(
                 "files-surface-{}",
@@ -310,28 +229,9 @@ impl Render for FilesSurface {
             .relative()
             .flex()
             .bg(crate::theme::ink(0.0))
-            .when(is_editor, |element| {
-                element
-                    .on_drag_move(cx.listener(Self::on_preview_split_drag))
-                    .child(
-                        gpui::canvas(
-                            move |bounds, _, cx| {
-                                let width = f32::from(bounds.size.width);
-                                if (measured_width.get() - width).abs() > 1.0 {
-                                    measured_width.set(width);
-                                    entity.update(cx, |_, cx| cx.notify());
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-            })
             .flex_col()
             .children(header)
             .child(div().flex_1().min_h_0().w_full().child(body))
-            .children(preview_split_handle)
             .children(editor_context_menu)
     }
 }
@@ -340,7 +240,6 @@ impl FilesSurface {
     fn render_explorer(
         &mut self,
         theme: &crate::theme::Theme,
-        show_header: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let phase = self.tree.node("").map(|root| root.load.clone());
@@ -397,9 +296,7 @@ impl FilesSurface {
             .min_w_0()
             .flex()
             .flex_col()
-            .when(show_header, |pane| {
-                pane.child(self.render_header(theme, cx))
-            })
+            .child(self.render_header(theme, cx))
             .when_some(watch_error, |element, error| {
                 element.child(
                     div()
@@ -466,6 +363,7 @@ impl FilesSurface {
         )
     }
 
+    #[cfg(test)]
     pub fn new(
         state: Entity<AppState>,
         chat_id: String,
@@ -479,7 +377,7 @@ impl FilesSurface {
         Self::new_with_presentation(
             state,
             chat_id,
-            FilesPresentation::Browser,
+            FilesPresentation::Editor,
             None,
             autosave_enabled,
             autosave_delay_ms,
@@ -763,7 +661,9 @@ impl FilesSurface {
         {
             self.open_file(path, cx);
         }
-        self.ensure_tree_loaded(cx);
+        if !self.presentation.is_editor() {
+            self.ensure_tree_loaded(cx);
+        }
     }
 
     fn ensure_tree_loaded(&mut self, cx: &mut Context<Self>) {
@@ -781,6 +681,9 @@ impl FilesSurface {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.presentation.is_editor() {
+            return;
+        }
         self.error = None;
         self.started = true;
         self.tree.invalidate_all_directories();
@@ -807,15 +710,29 @@ impl FilesSurface {
     }
 
     pub(super) fn open_tree_file(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.presentation != FilesPresentation::Browser {
-            cx.emit(FilesEvent::OpenFile(path));
-            return;
-        }
+        cx.emit(FilesEvent::OpenFile(path));
+    }
 
-        self.presentation = FilesPresentation::Editor;
-        self.editor_path = Some(path.clone());
-        self.open_file(path, cx);
-        cx.emit(FilesEvent::TitleChanged);
+    pub(crate) fn focus_explorer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = if self.search_state.query.is_empty() {
+            self.tree_focus.clone()
+        } else {
+            use gpui::Focusable;
+            self.search.focus_handle(cx)
+        };
+        window.defer(cx, move |window, cx| focus.focus(window, cx));
+    }
+
+    pub(crate) fn reveal_file(&mut self, path: String, cx: &mut Context<Self>) {
+        self.reveal_search_result(
+            roboco_proto::WorkspaceFileSearchMatch {
+                name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                path,
+                kind: roboco_proto::WorkspaceEntryKind::File,
+                score: 0,
+            },
+            cx,
+        );
     }
 
     fn toggle_ignored(&mut self, cx: &mut Context<Self>) {
@@ -829,8 +746,10 @@ impl FilesSurface {
             self.loads.clear();
             self.error = None;
             self.sync_tree_list();
-            self.started = true;
-            self.load_directory(String::new(), None, cx);
+            self.started = false;
+            if !self.presentation.is_editor() {
+                self.ensure_tree_loaded(cx);
+            }
             if !self.search_state.query.is_empty() {
                 self.search_state.query.clear();
                 self.on_search_edited(cx);
