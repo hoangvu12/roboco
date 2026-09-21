@@ -59,6 +59,7 @@ use crate::transcript::{self, Transcript, TranscriptEvent};
 use crate::workspace_links::resolve_workspace_file_link;
 
 mod files_panel;
+mod actions_ui;
 mod spaces;
 mod tabs;
 
@@ -1311,7 +1312,7 @@ impl Shell {
         // reply's space below it (notes-app parity).
         let composer_events = cx.subscribe(&composer, {
             let transcript = transcript.clone();
-            move |_this: &mut Shell, _, event: &ComposerEvent, cx| match event {
+            move |this: &mut Shell, _, event: &ComposerEvent, cx| match event {
                 ComposerEvent::NewThreadTransitionStarted => {
                     // Route observation drives the dock once selection commits.
                     cx.notify();
@@ -1332,6 +1333,18 @@ impl Shell {
                         t.on_own_queued_send(chat_id.clone(), message_id.clone(), cx)
                     });
                 }
+                ComposerEvent::WorktreeSetup {
+                    chat_id,
+                    setup_action,
+                    setup_error,
+                    target_device_id,
+                } => this.attach_worktree_setup(
+                    chat_id.clone(),
+                    setup_action.clone(),
+                    setup_error.clone(),
+                    target_device_id.clone(),
+                    cx,
+                ),
             }
         });
         // Spawn chips open their subagent's transcript as a right-pane tab.
