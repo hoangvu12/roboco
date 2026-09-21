@@ -3,7 +3,6 @@ import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
 import {
   PROVIDERS,
   badgeModel,
-  changeRequestCreateUrl,
   normalizeProvider,
   toneFor,
 } from "../src/lib/change-requests";
@@ -43,47 +42,15 @@ describe("badgeModel", () => {
   });
 });
 
-describe("changeRequestCreateUrl", () => {
-  it("builds a github compare URL when the provider is github", () => {
-    expect(
-      changeRequestCreateUrl("github", "main", "feature/pr", "acme/roboco"),
-    ).toBe("https://github.com/acme/roboco/compare/main...feature%2Fpr?expand=1");
-  });
-
-  it("handles absolute Windows-style cwd paths by normalising", () => {
-    expect(
-      changeRequestCreateUrl("gitlab", "main", "feature/pr", "C:\\repo\\acme\\roboco"),
-    ).toBe("https://gitlab.com/C:/repo/acme/roboco/-/merge_requests/new?merge_request[source_branch]=feature%2Fpr&merge_request[target_branch]=main");
-  });
-
-  it("strips a trailing .git suffix", () => {
-    expect(
-      changeRequestCreateUrl("bitbucket", "main", "feature/pr", "acme/roboco.git"),
-    ).toBe("https://bitbucket.org/acme/roboco/pull-requests/new?source=feature%2Fpr&dest=main");
-  });
-
-  it("returns null when ref is missing", () => {
-    expect(changeRequestCreateUrl("github", "", "feature/pr", "acme/roboco")).toBeNull();
-    expect(changeRequestCreateUrl("github", "main", "  ", "acme/roboco")).toBeNull();
-  });
-
-  it("returns null for unknown providers", () => {
-    expect(changeRequestCreateUrl("bogus", "main", "feature/pr", "acme/roboco")).toBeNull();
-  });
-
-  it("builds the right URL for every supported provider", () => {
-    // Single source of truth: PROVIDERS must match the cases the URL builder
-    // recognizes, so the create-button never falls back to github for an
-    // unknown but still-supported provider.
-    expect(PROVIDERS).toEqual(["github", "gitlab", "bitbucket", "azuredevops", "codeberg"]);
-    expect(changeRequestCreateUrl("azuredevops", "main", "feature/pr", "acme/roboco"))
-      .toBe("https://dev.azure.com/acme/roboco/pullrequestcreate?sourceRef=feature%2Fpr&targetRef=main");
-    expect(changeRequestCreateUrl("codeberg", "main", "feature/pr", "acme/roboco"))
-      .toBe("https://codeberg.org/acme/roboco/compare/main...feature%2Fpr");
-  });
-});
+// The create-PR compare-URL builder and its tests are gone (ticket 04): the
+// desktop has no create flow at all, so guessing a provider's compare URL was
+// web-only invention.
 
 describe("normalizeProvider", () => {
+  it("knows the provider keys it can normalize", () => {
+    expect(PROVIDERS).toEqual(["github", "gitlab", "bitbucket", "azuredevops", "codeberg"]);
+  });
+
   it("lowercases known provider names", () => {
     expect(normalizeProvider("GitHub")).toBe("github");
     expect(normalizeProvider("GITLAB")).toBe("gitlab");
@@ -97,10 +64,7 @@ describe("normalizeProvider", () => {
     expect(normalizeProvider("   ")).toBeNull();
   });
 
-  it("passes through unknown hosts lower-cased so the URL builder returns null instead of falling back", () => {
+  it("passes an unknown host through lower-cased rather than guessing a key", () => {
     expect(normalizeProvider("gitlab.example.com")).toBe("gitlab.example.com");
-    expect(
-      changeRequestCreateUrl(normalizeProvider("gitlab.example.com")!, "main", "feature/pr", "acme/roboco"),
-    ).toBeNull();
   });
 });

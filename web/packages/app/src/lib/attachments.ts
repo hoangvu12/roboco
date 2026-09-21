@@ -1,4 +1,4 @@
-import { methods, RpcError } from "@roboco/engine-client";
+import { methods } from "@roboco/engine-client";
 
 /**
  * Attachments — staging, upload, and read-back for the composer and the
@@ -28,6 +28,37 @@ const ATTACHED_HEADER_LOOSE = "attached images (local files";
 
 /** One-attachment size cap (24 MB) — matches the engine's jail. */
 export const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Staged-strip geometry (composer.rs:288-296) — the pill height depends on
+// the strip's wrap math, so the height function lives with the attachments
+// (the strip's own rendering is components/attachments/attachment-strip.tsx).
+// ---------------------------------------------------------------------------
+
+/** `STRIP_THUMB` (composer.rs:288) — the staged thumbnail's edge. */
+export const STRIP_THUMB = 56;
+/** `STRIP_GAP` (composer.rs:289). */
+export const STRIP_GAP = 8;
+/** `STRIP_PAD_TOP` (composer.rs:290). */
+export const STRIP_PAD_TOP = 12;
+/** `STRIP_PAD_X` (composer.rs:291) — the strip's per-side inset. */
+export const STRIP_PAD_X = 16;
+
+/**
+ * `attachment_strip_height` (composer.rs:296): the wrap strip's height for
+ * `count` staged thumbnails at an `innerWidth` pill content width. Mirrors
+ * flex-wrap: as many 56px thumbs per row as fit with 8px gaps inside the 16px
+ * side insets.
+ */
+export function attachmentStripHeight(count: number, innerWidth: number): number {
+  if (count === 0) {
+    return 0;
+  }
+  const usable = Math.max(innerWidth - 2 * STRIP_PAD_X, STRIP_THUMB);
+  const perRow = Math.max(Math.floor((usable + STRIP_GAP) / (STRIP_THUMB + STRIP_GAP)), 1);
+  const rows = Math.ceil(count / perRow);
+  return STRIP_PAD_TOP + rows * STRIP_THUMB + (rows - 1) * STRIP_GAP;
+}
 
 /** Base64 chars per `UploadChunk`. Sized against the relay's hard ceiling
  *  (Cloudflare caps WebSocket at 1 MiB, JSON envelope + uleb header add
@@ -450,6 +481,23 @@ function nameFromPath(path: string): string {
  *  committed chunk. Optional so callers can ignore it. */
 export type UploadProgress = (uploadedBytes: number, totalBytes: number) => void;
 
+/**
+ * The upload-path failure the composer surfaces with its own verbatim copy
+ * (composer.rs:6358-6374): `"Couldn't upload the attachment — the device may
+ * be offline."` The desktop's OTHER upload failure string — `"Couldn't stage
+ * the attachment locally."` (composer.rs:6323-6335) — belongs to the
+ * queued-flow's LOCAL-engine stage, which the web's single-engine model never
+ * takes (there is no local engine in a browser); only the remote-host path
+ * exists here.
+ */
+export class AttachmentUploadError extends Error {
+  constructor(cause: unknown) {
+    super("Couldn't upload the attachment — the device may be offline.");
+    this.name = "AttachmentUploadError";
+    this.cause = cause;
+  }
+}
+
 /** What one upload produced: the durable path on the host (the same path
  *  the transcript's read-back uses) plus the wire's `transfers` entry. */
 export interface UploadedAttachment {
@@ -483,9 +531,9 @@ export async function uploadAttachments(
       out.push({ uploadId: att.id, fileName: att.name, path });
       uploadedSoFar += att.bytes.byteLength;
     } catch (error) {
-      throw new Error(
-        `Couldn't upload ${att.name}: ${describeUploadError(error)}`,
-      );
+      // The composer surfaces this with the desktop's verbatim copy
+      // (composer.rs:6371-6373); the raw cause rides along for logs.
+      throw new AttachmentUploadError(error);
     }
   }
   progress?.(totalBytes, totalBytes);
@@ -509,7 +557,10 @@ async function uploadOne(
   clearTimeout(overallTimer);
   const deadlineMs = attachmentDeadlineMs(ranges.length);
   const deadline = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`Upload exceeded ${Math.round(deadlineMs / 1000)}s`)), deadlineMs),
+    setTimeout(
+      () => reject(new Error(`attachment upload exceeded ${Math.round(deadlineMs / 1000)}s`)),
+      deadlineMs,
+    ),
   );
 
   const upload = (async () => {
@@ -563,7 +614,11 @@ async function uploadOne(
 }
 
 /** One `UploadChunk` call with its per-call timeout. Transient blips
- *  (timeout, transport) retry once with a small stagger. */
+ *  (timeout, transport) retry up to 2 times — 3 attempts total, like the
+ *  desktop's per-chunk loop (attachments.rs:388-417) — staggered by
+ *  `50ms * attempt * (seq + 1)` so parallel chunks that failed together don't
+ *  re-collide in lockstep. `seq` slots are idempotent engine-side, so a blind
+ *  re-send is safe. */
 async function sendChunk(
   client: { call(method: string, params: unknown): Promise<unknown> },
   uploadId: string,
@@ -579,19 +634,21 @@ async function sendChunk(
       await callWithTimeout(client, methods.UPLOAD_CHUNK, params, timeoutMs);
       return;
     } catch (error) {
-      if (attempt >= 1) {
+      if (attempt >= 2) {
         throw error;
       }
       attempt += 1;
-      const delay = 50 * (1 + seq);
+      const delay = 50 * attempt * (seq + 1);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
 
-/** `(seq, b64 byte-range)` chunks for one file's base64. Empty file still
- *  yields one empty chunk (the commit needs the id staged). */
-function chunkRanges(b64Len: number): Array<{ start: number; end: number }> {
+/** `(seq, b64 byte-range)` chunks for one file's base64 (`chunk_ranges`,
+ *  attachments.rs:330-344): contiguous, non-overlapping
+ *  `UPLOAD_CHUNK_B64_CHARS`-sized tiles. An empty file still yields one empty
+ *  chunk (the commit RPC needs the uploadId staged). */
+export function chunkRanges(b64Len: number): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
   let start = 0;
   while (start < b64Len) {
@@ -651,16 +708,6 @@ async function callWithTimeout(
       clearTimeout(timer);
     }
   }
-}
-
-function describeUploadError(error: unknown): string {
-  if (error instanceof RpcError) {
-    return error.message;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 // ---------------------------------------------------------------------------

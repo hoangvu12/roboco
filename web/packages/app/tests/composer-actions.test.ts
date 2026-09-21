@@ -5,9 +5,9 @@ import {
   buildChatConfig,
   buildRunRequest,
   describeSendError,
+  queueMessage,
   sendInterrupt,
   sendRun,
-  sendSteer,
   persistChatConfig,
   type DraftConfig,
 } from "../src/lib/composer-actions";
@@ -69,7 +69,7 @@ describe("buildChatConfig", () => {
 
 describe("buildRunRequest", () => {
   it("fills every field the engine requires for a Run", () => {
-    const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj", "msg-1");
+    const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj");
     expect(request.prompt).toBe("hi");
     expect(request.harness).toBe("claude-code");
     expect(request.model).toBe("claude-3-5-sonnet");
@@ -81,40 +81,44 @@ describe("buildRunRequest", () => {
   });
 
   it("preserves the picked harness on the wire", () => {
-    const request = buildRunRequest({ ...DRAFT, harness: "codex" }, "hi", "/tmp", "m");
+    const request = buildRunRequest({ ...DRAFT, harness: "codex" }, "hi", "/tmp");
     expect(request.harness).toBe("codex");
+  });
+
+  it("carries the staged attachment paths and defaults worktree to null", () => {
+    const request = buildRunRequest(DRAFT, "hi", "/tmp", ["/host/a.png"]);
+    expect(request.attachments).toEqual(["/host/a.png"]);
+    expect(request.worktree).toBeNull();
+  });
+
+  it("carries a worktree directive for the host to materialize", () => {
+    const request = buildRunRequest(DRAFT, "hi", "/repo", [], { repoPath: "/repo", base: "HEAD" });
+    expect(request.worktree).toEqual({ repoPath: "/repo", base: "HEAD" });
   });
 });
 
 describe("sendRun", () => {
-  it("sends Mutate setChatConfig (when the draft drifted) then QueueCommand Run", async () => {
+  // The desktop carries model/reasoning/options on the RunRequest itself and
+  // only writes a ChatConfig via `Mutate createChat`; a per-send setChatConfig
+  // mutation was web-only invention (ticket 04).
+  it("sends only QueueCommand Run — never a setChatConfig mutation", async () => {
     const caller = new FakeCaller();
     caller.replies.set("QueueCommand", { commandId: "cmd-1" });
     await sendRun(caller, "chat-1", DRAFT, "  ship it  ", "/Users/me/proj", {
-      currentConfig: null,
       mintMessageId: () => "msg-1",
     });
-    expect(caller.calls.map((entry) => entry.method)).toEqual(["Mutate", "QueueCommand"]);
-    const setConfig = caller.calls[0]!.params as { op: string; chatId: string; config: ChatConfig };
-    expect(setConfig.op).toBe("setChatConfig");
-    expect(setConfig.chatId).toBe("chat-1");
-    expect(setConfig.config).toEqual(PERSISTED);
-    const queue = caller.calls[1]!.params as { chatId: string; command: { kind: string; messageId: string; request: { prompt: string; cwd: string } } };
+    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    const queue = caller.calls[0]!.params as { chatId: string; command: { kind: string; messageId: string; request: { prompt: string; cwd: string; harness: string; model: string | null; reasoning: string | null } } };
     expect(queue.chatId).toBe("chat-1");
     expect(queue.command.kind).toBe("run");
     expect(queue.command.messageId).toBe("msg-1");
     expect(queue.command.request.prompt).toBe("ship it");
     expect(queue.command.request.cwd).toBe("/Users/me/proj");
-  });
-
-  it("skips setChatConfig when the persisted config already matches the draft", async () => {
-    const caller = new FakeCaller();
-    caller.replies.set("QueueCommand", { commandId: "cmd-1" });
-    await sendRun(caller, "chat-1", DRAFT, "ship", "/Users/me/proj", {
-      currentConfig: PERSISTED,
-      mintMessageId: () => "msg-1",
-    });
-    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    // The draft's identity rides the request, which is why the pre-send
+    // mutation was redundant.
+    expect(queue.command.request.harness).toBe(DRAFT.harness);
+    expect(queue.command.request.model).toBe(DRAFT.model);
+    expect(queue.command.request.reasoning).toBe(DRAFT.reasoning);
   });
 
   it("rejects an empty prompt before touching the wire", async () => {
@@ -132,39 +136,45 @@ describe("sendRun", () => {
   it("propagates engine failures so the caller can show a notice", async () => {
     const caller = new FakeCaller();
     caller.nextError = new RpcError("transport", "Engine is offline; reconnecting");
-    await expect(sendRun(caller, "chat-1", DRAFT, "hi", "/Users/me/proj", { currentConfig: PERSISTED })).rejects.toThrow(
+    await expect(sendRun(caller, "chat-1", DRAFT, "hi", "/Users/me/proj")).rejects.toThrow(
       "Engine is offline",
     );
   });
 });
 
-describe("sendSteer", () => {
-  it("sends a Steer command with the picked prompt and a null messageId by default", async () => {
+describe("queueMessage", () => {
+  // The composer's busy-chat path (composer.rs:6547-6577): QueueMessage with
+  // holdForTurnEnd — never a Steer command (spec decision 3).
+  it("queues with holdForTurnEnd and returns the row id", async () => {
     const caller = new FakeCaller();
-    await sendSteer(caller, "chat-1", "  pivot  ");
+    caller.replies.set("QueueMessage", { id: "q-9" });
+    const id = await queueMessage(caller, "chat-1", "  ship it  ", ["/host/a.png"]);
+    expect(id).toBe("q-9");
     expect(caller.calls).toEqual([
       {
-        method: "QueueCommand",
+        method: "QueueMessage",
         params: {
           chatId: "chat-1",
-          command: { kind: "steer", prompt: "pivot", messageId: null },
-          transfers: [],
+          text: "ship it",
+          attachments: ["/host/a.png"],
+          holdForTurnEnd: true,
         },
       },
     ]);
   });
 
-  it("honors an explicit messageId when the caller supplies one", async () => {
+  it("raises the verbatim failure when the queue returns no id", async () => {
     const caller = new FakeCaller();
-    await sendSteer(caller, "chat-1", "pivot", "msg-9");
-    const params = caller.calls[0]!.params as { command: { messageId: string } };
-    expect(params.command.messageId).toBe("msg-9");
+    caller.replies.set("QueueMessage", {});
+    await expect(queueMessage(caller, "chat-1", "ship")).rejects.toThrow(
+      "Send failed: queue did not return an id",
+    );
   });
 
-  it("rejects an empty prompt", async () => {
+  it("wraps RPC failures as Send failed", async () => {
     const caller = new FakeCaller();
-    await expect(sendSteer(caller, "chat-1", "   ")).rejects.toThrow(/empty/);
-    expect(caller.calls).toHaveLength(0);
+    caller.nextError = new RpcError("transport", "engine offline");
+    await expect(queueMessage(caller, "chat-1", "ship")).rejects.toThrow(/^Send failed:/);
   });
 });
 
@@ -242,24 +252,24 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "see this",
       "/Users/me/proj",
-      { currentConfig: null, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: staged },
     );
 
     const methods = caller.calls.map((entry) => entry.method);
-    expect(methods).toEqual(["Mutate", "UploadChunk", "UploadCommit", "QueueCommand"]);
+    expect(methods).toEqual(["UploadChunk", "UploadCommit", "QueueCommand"]);
 
-    const uploadChunk = caller.calls[1]!.params as { uploadId: string; data: string; seq: number };
+    const uploadChunk = caller.calls[0]!.params as { uploadId: string; data: string; seq: number };
     expect(typeof uploadChunk.uploadId).toBe("string");
     expect(uploadChunk.uploadId.length).toBeGreaterThan(0);
     expect(uploadChunk.seq).toBe(0);
     expect(uploadChunk.data.length).toBeGreaterThan(0);
 
-    const commit = caller.calls[2]!.params as { uploadId: string; fileName: string };
+    const commit = caller.calls[1]!.params as { uploadId: string; fileName: string };
     expect(commit.uploadId).toBe(uploadChunk.uploadId);
     expect(commit.fileName).toBe("shot.png");
 
-    const queue = caller.calls[3]!.params as {
+    const queue = caller.calls[2]!.params as {
       chatId: string;
       command: { kind: string; request: { prompt: string }; messageId: string };
       transfers: Array<{ uploadId: string; fileName: string }>;
@@ -284,7 +294,7 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "",
       "/Users/me/proj",
-      { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: [stagePng("one.png")] },
     );
     const queue = caller.calls[2]!.params as {
@@ -296,12 +306,12 @@ describe("sendRun with attachments", () => {
   it("rejects an empty send (no text, no attachments) before touching the wire", async () => {
     const caller = new FakeCaller();
     await expect(
-      sendRun(caller, "chat-1", DRAFT, "   ", "/Users/me/proj", { currentConfig: PERSISTED }),
+      sendRun(caller, "chat-1", DRAFT, "   ", "/Users/me/proj", { }),
     ).rejects.toThrow(/empty/);
     expect(caller.calls).toHaveLength(0);
   });
 
-  it("propagates upload errors with a friendly message", async () => {
+  it("propagates upload errors with the desktop's verbatim copy", async () => {
     const caller = new FakeCaller();
     caller.nextError = new RpcError("transport", "upload chunk timed out");
     await expect(
@@ -311,10 +321,10 @@ describe("sendRun with attachments", () => {
         DRAFT,
         "see this",
         "/Users/me/proj",
-        { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+        { mintMessageId: () => "msg-1" },
         { stagedAttachments: [stagePng("a.png")] },
       ),
-    ).rejects.toThrow(/a\.png/);
+    ).rejects.toThrow("Couldn't upload the attachment — the device may be offline.");
   });
 
   it("ships transfers with the chat's host device id on UploadChunk", async () => {
@@ -328,7 +338,7 @@ describe("sendRun with attachments", () => {
       DRAFT,
       "see",
       "/Users/me/proj",
-      { currentConfig: PERSISTED, mintMessageId: () => "msg-1" },
+      { mintMessageId: () => "msg-1" },
       { stagedAttachments: [stagePng("x.png")] },
     );
     const uploadChunk = caller.calls[0]!.params as { uploadId: string; seq: number };

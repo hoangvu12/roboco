@@ -113,10 +113,34 @@ fn variant(seed: Seeds<'_>) -> ThemeVariant {
     } else {
         Color::rgb(35, 35, 40)
     };
+    // `text_dim`, `raised_hover`, and `danger_strong` are authored by hand on
+    // the desktop's own dark/light theme (`crates/ui/src/theme.rs:1052,1067,
+    // 1073` dark, `1144,1161,1169` light) — which is this family, Roboco. No
+    // other palette ships those tones, so every other family takes the same
+    // fallback the desktop's variant loader takes for a theme that did not
+    // author them (`crates/ui/src/theme.rs:1282,1305,1311`): the muted text,
+    // the raised plate itself, and the theme's own danger.
+    let authored = seed.family_id == "roboco";
+    let text_dim = match (authored, dark) {
+        (false, _) => muted,
+        (true, true) => Color::grey(0x98),
+        (true, false) => Color::neutral(0.50),
+    };
+    let raised_hover = match (authored, dark) {
+        (false, _) => raised,
+        (true, true) => Color::neutral(0.29),
+        (true, false) => Color::neutral(0.900),
+    };
+    let danger_strong = match (authored, dark) {
+        (false, _) => danger,
+        (true, true) => Color::oklch(0.58, 0.16, 25.0),
+        (true, false) => Color::oklch(0.51, 0.20, 25.0),
+    };
     let colors = ThemeColors {
         background,
         shell,
         raised,
+        raised_hover,
         card,
         dialog: card.mix(raised, if dark { 0.18 } else { 0.04 }),
         overlay: card.mix(raised, if dark { 0.34 } else { 0.02 }),
@@ -127,9 +151,11 @@ fn variant(seed: Seeds<'_>) -> ThemeVariant {
         text,
         text_muted: muted,
         text_faint: faint,
+        text_dim,
         solid,
         on_solid: solid.best_on_color(),
         danger,
+        danger_strong,
         danger_muted: danger.mix(text, 0.28),
         warning,
         warning_muted: warning.mix(text, 0.25),

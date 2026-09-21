@@ -3,7 +3,7 @@
 //! Seeds one chat with unseen activity so the chat list has a row to show.
 use std::sync::Arc;
 
-use roboco_engine::{EngineCore, EngineProfile, HarnessRegistry, pairing::PairingStore};
+use roboco_engine::{EngineCore, EngineProfile, pairing::PairingStore, smoke_registry};
 use roboco_rpc::RpcService;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -11,7 +11,7 @@ async fn main() {
     let dir = tempfile::tempdir().unwrap();
     let core = EngineCore::assemble_with_profile(
         EngineProfile::local(dir.path()).unwrap(),
-        Arc::new(HarnessRegistry::new()),
+        Arc::new(smoke_registry()),
         roboco_engine::HarnessId::Mock,
     )
     .unwrap();
@@ -22,7 +22,7 @@ async fn main() {
     )
     .await
     .unwrap();
-    seed_smoke_chat(core.rpc_service()).await;
+    seed_smoke_chat(core.rpc_service(), dir.path()).await;
     let code = PairingStore::open(dir.path())
         .unwrap()
         .create_code("browser smoke", 3600)
@@ -38,7 +38,7 @@ async fn main() {
     }
 }
 
-async fn seed_smoke_chat(service: Arc<dyn RpcService>) {
+async fn seed_smoke_chat(service: Arc<dyn RpcService>, cwd: &std::path::Path) {
     let device = match service
         .handle(roboco_rpc::methods::LOCAL_DEVICE, serde_json::json!({}))
         .await
@@ -50,6 +50,10 @@ async fn seed_smoke_chat(service: Arc<dyn RpcService>) {
     for params in [
         serde_json::json!({"op": "createChat", "chatId": "smoke-chat", "deviceId": device}),
         serde_json::json!({"op": "renameChat", "chatId": "smoke-chat", "title": "Browser smoke chat"}),
+        // A working directory is what makes the chat runnable: without one the
+        // composer refuses to send, so the harness never replies and the
+        // transcript stays empty — no use as a visual-parity harness.
+        serde_json::json!({"op": "setChatCwd", "chatId": "smoke-chat", "cwd": cwd.to_string_lossy()}),
         serde_json::json!({"op": "setChatActivity", "chatId": "smoke-chat", "lastMessageAt": now_ms() - 5 * 60_000, "createdAt": now_ms() - 3_600_000}),
     ] {
         service

@@ -1,5 +1,7 @@
-import type { Chat, Space } from "@roboco/proto";
+import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
+import { parseScopedId } from "@roboco/engine-client";
+import type { SidebarOrganization, SidebarSort } from "../state/ui-settings";
 
 /**
  * The desktop's view derivations, ported 1:1 from `roboco_proto::view` and
@@ -10,6 +12,72 @@ import type { ChatStatus } from "@roboco/engine-client";
  */
 
 export const SESSION_STALE_MS = 45_000;
+
+export type { SidebarOrganization, SidebarSort };
+
+/** `settings/devices.rs DEVICE_ONLINE_WINDOW_SECS` — presence staleness. */
+export const DEVICE_ONLINE_WINDOW_SECS = 70;
+
+/** A registry engine's live connection state, keyed by engine key. */
+export type EnginePresence = ReadonlyMap<string, "connected" | "reconnecting" | "off">;
+
+/**
+ * Presence: last-seen within the online window (future timestamps count).
+ * A device row that is MISSING reads online, not offline — the desktop's
+ * `state.rs::device_online` resolves unknown ids to `true` so a row that
+ * has not streamed yet never renders a spurious "offline" glyph. A device
+ * backed by a known REGISTRY engine (a scoped id whose engine is in
+ * `engineStates`) reports that engine's live connection state instead —
+ * the supervised connection is more accurate than a heartbeat timestamp
+ * (state.rs:1382-1399). Pure.
+ */
+export function deviceOnline(
+  device: Device | undefined,
+  now: number,
+  engineStates?: EnginePresence,
+): boolean {
+  if (device !== undefined && engineStates !== undefined) {
+    try {
+      const scoped = parseScopedId(device.id);
+      if (scoped.engine !== null && engineStates.has(scoped.engine)) {
+        return engineStates.get(scoped.engine) === "connected";
+      }
+    } catch {
+      // A malformed id falls through to the last-seen heuristic.
+    }
+  }
+  if (device === undefined) {
+    return true;
+  }
+  const lastSeen = device.lastSeenAt;
+  if (lastSeen === null || lastSeen === undefined) {
+    return false;
+  }
+  const at = Date.parse(lastSeen);
+  if (!Number.isFinite(at)) {
+    return false;
+  }
+  return now - at <= DEVICE_ONLINE_WINDOW_SECS * 1000;
+}
+
+/**
+ * The "@ device" tag with presence (`state.rs::space_device_tag`,
+ * state.rs:1405-1411): `label = "@ {name ?? 'Unknown device'}"`,
+ * `offline = !deviceOnline(...)`. Staleness renders as a disconnected
+ * GLYPH at the call sites, never words in the tag. Pure.
+ */
+export function spaceDeviceTag(
+  space: { readonly deviceId: string },
+  devices: readonly Device[],
+  now: number,
+  engineStates?: EnginePresence,
+): { tag: string; offline: boolean } {
+  const device = devices.find((row) => row.id === space.deviceId);
+  return {
+    tag: `@ ${device?.name ?? "Unknown device"}`,
+    offline: !deviceOnline(device, now, engineStates),
+  };
+}
 
 export type ChatIndicator = "working" | "awaitingInput" | "errored" | "completed" | "idle";
 
@@ -22,10 +90,38 @@ export interface ChatRow {
   readonly status: ChatIndicator;
   /** Line 1 left — the space's display name, or the cwd label, or "~". */
   readonly project: string;
-  /** Line 3 — the stamped branch, when present. */
+  /**
+   * Line 1 left as the desktop writes it: `"project @ device"`, or bare
+   * `project` when the device is unknown (shell/spaces.rs render_active_rows
+   * — an unknown device contributes no fragment, same as the archived list).
+   */
+  readonly folder: string;
+  /** Line 2's brand mark — the chat's configured harness, when it has one. */
+  readonly harness: string | null;
+  /** Line 3 — `chat.sourceContext.branch` (trimmed), when present. */
   readonly branch: string | null;
   /** The corner's relative time, shown while idle. */
   readonly timeAgo: string;
+  /** The chat's host device — the ByDevice grouping key. */
+  readonly deviceId: string;
+  /** The host device's name; null when the device row is unknown. */
+  readonly deviceName: string | null;
+  /** The host device's presence — drives the offline glyph (ticket 31). */
+  readonly deviceOffline: boolean;
+  /** The chat's current PR summary, when one is resolved (line 3, right). */
+  readonly changeRequest: ChangeRequestSummary | null;
+}
+
+/** The view options that shape the sidebar's rows before layout (§2.1). */
+export interface SidebarRowOptions {
+  readonly sort?: SidebarSort;
+  readonly showHarness?: boolean;
+  readonly showBranch?: boolean;
+  readonly showPullRequest?: boolean;
+  /** PR summaries per chat id, from the sidebar's change-request watches. */
+  readonly changeRequests?: ReadonlyMap<string, ChangeRequestSummary>;
+  /** Registry engine connection states, for the live-presence override. */
+  readonly engineStates?: EnginePresence;
 }
 
 /** The corner's status word, mirroring the desktop (Idle shows time-ago). */
@@ -152,30 +248,194 @@ export function sortRows<T extends { chat: Chat }>(rows: readonly T[]): T[] {
 }
 
 /**
- * The sidebar's chat list (overview_chats): every non-archived chat of a
- * live space — or no space at all — idle included, display statuses and
- * project lines attached, in pure recency order. Chats whose spaceId
- * points at a missing space row stay hidden.
+ * The sidebar's chat comparator (`spaces.rs::compare_sidebar_chats`) — the
+ * ONE ordering the active list, the keyboard/jump order, and the archived
+ * shelf all share. `lastUpdated` sorts by `lastMessageAt ?? createdAt`
+ * descending; `created` by `createdAt` alone; the chat id breaks ties
+ * ascending so the sort is total and stable.
+ */
+export function compareSidebarChats(sort: SidebarSort, left: Chat, right: Chat): number {
+  const primary =
+    sort === "created"
+      ? compareIso(right.createdAt, left.createdAt)
+      : compareIso(right.lastMessageAt ?? right.createdAt, left.lastMessageAt ?? left.createdAt);
+  return primary !== 0 ? primary : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+/**
+ * Put this machine's device group first without disturbing the order of any
+ * remote group (`spaces.rs::promote_local_device_group`). No-op when the
+ * local device id is null or matches nothing.
+ */
+export function promoteLocalDeviceGroup<T>(
+  groups: readonly SidebarBucket<T>[],
+  localDeviceId: string | null,
+): SidebarBucket<T>[] {
+  if (localDeviceId === null) {
+    return groups as SidebarBucket<T>[];
+  }
+  const index = groups.findIndex(
+    (bucket) => bucket.group !== null && bucket.group.deviceId === localDeviceId,
+  );
+  if (index <= 0) {
+    return groups as SidebarBucket<T>[];
+  }
+  const next = [...groups];
+  const [local] = next.splice(index, 1);
+  next.unshift(local!);
+  return next;
+}
+
+/** One ByDevice bucket: the group identity plus its rows in draw order. */
+export interface SidebarBucket<T> {
+  readonly group: { readonly deviceId: string; readonly deviceName: string } | null;
+  readonly rows: readonly T[];
+}
+
+/**
+ * Bucket the sorted rows for drawing: under `byDevice`, chats group by host
+ * device preserving first-seen order, the local device's bucket promoted to
+ * the top (`render_active_rows`). Every other organization is one flat,
+ * header-less bucket.
+ */
+export function sidebarGroups(
+  rows: readonly ChatRow[],
+  organization: SidebarOrganization,
+  localDeviceId: string | null,
+): SidebarBucket<ChatRow>[] {
+  const buckets: SidebarBucket<ChatRow>[] = [];
+  for (const row of rows) {
+    const group =
+      organization === "byDevice"
+        ? { deviceId: row.deviceId, deviceName: row.deviceName ?? "Unknown device" }
+        : null;
+    const existing = buckets.find((bucket) =>
+      bucket.group === null
+        ? group === null
+        : group !== null && bucket.group.deviceId === group.deviceId,
+    );
+    if (existing !== undefined) {
+      (existing.rows as ChatRow[]).push(row);
+    } else {
+      buckets.push({ group, rows: [row] });
+    }
+  }
+  if (organization === "byDevice") {
+    return promoteLocalDeviceGroup(buckets, localDeviceId);
+  }
+  return buckets;
+}
+
+/**
+ * The flat, top-to-bottom chat ids exactly as the sidebar draws them —
+ * grouping and local-device promotion applied, headers not counted
+ * (`spaces.rs::sidebar_visible_order`). The jump shortcuts and session
+ * cycling read THIS order so keyboard order never drifts from the screen.
+ */
+export function sidebarVisibleOrder(
+  rows: readonly ChatRow[],
+  organization: SidebarOrganization,
+  localDeviceId: string | null,
+): string[] {
+  return sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
+    bucket.rows.map((row) => row.chat.id),
+  );
+}
+
+/**
+ * Exact active-row height (`shell.rs::chat_row_height`): 45 compact, 61
+ * branch-only, 63 with a PR badge (with or without a branch). The FLIP
+ * resort diff and the disclosure body estimates both key off these.
+ */
+export function chatRowHeight(showsBranch: boolean, showsPullRequest: boolean): number {
+  let metadataHeight = 0;
+  if (showsBranch) {
+    metadataHeight = Math.max(metadataHeight, 14);
+  }
+  if (showsPullRequest) {
+    metadataHeight = Math.max(metadataHeight, 16);
+  }
+  return metadataHeight === 0 ? 45 : 47 + metadataHeight;
+}
+
+/** A keyed sidebar list entry: identity plus its FLIP height estimate. */
+export interface SidebarKeyed {
+  readonly key: string;
+  readonly height: number;
+}
+
+/**
+ * FLIP diff for a keyed list (`shell.rs::resort_offsets`): lay both orders
+ * out as `y += height + gap` and emit each surviving key's paint-only start
+ * offset `oldY - newY`, only when it moved more than half a pixel.
+ */
+export function resortOffsets(
+  old: readonly SidebarKeyed[],
+  next: readonly SidebarKeyed[],
+  gap: number,
+): Map<string, number> {
+  const oldY = new Map<string, number>();
+  let y = 0;
+  for (const { key, height } of old) {
+    oldY.set(key, y);
+    y += height + gap;
+  }
+  const offsets = new Map<string, number>();
+  y = 0;
+  for (const { key, height } of next) {
+    const prev = oldY.get(key);
+    if (prev !== undefined) {
+      const dy = prev - y;
+      if (Math.abs(dy) > 0.5) {
+        offsets.set(key, dy);
+      }
+    }
+    y += height + gap;
+  }
+  return offsets;
+}
+
+/**
+ * Height changes do not constitute a list reorder — a disclosure animating
+ * its own body height must not also trigger FLIP offsets on every following
+ * keyed section (`shell.rs::sidebar_key_order_changed`).
+ */
+export function sidebarKeyOrderChanged(old: readonly SidebarKeyed[], next: readonly SidebarKeyed[]): boolean {
+  return (
+    old.length !== next.length || old.some((entry, index) => entry.key !== next[index]?.key)
+  );
+}
+
+/**
+ * The sidebar's chat list (`overview_chats` + `render_active_rows`): every
+ * non-archived chat of a live space — or no space at all — idle included,
+ * display statuses and project lines attached, sorted by the user's sidebar
+ * preference with the show-toggle fields cleared before layout. Chats whose
+ * spaceId points at a missing space row stay hidden.
  */
 export function chatListRows(
   chats: readonly Chat[],
   spaces: readonly Space[],
   statuses: readonly ChatStatus[],
   now: number,
+  devices: readonly Device[] = [],
+  options: SidebarRowOptions = {},
 ): ChatRow[] {
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
   const rows: ChatRow[] = [];
   for (const chat of chats) {
     if (chat.archived) {
       continue;
     }
-    const row = toChatRow(chat, spaceById, statusByChat, now);
+    const row = toChatRow(chat, spaceById, statusByChat, now, deviceById, options);
     if (row !== null) {
       rows.push(row);
     }
   }
-  return sortRows(rows);
+  const sort = options.sort ?? "lastUpdated";
+  return rows.sort((left, right) => compareSidebarChats(sort, left.chat, right.chat));
 }
 
 /**
@@ -189,6 +449,8 @@ export function chatPageRow(
   spaces: readonly Space[],
   statuses: readonly ChatStatus[],
   now: number,
+  devices: readonly Device[] = [],
+  engineStates?: EnginePresence,
 ): ChatRow | undefined {
   const chat = chats.find((candidate) => candidate.id === chatId);
   if (chat === undefined) {
@@ -196,7 +458,8 @@ export function chatPageRow(
   }
   const spaceById = new Map(spaces.map((space) => [space.id, space]));
   const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
-  return toChatRow(chat, spaceById, statusByChat, now) ?? undefined;
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
+  return toChatRow(chat, spaceById, statusByChat, now, deviceById, { engineStates }) ?? undefined;
 }
 
 function toChatRow(
@@ -204,19 +467,36 @@ function toChatRow(
   spaceById: ReadonlyMap<string, Space>,
   statusByChat: ReadonlyMap<string, ChatStatus>,
   now: number,
+  deviceById: ReadonlyMap<string, Device> = new Map(),
+  options: SidebarRowOptions = {},
 ): ChatRow | null {
   const space =
     chat.spaceId !== null && chat.spaceId !== undefined ? spaceById.get(chat.spaceId) : undefined;
   if (chat.spaceId !== null && chat.spaceId !== undefined && space === undefined) {
     return null;
   }
-  const branch = chat.branch !== null && chat.branch !== undefined && chat.branch.trim().length > 0 ? chat.branch : null;
+  // Only conversation-owned source context is trusted (`conversation_branch`):
+  // the legacy scalar `branch` cannot prove a worktree has not switched since
+  // it was written.
+  const rawBranch = chat.sourceContext?.branch ?? null;
+  const branch = rawBranch !== null && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
+  const project = space !== undefined ? spaceDisplayName(space) : "~";
+  const device = deviceById.get(chat.deviceId);
+  const harness =
+    options.showHarness === false ? null : (chat.config?.harness ?? null);
   return {
     chat,
     status: displayStatus(chat, statusByChat.get(chat.id), now),
-    project: space !== undefined ? spaceDisplayName(space) : projectLabel(chat.cwd) ?? "~",
-    branch,
+    project,
+    folder: device !== undefined ? `${project} @ ${device.name}` : project,
+    harness,
+    branch: options.showBranch === false ? null : branch,
     timeAgo: timeAgo(recencyKey(chat), now),
+    deviceId: chat.deviceId,
+    deviceName: device !== undefined ? device.name : null,
+    deviceOffline: !deviceOnline(device, now, options.engineStates),
+    changeRequest:
+      options.showPullRequest === false ? null : (options.changeRequests?.get(chat.id) ?? null),
   };
 }
 
@@ -242,6 +522,24 @@ export function spacesSorted(spaces: readonly Space[]): Space[] {
     }
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
+}
+
+/**
+ * The spaces list with the add-space palette's optimistic rows folded in
+ * (the desktop pushes them straight into `AppState.spaces`; the web keeps
+ * them on `addSpaceStore` because the watch cache has no row-injection
+ * API). Merged by id so a watch-frame-confirmed row REPLACES its
+ * optimistic twin — never a duplicate. Pure.
+ */
+export function mergePendingSpaces(
+  spaces: readonly Space[],
+  pending: readonly Space[],
+): readonly Space[] {
+  if (pending.length === 0) {
+    return spaces;
+  }
+  const confirmed = new Set(spaces.map((space) => space.id));
+  return [...spaces, ...pending.filter((space) => !confirmed.has(space.id))];
 }
 
 /**
@@ -273,26 +571,22 @@ export interface ArchivedRow {
 
 /**
  * The sidebar's archived shelf (render_archived_section): archived chats of
- * the filter scope — all spaces under "All" — in recency order
- * (view.rs sort_chats: recency desc, createdAt desc tiebreak, id last).
+ * the filter scope — all spaces under "All" — in the user's sidebar sort
+ * (`compareSidebarChats`, the same comparator the active list uses — never
+ * its own fixed recency order).
  */
-export function archivedRows(chats: readonly Chat[], spaceFilter: string | null, now: number): ArchivedRow[] {
+export function archivedRows(
+  chats: readonly Chat[],
+  spaceFilter: string | null,
+  now: number,
+  sort: SidebarSort = "lastUpdated",
+): ArchivedRow[] {
   const rows = chats.filter(
     (chat) =>
       chat.archived &&
       (spaceFilter === null || (chat.spaceId !== undefined && chat.spaceId === spaceFilter)),
   );
-  rows.sort((a, b) => {
-    const byRecency = compareIso(recencyKey(b), recencyKey(a));
-    if (byRecency !== 0) {
-      return byRecency;
-    }
-    const byCreated = compareIso(b.createdAt, a.createdAt);
-    if (byCreated !== 0) {
-      return byCreated;
-    }
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  rows.sort((left, right) => compareSidebarChats(sort, left, right));
   return rows.map((chat) => {
     const title = chat.title === null ? "" : singleLine(chat.title);
     return {

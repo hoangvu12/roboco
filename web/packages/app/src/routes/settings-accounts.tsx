@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { Icon } from "@roboco/icons";
 import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { useNow } from "../state/hooks";
+import { useNow, useWatchSnapshot } from "../state/hooks";
+import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import {
   accountInitial,
   accountLabel,
@@ -30,8 +32,10 @@ import {
  * provider section per harness CLI (Claude Code, Codex, Cursor) with its
  * account rows — email, plan and Active badges, usage meters, Switch and
  * Forget on inactive rows — plus the add-account login flows (paste-code
- * and browser-poll). The visit's first list forces a usage probe; post-
- * action lists ride the still-warm cache. All RPC failures render inline.
+ * and browser-poll) and the page-header device switcher that retargets
+ * every call at another paired device via `targetDeviceId`. The visit's
+ * first list forces a usage probe; post-action lists ride the still-warm
+ * cache. All RPC failures render inline.
  */
 
 type Loadable = { kind: "loading" } | { kind: "ready"; snapshot: AgentAccountsSnapshot } | { kind: "error"; message: string };
@@ -44,7 +48,9 @@ type LoginFlow =
 export function AccountsSettingsPage() {
   const session = useEngineSession();
   const client = session?.client ?? null;
-  const [snapshot, setSnapshot] = useState<Loadable>({ kind: "loading" });
+  const snapshot = useWatchSnapshot(session);
+  const [target, setTarget] = useState<string | null>(null);
+  const [snapshotState, setSnapshot] = useState<Loadable>({ kind: "loading" });
   const [busyAccount, setBusyAccount] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [login, setLogin] = useState<LoginFlow | null>(null);
@@ -58,15 +64,15 @@ export function AccountsSettingsPage() {
       }
       setSnapshot({ kind: "loading" });
       try {
-        setSnapshot({ kind: "ready", snapshot: await listAgentAccounts(client, forceUsageFor(trigger)) });
+        setSnapshot({ kind: "ready", snapshot: await listAgentAccounts(client, forceUsageFor(trigger), target) });
       } catch (cause) {
         setSnapshot({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
       }
     },
-    [client],
+    [client, target],
   );
 
-  // Mount load (forced usage probe), and a full reset on engine switch.
+  // Mount load (forced usage probe), a retarget, or an engine switch.
   useEffect(() => {
     setBusyAccount(null);
     setActionError(null);
@@ -89,7 +95,7 @@ export function AccountsSettingsPage() {
             setLogin((current) => (current?.kind === "browser" ? { ...current, message } : current));
           }
         },
-      });
+      }, target);
       if (!active || poll === null) {
         return;
       }
@@ -105,7 +111,7 @@ export function AccountsSettingsPage() {
     return () => {
       active = false;
     };
-  }, [client, browserLoginId, load]);
+  }, [client, browserLoginId, load, target]);
 
   function accountAction(action: "activate" | "forget", account: AgentAccount) {
     if (client === null || busyAccount !== null) {
@@ -116,9 +122,9 @@ export function AccountsSettingsPage() {
     void (async () => {
       try {
         if (action === "activate") {
-          await activateAgentAccount(client, account);
+          await activateAgentAccount(client, account, target);
         } else {
-          await forgetAgentAccount(client, account);
+          await forgetAgentAccount(client, account, target);
         }
         void load("postAction");
       } catch (cause) {
@@ -137,7 +143,7 @@ export function AccountsSettingsPage() {
     setLogin({ kind: "starting", harness });
     void (async () => {
       try {
-        const start = await startAgentLogin(client, harness);
+        const start = await startAgentLogin(client, harness, target);
         window.open(start.url, "_blank", "noopener,noreferrer");
         setLogin(
           start.mode === "paste-code"
@@ -163,7 +169,7 @@ export function AccountsSettingsPage() {
     setLogin({ ...login, submitting: true, error: null });
     void (async () => {
       try {
-        await completeAgentLogin(client, loginId, trimmed);
+        await completeAgentLogin(client, loginId, trimmed, target);
         setLogin(null);
         void load("postLogin");
       } catch (cause) {
@@ -180,11 +186,32 @@ export function AccountsSettingsPage() {
     const loginId = login?.kind === "paste-code" || login?.kind === "browser" ? login.start.loginId : null;
     setLogin(null);
     if (client !== null && loginId !== null) {
-      void cancelAgentLogin(client, loginId).catch(() => {});
+      void cancelAgentLogin(client, loginId, target).catch(() => {});
     }
   }
 
-  const accountCount = snapshot.kind === "ready" && snapshot.snapshot.accounts.length > 0 ? snapshot.snapshot.accounts.length : null;
+  /**
+   * `set_target_device` (accounts.rs:242-256): a different device is a
+   * different accounts world — drop the in-flight login/action state; the
+   * `load` effect reloads with a forced usage probe (the new device's cache
+   * is cold).
+   */
+  function setTargetDevice(next: string | null) {
+    if (next === target) {
+      return;
+    }
+    setTarget(next);
+    setLogin(null);
+    setBusyAccount(null);
+    setActionError(null);
+  }
+
+  const devices = (snapshot?.devices.rows ?? [])
+    .slice()
+    .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
+  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  const refreshing = snapshotState.kind === "loading";
+  const accountCount = snapshotState.kind === "ready" && snapshotState.snapshot.accounts.length > 0 ? snapshotState.snapshot.accounts.length : null;
 
   return (
     <div className="settings-page">
@@ -192,14 +219,22 @@ export function AccountsSettingsPage() {
         <h1 className="settings-title">
           Accounts{accountCount !== null ? <span className="settings-title-count">{accountCount}</span> : null}
         </h1>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          disabled={snapshot.kind === "loading"}
-          onClick={() => void load("refresh")}
-        >
-          Refresh
-        </button>
+        <div className="settings-header-actions">
+          <button
+            type="button"
+            className={`settings-ghost-action settings-refresh ${refreshing ? "settings-refresh-busy" : ""}`}
+            onClick={() => void load("refresh")}
+          >
+            <Icon name="refresh" size={16} />
+            Refresh
+          </button>
+          <DeviceSwitcher
+            devices={devices}
+            localDeviceId={localDeviceId}
+            target={target}
+            onTargetChange={setTargetDevice}
+          />
+        </div>
       </div>
       <p className="settings-subtitle">
         The Claude Code, Codex, and Cursor logins on this device. Roboco detects the live session, keeps each account
@@ -212,9 +247,9 @@ export function AccountsSettingsPage() {
         </p>
       )}
 
-      {snapshot.kind === "error" ? (
+      {snapshotState.kind === "error" ? (
         <p className="error-strip" role="alert" onClick={() => void load("retry")}>
-          {snapshot.message}
+          {snapshotState.message}
           <span className="error-strip-hint">Click to retry</span>
         </p>
       ) : (
@@ -222,7 +257,7 @@ export function AccountsSettingsPage() {
           <ProviderSection
             key={provider.harness}
             provider={provider}
-            loadable={snapshot}
+            loadable={snapshotState}
             busyAccount={busyAccount}
             now={now}
             onAdd={() => addAccount(provider.harness)}
@@ -325,7 +360,7 @@ function AccountRow({
       <div className="settings-row-main">
         <span className="settings-row-title">{accountLabel(account)}</span>
         {account.usageWindows.length === 0 ? (
-          <span className="settings-row-meta">{usageFallback(account)}</span>
+          <span className="account-usage-fallback">{usageFallback(account)}</span>
         ) : (
           <span className="usage-list">
             {account.usageWindows.map((window, index) => (
@@ -387,13 +422,30 @@ function UsageMeter({
   );
 }
 
+/**
+ * A ghost account row (`render_skeleton_row`, accounts.rs:1114-1193): avatar,
+ * email line, two usage-meter ghosts, a badge — same geometry as the real row
+ * so loaded data lands without a layout jump. `dim` fades row two; the inner
+ * block rides the shared skeleton pulse.
+ */
 function SkeletonRow({ dim = false }: { readonly dim?: boolean }) {
   return (
-    <div className={`settings-row skeleton-row ${dim ? "skeleton-dim" : ""}`} aria-hidden>
-      <span className="account-avatar skeleton-block" />
-      <div className="settings-row-main">
-        <span className="skeleton-block skeleton-line" />
-        <span className="skeleton-block skeleton-line skeleton-line-short" />
+    <div className={`skeleton-account-row ${dim ? "skeleton-account-row-dim" : ""}`} aria-hidden>
+      <div className="skeleton-account-inner">
+        <span className="skeleton-avatar" />
+        <div className="skeleton-account-main">
+          <span className="skeleton-ghost skeleton-email-line" />
+          <div className="skeleton-meters">
+            {[0, 1].map((ix) => (
+              <div className="skeleton-meter-row" key={ix}>
+                <span className="skeleton-ghost skeleton-meter-label" />
+                <span className="skeleton-meter-track" />
+                <span className="skeleton-ghost skeleton-meter-percent" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <span className="skeleton-ghost skeleton-badge" />
       </div>
     </div>
   );
@@ -410,28 +462,28 @@ function LoginDialog({
 }) {
   const [code, setCode] = useState("");
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
+    <div className="login-dialog-backdrop" onClick={onCancel}>
       <section
-        className="modal-card panel"
+        className="login-dialog-card panel"
         role="dialog"
         aria-label={loginTitle(flow.harness)}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="modal-title">{loginTitle(flow.harness)}</h2>
+        <h2 className="login-dialog-title">{loginTitle(flow.harness)}</h2>
         {flow.kind === "starting" && (
-          <p className="settings-row-meta modal-body">Starting the login flow…</p>
+          <p className="settings-row-meta login-dialog-body">Starting the login flow…</p>
         )}
         {flow.kind === "paste-code" && (
           <>
-            <p className="settings-row-meta modal-body">
+            <p className="settings-row-meta login-dialog-body">
               A browser window opened. Sign in to the account you want to add, approve access, then paste the code
               Anthropic shows you below. Your current login is untouched until you switch.
             </p>
-            <a className="modal-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
+            <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the authorization page
             </a>
             <form
-              className="modal-form"
+              className="login-dialog-form"
               onSubmit={(event) => {
                 event.preventDefault();
                 onSubmitCode(code);
@@ -447,8 +499,8 @@ function LoginDialog({
                 spellCheck={false}
                 autoFocus
               />
-              {flow.error !== null && <p className="form-error">{flow.error}</p>}
-              <div className="modal-actions">
+              {flow.error !== null && <p className="login-dialog-error">{flow.error}</p>}
+              <div className="login-dialog-actions">
                 <button type="button" className="btn btn-ghost" onClick={onCancel}>
                   Cancel
                 </button>
@@ -461,22 +513,22 @@ function LoginDialog({
         )}
         {flow.kind === "browser" && (
           <>
-            <p className="settings-row-meta modal-body">
+            <p className="settings-row-meta login-dialog-body">
               {flow.harness === "cursor"
                 ? "Finish signing in to Cursor in your browser. This mints a roboco-named API key you can revoke any time from Cursor's dashboard — it is separate from `cursor-agent login`."
                 : "Finish signing in to OpenAI in your browser. The new login is captured in an isolated profile — your current session is untouched until you switch."}
             </p>
-            <a className="modal-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
+            <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the sign-in page
             </a>
             {flow.error === null ? (
-              <p className="settings-row-meta modal-poll">
+              <p className="login-dialog-poll">
                 <span className="dot dot-working" /> {flow.message ?? "Waiting for the browser…"}
               </p>
             ) : (
-              <p className="form-error">{flow.error}</p>
+              <p className="login-dialog-error">{flow.error}</p>
             )}
-            <div className="modal-actions">
+            <div className="login-dialog-actions">
               <button type="button" className="btn btn-ghost" onClick={onCancel}>
                 {flow.error !== null ? "Close" : "Cancel"}
               </button>

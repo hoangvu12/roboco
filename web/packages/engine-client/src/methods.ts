@@ -12,6 +12,9 @@ export const WATCH_SPACES = "WatchSpaces";
 export const WATCH_DEVICES = "WatchDevices";
 export const WATCH_SESSIONS = "WatchSessions";
 export const WATCH_QUEUE = "WatchQueue";
+/** Live edge-connectivity posture (crates/engine/src/rpc.rs:1098): one
+ *  `Connectivity` object per engine, re-sent whole on every change. */
+export const WATCH_CONNECTIVITY = "WatchConnectivity";
 /** The chat doc's transcript stream: full `reset` first, then delta frames. */
 export const WATCH_DOC_MESSAGES = "WatchDocMessages";
 /** Fetch a tool sidecar blob (`{blobRef}` → `{text}`) - full output/diff text. */
@@ -34,12 +37,42 @@ export const POLL_AGENT_LOGIN = "PollAgentLogin";
 export const CANCEL_AGENT_LOGIN = "CancelAgentLogin";
 /** Workspace entity mutations, tagged `{op: createChat|renameChat|deleteChat|…}` (crates/engine/src/rpc.rs MutateParams). */
 export const MUTATE = "Mutate";
+/** The add-space palette's folder browse (`{query, path?, targetDeviceId?}`;
+ *  `path` omitted means "browse home"). Replies `FolderListing`. */
+export const LIST_FOLDERS = "ListFolders";
+/** The add-space palette's Locations rail: mounted drives/volumes of the
+ *  browsed device (`{targetDeviceId?}`). Replies `DriveListing`. */
+export const LIST_DRIVES = "ListDrives";
+/** Resolve/optionally create a typed project path ON THE OWNING DEVICE
+ *  (`{path, createIfMissing, targetDeviceId}` — targetDeviceId required).
+ *  Replies `PrepareSpacePathReply` (path, exists, gitDetected). */
+export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 /** Harness catalog for the pickers (one row per harness). */
 export const LIST_HARNESSES = "ListHarnesses";
+/** Settings → Agents: flip one harness's enablement; the reply is the
+ *  device's fresh `ListHarnesses` catalog (a raced toggle self-corrects). */
+export const SET_HARNESS_ENABLED = "SetHarnessEnabled";
+/** Settings → Agents session-title pickers (per-device `harness-prefs.json`).
+ *  `SetTitleSettings`'s params ARE the settings; both reply with the stored pair. */
+export const GET_TITLE_SETTINGS = "GetTitleSettings";
+export const SET_TITLE_SETTINGS = "SetTitleSettings";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
 export const LIST_MODELS = "ListModels";
+/** The composer's `/` discovery (crates/rpc/src/lib.rs:42): harness-advertised
+ *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Cached
+ *  once per harness per composer lifetime, filtered locally per keystroke. */
+export const LIST_COMMANDS = "ListCommands";
+/** The composer's `@` file-mention search (crates/rpc/src/lib.rs:131):
+ *  `{query, chatId? | spaceId?, path?, targetDeviceId?}` → `FileSearchMatch[]`.
+ *  Debounced 80ms client-side; one retry after 250ms on transport failure. */
+export const SEARCH_FILES = "SearchFiles";
 /** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
 export const QUEUE_COMMAND = "QueueCommand";
+/** Failed-send retry (crates/rpc/src/lib.rs:54): `{chatId}` — the engine
+ *  re-issues the chat's dead Run/Steer commands under their original message
+ *  ids; the user-entry pre-write dedupes by id, so the optimistic echo acks
+ *  without doubling. */
+export const RETRY_DELIVERY = "RetryDelivery";
 /** Message-queue surface (crates/engine/rpc.rs §3.5). The queue lives on the chat doc;
  *  `WatchQueue` streams `{items}` snapshots, the rest are mutations that require
  *  an explicit ack so a racing device's row never silently moves. Edit leases
@@ -90,3 +123,15 @@ export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
 export const GET_CHECKOUT_FILE_DIFF_TEXT = "GetCheckoutFileDiffText";
 /** Branches for a checkout (one-shot). Default branch first. */
 export const LIST_BRANCHES = "ListBranches";
+/** Refs for a repo folder (one-shot): branches plus their current/worktree state (`crates/rpc/src/lib.rs:117`, `pickers.rs:1255`). */
+export const LIST_REFS = "ListRefs";
+/** Check a repo folder out onto another ref (`crates/rpc/src/lib.rs:125`, `pickers.rs:1340`). */
+export const SWITCH_REF = "SwitchRef";
+/** The History pane's paged commit log (`{cwd, cursor, limit}` → `GitHistoryPage`). */
+export const LIST_GIT_HISTORY = "ListGitHistory";
+/** Full-repository commit search (`{cwd, query, cursor, limit}` → `GitHistoryPage`). */
+export const SEARCH_GIT_HISTORY = "SearchGitHistory";
+/** GitHub avatar blobs for commit authors (`{cwd, authors, cursor, limit}` → email → base64). */
+export const RESOLVE_GIT_AVATARS = "ResolveGitAvatars";
+/** `git fetch --all --quiet` on a repo (`{repoPath}` → `{ok: true}`). */
+export const FETCH_ALL = "FetchAll";

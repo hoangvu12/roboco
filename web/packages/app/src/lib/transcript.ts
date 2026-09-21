@@ -13,11 +13,22 @@ import type {
   MessagePart,
   SessionMessageEntry,
   ToolCall,
+  ToolDiff,
   ToolDiffStat,
   TranscriptFrame,
 } from "@roboco/proto";
+import type { IconName } from "@roboco/icons";
+import { layout } from "@roboco/theme";
+import { bodyHeight, truncateFileLines, type FileDiff } from "./diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
+import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
+import { splitBadges, type MessageBadge } from "./badges";
+
+/** `Theme::TITLEBAR_HEIGHT` (proto/layout.rs:44) — the overlay bar's height. */
+export const TITLEBAR_HEIGHT = layout.chrome.titlebarHeight;
+/** `Theme::TRANSCRIPT_FADE_BAND` (proto/layout.rs) — the edge fade ramp. */
+export const TRANSCRIPT_FADE_BAND = layout.chrome.transcriptFadeBand;
 
 // ---------------------------------------------------------------------------
 // Shared view helpers (crates/proto/src/view.rs)
@@ -214,12 +225,126 @@ export function subagentModel(call: ToolCall): string | null {
   return null;
 }
 
+/**
+ * `is_agent_call` (transcript.rs:359) — the genus is the call itself, never
+ * the ref: docs written before the claude-driver fix carry stray
+ * `subagent_ref`s on ordinary Run chips, and honoring the ref alone turned
+ * those Runs into spawn chips that opened empty, never-created docs.
+ */
+export function isAgentCall(call: ToolCall): boolean {
+  return isSubagentSpawn(call);
+}
+
+/** `is_agent_tool` (:368) — the item's call is an agent call. */
+export function isAgentTool(item: ToolItem): boolean {
+  return isAgentCall(item.call);
+}
+
+/**
+ * `is_spawn_link` (:374) — an agent call that actually links to a spawned
+ * doc. These render as links, never accordions: their `detail`/`invocation`
+ * are suppressed and the whole chip opens the subagent's transcript.
+ */
+export function isSpawnLink(item: ToolItem): boolean {
+  return isAgentCall(item.call) && item.subagentRef !== null;
+}
+
+/**
+ * `tool_group_collapses` (:380) — ordinary tool groups fold behind a summary
+ * header; an all-agent group renders as standalone, always-open rows.
+ */
+export function toolGroupCollapses(tools: readonly ToolItem[]): boolean {
+  return tools.some((tool) => !isAgentTool(tool));
+}
+
+/**
+ * First line of `text`, trimmed, capped at `max` chars with an ellipsis
+ * (transcript.rs:7152).
+ */
+export function titleLine(text: string, max: number): string | null {
+  const line = text.split("\n").find((l) => l.trim().length > 0);
+  if (line === undefined) {
+    return null;
+  }
+  const trimmed = line.trim();
+  const chars = [...trimmed];
+  if (chars.length > max) {
+    return `${chars.slice(0, max).join("")}…`;
+  }
+  return trimmed;
+}
+
+/**
+ * Drop a leading "Agent"/"Task" genus (with its `:` and spacing) from a
+ * spawn-title candidate (transcript.rs:7164). Only a real word boundary
+ * strips — "Taskmaster" keeps its name; a bare "Agent"/"Task" strips to "".
+ */
+export function stripSpawnPrefix(text: string): string {
+  const t = text.trim();
+  for (const prefix of ["agent", "task"]) {
+    if (t.length >= prefix.length && t.slice(0, prefix.length).toLowerCase() === prefix) {
+      const rest = t.slice(prefix.length);
+      if (rest.length === 0) {
+        return "";
+      }
+      if (rest.startsWith(":") || /^\s/.test(rest)) {
+        return rest.replace(/^:+/, "").trim();
+      }
+    }
+  }
+  return t;
+}
+
+/**
+ * `subagent_tab_title` (transcript.rs:7188) — the BARE task description.
+ * Candidates in order: the tool name, then `input.description`, then
+ * `input.prompt`; each stripped of its spawn prefix and capped at 40 chars;
+ * "Subagent" only as the last resort.
+ */
+export function subagentTabTitle(call: ToolCall): string {
+  const [name, input] =
+    call.kind === "unknown"
+      ? [call.name, call.input]
+      : call.kind === "mcp"
+        ? [call.tool, call.input]
+        : [null, null];
+  if (name === null) {
+    return "Subagent";
+  }
+  const candidates: (string | null)[] = [
+    name,
+    typeof input === "object" && input !== null ? readString(input, "description") : null,
+    typeof input === "object" && input !== null ? readString(input, "prompt") : null,
+  ];
+  for (const text of candidates) {
+    if (text === null) {
+      continue;
+    }
+    const title = titleLine(stripSpawnPrefix(text), SUBAGENT_TITLE_MAX);
+    if (title !== null) {
+      return title;
+    }
+  }
+  return "Subagent";
+}
+
+function readString(input: object, key: string): string | null {
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
+}
+
 // ---------------------------------------------------------------------------
 // Tool detail payloads (transcript.rs tool_detail / call_block / thought_item)
 // ---------------------------------------------------------------------------
 
 /** Max verbatim output lines per chip before the counted tail row. */
 export const OUTPUT_DETAIL_MAX_LINES = 24;
+/**
+ * Max diff lines an inline tool-diff detail renders — the detail is one
+ * stacked element inside its transcript row, so it must stay bounded
+ * (transcript.rs:742).
+ */
+export const DIFF_DETAIL_MAX_LINES = 600;
 /** Columns at which an invocation line soft-wraps into continuation lines. */
 export const CALL_WRAP_COLS = 80;
 /** Column budget for soft-wrapping thought text into detail lines. */
@@ -229,6 +354,7 @@ export const THOUGHT_WRAP_COLS = 96;
 export type ToolDetail =
   | { readonly kind: "output"; readonly lines: readonly string[]; readonly truncatedBy: number }
   | { readonly kind: "thought"; readonly lines: readonly (readonly InlineRun[])[]; readonly truncatedBy: number }
+  | { readonly kind: "diff"; readonly file: FileDiff }
   | { readonly kind: "stats"; readonly stats: readonly ToolDiffStat[] };
 
 /** One tool invocation (or a reasoning part riding the group) inside a row. */
@@ -249,9 +375,51 @@ export interface ToolItem {
   readonly subagentRef: string | null;
   /** Subagent lifecycle, distinct from `resolved` (eager-done). */
   readonly subagentStatus: "running" | "done" | "failed" | null;
+  /** One-line live tail — LEGACY docs only; fingerprinted, never rendered. */
+  readonly subagentTail: string | null;
   /** A reasoning part riding the tool group as a chip. */
   readonly isThought: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Tool-chip geometry (transcript.rs:96-166) — analytic, so fold heights need
+// no measurement. Ordinary tools place their icon on the rail; subagents
+// retain a 30px card. Rows stack without a gap so the rail continues
+// alongside expanded output.
+// ---------------------------------------------------------------------------
+
+/** `CHIP_HEIGHT` — a standalone (non-rail) chip row. */
+export const CHIP_HEIGHT = 38;
+/** `CHIP_GAP` — rail rows stack flush. */
+export const CHIP_GAP = 0;
+/** `CHIP_CARD_HEIGHT` — the chip card's border-box height. */
+export const CHIP_CARD_HEIGHT = 30;
+/**
+ * `CHIP_HEADER_HEIGHT` — the card's inner header height (`CARD − 2`: a 30px
+ * header inside a 30px bordered card clips 2px and every glyph reads high,
+ * transcript.rs:102-106).
+ */
+export const CHIP_HEADER_HEIGHT = CHIP_CARD_HEIGHT - 2;
+/** `TOOL_TEXT_SIZE` / `TOOL_LABEL_SIZE` / `TOOL_LABEL_LINE_HEIGHT` (:117-119). */
+export const TOOL_TEXT_SIZE = 12;
+export const TOOL_LABEL_SIZE = 12;
+export const TOOL_LABEL_LINE_HEIGHT = 18;
+/** `TOOL_GROUP_HEADER_HEIGHT` — the collapsed summary line (:120). */
+export const TOOL_GROUP_HEADER_HEIGHT = 26;
+/** `TOOL_TREE_ROW_HEIGHT` — a rail (activity) chip row (:122). */
+export const TOOL_TREE_ROW_HEIGHT = 32;
+/** `OUTPUT_LINE_HEIGHT` — one output/thought detail row (:746). */
+export const OUTPUT_LINE_HEIGHT = 18;
+/** `OUTPUT_BODY_PAD` — the detail body's py(6) × 2 (:749). */
+export const OUTPUT_BODY_PAD = 12;
+/** `DETAIL_SEPARATOR` — the hairline between an open chip's blocks (:752). */
+export const DETAIL_SEPARATOR = 1;
+/** `BLOB_AFFORDANCE_HEIGHT` — the "Show full output" row (:1838). */
+export const BLOB_AFFORDANCE_HEIGHT = 24;
+/** Line cap for a FETCHED full output (a defensive ceiling, :1851). */
+export const FULL_OUTPUT_MAX_LINES = 400;
+/** `SUBAGENT_TITLE_MAX` — chars a subagent tab title keeps (:7149). */
+export const SUBAGENT_TITLE_MAX = 40;
 
 /** A reasoning part flattened into styled, wrapped detail lines. */
 export function thoughtDetail(text: string, live: boolean): ToolDetail | null {
@@ -461,10 +629,12 @@ function thoughtBlockLines(block: Block, indent: number, out: InlineRun[][]): vo
         if (out.length === mark) {
           out.push(indentRun(inner));
         }
-        // The item's first line trades its indent spaces for the marker.
+        // The item's first line trades its indent spaces for the marker —
+        // the slot-0 run is REPLACED (its remainder is the item's own inner
+        // indent, which the marker supplants; transcript.rs:599-601).
         const first = out[mark]![0];
         if (first !== undefined) {
-          out[mark]![0] = { text: `${" ".repeat(indent)}${marker}${first.text.slice(indent)}`, style: first.style };
+          out[mark]![0] = { text: `${" ".repeat(indent)}${marker}`, style: first.style };
         }
       });
       break;
@@ -520,13 +690,25 @@ function thoughtBlockLines(block: Block, indent: number, out: InlineRun[][]): vo
 }
 
 /**
- * Build a tool part's expandable detail. A diff (or its stats) wins over raw
- * output; trailing blank lines are trimmed so the block hugs its content.
+ * Build a tool part's expandable detail (transcript.rs:757). An inline diff
+ * wins (it is the more structured record of the same action) → then
+ * non-empty diff stats → then raw output, with trailing blank lines trimmed
+ * so the block hugs its content. The diff is capped at
+ * `DIFF_DETAIL_MAX_LINES` so a whole-file rewrite can't build tens of
+ * thousands of rows inside one transcript row.
  */
 export function toolDetail(
   output: string | null | undefined,
+  diff: ToolDiff | null | undefined,
   diffStats: readonly ToolDiffStat[] | null | undefined,
 ): ToolDetail | null {
+  if (diff !== null && diff !== undefined) {
+    const file = diffToFile(diff);
+    if (file.hunks.length === 0) {
+      return null;
+    }
+    return { kind: "diff", file: truncateFileLines(file, DIFF_DETAIL_MAX_LINES) };
+  }
   if (diffStats !== null && diffStats !== undefined && diffStats.length > 0) {
     return { kind: "stats", stats: diffStats };
   }
@@ -542,6 +724,353 @@ export function toolDetail(
   }
   const truncatedBy = Math.max(0, lines.length - OUTPUT_DETAIL_MAX_LINES);
   return { kind: "output", lines: lines.slice(0, OUTPUT_DETAIL_MAX_LINES), truncatedBy };
+}
+
+// ---------------------------------------------------------------------------
+// diff_to_file (transcript.rs:890) — reduce an inline ToolDiff to the changes
+// pane's FileDiff: hunks grouped with 3 context lines, dual 1-based line
+// numbers, unified-diff hunk headers, and add/del counts.
+// ---------------------------------------------------------------------------
+
+/** One line-level edit from the Myers walk, in document order. */
+interface LineOp {
+  readonly tag: "equal" | "del" | "ins";
+  readonly oldNo: number;
+  readonly newNo: number;
+}
+
+/** Lines of `text` the way Rust's `str::lines()` splits (no trailing `""`). */
+function splitLines(text: string): string[] {
+  if (text.length === 0) {
+    return [];
+  }
+  const lines = text.split("\n");
+  if (text.endsWith("\n")) {
+    lines.pop();
+  }
+  return lines;
+}
+
+/**
+ * The minimal edit script between two line lists — Myers' O(ND) greedy
+ * algorithm with a per-d V trace, backtracked to line-level ops. This is the
+ * web stand-in for `similar::TextDiff::from_lines`; the huge-input guard
+ * (a >4M-cell pairing) degrades to one whole-file hunk, matching similar's
+ * bounded behavior on pathological inputs.
+ */
+function myersLineOps(a: readonly string[], b: readonly string[]): LineOp[] {
+  const n = a.length;
+  const m = b.length;
+  const ops: LineOp[] = [];
+  if (n + m > 20_000) {
+    // Pathological input: all deletes then all inserts, one pairing.
+    for (let ix = 0; ix < n; ix += 1) {
+      ops.push({ tag: "del", oldNo: ix, newNo: -1 });
+    }
+    for (let ix = 0; ix < m; ix += 1) {
+      ops.push({ tag: "ins", oldNo: -1, newNo: ix });
+    }
+    return ops;
+  }
+  if (n === 0 && m === 0) {
+    return ops;
+  }
+  const max = n + m;
+  const offset = max;
+  // V indexed by k + offset; one snapshot per d for the backtrack. Reads
+  // clamp to 0 — the guards below keep the read indexes in-range, and a
+  // never-written cell reads as its initial 0.
+  const at = (arr: readonly number[], k: number): number => arr[k + offset] ?? 0;
+  const trace: number[][] = [];
+  let v = new Array<number>(2 * max + 1).fill(0);
+  let found = -1;
+  outer: for (let d = 0; d <= max; d += 1) {
+    trace.push([...v]);
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && at(v, k - 1) < at(v, k + 1))) {
+        x = at(v, k + 1);
+      } else {
+        x = at(v, k - 1) + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      v[k + offset] = x;
+      if (x >= n && y >= m) {
+        found = d;
+        break outer;
+      }
+    }
+  }
+  if (found < 0) {
+    return ops;
+  }
+  // Backtrack: emit line ops in REVERSE, then flip.
+  let x = n;
+  let y = m;
+  const reversed: LineOp[] = [];
+  for (let d = found; d > 0; d -= 1) {
+    const vPrev = trace[d]!;
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && at(vPrev, k - 1) < at(vPrev, k + 1))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = at(vPrev, prevK);
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      x -= 1;
+      y -= 1;
+      reversed.push({ tag: "equal", oldNo: x, newNo: y });
+    }
+    if (x === prevX) {
+      y -= 1;
+      reversed.push({ tag: "ins", oldNo: -1, newNo: y });
+    } else {
+      x -= 1;
+      reversed.push({ tag: "del", oldNo: x, newNo: -1 });
+    }
+  }
+  while (x > 0 && y > 0) {
+    x -= 1;
+    y -= 1;
+    reversed.push({ tag: "equal", oldNo: x, newNo: y });
+  }
+  ops.push(...reversed.reverse());
+  return ops;
+}
+
+/** Group line ops into hunks with `context` equal lines around the changes. */
+function groupHunks(ops: readonly LineOp[], context: number): { startIx: number; ops: LineOp[] }[] {
+  const groups: { startIx: number; ops: LineOp[] }[] = [];
+  const changeIx: number[] = [];
+  for (let ix = 0; ix < ops.length; ix += 1) {
+    if (ops[ix]!.tag !== "equal") {
+      changeIx.push(ix);
+    }
+  }
+  if (changeIx.length === 0) {
+    return groups;
+  }
+  const gapLimit = 2 * context;
+  let groupStart = Math.max(0, changeIx[0]! - context);
+  let groupEnd = Math.min(ops.length - 1, changeIx[0]! + context);
+  for (let ix = 1; ix < changeIx.length; ix += 1) {
+    const at = changeIx[ix]!;
+    if (at - groupEnd > gapLimit + 1) {
+      groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
+      groupStart = Math.max(0, at - context);
+    }
+    groupEnd = Math.min(ops.length - 1, at + context);
+  }
+  groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
+  return groups;
+}
+
+/**
+ * `diff_to_file` (transcript.rs:890) — one inline `ToolDiff` to the Changes
+ * pane's `FileDiff`, grouped with 3 context lines like
+ * `similar::TextDiff::grouped_ops(3)`. `oldText: null` means a new file
+ * (status `added`).
+ */
+export function diffToFile(diff: ToolDiff): FileDiff {
+  const oldText = diff.oldText ?? "";
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(diff.newText);
+  const ops = myersLineOps(oldLines, newLines);
+  // Each op's document-order start positions (an insert's old-side start is
+  // where it lands, a delete's new-side start where it lands) — the source
+  // of the hunk header's 0-based starts, exactly like similar's
+  // `old_range()/new_range()` starts.
+  const startOld: number[] = [];
+  const startNew: number[] = [];
+  let o = 0;
+  let nw = 0;
+  for (const op of ops) {
+    startOld.push(o);
+    startNew.push(nw);
+    if (op.tag !== "ins") {
+      o += 1;
+    }
+    if (op.tag !== "del") {
+      nw += 1;
+    }
+  }
+  const hunks: { header: string; lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] }[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let maxLine = 0;
+  for (const group of groupHunks(ops, 3)) {
+    const oldStart = startOld[group.startIx] ?? 0;
+    const newStart = startNew[group.startIx] ?? 0;
+    let oldCount = 0;
+    let newCount = 0;
+    for (const op of group.ops) {
+      if (op.tag === "equal" || op.tag === "del") {
+        oldCount += 1;
+      }
+      if (op.tag === "equal" || op.tag === "ins") {
+        newCount += 1;
+      }
+    }
+    const header = `@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`;
+    const lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] = [];
+    for (const op of group.ops) {
+      if (op.tag === "del") {
+        deletions += 1;
+      } else if (op.tag === "ins") {
+        additions += 1;
+      }
+      const oldNo = op.tag === "ins" ? null : op.oldNo + 1;
+      const newNo = op.tag === "del" ? null : op.newNo + 1;
+      maxLine = Math.max(maxLine, oldNo ?? 0, newNo ?? 0);
+      lines.push({
+        kind: op.tag === "equal" ? "context" : op.tag === "ins" ? "add" : "del",
+        oldNo,
+        newNo,
+        text: op.tag === "ins" ? newLines[op.newNo]! : oldLines[op.oldNo]!,
+      });
+    }
+    hunks.push({ header, lines });
+  }
+  return {
+    path: diff.path,
+    oldPath: null,
+    status: diff.oldText === null || diff.oldText === undefined ? "added" : "modified",
+    binary: false,
+    notices: [],
+    hunks,
+    additions,
+    deletions,
+    maxLine,
+  };
+}
+
+/**
+ * Build the upgraded detail from a fetched sidecar blob
+ * (transcript.rs:1856). Diff blobs parse the `ToolDiff` JSON through the
+ * same pipeline as inline diffs; output blobs render (near-)uncapped —
+ * fetching past the summary was the point.
+ */
+export function blobDetail(text: string, isDiff: boolean): ToolDetail | null {
+  if (isDiff) {
+    let diff: ToolDiff | null = null;
+    try {
+      diff = JSON.parse(text) as ToolDiff;
+    } catch {
+      return null;
+    }
+    if (typeof diff !== "object" || diff === null || typeof diff.newText !== "string" || typeof diff.path !== "string") {
+      return null;
+    }
+    return toolDetail(null, diff, null);
+  }
+  const lines = text.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1]!.trim().length === 0) {
+    lines.pop();
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  const truncatedBy = Math.max(0, lines.length - FULL_OUTPUT_MAX_LINES);
+  return { kind: "output", lines: lines.slice(0, FULL_OUTPUT_MAX_LINES), truncatedBy };
+}
+
+/**
+ * Compact byte size for the fetch affordance label ("812 B", "12 KB")
+ * (transcript.rs:1880) — `ceil`, never decimals.
+ */
+export function formatKb(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  return `${Math.ceil(bytes / 1024)} KB`;
+}
+
+/**
+ * The glyph for a tool call — `tool_icon_path` (transcript.rs:6656) mapped
+ * to `@roboco/icons` names.
+ */
+export function toolIconName(call: ToolCall): IconName {
+  switch (call.kind) {
+    case "exec":
+      return "terminal";
+    case "readFile":
+    case "applyPatch":
+      return "document";
+    case "writeFile":
+      return "documentAdd";
+    case "editFile":
+      return "pen";
+    case "search":
+      return "magnifer";
+    case "glob":
+      return "folderWithFiles";
+    case "webFetch":
+    case "webSearch":
+      return "global";
+    case "todo":
+      return "checklist";
+    case "mcp":
+      return isSubagentSpawn(call) ? "bot" : "widget";
+    case "unknown":
+      if (isSubagentSpawn(call) || call.name === "Wait for agents") {
+        return "bot";
+      }
+      return "widget";
+  }
+}
+
+/**
+ * `file_badge_name` (transcript.rs:6676) — compact file-action chips show
+ * only the final path component, accepting `/` AND `\` (remote tools can
+ * report Windows paths even when the UI runs elsewhere).
+ */
+export function fileBadgeName(path: string): string {
+  for (const part of path.split(/[/\\]/).reverse()) {
+    if (part.length > 0) {
+      return part;
+    }
+  }
+  return path;
+}
+
+/**
+ * Analytic expanded-chips height (transcript.rs:1803) — no measurement
+ * needed for the fold tween.
+ */
+export function chipsHeight(count: number): number {
+  if (count === 0) {
+    return 0;
+  }
+  return CHIPS_TOP_PAD + count * CHIP_HEIGHT + (count - 1) * CHIP_GAP;
+}
+
+/**
+ * Analytic height an open detail adds to its chip's card (separator + body)
+ * (transcript.rs:1814) — output/thought by line count, diff via the changes
+ * pane's own `body_height`, stats one row each.
+ */
+export function detailHeight(detail: ToolDetail): number {
+  let body: number;
+  switch (detail.kind) {
+    case "output":
+    case "thought":
+      body = (detail.lines.length + (detail.truncatedBy > 0 ? 1 : 0)) * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
+      break;
+    case "diff":
+      body = bodyHeight(detail.file);
+      break;
+    case "stats":
+      body = detail.stats.length * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
+      break;
+  }
+  return DETAIL_SEPARATOR + body;
 }
 
 /**
@@ -621,10 +1150,183 @@ export const USER_COLLAPSED_LINES = 5;
 /** Conservative char-count proxy for the fold affordance. */
 export const USER_COLLAPSE_CHARS = 400;
 
+// ---------------------------------------------------------------------------
+// Shared constants (transcript.rs:70-218; the spring pair lives in
+// lib/stick-spring.ts, listed in the ticket for reference only)
+// ---------------------------------------------------------------------------
+
+/** Per-chat saved viewports, LRU-bounded (transcript.rs MAX_SAVED_VIEWPORTS). */
+export const MAX_SAVED_VIEWPORTS = 256;
+/** Locally-authored queue rows awaiting materialization (transcript.rs:87). */
+export const MAX_PENDING_QUEUED_TURNS = 256;
+/** Cadence of the selection drag's edge auto-scroll (transcript.rs:91). */
+export const SELECTION_SCROLL_TICK_MS = 24;
+/** Distance from an edge where a selection drag starts auto-scrolling (:92). */
+export const SELECTION_SCROLL_EDGE_PX = 36;
+/** Max px per selection auto-scroll tick, at full penetration (:93). */
+export const SELECTION_SCROLL_MAX_STEP_PX = 24;
+/** Wrapped line height of the user bubble (transcript.rs USER_LINE_HEIGHT). */
+export const USER_LINE_HEIGHT = 22;
+/** Collapsed prompt text height: 5 lines * 22 (transcript.rs:1771). */
+export const USER_COLLAPSED_TEXT_HEIGHT = USER_COLLAPSED_LINES * USER_LINE_HEIGHT;
+/** Gap between the bubble and its expander (transcript.rs USER_TOGGLE_GAP). */
+export const USER_TOGGLE_GAP = 8;
+/**
+ * A locally-sent prompt parks this far below the viewport top
+ * (transcript.rs:205) — `TITLEBAR_HEIGHT + 10`: the titlebar overlays the
+ * full-height list, so its height is part of the inset.
+ */
+export const OWN_SEND_TOP_INSET_PX = TITLEBAR_HEIGHT + 10;
+/** Legal resting slack under the hold (transcript.rs:213). */
+export const OWN_SEND_SCROLL_SLACK_PX = 2;
+/** Per-60fps-frame retained fraction of the entry glide's error (:216). */
+export const OWN_SEND_GLIDE_RETAIN = 0.85;
+/** The entry glide snaps within this error (transcript.rs:218). */
+export const OWN_SEND_GLIDE_SNAP_PX = 1;
+/** Flavour-word rotation period (transcript.rs FLAVOUR_ROTATE_SECS). */
+export const FLAVOUR_ROTATE_SECS = 7;
+/** Long-press delay that toggles a prompt's fold (transcript.rs:4460). */
+export const USER_HOLD_DELAY_MS = 360;
+/** Copy-feedback clear (transcript.rs:5689, :5721). */
+export const COPIED_CLEAR_MS = 1200;
+/** Tool-group chip stack top pad — ticket 19 consumes (transcript.rs:166). */
+export const CHIPS_TOP_PAD = 2;
+
+// ---------------------------------------------------------------------------
+// Working-trailer helpers (transcript.rs:1886-1952)
+// ---------------------------------------------------------------------------
+
+/** The 21 flavour words, in desktop order (transcript.rs:1886-1915). */
+export const FLAVOUR_WORDS: readonly string[] = [
+  "Robocoing",
+  "Thinking",
+  "Pondering",
+  "Scheming",
+  "Brewing",
+  "Weaving",
+  "Tinkering",
+  "Musing",
+  "Composing",
+  "Sifting",
+  "Untangling",
+  "Distilling",
+  "Sketching",
+  "Plotting",
+  "Riffing",
+  "Combobulating",
+  "Percolating",
+  "Marinating",
+  "Noodling",
+  "Puzzling",
+  "Conjuring",
+];
+
+/** The flavour word for a seed at an elapsed time (transcript.rs:1919). */
+export function flavourWord(seed: number, elapsedSecs: number): string {
+  const step = Math.floor(Math.max(elapsedSecs, 0) / FLAVOUR_ROTATE_SECS);
+  const count = FLAVOUR_WORDS.length;
+  const ix = ((Math.trunc(seed) + step) % count + count) % count;
+  return FLAVOUR_WORDS[ix]!;
+}
+
+/** A stable per-chat seed (transcript.rs:1925 — fnv1a over the id). */
+export function flavourSeed(chatId: string): number {
+  return fnv1a(chatId);
+}
+
+/** "1m 32s"-style elapsed formatting (transcript.rs:1945). */
+export function formatElapsed(secs: number): string {
+  const clamped = Math.max(0, Math.floor(secs));
+  if (clamped < 60) {
+    return `${clamped}s`;
+  }
+  return `${Math.floor(clamped / 60)}m ${clamped % 60}s`;
+}
+
+/**
+ * The working trailer's "Sending…" bridge (transcript.rs:1933): true while an
+ * in-flight send is fresher than the session row's turn start — the row still
+ * carries the PREVIOUS turn (or none), so a timer would count the send
+ * round-trip and restart when the turn actually begins.
+ */
+export function sendingBridge(sendStarted: number | null, turnStarted: number | null): boolean {
+  if (sendStarted === null) {
+    return false;
+  }
+  if (turnStarted === null) {
+    return true;
+  }
+  return turnStarted <= sendStarted;
+}
+
+// ---------------------------------------------------------------------------
+// Selection drag auto-scroll (transcript.rs:142, §3.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * The t²-ramped auto-scroll step while a selection drag sits near a viewport
+ * edge. Positive moves toward the document bottom; the tick cadence is
+ * `SELECTION_SCROLL_TICK_MS` (24ms).
+ */
+export function selectionScrollStep(
+  bounds: { top: number; bottom: number },
+  position: { x: number; y: number },
+): number {
+  const height = bounds.bottom - bounds.top;
+  if (height <= 0) {
+    return 0;
+  }
+  const edge = Math.min(SELECTION_SCROLL_EDGE_PX, height / 3);
+  if (edge <= 0) {
+    return 0;
+  }
+  const scaled = (penetration: number): number => {
+    const t = Math.min(Math.max(penetration / edge, 0), 1);
+    return SELECTION_SCROLL_MAX_STEP_PX * t * t;
+  };
+  if (position.y < bounds.top + edge) {
+    return -scaled(bounds.top + edge - position.y);
+  }
+  if (position.y > bounds.bottom - edge) {
+    return scaled(position.y - (bounds.bottom - edge));
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// User-fold resize spec (transcript.rs:1178-1192)
+// ---------------------------------------------------------------------------
+
+/** Fold tween duration scales with travel, bounded to 850ms (:1178). */
+export function userResizeDurationMs(heightDelta: number): number {
+  return Math.round(Math.min(220 + Math.max(heightDelta, 0) * 0.32, 850));
+}
+
+/**
+ * The fold tween's curve (:1185): short folds keep the decisive ease-out;
+ * large folds ease-in-out so thousands of pixels do not vanish in the first
+ * few frames of a front-loaded curve. The name maps to the motion catalog's
+ * `--rb-ease-<curve>` custom property.
+ */
+export function userResizeCurve(heightDelta: number): "easeInOut" | "easeOut" {
+  return heightDelta > 500 ? "easeInOut" : "easeOut";
+}
+
 /** Whether a prompt may need a fold affordance (first-frame proxy). */
 export function userMessageNeedsCollapse(text: string): boolean {
   return text.split("\n").length > USER_COLLAPSED_LINES || [...text].length > USER_COLLAPSE_CHARS;
 }
+
+// ---------------------------------------------------------------------------
+// Sent file mentions (crates/ui/src/composer.rs:860-1338 — the projection the
+// transcript reuses so sent chips read as chips, not raw Markdown). Ticket 14
+// owns the implementation once, in `./mentions.ts`; this module re-exports
+// the transcript-facing surface it has always exposed.
+// ---------------------------------------------------------------------------
+
+export type { SentMentionSpan } from "./mentions";
+export { sentMentionDisplay } from "./mentions";
+
 
 /**
  * Clipboard payload for an assistant/system entry: authored text parts in
@@ -675,9 +1377,28 @@ export function fnv1a(text: string): number {
 export type TranscriptRowKind =
   | {
       readonly kind: "user";
+      /**
+       * The visible prompt — the PROJECTED display text when it carries file
+       * mentions (chip labels in place of the raw Markdown links); the
+       * attachment-ref trailer is already stripped.
+       */
       readonly text: string;
+      /** File-mention chips over `text`, in display-string offsets. */
+      readonly mentions: readonly SentMentionSpan[];
+      /**
+       * Structured context the prompt folded in as text, lifted back out
+       * (`badges::split`) — the pill's data (lib/badges.ts).
+       */
+      readonly badges: readonly MessageBadge[];
       /** Optimistic echo not yet confirmed by a doc frame. */
       readonly pending: boolean;
+      /**
+       * A pending echo past `UNDELIVERED_GRACE_MS` with nothing confirming it
+       * (`send_undelivered`) — the trailer under the last row carries the
+       * "Not delivered — click to retry" affordance. Only ever set on echo
+       * rows; a real doc row is delivered by definition.
+       */
+      readonly undelivered?: boolean;
       /** Attachment refs parsed out of the message's refs trailer
        *  (composer/use-attachments.ts `withAttachments`). The transcript
        *  renders a thumbnail strip above the bubble when non-empty. */
@@ -713,12 +1434,58 @@ export interface RowsOptions {
   readonly parse: (key: string, text: string, live: boolean) => BlockTree;
 }
 
-function isAgentCall(call: ToolCall): boolean {
-  return isSubagentSpawn(call);
+// ---------------------------------------------------------------------------
+// Virtualizer window
+// ---------------------------------------------------------------------------
+
+/** The mounted row range of the virtualizer: `first`..`last`, inclusive. */
+export interface RowWindow {
+  readonly first: number;
+  readonly last: number;
 }
 
-function isAgentTool(item: ToolItem): boolean {
-  return isAgentCall(item.call);
+/**
+ * The visible window over prefix-sum `positions` (row bottoms are monotonic
+ * by construction — `positions[ix] + rowHeights[ix]` is `positions[ix + 1]`):
+ * `first` is the first row whose BOTTOM crosses `top − overdraw`, `last` the
+ * last row whose TOP is at or below `top + height + overdraw` (the desktop's
+ * 320px overdraw on both ends, transcript.rs OVERDRAW_PX). One contiguous
+ * run: everything strictly above is replaced by the top spacer.
+ *
+ * When every row sits above the window (a stale `top` the scroller has not
+ * clamped yet), `first` pins to the last row so the spacer math stays inside
+ * `positions`; the next scroll event corrects the view.
+ */
+export function visibleRowWindow(
+  positions: readonly number[],
+  rowHeights: readonly number[],
+  top: number,
+  height: number,
+  overdraw: number,
+): RowWindow {
+  const count = positions.length;
+  const windowStart = top - overdraw;
+  const windowEnd = top + height + overdraw;
+  let first = count;
+  let last = -1;
+  for (let ix = 0; ix < count; ix++) {
+    const rowTop = positions[ix]!;
+    const bottom = rowTop + (rowHeights[ix] ?? 0);
+    // The first row to cross the window's start — the mounted prefix ends
+    // here. (The old `ix < first` test with `first` starting at 0 was never
+    // true, so every render mounted ALL rows from index 0 and top
+    // virtualization was dead.)
+    if (first === count && bottom >= windowStart) {
+      first = ix;
+    }
+    if (rowTop <= windowEnd) {
+      last = ix;
+    }
+  }
+  if (count > 0 && first >= count) {
+    first = count - 1;
+  }
+  return { first, last };
 }
 
 /**
@@ -738,14 +1505,23 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       .map((part) => part.text)
       .join("\n\n");
     const parsed = parseUserMessageImages(raw);
-    const copyText = parsed.text.trim().length > 0 ? parsed.text : null;
+    // Badges split BEFORE the mention projection, so a comment body's own
+    // Markdown never lands in the bubble (transcript.rs:1226).
+    const { text: body, badges } = splitBadges(parsed.text);
+    // File mentions render as chips here too, not just in the composer. The
+    // projection is pure over the text, so the raw-length row version stays
+    // a valid cache/diff key.
+    const mention = sentMentionDisplay(body);
+    const text = mention?.display ?? body;
+    const mentions = mention?.mentions ?? [];
+    const copyText = text.trim().length > 0 ? text : null;
     // `raw.length << 1 | pending` on the desktop; BigInt-free equivalent.
     return [
       {
         id: entry.id,
         version: raw.length * 2 + (pending ? 1 : 0),
         turnStart: true,
-        rowKind: { kind: "user", text: parsed.text, pending, attachments: parsed.attachments },
+        rowKind: { kind: "user", text, mentions, badges, pending, attachments: parsed.attachments },
         entryId: entry.id,
         // User rows always carry the strip (the optimistic echo included).
         timestamp: entry.createdAt,
@@ -787,13 +1563,14 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         call: part.call,
         isError: part.isError,
         resolved: part.resolved,
-        detail: toolDetail(part.output, part.diffStats),
+        detail: toolDetail(part.output, part.diff ?? null, part.diffStats),
         invocation: callBlock(part.call),
         outputRef: part.outputRef ?? null,
         outputBytes: part.outputBytes ?? null,
         diffRef: part.diffRef ?? null,
         subagentRef: part.subagentRef ?? null,
         subagentStatus: part.subagentStatus ?? null,
+        subagentTail: part.subagentTail ?? null,
         isThought: false,
       };
       // Agent chips don't share a fold with ordinary tools: flush whenever
@@ -824,6 +1601,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         diffRef: null,
         subagentRef: null,
         subagentStatus: null,
+        subagentTail: null,
         isThought: true,
       };
       // Thoughts join ordinary tool groups; agent groups stay pure.
@@ -906,7 +1684,20 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
   return rows;
 }
 
-/** Content fingerprint for a tool group row (the diff key). */
+/**
+ * Content fingerprint for a tool group row (the diff key, transcript.rs
+ * :1051) — per tool: the chip label bytes, the detail string LENGTH, the
+ * packed `is_error | resolved<<1` byte, a detail tag byte (0 none, 1 Output,
+ * 2 Diff, 3 Stats, 4 Thought) plus kind-specific payload (Output: line
+ * count, truncated_by, total byte count; Thought: line count, truncated_by,
+ * then EVERY run's bytes and a packed style byte `bold | italic<<1 |
+ * code<<2 | strike<<3 | link<<4`, `\n` per line; Diff: path, additions,
+ * deletions, hunk count; Stats: each `(path, additions, deletions)`), the
+ * invocation's line bytes + truncated_by, a packed
+ * `output_ref.is_some() | diff_ref.is_some()<<1` byte, a packed
+ * `subagent_ref.is_some() | status<<1` byte, and the subagent tail bytes.
+ * Finally the `auto_open` byte.
+ */
 function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number {
   let acc = "";
   for (const tool of tools) {
@@ -918,20 +1709,38 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
       acc += "0";
     } else if (tool.detail.kind === "output") {
       acc += `1${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines.join("").length}`;
-    } else if (tool.detail.kind === "thought") {
-      acc += `4${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines
-        .map((line) => line.map((run) => run.text).join(""))
-        .join("")
-        .length}`;
+    } else if (tool.detail.kind === "diff") {
+      const file = tool.detail.file;
+      acc += `2${file.path},${file.additions},${file.deletions},${file.hunks.length}`;
+    } else if (tool.detail.kind === "stats") {
+      acc += `3${tool.detail.stats.map((stat) => `${stat.path},${stat.additions},${stat.deletions}`).join(";")}`;
     } else {
-      acc += `5${tool.detail.stats.length}`;
+      acc += `4${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines
+        .map((line) =>
+          line
+            .map((run) => {
+              const style = run.style;
+              const packed =
+                Number(style.bold === true) |
+                (Number(style.italic === true) << 1) |
+                (Number(style.code === true) << 2) |
+                (Number(style.strikethrough === true) << 3) |
+                (Number(style.link !== null && style.link !== undefined) << 4);
+              return `${run.text}\u{1}${packed}`;
+            })
+            .join(""),
+        )
+        .join("\n")}`;
     }
     if (tool.invocation !== null && tool.invocation.kind === "output") {
-      acc += `i${tool.invocation.lines.length}`;
+      acc += `i${tool.invocation.lines.join("")},${tool.invocation.truncatedBy}`;
     }
-    acc += tool.outputRef ?? "";
-    acc += tool.subagentRef ?? "";
-    acc += tool.subagentStatus ?? "";
+    acc += String(Number(tool.outputRef !== null) | (Number(tool.diffRef !== null) << 1));
+    acc += String(
+      Number(tool.subagentRef !== null) |
+        (tool.subagentStatus === null ? 0 : tool.subagentStatus === "running" ? 1 << 1 : tool.subagentStatus === "done" ? 2 << 1 : 3 << 1),
+    );
+    acc += tool.subagentTail ?? "";
   }
   acc += String(Number(autoOpen));
   return fnv1a(acc);
@@ -941,9 +1750,12 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
 // Row spacing and diffs
 // ---------------------------------------------------------------------------
 
-const SPACE_SM = 8;
-const SPACE_MD = 12;
-const SPACE_LG = 16;
+/** `Theme::SPACE_SM` (proto/layout.rs) — the small step. */
+export const SPACE_SM = layout.space.sm;
+/** `Theme::SPACE_MD` (proto/layout.rs) — the medium step. */
+export const SPACE_MD = layout.space.md;
+/** `Theme::SPACE_LG` (proto/layout.rs) — the turn gap. */
+export const SPACE_LG = layout.space.lg;
 /** Gap between sibling markdown block rows (render.rs MD_BLOCK_GAP). */
 export const MD_BLOCK_GAP = 12;
 
@@ -954,24 +1766,25 @@ function partPrefix(id: string): string {
 }
 
 /**
- * Vertical gap opening `row` given its predecessor: turn gap at turn starts;
- * the markdown block gap between sibling rows of the same part; tool groups
- * open with the medium step (their own padding handles the trailing side)
- * and close into the small step.
+ * Vertical gap opening `row` given its predecessor (transcript.rs:1630): the
+ * turn gap at turn starts; the markdown block gap between sibling rows of the
+ * same part (BOTH rows markdown kinds — the guard keeps a chip following a
+ * block on the ordinary small step); tool groups open with the medium step
+ * and close into it.
  */
 export function topGapFor(prev: TranscriptRow | null, row: TranscriptRow): number {
   if (row.turnStart) {
     return SPACE_LG;
   }
-  const samePart = prev !== null && partPrefix(prev.id) === partPrefix(row.id);
-  if (samePart) {
+  const bothMarkdown =
+    prev !== null &&
+    (prev.rowKind.kind === "markdown" || prev.rowKind.kind === "liveMarkdown") &&
+    (row.rowKind.kind === "markdown" || row.rowKind.kind === "liveMarkdown");
+  if (bothMarkdown && partPrefix(prev.id) === partPrefix(row.id)) {
     return MD_BLOCK_GAP;
   }
-  if (row.rowKind.kind === "toolGroup") {
+  if (row.rowKind.kind === "toolGroup" || prev?.rowKind.kind === "toolGroup") {
     return SPACE_MD;
-  }
-  if (prev?.rowKind.kind === "toolGroup") {
-    return SPACE_SM;
   }
   return SPACE_SM;
 }
@@ -999,6 +1812,316 @@ export function diffRows(
     suffix++;
   }
   return [prefix, oldRows.length - suffix - prefix, newRows.length - suffix - prefix];
+}
+
+// ---------------------------------------------------------------------------
+// Viewport memory + own-turn runway (transcript.rs:2260-2470)
+// ---------------------------------------------------------------------------
+
+/** A stable per-chat viewport anchor (transcript.rs:2349). */
+export interface ViewportAnchor {
+  readonly rowId: string;
+  readonly entryId: string;
+  readonly fallbackIx: number;
+  readonly offsetInRow: number;
+}
+
+/** A resolved scroll position: row index + offset inside that row. */
+export interface RowOffset {
+  readonly itemIx: number;
+  readonly offsetInItem: number;
+}
+
+/**
+ * `ViewportAnchor::capture` (:2357): the first row whose bottom crosses the
+ * viewport top, keeping the intra-row offset. `null` when the list is empty.
+ */
+export function captureViewportAnchor(
+  rows: readonly TranscriptRow[],
+  scrollTop: number,
+  positions: readonly number[],
+  heights: readonly number[],
+): ViewportAnchor | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  for (let ix = 0; ix < rows.length; ix++) {
+    const top = positions[ix] ?? 0;
+    const bottom = top + (heights[ix] ?? 0);
+    if (bottom > scrollTop + 0.5) {
+      const row = rows[ix]!;
+      return { rowId: row.id, entryId: row.entryId, fallbackIx: ix, offsetInRow: scrollTop - top };
+    }
+  }
+  // Scrolled past the last row: pin to the last row, as the desktop's
+  // `item_ix.min(rows.len() - 1)` does for a glued offset.
+  const last = rows.length - 1;
+  const row = rows[last]!;
+  return { rowId: row.id, entryId: row.entryId, fallbackIx: last, offsetInRow: scrollTop - (positions[last] ?? 0) };
+}
+
+/** `resolve_exact` (:2368): the index of the row whose id matches, offset kept. */
+function resolveViewportAnchorExact(anchor: ViewportAnchor, rows: readonly TranscriptRow[]): RowOffset | null {
+  const itemIx = rows.findIndex((row) => row.id === anchor.rowId);
+  if (itemIx < 0) {
+    return null;
+  }
+  return { itemIx, offsetInItem: anchor.offsetInRow };
+}
+
+/**
+ * `resolve` (:2376): exact first; otherwise stay in the same message entry,
+ * choosing the surviving row nearest the old location (the intra-row offset
+ * is no longer meaningful then); else the clamped index with offset 0.
+ * `null` when the list is empty.
+ */
+export function resolveViewportAnchor(
+  anchor: ViewportAnchor,
+  rows: readonly TranscriptRow[],
+  allowFallback: boolean,
+): RowOffset | null {
+  const exact = resolveViewportAnchorExact(anchor, rows);
+  if (exact !== null) {
+    return exact;
+  }
+  if (!allowFallback) {
+    return null;
+  }
+  let best = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  rows.forEach((row, ix) => {
+    if (row.entryId === anchor.entryId) {
+      const distance = Math.abs(ix - anchor.fallbackIx);
+      if (distance < bestDistance) {
+        best = ix;
+        bestDistance = distance;
+      }
+    }
+  });
+  if (best >= 0) {
+    return { itemIx: best, offsetInItem: 0 };
+  }
+  if (rows.length === 0) {
+    return null;
+  }
+  return { itemIx: Math.min(anchor.fallbackIx, rows.length - 1), offsetInItem: 0 };
+}
+
+/**
+ * A locally-sent turn reserves the viewport below its prompt
+ * (transcript.rs:2269). `held`: the runway still owns the viewport (glide →
+ * hold) — any wheel/touch input releases it while the reservation stays as
+ * plain scrollable space. `positioned`: the entry glide has landed; the hold
+ * re-asserts the prompt's position after every layout.
+ */
+export interface OwnTurnAnchor {
+  readonly chatId: string;
+  readonly messageId: string;
+  readonly held: boolean;
+  readonly positioned: boolean;
+  readonly seenPrompt: boolean;
+}
+
+/** `released_for_restore` (:2287): navigation restores the reservation only. */
+export function ownTurnReleasedForRestore(anchor: OwnTurnAnchor): OwnTurnAnchor {
+  return { ...anchor, held: false, positioned: false, seenPrompt: true };
+}
+
+/**
+ * `observe_prompt` (:2294): a fresh send may install the anchor one
+ * notification before its echo. Once the prompt has appeared, its later
+ * disappearance is terminal — the runway must retire.
+ */
+export function ownTurnObservesPrompt(anchor: OwnTurnAnchor, exists: boolean): boolean {
+  return exists || !anchor.seenPrompt;
+}
+
+/**
+ * `PendingQueuedTurns` (transcript.rs:2307): locally-authored queue rows whose
+ * ids have not appeared in the transcript yet. Registration is deliberately
+ * inert; once a matching prompt materializes, the newest match becomes the
+ * own-turn anchor.
+ */
+export class PendingQueuedTurns {
+  #items: Array<{ chatId: string; messageId: string }> = [];
+
+  /** Test seam. */
+  get size(): number {
+    return this.#items.length;
+  }
+
+  register(chatId: string, messageId: string): void {
+    this.#items = this.#items.filter(
+      (item) => item.chatId !== chatId || item.messageId !== messageId,
+    );
+    this.#items.push({ chatId, messageId });
+    while (this.#items.length > MAX_PENDING_QUEUED_TURNS) {
+      this.#items.shift();
+    }
+  }
+
+  /**
+   * Consume every candidate from this chat that is now present (a
+   * `turn_start` row with `entry_id == messageId`) and return the newest.
+   * Multiple rows can land in one doc frame; the last send owns the runway.
+   */
+  takeLatestMaterialized(chatId: string, rows: readonly TranscriptRow[]): string | null {
+    let latest: string | null = null;
+    this.#items = this.#items.filter((item) => {
+      const materialized =
+        item.chatId === chatId &&
+        rows.some((row) => row.turnStart && row.entryId === item.messageId);
+      if (materialized) {
+        latest = item.messageId;
+      }
+      return !materialized;
+    });
+    return latest;
+  }
+}
+
+/**
+ * Session-local viewport state (transcript.rs:2401): chats that were
+ * following their tail keep following it; only user-owned viewports restore a
+ * concrete row anchor.
+ */
+export type SavedViewport =
+  | { readonly kind: "followTail" }
+  | {
+      readonly kind: "anchored";
+      readonly anchor: ViewportAnchor;
+      readonly distanceFromBottom: number;
+      /** The runway that made a short active turn scrollable, released. */
+      readonly ownTurn: OwnTurnAnchor | null;
+    };
+
+/**
+ * `SavedViewport::capture` (:2453): `null` when the rows are empty (a
+ * partial replay must never overwrite an older snapshot).
+ */
+export function captureSavedViewport(
+  rows: readonly TranscriptRow[],
+  scrollTop: number,
+  positions: readonly number[],
+  heights: readonly number[],
+  pinned: boolean,
+  distanceFromBottom: number,
+  ownTurn: OwnTurnAnchor | null,
+): SavedViewport | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  if (pinned) {
+    return { kind: "followTail" };
+  }
+  const anchor = captureViewportAnchor(rows, scrollTop, positions, heights);
+  if (anchor === null) {
+    return null;
+  }
+  return { kind: "anchored", anchor, distanceFromBottom, ownTurn };
+}
+
+/** Per-chat viewport memory, LRU-bounded by `MAX_SAVED_VIEWPORTS`. */
+export class SavedViewportCache {
+  #map = new Map<string, SavedViewport>();
+
+  get(chatId: string): SavedViewport | undefined {
+    return this.#map.get(chatId);
+  }
+
+  save(chatId: string, viewport: SavedViewport): void {
+    this.#map.delete(chatId);
+    this.#map.set(chatId, viewport);
+    while (this.#map.size > MAX_SAVED_VIEWPORTS) {
+      const oldest = this.#map.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.#map.delete(oldest.value);
+    }
+  }
+
+  /** Test seam. */
+  clear(): void {
+    this.#map.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parse wiring (transcript.rs:1557-1650, `parse_for_row`)
+// ---------------------------------------------------------------------------
+
+/** One `parse_for_row` outcome — why the returned tree is what it is. */
+export type ParseOutcome =
+  | { readonly kind: "incremental"; readonly parsedBytes: number; readonly stablePrefixBlocks: number }
+  | { readonly kind: "cached" }
+  | { readonly kind: "handoff" }
+  | { readonly kind: "full" };
+
+export interface ParseEntry {
+  readonly text: string;
+  readonly live: boolean;
+  readonly tree: BlockTree;
+}
+
+/** Leading top-level blocks whose char ranges are unchanged between trees. */
+function stablePrefixBlocks(prior: BlockTree | undefined, next: BlockTree): number {
+  if (prior === undefined) {
+    return 0;
+  }
+  let stable = 0;
+  while (
+    stable < prior.blocks.length &&
+    stable < next.blocks.length &&
+    prior.blocks[stable]!.start === next.blocks[stable]!.start &&
+    prior.blocks[stable]!.end === next.blocks[stable]!.end
+  ) {
+    stable++;
+  }
+  return stable;
+}
+
+/**
+ * `parse_for_row`, the transcript's markdown parse wiring extracted for
+ * testability — one call per text part per sync. Streaming parses with the
+ * mended tail (display-only closers); settling reuses the live tree when the
+ * sources match (the flicker-free handoff), serves settled trees from the
+ * cache, and otherwise parses from scratch.
+ */
+export function parseForRow(
+  state: Map<string, ParseEntry>,
+  key: string,
+  text: string,
+  streaming: boolean,
+): { tree: BlockTree; outcome: ParseOutcome } {
+  const prior = state.get(key);
+  if (streaming) {
+    if (prior !== undefined && prior.live && prior.text === text) {
+      return { tree: prior.tree, outcome: { kind: "incremental", parsedBytes: 0, stablePrefixBlocks: stablePrefixBlocks(prior.tree, prior.tree) } };
+    }
+    const tree = parseMarkdown(text, true);
+    const parsedBytes =
+      prior !== undefined && text.startsWith(prior.text) ? text.length - prior.text.length : text.length;
+    const outcome: ParseOutcome = {
+      kind: "incremental",
+      parsedBytes,
+      stablePrefixBlocks: stablePrefixBlocks(prior?.tree, tree),
+    };
+    state.set(key, { text, live: true, tree });
+    return { tree, outcome };
+  }
+  if (prior !== undefined && prior.text === text) {
+    if (!prior.live) {
+      return { tree: prior.tree, outcome: { kind: "cached" } };
+    }
+    // Live→complete handoff: the live parser's exact tree is adopted — the
+    // split rows then share the tree the unsplit row painted.
+    state.set(key, { text, live: false, tree: prior.tree });
+    return { tree: prior.tree, outcome: { kind: "handoff" } };
+  }
+  const tree = parseMarkdown(text, false);
+  state.set(key, { text, live: false, tree });
+  return { tree, outcome: { kind: "full" } };
 }
 
 // ---------------------------------------------------------------------------

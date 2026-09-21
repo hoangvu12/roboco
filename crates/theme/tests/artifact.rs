@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use roboco_theme::artifact::{self, FONT_FACES, render_files};
 use roboco_theme::{
-    AccentPreset, AccentRoles, AccentSelection, ThemeFamily, builtin_registry,
+    AccentPreset, AccentRoles, AccentSelection, Color, ThemeFamily, ThemeVariant, builtin_registry,
 };
 
 fn web_package_dir() -> PathBuf {
@@ -56,6 +56,50 @@ fn artifact_contains_every_builtin_family_and_variant() {
             .sum::<usize>(),
         30
     );
+}
+
+/// The three roles the desktop authors by hand travel on every exported
+/// variant: Roboco carries the authored tones, every other family carries the
+/// fallback the desktop's variant loader uses for a theme that did not author
+/// them. The web reads them as `--rb-text-dim`, `--rb-raised-hover`, and
+/// `--rb-danger-strong`.
+#[test]
+fn exported_variants_carry_the_hand_authored_roles() {
+    let json = artifact_json();
+    let families: Vec<ThemeFamily> =
+        serde_json::from_value(json["families"].clone()).expect("families match the model");
+    let variant = |id: &str| -> ThemeVariant {
+        families
+            .iter()
+            .flat_map(|family| &family.variants)
+            .find(|variant| variant.id == id)
+            .unwrap_or_else(|| panic!("{id} is exported"))
+            .clone()
+    };
+
+    let dark = variant("roboco-dark").colors;
+    let light = variant("roboco-light").colors;
+    assert_eq!(dark.text_dim, Color::grey(0x98));
+    assert_eq!(light.text_dim, Color::neutral(0.50));
+    assert_eq!(dark.raised_hover, Color::neutral(0.29));
+    assert_eq!(light.raised_hover, Color::neutral(0.900));
+    assert_eq!(dark.danger_strong, Color::oklch(0.58, 0.16, 25.0));
+    assert_eq!(light.danger_strong, Color::oklch(0.51, 0.20, 25.0));
+    // An opaque pill's hover has to move off the plate it hovers.
+    assert_ne!(dark.raised_hover, dark.raised);
+    assert_ne!(light.raised_hover, light.raised);
+
+    for family in &families {
+        if family.id == "roboco" {
+            continue;
+        }
+        for variant in &family.variants {
+            let colors = &variant.colors;
+            assert_eq!(colors.text_dim, colors.text_muted, "{}", variant.id);
+            assert_eq!(colors.raised_hover, colors.raised, "{}", variant.id);
+            assert_eq!(colors.danger_strong, colors.danger, "{}", variant.id);
+        }
+    }
 }
 
 #[test]
@@ -138,6 +182,24 @@ fn exported_layout_and_motion_match_the_shared_constants() {
         l::INPUT_GLASS_ALPHA_LIGHT
     );
     assert_eq!(px(&layout["glass"]["cardAlpha"]), l::CARD_GLASS_ALPHA);
+    assert_eq!(
+        px(&layout["glass"]["selectedWashAlphaDark"]),
+        artifact::SELECTED_WASH_ALPHA_DARK
+    );
+    assert_eq!(
+        px(&layout["glass"]["selectedWashAlphaLight"]),
+        artifact::SELECTED_WASH_ALPHA_LIGHT
+    );
+    assert_eq!(px(&layout["glass"]["bandAlphaDark"]), artifact::BAND_ALPHA_DARK);
+    assert_eq!(
+        px(&layout["glass"]["bandAlphaLight"]),
+        artifact::BAND_ALPHA_LIGHT
+    );
+    assert_eq!(px(&layout["glass"]["scrimAlphaDark"]), artifact::SCRIM_ALPHA_DARK);
+    assert_eq!(
+        px(&layout["glass"]["scrimAlphaLight"]),
+        artifact::SCRIM_ALPHA_LIGHT
+    );
 
     use roboco_proto::motion as m;
     let curves = motion["curves"].as_object().expect("curves is an object");

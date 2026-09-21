@@ -7,6 +7,7 @@ import {
   chatListRows,
   displayStatus,
   effectiveIndicator,
+  mergePendingSpaces,
   mostUrgent,
   projectLabel,
   sortRows,
@@ -189,6 +190,39 @@ describe("projectLabel and spaceDisplayName", () => {
   });
 });
 
+describe("mergePendingSpaces", () => {
+  const space = (id: string, path: string, name: string | null): Space => ({
+    id,
+    deviceId: "device-1",
+    path,
+    name,
+    gitDetected: false,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+
+  it("passes the confirmed rows through untouched with nothing pending", () => {
+    const rows = [space("a", "/srv/a", "Alpha"), space("b", "/srv/b", null)];
+    expect(mergePendingSpaces(rows, [])).toBe(rows);
+  });
+
+  it("appends optimistic rows the watch frame has not confirmed yet", () => {
+    const rows = [space("a", "/srv/a", "Alpha")];
+    const pending = [space("p1", "/srv/new", null)];
+    const merged = mergePendingSpaces(rows, pending);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((row) => row.id)).toEqual(["a", "p1"]);
+  });
+
+  it("drops an optimistic row once its id is confirmed — never a duplicate", () => {
+    const confirmed = [space("p1", "/srv/new", "Renamed")];
+    const pending = [space("p1", "/srv/new", null), space("p2", "/srv/other", null)];
+    const merged = mergePendingSpaces(confirmed, pending);
+    // The confirmed row wins; only the still-unconfirmed sibling survives.
+    expect(merged.map((row) => row.id)).toEqual(["p1", "p2"]);
+    expect(merged[0]!.name).toBe("Renamed");
+  });
+});
+
 describe("chatListRows", () => {
   const space = (id: string, name: string | null): Space => ({
     id,
@@ -226,14 +260,25 @@ describe("chatListRows", () => {
     expect(rows[1]!.project).toBe("Engine work");
   });
 
-  it("labels project-less rows from the cwd or ~ and stamps branches", () => {
+  it("labels project-less rows ~ and stamps branches from the source context", () => {
     const rows = chatListRows(
-      [chat({ id: "a", cwd: "/home/me/roboco", branch: "feat/web" }), chat({ id: "b", cwd: "~", branch: null })],
+      [
+        chat({
+          id: "a",
+          cwd: "/home/me/roboco",
+          branch: "legacy-scalar",
+          sourceContext: { checkoutId: "c1", repoRoot: "/home/me/roboco", cwd: "/home/me/roboco", branch: "feat/web", observedAt: "2026-09-16T10:00:00Z" },
+        }),
+        chat({ id: "b", cwd: "~", branch: null }),
+      ],
       [],
       [],
       NOW,
     );
-    expect(rows[0]!.project).toBe("roboco");
+    // Project-less sessions read as "~" (spaces.rs:1387), and only the
+    // conversation-owned source context's branch counts — the legacy scalar
+    // cannot prove a worktree has not switched since it was written.
+    expect(rows[0]!.project).toBe("~");
     expect(rows[0]!.branch).toBe("feat/web");
     expect(rows[1]!.project).toBe("~");
     expect(rows[1]!.branch).toBe(null);

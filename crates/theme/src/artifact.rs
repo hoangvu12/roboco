@@ -19,7 +19,32 @@ use crate::{
 
 /// Version of the artifact's JSON *shape* (not the data). Bump on schema
 /// changes so the web client can pin instead of sniff.
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 2;
+
+// ---------------------------------------------------------------------------
+// Derived alphas the desktop keeps inside `crates/ui` (they scale an existing
+// neutral rather than naming a color), quoted here so the web can reproduce
+// them. Each pair is `(dark, light)`, exactly as the desktop branches it.
+// ---------------------------------------------------------------------------
+
+/// `glass_selected_bg()`/`card_selected_bg()` — the selected row/chip/tab wash
+/// over `wash` (`crates/ui/src/theme.rs:1588-1616`). Light runs at half: 11%
+/// black read too dark over the bright frost.
+pub const SELECTED_WASH_ALPHA_DARK: f32 = 0.11;
+pub const SELECTED_WASH_ALPHA_LIGHT: f32 = 0.06;
+
+/// `band()` — the recessed strip behind a picker header/footer
+/// (`crates/ui/src/theme.rs:1567-1578`). Literal black in BOTH appearances;
+/// a recessed strip on white needs far less ink than on near-black.
+pub const BAND_ALPHA_DARK: f32 = 0.16;
+pub const BAND_ALPHA_LIGHT: f32 = 0.045;
+
+/// `scrim()` — the modal/drawer backdrop (`crates/ui/src/theme.rs:999,
+/// 1552-1561`). Literal black in BOTH appearances; the light value is
+/// `0.32 * (alpha_dark / SCRIM_ALPHA_DARK)`, which at the default
+/// `SCRIM_ALPHA_DARK` is the flat `0.32`.
+pub const SCRIM_ALPHA_DARK: f32 = 0.60;
+pub const SCRIM_ALPHA_LIGHT: f32 = 0.32 * (SCRIM_ALPHA_DARK / 0.60);
 
 /// Stable id of the generator, stamped into the artifact for provenance.
 pub const GENERATOR: &str = "roboco-theme-export";
@@ -107,6 +132,15 @@ pub struct GlassTokens {
     pub overlay_alpha_light: f32,
     pub input_alpha_light: f32,
     pub card_alpha: f32,
+    /// Selected row/chip/tab wash over `--rb-wash` (`glass_selected_bg`).
+    pub selected_wash_alpha_dark: f32,
+    pub selected_wash_alpha_light: f32,
+    /// Recessed picker header/footer strip over literal black (`band`).
+    pub band_alpha_dark: f32,
+    pub band_alpha_light: f32,
+    /// Modal/drawer backdrop over literal black (`scrim`).
+    pub scrim_alpha_dark: f32,
+    pub scrim_alpha_light: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -366,6 +400,12 @@ pub fn build_artifact() -> ThemeArtifact {
                 overlay_alpha_light: layout::GLASS_OVERLAY_ALPHA_LIGHT,
                 input_alpha_light: layout::INPUT_GLASS_ALPHA_LIGHT,
                 card_alpha: layout::CARD_GLASS_ALPHA,
+                selected_wash_alpha_dark: SELECTED_WASH_ALPHA_DARK,
+                selected_wash_alpha_light: SELECTED_WASH_ALPHA_LIGHT,
+                band_alpha_dark: BAND_ALPHA_DARK,
+                band_alpha_light: BAND_ALPHA_LIGHT,
+                scrim_alpha_dark: SCRIM_ALPHA_DARK,
+                scrim_alpha_light: SCRIM_ALPHA_LIGHT,
             },
         },
         motion: MotionTokens {

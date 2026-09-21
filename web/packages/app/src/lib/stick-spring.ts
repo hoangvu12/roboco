@@ -46,6 +46,21 @@ export function shouldRestick(distance: number, previousDistance: number): boole
 }
 
 /**
+ * Whether a not-ours scroll moving the viewport breaks the pin — the
+ * desktop's escape rule (transcript.rs:3182-3189): a scroll whose distance
+ * grew by more than 1px while already past the stick band is user input
+ * moving away from the bottom. Content growth never fires the handler on the
+ * desktop, so `previousDistance` is always a USER-scroll baseline there; the
+ * web controller must refresh the baseline on every content kick to keep
+ * that meaning (growth between two user scrolls would otherwise read as the
+ * second scroll's intent — the trap the desktop's own-turn stepper documents
+ * at transcript.rs:3534-3540).
+ */
+export function shouldBreakPin(distance: number, previousDistance: number): boolean {
+  return distance > previousDistance + 1 && distance > AT_BOTTOM_PX;
+}
+
+/**
  * A live stream already resting at the end keeps that end anchored as its
  * measured height grows — deliberately narrower than `pinned`: users gliding
  * back toward the bottom keep the normal spring behavior.

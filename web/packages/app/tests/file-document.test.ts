@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceFileText, WriteWorkspaceFileOutcome } from "@roboco/proto";
 import { WorkspaceFilesClient, type FilesCaller } from "../src/lib/files-client";
 import { FileDocument } from "../src/lib/file-document";
@@ -21,6 +21,7 @@ interface FakeStore {
   client: WorkspaceFilesClient;
   written: { text: string; expectedContentHash: string }[];
   failWrite: (error: Error) => void;
+  succeedWrite: () => void;
   conflictWrite: () => void;
   setDisk: (file: WorkspaceFileText) => void;
 }
@@ -29,10 +30,11 @@ interface FakeStore {
 function fakeStore(file: WorkspaceFileText): FakeStore {
   let disk = file;
   const written: FakeStore["written"] = [];
-  let writeOutcome: () => WriteWorkspaceFileOutcome = () => ({
+  const success = (): WriteWorkspaceFileOutcome => ({
     status: "written",
     file: { path: disk.path, contentHash: "hash-2", size: 3 },
   });
+  let writeOutcome: () => WriteWorkspaceFileOutcome = success;
   const caller: FilesCaller = {
     call<T>(method: string, params?: unknown): Promise<T> {
       if (method === "ReadWorkspaceFile") {
@@ -57,6 +59,9 @@ function fakeStore(file: WorkspaceFileText): FakeStore {
       writeOutcome = () => {
         throw error;
       };
+    },
+    succeedWrite: () => {
+      writeOutcome = success;
     },
     conflictWrite: () => {
       writeOutcome = () => ({ status: "conflict", reason: "changed", currentContentHash: "disk-hash" });
@@ -254,5 +259,124 @@ describe("FileDocument", () => {
     expect(snapshot.dirty).toBe(true);
     expect(document.canSave()).toBe(true);
     document.dispose();
+  });
+
+  it("markdown documents start in preview mode and toggle", async () => {
+    const store = fakeStore(textFile({ path: "docs/readme.md", text: "# Hi" }));
+    const document = await loaded(store, "docs/readme.md");
+    expect(document.getSnapshot().showMarkdown).toBe(true);
+    document.setShowMarkdown(false);
+    expect(document.getSnapshot().showMarkdown).toBe(false);
+    document.dispose();
+  });
+
+  it("keepEditing converts externallyModified into conflict", async () => {
+    const store = fakeStore(textFile());
+    const document = await loaded(store);
+    document.edit("mine");
+    store.setDisk(textFile({ text: "on disk", contentHash: "hash-2" }));
+    document.reconcile();
+    await settle();
+    expect(document.getSnapshot().phase.kind).toBe("externallyModified");
+    document.keepEditing();
+    expect(document.getSnapshot().phase).toEqual({ kind: "conflict", diskHash: "hash-2" });
+    expect(document.getSnapshot().dirty).toBe(true);
+    // The conflict blocks saves until an explicit reload.
+    expect(document.canSave()).toBe(false);
+    document.dispose();
+  });
+
+  describe("autosave scheduling (preview.rs schedule_autosave)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function settleFake(): Promise<void> {
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    it("fires after idle edits, rescheduling on each keystroke", async () => {
+      const store = fakeStore(textFile());
+      const document = new FileDocument(store.client, "src/lib.rs", { autosaveDelayMs: 900 });
+      document.load();
+      await settleFake();
+      document.configureAutosave(true, 900);
+      document.edit("one");
+      document.edit("two");
+      // The timer restarts per edit — nothing fires at the halfway mark.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(store.written).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(store.written).toEqual([{ text: "two", expectedContentHash: "hash-1" }]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store.written).toHaveLength(1);
+      expect(document.getSnapshot().dirty).toBe(false);
+      document.dispose();
+    });
+
+    it("does not autosave a saveFailed document until a fresh edit", async () => {
+      const store = fakeStore(textFile());
+      const document = new FileDocument(store.client, "src/lib.rs", { autosaveDelayMs: 100 });
+      document.load();
+      await settleFake();
+      document.configureAutosave(true, 100);
+      document.edit("mine");
+      store.failWrite(new Error("offline"));
+      document.save();
+      await settleFake();
+      expect(document.getSnapshot().phase.kind).toBe("saveFailed");
+      // The failed phase is not autosave-capable; idle never retries.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(store.written).toHaveLength(1);
+      // A fresh edit returns it to ready and re-arms the schedule.
+      store.succeedWrite();
+      document.edit("mine again");
+      await vi.advanceTimersByTimeAsync(200);
+      await settleFake();
+      expect(store.written[1]?.text).toBe("mine again");
+      expect(document.getSnapshot().dirty).toBe(false);
+      document.dispose();
+    });
+  });
+
+  describe("close lifecycle (preview.rs prepare_close)", () => {
+    it("a clean document allows the close", async () => {
+      const store = fakeStore(textFile());
+      const document = await loaded(store);
+      expect(document.prepareClose()).toBe("allow");
+      document.dispose();
+    });
+
+    it("a dirty ready document saves and pends", async () => {
+      const store = fakeStore(textFile());
+      const document = await loaded(store);
+      document.edit("mine");
+      expect(document.prepareClose()).toBe("pending");
+      await settle();
+      expect(store.written).toHaveLength(1);
+      expect(document.getSnapshot().dirty).toBe(false);
+      document.dispose();
+    });
+
+    it("a saveFailed document blocks the close; discard resolves it", async () => {
+      const store = fakeStore(textFile());
+      const document = await loaded(store);
+      document.edit("mine");
+      store.failWrite(new Error("offline"));
+      document.save();
+      await settle();
+      expect(document.prepareClose()).toBe("blocked");
+      // Keep Open: still dirty, still blocked.
+      expect(document.blocksLifecycleClose()).toBe(true);
+      // Discard Changes: dirty state resolves for the lifecycle exit.
+      document.discardChanges();
+      expect(document.hasUnsavedChanges()).toBe(false);
+      expect(document.prepareClose()).toBe("allow");
+      document.dispose();
+    });
   });
 });

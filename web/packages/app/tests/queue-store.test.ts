@@ -194,7 +194,7 @@ describe("QueueStore", () => {
       };
       client.replies.set("BeginQueuedMessageEdit", acquired);
       const outcome = await store.beginEdit("qm-1", "instance-1");
-      expect(outcome).toEqual({ kind: "acquired", leaseId: "lease-1", text: "snapshot text", baseTextHash: "hash-1", expiresAtMs: 1_700_000_060_000 });
+      expect(outcome).toEqual({ kind: "acquired", leaseId: "lease-1", text: "snapshot text", attachments: [], baseTextHash: "hash-1", expiresAtMs: 1_700_000_060_000 });
       const lease = store.getSnapshot().editLease;
       expect(lease).not.toBe(null);
       expect(lease?.leaseId).toBe("lease-1");

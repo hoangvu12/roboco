@@ -15,13 +15,25 @@ export default defineConfig({
     },
   },
   server: {
+    /*
+     * The engine serves its RPC WebSocket at path `/` — the very path Vite's
+     * own HMR socket uses — so the catch-all proxy below cannot tell them
+     * apart by URL and would hand HMR to the engine, which rejects it. A
+     * rejected HMR socket makes Vite's client reload the page, and it retries
+     * forever: a reload loop. Give HMR its own port so it never touches the
+     * proxy at all.
+     */
+    hmr: { port: 24678 },
     proxy: {
       "/pairing/redeem": { target: engine },
       "/": {
         target: engine,
         ws: true,
         bypass: (req) => {
-          if (req.headers.upgrade === "websocket") {
+          // Belt and braces: even on one port, never proxy Vite's own socket.
+          const upgrade = req.headers.upgrade;
+          const protocol = req.headers["sec-websocket-protocol"];
+          if (upgrade === "websocket" && !String(protocol ?? "").includes("vite-hmr")) {
             return undefined;
           }
           return req.url;

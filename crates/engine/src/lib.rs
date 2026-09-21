@@ -49,7 +49,7 @@ pub use diff_sync::{
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig};
 pub use instance_lock::InstanceLock;
 pub use profile::EngineProfile;
-pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
+pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry, smoke_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};

@@ -3,10 +3,13 @@ import { RpcError } from "@roboco/engine-client";
 import type { WatchCacheSnapshot } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
 import {
+  chatSeenAt,
   createChat,
   deleteChat,
   describeMutateError,
+  markChatSeen,
   renameChat,
+  resetChatSeen,
   setChatArchived,
   waitForChatRow,
 } from "../src/lib/chat-actions";
@@ -146,5 +149,38 @@ describe("waitForChatRow", () => {
   it("gives up on timeout so the caller still navigates", async () => {
     const cache = fakeCache();
     await expect(waitForChatRow(cache, "chat-1", 20)).resolves.toBe(false);
+  });
+});
+
+describe("markChatSeen", () => {
+  it("stamps locally first, then fire-and-forgets the mutation", () => {
+    resetChatSeen();
+    const caller = new FakeCaller();
+    expect(markChatSeen(caller, "chat-1", 1_000)).toBe(true);
+    // The stamp is visible synchronously — it does not wait on the wire.
+    expect(chatSeenAt("chat-1")).toBe(1_000);
+    expect(caller.calls).toHaveLength(1);
+    expect(caller.calls[0]!.params).toEqual({ op: "markChatSeen", chatId: "chat-1" });
+  });
+
+  it("is idempotent: a chat already seen at or after now sends nothing", () => {
+    resetChatSeen();
+    const caller = new FakeCaller();
+    markChatSeen(caller, "chat-1", 2_000);
+    expect(markChatSeen(caller, "chat-1", 2_000)).toBe(false);
+    expect(markChatSeen(caller, "chat-1", 1_500)).toBe(false);
+    expect(caller.calls).toHaveLength(1);
+    // A later view stamps again.
+    expect(markChatSeen(caller, "chat-1", 3_000)).toBe(true);
+    expect(chatSeenAt("chat-1")).toBe(3_000);
+  });
+
+  it("keeps the optimistic stamp when the mutation fails", async () => {
+    resetChatSeen();
+    const caller = new FakeCaller();
+    caller.error = new RpcError("transport", "offline");
+    markChatSeen(caller, "chat-1", 1_000);
+    await Promise.resolve();
+    expect(chatSeenAt("chat-1")).toBe(1_000);
   });
 });

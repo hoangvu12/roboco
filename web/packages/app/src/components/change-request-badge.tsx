@@ -1,15 +1,23 @@
+import { Icon } from "@roboco/icons";
 import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
-import { changeRequestCreateUrl } from "../lib/change-requests";
 
 /**
- * The change-request badge — the web peer of `crates/ui/src/change_requests.rs`.
- * A pill that shows `#N` + the state word; tone by state (Open / Merged /
- * Closed). Click opens the change-request URL (or the provider's create
- * page if none exists yet). On hover, a frosted tooltip card surfaces the
- * title and the same `PR #N · State` label the desktop uses.
+ * The change-request badge — the web peer of `crates/ui/src/change_requests.rs`
+ * (`pull_request_badge`, 117-169). A pill that shows the PR glyph (composer
+ * size only) and the mono `#N`; the state word never appears in the badge
+ * itself — the tooltip carries it ("PR #N · State"). Click opens the change
+ * request's own URL. Tone by state: Open → success, Merged → code text (the
+ * accent), Closed → danger.
  *
- * Used in two places: the chat header (per-chat status) and the changes
- * surface's checkout card (the underlying CR for the displayed diff).
+ * Two size presets, exactly the desktop's: sidebar (h16, gap 0, px 4,
+ * radius 4, 10px, no glyph) and composer (h20, gap 5, px 7, radius 6, 11px,
+ * an 11px PULL_REQUEST glyph). The tooltip is a CSS-hover card — the
+ * research's sanctioned native substitute for the desktop's 350ms tooltip —
+ * delayed 350ms to match.
+ *
+ * Used at the desktop's two call sites: the sidebar chat row and the
+ * composer footer. (The Changes pane's own CR card is a documented,
+ * intentional web-only addition, not a port of this.)
  */
 
 export type BadgeTone = "open" | "merged" | "closed";
@@ -42,66 +50,23 @@ export function ChangeRequestBadge({ summary, size = "sidebar" }: ChangeRequestB
   const number = `#${summary.number}`;
   const title = summary.title.replace(/[\r\n]+/g, " ");
   const tooltipId = `cr-${summary.provider}-${summary.number}`;
+  const composer = size === "composer";
 
   return (
     <a
-      className={`cr-badge cr-badge-${tone} cr-badge-${size}`}
+      className={`cr-badge cr-badge-${tone} ${composer ? "cr-badge-composer" : "cr-badge-sidebar"}`}
       href={summary.url}
       target="_blank"
       rel="noreferrer noopener"
       aria-describedby={tooltipId}
+      onClick={(event) => event.stopPropagation()}
     >
-      <span className="cr-badge-glyph" aria-hidden>
-        PR
-      </span>
+      {composer ? <Icon name="pullRequest" size={11} className="cr-badge-glyph" aria-hidden /> : null}
       <span className="cr-badge-number mono">{number}</span>
-      <span className="cr-badge-state">{label}</span>
-      <span className="cr-tooltip panel" role="tooltip" id={tooltipId}>
-        <span className="cr-tooltip-line">
-          <span className={`cr-tooltip-dot cr-tooltip-dot-${tone}`} aria-hidden />
-          <span className="cr-tooltip-label">
-            {summary.provider} {number} · {label}
-          </span>
-        </span>
+      <span className="cr-tooltip" role="tooltip" id={tooltipId}>
+        <span className={`cr-tooltip-line cr-tooltip-line-${tone}`}>{`PR ${number} · ${label}`}</span>
         <span className="cr-tooltip-title">{title}</span>
       </span>
-    </a>
-  );
-}
-
-export interface CreateChangeRequestButtonProps {
-  /** Provider key the create-URL builder understands. `null` disables the button. */
-  readonly provider: string | null;
-  readonly baseRef: string;
-  readonly headRef: string;
-  readonly cwd: string;
-  readonly size?: "composer" | "sidebar";
-}
-
-/**
- * A "Create PR/MR" affordance when the engine has no Create RPC — falls
- * back to opening the provider's compare/merge-request page with the
- * head branch pre-filled. Disabled when no base ref is available or when
- * no provider has been detected yet for this checkout.
- */
-export function CreateChangeRequestButton({ provider, baseRef, headRef, cwd, size = "sidebar" }: CreateChangeRequestButtonProps) {
-  const url = provider === null ? null : changeRequestCreateUrl(provider, baseRef, headRef, cwd);
-  const disabled = url === null;
-  if (disabled) {
-    return (
-      <span className={`cr-create cr-create-disabled cr-create-${size}`} aria-disabled>
-        Create PR
-      </span>
-    );
-  }
-  return (
-    <a
-      className={`cr-create btn btn-ghost cr-create-${size}`}
-      href={url}
-      target="_blank"
-      rel="noreferrer noopener"
-    >
-      Create PR
     </a>
   );
 }

@@ -1,5 +1,6 @@
 import { methods, type EngineClient } from "@roboco/engine-client";
 import type { PairedSession, PairingLink, RemoteAccessSnapshot } from "@roboco/proto";
+import { formatLastSeen } from "./devices";
 
 /**
  * Remote access settings — the web peer of the desktop's
@@ -23,27 +24,6 @@ export function createPairingLink(client: EngineClient): Promise<PairingLink> {
 
 export function revokePairingSession(client: EngineClient, sessionId: string): Promise<RemoteAccessSnapshot> {
   return client.call<RemoteAccessSnapshot>(methods.REVOKE_PAIRING_SESSION, { sessionId });
-}
-
-/**
- * Compact last-seen line — port of settings/devices.rs `format_last_seen`.
- * `at`/`now` are epoch millis (PairedSession.lastSeen is millis).
- */
-export function formatLastSeen(at: number | null, now: number): string {
-  if (at === null) {
-    return "never seen";
-  }
-  const seconds = Math.floor((now - at) / 1000);
-  if (seconds < 60) {
-    return "just now";
-  }
-  if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}m ago`;
-  }
-  if (seconds < 86_400) {
-    return `${Math.floor(seconds / 3600)}h ago`;
-  }
-  return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
 /** One paired-session row, ready to draw. */

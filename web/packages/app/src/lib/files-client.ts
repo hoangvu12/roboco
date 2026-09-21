@@ -19,8 +19,10 @@ import { methods, RpcError, type EngineClient, type WatchHandle, type WatchHandl
 /**
  * The workspace files RPC surface (a port of the desktop's
  * `WorkspaceFilesClient`, crates/ui/src/files/client.rs) over the web
- * client's `EngineClient.call`. The target pins one space's checkout; the
- * engine resolves it (crates/engine/src/workspace_files.rs resolve_target).
+ * client's `EngineClient.call`. The target pins one checkout — the pane's
+ * Files surface targets the ACTIVE CHAT (`{ chatId }`, the desktop's
+ * `FilesRequestContext::for_chat`); the engine resolves it
+ * (crates/engine/src/workspace_files.rs resolve_target).
  */
 
 /** The slice of EngineClient the files surface needs (structural, testable). */
@@ -28,9 +30,17 @@ export interface FilesCaller {
   call<T>(method: string, params?: unknown): Promise<T>;
 }
 
-/** Wire target fields, flattened into every request (serde flatten parity). */
+/**
+ * Wire target fields, flattened into every request (serde flatten parity).
+ * Exactly one of `chatId` / `spaceId` — the engine's `resolve_target`
+ * (workspace_files.rs:221) scopes a chat target to the active chat's
+ * checkout and a space target to the space folder (plus optional
+ * `checkoutPath`).
+ */
 export interface FilesTarget {
-  readonly spaceId: string;
+  readonly chatId?: string | null;
+  readonly spaceId?: string | null;
+  readonly checkoutPath?: string | null;
 }
 
 export interface WorkspaceImage {

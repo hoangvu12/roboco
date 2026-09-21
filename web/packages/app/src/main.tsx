@@ -4,12 +4,15 @@ import { RouterProvider } from "@tanstack/react-router";
 import "@roboco/theme/fonts.css";
 import "./styles/app.css";
 import { initAppearance } from "./state/appearance";
+import { RootErrorBoundary } from "./components/error-boundary";
 import { router } from "./router";
 
 initAppearance();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <RootErrorBoundary>
+      <RouterProvider router={router} />
+    </RootErrorBoundary>
   </StrictMode>,
 );

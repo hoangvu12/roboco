@@ -14,7 +14,18 @@ function memoryStorage(): StorageLike {
 describe("SidebarStore", () => {
   it("starts unfiltered with the archived shelf closed", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
-    expect(store.getSnapshot()).toEqual({ spaceFilter: null, lastSpaceId: null, archivedOpen: false });
+    expect(store.getSnapshot()).toEqual({
+      spaceFilter: null,
+      lastSpaceId: null,
+      archivedOpen: false,
+      // The five view options ride along at their desktop defaults
+      // (settings.rs:658-665) — ticket 10's menu writes them.
+      organization: "inOneList",
+      sort: "lastUpdated",
+      showHarness: true,
+      showBranch: true,
+      showPullRequest: true,
+    });
   });
 
   it("persists the filter and the last selected space across reloads", () => {
@@ -38,13 +49,14 @@ describe("SidebarStore", () => {
     expect(new SidebarStore({ storage }).getSnapshot().archivedOpen).toBe(false);
   });
 
-  it("drops corrupted persisted state", () => {
+  it("ignores corrupted legacy state without destroying it", () => {
+    // Storage moved to the consolidated ui-settings key; the legacy key is a
+    // one-time migration source now, so a corrupt one heals to the default and
+    // is left exactly where it is for a rollback to find.
     const storage = memoryStorage();
     storage.setItem("roboco.sidebar.v1", "{not json");
     expect(new SidebarStore({ storage }).getSnapshot().spaceFilter).toBe(null);
-    expect(storage.getItem("roboco.sidebar.v1")).toBe(null);
-    storage.setItem("roboco.sidebar.v1", JSON.stringify({ version: 99, spaceFilter: "s" }));
-    expect(new SidebarStore({ storage }).getSnapshot().spaceFilter).toBe(null);
+    expect(storage.getItem("roboco.sidebar.v1")).toBe("{not json");
   });
 
   it("notifies subscribers on actual changes only", () => {

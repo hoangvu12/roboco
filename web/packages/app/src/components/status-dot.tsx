@@ -2,7 +2,7 @@ import type { ChatIndicator } from "../lib/view";
 
 const LABELS: Record<ChatIndicator, string> = {
   working: "Working",
-  awaitingInput: "Waiting for input",
+  awaitingInput: "Input",
   errored: "Failed",
   completed: "Done",
   idle: "Idle",
