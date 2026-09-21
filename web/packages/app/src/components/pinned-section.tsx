@@ -296,6 +296,7 @@ export function PinnedSection({
         id="pinned-toggle"
         label={open ? "Pinned" : `Pinned (${count})`}
         open={open}
+        withRule={false}
         chevronRef={chevronRef}
         onToggle={() => {
           // The header click kills any live drag before the section moves —

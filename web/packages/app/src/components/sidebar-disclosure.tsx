@@ -266,26 +266,31 @@ export function useSidebarDisclosureDivider(
 }
 
 /**
- * `sidebar_disclosure_header`: muted 12px MEDIUM label, a hairline filling
- * the middle, the chevron at the end. 28px tall, 8px inline padding.
+ * `sidebar_disclosure_header`: muted 12px MEDIUM label, the hairline rule
+ * (device groups only — `with_rule`; Pinned and Archived go bare, matching
+ * the desktop's 38a8f013/adc290e3 polish) filling the middle, the chevron
+ * at the end. 28px tall, 8px inline padding.
  */
 export function SidebarDisclosureHeader({
   id,
   label,
   open,
+  withRule = true,
   chevronRef,
   onToggle,
 }: {
   id?: string;
   label: string;
   open: boolean;
+  /** Whether the hairline rule fills the middle (adc290e3: device groups only). */
+  withRule?: boolean;
   chevronRef: React.RefObject<HTMLSpanElement | null>;
   onToggle: () => void;
 }) {
   return (
     <button type="button" id={id} className="sidebar-disclosure-header" aria-expanded={open} onClick={onToggle}>
       <span className="sidebar-disclosure-label">{label}</span>
-      <span className="sidebar-disclosure-rule" />
+      {withRule ? <span className="sidebar-disclosure-rule" /> : null}
       <span ref={chevronRef} className="sidebar-disclosure-chevron">
         <Icon name="altArrowRight" size={12} />
       </span>
