@@ -23,8 +23,8 @@ import { AddSpacePalette } from "./add-space-palette";
  *
  * New-chat creation is NOT here: the desktop's titlebar owns that action in
  * both sidebar states, so the `+` lives in `Titlebar` and this column only
- * lists. AppShell keys this by the active engine so menus and dialogs reset
- * on a switch.
+ * lists. Not keyed by engine either — the sidebar reads the fleet-merged
+ * snapshot and persists across engine switches (ticket 43).
  *
  * The add-space palette mounts here as a sibling (like `SidebarNotice`) —
  * headless while closed; the spaces menu's "New project…" row (ticket 10)

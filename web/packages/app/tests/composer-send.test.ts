@@ -6,11 +6,15 @@ import {
   messageEnterBindings,
   modifiedSubmitTarget,
   platformModifierCombo,
+  resolveEnterAction,
+  resolveSendCwd,
   retainLiveInterrupts,
   sendBlocked,
   sendButtonMode,
   shouldPublishOptimisticEcho,
+  type EnterKeyContext,
 } from "../src/lib/composer-send";
+import { buildRunRequest, sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
 /**
  * The composer's send-path decisions — each describe named after the
@@ -19,6 +23,28 @@ import {
  * run, the Mod+Enter target, the optimistic-echo gate, and the interrupt
  * tracking.
  */
+
+class FakeCaller {
+  readonly calls: { method: string; params: unknown }[] = [];
+  replies: Map<string, unknown> = new Map();
+
+  async call<T>(method: string, params?: unknown): Promise<T> {
+    this.calls.push({ method, params });
+    const byMethod = this.replies.get(method);
+    if (byMethod !== undefined) {
+      return byMethod as T;
+    }
+    return {} as T;
+  }
+}
+
+const DRAFT: DraftConfig = {
+  harness: "claude-code",
+  model: "claude-3-5-sonnet",
+  reasoning: "high",
+  sandbox: "workspace-write",
+  modelOptions: {},
+};
 
 describe("staged_comments_alone_are_content", () => {
   it("attachments and comments each count as content on their own", () => {
@@ -108,6 +134,160 @@ describe("message_enter_never_adds_extra_modifier_bindings", () => {
         ["ctrl-enter", "shift-cmd-enter", "alt-cmd-enter", "shift-enter"].includes(binding.keystroke),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * Ticket 75 §3 — the phone Enter policy matrix against `resolveEnterAction`,
+ * the Enter branch's single decision owner. `nativeNewline`/`imeNative`
+ * leave the event's default to the textarea (the app never injects a
+ * newline); every other action consumes the event exactly once. Vitest runs
+ * node here: no synthetic KeyboardEvent can prove a browser's native
+ * newline insertion, so these pin the DECISION only.
+ */
+const enterKey = (overrides: Partial<EnterKeyContext>): EnterKeyContext => ({
+  phone: false,
+  composing: false,
+  completionSelected: false,
+  wizardActive: false,
+  mod: false,
+  alt: false,
+  shift: false,
+  sendBehavior: "enter",
+  ...overrides,
+});
+
+describe("phone_bare_enter_is_always_a_native_newline", () => {
+  it("phone bare Enter is native at either saved preference — the setting is never overridden", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "enter" }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "modEnter" }))).toBe("nativeNewline");
+  });
+
+  it("phone bare Enter in the focused wizard input is a newline — no advance, no response", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, wizardActive: true }))).toBe("nativeNewline");
+  });
+
+  it("phone bare Enter in a queue-edit draft is a newline — the edit stays open", () => {
+    // Queue-edit state never reaches the resolver: a native newline can
+    // never finish the edit; only the explicit finish/submit controls do.
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: "enter" }))).toBe("nativeNewline");
+  });
+
+  it("phone Shift/Alt Enter stays native; Mod+Enter keeps ModifiedSubmit at any width", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, shift: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, alt: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true }))).toBe("modifiedSubmit");
+    expect(resolveEnterAction(enterKey({ phone: false, mod: true }))).toBe("modifiedSubmit");
+    // Alt drops the modified-submit binding (never Stop); Shift does not.
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true, alt: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: true, mod: true, shift: true }))).toBe("modifiedSubmit");
+  });
+});
+
+describe("phone_enter_keeps_composition_and_completion_precedence", () => {
+  it("an IME composition owns the event at any width — no app action", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, composing: true }))).toBe("imeNative");
+    expect(resolveEnterAction(enterKey({ phone: false, composing: true }))).toBe("imeNative");
+  });
+
+  it("a selected completion is accepted exactly once, before the phone newline", () => {
+    // `enter_accepts_a_completion_before_submit_or_newline` (composer.rs:8384).
+    expect(resolveEnterAction(enterKey({ phone: true, completionSelected: true }))).toBe("acceptCompletion");
+    expect(resolveEnterAction(enterKey({ phone: false, completionSelected: true }))).toBe("acceptCompletion");
+    expect(
+      resolveEnterAction(enterKey({ phone: true, completionSelected: true, wizardActive: true })),
+    ).toBe("acceptCompletion");
+  });
+});
+
+describe("phone_wizard_enter_policy", () => {
+  it("the wizard's Mod+Enter suppression is preserved at any width", () => {
+    expect(resolveEnterAction(enterKey({ phone: true, wizardActive: true, mod: true }))).toBe("wizardSuppress");
+    expect(resolveEnterAction(enterKey({ phone: false, wizardActive: true, mod: true }))).toBe(
+      "wizardSuppress",
+    );
+  });
+
+  it("desktop wizard bare Enter still submits the page; Shift/Alt stay native", () => {
+    expect(resolveEnterAction(enterKey({ wizardActive: true }))).toBe("wizardSubmit");
+    expect(resolveEnterAction(enterKey({ wizardActive: true, shift: true }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ wizardActive: true, alt: true }))).toBe("nativeNewline");
+  });
+});
+
+describe("desktop_enter_policy_is_unchanged", () => {
+  it("saved enter submits; saved modEnter inserts a newline", () => {
+    expect(resolveEnterAction(enterKey({ sendBehavior: "enter" }))).toBe("submit");
+    expect(resolveEnterAction(enterKey({ sendBehavior: "modEnter" }))).toBe("nativeNewline");
+  });
+
+  it("the saved preference survives a live 768↔769 media crossing", () => {
+    // The policy flips with the live `phone` input while the stored setting
+    // object is untouched — nothing is persisted across the boundary.
+    const behavior: EnterKeyContext["sendBehavior"] = "enter";
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: behavior }))).toBe("nativeNewline");
+    expect(resolveEnterAction(enterKey({ phone: false, sendBehavior: behavior }))).toBe("submit");
+    expect(resolveEnterAction(enterKey({ phone: true, sendBehavior: behavior }))).toBe("nativeNewline");
+    expect(behavior).toBe("enter");
+  });
+});
+
+describe("resolve_send_cwd", () => {
+  // composer.rs:6433-6440: the exact rule — a NEW chat runs from the picked
+  // space's path else "~"; an EXISTING chat from its stored cwd else ".".
+  // There is no error path.
+  it("a new chat runs from the space's path, else ~", () => {
+    expect(resolveSendCwd(true, "/Users/me/proj", null)).toBe("/Users/me/proj");
+    expect(resolveSendCwd(true, null, null)).toBe("~");
+    expect(resolveSendCwd(true, undefined, undefined)).toBe("~");
+  });
+
+  it("an existing chat runs from its stored cwd, else .", () => {
+    expect(resolveSendCwd(false, "/ignored-new-path", "/Users/me/proj")).toBe("/Users/me/proj");
+    expect(resolveSendCwd(false, "/ignored-new-path", null)).toBe(".");
+    expect(resolveSendCwd(false, "/ignored-new-path", undefined)).toBe(".");
+  });
+
+  it("blank and whitespace-only paths count as absent", () => {
+    expect(resolveSendCwd(true, "   ", null)).toBe("~");
+    expect(resolveSendCwd(false, null, "  ")).toBe(".");
+  });
+});
+
+describe("projectless_composer_allows_send_and_enter_submission", () => {
+  // composer.rs:8281, the web mirror: a projectless canvas send is legal —
+  // it reaches the QUEUE_COMMAND step with cwd "~" and never surfaces the
+  // deleted web-only working-directory failure.
+  it("a projectless canvas send reaches QueueCommand with cwd ~", async () => {
+    const caller = new FakeCaller();
+    caller.replies.set("QueueCommand", { commandId: "cmd-1" });
+    // The canvas stub's cwd is null with no space picked → resolveSendCwd.
+    const sendCwd = resolveSendCwd(true, null, null);
+    await sendRun(caller, "chat-1", DRAFT, "Hello without a project", sendCwd, {
+      mintMessageId: () => "msg-1",
+    });
+    expect(caller.calls.map((entry) => entry.method)).toEqual(["QueueCommand"]);
+    const queue = caller.calls[0]!.params as { command: { request: { cwd: string } } };
+    expect(queue.command.request.cwd).toBe("~");
+  });
+
+  it("an existing chat with a blank stored cwd sends with cwd .", async () => {
+    const caller = new FakeCaller();
+    caller.replies.set("QueueCommand", { commandId: "cmd-2" });
+    await sendRun(caller, "chat-1", DRAFT, "hi", resolveSendCwd(false, null, "   "), {
+      mintMessageId: () => "msg-2",
+    });
+    const queue = caller.calls[0]!.params as { command: { request: { cwd: string } } };
+    expect(queue.command.request.cwd).toBe(".");
+  });
+});
+
+describe("expand_home parity", () => {
+  // §3.2: the engine at sessions.rs:1303-1313 is authoritative — the web
+  // only ever sends the LITERAL "~" and "." (never expands client-side).
+  it("buildRunRequest carries cwd ~ verbatim", () => {
+    expect(buildRunRequest(DRAFT, "hi", "~").cwd).toBe("~");
+    expect(buildRunRequest(DRAFT, "hi", ".").cwd).toBe(".");
   });
 });
 

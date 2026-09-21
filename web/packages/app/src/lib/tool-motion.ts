@@ -14,7 +14,8 @@
  */
 
 import { motion } from "@roboco/theme";
-import { blobDetail, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
+import type { ChatArrivalWindow } from "./chat-arrival";
+import { blobDetail, isSpawnLink, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
 
 // ---------------------------------------------------------------------------
 // Catalog curves (proto/motion.rs:215-237) — solved locally so this module
@@ -410,6 +411,135 @@ export function railPath(input: {
 }
 
 // ---------------------------------------------------------------------------
+// The shared reveal clock (ticket 59, audit fix plan P5)
+// ---------------------------------------------------------------------------
+
+/** What one subscribing row does with a frame's timestamp (`setNow`). */
+export type RevealClockListener = (now: number) => void;
+
+/** Constructor seams — injectable so the unit tests drive the clock headless. */
+export interface ToolRevealClockSeams {
+  readonly schedule?: (callback: () => void) => number;
+  readonly cancel?: (handle: number) => void;
+  readonly now?: () => number;
+  readonly reduced?: () => boolean;
+}
+
+let reducedQuery: MediaQueryList | null = null;
+
+/** `prefers-reduced-motion` as a live read (cached query, node-safe). */
+const prefersReducedMotion = (): boolean => {
+  if (typeof globalThis.matchMedia !== "function") {
+    return false;
+  }
+  reducedQuery ??= globalThis.matchMedia("(prefers-reduced-motion: reduce)");
+  return reducedQuery.matches;
+};
+
+/**
+ * The ONE rAF clock behind every tool-group row's reveal/fold tween. Each
+ * `ToolGroupRow` used to run its own `requestAnimationFrame` + `setNow` loop
+ * while its motion was active, so a live reveal re-rendered every group row
+ * from N independent loops; this clock shares the loop — the first
+ * subscriber arms it, the last unsubscribe stops it.
+ *
+ * Per-row TIMINGS are preserved exactly: every subscriber is handed the same
+ * `performance.now()` a per-row loop would have sampled that frame, and each
+ * row still computes its own progress from that timestamp — only the loop is
+ * shared, never the tween state.
+ *
+ * `prefers-reduced-motion` never rides the loop: rows gate their
+ * `motionActive` off the same media query, so nothing subscribes under
+ * reduce; the two reduced arms here are the safety net for a flip landing
+ * between a row's render and its effect — a subscribe under reduce delivers
+ * ONE immediate tick (the snap frame; the row renders its endpoint and
+ * unsubscribes), and a flip mid-flight makes the current frame the last.
+ */
+export class ToolRevealClock {
+  readonly #listeners = new Set<RevealClockListener>();
+  readonly #schedule: (callback: () => void) => number;
+  readonly #cancel: (handle: number) => void;
+  readonly #now: () => number;
+  readonly #reduced: () => boolean;
+  #raf = 0;
+  #running = false;
+
+  constructor(seams: ToolRevealClockSeams = {}) {
+    this.#schedule = seams.schedule ?? ((callback) => requestAnimationFrame(callback));
+    this.#cancel = seams.cancel ?? ((handle) => cancelAnimationFrame(handle));
+    this.#now = seams.now ?? (() => performance.now());
+    this.#reduced = seams.reduced ?? prefersReducedMotion;
+  }
+
+  /** True while the shared loop is armed (the start/stop test seam). */
+  isRunning(): boolean {
+    return this.#running;
+  }
+
+  subscribe = (listener: RevealClockListener): (() => void) => {
+    this.#listeners.add(listener);
+    if (this.#listeners.size === 1) {
+      this.#arm();
+    }
+    return () => {
+      this.#listeners.delete(listener);
+      if (this.#listeners.size === 0) {
+        this.#disarm();
+      }
+    };
+  };
+
+  #arm(): void {
+    if (this.#reduced()) {
+      // The snap: one synchronous tick, no loop — the row renders its
+      // endpoint and unsubscribes on its own.
+      this.#deliver(this.#now());
+      return;
+    }
+    this.#running = true;
+    this.#raf = this.#schedule(this.#tick);
+  }
+
+  #disarm(): void {
+    if (!this.#running) {
+      return;
+    }
+    this.#running = false;
+    this.#cancel(this.#raf);
+    this.#raf = 0;
+  }
+
+  #tick = (): void => {
+    if (!this.#running) {
+      return;
+    }
+    this.#deliver(this.#now());
+    if (!this.#running) {
+      // The last listener unsubscribed mid-dispatch and stopped the clock.
+      return;
+    }
+    if (this.#reduced()) {
+      // Reduced motion flipped mid-flight: this frame is the snap, and it
+      // is the last — the rows render their endpoints and unsubscribe.
+      this.#running = false;
+      this.#raf = 0;
+      return;
+    }
+    this.#raf = this.#schedule(this.#tick);
+  };
+
+  #deliver(now: number): void {
+    // A copy: a listener may unsubscribe (or subscribe) inside its tick.
+    for (const listener of [...this.#listeners]) {
+      listener(now);
+    }
+  }
+}
+
+/** The app's ONE shared reveal clock — every surface's rows ride this loop. */
+export const toolRevealClock = new ToolRevealClock();
+
+// ---------------------------------------------------------------------------
 // The per-instance state store (transcript.rs:2588-2731 fields)
 // ---------------------------------------------------------------------------
 
@@ -418,6 +548,33 @@ export type BlobFetch = { state: "loading" } | { state: "failed" } | { state: "r
 
 /** The 20s fetch timeout (spawn_blob_fetch, :4349). */
 const BLOB_TIMEOUT_MS = 20_000;
+
+/**
+ * One AUTOMATIC fold transition (ticket 71): a thought chip completing
+ * (unresolved→resolved, no explicit pin) or the rendered-open flip of a
+ * live group (auto-open expiring). Explicit clicks never emit — they take
+ * the viewport through the component's fold-navigation callback instead.
+ * The scroller subscribes to arm its reading-anchor compensation, gated by
+ * the one-owner rule (lib/tool-fold-scroll.ts).
+ */
+export interface AutomaticFoldTransition {
+  readonly rowId: string;
+  /** The detail fold's key (`"{rowId}#d{ix}"`); null for the group fold. */
+  readonly key: string | null;
+  readonly toggledAt: number;
+}
+
+/**
+ * The explicit fold pins of one chat/doc (ticket 68): group folds and chip
+ * detail folds keyed by the store's existing stable identities (row id;
+ * `"{rowId}#d{ix}"`). Capture keeps ONLY the `open` pins — no tween clocks,
+ * no reveal state, no blob payload — so restoring a choice renders its
+ * endpoint without scheduling any motion.
+ */
+export interface ExplicitFoldSnapshot {
+  readonly groups: ReadonlyMap<string, boolean>;
+  readonly details: ReadonlyMap<string, boolean>;
+}
 
 /**
  * The tool groups' render-local state: group folds, chip detail folds, reveal
@@ -437,9 +594,34 @@ export class ToolGroupMotionStore {
   readonly #blobs = new Map<string, BlobFetch>();
   readonly #blobOrder = new Map<string, number>();
   readonly #counts = new Map<string, number>();
+  /**
+   * Ticket 71 B — the rendered card height per expandable chip key, as the
+   * renderer reported it: the animated thought-close tween's `from`. A chip
+   * that never rendered open has no entry, so its completion snaps (an
+   * unmounted row's close is invisible anyway).
+   */
+  readonly #detailCardHeights = new Map<string, number>();
+  /**
+   * Ticket 69/71 — the last-seen `resolved` per thought chip key. Only a
+   * LIVE flip Some(false)→true is a genuine completion; the replay baseline
+   * clears this map so a reset/replay never impersonates one.
+   */
+  readonly #thoughtSeenResolved = new Map<string, boolean>();
+  readonly #transitionListeners = new Set<(transition: AutomaticFoldTransition) => void>();
+  readonly #arrival: ChatArrivalWindow | null;
   #blobCounter = 0;
   #version = 0;
   readonly #listeners = new Set<() => void>();
+
+  /**
+   * @param arrival The chat-switch arrival window (ticket 58) — the surface's
+   * ONE predicate, shared with the scroller. While it is armed, fold flips
+   * render their endpoint without a tween and `sync` does not arm the
+   * shimmer: a switch's arrival is atomic, not choreographed.
+   */
+  constructor(arrival: ChatArrivalWindow | null = null) {
+    this.#arrival = arrival;
+  }
 
   getVersion = (): number => this.#version;
 
@@ -449,6 +631,25 @@ export class ToolGroupMotionStore {
       this.#listeners.delete(listener);
     };
   };
+
+  /**
+   * Subscribe to AUTOMATIC fold transitions (ticket 71): a thought chip's
+   * animated completion close, or a live group's rendered-open flip. The
+   * scroller uses this to arm its reading-anchor compensation under the
+   * one-owner gate; clicks never appear here.
+   */
+  onAutomaticFoldTransition = (listener: (transition: AutomaticFoldTransition) => void): (() => void) => {
+    this.#transitionListeners.add(listener);
+    return () => {
+      this.#transitionListeners.delete(listener);
+    };
+  };
+
+  #emitAutomaticFoldTransition(transition: AutomaticFoldTransition): void {
+    for (const listener of [...this.#transitionListeners]) {
+      listener(transition);
+    }
+  }
 
   groupFold(rowId: string): FoldState | null {
     return this.#folds.get(rowId) ?? null;
@@ -508,7 +709,12 @@ export class ToolGroupMotionStore {
    * The rendered-open flip without a user click (auto-open expiring,
    * :5862-5870): seed the fold's tween from the last RENDERED height. A user
    * toggle's own `from`/`toggledAt` agree with these values, so the seed
-   * never fights a click.
+   * never fights a click. On a chat-switch ARRIVAL the flip records its
+   * endpoint WITHOUT the tween (ticket 58): the arrival predicate is armed,
+   * so the render is the destination state — only a same-chat flip (the
+   * chat live again) animates. Ticket 71: the seeded flip also announces
+   * itself so the scroller can preserve the reading anchor through the
+   * shrink (never fighting a pinned tail-follow or a held runway).
    */
   noteRendered(rowId: string, open: boolean, bodyHeight: number): void {
     const reveal = this.#reveals.get(rowId);
@@ -516,25 +722,52 @@ export class ToolGroupMotionStore {
       return;
     }
     if (reveal.renderedOpen !== null && reveal.renderedOpen !== open) {
-      const prev = this.#folds.get(rowId) ?? DEFAULT_FOLD;
-      const now = performance.now();
-      this.#folds.set(rowId, { ...prev, from: reveal.renderedHeight, toggledAt: now, disclosureAt: now });
-      this.#bump();
+      if (this.#arrival?.isArrival(performance.now()) !== true) {
+        const prev = this.#folds.get(rowId) ?? DEFAULT_FOLD;
+        const now = performance.now();
+        this.#folds.set(rowId, { ...prev, from: reveal.renderedHeight, toggledAt: now, disclosureAt: now });
+        this.#emitAutomaticFoldTransition({ rowId, key: null, toggledAt: now });
+        this.#bump();
+      }
     }
     reveal.renderedOpen = open;
     reveal.renderedHeight = bodyHeight;
   }
 
   /**
+   * The renderer's per-paint card-height report for one expandable chip
+   * (ticket 70's measurement key feeds the same geometry): while a thought
+   * streams open this records its settled open height, which the animated
+   * completion close uses as the tween's `from`. Pure recording — seeding
+   * is `sync`'s job, so replay and arrivals can never impersonate a live
+   * completion.
+   */
+  noteDetailRendered(key: string, cardHeight: number): void {
+    this.#detailCardHeights.set(key, cardHeight);
+  }
+
+  /**
    * The reveal-epoch assignment on every row sync (:4059-4116). `baseline` is
    * the replay baseline (the first populated frame after attach): it clears
    * every reveal and strips the group folds' tween clocks, so replaying
-   * history never re-animates an existing task tree.
+   * history never re-animates an existing task tree. `replaying` marks a
+   * TRANSIENT empty window (the store re-subscribing — a desync, a
+   * reconnect): the reset lands as an atomic swap, so the live-set cleanup
+   * below is skipped for that call and the reveal counts survive it
+   * (the desktop reads `previous_tool_counts` off the LIVE rows, which never
+   * empty mid-session, transcript.rs:4073-4097).
    */
-  sync(rows: readonly TranscriptRow[], baseline: boolean): void {
+  sync(rows: readonly TranscriptRow[], baseline: boolean, replaying = false): void {
     const now = performance.now();
     if (baseline) {
       this.#reveals.clear();
+      // Ticket 71/69: the completion tracker resets with the baseline — a
+      // replayed frame re-records its resolved states without ever reading
+      // as an unresolved→resolved flip, and the recorded card heights (the
+      // animated close's `from`) never outlive the transcript they belong
+      // to.
+      this.#thoughtSeenResolved.clear();
+      this.#detailCardHeights.clear();
       // Retain explicit user pins, but never resume an old arrival or
       // closing animation when revisiting the retained transcript.
       for (const [key, fold] of this.#folds) {
@@ -544,11 +777,54 @@ export class ToolGroupMotionStore {
       }
     }
     const live = new Set<string>();
+    const liveDetailKeys = new Set<string>();
+    const transitions: AutomaticFoldTransition[] = [];
     for (const row of rows) {
       if (row.rowKind.kind !== "toolGroup") {
         continue;
       }
       const tools = row.rowKind.tools;
+      // Ticket 71 B — the animated thought completion. Every tool group
+      // (standalone spawn cards included) tracks its thought chips' seen
+      // `resolved`: a LIVE flip to resolved with no explicit pin seeds the
+      // detail fold's close tween from the renderer-reported card height,
+      // so the chip closes over the existing 140ms EASE_OUT fold instead
+      // of snapping. Explicit pins win in every case (the seed never fires
+      // under a pin); a fresh store, an armed arrival, or a baseline frame
+      // never reads as a completion.
+      for (let ix = 0; ix < tools.length; ix += 1) {
+        const tool = tools[ix]!;
+        if (isSpawnLink(tool)) {
+          continue;
+        }
+        const key = `${row.id}#d${ix}`;
+        if (tool.detail !== null || tool.invocation !== null) {
+          liveDetailKeys.add(key);
+        }
+        if (!tool.isThought) {
+          continue;
+        }
+        const previouslyResolved = this.#thoughtSeenResolved.get(key) ?? null;
+        this.#thoughtSeenResolved.set(key, tool.resolved);
+        if (
+          previouslyResolved === false &&
+          tool.resolved &&
+          (tool.detail !== null || tool.invocation !== null) &&
+          (this.#detailFolds.get(key)?.open ?? null) === null &&
+          this.#detailCardHeights.has(key) &&
+          this.#arrival?.isArrival(now) !== true
+        ) {
+          const prev = this.#detailFolds.get(key) ?? DEFAULT_FOLD;
+          this.#detailFolds.set(key, {
+            open: null,
+            epoch: prev.epoch + 1,
+            from: this.#detailCardHeights.get(key)!,
+            toggledAt: now,
+            disclosureAt: null,
+          });
+          transitions.push({ rowId: row.id, key, toggledAt: now });
+        }
+      }
       // Agent/spawn groups are standalone cards, not task trees.
       if (!toolGroupCollapses(tools)) {
         continue;
@@ -561,7 +837,10 @@ export class ToolGroupMotionStore {
         reveal = { ...DEFAULT_REVEAL, starts: [] };
         this.#reveals.set(row.id, reveal);
       }
-      if (reveal.shimmerStartedAt === null) {
+      // Ticket 58: no shimmer restart on a chat switch's arrival — the
+      // window is armed, so this is the first paint of an already-loaded
+      // transcript; a later live sync (real streaming content) arms it.
+      if (reveal.shimmerStartedAt === null && this.#arrival?.isArrival(now) !== true) {
         reveal.shimmerStartedAt = now;
       }
       if (isNewGroup && reveal.headerStartedAt === null) {
@@ -576,17 +855,81 @@ export class ToolGroupMotionStore {
       }
       this.#counts.set(row.id, tools.length);
     }
+    // The live-set cleanup: reveals and counts for rows absent from `rows`.
+    // A transient empty window while the store is replaying is NOT an
+    // authoritative empty — the reset frame replaces the rows atomically —
+    // so the cleanup is skipped entirely for that call.
+    const transientEmpty = rows.length === 0 && replaying;
     for (const id of [...this.#reveals.keys()]) {
-      if (!live.has(id)) {
+      if (!transientEmpty && !live.has(id)) {
         this.#reveals.delete(id);
       }
     }
     for (const id of [...this.#counts.keys()]) {
-      if (!live.has(id)) {
+      if (!transientEmpty && !live.has(id)) {
         this.#counts.delete(id);
       }
     }
+    for (const key of [...this.#thoughtSeenResolved.keys()]) {
+      if (!transientEmpty && !liveDetailKeys.has(key)) {
+        this.#thoughtSeenResolved.delete(key);
+      }
+    }
+    for (const key of [...this.#detailCardHeights.keys()]) {
+      if (!transientEmpty && !liveDetailKeys.has(key)) {
+        this.#detailCardHeights.delete(key);
+      }
+    }
+    if (transitions.length > 0) {
+      // The listener may re-render (arming the scroller's compensation);
+      // deliver it before the store's own bump so both land in one commit.
+      for (const transition of transitions) {
+        this.#emitAutomaticFoldTransition(transition);
+      }
+    }
     this.#bump();
+  }
+
+  /**
+   * Serialize the explicit fold pins for chat-switch memory (ticket 68):
+   * every group/detail fold the user pinned, reduced to its `open` value.
+   * Unpinned entries (auto-following) and tween metadata are dropped — the
+   * replay baseline owns reveal state, and a restored choice must not carry
+   * a click or tween timestamp.
+   */
+  captureExplicitFolds(): ExplicitFoldSnapshot {
+    const groups = new Map<string, boolean>();
+    for (const [key, fold] of this.#folds) {
+      if (fold.open !== null) {
+        groups.set(key, fold.open);
+      }
+    }
+    const details = new Map<string, boolean>();
+    for (const [key, fold] of this.#detailFolds) {
+      if (fold.open !== null) {
+        details.set(key, fold.open);
+      }
+    }
+    return { groups, details };
+  }
+
+  /**
+   * Reinstall saved explicit pins as SETTLED folds (ticket 68): the pin wins
+   * over auto-open and arrival-pending through the shared geometry resolver,
+   * and `toggledAt`/`disclosureAt` stay null so no tween runs. Keys whose
+   * rows vanished since the capture are harmless misses — the maps only
+   * surface through lookups for rows that render.
+   */
+  restoreExplicitFolds(saved: ExplicitFoldSnapshot): void {
+    for (const [key, open] of saved.groups) {
+      this.#folds.set(key, { open, epoch: 1, from: 0, toggledAt: null, disclosureAt: null });
+    }
+    for (const [key, open] of saved.details) {
+      this.#detailFolds.set(key, { open, epoch: 1, from: 0, toggledAt: null, disclosureAt: null });
+    }
+    if (saved.groups.size > 0 || saved.details.size > 0) {
+      this.#bump();
+    }
   }
 
   /**
@@ -638,6 +981,8 @@ export class ToolGroupMotionStore {
     this.#blobs.clear();
     this.#blobOrder.clear();
     this.#counts.clear();
+    this.#detailCardHeights.clear();
+    this.#thoughtSeenResolved.clear();
     this.#blobCounter = 0;
     this.#bump();
   }

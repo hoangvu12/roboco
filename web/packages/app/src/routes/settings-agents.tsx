@@ -4,6 +4,7 @@ import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
 import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
+import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
@@ -160,6 +161,7 @@ export function AgentsSettingsPage() {
       <p className="settings-subtitle">
         Choose which coding agents the composer offers. The setting is per device — switch devices in the
         header. Agents whose CLI isn't installed on a device can't be enabled there.
+        <SettingsEngineIndicator />
       </p>
 
       {error !== null && (

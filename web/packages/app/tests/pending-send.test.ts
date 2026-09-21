@@ -6,8 +6,11 @@ import {
   UNDELIVERED_GRACE_MS,
   chatDeliveryDegraded,
   pendingSendStatus,
+  transcriptSnapshotIsLive,
   type PendingSend,
+  type TranscriptCache,
   type TranscriptClient,
+  type TranscriptSeed,
 } from "../src/state/transcript-store";
 import { sendRun, type DraftConfig } from "../src/lib/composer-actions";
 
@@ -153,7 +156,7 @@ describe("echo overlay", () => {
 describe("TranscriptStore acks the overlay from the stream", () => {
   function fakeClient(): {
     client: TranscriptClient;
-    emit: (update: TranscriptUpdate) => void;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
   } {
     let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
     return {
@@ -167,7 +170,7 @@ describe("TranscriptStore acks the overlay from the stream", () => {
           return { cancel: () => {} };
         },
       } as TranscriptClient,
-      emit: (update) => onItem?.(update, { generation: 1 }),
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
     };
   }
 
@@ -198,6 +201,246 @@ describe("TranscriptStore acks the overlay from the stream", () => {
       count: 1,
     });
     expect(echoes.forChat(CHAT)).toHaveLength(0);
+    store.dispose();
+  });
+});
+
+describe("TranscriptStore reset without the empty window (ticket 40)", () => {
+  function fakeClient(): {
+    client: TranscriptClient;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
+  } {
+    let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
+    return {
+      client: {
+        watch<T>(
+          _method: string,
+          _params: unknown,
+          handlers: { onItem: (item: T, ctx: { generation: number }) => void },
+        ) {
+          onItem = handlers.onItem as (item: TranscriptUpdate, ctx: { generation: number }) => void;
+          return { cancel: () => {} };
+        },
+      } as TranscriptClient,
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
+    };
+  }
+
+  /** A delta that cannot apply — the desync tripwire (resubscribe path). */
+  const DESYNC_DELTA: TranscriptUpdate = {
+    contextUsage: null,
+    upsert: [],
+    append: [{ entry: "ghost", part: "p0", text: "x", len: 1 }],
+    remove: [],
+    count: 3,
+  };
+
+  it("a_desync_resubscribe_keeps_the_previous_entries_until_the_reset_frame_lands", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    const a = userEntry("a");
+    const b = userEntry("b");
+    emit({ contextUsage: null, reset: [a, b] });
+    const settled = store.getSnapshot();
+    expect(settled.entries).toHaveLength(2);
+    expect(settled.loaded).toBe(true);
+    expect(settled.replay).toBe("populated");
+
+    // The desync trips the resubscribe: the rows STAY (rows are only empty
+    // on a genuine chat switch — the desktop re-derives them atomically,
+    // transcript.rs:4032-4057); only the replay returns to "pending".
+    emit(DESYNC_DELTA);
+    const mid = store.getSnapshot();
+    expect(mid.entries).toBe(settled.entries);
+    expect(mid.loaded).toBe(true);
+    expect(mid.replay).toBe("pending");
+
+    // The fresh stream's reset lands as an atomic swap: deep-equal entries
+    // keep their object identities (`preserveIdentity`), so the row cache
+    // and the measured-height map survive it.
+    emit({ contextUsage: null, reset: [userEntry("a"), userEntry("b")] });
+    const after = store.getSnapshot();
+    expect(after.replay).toBe("populated");
+    expect(after.entries[0]).toBe(a);
+    expect(after.entries[1]).toBe(b);
+    store.dispose();
+  });
+
+  it("a_generation_swap_keeps_the_previous_entries_until_the_reset_frame_lands", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    const a = userEntry("a");
+    emit({ contextUsage: null, reset: [a] });
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // A reconnect bumps the generation: the swap commits the pending window
+    // BEFORE the frame applies (the surface observes it, so the coming reset
+    // re-arms the reveal baseline), and the rows stay put throughout — an
+    // empty, unloaded snapshot is never published.
+    const observed: { replay: string; entries: number }[] = [];
+    const unsubscribe = store.subscribe(() => {
+      const snap = store.getSnapshot();
+      observed.push({ replay: snap.replay, entries: snap.entries.length });
+    });
+    emit({ contextUsage: null, upsert: [], append: [], remove: [], count: 1 }, 2);
+    unsubscribe();
+    expect(observed.map((o) => o.replay)).toEqual(["pending", "populated"]);
+    expect(observed.every((o) => o.entries === 1)).toBe(true);
+
+    // The stale-stream guard stays: a frame from the OLD generation is
+    // dropped without touching the snapshot.
+    emit({ contextUsage: null, reset: [userEntry("zzz")] }, 1);
+    expect(store.getSnapshot().entries).toHaveLength(1);
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // The new stream's reset lands: populated, identity preserved.
+    emit({ contextUsage: null, reset: [userEntry("a")] }, 2);
+    const after = store.getSnapshot();
+    expect(after.replay).toBe("populated");
+    expect(after.entries[0]).toBe(a);
+    store.dispose();
+  });
+});
+
+describe("TranscriptStore accepted-reset baseline epochs (ticket 69)", () => {
+  it("arrival waits for a live reset even when a seed is loaded (ticket 82)", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    store.seedEntries([userEntry("cached")]);
+    expect(store.getSnapshot().loaded).toBe(true);
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(false);
+
+    emit({ contextUsage: null, reset: [userEntry("live")] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    // Empty authoritative history also releases the gate.
+    emit({ contextUsage: null, reset: [] });
+    expect(transcriptSnapshotIsLive(store.getSnapshot())).toBe(true);
+    store.dispose();
+  });
+
+  it("a terminal error releases cached or unloaded content (ticket 82)", () => {
+    const { client } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    store.seedEntries([userEntry("cached")]);
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "offline" })).toBe(true);
+    // The contract is non-null, even if the engine supplies an empty message.
+    expect(transcriptSnapshotIsLive({ ...store.getSnapshot(), error: "" })).toBe(true);
+    store.dispose();
+  });
+
+  function fakeClient(): {
+    client: TranscriptClient;
+    emit: (update: TranscriptUpdate, generation?: number) => void;
+  } {
+    let onItem: ((item: TranscriptUpdate, ctx: { generation: number }) => void) | null = null;
+    return {
+      client: {
+        watch<T>(
+          _method: string,
+          _params: unknown,
+          handlers: { onItem: (item: T, ctx: { generation: number }) => void },
+        ) {
+          onItem = handlers.onItem as (item: TranscriptUpdate, ctx: { generation: number }) => void;
+          return { cancel: () => {} };
+        },
+      } as TranscriptClient,
+      emit: (update, generation = 1) => onItem?.(update, { generation }),
+    };
+  }
+
+  function deferredCache(): { cache: TranscriptCache; resolve: (seed: TranscriptSeed | null) => void } {
+    let resolve!: (seed: TranscriptSeed | null) => void;
+    const promise = new Promise<TranscriptSeed | null>((res) => {
+      resolve = res;
+    });
+    return { cache: { load: () => promise, save: () => Promise.resolve() }, resolve };
+  }
+
+  it("accepted resets advance the epoch; stale and malformed frames do not", () => {
+    const { client, emit } = fakeClient();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore() });
+    expect(store.getSnapshot().baseline).toBeNull();
+
+    // The first accepted reset publishes the first baseline.
+    emit({ contextUsage: null, reset: [userEntry("a")] }, 1);
+    const first = store.getSnapshot().baseline;
+    expect(first?.provenance).toBe("reset");
+    expect(first?.entries.map((entry) => entry.id)).toEqual(["a"]);
+
+    // A delta is not a reset boundary: no advance.
+    emit({ contextUsage: null, upsert: [{ after: "a", entry: userEntry("b") }], append: [], remove: [], count: 2 }, 1);
+    expect(store.getSnapshot().baseline).toBe(first);
+
+    // A stale generation's reset is dropped before it can publish.
+    emit({ contextUsage: null, reset: [userEntry("zzz")] }, 0);
+    expect(store.getSnapshot().baseline).toBe(first);
+    expect(store.getSnapshot().entries.map((entry) => entry.id)).toEqual(["a", "b"]);
+
+    // Malformed frames are dropped (logged) without advancing the baseline.
+    emit({ contextUsage: null, reset: "nope" } as unknown as TranscriptUpdate, 1);
+    emit({ contextUsage: null, upsert: [], append: [], remove: [] } as unknown as TranscriptUpdate, 1);
+    expect(store.getSnapshot().baseline).toBe(first);
+
+    // A same-generation resubscribe: the resubscribe itself publishes
+    // nothing — only the accepted reset that follows advances the epoch.
+    store.resubscribe();
+    expect(store.getSnapshot().baseline).toBe(first);
+    emit({ contextUsage: null, reset: [userEntry("a"), userEntry("b")] }, 1);
+    const second = store.getSnapshot().baseline;
+    expect(second).not.toBe(first);
+    expect(second!.epoch).toBeGreaterThan(first!.epoch);
+    expect(second!.entries.map((entry) => entry.id)).toEqual(["a", "b"]);
+
+    // An authoritative empty reset stays authoritative — its own baseline.
+    emit({ contextUsage: null, reset: [] }, 1);
+    const third = store.getSnapshot().baseline;
+    expect(third!.epoch).toBeGreaterThan(second!.epoch);
+    expect(third!.entries).toEqual([]);
+    expect(store.getSnapshot().replay).toBe("empty");
+    store.dispose();
+  });
+
+  it("the cache seed is a distinguishable baseline; the live reset supersedes it", async () => {
+    const { client, emit } = fakeClient();
+    const deferred = deferredCache();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore(), cache: deferred.cache });
+    expect(store.getSnapshot().baseline).toBeNull();
+
+    deferred.resolve({ entries: [userEntry("c")], savedAtMs: 0 });
+    await Promise.resolve();
+    const seed = store.getSnapshot().baseline;
+    expect(seed?.provenance).toBe("seed");
+    expect(seed?.entries.map((entry) => entry.id)).toEqual(["c"]);
+    expect(store.getSnapshot().replay).toBe("populated");
+
+    // The authoritative live reset is a NEW baseline, not a continuation of
+    // the cache — a later reset must never be skipped as "already baselined".
+    emit({ contextUsage: null, reset: [userEntry("c"), userEntry("d")] }, 1);
+    const live = store.getSnapshot().baseline;
+    expect(live?.provenance).toBe("reset");
+    expect(live!.epoch).toBeGreaterThan(seed!.epoch);
+    expect(live?.entries.map((entry) => entry.id)).toEqual(["c", "d"]);
+    store.dispose();
+  });
+
+  it("a cache load resolving after the first live frame never mints a seed baseline", async () => {
+    const { client, emit } = fakeClient();
+    const deferred = deferredCache();
+    const store = new TranscriptStore(client, CHAT, { echoes: new EchoStore(), cache: deferred.cache });
+
+    emit({ contextUsage: null, reset: [userEntry("live")] }, 1);
+    const live = store.getSnapshot().baseline;
+    expect(live?.provenance).toBe("reset");
+
+    // The late cache resolves into a loaded store: dropped entirely — no
+    // seed baseline, no entry change.
+    deferred.resolve({ entries: [userEntry("stale-cache")], savedAtMs: 0 });
+    await Promise.resolve();
+    expect(store.getSnapshot().baseline).toBe(live);
+    expect(store.getSnapshot().entries.map((entry) => entry.id)).toEqual(["live"]);
     store.dispose();
   });
 });

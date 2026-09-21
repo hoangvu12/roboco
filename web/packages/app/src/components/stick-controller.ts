@@ -1,3 +1,4 @@
+import type { ChatArrivalWindow } from "../lib/chat-arrival";
 import {
   AT_BOTTOM_PX,
   GLIDE_MAX_VIEWPORTS,
@@ -5,6 +6,7 @@ import {
   SPRING_MAX_CATCHUP_FRAMES,
   SPRING_SETTLE_GRACE_MS,
   StickSpring,
+  jumpButtonShown,
   jumpVisibility,
   shouldAnchorLiveStream,
   shouldBreakPin,
@@ -31,6 +33,12 @@ export interface OwnTurnGeometry {
   readonly filled: boolean;
   /** Row-top positions (the virtualizer's prefix sums), in scroll content space. */
   readonly positions: readonly number[];
+  /**
+   * True while the row list is mid-replay (the store not loaded, or its
+   * replay pending — a resubscribe/reconnect window). A missing anchor in
+   * that window is transient: the runway waits, never retires.
+   */
+  readonly transient: boolean;
 }
 
 export interface StickControllerOptions {
@@ -39,7 +47,22 @@ export interface StickControllerOptions {
   onOwnTurnChange?: () => void;
   /** User scroll input (not ours) — the surface cancels its hold/anim state. */
   onUserInput?: () => void;
+  /**
+   * Explicit navigation began (ticket 71): a fold toggle, the rail glide,
+   * the selection auto-scroll, or a tool-fold click handed the viewport to
+   * navigation. The surface cancels its tool-fold compensation here — the
+   * desktop's `begin_scroll_navigation` clears its compensations the same
+   * way.
+   */
+  onNavigation?: () => void;
   reducedMotion?: MediaQueryList | null;
+  /**
+   * The chat-switch arrival window (ticket 58): while it is armed, `kick`
+   * writes the end directly instead of arming the spring — a switch's
+   * arrival is atomic (the desktop's `select_chat`, state.rs:1740-1792),
+   * so the estimate→measure settle cascade must never read as motion.
+   */
+  arrival?: ChatArrivalWindow | null;
 }
 
 /**
@@ -91,12 +114,16 @@ export class StickController {
   readonly #onJumpVisibility: (shown: boolean) => void;
   readonly #onOwnTurnChange: () => void;
   readonly #onUserInput: () => void;
+  readonly #onNavigation: () => void;
   readonly #reduced: MediaQueryList | null;
+  readonly #arrival: ChatArrivalWindow | null;
 
   constructor(options: StickControllerOptions) {
     this.#onJumpVisibility = options.onJumpVisibility;
     this.#onOwnTurnChange = options.onOwnTurnChange ?? (() => {});
     this.#onUserInput = options.onUserInput ?? (() => {});
+    this.#onNavigation = options.onNavigation ?? (() => {});
+    this.#arrival = options.arrival ?? null;
     this.#reduced =
       options.reducedMotion ??
       (typeof globalThis.matchMedia === "function" ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null);
@@ -151,6 +178,19 @@ export class StickController {
 
   /** Content or viewport resized: one observation frame (desktop wake_spring). */
   kick(): void {
+    if (this.#pinned && this.#arrival?.isArrival(performance.now())) {
+      // Ticket 58 — a chat switch's arrival is atomic: while the arrival
+      // window is armed, the settle cascade's measurement batches must not
+      // arm the spring against their drift (the visible "scrolling down").
+      // Write the end directly (`snapToEnd`'s shape) and leave the spring
+      // parked; the window is the scroller's ONE arrival predicate.
+      this.#spring.reset();
+      this.#lastTick = null;
+      this.#settledAt = null;
+      this.#write(this.#maxScroll());
+      this.#prevDistance = this.#distance();
+      return;
+    }
     if (
       this.#settledAt !== null &&
       this.#lastTick !== null &&
@@ -248,6 +288,9 @@ export class StickController {
     this.#lastTick = null;
     this.#settledAt = null;
     this.#kick = false;
+    // The surface's viewport compensations stand down (ticket 71): a tool
+    // fold compensator arming AFTER this call is the next owner.
+    this.#onNavigation();
   }
 
   /** Cancel a running glide (the scroll-task slot clears; the next
@@ -477,7 +520,10 @@ export class StickController {
       this.kick();
     }
     this.#prevDistance = distance;
-    this.#setJumpShown(jumpVisibility(this.#jumpShown, distance));
+    // `handle_scroll`'s pinned gate (transcript.rs:3198): never flash the
+    // pill while the bottom spring settles near the end. No own turn is
+    // live in this branch (the one above owns the held suppression).
+    this.#setJumpShown(jumpButtonShown(this.#jumpShown, distance, this.#pinned, false));
   };
 
   #setJumpShown(shown: boolean): void {
@@ -591,9 +637,13 @@ export class StickController {
     const geometry = this.#geometry?.() ?? null;
     const anchor = geometry?.anchor ?? null;
     if (anchor === null) {
-      // The optimistic echo may arrive on the next state notification — but
-      // once the prompt has appeared, its disappearance is terminal.
-      if (ownTurn.seenPrompt) {
+      // The desktop waits one notification for the optimistic echo
+      // (transcript.rs:3541-3543) — and a row list that is momentarily
+      // replaying (a resubscribe or reconnect window; rows are never
+      // emptied, but the geometry can lag a frame) is the same wait: keep
+      // the runway and schedule the next frame. Only a prompt absent from a
+      // POPULATED frame is terminal (a failed echo or a removed entry).
+      if (ownTurn.seenPrompt && geometry?.transient !== true) {
         this.#retireOwnTurn();
         return false;
       }

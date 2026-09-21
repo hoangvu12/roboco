@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { methods } from "@roboco/engine-client";
+import { methods, type EngineEntrySnapshot } from "@roboco/engine-client";
 import type { Device } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { useFleet, fleetStore } from "../state/fleet";
+import { forgetEngine, useFleet, useFleetRegistry, fleetStore } from "../state/fleet";
 import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
-import { webDeviceLabel } from "../lib/engine-store";
-import { describeRedeemError } from "../components/engine-drawer";
+import { webDeviceLabel, engineHost, type StoredEngine } from "../lib/engine-store";
+import { describeRedeemError } from "../lib/pairing-errors";
+import { engineConnection } from "../lib/settings-engine";
 import {
   lastSeenOnline,
   formatLastSeenAt,
@@ -23,7 +25,12 @@ import {
  * the platform tile's corner presence dot, the meta line (platform · version
  * · connection · last seen · added · the click-to-copy id chip), Rename (via
  * the Mutate renameDevice op) and the pairing box that redeems a pairing URL
- * through the same fleet store the engine drawer uses.
+ * through the fleet store — the page's one paste entry (the `/pair` landing
+ * is the other, for token URLs). Above the device rows sits the engines
+ * card: one row per engine this browser paired, folded here from the
+ * deleted web-only user-menu Engines drawer (ticket 45) — connection state
+ * dot + label, the engine identity line, "Pair again" when the engine
+ * parked (a revoked Session re-pairs through `/pair`), and Forget.
  *
  * Web mapping of the desktop's multi-engine registry concepts: the rows come
  * from the connected engine's WatchDevices; the "engine-backed" row is the
@@ -43,6 +50,7 @@ export function DevicesSettingsPage() {
   const client = session?.client ?? null;
   const status = useEngineStatus(session);
   const fleet = useFleet();
+  const registry = useFleetRegistry();
   const snapshot = useWatchSnapshot(session);
   const now = useNow(15_000);
   const [pairingUrl, setPairingUrl] = useState("");
@@ -70,6 +78,8 @@ export function DevicesSettingsPage() {
   const devices = snapshot?.devices.rows ?? [];
   const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
   const activeEngine = fleet.engines.find((engine) => engine.baseUrl === fleet.active) ?? null;
+  // One registry entry per stored engine, keyed by its baseUrl.
+  const registryByEngine = new Map(registry.engines.map((entry) => [entry.key, entry]));
 
   /** The live engine connection behind a row, or null (last-seen fallback). */
   function rowConnection(deviceId: string): EngineConnection | null {
@@ -195,6 +205,23 @@ export function DevicesSettingsPage() {
         </p>
       </section>
 
+      <div className="settings-section-header">
+        <h2>Engines</h2>
+      </div>
+      <section className="settings-card">
+        {fleet.engines.length === 0 ? (
+          <p className="settings-empty">No engines paired yet. Pair one above.</p>
+        ) : (
+          fleet.engines.map((engine) => (
+            <EngineRow
+              key={engine.baseUrl}
+              engine={engine}
+              entry={registryByEngine.get(engine.baseUrl) ?? null}
+            />
+          ))
+        )}
+      </section>
+
       <section className="settings-card">
         {count === 0 ? (
           <p className="settings-empty settings-empty-devices">No devices registered</p>
@@ -227,6 +254,60 @@ export function DevicesSettingsPage() {
         <RenameDeviceDialog dialog={rename} onCancel={() => setRename(null)} onSubmit={submitRename} />
       )}
     </div>
+  );
+}
+
+interface EngineRowProps {
+  readonly engine: StoredEngine;
+  readonly entry: EngineEntrySnapshot | null;
+}
+
+/**
+ * One paired engine's row — the drawer's per-engine row folded here
+ * (ticket 45), minus the urgent-chat dot (the sidebar owns urgency).
+ * The meta line is the connection label · identity (`Engine {shortId}`,
+ * or "Identity unverified" before the first verified connect); "Pair
+ * again" appears only on a parked engine and re-enters the pairing flow
+ * at `/pair`, where a fresh URL redeems into a new Session.
+ */
+function EngineRow({ engine, entry }: EngineRowProps) {
+  const navigate = useNavigate();
+  const connection = engineConnection(entry);
+
+  return (
+    <div className="settings-row">
+      <span className={`dot ${connection.dot}`} />
+      <div className="settings-row-main">
+        <span className="settings-row-title">{engineHost(engine.baseUrl)}</span>
+        <span className="settings-meta-line">
+          {connection.label}
+          <span className="settings-meta-dot" aria-hidden="true">·</span>
+          {engine.deviceId !== null ? `Engine ${engine.deviceId.slice(0, 8)}` : "Identity unverified"}
+        </span>
+      </div>
+      {connection.pairable && (
+        <button type="button" className="btn btn-ghost" onClick={() => void navigate({ to: "/pair" })}>
+          Pair again
+        </button>
+      )}
+      <RemoveEngineButton engine={engine} />
+    </div>
+  );
+}
+
+function RemoveEngineButton({ engine }: { engine: StoredEngine }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <button type="button" className="btn btn-ghost" onClick={() => setConfirming(true)}>
+        Forget
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="btn btn-danger-ghost" onClick={() => forgetEngine(engine.baseUrl)}>
+      Forget?
+    </button>
   );
 }
 

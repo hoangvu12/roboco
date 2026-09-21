@@ -505,7 +505,9 @@ impl AccountsPage {
                         .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
                 }) {
                     Ok(start) => {
-                        cx.open_url(&start.url);
+                        if !start.cli_opens_browser {
+                            cx.open_url(&start.url);
+                        }
                         match start.mode {
                             AgentLoginMode::PasteCode => {
                                 page.code_input

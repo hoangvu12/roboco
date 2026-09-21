@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "../lib/composer-actions";
+import { catalogLoading, modelsLoading, openForceRefire, shouldReload } from "../lib/catalog-loading";
 import {
   applyDraftUpdate,
   composerDefaults,
@@ -14,7 +15,7 @@ import {
   rememberReasoning,
   toggleModelFavorite,
 } from "../lib/composer-draft";
-import { defaultReasoning, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import { defaultReasoning, effectiveReasoningLadder, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform } from "../state/shortcuts";
@@ -130,8 +131,10 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const selectedModel =
     (modelsList.loaded ? models.find((model) => model.id === draft.model) : undefined) ??
     (models.length > 0 ? models[0] : undefined);
-  // `trait_ladder`: the model's ladder, falling back to the descriptor's own.
-  const ladder: readonly ReasoningLevel[] = selectedModel?.reasoningLevels ?? descriptor?.reasoningLevels ?? [];
+  // `trait_ladder`: the model's NONEMPTY ladder, else the descriptor's own —
+  // an empty model list falls back (Haiku → Claude's advertised levels);
+  // before any model resolves there is no effective ladder at all.
+  const ladder: readonly ReasoningLevel[] = effectiveReasoningLadder(selectedModel, descriptor);
 
   const favorites = defaults.favorites;
 
@@ -145,15 +148,23 @@ export function ComposerPickers(props: ComposerPickersProps) {
     [catalog],
   );
 
+  // The descriptor lookup `applyDraftUpdate` clamps against — resolved per
+  // call for the NEXT draft's harness, never a captured previous one.
+  const resolveDescriptor = useCallback(
+    (harness: HarnessId): HarnessDescriptor | null =>
+      catalog.getHarnesses().rows.find((row) => row.id === harness) ?? null,
+    [catalog],
+  );
+
   const commit = useCallback(
     (update: DraftConfigUpdate) => {
-      const next = applyDraftUpdate(draft, update, resolveModel);
+      const next = applyDraftUpdate(draft, update, resolveModel, resolveDescriptor);
       onDraft(next);
       if (chatConfig !== null) {
         onPersist(next);
       }
     },
-    [draft, resolveModel, onDraft, onPersist, chatConfig],
+    [draft, resolveModel, resolveDescriptor, onDraft, onPersist, chatConfig],
   );
 
   function pickHarness(harness: HarnessId): void {
@@ -167,7 +178,11 @@ export function ComposerPickers(props: ComposerPickersProps) {
     rememberHarness(harness);
     // The remembered model for this harness takes over via the defaults
     // fallback; a foreign pick must not linger (pickers.rs:1380-1394).
-    commit({ harness, model: null, reasoning: null });
+    // Reasoning clears to the REMEMBERED level (native `pick_harness` clears
+    // the draft value and `effective_reasoning` falls back to the remembered
+    // default); the reconciliation re-derives it against the new harness's
+    // effective ladder once the models resolve.
+    commit({ harness, model: null, reasoning: composerDefaults.getSnapshot().reasoning });
   }
 
   function pickModel(harness: HarnessId, model: Model): void {
@@ -202,27 +217,82 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const brand = harnessBrandIcon(effectiveHarness);
   const modelLabel = resolveChipLabel(draft.model, selectedModel, effectiveHarness, modelsList);
   const rememberedLabel = draft.model === null ? null : rememberedLabelFor(draft.model);
+  // `chip_label_loading` (pickers.rs:4220-4221): nothing names the pick yet
+  // AND the catalog is Idle/Loading. An errored harness or model slot is
+  // settled, not loading — the real label (remembered label → configured/
+  // raw id, `model_label` at pickers.rs:4186-4206) renders and the failure
+  // surfaces through the card's ErrorRow, never an eternal skeleton.
   const labelLoading =
     draft.model !== null &&
     modelLabel === draft.model &&
     rememberedLabel === null &&
-    (!harnesses.loaded || modelsList.loading);
-  const iconLoading = !harnesses.loaded && chatConfig === null && defaults.harness === null && !noAgents;
+    harnesses.error === null &&
+    (catalogLoading(harnesses) || modelsLoading(modelsList));
+  // `chip_icon_loading` (pickers.rs:4216-4217): catalog Idle/Loading only —
+  // an errored catalog shows the brand mark with the resolved label.
+  const iconLoading =
+    catalogLoading(harnesses) && chatConfig === null && defaults.harness === null && !noAgents;
   const suffix = traitsSummary(selectedModel, draft.reasoning, draft.modelOptions);
   const suffixActive = traitsCustomized(selectedModel, draft.reasoning, ladder, draft.modelOptions);
 
   // Force: the enabled set moves under us (Settings → Agents, possibly from
   // another viewer) — every open revalidates, keeping current rows visible
-  // until the fresh catalog lands (pickers.rs:1003-1019). The
-  // overlaySource prop below registers the `composer-pickers` overlay
+  // until the fresh catalog lands (pickers.rs:1003-1019). The force also
+  // RE-FIRES when the slot lands Error while the card stays open (ticket
+  // 61, hole 1): the desktop's per-render `ensure_harnesses` cadence
+  // (pickers.rs:4164-4168) never waits for an event to re-kick, and the
+  // web's stand-in for that cadence is this effect re-running on a state
+  // change — the slot's error arm is the one that must re-kick (an open
+  // card's ErrorRow has no scheduled retry otherwise). `openForceRefire`
+  // keys on that arm alone, so a warm Ready slot never re-fires (each
+  // landed reload produces a fresh slot object — keying on identity would
+  // loop) and a failed re-arm does not re-fire again until a new error
+  // lands. The in-flight guard inside `loadHarnesses` bounds a wedged
+  // load's lifetime, so the re-force can supersede it.
+  // The overlaySource prop below registers the `composer-pickers` overlay
   // keyboard source while the card is open (shell.rs:3681-3683).
   const opened = open;
+  const openRefire = openForceRefire(harnesses);
   useEffect(() => {
     if (opened) {
       void catalog.loadHarnesses({ force: true });
       catalog.prefetchModels(true);
     }
-  }, [catalog, opened]);
+  }, [catalog, opened, openRefire]);
+
+  // The desktop's per-render `ensure_harnesses(false, cx)` kick
+  // (pickers.rs:4164-4168) has no per-frame web peer — port the discipline
+  // instead: React re-renders on every relevant state change, and this
+  // effect re-runs whenever the slot identity moves, which is every Idle
+  // transition (reset, invalidate, a fresh session). A non-forced kick is
+  // a no-op unless the slot is Idle (`shouldReload`'s Idle-only rule), so
+  // Ready/Loading/Error slots never re-fire — and the card's skeleton
+  // takeover can never sit on an Idle slot with nothing scheduled.
+  useEffect(() => {
+    if (shouldReload(harnesses, false)) {
+      void catalog.loadHarnesses();
+    }
+  }, [catalog, harnesses]);
+
+  // A failure that lands while the connection is up (the unary call
+  // timeout, a mid-call teardown) has no status event to heal it — the
+  // offline re-arm only covers pre-dial errors. Window focus re-arms an
+  // errored, row-less slot: reset to Idle, then the non-forced kick above
+  // (the Idle row of `shouldReload`) reloads it. Ready and Loading slots
+  // are never touched; the in-flight guard inside `loadHarnesses` stands.
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      const slot = catalog.getHarnesses();
+      if (slot.error !== null && !slot.loaded && !slot.loading) {
+        catalog.resetHarnesses();
+        void catalog.loadHarnesses();
+      }
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [catalog]);
 
   return (
     <div className="composer-pickers">
@@ -242,7 +312,6 @@ export function ComposerPickers(props: ComposerPickersProps) {
             type="button"
             id="picker-model"
             className={openChipClass("identity-chip", open)}
-            title={`${descriptor?.name ?? effectiveHarness} · ${modelLabel}${suffix === null ? "" : ` · ${suffix}`}`}
           >
             {noAgents ? (
               <Icon name="terminal" size={16} className="identity-chip-brand identity-chip-brand-muted" />

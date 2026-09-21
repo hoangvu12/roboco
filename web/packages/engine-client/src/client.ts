@@ -202,6 +202,15 @@ export class EngineClient {
     return this.#info;
   }
 
+  /**
+   * The registry engine key this client routes for (its canonical origin),
+   * or null for an unkeyed client. Presentation caches that must not collide
+   * across engines key off this.
+   */
+  get engineKey(): string | null {
+    return this.#engineKey ?? null;
+  }
+
   /** Increments on every successful (re)connect; the cache swap epoch. */
   get generation(): number {
     return this.#generation;
@@ -306,9 +315,12 @@ export class EngineClient {
     }
     this.#attempt += 1;
     const dial = ++this.#dialCounter;
-    if (dial === 1) {
-      this.#emit({ state: "connecting", attempt: this.#attempt });
-    }
+    // Every dial announces itself (ticket 61, hole 3): re-dials used to
+    // stay silent until they failed ("reconnecting") or established
+    // ("connected"), so a status-change heal had no event to consume
+    // between a drop and the re-dial's outcome — dial 1's "connecting"
+    // was the only one ever emitted.
+    this.#emit({ state: "connecting", attempt: this.#attempt });
     let socket: WsSocket;
     try {
       socket = this.#factory(this.endpoint);

@@ -20,10 +20,13 @@ import {
   type FileFold,
 } from "../lib/diff";
 import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
+import { useResolvedAppearance } from "../state/appearance";
 import { CommentAdder } from "../components/review-comments/comment-adder";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
+import { PickerCard } from "../components/ui/PickerCard";
+import { MenuRowNav } from "../components/ui/MenuRows";
 import type { ChangeRequestSummary } from "@roboco/proto";
 
 /**
@@ -33,12 +36,14 @@ import type { ChangeRequestSummary } from "@roboco/proto";
  * the per-surface store (`state/changes-surface.ts`), shared with the
  * toolbar the host renders above this body.
  *
- * The toolbar row (scope chips, the branch → base selector, split/wrap/
+ * The toolbar row (scope selector, the branch → base selector, split/wrap/
  * fold-all) is the desktop's `render_header_controls`; the banner row below
  * it (scope label, +N/−N, the "Partial snapshot" chip) is
- * `render_header_strip`. Scope chips replace the desktop's dropdown and the
- * base selector stays a native `<select>` — both are the documented,
- * accepted web deviations (research §5), not bugs to fix here.
+ * `render_header_strip`. The scope selector is the desktop's trigger +
+ * popover port (ticket 62 overturned ticket 22's sanctioned three-chip
+ * deviation, user report 2026-09-20 #7); the base selector stays a native
+ * `<select>` — the remaining documented, accepted web deviation (research
+ * §5), not a bug to fix here.
  *
  * The CR card is reactive: the surface subscribes a
  * `WatchCheckoutChangeRequest` per the chat's `(device, cwd, branch)` tuple
@@ -130,21 +135,16 @@ export function CommitDiffToolbar({ chatId, surfaceId }: { chatId: string; surfa
  */
 export function ChangesToolbar({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const surface = useChangesSurface(chatId, surfaceId);
+  const [scopeOpen, setScopeOpen] = useState(false);
   return (
     <div className="surface-toolbar changes-toolbar" role="toolbar" aria-label="Diff options">
-      <nav className="changes-scope" aria-label="Diff scope">
-        {DIFF_SCOPE_CHIPS.map((option) => (
-          <button
-            key={option}
-            type="button"
-            className={`changes-scope-chip ${surface.scope === option ? "changes-scope-chip-active" : ""}`}
-            onClick={() => changesSurfaceStore.setScope(chatId, surfaceId, option)}
-            aria-pressed={surface.scope === option}
-          >
-            {DIFF_SCOPE_LABELS[option]}
-          </button>
-        ))}
-      </nav>
+      <ChangesScopeSelector
+        chatId={chatId}
+        surfaceId={surfaceId}
+        scope={surface.scope}
+        open={scopeOpen}
+        onOpenChange={setScopeOpen}
+      />
       {surface.scope === "branch" ? (
         <BasePicker
           branches={surface.branches}
@@ -182,6 +182,102 @@ export function ChangesToolbar({ chatId, surfaceId }: { chatId: string; surfaceI
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * The scope menu's rows (`render_scope_menu`, changes.rs:3845-3871): one
+ * `MenuRowNav` per `DiffScope::ALL` on the menu family's 2px rhythm, the
+ * active scope's row wearing the selected wash plus the trailing check,
+ * every pick calling the unchanged `setScope` and closing through the
+ * caller. A unit so the selector composes it into the card and the node
+ * test suite can render the rows directly (Base UI's portal renders
+ * nothing under `renderToString`).
+ */
+export function ChangesScopeMenuRows({
+  chatId,
+  surfaceId,
+  scope,
+  onPick,
+}: {
+  readonly chatId: string;
+  readonly surfaceId: string;
+  readonly scope: DiffScope;
+  readonly onPick: () => void;
+}) {
+  return (
+    <div className="changes-scope-menu">
+      {DIFF_SCOPE_CHIPS.map((option) => (
+        <MenuRowNav
+          key={option}
+          fadeKey={`changes-scope-row-${option}`}
+          selected={scope === option}
+          onClick={() => {
+            changesSurfaceStore.setScope(chatId, surfaceId, option);
+            onPick();
+          }}
+        >
+          <span className="menu-row-label">{DIFF_SCOPE_LABELS[option]}</span>
+          {scope === option ? <Icon name="check" size={12} className="changes-scope-check" /> : null}
+        </MenuRowNav>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The scope selector (`render_header_controls`' scope trigger + menu,
+ * changes.rs:3699-3744 / 3845-3871): ONE 24px trigger — the current scope's
+ * label plus the 12px chevron — where ticket 22's three chips sat. The
+ * `PickerCard` opens 10px below the trigger at the desktop's 180px and
+ * carries the rows unit; ticket 62 (user report 2026-09-20 #7) replaced the
+ * sanctioned three-chip deviation with this port.
+ */
+export function ChangesScopeSelector({
+  chatId,
+  surfaceId,
+  scope,
+  open,
+  onOpenChange,
+}: {
+  readonly chatId: string;
+  readonly surfaceId: string;
+  readonly scope: DiffScope;
+  /** Controlled open — the toolbar owns the state; every dismissal lands there. */
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <PickerCard
+      open={open}
+      onOpenChange={onOpenChange}
+      placement="anchorBelowGap"
+      gap={10}
+      width={180}
+      role="menu"
+      ariaLabel="Diff scope"
+      overlaySource="changes-scope"
+      initialFocus={false}
+      trigger={
+        <button
+          type="button"
+          id="changes-scope-trigger"
+          className="changes-scope-trigger"
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          <span className="changes-scope-label">{DIFF_SCOPE_LABELS[scope]}</span>
+          <Icon name="altArrowDown" size={12} className="changes-scope-caret" />
+        </button>
+      }
+    >
+      <ChangesScopeMenuRows
+        chatId={chatId}
+        surfaceId={surfaceId}
+        scope={scope}
+        onPick={() => onOpenChange(false)}
+      />
+    </PickerCard>
   );
 }
 
@@ -252,6 +348,8 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   // every engine; the diff store runs on the routed session's client.
   const snapshot = useFleetSnapshot();
   const now = useNow(10_000);
+  // File headers resolve polychrome icons — dark picks the `dark/` tree.
+  const appearance = useResolvedAppearance();
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
   const chat = chatPageRow(chatId, snapshot.chats.rows, snapshot.spaces.rows, snapshot.statuses.rows, now)?.chat ?? null;
@@ -512,6 +610,7 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
             ) : (
               <DiffView
                 files={files}
+                appearance={appearance}
                 layout={layout}
                 wrap={wrap}
                 folds={folds}

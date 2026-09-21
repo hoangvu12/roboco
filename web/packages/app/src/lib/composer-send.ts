@@ -101,6 +101,31 @@ export function shouldPublishOptimisticEcho(queue: boolean): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// The send cwd (composer.rs:6433-6440)
+// ---------------------------------------------------------------------------
+
+/**
+ * `resolve_send_cwd` (composer.rs:6433-6440): a NEW chat runs from the
+ * picked space's path, else `"~"` — the host's home, expanded by the ENGINE
+ * when the run spawns (`sessions.rs::expand_home`, 1303-1313; the web never
+ * expands it client-side); an EXISTING chat runs from its stored cwd, else
+ * `"."`. Blank/whitespace counts as absent (the deleted web-only guard's
+ * trim rule folds in here). There is no error path — the desktop has none
+ * for a projectless send.
+ */
+export function resolveSendCwd(
+  isNew: boolean,
+  spacePath: string | null | undefined,
+  existingCwd: string | null | undefined,
+): string {
+  const path = isNew ? spacePath : existingCwd;
+  if (typeof path === "string" && path.trim().length > 0) {
+    return path;
+  }
+  return isNew ? "~" : ".";
+}
+
+// ---------------------------------------------------------------------------
 // Interrupt tracking (composer.rs:587-599, 6707-6741)
 // ---------------------------------------------------------------------------
 
@@ -174,4 +199,80 @@ export function messageEnterBindings(
  */
 export function platformModifierCombo(isMac: boolean): "cmd-enter" | "ctrl-enter" {
   return isMac ? "cmd-enter" : "ctrl-enter";
+}
+
+// ---------------------------------------------------------------------------
+// The Enter key's resolved action (ticket 75 — the phone newline policy)
+// ---------------------------------------------------------------------------
+
+/** Everything the composer's Enter branch needs to decide (ticket 75 §2.1). */
+export interface EnterKeyContext {
+  /** The live phone layer (`useIsPhone`, state/media.ts: `max-width: 768px`). */
+  readonly phone: boolean;
+  /** An IME composition is active — the event belongs to the IME. */
+  readonly composing: boolean;
+  /** A completion (slash/mention) is open with a live selection. */
+  readonly completionSelected: boolean;
+  /** The question wizard is borrowing the shared input. */
+  readonly wizardActive: boolean;
+  /** The platform modifier (Ctrl or Cmd). */
+  readonly mod: boolean;
+  readonly alt: boolean;
+  readonly shift: boolean;
+  /**
+   * The saved `ComposerSendBehavior` desktop preference — read, never
+   * mutated; the phone policy is derived in memory per keypress.
+   */
+  readonly sendBehavior: ComposerSendBehavior;
+}
+
+/**
+ * What an Enter press becomes. `"imeNative"` and `"nativeNewline"` leave the
+ * event's default intact (the textarea performs the edit natively); every
+ * other action consumes the event exactly once.
+ */
+export type EnterKeyAction =
+  | "imeNative"
+  | "acceptCompletion"
+  | "nativeNewline"
+  | "wizardSuppress"
+  | "wizardSubmit"
+  | "modifiedSubmit"
+  | "submit";
+
+/**
+ * The single decision owner of the composer's Enter branch (ticket 75
+ * §2.2's order): IME composition → a selected completion (accepted exactly
+ * once) → a PHONE bare Enter, which is a native newline before both the
+ * wizard and message submit branches, at every saved preference → the
+ * wizard policy (ModifiedSubmit suppressed, bare Enter submits the page,
+ * Shift/Alt stay native) → ModifiedSubmit → the saved bare-Enter
+ * preference. Shift+Enter and Alt+Enter are a native newline at any width;
+ * Mod+Enter's submit/activate-latest-queued target is the caller's
+ * (`modifiedSubmitTarget`).
+ */
+export function resolveEnterAction(context: EnterKeyContext): EnterKeyAction {
+  if (context.composing) {
+    return "imeNative";
+  }
+  if (context.completionSelected) {
+    return "acceptCompletion";
+  }
+  const bare = !context.mod && !context.alt && !context.shift;
+  if (context.phone && bare) {
+    return "nativeNewline";
+  }
+  if (context.wizardActive) {
+    if (context.mod) {
+      return "wizardSuppress";
+    }
+    return bare ? "wizardSubmit" : "nativeNewline";
+  }
+  if (context.mod && !context.alt) {
+    return "modifiedSubmit";
+  }
+  if (bare && context.sendBehavior === "enter") {
+    return "submit";
+  }
+  return "nativeNewline";
 }

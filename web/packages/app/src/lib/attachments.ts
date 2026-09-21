@@ -1,4 +1,5 @@
 import { methods } from "@roboco/engine-client";
+import { mintId } from "./id";
 
 /**
  * Attachments — staging, upload, and read-back for the composer and the
@@ -272,7 +273,7 @@ function finalizeStage(rawName: string, format: AttachmentFormat, bytes: Uint8Ar
   const name = ensureExtension(rawName, format);
   const previewUrl = bytesToDataUrl(bytes, formatToMime(format));
   return {
-    id: crypto.randomUUID(),
+    id: mintId(),
     name,
     format,
     bytes,

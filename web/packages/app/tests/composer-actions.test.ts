@@ -68,6 +68,14 @@ describe("buildChatConfig", () => {
 });
 
 describe("buildRunRequest", () => {
+  it("carries the chosen reasoning level to both the wire ChatConfig and the RunRequest", () => {
+    // Ticket 77: the level the picker commits is the level both transports
+    // ship — no transport-side repair exists or is needed.
+    const draft: DraftConfig = { ...DRAFT, reasoning: "low" };
+    expect(buildChatConfig(draft).reasoning).toBe("low");
+    expect(buildRunRequest(draft, "hi", "/tmp").reasoning).toBe("low");
+  });
+
   it("fills every field the engine requires for a Run", () => {
     const request = buildRunRequest(DRAFT, "hi", "/Users/me/proj");
     expect(request.prompt).toBe("hi");
@@ -127,10 +135,19 @@ describe("sendRun", () => {
     expect(caller.calls).toHaveLength(0);
   });
 
-  it("rejects when the chat has no cwd (project-less, unresolved)", async () => {
+  it("accepts ~ and . as legal wire cwd values — the engine expands host-side", async () => {
+    // composer.rs:6433-6440 has no error path for a projectless send: "~"
+    // (the host's home) and "." (the existing-chat fallback) ride the
+    // RunRequest literally; sessions.rs:342-352 expands them ON THE ENGINE.
+    // The old web-only empty-cwd throw is deleted (§2.1).
     const caller = new FakeCaller();
-    await expect(sendRun(caller, "chat-1", DRAFT, "hi", null)).rejects.toThrow(/working directory/);
-    expect(caller.calls).toHaveLength(0);
+    caller.replies.set("QueueCommand", { commandId: "cmd-1" });
+    await sendRun(caller, "chat-1", DRAFT, "hi", "~", { mintMessageId: () => "m-1" });
+    const first = caller.calls[0]!.params as { command: { request: { cwd: string } } };
+    expect(first.command.request.cwd).toBe("~");
+    await sendRun(caller, "chat-2", DRAFT, "hi again", ".", { mintMessageId: () => "m-2" });
+    const second = caller.calls[1]!.params as { command: { request: { cwd: string } } };
+    expect(second.command.request.cwd).toBe(".");
   });
 
   it("propagates engine failures so the caller can show a notice", async () => {

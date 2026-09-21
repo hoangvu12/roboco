@@ -191,6 +191,29 @@ describe("connection against a scripted fake engine", () => {
     expect(await client.call("Echo", { reconnect: true })).toEqual({ reconnect: true });
   });
 
+  test("every dial emits the connecting status the catalog heal listens on", async () => {
+    // Ticket 61, hole 3: only dial 1 emitted "connecting" (client #dial),
+    // so a status-change heal had no event between a drop's
+    // "reconnecting" and the re-dial's outcome — silent re-dials starved
+    // the re-trigger lattice. Each dial must announce itself.
+    const fake = new FakeEngine();
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    const { client } = newClient(fake);
+    const states: string[] = [];
+    client.onStatus((status) => states.push(status.state));
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+
+    fake.connections[0]!.socket.terminate();
+    await statusWhen(client, (status: EngineStatus) => status.state === "connected" && status.generation === 2);
+    // The drop emitted "reconnecting"; the re-dial that followed must
+    // have emitted "connecting" again before it established.
+    const reconnecting = states.lastIndexOf("reconnecting");
+    expect(reconnecting).toBeGreaterThanOrEqual(0);
+    expect(states.indexOf("connecting", reconnecting + 1)).toBeGreaterThan(reconnecting);
+  });
+
   test("a 4401 invalid-credential close parks permanently with no re-dialling", async () => {
     const fake = new FakeEngine({ auth: (credential) => credential === "good-credential" });
     cleanups.push(() => fake.close());

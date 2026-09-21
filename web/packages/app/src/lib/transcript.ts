@@ -1293,6 +1293,70 @@ export function selectionScrollStep(
   return 0;
 }
 
+/**
+ * Ticket 78 — the arming rules of the selection drag's edge auto-scroll.
+ * The edge step above is fine; the ARming was the live bug: a window-level
+ * `pointermove` with `buttons !== 0` armed the tracker from ANY hold with
+ * micro-drift (titlebar, composer, safe-area), scrolling the chat for the
+ * whole contact. The tracker owns the rules so the component's listeners
+ * stay thin:
+ *
+ * - Only a primary-button press on non-interactive content INSIDE the
+ *   scroller arms it (`press`); interactive targets disarm (`pressInteractive`).
+ * - Window `pointermove` only ever UPDATES an armed drag (`move`) — never
+ *   arms one — and drops it when the buttons release.
+ * - `pointercancel` clears exactly like `pointerup` (the composer's copy of
+ *   this listener set handles cancel; the transcript's did not, so a browser
+ *   takeover left the tracker armed past finger-lift).
+ */
+export class SelectionDragTracker {
+  #position: { x: number; y: number } | null = null;
+
+  /** A primary press landed on non-interactive content inside the scroller. */
+  press(x: number, y: number): void {
+    this.#position = { x, y };
+  }
+
+  /** A press landed on interactive content — any armed drag disarms. */
+  pressInteractive(): void {
+    this.#position = null;
+  }
+
+  /** Window pointermove: tracks an ARMED drag only, never arms one. */
+  move(buttons: number, x: number, y: number): void {
+    if (this.#position === null) {
+      return;
+    }
+    if (buttons === 0) {
+      this.#position = null;
+      return;
+    }
+    this.#position = { x, y };
+  }
+
+  clear(): void {
+    this.#position = null;
+  }
+
+  /** The armed drag's position, or null when disarmed. */
+  get position(): { x: number; y: number } | null {
+    return this.#position;
+  }
+}
+
+/**
+ * Ticket 78 — the edge auto-scroll is a SELECTION-drag affordance (the
+ * desktop's `step_selection_scroll` rides a real selection drag): the tick
+ * only steps while the document carries a non-collapsed selection. A
+ * stationary hold inside the scroller's own edge band without a selection
+ * must not scroll either.
+ */
+export function selectionDragAutoscrolls(
+  selection: { isCollapsed: boolean; rangeCount: number } | null,
+): boolean {
+  return selection !== null && selection.rangeCount > 0 && !selection.isCollapsed;
+}
+
 // ---------------------------------------------------------------------------
 // User-fold resize spec (transcript.rs:1178-1192)
 // ---------------------------------------------------------------------------

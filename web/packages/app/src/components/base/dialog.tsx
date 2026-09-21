@@ -13,9 +13,10 @@
  *   viewport center (`top/left 50%` + `translate(-50%, -50%)`), clamped by
  *   `max-height` — the flex-overflow trap (a tall card clipping above the
  *   fold inside the old flex centering) is fixed structurally.
- * - **Frost:** `.modal-card` keeps radius 16 + the 44px `backdrop-filter`
- *   blur; the card content stays `DialogCard`/`DialogTitle`/… from
- *   `components/ui/Dialog.tsx` (pure styled divs, unchanged).
+ * - **Plate:** `.modal-card` keeps radius 16; the 44px frost blur is gone
+ *   (the web is always opaque, ticket 56) — the card content stays
+ *   `DialogCard`/`DialogTitle`/… from `components/ui/Dialog.tsx`
+ *   (pure styled divs, unchanged).
  * - **Motion:** `rb-dialog-in` (180ms, EASE) keys to `[data-open]` on
  *   `.rb-dialog-card`; the winning keyframe definition animates the
  *   `translate` property, which composes with (not clobbers) the centering
@@ -40,6 +41,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Dialog, type DialogRootProps, type DialogPopupProps } from "@base-ui/react/dialog";
 import { useOverlayKeyboardSource } from "./overlay";
+import { drawerOnOpenChange, RbDrawerSheet } from "./responsive-surface";
+import { useIsPhone } from "../../state/media";
 
 export interface RbDialogProps {
   /** Controlled open. Close-on-unmount is the normal parity pattern (no exit motion). */
@@ -124,13 +127,43 @@ export interface RbDialogGlassProps {
  * `RbDialogGlass` — the `modal_glass` variant (popover.rs:684-705): the
  * lighter 0.35 scrim, and scrim presses DO dismiss (the add-space palette's
  * contract — "clicking the scrim dismisses, same as Escape"). Same card
- * self-centering, frost, and `[data-open]` entrance as `RbDialog`; the exit
- * is the caller's `[data-closed]` CSS, which Base UI's animation-aware
+ * self-centering, opaque plate, and `[data-open]` entrance as `RbDialog`; the
+ * exit is the caller's `[data-closed]` CSS, which Base UI's animation-aware
  * unmount waits out — the palette's 100ms layer fade, replacing the old
  * layer's reap timer.
+ *
+ * At ≤768px (ticket 49) the glass renders through the shared phone sheet
+ * (`RbDrawerSheet`): the 680px palette as a bottom sheet — the natural
+ * mobile form; its own phone cap (`width: 100%; max-width: 680px`,
+ * `app.css`'s `.add-space-card` block) applies inside the sheet unchanged.
+ * The caller's backdrop/card classes ride along so the `[data-closed]`
+ * exit CSS keeps working through the sheet exactly as through the
+ * centered form. `disablePointerDismissal` is NOT passed here — the glass
+ * contract's scrim press closes, same as at desktop.
  */
 export function RbDialogGlass(props: RbDialogGlassProps) {
+  // Registered here for the desktop arm; the phone sheet re-registers the
+  // same name through its own seam (idempotent — the registry is a Set, so
+  // both arms agree on the claim without fighting over it).
   useOverlayKeyboardSource(props.overlaySource, props.overlayOpen ?? props.open);
+  const isPhone = useIsPhone();
+  if (isPhone) {
+    return (
+      <RbDrawerSheet
+        open={props.open}
+        onOpenChange={drawerOnOpenChange(props.onOpenChange)}
+        onOpenChangeComplete={props.onOpenChangeComplete}
+        ariaLabel={props.ariaLabel}
+        backdropClassName={`modal-glass-backdrop ${props.backdropClassName ?? ""}`}
+        cardClassName={`rb-dialog-card ${props.cardClassName ?? ""}`}
+        style={props.style}
+        overlaySource={props.overlaySource}
+        overlayOpen={props.overlayOpen}
+      >
+        {props.children}
+      </RbDrawerSheet>
+    );
+  }
   return (
     <Dialog.Root
       open={props.open}

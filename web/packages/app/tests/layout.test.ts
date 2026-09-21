@@ -166,6 +166,73 @@ describe("titlebarRowLeft", () => {
   });
 });
 
+/*
+ * The phone geometry inputs (ticket 50, mobile-native — the desktop has no
+ * phone layout, so no desktop test maps): at ≤768px the sidebar is a fixed
+ * overlay out of flow, and `AppShell` feeds the desktop width functions the
+ * term 0 (`sidebarForGeometry = phone ? 0 : sidebarWidth`) instead of the
+ * dragged column width. Today's phone reality feeds the live width (e.g.
+ * 304), which pushes the identity to x=320 of a 375px window and collapses
+ * the pane's width inputs to 0.
+ */
+describe("phone geometry inputs", () => {
+  it("titlebarRowLeft phone sidebar is out of flow", () => {
+    // With a chat selected the `+` slot rides in: max(0 + 16, 104 + 32) = 136;
+    // otherwise, and on the blank canvas, max(16, 104) = 104 — the identity
+    // sits next to the window-control cluster instead of at 320 (304 + 16).
+    expect(titlebarRowLeft({ sidebar: 0, showsNewSession: true, takeover: false })).toBe(136);
+    expect(titlebarRowLeft({ sidebar: 0, showsNewSession: false, takeover: false })).toBe(104);
+  });
+
+  it("right_pane_ceiling_keeps_a_phone_floor", () => {
+    // 375 - 0 - 300: the pane keeps a 75px floor when the sidebar term is 0,
+    // instead of the 0 the live width produces (375 - 304 - 300 < 0).
+    expect(rightPaneMaxWidth(375, 0)).toBe(75);
+    expect(rightPaneMaxWidth(375, 304)).toBe(0);
+  });
+
+  it("titlebarPaneBandWidth phone inputs no longer collapse to zero", () => {
+    // rowLeft 136 (the phone identity inset) and a real pane width: the band
+    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 16) - 28 = 41 —
+    // where the live-width inputs collapsed it to 0.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
+    ).toBe(41);
+  });
+});
+
+/*
+ * The phone pane drawer's width inputs (ticket 52, mobile-native — the
+ * desktop has no phone layout, so no desktop test maps): 50's
+ * `sidebarForGeometry = phone ? 0 : sidebarWidth` term is consumed here,
+ * not re-landed — these cases pin what it buys the pane once the phone
+ * form is the drawer (§2.3's verification math).
+ */
+describe("phone pane drawer inputs (ticket 52)", () => {
+  it("resolvePaneWidth phone inputs: sidebar term is zero", () => {
+    // The stored 520 against the phone ceiling: min(520, 375 - 0 - 300) = 75
+    // — the number `--rb-pane-open` carries, where the live dragged width
+    // (375 - 304 - 300 < 0) starved it to 0.
+    expect(resolvePaneWidth(pane({ width: 520 }), 375, 0)).toBe(75);
+    // The expanded arm hands the drawer the whole viewport: 375 - 0.
+    expect(resolvePaneWidth(pane({ width: 520, expanded: true }), 375, 0)).toBe(375);
+  });
+
+  it("titlebarPaneBandWidth phone inputs no longer collapse the band", () => {
+    // The phone-corrected inputs (sidebar 0 → rowLeft 136, pane 75): 41 —
+    // the band the strip's in-drawer header supersedes, but which the
+    // titlebar still consumes so nothing downstream reads 0-by-accident.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
+    ).toBe(41);
+    // Today's shape, documented: the live dragged sidebar (304 → rowLeft
+    // 320, pane 0) starves the band to 0 — the "i dont see the tabs" bug.
+    expect(
+      titlebarPaneBandWidth({ viewport: 375, paneWidth: 0, rowLeft: 320, takeover: false }),
+    ).toBe(0);
+  });
+});
+
 describe("titlebar cluster geometry", () => {
   it("titlebar_cluster_matches_roboco_window_controls (shell.rs:8447)", () => {
     // 24·3 controls + the 8px group gap + the 2px control gap.

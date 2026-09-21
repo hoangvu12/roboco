@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
 import type { PairedSession, RemoteAccessSnapshot } from "@roboco/proto";
+import type { StoredEngine } from "../src/lib/engine-store";
 import { formatLastSeen } from "../src/lib/devices";
+import type { SessionRow } from "../src/lib/remote-access";
 import {
   createPairingLink,
   getRemoteAccess,
+  ownSessionId,
   revokePairingSession,
+  sessionIsSelf,
   sessionRows,
   setRemoteAccess,
 } from "../src/lib/remote-access";
@@ -42,6 +46,22 @@ function snapshot(sessions: PairedSession[]): RemoteAccessSnapshot {
   };
 }
 
+function sessionRow(fields: Partial<SessionRow> = {}): SessionRow {
+  return { id: "s1", label: "Roboco web on Windows", revoked: false, lastSeenLabel: null, ...fields };
+}
+
+function storedEngine(fields: Partial<StoredEngine> = {}): StoredEngine {
+  return {
+    baseUrl: "http://127.0.0.1:27655",
+    credential: "credential",
+    label: "Roboco web on Windows",
+    sessionId: "s1",
+    pairedAt: NOW - 86_400_000,
+    deviceId: null,
+    ...fields,
+  };
+}
+
 describe("sessionRows", () => {
   it("falls back to a generic label for unlabeled sessions", () => {
     const rows = sessionRows(snapshot([pairedSession({ label: "" })]), NOW);
@@ -54,6 +74,26 @@ describe("sessionRows", () => {
     const rows = sessionRows(snapshot([pairedSession({ revokedAt: NOW - 1_000 })]), NOW);
     expect(rows[0]!.revoked).toBe(true);
     expect(rows[0]!.lastSeenLabel).toBe(null);
+  });
+});
+
+describe("sessionIsSelfMatchesStoredSessionId", () => {
+  it("matches the row whose id equals the stored engine's sessionId", () => {
+    expect(sessionIsSelf(sessionRow({ id: "s1" }), storedEngine())).toBe(true);
+  });
+
+  it("leaves every other row unmatched", () => {
+    expect(sessionIsSelf(sessionRow({ id: "s2" }), storedEngine())).toBe(false);
+  });
+
+  it("never matches when the stored engine has no session id", () => {
+    const stored = storedEngine({ sessionId: null as unknown as string });
+    expect(ownSessionId(stored)).toBe(null);
+    expect(sessionIsSelf(sessionRow({ id: "s1" }), stored)).toBe(false);
+  });
+
+  it("still matches a revoked self row — the badge outlives the session", () => {
+    expect(sessionIsSelf(sessionRow({ id: "s1", revoked: true }), storedEngine())).toBe(true);
   });
 });
 

@@ -13,13 +13,23 @@
  * tests). The component converts to hero-local pixels only when it emits
  * CSS.
  *
+ * The cutout hole is the desktop's exact per-pixel shader (the gpui
+ * `ImageAlphaMask` fragment shader over `mask.rs`'s geometry): a hard 8 px
+ * transparent margin around the cleared rounded rect, then a one-sided
+ * smoothstep dome over `clamp(hero height × 0.52, 120, 280)`, composed with
+ * the shared bottom fade by `min` inside ONE mask — never by multiplying
+ * two element masks (mid-ramp `a·b < min(a,b)`, so multiplication darkens
+ * the hole's edges near the hero's bottom).
+ *
  * This module references no theme roles at all: the mask multiplies source
  * alpha and nothing else, so the artwork resolves into the real canvas
  * (translucent themes included) with no theme-coloured overlay bleaching or
  * darkening it.
  */
 
+import type { SurfaceTreatment } from "@roboco/theme";
 import type { UiSettingsStore } from "../state/ui-settings";
+import { clamp } from "./new-thread-background-effects";
 import { idbBackgroundBlobStore, type BackgroundBlobStore } from "./background-blob-store";
 
 // ---------------------------------------------------------------------------
@@ -58,9 +68,31 @@ export function newThreadBackgroundOpacity(isFrost: boolean): number {
   return isFrost ? NEW_THREAD_BACKGROUND_FROSTED_OPACITY : 1;
 }
 
+/**
+ * The hero ELEMENT's opacity (shell.rs:880, 5860-5864, 5893):
+ * `(1 − dissolve) × artwork_readiness × new_thread_background_opacity(is_frost)`
+ * — the multiplier is 0.84 under a resolved frosted surface, 1.0 under an
+ * opaque one. The component splits the product across two elements — the
+ * root carries `(1 − dissolve) × multiplier`, the readiness wrapper the
+ * fade — which composes back to exactly this because nested CSS opacities
+ * multiply.
+ */
+export function newThreadBackgroundElementOpacity(
+  dissolve: number,
+  readiness: number,
+  surface: SurfaceTreatment,
+): number {
+  const settled = 1 - clamp(dissolve, 0, 1);
+  return settled * readiness * newThreadBackgroundOpacity(surface === "frosted");
+}
+
 /** `new_thread_background_height` (shell.rs:852-855): `min(max(vh,0)·0.72, 760)`. */
 export function newThreadBackgroundHeight(viewportHeight: number): number {
-  return Math.min(Math.max(viewportHeight, 0) * NEW_THREAD_BACKGROUND_VIEWPORT_RATIO, NEW_THREAD_BACKGROUND_MAX_HEIGHT);
+  return clamp(
+    viewportHeight * NEW_THREAD_BACKGROUND_VIEWPORT_RATIO,
+    0,
+    NEW_THREAD_BACKGROUND_MAX_HEIGHT,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +145,7 @@ export function heroMaskGeometry(hero: Rect, composer: Rect, cutout: boolean): H
   return {
     bounds: cutout ? cleared : parked,
     radius: cutout ? HERO_MASK_RADIUS : 0,
-    feather: cutout ? Math.min(Math.max(height * 0.52, 120), 280) : REVEAL_FEATHER,
+    feather: cutout ? clamp(height * 0.52, 120, 280) : REVEAL_FEATHER,
     clearance: cutout ? HERO_MASK_CLEARANCE : 0,
     // Start fading at the image's top, rather than holding full opacity
     // through its first 40% and compressing the transition near the bottom.
@@ -122,57 +154,123 @@ export function heroMaskGeometry(hero: Rect, composer: Rect, cutout: boolean): H
   };
 }
 
+// ---------------------------------------------------------------------------
+// The cutout ramp (the gpui ImageAlphaMask shader over mask.rs's geometry)
+// ---------------------------------------------------------------------------
+
 /**
- * The cutout hole as the CSS mask consumes it: the cleared rect expanded by
- * the `clearance` margin (the SDF's `d ≤ clearance` region is exactly the
- * rounded rect offset outward by 8 — the expanded rect's corner radius is
- * `radius + clearance`), in HERO-LOCAL pixels. The blurred rounded rect in
- * the SVG mask approximates the shader's smoothstep ramp over `feather`.
+ * `smoothstep(0, edge, value)` — the GLSL smoothstep the shader applies to
+ * both the hole ramp and the bottom fade: `t²(3 − 2t)` over the clamped
+ * `t = value/edge`. Zero for `value ≤ 0`, 0.5 at `edge/2`, exactly 1 at
+ * `value ≥ edge` (compact support).
  */
-export function heroCutoutHole(
+function smoothstep(value: number, edge: number): number {
+  const t = clamp(value / edge, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The hole ramp — `image_mask_alpha`'s first term (shaders.wgsl): the
+ * rounded-rect SDF of the mask's own bounds,
+ * `q = |p − center| − half_size + radius`,
+ * `distance = length(max(q, 0)) + min(max(q.x, q.y), 0) − radius`
+ * (with the radius clamped to half the shorter side, exactly like
+ * `ImageAlphaMask::scale`), then
+ * `smoothstep(0, feather, distance − clearance)` — alpha is exactly 0 for
+ * `d ≤ clearance` (the hard transparent margin), 0.5 at
+ * `d = clearance + feather/2`, and 1 at `d ≥ clearance + feather`.
+ */
+export function cutoutHoleAlpha(mask: HeroMaskGeometry, x: number, y: number): number {
+  if (mask.feather <= 0) {
+    return 1;
+  }
+  const bounds = mask.bounds;
+  const radius = Math.min(
+    Math.max(mask.radius, 0),
+    Math.max(bounds.width, 0) * 0.5,
+    Math.max(bounds.height, 0) * 0.5,
+  );
+  const halfWidth = bounds.width * 0.5;
+  const halfHeight = bounds.height * 0.5;
+  const qx = Math.abs(x - (bounds.x + halfWidth)) - halfWidth + radius;
+  const qy = Math.abs(y - (bounds.y + halfHeight)) - halfHeight + radius;
+  const distance = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - radius;
+  return smoothstep(distance - mask.clearance, mask.feather);
+}
+
+/**
+ * The shared bottom fade — the shader's second term:
+ * `smoothstep(0, bottom_feather, bottom_y − y)` across the hero's full
+ * height, on BOTH passes (mask.rs:42-46).
+ */
+export function cutoutBottomFadeAlpha(mask: HeroMaskGeometry, y: number): number {
+  const feather = mask.bottomFade.height;
+  if (feather <= 0) {
+    return 1;
+  }
+  return smoothstep(mask.bottomFade.end - y, feather);
+}
+
+/**
+ * The desktop's whole mask shader in one pure function (shaders.wgsl
+ * `image_mask_alpha`): `alpha = min(hole, fade)` — the `min` happens inside
+ * ONE mask, so a pixel where both terms are mid-ramp keeps the brighter of
+ * the two (multiplying two element masks would darken it to their product).
+ * A non-positive feather disables the entire mask, exactly like the shader's
+ * early-out.
+ */
+export function cutoutMaskAlpha(mask: HeroMaskGeometry, x: number, y: number): number {
+  if (mask.feather <= 0) {
+    return 1;
+  }
+  return Math.min(cutoutHoleAlpha(mask, x, y), cutoutBottomFadeAlpha(mask, y));
+}
+
+/**
+ * The shader's per-pixel grid over the hero's own raster: every raster pixel
+ * `(x, y)` evaluates `cutoutMaskAlpha` at its window-space center
+ * `(hero.x + (x + 0.5)/scale, hero.y + (y + 0.5)/scale)` — the web peer of
+ * the fragment shader evaluating the scaled mask at device-pixel positions
+ * (the ramp is scale-invariant, so `scale` is the canvas backing store's
+ * device-pixel ratio). Rows and columns outside the hole's ramp band are
+ * filled with the row-constant fade (the hole is exactly 1 there), which
+ * keeps the per-pixel smoothstep work inside the dome.
+ */
+export function cutoutMaskRaster(
   hero: Rect,
   composer: Rect,
-): { readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly radius: number } {
-  const mask = heroMaskGeometry(hero, composer, true);
+  cutout: boolean,
+  width: number,
+  height: number,
+  scale = 1,
+): Float32Array {
+  const mask = heroMaskGeometry(hero, composer, cutout);
+  const out = new Float32Array(width * height);
+  // The hole can only dip below 1 within `feather + clearance` of the mask's
+  // bounds (the SDF's sub-level set of a rounded rect is its dilation by
+  // that distance); a pixel outside the band evaluates to exactly the row's
+  // fade, so only the band runs the per-pixel smoothstep.
+  const reach = mask.feather + mask.clearance + 1;
   const bounds = mask.bounds;
-  return {
-    x: bounds.x - hero.x - mask.clearance,
-    y: bounds.y - hero.y - mask.clearance,
-    width: bounds.width + 2 * mask.clearance,
-    height: bounds.height + 2 * mask.clearance,
-    radius: mask.radius + mask.clearance,
-  };
-}
-
-/** The Gaussian σ that best matches the shader's smoothstep ramp of `feather` width. */
-export function featherSigma(feather: number): number {
-  return feather / 2.563;
-}
-
-/**
- * Build the cutout pass's CSS mask as an SVG data URI. CSS `mask-image`
- * consumes ALPHA, so the document paints one white (opaque = visible) rect
- * through an internal SVG `<mask>` whose luminance semantics erase the
- * blurred hole — the result carries a soft-edged transparent hole exactly
- * where the composer's rounded rect sits. Regenerated from the live
- * composer geometry every frame, exactly as the desktop's paint-time mask
- * is.
- */
-export function cutoutMaskDataUri(hero: Rect, composer: Rect): string {
-  const hole = heroCutoutHole(hero, composer);
-  const sigma = featherSigma(heroMaskGeometry(hero, composer, true).feather);
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${hero.width}" height="${hero.height}" viewBox="0 0 ${hero.width} ${hero.height}">` +
-    `<defs>` +
-    `<filter id="b" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${sigma.toFixed(2)}"/></filter>` +
-    `<mask id="m">` +
-    `<rect width="${hero.width}" height="${hero.height}" fill="#ffffff"/>` +
-    `<rect x="${hole.x.toFixed(2)}" y="${hole.y.toFixed(2)}" width="${hole.width.toFixed(2)}" height="${hole.height.toFixed(2)}" rx="${hole.radius.toFixed(2)}" fill="#000000" filter="url(#b)"/>` +
-    `</mask>` +
-    `</defs>` +
-    `<rect width="${hero.width}" height="${hero.height}" fill="#ffffff" mask="url(#m)"/>` +
-    `</svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  const bandLeft = Math.max(0, Math.floor((bounds.x - reach - hero.x) * scale));
+  const bandRight = Math.min(width, Math.ceil((bounds.x + bounds.width + reach - hero.x) * scale));
+  const bandTop = Math.max(0, Math.floor((bounds.y - reach - hero.y) * scale));
+  const bandBottom = Math.min(height, Math.ceil((bounds.y + bounds.height + reach - hero.y) * scale));
+  for (let y = 0; y < height; y++) {
+    const windowY = hero.y + (y + 0.5) / scale;
+    const fade = cutoutBottomFadeAlpha(mask, windowY);
+    out.fill(fade, y * width, (y + 1) * width);
+    if (y < bandTop || y >= bandBottom) {
+      continue;
+    }
+    for (let x = bandLeft; x < bandRight; x++) {
+      out[y * width + x] = Math.min(
+        cutoutHoleAlpha(mask, hero.x + (x + 0.5) / scale, windowY),
+        fade,
+      );
+    }
+  }
+  return out;
 }
 
 /**
@@ -213,7 +311,7 @@ export class Readiness {
     if (reduced) {
       return 1;
     }
-    const t = Math.min(Math.max((nowMs - this.#startMs) / 120, 0), 1);
+    const t = clamp((nowMs - this.#startMs) / 120, 0, 1);
     return t * t * (3 - 2 * t);
   }
 }
@@ -248,21 +346,63 @@ export async function decodeBackgroundBlob(blob: Blob): Promise<boolean> {
  * Resolve the artwork to paint: the setting's managed blob if it decodes,
  * else the bundled default. A `path` that is not the managed key is fetched
  * as a URL (a same-session object URL from a pre-managed install) so legacy
- * stored paths keep resolving until they are replaced.
+ * stored paths keep resolving until they are replaced. Thin wrapper over
+ * [`resolveActiveNewThreadBackground`] — the painter and the Appearance row
+ * share that one resolution; on a broken stored entry this wrapper keeps
+ * painting the default (the page-vs-painter split is existing behavior).
+ *
+ * The default blob store is the module-level singleton
+ * (`idbBackgroundBlobStore`), so every resolution — this one, the
+ * Appearance row's, the install/remove staging — shares ONE `cachedUrl`:
+ * the resolved URL (hence the artwork's identity) is stable across mounts,
+ * and replacing the blob retires the old URL exactly once (ticket 35).
  */
 export async function resolveNewThreadBackground(
   setting: { readonly path: string; readonly name: string } | null,
   defaultUrl: string = DEFAULT_NEW_THREAD_BACKGROUND_URL,
   blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
 ): Promise<string> {
+  return (await resolveActiveNewThreadBackground(setting, defaultUrl, blobs))?.url ?? defaultUrl;
+}
+
+/** The background that actually renders (ticket 48's resolved selection). */
+export interface ResolvedNewThreadBackground {
+  /** The artwork that will paint. */
+  readonly url: string;
+  /** Display name: the stored name, or "Roboco" for the default. */
+  readonly name: string;
+  /** True when nothing is stored and the bundled default resolved. */
+  readonly isDefault: boolean;
+}
+
+/**
+ * The web peer of the desktop's `settings::active_new_thread_background`:
+ * the stored entry while its blob still resolves, else the bundled default.
+ * A stored entry that no longer resolves returns null — the Appearance
+ * row's "Image unavailable" state — while the painter separately falls back
+ * to the default through `resolveNewThreadBackground`. Callers gating UI on
+ * "is a background active" must use this, never the raw persisted field.
+ */
+export async function resolveActiveNewThreadBackground(
+  setting: { readonly path: string; readonly name: string } | null,
+  defaultUrl: string = DEFAULT_NEW_THREAD_BACKGROUND_URL,
+  blobs: BackgroundBlobStore = idbBackgroundBlobStore(),
+): Promise<ResolvedNewThreadBackground | null> {
+  if (setting === null) {
+    return { url: defaultUrl, name: "Roboco", isDefault: true };
+  }
   const installed = await resolveInstalledBackground(setting, blobs);
-  return installed ?? defaultUrl;
+  if (installed === null) {
+    return null;
+  }
+  return { url: installed, name: setting.name, isDefault: false };
 }
 
 /**
  * The installed background's URL, or null when nothing is installed or the
  * stored entry no longer decodes — the Appearance row's "Image unavailable"
- * state and the effect row's gate.
+ * state and the effect row's gate. Binds the singleton blob store by
+ * default (see `resolveNewThreadBackground`).
  */
 export async function resolveInstalledBackground(
   setting: { readonly path: string; readonly name: string } | null,
@@ -287,6 +427,46 @@ export async function resolveInstalledBackground(
     // Not installed (or unreachable) — the caller falls back.
   }
   return null;
+}
+
+/**
+ * The Appearance page's background row state (ticket 48's truth table, the
+ * web peer of the desktop's `background_row_state`): the resolved value
+ * drives the row — thumbnail, meta name, and the effect row's gate — while
+ * the stored one preserves the "Image unavailable" distinction.
+ */
+export interface BackgroundRowState {
+  /** "Replace image" + "Remove" actions (the bundled default counts). */
+  readonly installed: boolean;
+  /** The artwork tile and effect row show exactly when artwork resolves. */
+  readonly available: boolean;
+  /** The meta fragments under the row title. */
+  readonly meta: readonly string[];
+}
+
+export function backgroundRowState(
+  stored: { readonly path: string; readonly name: string } | null,
+  resolved: ResolvedNewThreadBackground | null,
+): BackgroundRowState {
+  if (resolved !== null) {
+    return {
+      installed: true,
+      available: true,
+      meta: [resolved.name, "Softened automatically on frosted themes."],
+    };
+  }
+  if (stored !== null) {
+    return {
+      installed: true,
+      available: false,
+      meta: ["Image unavailable", "Choose a replacement or remove it."],
+    };
+  }
+  return {
+    installed: false,
+    available: false,
+    meta: ["Add an image behind the composer on empty new threads."],
+  };
 }
 
 // ---------------------------------------------------------------------------

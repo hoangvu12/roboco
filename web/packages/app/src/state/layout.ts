@@ -257,8 +257,10 @@ export function resizeBounceOffset(edge: ResizeEdge, elapsedMs: number): number 
  * (`pane_resize_hitboxes_yield_the_titlebar_chrome`).
  */
 export const PANE_RESIZE_HITBOX_HALF_WIDTH = 10;
-/** `Theme::TITLEBAR_HEIGHT` (`proto/layout.rs:44`), same value as `--rb-titlebar-height`. */
+/** `Theme::TITLEBAR_HEIGHT` (`proto/layout.rs:45`), same value as `--rb-titlebar-height`. */
 export const TITLEBAR_HEIGHT = 38;
+/** `Theme::TITLEBAR_TOP_PAD` (`proto/layout.rs:48`), same value as `--rb-titlebar-top-pad`. */
+export const TITLEBAR_TOP_PAD = 4;
 
 // ---------------------------------------------------------------------------
 // Titlebar row inset — `tabs.rs::render_session_title_bar`
@@ -269,6 +271,11 @@ export const TITLEBAR_HEIGHT = 38;
  * the desktop, not a member of the title row, and the row pads itself past it —
  * which is what lets the identity sit at the sidebar's edge and glide with it.
  */
+// The desktop's cluster is `left_0()` + `.px(TITLEBAR_CLUSTER_PAD)`
+// (shell.rs:4025-4034); the web's `.titlebar-cluster` is the same shape
+// (ticket 66), so this is the cluster's inline padding AND the controls'
+// window-space start — and the island's `left(6).right_0()` resolves against
+// the 20px-wider padding box that padding creates.
 export const TITLEBAR_CLUSTER_PAD = 10;
 export const TITLEBAR_CONTROL_GAP = 2;
 export const TITLEBAR_GROUP_GAP = 8;
@@ -278,6 +285,8 @@ export const TITLEBAR_IDENTITY_GAP = 12;
 export const CLUSTER_BUTTONS_WIDTH = 24 * 3 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
 /** The new-session `+` budgets one slot so the title never sits under it. */
 export const TITLEBAR_ACTION_SLOT_WIDTH = TITLEBAR_GROUP_GAP + 24;
+/** The island wrapper's own left inset — `left(6).right_0()` (shell.rs:4027-4028). */
+export const TITLEBAR_ISLAND_INSET = 6;
 const SPACE_LG = 16;
 
 // ---------------------------------------------------------------------------

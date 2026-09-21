@@ -6,6 +6,7 @@ import type { StagedAttachment, UploadedAttachment } from "./attachments";
 import { uploadAttachments, withAttachments } from "./attachments";
 import { withComments, type ReviewComment } from "./review-comments";
 import { queueMessage as queueMessageRpc } from "./queue-actions";
+import { mintId } from "./id";
 
 /**
  * The composer's working draft — what the user has picked for the next send.
@@ -116,12 +117,8 @@ export interface SendAttachmentsOptions {
 }
 
 /** Mint a client-side message id (the optimistic-echo dedupe key). */
-export function mintMessageId(mint: () => string = defaultMint): string {
+export function mintMessageId(mint: () => string = mintId): string {
   return mint();
-}
-
-function defaultMint(): string {
-  return crypto.randomUUID();
 }
 
 /**
@@ -144,7 +141,7 @@ export async function sendRun(
   chatId: string,
   draft: DraftConfig,
   prompt: string,
-  chatCwd: string | null,
+  chatCwd: string,
   options: { mintMessageId?: () => string } = {},
   attachments: SendAttachmentsOptions = {},
 ): Promise<SendResult> {
@@ -155,15 +152,18 @@ export async function sendRun(
   if (!hasContent) {
     throw new Error("Cannot send an empty message");
   }
-  if (chatCwd === null || chatCwd.trim().length === 0) {
-    throw new Error("This chat has no working directory yet");
-  }
+  // `chatCwd` is the RESOLVED send cwd (composer.rs:6433-6440, resolved by
+  // the caller through `resolveSendCwd`): a NEW chat's space path else `"~"`
+  // — delivered literally, expanded by the engine host-side
+  // (sessions.rs:342-352) — or an existing chat's stored cwd else `"."`.
+  // There is no error path for a projectless send; "~"/"." are legal wire
+  // cwd values.
   // ONE id per send, minted once and stored. It is the dedupe key shared by
   // the command envelope, the entry the host writes back, the caller's
   // optimistic echo and any failure cleanup — three separate `messageId()`
   // calls used to produce three unrelated uuids, so nothing downstream could
   // ever say "this specific sent message".
-  const messageId = (options.mintMessageId ?? defaultMint)();
+  const messageId = (options.mintMessageId ?? mintId)();
   const uploaded: readonly UploadedAttachment[] = await uploadStage(
     caller,
     staged,

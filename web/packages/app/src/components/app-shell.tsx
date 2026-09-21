@@ -32,7 +32,6 @@ import {
   type NavEntry,
 } from "../state/nav-history";
 import {
-  PHONE_MAX_WIDTH,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   TITLEBAR_CONTENT_START,
@@ -45,7 +44,9 @@ import {
   titlebarRowLeft,
   useSidebarLayout,
   useViewportWidth,
+  PHONE_MAX_WIDTH,
 } from "../state/layout";
+import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
@@ -59,14 +60,14 @@ import {
   useRightPane,
 } from "../state/right-pane";
 import { useSidebar } from "../state/sidebar";
+import { useNewThreadBackground } from "../state/appearance";
 import { SidebarBody } from "./sidebar-body";
 import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
 import { RightTabStrip } from "./right-tab-strip";
-import { EngineDrawer } from "./engine-drawer";
 import { useConnectionState } from "./connection-state";
-import { Titlebar } from "./titlebar";
+import { Titlebar, islandTarget } from "./titlebar";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
 
 /**
@@ -110,7 +111,6 @@ const TAKEOVER_GLIDE_MS =
 
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const fleet = useFleet();
   const session = useEngineSession();
   const status = useEngineStatus(session);
@@ -122,6 +122,15 @@ export function AppShell() {
   const sidebar = useSidebarLayout();
   const viewport = useViewportWidth();
   const sidebarWidth = sidebarTarget(sidebar);
+  // The phone sidebar is a fixed overlay out of flow (app.css's phone block),
+  // so the desktop width functions must not see its dragged width: with 0
+  // the title row starts at 136/104 instead of the dragged 320 (M3 — the
+  // identity lands next to the cluster), and the pane keeps its 75px floor
+  // instead of collapsing to 0 (M2's geometry inputs; its phone FORM is
+  // ticket 52's). One branch, shared by `rowLeft`, `paneOpenWidth` and the
+  // band the two feed.
+  const phone = useIsPhone();
+  const sidebarForGeometry = phone ? 0 : sidebarWidth;
   // The pane's owning chat, straight off the router. Deliberately NOT via the
   // chrome store: that is published from an effect and cleared on every dep
   // change, so the shell saw "no pane" for one commit on each toggle and tore
@@ -152,6 +161,38 @@ export function AppShell() {
     navHistory.visit(entry);
   }, [pathname]);
 
+  // ── M7(b): the phone drawer closes on navigate (ticket 55) ─────────────
+  // Every entry surface into the drawer's content navigates by changing the
+  // pathname — chat rows and archived rows are router Links, settings rows
+  // are Links, the account menu's Settings item calls `navigate` — so ONE
+  // effect keyed on the pathname covers them all, future surfaces included.
+  // At phone width the drawer is a transient overlay over the destination,
+  // so it closes; at desktop width the sidebar is a persistent column that
+  // never closes on selection, and the matchMedia guard — the toggle's own
+  // breakpoint (`onToggleSidebar` above), read at navigation time inside the
+  // body, not at render time — makes this a no-op there. Re-notifying the
+  // SAME pathname does not refire the effect (deps compare equal), and the
+  // ref-recorded `pathChanged` keeps even a hypothetical refire from reading
+  // as a navigation: the drawer stays open on a same-path re-tap (the
+  // recorded known limitation — the backdrop, the cluster toggle, and Escape
+  // still close it). `sidebarOpen` is deliberately NOT a dep: a dep would
+  // fire this on drawer-open changes alone and slam the drawer shut the
+  // frame the toggle opens it.
+  const previousPathname = useRef(pathname);
+  useEffect(() => {
+    const pathChanged = previousPathname.current !== pathname;
+    previousPathname.current = pathname;
+    if (
+      shouldCloseDrawer(
+        pathChanged,
+        sidebarOpen,
+        window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches,
+      )
+    ) {
+      setSidebarOpen(false);
+    }
+  }, [pathname]);
+
   const onNavWalk = useCallback(
     (entry: NavEntry | null) => {
       if (entry === null) {
@@ -176,7 +217,7 @@ export function AppShell() {
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
   // Keeping the two apart is what lets the column animate between them: the
   // content keeps the open width while the column itself glides to zero.
-  const paneOpenWidth = resolvePaneWidth({ ...pane, open: true }, viewport, sidebarWidth);
+  const paneOpenWidth = resolvePaneWidth({ ...pane, open: true }, viewport, sidebarForGeometry);
   const paneWidth = paneChatId !== null && pane.open ? paneOpenWidth : 0;
 
   const onNewChat = useCallback(() => {
@@ -191,25 +232,25 @@ export function AppShell() {
 
   // One control, two meanings — the desktop's `toggle_sidebar` collapses the
   // column; at phone widths the same button opens the drawer over the content.
-  // The breakpoint is the stylesheet's: asking at a wider one left a dead band
-  // where the click flipped the drawer flag while CSS still drew the column.
+  // The breakpoint is the shared media hook's (`state/media.ts`, ticket 49):
+  // the same `(max-width: 768px)` query the stylesheet keys, so the click can
+  // never land in the dead band the old one-shot matchMedia-per-click risked —
+  // asking at a wider query than CSS drew left a window where the click
+  // flipped the drawer flag while CSS still drew the column. The value is
+  // read at render and captured in the callback, so a resize re-renders and
+  // the captured branch follows.
+  const isPhone = useIsPhone();
   const onToggleSidebar = useCallback(() => {
-    if (window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH}px)`).matches) {
+    if (isPhone) {
       setSidebarOpen((current) => !current);
       return;
     }
     sidebarLayout.toggleCollapsed();
-  }, []);
+  }, [isPhone]);
 
   const onCloseDrawer = useCallback(() => {
     setSidebarOpen(false);
-    setDrawerOpen(false);
   }, []);
-
-  // The sidebar's user menu opens the engine drawer, whose open flag lives
-  // here; the shortcut bus carries it rather than threading a prop through
-  // the whole sidebar.
-  useEffect(() => onShortcut("open-engines", () => setDrawerOpen(true)), []);
 
   // The global keymap dispatch (`apply_keymap` + the action guards,
   // shell.rs:7768-7839): one capture-phase window listener consulting the
@@ -306,8 +347,9 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [table, route, pathname, paneChatId, pane.open, onNewChat]);
 
-  // The shell-owned actions subscribe to the bus the same way the engine
-  // drawer does — the keyboard layer stays free of component imports.
+  // The shell-owned actions subscribe to the bus the same way the
+  // scattered widget listeners do — the keyboard layer stays free of
+  // component imports.
   useEffect(() => onShortcut("toggle-sidebar", () => onToggleSidebar()), [onToggleSidebar]);
   useEffect(
     () =>
@@ -344,19 +386,19 @@ export function AppShell() {
 
   // The shell's Escape model — one capture-phase ladder (installed once) plus
   // the bubble-phase interrupt (`on_key_down` → `resolve_shell_escape`). The
-  // engine drawer and the phone sidebar register as a ladder surface; the
-  // popovers and dialogs that still close on their own Escape listeners are
-  // theirs to migrate onto the ladder in their tickets.
+  // phone sidebar registers as a ladder surface; the popovers and dialogs
+  // that still close on their own Escape listeners are theirs to migrate
+  // onto the ladder in their tickets.
   useEffect(() => installEscapeLadder(), []);
   useEffect(() => {
-    if (!drawerOpen && !sidebarOpen) {
+    if (!sidebarOpen) {
       return;
     }
     return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
       onCloseDrawer();
       return true;
     });
-  }, [drawerOpen, sidebarOpen, onCloseDrawer]);
+  }, [sidebarOpen, onCloseDrawer]);
 
   // Interrupts already in flight for a chat — the desktop's
   // `composer.is_interrupting(chat_id)`. A second Escape while the Stop
@@ -414,6 +456,22 @@ export function AppShell() {
   const paired = fleet.engines.length > 0;
   const hasPane = paired && paneChatId !== null;
   const takeover = hasPane && pane.open && pane.expanded;
+  // The phone pane drawer rides the Escape ladder's same rung as the phone
+  // sidebar drawer (12, `webDrawer` — the web-only phone chrome): Escape
+  // closes it exactly as it closes the sidebar drawer, and two drawers open
+  // at once peel one per press in registration order. Desktop-pane-open
+  // Escape is untouched — the rung is phone-gated.
+  useEffect(() => {
+    if (!phone || !hasPane || !pane.open) {
+      return;
+    }
+    return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
+      if (paneChatId !== null) {
+        rightPaneStore.close(paneChatId);
+      }
+      return true;
+    });
+  }, [phone, hasPane, pane.open, paneChatId]);
   // One glide, shared: `toggle_right_pane_expand` tweens the pane AND the
   // conversation together, so both columns have to read the same clock.
   const glide = usePaneGlide(hasPane && pane.open, takeover, hasPane ? paneOpenWidth : 0);
@@ -428,13 +486,31 @@ export function AppShell() {
   // never in Settings.
   const isChatRoute = navEntryForPath(pathname)?.kind === "chat";
   const plusAlpha = titlebarNewSessionAlpha(isChatRoute, paired && paneChatId !== null);
+  // ── The titlebar island's gate (ticket 34) ─────────────────────────────
+  // The desktop's `island_target` (shell.rs:3990-4001) keyed off the
+  // RESOLVED background — ticket 48's semantics (installed-else-default),
+  // never the raw setting: `useNewThreadBackground` resolves through
+  // `resolveNewThreadBackground`, so a stored entry that no longer decodes
+  // falls back to the bundled default and the island still shows; only a
+  // resolution failure (null url) hides it. Deliberately not through
+  // `state/chrome.ts` — route-published effect state is what tore columns
+  // down before (ticket 06's lesson). The resolution lands a frame after
+  // mount, so the island's first appearance on a reload rides its 200ms
+  // tween; the tween itself mounts settled.
+  const newThreadBackground = useNewThreadBackground();
+  const islandTargetValue = islandTarget({
+    isChatRoute,
+    hasSelectedChat: paneChatId !== null,
+    sidebarCollapsed: sidebar.collapsed,
+    backgroundResolves: newThreadBackground.url !== null,
+  });
   // The settings route's bar is a BARE strip (`render_title_bar`,
   // shell.rs:3898-3909): no identity, no `+`, no trailing group, and its
   // left inset is flat `title_bar_content_start()` — it does not track the
   // sidebar, because the settings column is not the conversation column.
   const rowLeft = isChatRoute
     ? titlebarRowLeft({
-        sidebar: sidebarWidth,
+        sidebar: sidebarForGeometry,
         showsNewSession: plusAlpha > 0,
         takeover,
       })
@@ -529,6 +605,7 @@ export function AppShell() {
         canBack={nav.canBack}
         canForward={nav.canForward}
         newSessionAlpha={plusAlpha}
+        islandTarget={islandTargetValue}
         // No fallback handler: the `+` exists only where the route published
         // one (a selected chat), exactly `titlebar_plus_alpha`'s gate.
         onNewSession={chrome.onNewSession}
@@ -540,9 +617,12 @@ export function AppShell() {
         paneExpanded={hasPane && pane.expanded}
         // Mounted whether or not the pane is open: the band clips it to zero
         // when shut, so it can glide away with the column instead of blinking
-        // out on the first frame of the close.
+        // out on the first frame of the close. At phone the band renders NO
+        // tabs — the strip lives in the drawer's header (RightPane mounts it
+        // there, §2.2) — so the prop is gated here at its mount site and the
+        // band carries only the expand control next to the toggle.
         paneTabs={
-          hasPane ? <RightTabStrip chatId={paneChatId} pane={pane} /> : undefined
+          hasPane && !phone ? <RightTabStrip chatId={paneChatId} pane={pane} /> : undefined
         }
         onToggleExpand={hasPane ? () => rightPaneStore.toggleExpanded(paneChatId) : null}
       />
@@ -550,15 +630,17 @@ export function AppShell() {
         `SidebarPane::render`'s route match (shell.rs:993-1008): the sidebar
         COLUMN persists — width, seam, collapse, titlebar pad all stay — and
         only its CONTENT swaps, the settings nav replacing the chat sidebar
-        on `/settings/*`. Keyed by engine on the chat side so menus and
-        dialogs reset on a switch; the settings nav is engine-independent.
+        on `/settings/*`. Never keyed by engine: the desktop's tree never
+        is, the sidebar reads the fleet-merged snapshot, and a remount
+        would force-close an open add-space palette and reset the
+        group-collapse state (ticket 43).
       */}
       <aside className="sidebar">
         <div className="sidebar-inner">
           {route === "settings" ? (
             <SettingsNavBody />
           ) : (
-            <SidebarBody key={fleet.active ?? "none"} />
+            <SidebarBody />
           )}
         </div>
       </aside>
@@ -697,9 +779,46 @@ export function AppShell() {
           bounceVar="--rb-pane-edge-offset"
         />
       )}
-      <EngineDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      {/*
+        The phone pane drawer's backdrop — the mirror of `.sidebar-backdrop`
+        above: fixed, z 20 under the drawer's 30, and shown by the phone CSS
+        only while the pane is open (the drawer's own `aria-hidden` drives the
+        sibling rule). A tap closes the pane, the phone counterpart of the
+        sidebar backdrop's tap. Mounted unconditionally like the sidebar's —
+        at ≥769px the stylesheet hides it, and the pane is the in-flow column
+        there.
+      */}
+      <div
+        className="pane-backdrop"
+        role="presentation"
+        onClick={() => {
+          if (paneChatId !== null) {
+            rightPaneStore.close(paneChatId);
+          }
+        }}
+      />
     </div>
   );
+}
+
+/**
+ * Ticket 55 / research M7(b) — the phone drawer's close-on-navigate rule:
+ * close iff the navigation actually changed the pathname, the drawer is
+ * open (the already-closed state is the effect's early return, encoded
+ * here as the short-circuit), and the viewport is at phone width — the
+ * toggle's own matchMedia breakpoint, so the desktop column never closes
+ * on selection ("there is nothing to port", M7(b)). Extracted pure so the
+ * drawer suite can drive the rule's full truth table, the same-path branch
+ * included: the effect's `[pathname]` deps never refire on a same-path
+ * re-notify, and the previous-pathname ref keeps even a refire from
+ * reading as a navigation.
+ */
+export function shouldCloseDrawer(
+  pathChanged: boolean,
+  sidebarOpen: boolean,
+  isPhone: boolean,
+): boolean {
+  return pathChanged && sidebarOpen && isPhone;
 }
 
 /**
@@ -714,7 +833,7 @@ export function AppShell() {
  *
  * A layout effect, not a passive one: the class it flips
  * (`shell-pane-gliding`) must ride the SAME commit as the takeover flip, or
- * the titlebar's row-left jump would spend a frame inside its padding-left
+ * the titlebar's row-left jump would spend a frame inside its translateX
  * transition before the suppression below lands.
  */
 function useTakeoverStableWidth(takeover: boolean, conversation: number): number | null {

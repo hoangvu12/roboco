@@ -62,6 +62,7 @@ const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
 const DEFAULT_NEW_THREAD_BACKGROUND_FILE: &str = "default-new-thread-background.png";
 const DEFAULT_NEW_THREAD_BACKGROUND_BYTES: &[u8] =
     include_bytes!("../assets/backgrounds/default-new-thread-background.png");
+const DEFAULT_NEW_THREAD_BACKGROUND_NAME: &str = "Roboco";
 
 /// Path of the bundled default new-thread background, materialized into the
 /// managed backgrounds directory on first use. It backs the new-thread canvas
@@ -81,6 +82,29 @@ pub fn default_new_thread_background(cx: &App) -> Option<std::path::PathBuf> {
         std::fs::write(&destination, DEFAULT_NEW_THREAD_BACKGROUND_BYTES).ok()?;
     }
     Some(destination)
+}
+
+/// The background that actually renders on the new-thread canvas: the
+/// user-installed one when its file exists, else the bundled default.
+/// Callers gating UI on "is a background active" must use this, never the
+/// raw persisted field.
+///
+/// A stored entry whose file is missing resolves to `None` — the canvas
+/// already paints no artwork for that state, and the Appearance row keeps
+/// its "Image unavailable" presentation. The accessor never writes to
+/// `ui-settings.json` and never changes the field (the default stays
+/// un-persisted). The `is_file()` probe is synchronous `std::fs` metadata
+/// on the call path — same as the availability probes that predate this
+/// accessor.
+pub fn active_new_thread_background(cx: &App) -> Option<NewThreadComposerBackground> {
+    match current(cx).new_thread_composer_background {
+        Some(background) if Path::new(&background.path).is_file() => Some(background),
+        Some(_) => None,
+        None => default_new_thread_background(cx).map(|path| NewThreadComposerBackground {
+            path: path.to_string_lossy().into_owned(),
+            name: DEFAULT_NEW_THREAD_BACKGROUND_NAME.to_owned(),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1336,6 +1360,62 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn active_background_resolves_default_user_and_broken_states(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            init(UiSettings::default(), dir.path(), cx);
+            // Fresh install: the field stays None while the resolver
+            // materializes and returns the bundled default (Option A — the
+            // default is recognized, never persisted).
+            let default = active_new_thread_background(cx).expect("default resolves");
+            assert_eq!(default.name, "Roboco");
+            assert_eq!(
+                PathBuf::from(&default.path),
+                dir.path()
+                    .join(NEW_THREAD_BACKGROUND_DIR)
+                    .join(DEFAULT_NEW_THREAD_BACKGROUND_FILE)
+            );
+            assert_eq!(
+                std::fs::read(&default.path).unwrap(),
+                DEFAULT_NEW_THREAD_BACKGROUND_BYTES
+            );
+            assert!(current(cx).new_thread_composer_background.is_none());
+            assert!(!UiSettings::path(dir.path()).exists());
+
+            // Stored and present: the user entry, unchanged.
+            let user = NewThreadComposerBackground {
+                path: dir.path().join("user.png").to_string_lossy().into_owned(),
+                name: "user.png".into(),
+            };
+            std::fs::write(&user.path, b"user").unwrap();
+            update(SavePolicy::Immediate, cx, |settings| {
+                settings.new_thread_composer_background = Some(user.clone());
+            });
+            assert_eq!(active_new_thread_background(cx).as_ref(), Some(&user));
+
+            // Stored but missing: NOT active (the row's "Image unavailable"
+            // state; the canvas paints no artwork for it).
+            update(SavePolicy::Immediate, cx, |settings| {
+                settings.new_thread_composer_background = Some(NewThreadComposerBackground {
+                    path: dir
+                        .path()
+                        .join("missing.png")
+                        .to_string_lossy()
+                        .into_owned(),
+                    name: "missing.png".into(),
+                });
+            });
+            assert_eq!(active_new_thread_background(cx), None);
+
+            // Removing the user entry falls back to the default again.
+            remove_new_thread_composer_background(cx).unwrap();
+            let resolved = active_new_thread_background(cx).expect("default re-resolves");
+            assert_eq!(resolved.name, "Roboco");
+            assert_eq!(PathBuf::from(&resolved.path), PathBuf::from(&default.path));
+        });
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn appshot_shortcut_defaults_round_trip_and_reset() {
@@ -1421,8 +1501,10 @@ mod tests {
         std::fs::create_dir(&backgrounds).unwrap();
         let managed = backgrounds.join("new-thread-background-owned.png");
         let unrelated = dir.path().join("keep.png");
+        let default_file = backgrounds.join(DEFAULT_NEW_THREAD_BACKGROUND_FILE);
         std::fs::write(&managed, b"managed").unwrap();
         std::fs::write(&unrelated, b"unrelated").unwrap();
+        std::fs::write(&default_file, b"default").unwrap();
 
         remove_managed_new_thread_background(
             Some(&NewThreadComposerBackground {
@@ -1440,6 +1522,11 @@ mod tests {
             &backgrounds,
         );
         assert!(!managed.exists());
+        // The bundled default lives in the same managed directory, but the
+        // stored setting never names it — retirement leaves it alone. (The
+        // guard Option B would have needed: materializing the default into
+        // the setting would make it deletable.)
+        assert!(default_file.exists());
     }
 
     #[gpui::test]
@@ -1495,6 +1582,10 @@ mod tests {
                 ..Default::default()
             };
             init(initial, dir.path(), cx);
+            // Materialize the default first: a fresh install's state. The
+            // resolver returns it while nothing is stored.
+            let default_path = default_new_thread_background(cx).unwrap();
+            assert!(default_path.is_file());
             install_new_thread_composer_background(&first, cx).unwrap();
             let old_path = current(cx).new_thread_composer_background.unwrap().path;
             install_new_thread_composer_background(&second, cx).unwrap();
@@ -1512,11 +1603,33 @@ mod tests {
             );
             assert!(!Path::new(&old_path).exists());
             assert!(first.exists() && second.exists());
+            // Install/replace never retires the default: the managed dir
+            // keeps the replacement AND the default.
+            assert!(default_path.is_file());
+            assert_eq!(
+                std::fs::read_dir(dir.path().join(NEW_THREAD_BACKGROUND_DIR))
+                    .unwrap()
+                    .count(),
+                2
+            );
+            // The resolver tracks the user entry, not the default.
+            assert_eq!(active_new_thread_background(cx).as_ref(), Some(replacement));
+            // Removing the user background flips the resolver back to the
+            // default and retires only the user's managed file.
+            remove_new_thread_composer_background(cx).unwrap();
+            let resolved = active_new_thread_background(cx).expect("default re-resolves");
+            assert_eq!(resolved.name, "Roboco");
+            assert_eq!(PathBuf::from(&resolved.path), default_path);
+            assert!(default_path.is_file());
             assert_eq!(
                 std::fs::read_dir(dir.path().join(NEW_THREAD_BACKGROUND_DIR))
                     .unwrap()
                     .count(),
                 1
+            );
+            assert_eq!(
+                UiSettings::load(dir.path()).new_thread_composer_background,
+                None
             );
         });
     }
@@ -1535,6 +1648,23 @@ mod tests {
             assert!(!dir.path().join(NEW_THREAD_BACKGROUND_DIR).exists());
             assert!(!UiSettings::path(dir.path()).exists());
             assert!(candidate.exists());
+            // The failed import leaves resolution untouched: the resolver
+            // still materializes and returns the bundled default — and only
+            // that file lands in the managed dir.
+            let resolved = active_new_thread_background(cx).expect("default resolves");
+            assert_eq!(resolved.name, "Roboco");
+            assert_eq!(
+                std::fs::read(PathBuf::from(&resolved.path)).unwrap(),
+                DEFAULT_NEW_THREAD_BACKGROUND_BYTES
+            );
+            assert_eq!(
+                std::fs::read_dir(dir.path().join(NEW_THREAD_BACKGROUND_DIR))
+                    .unwrap()
+                    .count(),
+                1
+            );
+            assert!(current(cx).new_thread_composer_background.is_none());
+            assert!(!UiSettings::path(dir.path()).exists());
         });
     }
 
@@ -1648,6 +1778,10 @@ mod tests {
         assert!(json.contains(r#""codeFencesFitContent": true"#));
         assert!(json.contains(r#""openWebLinksInRoboco": false"#));
         assert!(json.contains(r#""newThreadBackgroundEffect": "ascii""#));
+        // Option A: a default-background install persists nothing for it —
+        // the field is absent from a default settings file.
+        let default_json = serde_json::to_value(UiSettings::default()).unwrap();
+        assert!(default_json.get("newThreadComposerBackground").is_none());
     }
 
     #[test]

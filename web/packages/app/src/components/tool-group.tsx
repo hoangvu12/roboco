@@ -15,38 +15,29 @@ import { useResolvedAppearance } from "../state/appearance";
 import type { FileDiff } from "../lib/diff";
 import type { InlineRun } from "../lib/markdown";
 import {
-  BLOB_AFFORDANCE_HEIGHT,
-  CHIPS_TOP_PAD,
   CHIP_CARD_HEIGHT,
   CHIP_HEIGHT,
-  detailHeight,
   fileBadgeName,
-  formatKb,
   isAgentTool,
   isSpawnLink,
   subagentModel,
   subagentTabTitle,
   toolChipContent,
-  toolGroupCollapses,
-  TOOL_GROUP_HEADER_HEIGHT,
   toolGroupTitle,
   toolIconName,
   type ToolDetail,
   type ToolItem,
 } from "../lib/transcript";
 import { wellBg } from "../lib/file-icons";
+import { toolGroupGeometry } from "../lib/tool-group-geometry";
 import {
   FOLD_TWEEN_WINDOW_MS,
-  TOOL_CONNECTOR_REVEAL_MS,
   ACTIVITY_TEXT_GAP,
   toolConnectorContinuation,
   toolConnectorParts,
-  toolConnectorRevealProgress,
   toolDisclosureProgress,
-  toolFoldProgress,
-  toolRowRevealProgress,
+  toolRevealClock,
   ToolGroupMotionStore,
-  type BlobFetch,
   type FoldState,
 } from "../lib/tool-motion";
 import { ActivityRail } from "./activity-rail";
@@ -69,9 +60,10 @@ import { GlyphSpinner } from "./glyph-spinner";
  * blob affordance row when one is offered; spawn chips are LINKS whose whole
  * card opens the subagent's transcript as a right-pane tab.
  *
- * While any tween/reveal is unfinished the row re-renders on a rAF clock
- * (the desktop's invisible per-frame canvas); the loop stops when every
- * progress reaches 1.
+ * While any tween/reveal is unfinished the row re-renders on the SHARED rAF
+ * clock (ticket 59, the desktop's invisible per-frame canvas — ONE loop for
+ * every live row, armed by the first subscriber and stopped by the last);
+ * per-row timings are unchanged.
  */
 
 // ---------------------------------------------------------------------------
@@ -99,6 +91,20 @@ export interface ToolGroupRowProps {
     call: <T>(method: string, params: unknown) => Promise<T>;
   };
   readonly onOpenSubagent: (payload: SubagentOpen) => void;
+  /**
+   * The explicit fold-navigation callback (ticket 71 A): called with the
+   * CLICKED header element synchronously, BEFORE the fold state flips, so
+   * the scroller can capture the header's screen position, release the
+   * follow/hold (retaining any live reservation), and arm the compensation.
+   */
+  readonly onFoldNav?: (nav: ToolFoldNav) => void;
+}
+
+/** One explicit fold click's navigation payload (ticket 71 A). */
+export interface ToolFoldNav {
+  readonly rowId: string;
+  /** The clicked header button/card head — its rect is the anchor. */
+  readonly header: HTMLElement;
 }
 
 const prefersReducedMotion = (): boolean =>
@@ -109,109 +115,47 @@ const prefersReducedMotion = (): boolean =>
 // The group row (render_tool_group :5837)
 // ---------------------------------------------------------------------------
 
-export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, onOpenSubagent }: ToolGroupRowProps) {
+export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, onOpenSubagent, onFoldNav }: ToolGroupRowProps) {
   // Folds/fetches/reveals live in the surface's store: a virtualized row
   // scrolling back into view is a remount and must find its fold.
   useSyncExternalStore(motion.subscribe, motion.getVersion);
   const reduced = prefersReducedMotion();
   const [now, setNow] = useState(() => performance.now());
 
-  const collapses = toolGroupCollapses(tools);
+  // The SHARED geometry contract (ticket 70): the scroller's estimator calls
+  // the same pure resolver with the same inputs, so an unmeasured group
+  // mounts at the height this row actually renders.
+  const geometry = toolGroupGeometry({ rowId, tools, autoOpen, state: motion, now, reduced });
+  const {
+    collapses,
+    open,
+    effectiveAutoOpen,
+    baseRowHeight,
+    details,
+    invocations,
+    affordances,
+    detailFolds,
+    detailOpens,
+    rowHeights,
+    revealProgress,
+    connectorProgress,
+    headerHeight,
+    revealedHeight,
+    bodyHeight,
+    motionActive,
+  } = geometry;
   const fold = motion.groupFold(rowId);
-  const reveal = motion.revealOf(rowId);
-  const starts = reveal?.starts ?? [];
-  // A FUTURE start reads as pending (elapsed saturates at 0), exactly like
-  // the desktop's checked_duration_since.
-  const arrivalPending = !reduced && starts.some((start) => start !== null && now - start < TOOL_CONNECTOR_REVEAL_MS);
-  const effectiveAutoOpen = autoOpen || arrivalPending;
-  const open = !collapses || (fold?.open ?? effectiveAutoOpen);
   const active = collapses && autoOpen;
-  const baseRowHeight = collapses ? 32 : CHIP_HEIGHT;
 
-  // ── The chips' effective payloads (:5874-5989) ──────────────────────────
-  const details: (ToolDetail | null)[] = [];
-  const invocations: (ToolDetail | null)[] = [];
-  const affordances: ({ ref: string; label: string; loading: boolean } | null)[] = [];
-  const detailFolds: (FoldState | null)[] = [];
-  const detailOpens: boolean[] = [];
-  for (let ix = 0; ix < tools.length; ix += 1) {
-    const tool = tools[ix]!;
-    // Spawn chips never expand — the subagent doc is the record of what the
-    // tool did; the whole chip is the "open that doc" click instead.
-    if (isSpawnLink(tool)) {
-      details.push(null);
-      invocations.push(null);
-      affordances.push(null);
-      detailFolds.push(null);
-      detailOpens.push(false);
-      continue;
-    }
-    const detail = effectiveDetail(tool, motion);
-    const invocation = tool.invocation;
-    const key = `${rowId}#d${ix}`;
-    const dfold = motion.detailFold(key);
-    const defaultOpen = tool.isThought && !tool.resolved;
-    details.push(detail);
-    invocations.push(invocation);
-    affordances.push(effectiveAffordance(tool, motion));
-    detailFolds.push(dfold);
-    detailOpens.push((detail !== null || invocation !== null) && (dfold?.open ?? defaultOpen));
-  }
-
-  // ── The chips' heights (analytic — :6000-6042) ──────────────────────────
-  let motionActive = false;
-  const rowHeights: number[] = [];
-  for (let ix = 0; ix < tools.length; ix += 1) {
-    const target = detailOpens[ix]
-      ? baseRowHeight +
-        (invocations[ix] !== null ? detailHeight(invocations[ix]!) : 0) +
-        (details[ix] !== null ? detailHeight(details[ix]!) : 0) +
-        (affordances[ix] !== null ? BLOB_AFFORDANCE_HEIGHT : 0)
-      : baseRowHeight;
-    const dfold = detailFolds[ix] ?? null;
-    const from = dfold !== null && dfold.toggledAt !== null ? dfold.from + baseRowHeight - CHIP_CARD_HEIGHT : null;
-    const tweened = tweenHeight(from, target, dfold, now, reduced);
-    if (tweened.motion) {
-      motionActive = true;
-    }
-    rowHeights.push(tweened.height);
-  }
-
-  // ── Reveal progress per row (:6044-6079) ───────────────────────────────
-  const revealProgress: number[] = [];
-  const connectorProgress: number[] = [];
-  for (let ix = 0; ix < tools.length; ix += 1) {
-    const start = starts[ix] ?? null;
-    revealProgress.push(toolRowRevealProgress(start, now, reduced));
-    connectorProgress.push(toolConnectorRevealProgress(start, now, reduced));
-  }
-  const headerReveal = collapses ? toolRowRevealProgress(reveal?.headerStartedAt ?? null, now, reduced) : 1;
-  if (headerReveal < 1 || revealProgress.some((p) => p < 1) || connectorProgress.some((p) => p < 1)) {
-    motionActive = true;
-  }
-
-  // ── Group body height (:6080-6087, :6360-6387) ─────────────────────────
-  const revealedHeight = CHIPS_TOP_PAD + rowHeights.reduce((sum, height, ix) => sum + height * revealProgress[ix]!, 0);
-  const bodyTarget = open ? revealedHeight : 0;
-  const bodyTweened = tweenHeight(fold?.from ?? null, bodyTarget, fold, now, reduced);
-  if (bodyTweened.motion) {
-    motionActive = true;
-  }
-  const bodyHeight = bodyTweened.height;
-
-  // The rAF clock: the desktop keeps requesting frames while a tween/reveal
-  // is unfinished; the loop stops when every progress reaches 1.
+  // The SHARED rAF clock (ticket 59): the desktop keeps requesting frames
+  // while a tween/reveal is unfinished — ONE loop drives every live row and
+  // stops when the last row's progress reaches 1. The row still computes
+  // every progress from the delivered `now`, so its timings are untouched.
   useEffect(() => {
     if (!motionActive) {
       return;
     }
-    let raf = 0;
-    const tick = (): void => {
-      setNow(performance.now());
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return toolRevealClock.subscribe(setNow);
   }, [motionActive]);
 
   // The rendered-open flip without a user click (auto-open expiring) seeds
@@ -221,14 +165,34 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
     motion.noteRendered(rowId, open, bodyHeight);
   });
 
+  // Ticket 71 B — the renderer's card-height report per expandable chip:
+  // while a thought streams open this records the settled open height that
+  // the animated completion close tweens from. One effect per group row,
+  // fed by the SHARED geometry (the estimator's numbers agree by contract).
+  useLayoutEffect(() => {
+    for (let ix = 0; ix < tools.length; ix += 1) {
+      if (details[ix] === null && invocations[ix] === null) {
+        continue;
+      }
+      motion.noteDetailRendered(
+        `${rowId}#d${ix}`,
+        (rowHeights[ix] ?? baseRowHeight) - baseRowHeight + CHIP_CARD_HEIGHT,
+      );
+    }
+  });
+
   const disclosure = reduced ? (open ? 1 : 0) : toolDisclosureProgress(open, fold, now);
 
   const onToggleGroup = useCallback(
     (event: React.MouseEvent) => {
       event.stopPropagation();
+      // The click owns the viewport FIRST: the header is measured at its
+      // pre-toggle position and the follow/hold releases before the fold
+      // state flips (ticket 71 A).
+      onFoldNav?.({ rowId, header: event.currentTarget as HTMLElement });
       motion.toggleGroupFold(rowId, revealedHeight, effectiveAutoOpen);
     },
-    [rowId, revealedHeight, effectiveAutoOpen, motion],
+    [rowId, revealedHeight, effectiveAutoOpen, motion, onFoldNav],
   );
 
   const fetchBlob = useCallback(
@@ -280,6 +244,7 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
       motion={motion}
       fetchBlob={fetchBlob}
       onOpenSubagent={onOpenSubagentFor}
+      onFoldNav={onFoldNav}
     />
   ));
 
@@ -290,7 +255,7 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
 
   return (
     <div className="tool-group">
-      <div className="tool-reveal" style={{ height: TOOL_GROUP_HEADER_HEIGHT * headerReveal }}>
+      <div className="tool-reveal" style={{ height: headerHeight }}>
         <ToolGroupHeader
           rowId={rowId}
           summary={toolGroupTitle(tools)}
@@ -305,29 +270,6 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
       </div>
     </div>
   );
-}
-
-/**
- * The height tween shared by the group fold and the chip cards (:6025-6041,
- * :6360-6375): lerp from `from` to `target` over TOOL_FOLD while the fold's
- * clock is armed; past 140ms it saturates at `target` (an aged tween renders
- * its endpoint — a remount never flashes). Null `from` renders the target.
- */
-function tweenHeight(
-  from: number | null,
-  target: number,
-  fold: FoldState | null,
-  now: number,
-  reduced: boolean,
-): { height: number; motion: boolean } {
-  if (from === null || reduced || fold === null || fold.toggledAt === null) {
-    return { height: target, motion: false };
-  }
-  const t = toolFoldProgress(fold, now);
-  if (t === null) {
-    return { height: target, motion: false };
-  }
-  return { height: from + (target - from) * t, motion: t < 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +327,8 @@ interface ToolChipRowProps {
   readonly motion: ToolGroupMotionStore;
   readonly fetchBlob: (ref: string) => void;
   readonly onOpenSubagent: (tool: ToolItem) => void;
+  /** The explicit fold-navigation callback (ticket 71 A). */
+  readonly onFoldNav?: (nav: ToolFoldNav) => void;
 }
 
 function ToolChipRow(props: ToolChipRowProps) {
@@ -420,6 +364,9 @@ function ToolChipRow(props: ToolChipRowProps) {
             height: CHIP_CARD_HEIGHT,
             marginTop: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
             marginBottom: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
+            // The rail margin (transcript.rs:7363): the label breaks 8px off
+            // the rail icon when the rail renders.
+            marginLeft: collapses ? ACTIVITY_TEXT_GAP : undefined,
             ...(collapses && contentReveal < 1 ? liftStyle(contentReveal) : null),
           }}
         >
@@ -442,6 +389,10 @@ function ToolChipRow(props: ToolChipRowProps) {
   const defaultOpen = tool.isThought && !tool.resolved;
   const onToggle = (event: React.MouseEvent): void => {
     event.stopPropagation();
+    // The click owns the viewport FIRST (ticket 71 A): measure the chip
+    // header at its pre-toggle position and release the follow/hold
+    // before the fold state flips.
+    props.onFoldNav?.({ rowId: props.rowId, header: event.currentTarget as HTMLElement });
     props.motion.toggleDetailFold(key, cardHeight, defaultOpen);
   };
   return revealRow(
@@ -463,6 +414,9 @@ function ToolChipRow(props: ToolChipRowProps) {
           height: cardHeight,
           marginTop: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
           marginBottom: (props.baseRowHeight - CHIP_CARD_HEIGHT) / 2,
+          // The rail margin (transcript.rs:6233): same 8px icon→label break
+          // when the rail renders.
+          marginLeft: collapses ? ACTIVITY_TEXT_GAP : undefined,
           ...(collapses && contentReveal < 1 ? liftStyle(contentReveal) : null),
         }}
       >
@@ -792,86 +746,6 @@ function ToolDiffBody({ file }: { file: FileDiff }) {
 }
 
 // ---------------------------------------------------------------------------
-// Blob-upgrade resolution (render_tool_group :5880-5959)
+// Blob-upgrade resolution (render_tool_group :5880-5959) lives in
+// ../lib/tool-group-geometry.ts (ticket 70) — the estimator shares it.
 // ---------------------------------------------------------------------------
-
-/** The most recently REQUESTED Ready blob wins; else the doc detail. */
-function effectiveDetail(tool: ToolItem, motion: ToolGroupMotionStore): ToolDetail | null {
-  let best: { order: number; detail: ToolDetail } | null = null;
-  for (const ref of [tool.diffRef, tool.outputRef]) {
-    if (ref === null) {
-      continue;
-    }
-    const fetch = motion.blobFetchOf(ref);
-    if (fetch !== null && fetch.state === "ready") {
-      const order = motion.blobOrderOf(ref);
-      if (best === null || order > best.order) {
-        best = { order, detail: fetch.detail };
-      }
-    }
-  }
-  return best !== null ? best.detail : tool.detail;
-}
-
-/** The ref of the blob whose upgrade is currently showing, if any. */
-function shownBlobRef(tool: ToolItem, motion: ToolGroupMotionStore): string | null {
-  let best: { order: number; ref: string } | null = null;
-  for (const ref of [tool.diffRef, tool.outputRef]) {
-    if (ref === null) {
-      continue;
-    }
-    const fetch: BlobFetch | null = motion.blobFetchOf(ref);
-    if (fetch !== null && fetch.state === "ready") {
-      const order = motion.blobOrderOf(ref);
-      if (best === null || order > best.order) {
-        best = { order, ref };
-      }
-    }
-  }
-  return best !== null ? best.ref : null;
-}
-
-/**
- * The one affordance slot (:5913-5959): diff offered first (the richer
- * upgrade), then the output. A fetched-and-SHOWING ref hands the slot to the
- * next unfetched one; a fetched-but-not-showing ref stays offered as a
- * no-fetch recency toggle. Failure re-arms as a manual retry — there is no
- * backoff ladder.
- */
-function effectiveAffordance(
-  tool: ToolItem,
-  motion: ToolGroupMotionStore,
-): { ref: string; label: string; loading: boolean } | null {
-  if (isSpawnLink(tool)) {
-    return null;
-  }
-  const shown = shownBlobRef(tool, motion);
-  const candidates: { ref: string | null; what: string; bytes: number | null }[] = [
-    { ref: tool.diffRef, what: "diff", bytes: null },
-    { ref: tool.outputRef, what: "output", bytes: tool.outputBytes },
-  ];
-  for (const { ref, what, bytes } of candidates) {
-    if (ref === null) {
-      continue;
-    }
-    const fetch = motion.blobFetchOf(ref);
-    if (fetch === null) {
-      return {
-        ref,
-        label: bytes !== null ? `Show full ${what} (${formatKb(bytes)})` : `Show full ${what}`,
-        loading: false,
-      };
-    }
-    if (fetch.state === "loading") {
-      return { ref, label: `Loading full ${what}…`, loading: true };
-    }
-    if (fetch.state === "failed") {
-      return { ref, label: `Couldn't load full ${what} — tap to retry`, loading: false };
-    }
-    if (ref === shown) {
-      continue;
-    }
-    return { ref, label: `Show full ${what}`, loading: false };
-  }
-  return null;
-}

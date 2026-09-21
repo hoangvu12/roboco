@@ -3,10 +3,12 @@ import type { RemoteAccessSnapshot } from "@roboco/proto";
 import type { EngineClient } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
+import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import {
   createPairingLink,
   getRemoteAccess,
   revokePairingSession,
+  sessionIsSelf,
   sessionRows,
   setRemoteAccess,
 } from "../lib/remote-access";
@@ -14,7 +16,10 @@ import {
 /**
  * Remote access settings (desktop settings/remote_access.rs parity): the
  * "Allow remote connections" toggle, the pairing-link mint with copy, and
- * the paired-session list with per-row Revoke. Every mutation is followed
+ * the paired-session list with per-row Revoke; the row that is this
+ * browser's own Session (id === session.engine.sessionId) carries the
+ * "This browser" badge — the desktop has no self-session (its loopback
+ * client is credential-free). Every mutation is followed
  * by a fresh GetRemoteAccess so the page always lands on engine truth;
  * failures render in the strip. Revocation gates the session's next
  * handshake server-side — live connections are not torn down.
@@ -110,6 +115,7 @@ export function RemoteAccessSettingsPage() {
       <h1 className="settings-title">Remote access</h1>
       <p className="settings-subtitle">
         Pair your other devices with this engine. Use a trusted network or your own tunnel.
+        <SettingsEngineIndicator />
       </p>
 
       <section className="settings-card">
@@ -178,7 +184,7 @@ export function RemoteAccessSettingsPage() {
         {snapshot === null ? (
           <p className="settings-empty">{busy ? "Loading…" : "Nothing to show yet."}</p>
         ) : snapshot.sessions.length === 0 ? (
-          <p className="settings-empty">No devices paired yet.</p>
+          <p className="settings-empty">No clients paired yet.</p>
         ) : (
           sessionRows(snapshot, now).map((row) => (
             <div className={`settings-row ${row.revoked ? "settings-row-revoked" : ""}`} key={row.id}>
@@ -189,6 +195,7 @@ export function RemoteAccessSettingsPage() {
                   {row.revoked ? "Revoked" : row.lastSeenLabel}
                 </span>
               </div>
+              {session !== null && sessionIsSelf(row, session.engine) && <span className="badge">This browser</span>}
               {!row.revoked && (
                 <button type="button" className="btn btn-danger-ghost" disabled={busy} onClick={() => revoke(row.id)}>
                   Revoke

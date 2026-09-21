@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { pairEngine } from "../state/fleet";
 import { webDeviceLabel } from "../lib/engine-store";
-import { describeRedeemError } from "../components/engine-drawer";
+import { describeRedeemError } from "../lib/pairing-errors";
 
 type PairPhase = { kind: "idle" } | { kind: "redeeming" } | { kind: "error"; message: string };
 

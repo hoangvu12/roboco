@@ -16,6 +16,7 @@ import { methods } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
+import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
 import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
@@ -24,11 +25,13 @@ import {
   TranscriptStore,
   type PendingSend,
 } from "../state/transcript-store";
+import { transcriptFoldCache } from "../state/transcript-fold-state";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
 import {
   COPIED_CLEAR_MS,
+  OWN_SEND_SCROLL_SLACK_PX,
   OWN_SEND_TOP_INSET_PX,
   SELECTION_SCROLL_TICK_MS,
   TITLEBAR_HEIGHT,
@@ -46,10 +49,11 @@ import {
   parseForRow,
   resolveViewportAnchor,
   rowsForEntry,
+  selectionDragAutoscrolls,
+  SelectionDragTracker,
   selectionScrollStep,
   sendingBridge,
   SPACE_LG,
-  TOOL_GROUP_HEADER_HEIGHT,
   topGapFor,
   toolGroupCollapses,
   userMessageNeedsCollapse,
@@ -60,8 +64,23 @@ import {
   type SentMentionSpan,
   type TranscriptRow,
 } from "../lib/transcript";
+import {
+  computeToolMeasurementKeys,
+  EMPTY_TOOL_GEOMETRY_STATE,
+  pruneStaleToolMeasurements,
+  toolGroupGeometry,
+  type ToolGroupEstimateContext,
+} from "../lib/tool-group-geometry";
+import {
+  armToolFoldCompensation,
+  automaticToolFoldCompensationArms,
+  toolFoldCompensationDone,
+  toolFoldCompensationWrite,
+  type ToolFoldCompensation,
+} from "../lib/tool-fold-scroll";
 import { railTicks, type RailTick } from "../lib/rail";
 import { OVERDRAW_PX } from "../lib/stick-spring";
+import { ChatArrivalWindow } from "../lib/chat-arrival";
 import { VeilTracker } from "../lib/veil";
 import type { ChatIndicator } from "../lib/view";
 import type { MessageBadge } from "../lib/badges";
@@ -75,15 +94,6 @@ import { UserAttachments } from "./attachments/user-attachments";
 import { MatrixSpinner } from "./glyph-spinner";
 import { WorkingTrailer, type WorkingTrailerState } from "./working-trailer";
 
-/**
- * The chat transcript — virtualization at block granularity over the row model
- * of `../lib/transcript.ts` (the desktop's `rows_for_entry` port), with the
- * stick-to-bottom spring and the own-turn runway driving the scroller. Rows
- * are accounted by measured heights (estimates until rendered, 320px
- * overdraw), so a thousand-message chat keeps a bounded DOM and a stable
- * viewport.
- */
-
 /** Line cap for a FETCHED full output (defensive; desktop FULL_OUTPUT_MAX_LINES). */
 const FULL_OUTPUT_MAX_LINES = 400;
 
@@ -96,8 +106,9 @@ const USER_COLLAPSED_TEXT_HEIGHT = USER_COLLAPSED_LINES * USER_LINE_HEIGHT;
 const USER_COLLAPSED_HEIGHT = USER_COLLAPSED_TEXT_HEIGHT + USER_LINE_HEIGHT;
 /** Trailer estimate for unmounted last rows: `pt(16)` + one 12px line. */
 const TRAILER_ESTIMATE_HEIGHT = 28;
-/** Desktop widths — the underlay layout and the clearance pad apply here. */
-const DESKTOP_QUERY = "(min-width: 769px)";
+/** Desktop widths — the underlay layout and the clearance pad apply here.
+ *  `DESKTOP_QUERY` and the `useMediaQuery` hook live in `state/media.ts`
+ *  now — the one shared breakpoint module (ticket 49). */
 
 /** The jump pill's visibility + action, published up to the chat page. */
 export interface JumpButtonState {
@@ -105,7 +116,21 @@ export interface JumpButtonState {
   readonly jump: () => void;
 }
 
-export function TranscriptView({
+/**
+ * The chat transcript — virtualization at block granularity over the row model
+ * of `../lib/transcript.ts` (the desktop's `rows_for_entry` port), with the
+ * stick-to-bottom spring and the own-turn runway driving the scroller. Rows
+ * are accounted by measured heights (estimates until rendered, 320px
+ * overdraw), so a thousand-message chat keeps a bounded DOM and a stable
+ * viewport.
+ *
+ * Memoized (ticket 57b): every prop is stable across the page's mid-glide
+ * commits (the flip, a chrome mount crossing, the settle — the discrete
+ * publishes of the de-Reacted dock pump), so the pump's phase events and the
+ * async loads that re-render the page no longer descend into the transcript
+ * tree; the row renders ride the store's own subscription.
+ */
+export const TranscriptView = memo(function TranscriptView({
   client,
   docId,
   deviceId,
@@ -217,7 +242,7 @@ export function TranscriptView({
       deliveryDegraded={deliveryDegraded}
     />
   );
-}
+});
 
 function TranscriptSurface({
   store,
@@ -316,17 +341,101 @@ function TranscriptSurface({
   // never re-animate an existing task tree. The store is per-surface (the
   // desktop's per-Transcript fields): a subagent tab's sync can never touch
   // this chat's reveals.
-  const toolMotion = useMemo(() => new ToolGroupMotionStore(), [store]);
-  useEffect(() => () => toolMotion.reset(), [toolMotion]);
-  const revealBaselineRef = useRef(false);
+  //
+  // The chat-switch arrival window (ticket 58): ONE predicate shared by every
+  // arrival gate — the scroller's restore/spring, the tool groups' fold
+  // tweens, the shimmer arming. Armed at this surface's first loaded commit
+  // (the `key={active.docId}` remount IS the chat switch — the outlet hands
+  // the view the new store only once its first frame has landed), cleared
+  // when the measurement cascade quiesces or its hard cap passes. The
+  // desktop's switch is atomic (state.rs:1740-1792, shell.rs:1837-1862,
+  // composer.rs:5849-5874); this window is the web's equivalent gate.
+  const chatArrival = useMemo(() => new ChatArrivalWindow(), [store]);
+  // Ticket 68 (decision option 1): the chat's remembered explicit fold pins
+  // are reinstalled INTO the fresh motion store during the render that
+  // creates it — before any rows render, before the scroller's first
+  // layout effect, and therefore before the viewport restore's height
+  // estimates read the pins ("restore fold choices before calculating the
+  // restored viewport"). Restored pins are settled (no tween clocks) and
+  // ride the shared geometry resolver, so a remembered closed pin overrides
+  // autoOpen/arrivalPending without forking the effective-open formula.
+  // The outgoing chat's pins are captured at surface teardown, before the
+  // store is reset — the LRU lives in `state/transcript-fold-state.ts`.
+  const engineKey = client.engineKey ?? "";
+  const toolMotion = useMemo(() => {
+    const motion = new ToolGroupMotionStore(chatArrival);
+    if (!alignTop) {
+      const saved = transcriptFoldCache.restore(engineKey, docId);
+      if (saved !== null) {
+        motion.restoreExplicitFolds(saved);
+      }
+    }
+    return motion;
+  }, [chatArrival, engineKey, docId, alignTop]);
   useEffect(() => {
-    if (snapshot.replay === "populated" && !revealBaselineRef.current) {
-      revealBaselineRef.current = true;
-      toolMotion.sync(rows, true);
+    // StrictMode's simulated remount re-runs this effect after the cleanup
+    // below reset the KEPT store instance; re-applying the pins keeps that
+    // double mount as faithful as a real remount (idempotent — the snapshot
+    // re-sets the same keys).
+    if (!alignTop) {
+      const saved = transcriptFoldCache.restore(engineKey, docId);
+      if (saved !== null) {
+        toolMotion.restoreExplicitFolds(saved);
+      }
+    }
+    return () => {
+      if (!alignTop) {
+        transcriptFoldCache.capture(engineKey, docId, toolMotion.captureExplicitFolds());
+      }
+      toolMotion.reset();
+      // StrictMode reuses this surface after its simulated cleanup. Its
+      // emptied motion store needs the same current-history baseline as a
+      // real return to a warm chat.
+      consumedBaselineRef.current = 0;
+      const current = store.getSnapshot();
+      mountBaselineEntriesRef.current = current.loaded ? current.entries : null;
+    };
+  }, [toolMotion, engineKey, docId, alignTop, store]);
+  // The reveal baseline (ticket 69) rides the store's durable accepted-reset
+  // epoch, never an observed pending render: a generation swap commits the
+  // pending window and the reset's populated frame in ONE task, so React may
+  // never render the intermediate snapshot — and a same-generation resubscribe
+  // resets without the generation moving at all. Each published baseline is
+  // consumed exactly once, in a layout effect so the corrected rows land
+  // before paint: FIRST the reset's own entries as the replay baseline (the
+  // desktop's populated-baseline consume, transcript.rs:4063-4113 — reveal
+  // and tween clocks clear, every reset tool counts as history), THEN the
+  // current rows as the live delta, so a reset coalesced with later deltas in
+  // one React batch still classifies genuinely post-reset tools as arrivals.
+  const consumedBaselineRef = useRef(0);
+  // A warm store can contain deltas newer than its last reset. Everything
+  // already present at mount is history; only subsequent deltas arrive.
+  const mountBaselineEntriesRef = useRef(snapshot.loaded ? snapshot.entries : null);
+  useLayoutEffect(() => {
+    const baseline = snapshot.baseline;
+    if (baseline !== null && baseline.epoch > consumedBaselineRef.current) {
+      consumedBaselineRef.current = baseline.epoch;
+      // Ticket 80 — the authoritative reset IS an arrival. On the canvas
+      // route the surface mounts blank, the cache seed's loaded commit arms
+      // the window, and the live reset can land after that window fell —
+      // its settle cascade then armed the stick spring and replayed fold
+      // flips visibly mid-dock-fade. Re-arming on every accepted reset
+      // gives the seed→reset handoff the same atomic settle a chat→chat
+      // switch gets from its mount commit (reconnect resets get it too,
+      // which is equally correct: settling must never visibly glide).
+      if (baseline.provenance === "reset") {
+        chatArrival.arm(performance.now());
+      }
+      toolMotion.sync(baselineRows(mountBaselineEntriesRef.current ?? baseline.entries), true);
+      mountBaselineEntriesRef.current = null;
+      toolMotion.sync(rows, false);
       return;
     }
-    toolMotion.sync(rows, false);
-  }, [rows, snapshot.replay, toolMotion]);
+    // `replay === "pending"` marks a transient window (a resubscribe waiting
+    // for its reset): rows are kept through it, and a genuinely empty pending
+    // frame (a fresh mount) is harmless.
+    toolMotion.sync(rows, false, snapshot.replay === "pending");
+  }, [rows, snapshot.baseline, snapshot.replay, toolMotion]);
 
   const allRows = useMemo(() => {
     if (pendingSends.length === 0) {
@@ -432,6 +541,7 @@ function TranscriptSurface({
         onJumpChange={onJumpChange}
         onOpenSubagent={onOpenSubagent}
         toolMotion={toolMotion}
+        chatArrival={chatArrival}
       />
     </MarkdownSurfaceProvider>
   );
@@ -462,6 +572,23 @@ function echoEntry(send: PendingSend, deviceId: string | null): SessionMessageEn
   };
 }
 
+/**
+ * The accepted baseline's rows (ticket 69): derived through the real row
+ * model, but with an empty markdown tree — `rowsForEntry` consults the parser
+ * only for text parts, so tool-group identity and counts (the only thing the
+ * reveal baseline reads) are exact, and the live parse caches are never
+ * perturbed by replayed history.
+ */
+const BASELINE_PARSE_TREE = parseMarkdown("", false);
+
+function baselineRows(entries: readonly SessionMessageEntry[]): TranscriptRow[] {
+  const out: TranscriptRow[] = [];
+  for (const entry of entries) {
+    out.push(...rowsForEntry(entry, { parse: () => BASELINE_PARSE_TREE }));
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Scroller: virtualization + stick-to-bottom + the own-turn runway
 // ---------------------------------------------------------------------------
@@ -484,10 +611,12 @@ interface ScrollerProps {
   readonly onOpenSubagent?: (payload: SubagentOpen) => void;
   /** The surface's tool-group motion store (folds, reveals, blob fetches). */
   readonly toolMotion: ToolGroupMotionStore;
+  /** The surface's chat-switch arrival window (ticket 58's ONE predicate). */
+  readonly chatArrival: ChatArrivalWindow;
 }
 
 /** The user-bubble fold, lifted so virtualizer remounts never lose it. */
-interface UserFoldState {
+export interface UserFoldState {
   readonly open: boolean;
   readonly epoch: number;
   readonly toggledAt: number;
@@ -522,6 +651,7 @@ function TranscriptScroller({
   onJumpChange,
   onOpenSubagent,
   toolMotion,
+  chatArrival,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
@@ -539,13 +669,27 @@ function TranscriptScroller({
     }
   }, []);
   const heightsRef = useRef(new Map<string, number>());
-  const anchorRef = useRef<{ id: string; offset: number } | null>(null);
+  // Ticket 70's bounded cache boundary: the semantic geometry key each cached
+  // tool-row measurement was taken UNDER (heightKeysRef), and the current
+  // keys refreshed every render (toolKeysRef, also the observer's tag source).
+  const heightKeysRef = useRef(new Map<string, string>());
+  const toolKeysRef = useRef(new Map<string, string>());
+  const anchorRef = useRef<{ id: string; offset: number; top: number } | null>(null);
   const rowsRef = useRef(rows);
   const positionsRef = useRef<readonly number[]>([]);
   const rowHeightsRef = useRef<readonly number[]>([]);
   const measuredTextRef = useRef(new Map<string, number>());
   const holdTimersRef = useRef(new Map<string, number>());
   const collapseScrollRef = useRef<CollapseScroll | null>(null);
+  /**
+   * Ticket 71 — the tool-fold viewport compensation: the clicked header (an
+   * explicit fold) or the top visible row (an automatic closure while no
+   * other owner is live) held at a fixed screen position for the fold
+   * tween's duration. At most one compensator is live; user input and
+   * explicit navigation cancel it synchronously.
+   */
+  const toolFoldScrollRef = useRef<ToolFoldCompensation | null>(null);
+  const [toolFoldTick, bumpToolFold] = useState(0);
   const [, bumpMeasure] = useState(0);
   const [view, setView] = useState({ top: 0, height: 0 });
   const [showJump, setShowJump] = useState(false);
@@ -583,16 +727,24 @@ function TranscriptScroller({
       // The runway's floor is render-derived — install/retire must re-render
       // the virtualizer's height model.
       onOwnTurnChange: () => bumpRunway((tick) => tick + 1),
-      // A user scroll stands down the fold compensation and any pending
+      // A user scroll stands down the fold compensations and any pending
       // long-press (`handle_scroll`'s synchronous cancels).
       onUserInput: () => {
         collapseScrollRef.current = null;
+        toolFoldScrollRef.current = null;
         for (const timer of holdTimersRef.current.values()) {
           window.clearTimeout(timer);
         }
         holdTimersRef.current.clear();
       },
+      // Explicit navigation (a user-fold toggle, the rail glide, the
+      // selection auto-scroll) owns the viewport: the tool-fold
+      // compensation stands down before it moves the list.
+      onNavigation: () => {
+        toolFoldScrollRef.current = null;
+      },
       reducedMotion: reduced,
+      arrival: chatArrival,
     });
   }
   const stick = stickRef.current;
@@ -605,9 +757,22 @@ function TranscriptScroller({
     for (const id of heights.keys()) {
       if (!live.has(id)) {
         heights.delete(id);
+        heightKeysRef.current.delete(id);
       }
     }
   }
+
+  // Bounded tool-row measurement validity (ticket 70 §2.4): a cached tool
+  // measurement is valid only for the semantic geometry inputs it was taken
+  // under — fold pins, the effective detail/invocation heights, the payload
+  // selection, the affordance slot. A change in those inputs (an UNMOUNTED
+  // row's in-flight blob fetch completing is the motivating case) drops ONLY
+  // that row's cached height, so the analytic-exact estimate stands in until
+  // the row remounts and re-measures. Unchanged inputs keep their
+  // measurements; this pass fetches nothing and notifies no one.
+  const toolKeys = computeToolMeasurementKeys(rows, toolMotion);
+  toolKeysRef.current = toolKeys;
+  pruneStaleToolMeasurements(heights, heightKeysRef.current, toolKeys);
 
   // ── Height model ─────────────────────────────────────────────────────────
   // Row 0's gap carries the titlebar chrome (the primary instance spans
@@ -627,26 +792,37 @@ function TranscriptScroller({
   // minimum height, so the prompt can sit at the viewport top with the
   // scroll ending at the app's bottom (`set_tail_reservation`; the floor is
   // met by the bottom spacer — plain scrollable space, never painted
-  // chrome). The arithmetic reads the PREVIOUS layout's positions, exactly
-  // like the desktop's pre-layout `update_runway_minimum`.
+  // chrome). The reservation value is the desktop's
+  // `own_send_inset − OWN_SEND_SCROLL_SLACK_PX − expansion`
+  // (transcript.rs:3506-3509): the 2px slack reads as the app's bottom, and
+  // the expansion term carries the anchor row's live Show-more fold tween
+  // (:3490-3504) — revealing the prompt adds reading space (the scroll end
+  // extends with it); only reply growth consumes the reservation. The floor
+  // reads the CURRENT render's prefix sums, so measurement that lands
+  // recomputes it in the same pass (the finalize recompute; the sums above
+  // the last row never depend on the floor, so there is no cycle).
   const anchorIx =
     stickOwnTurn !== null
       ? rows.findIndex((row) => row.turnStart && row.entryId === stickOwnTurn.messageId)
       : -1;
   const lastIx = rows.length - 1;
   const viewportHeight = view.height;
-  const priorPositions = positionsRef.current;
-  const reservationFloor =
-    anchorIx >= 0 && viewportHeight > 0
-      ? Math.max(
-          0,
-          (priorPositions[anchorIx] ?? 0) +
-            viewportHeight -
-            StickController.ownSendInset(anchorIx) -
-            (priorPositions[lastIx] ?? 0),
-        )
-      : 0;
   const trailerLive = trailer.kind !== "none";
+  // The estimator's geometry inputs (ticket 70): the motion store through its
+  // read-only view plus ONE caller-provided timestamp and the reduced flag,
+  // so an estimate and the row's own render of the same state agree — time
+  // is never read twice. Event handlers call this for a fresh timestamp.
+  const toolEstimateContext = (): ToolGroupEstimateContext => ({
+    state: toolMotion,
+    now: performance.now(),
+    reduced: reduced?.matches === true,
+  });
+  const estimateCtx = toolEstimateContext();
+  const anchorFold = anchorIx >= 0 ? userFolds.get(rows[anchorIx]!.id) ?? null : null;
+  const anchorExpansion =
+    anchorFold !== null
+      ? userFoldExpansionHeight(anchorFold, performance.now(), reduced?.matches === true)
+      : 0;
 
   // Row positions: prefix sums over measured heights (estimates until
   // rendered). The last row's height carries its clearance pad — and the
@@ -664,19 +840,34 @@ function TranscriptScroller({
     const isLast = ix === lastIx;
     const natural =
       heights.get(rows[ix]!.id) ??
-      estimateRowHeight(rows[ix]!) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
+      estimateRowHeight(rows[ix]!, estimateCtx) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
     naturalHeights[ix] = natural;
-    rowHeights[ix] = isLast ? Math.max(natural, reservationFloor) : natural;
-    total += rowHeights[ix]!;
+    rowHeights[ix] = natural;
+    total += natural;
+  }
+  const reservationFloor =
+    anchorIx >= 0 && viewportHeight > 0
+      ? ownTurnReservationFloor({
+          anchorTop: positions[anchorIx] ?? 0,
+          lastTop: positions[lastIx] ?? 0,
+          viewport: viewportHeight,
+          inset: StickController.ownSendInset(anchorIx),
+          expansion: anchorExpansion,
+        })
+      : 0;
+  if (lastIx >= 0 && reservationFloor > naturalHeights[lastIx]!) {
+    rowHeights[lastIx] = reservationFloor;
+    total += reservationFloor - naturalHeights[lastIx]!;
   }
   rowsRef.current = rows;
   positionsRef.current = positions;
   rowHeightsRef.current = rowHeights;
-  // A transient replay (the store's desync resubscribe) empties the rows for
-  // a frame before the reset lands. Hold the last measured layout open so
-  // the content never shrinks under the viewport — the browser would clamp
-  // scrollTop to 0 and the released view would land at the top (the desktop
-  // keeps its offset logical across replays; the web needs the spacer).
+  // The lastTotalRef hold-open: an authoritative-empty transition (rows went
+  // to 0 and stayed) must not shrink the content under the viewport — the
+  // browser would clamp scrollTop to 0 and the released view would land at
+  // the top (the desktop keeps its offset logical across replays; the web
+  // needs the spacer). Mid-session rows never empty now (the store keeps
+  // them through a resubscribe), so this only arms on a real empty state.
   const lastTotalRef = useRef(0);
   if (rows.length > 0) {
     lastTotalRef.current = total;
@@ -688,7 +879,7 @@ function TranscriptScroller({
   const lastNatural =
     lastIx >= 0
       ? (heights.get(rows[lastIx]!.id) ??
-        estimateRowHeight(rows[lastIx]!) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
+        estimateRowHeight(rows[lastIx]!, estimateCtx) + lastRowPad + (trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0))
       : 0;
   const reservationFilled =
     anchorIx >= 0 &&
@@ -696,13 +887,16 @@ function TranscriptScroller({
     (positions[lastIx] ?? 0) + lastNatural >=
       (positions[anchorIx] ?? 0) + viewportHeight - StickController.ownSendInset(anchorIx) + 0.5;
 
-  // The controller's frame-time geometry: anchor position, fill state, and
-  // the row-top prefix sums the rail glide anchors against.
-  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false, positions: [] as readonly number[] });
+  // The controller's frame-time geometry: anchor position, fill state, the
+  // row-top prefix sums the rail glide anchors against, and whether the row
+  // list is mid-replay (a transient window — a missing anchor waits, never
+  // retires the runway).
+  const geometryRef = useRef({ anchor: null as { top: number; ix: number } | null, filled: false, positions: [] as readonly number[], transient: false });
   geometryRef.current = {
     anchor: anchorIx >= 0 ? { top: positions[anchorIx]!, ix: anchorIx } : null,
     filled: reservationFilled,
     positions,
+    transient: !loaded || replay === "pending",
   };
   const anchorExpanded = anchorIx >= 0 && (userFolds.get(rows[anchorIx]!.id)?.open ?? false) === true;
   const anchorExpandedRef = useRef(anchorExpanded);
@@ -724,15 +918,41 @@ function TranscriptScroller({
         const height = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
         if (Math.abs((heightsRef.current.get(id) ?? 0) - height) > 0.5) {
           heightsRef.current.set(id, height);
+          // Tag tool rows with the semantic inputs this measurement
+          // corresponds to (ticket 70's cache boundary).
+          const toolKey = toolKeysRef.current.get(id);
+          if (toolKey === undefined) {
+            heightKeysRef.current.delete(id);
+          } else {
+            heightKeysRef.current.set(id, toolKey);
+          }
           changed = true;
         }
       }
       if (changed) {
+        // The settle cascade's heartbeat: extend the chat-switch arrival
+        // window so its gates cover this batch's scroll corrections (ticket 58).
+        chatArrival.noteMeasure(performance.now());
         bumpMeasure((tick) => tick + 1);
       }
     });
   }
   const rowElsRef = useRef(new Map<string, HTMLDivElement>());
+  // The bounded height update's trigger (ticket 70 §2.4): a motion-store bump
+  // can change an UNMOUNTED tool row's effective geometry (an in-flight blob
+  // fetch completing, a ready-recency click) with no row-prop or DOM change
+  // the scroller would otherwise observe. Re-key on the bump and re-render
+  // only when some tool row's semantic inputs actually moved — the render
+  // pass above then drops exactly the stale cached measurements.
+  useEffect(() => {
+    return toolMotion.subscribe(() => {
+      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion);
+      const prev = toolKeysRef.current;
+      if (next.size !== prev.size || [...next].some(([id, key]) => prev.get(id) !== key)) {
+        bumpMeasure((tick) => tick + 1);
+      }
+    });
+  }, [toolMotion]);
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
     const observer = observerRef.current;
     const els = rowElsRef.current;
@@ -777,7 +997,7 @@ function TranscriptScroller({
     }
     let raf = 0;
     const onScroll = (): void => {
-      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current);
+      anchorRef.current = captureAnchor(el.scrollTop, rowsRef.current, positionsRef.current, heightsRef.current, toolEstimateContext());
       if (alignTop) {
         // The override instance's top fade is gated on real overflow
         // (transcript.rs:7648-7651): max_offset − distance_from_bottom > 1.
@@ -802,38 +1022,42 @@ function TranscriptScroller({
     // ── Selection drag edge auto-scroll (§3.7) ────────────────────────────
     // Native selection is acceptable on the web, but a drag pinned near the
     // top/bottom edge still needs to auto-scroll — the t² ramp at a 24ms
-    // cadence. Armed by a primary-button press on non-interactive content.
-    let drag: { x: number; y: number } | null = null;
+    // cadence. Ticket 78: armed ONLY by a primary-button press on
+    // non-interactive content inside the scroller, tracked by the
+    // `SelectionDragTracker` (window `pointermove` never arms — a hold with
+    // micro-drift on the titlebar/composer/safe-area must not scroll the
+    // chat), cleared on `pointerup` AND `pointercancel`, and the tick steps
+    // only while a real text selection is active (the desktop's
+    // `step_selection_scroll` rides a genuine selection drag).
+    const drag = new SelectionDragTracker();
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0) {
         return;
       }
       const target = event.target as Element | null;
       if (target !== null && target.closest("button, a, [role='button'], input, textarea")) {
-        drag = null;
+        drag.pressInteractive();
         return;
       }
-      drag = { x: event.clientX, y: event.clientY };
+      drag.press(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
-      if (event.buttons === 0) {
-        drag = null;
-        return;
-      }
-      drag = { x: event.clientX, y: event.clientY };
+      drag.move(event.buttons, event.clientX, event.clientY);
     };
     const clearDrag = (): void => {
-      drag = null;
+      drag.clear();
     };
     el.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove, { passive: true });
     window.addEventListener("pointerup", clearDrag, { passive: true });
+    window.addEventListener("pointercancel", clearDrag, { passive: true });
     const selectionTimer = window.setInterval(() => {
-      if (drag === null) {
+      const position = drag.position;
+      if (position === null || !selectionDragAutoscrolls(document.getSelection())) {
         return;
       }
       const rect = el.getBoundingClientRect();
-      const step = selectionScrollStep({ top: rect.top, bottom: rect.bottom }, drag);
+      const step = selectionScrollStep({ top: rect.top, bottom: rect.bottom }, position);
       if (step === 0) {
         return;
       }
@@ -849,6 +1073,7 @@ function TranscriptScroller({
       el.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", clearDrag);
+      window.removeEventListener("pointercancel", clearDrag);
       window.clearInterval(selectionTimer);
       wrapResize.disconnect();
       resize.disconnect();
@@ -890,44 +1115,37 @@ function TranscriptScroller({
     pendingViewportRef.current = alignTop ? null : (savedViewportCache.get(docId) ?? null);
   }
   const restoredRef = useRef(false);
+  const arrivalArmedRef = useRef(false);
   useLayoutEffect(() => {
     const el = scrollerRef.current;
-    if (el === null || restoredRef.current || !loaded) {
+    if (el === null || !loaded) {
       return;
     }
-    // The restore targets the anchor row's position, which is only real once
-    // the mounted rows have MEASURED (the desktop's `viewport_finalize`
-    // token waits for layout the same way) — specifically the anchor row's.
-    // Poll a few frames before resolving the saved viewport.
-    let raf = 0;
-    let waited = 0;
-    const anchorId =
-      pendingViewportRef.current !== null && pendingViewportRef.current.kind === "anchored"
-        ? pendingViewportRef.current.anchor.rowId
-        : null;
-    const apply = (): void => {
-      raf = 0;
-      if (scrollerRef.current === null) {
-        return;
-      }
-      const measuredEnough = anchorId === null ? heightsRef.current.size > 0 : heightsRef.current.has(anchorId);
-      if (!measuredEnough && waited < 12) {
-        waited++;
-        raf = requestAnimationFrame(apply);
-        return;
-      }
-      restoredRef.current = true;
-      const elNow = scrollerRef.current;
-      applyRestoredViewport(elNow!);
-    };
-    raf = requestAnimationFrame(apply);
-    return () => {
-      if (raf !== 0) {
-        cancelAnimationFrame(raf);
-      }
-    };
+    // Ticket 58: arm the chat-switch arrival window at this surface's first
+    // loaded commit. The surface remounts per doc (`key={active.docId}`) and
+    // the outlet hands the view the new store only once its first frame has
+    // landed — so this commit IS the arrival. Every arrival gate (the
+    // spring, the fold tweens, the shimmer) consults the window until the
+    // measurement cascade quiesces; the desktop's switch applies the same
+    // state atomically in one frame (state.rs:1740-1792).
+    if (!arrivalArmedRef.current) {
+      arrivalArmedRef.current = true;
+      chatArrival.arm(performance.now());
+    }
+    if (restoredRef.current) {
+      return;
+    }
+    // Ticket 58 §2.1: resolve the saved viewport from THIS commit's
+    // estimate-based prefix sums and assign it immediately — a hard
+    // `scrollTop` write, no poll frames, no spring. The per-commit anchor
+    // preserve below is the post-measure correction: when the anchor row's
+    // measured position differs from the estimate it re-assigns (each
+    // correction is a write, never a tween), exactly like the desktop's
+    // `viewport_finalize` follow-up.
+    restoredRef.current = true;
+    applyRestoredViewport(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stick, loaded, replay, rows.length, alignTop]);
+  }, [stick, loaded, replay, rows.length, alignTop, chatArrival]);
 
   /** Resolve and apply the saved viewport (or open at the end). */
   const applyRestoredViewport = (el: HTMLElement): void => {
@@ -957,15 +1175,17 @@ function TranscriptScroller({
       const offset = resolveViewportAnchor(saved.anchor, rowsRef.current, replay === "populated");
       if (offset !== null) {
         const scrollTop = positionsRef.current[offset.itemIx]! + offset.offsetInItem;
-        // The restored row anchor doubles as the escape anchor: the
-        // per-commit preserve keeps it stationary while late measurements
-        // land (the desktop's viewport-finalize token).
-        anchorRef.current = { id: saved.anchor.rowId, offset: offset.offsetInItem };
         stick.restoreViewport(
           scrollTop,
           saved.ownTurn === null ? null : ownTurnReleasedForRestore(saved.ownTurn),
           saved.distanceFromBottom,
         );
+        // The restored row anchor doubles as the escape anchor: the
+        // per-commit preserve keeps it stationary while late measurements
+        // land (the desktop's viewport-finalize token). `top` is the
+        // position the clamped write actually landed on — the delta
+        // correction's zero point.
+        anchorRef.current = { id: saved.anchor.rowId, offset: offset.offsetInItem, top: el.scrollTop };
         setView({ top: el.scrollTop, height: el.clientHeight });
         pendingViewportRef.current = null;
         return;
@@ -1026,7 +1246,13 @@ function TranscriptScroller({
   // one commit per streamed delta is the web's equivalent cadence); pinned →
   // let the spring track growth; escaped → keep the captured anchor row
   // visually stationary across splices and measures. An animating fold owns
-  // the viewport for the duration of its tween.
+  // the viewport for the duration of its tween. This is the desktop's
+  // escape-anchor semantics and it must never fight an active runway: the
+  // guards below (own-turn hold, collapse scroll) are that contract, and the
+  // height oscillation that used to shuttle the viewport between "hold
+  // anchor" and "chase tail" now stops at the source (rows never empty
+  // mid-session, replayed groups never re-reveal, open groups estimate their
+  // open height).
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (el === null) {
@@ -1036,16 +1262,28 @@ function TranscriptScroller({
     // `own_turn_kick` on every sync — the fill-check and the post-layout
     // re-assert advance per streamed delta, transcript.rs:7541-7549); the
     // released reservation still needs the fill-check, so the kick fires for
-    // any live anchor, held or not. A pending viewport restore owns the
-    // first frames instead — the spring must not pre-empt it.
+    // any live anchor, held or not. While the chat-switch arrival window is
+    // armed the kick writes the end directly (ticket 58 — the spring never
+    // pre-empts the restore or glides through the settle cascade); a pending
+    // viewport restore still owns the first frames for the un-loaded case.
     if (pendingViewportRef.current === null && (stick.ownTurn !== null || stick.pinned)) {
       stick.kick();
     }
-    if (stick.ownTurnHeld || collapseScrollRef.current !== null) {
+    // A tool-fold compensator owns the viewport for its tween's duration
+    // (ticket 71): the escape-anchor preserve below stands down for it —
+    // one owner, no fighting writes.
+    if (stick.ownTurnHeld || collapseScrollRef.current !== null || toolFoldScrollRef.current !== null) {
       return;
     }
     // Escaped (or a released runway): keep the captured anchor row visually
-    // stationary across splices and measures.
+    // stationary across splices and measures. The correction is the CONTENT
+    // DELTA — how far the anchor row's own position moved since capture —
+    // added to the CURRENT scrollTop, never a teleport back to the capture
+    // position: between a touch fling's scroll events the compositor keeps
+    // advancing scrollTop, and a commit landing there would otherwise yank
+    // the viewport back every frame (the mobile "content jumping up and
+    // down" during fast swipes). With the user's own motion left untouched,
+    // a still viewport gets exactly the old absolute correction.
     const anchor = anchorRef.current;
     if (stick.pinned || anchor === null) {
       return;
@@ -1054,9 +1292,10 @@ function TranscriptScroller({
     if (ix < 0) {
       return;
     }
-    const target = positions[ix]! + anchor.offset;
-    if (Math.abs(el.scrollTop - target) > 0.5) {
-      stick.writePreserving(target);
+    const contentDelta = positions[ix]! + anchor.offset - anchor.top;
+    if (Math.abs(contentDelta) > 0.5) {
+      stick.writePreserving(el.scrollTop + contentDelta);
+      anchorRef.current = { ...anchor, top: anchor.top + contentDelta };
     }
   });
 
@@ -1099,6 +1338,147 @@ function TranscriptScroller({
     // Armed by the toggle's bump; the loop reads live refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stick, collapseTick]);
+
+  // ── Tool-fold scroll ownership (ticket 71, step_user_collapse_scroll's
+  // tool-group peer) ─────────────────────────────────────────────────────
+  // The compensation keeps ONE anchor at a FIXED screen position for the
+  // fold tween's duration: an explicit group/detail click anchors the
+  // CLICKED header (measured from the click event, before the fold state
+  // flips); an automatic closure (thought completion, auto-open expiry)
+  // anchors the reading position — the top visible row — and only while no
+  // other owner is live. Each frame's write corrects drift only (a browser
+  // clamp near the scroll end, a leftover write), so reduced motion needs
+  // no separate branch: the geometry snaps and the anchor correction land
+  // in the same frame.
+
+  /** `toggle_fold`/chip-toggle's navigation (ticket 71 A): the click owns the viewport. */
+  const onToolFoldNav = useCallback(
+    (nav: { rowId: string; header: HTMLElement }) => {
+      const el = scrollerRef.current;
+      if (el === null) {
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === nav.rowId);
+      if (ix < 0) {
+        return;
+      }
+      // Measured tool-row geometry, never guessed user-row heights: the
+      // clicked header's rect against the scroller's, plus the live row
+      // top from the virtualizer's prefix sums.
+      const scrollerTop = el.getBoundingClientRect().top;
+      const headerScreenY = nav.header.getBoundingClientRect().top - scrollerTop;
+      const offsetInRow = headerScreenY + el.scrollTop - (positionsRef.current[ix] ?? 0);
+      // Release the follow/hold FIRST — the reservation survives as
+      // scrollable space; beginScrollNavigation also cancels any running
+      // compensation (ours included, hence arming after it).
+      stick.beginScrollNavigation();
+      toolFoldScrollRef.current = armToolFoldCompensation({
+        rowId: nav.rowId,
+        offsetInRow,
+        screenY: headerScreenY,
+        now: performance.now(),
+      });
+      bumpToolFold((tick) => tick + 1);
+    },
+    [stick],
+  );
+
+  // An AUTOMATIC fold transition arms the reading-anchor compensation only
+  // while no other owner is live (§2.3): a pinned tail keeps its
+  // tail-follow, a held runway keeps its hold, an escaped reading position
+  // keeps its per-commit preserve, and a pending viewport restore owns the
+  // first frames of an unloaded chat.
+  useEffect(() => {
+    return toolMotion.onAutomaticFoldTransition(() => {
+      if (
+        !automaticToolFoldCompensationArms({
+          pinned: stick.pinned,
+          ownTurnHeld: stick.ownTurnHeld,
+          userFoldCompensating: collapseScrollRef.current !== null,
+          escapeAnchor: anchorRef.current !== null,
+          pendingViewportRestore: pendingViewportRef.current !== null,
+        })
+      ) {
+        return;
+      }
+      const el = scrollerRef.current;
+      if (el === null) {
+        return;
+      }
+      const anchor = captureAnchor(
+        el.scrollTop,
+        rowsRef.current,
+        positionsRef.current,
+        heightsRef.current,
+        toolEstimateContext(),
+      );
+      if (anchor === null) {
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === anchor.id);
+      if (ix < 0) {
+        return;
+      }
+      toolFoldScrollRef.current = armToolFoldCompensation({
+        rowId: anchor.id,
+        offsetInRow: anchor.offset,
+        screenY: (positionsRef.current[ix] ?? 0) + anchor.offset - el.scrollTop,
+        now: performance.now(),
+      });
+      bumpToolFold((tick) => tick + 1);
+    });
+    // The loop reads live refs; the controllers are stable per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolMotion, stick]);
+
+  // The per-frame step: re-resolve the row (splices above it re-target the
+  // index), write the drift correction, yield to a live pin/hold (never
+  // fight tail-follow), and stand down when the tween has played out.
+  useEffect(() => {
+    if (toolFoldScrollRef.current === null) {
+      return;
+    }
+    let raf = 0;
+    const step = (): void => {
+      raf = 0;
+      const comp = toolFoldScrollRef.current;
+      const el = scrollerRef.current;
+      if (comp === null || el === null) {
+        return;
+      }
+      if (stick.pinned || stick.ownTurnHeld) {
+        // A live tail-follow or runway re-engaged mid-tween: it owns the
+        // viewport now — cancel, never fight.
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      const ix = rowsRef.current.findIndex((row) => row.id === comp.rowId);
+      if (ix < 0) {
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      const write = toolFoldCompensationWrite(comp, {
+        rowTop: positionsRef.current[ix] ?? 0,
+        scrollTop: el.scrollTop,
+      });
+      if (write !== null) {
+        stick.writePreserving(write);
+      }
+      if (toolFoldCompensationDone(comp, performance.now())) {
+        toolFoldScrollRef.current = null;
+        return;
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => {
+      if (raf !== 0) {
+        cancelAnimationFrame(raf);
+      }
+    };
+    // Armed by the bump; the loop reads live refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stick, toolFoldTick]);
 
   /** `toggle_user_fold` (transcript.rs:4380-4440). */
   const toggleUserFold = useCallback(
@@ -1196,7 +1576,7 @@ function TranscriptScroller({
   // exactly at that inset, so crediting the raw top row kept the previous
   // tick lit for the whole runway (rail.rs:437-457). Unmeasured rows stop
   // the walk.
-  const topRow = readingTopRow(rows, positions, heights, view.top);
+  const topRow = readingTopRow(rows, positions, heights, view.top, estimateCtx);
   const topPad = rows.length === 0 ? layoutTotal : (positions[first] ?? total);
   // The spacer covers everything below the last MOUNTED row — the unmounted
   // rows' arithmetic heights plus the reservation floor, minus the mounted
@@ -1248,6 +1628,7 @@ function TranscriptScroller({
                 onToggleFold={toggleUserFold}
                 onMeasureText={onMeasureText}
                 onHoldTimer={onHoldTimer}
+                onToolFoldNav={onToolFoldNav}
                 reduced={reduced?.matches === true}
               />
               {isLast && <WorkingTrailer state={trailer} />}
@@ -1296,32 +1677,19 @@ function offlineStripMessage(alignTop: boolean, status: EngineStatus | null): st
     : "Reconnecting… Cached history is read-only.";
 }
 
-/** Live matchMedia as a React value (breakpoints only — it re-renders on flip). */
-function useMediaQuery(query: string): boolean {
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      const mql = window.matchMedia(query);
-      mql.addEventListener("change", listener);
-      return () => mql.removeEventListener("change", listener);
-    },
-    [query],
-  );
-  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
-}
-
 /** Capture the first visible row + its pixel offset — the escape anchor. */
 function captureAnchor(
   top: number,
   rows: readonly TranscriptRow[],
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
-): { id: string; offset: number } | null {
+  toolGeometry: ToolGroupEstimateContext | null = null,
+): { id: string; offset: number; top: number } | null {
   for (let ix = 0; ix < rows.length; ix++) {
     const rowTop = positions[ix]!;
-    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
+    const bottom = rowTop + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, toolGeometry));
     if (bottom > top + 1) {
-      return { id: rows[ix]!.id, offset: top - rowTop };
+      return { id: rows[ix]!.id, offset: top - rowTop, top };
     }
   }
   return null;
@@ -1338,10 +1706,11 @@ function readingTopRow(
   positions: readonly number[],
   heights: ReadonlyMap<string, number>,
   scrollTop: number,
+  toolGeometry: ToolGroupEstimateContext | null = null,
 ): number {
   let topRow = Math.max(rows.length - 1, 0);
   for (let ix = 0; ix < rows.length; ix++) {
-    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!));
+    const bottom = positions[ix]! + (heights.get(rows[ix]!.id) ?? estimateRowHeight(rows[ix]!, toolGeometry));
     if (bottom > scrollTop + 0.5) {
       topRow = ix;
       break;
@@ -1358,8 +1727,31 @@ function readingTopRow(
   return topRow;
 }
 
-/** First-frame estimate per row kind; measurement corrects on render. */
-function estimateRowHeight(row: TranscriptRow): number {
+/** No-store estimate context: no folds, reveals, or blobs — bare row data. */
+const DEFAULT_TOOL_ESTIMATE_CONTEXT: ToolGroupEstimateContext = {
+  state: EMPTY_TOOL_GEOMETRY_STATE,
+  now: 0,
+  reduced: false,
+};
+
+/**
+ * First-frame estimate per row kind; measurement corrects on render. The
+ * `toolGroup` branch is analytic (the desktop needs no estimation at all —
+ * its rows are analytic, transcript.rs:96-136) and, since ticket 70, shares
+ * the renderer's ONE geometry resolver (`toolGroupGeometry`): a collapsed
+ * group is its 26px header, a spawn-only group is its unwrapped chips (the
+ * standalone 38px CHIP_HEIGHT is preserved), and a group that will render
+ * OPEN — the explicit pin, else `autoOpen` OR an in-flight arrival —
+ * estimates header + the 32px rail rows + each open chip's effective
+ * detail/invocation/affordance additions, so mounting or replaying a long
+ * group does not lurch 26 → full body. `toolGeometry` carries the surface's
+ * read-only motion state and ONE timestamp per pass; null (pure callers)
+ * reads bare row data.
+ */
+export function estimateRowHeight(
+  row: TranscriptRow,
+  toolGeometry: ToolGroupEstimateContext | null = null,
+): number {
   const kind = row.rowKind;
   switch (kind.kind) {
     case "user": {
@@ -1376,16 +1768,65 @@ function estimateRowHeight(row: TranscriptRow): number {
       return 30;
     }
     case "toolGroup": {
-      // The analytic first frame: a collapsed group is its 26px header; a
-      // spawn-only group is its unwrapped chips (measurement corrects an
-      // auto-opened group on mount).
-      const collapses = toolGroupCollapses(kind.tools);
-      return collapses ? TOOL_GROUP_HEADER_HEIGHT : chipsHeight(kind.tools.length);
+      if (!toolGroupCollapses(kind.tools)) {
+        return chipsHeight(kind.tools.length);
+      }
+      const ctx = toolGeometry ?? DEFAULT_TOOL_ESTIMATE_CONTEXT;
+      return toolGroupGeometry({
+        rowId: row.id,
+        tools: kind.tools,
+        autoOpen: kind.autoOpen,
+        state: ctx.state,
+        now: ctx.now,
+        reduced: ctx.reduced,
+      }).totalHeight;
     }
     case "inputChip":
     case "errorChip":
       return 42;
   }
+}
+
+/**
+ * `update_runway_minimum`'s floor (transcript.rs:3483-3513): the LAST row's
+ * minimum height while a runway is live. The reservation value is
+ * `inset − OWN_SEND_SCROLL_SLACK_PX − expansion` (:3506-3509) — the 2px slack
+ * keeps the held layout out of the shorter-than-viewport regime, and the
+ * expansion term carries the anchor row's live Show-more fold tween — so the
+ * content end reaches `anchorTop + viewport − reservation` and the scroll end
+ * parks the anchor at the reservation value. The space itself is plain
+ * scrollable whitespace (the bottom spacer), never painted chrome.
+ */
+export function ownTurnReservationFloor(input: {
+  readonly anchorTop: number;
+  readonly lastTop: number;
+  readonly viewport: number;
+  readonly inset: number;
+  readonly expansion: number;
+}): number {
+  const reservation = input.inset - OWN_SEND_SCROLL_SLACK_PX - input.expansion;
+  return Math.max(0, input.anchorTop + input.viewport - reservation - input.lastTop);
+}
+
+/**
+ * The anchor row's live fold-tween height (transcript.rs:3490-3504): the
+ * tweened value of the prompt's expansion beyond its collapsed height —
+ * `lerp(expansion − target, target, progress)` over the user-resize curve,
+ * the target being the full expansion while open and 0 while closed, so an
+ * opening tween grows the term and Show-less decays it back. Reduced motion
+ * or a degenerate duration snaps to the target (the desktop's `_` arm).
+ */
+export function userFoldExpansionHeight(fold: UserFoldState, now: number, reduced: boolean): number {
+  const target = fold.open ? fold.expansion : 0;
+  if (reduced || fold.durationMs <= 0) {
+    return target;
+  }
+  const raw = Math.min(Math.max((now - fold.toggledAt) / fold.durationMs, 0), 1);
+  const curve = motion.curves[userResizeCurve(fold.expansion)] as
+    | readonly [number, number, number, number]
+    | undefined;
+  const progress = cubicBezierEval(curve ?? motion.curves.easeOut!, raw);
+  return fold.expansion - target + (2 * target - fold.expansion) * progress;
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,6 +1882,7 @@ function RowContent({
   onToggleFold,
   onMeasureText,
   onHoldTimer,
+  onToolFoldNav,
   reduced,
 }: {
   row: TranscriptRow;
@@ -1454,6 +1896,7 @@ function RowContent({
   onToggleFold: (rowId: string) => void;
   onMeasureText: (rowId: string, height: number) => void;
   onHoldTimer: (rowId: string, timer: number) => void;
+  onToolFoldNav?: (nav: { rowId: string; header: HTMLElement }) => void;
   reduced: boolean;
 }) {
   const kind = row.rowKind;
@@ -1487,6 +1930,7 @@ function RowContent({
           chatId={docId}
           motion={toolMotion}
           onOpenSubagent={onOpenSubagent ?? (() => {})}
+          onFoldNav={onToolFoldNav}
           client={client}
         />
       )}

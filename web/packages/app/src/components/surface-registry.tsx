@@ -92,7 +92,7 @@ export function renderRightSurface(surface: RightSurface, ctx: SurfaceContext): 
 
 /**
  * `surface_chrome::toolbar` (§3.27): the 38 px border-box row a Diff surface
- * mounts above its body. Its controls — the scope chips, ref selector,
+ * mounts above its body. Its controls — the scope selector, ref selector,
  * split/wrap/fold-all — are ticket 22's `ChangesToolbar`, reading and
  * mutating the same per-surface state store the body renders from.
  */

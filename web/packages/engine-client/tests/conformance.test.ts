@@ -224,7 +224,16 @@ describe("conformance against a real engine: the watch cache", () => {
       await waitUntil(
         () => {
           const snapshot = cache.getSnapshot();
-          return snapshot.generation === 2 && snapshot.chats.loaded && snapshot.chats.rows.length === 2;
+          // statuses must be part of the wait: the assertions below read it
+          // immediately after, and the collections refill independently —
+          // chats landing first raced the statuses watch (the intermittent
+          // CI failure at the swapped.statuses.loaded assertion).
+          return (
+            snapshot.generation === 2 &&
+            snapshot.chats.loaded &&
+            snapshot.statuses.loaded &&
+            snapshot.chats.rows.length === 2
+          );
         },
         10_000,
         "cache refilled on generation 2",
