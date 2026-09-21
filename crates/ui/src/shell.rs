@@ -442,8 +442,8 @@ pub enum Route {
 /// floor. On unusually small windows this deliberately falls below the right
 /// pane's preferred minimum: the chat remains usable and the side surface
 /// yields the scarce space.
-fn right_pane_max_width(viewport: f32, sidebar: f32) -> f32 {
-    (viewport - sidebar - CHAT_PANEL_MIN).max(0.0)
+fn right_pane_max_width(viewport: f32, sidebar: f32, chat_floor: f32) -> f32 {
+    (viewport - sidebar - chat_floor).max(0.0)
 }
 
 /// Width used by right-pane takeover. Unlike manual resizing, takeover is
@@ -1965,10 +1965,9 @@ impl Shell {
                     sidebar_now,
                 )
             } else {
-                self.settings.right_pane_width.min(right_pane_max_width(
-                    self.viewport_width - self.files_reserved_width(cx),
-                    sidebar_now,
-                ))
+                self.settings
+                    .right_pane_width
+                    .min(self.surface_max_width(cx))
             }
         }
     }
@@ -1987,7 +1986,7 @@ impl Shell {
 
     fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
         // Reverse from the visible width when toggled during an animation.
-        let from = self.eval_tween(self.right_tween, self.right_target(cx));
+        let from = self.right_visible_width(cx);
         self.right_edge_bounce = None;
         self.right_resize_edge = None;
         self.finish_pane_resize(PaneResizeKind::Right);
@@ -3076,12 +3075,8 @@ impl Shell {
     ) {
         let viewport = f32::from(window.viewport_size().width);
         let width = viewport - self.files_reserved_width(cx) - f32::from(event.event.position.x);
-        // No arbitrary percentage ceiling, but retain the chat's usable 300px
-        // floor instead of allowing the conversation to collapse to zero.
-        let max = right_pane_max_width(
-            viewport - self.files_reserved_width(cx),
-            self.sidebar_target(),
-        );
+        // Use the same shared budget as rendering, including compact windows.
+        let max = self.surface_max_width(cx);
         let sample = if max >= RIGHT_PANE_MIN {
             motion::resize_drag_sample(
                 width,
@@ -3802,21 +3797,20 @@ impl Shell {
         &self,
         tween: Option<WidthTween>,
         target: f32,
-        edge_offset: f32,
+        visible: f32,
         inner: AnyElement,
     ) -> AnyElement {
         let takeover_width = self
             .active_tween_endpoints(self.right_takeover_content_tween)
             .map(|_| self.eval_tween(self.right_takeover_content_tween, target));
         let content_width =
-            right_panel_content_width(target, self.active_tween_endpoints(tween), takeover_width)
-                + edge_offset;
+            right_panel_content_width(target, self.active_tween_endpoints(tween), takeover_width);
         div()
             .h_full()
             .flex_none()
             .relative()
             .overflow_hidden()
-            .w(px(self.eval_tween(tween, target) + edge_offset))
+            .w(px(visible))
             .child(
                 div()
                     .absolute()
@@ -6537,14 +6531,14 @@ impl Shell {
             .pt(px(Theme::TITLEBAR_HEIGHT))
             .child(content);
         let target = self.right_target(cx);
-        let edge_offset = self.eval_resize_edge_bounce(
+        let edge_bounce = self.eval_resize_edge_bounce(
             self.right_edge_bounce,
             self.right_pane_open(cx) && !self.right_pane_expanded,
         );
         self.right_pane_container(
             self.right_tween,
             target,
-            edge_offset,
+            self.right_visible_width(cx) + edge_bounce,
             div().h_full().relative().child(panel).into_any_element(),
         )
     }
@@ -6589,9 +6583,6 @@ impl Shell {
             .items_center()
             .justify_center()
             .p(px(16.0))
-            // The responsive Files drawer covers the right end of this
-            // surface. Center the picker in the remaining visible region.
-            .pr(px(16.0 + self.files_overlay_width(cx)))
             .child(
                 div()
                     .w_full()
@@ -8282,11 +8273,11 @@ mod tests {
 
     #[test]
     fn right_pane_ceiling_preserves_the_chat_floor() {
-        assert_eq!(right_pane_max_width(1200.0, 256.0), 644.0);
+        assert_eq!(right_pane_max_width(1200.0, 256.0, CHAT_PANEL_MIN), 644.0);
         assert_eq!(1200.0 - 256.0 - 644.0, CHAT_PANEL_MIN);
         // The chat floor wins over the right pane's preferred 360px minimum
         // when the whole window is unusually narrow.
-        assert_eq!(right_pane_max_width(800.0, 256.0), 244.0);
+        assert_eq!(right_pane_max_width(800.0, 256.0, CHAT_PANEL_MIN), 244.0);
         assert_eq!(800.0 - 256.0 - 244.0, CHAT_PANEL_MIN);
     }
 
