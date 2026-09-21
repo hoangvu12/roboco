@@ -248,8 +248,10 @@ impl Shell {
         let row_gap = 8.0;
         let files_width = self.files_visible_width(cx);
         let right_pad = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);
-        // The title row's gaps are outside the fixed-width panel controls.
-        let gap_budget = if takeover { 8.0 } else { 16.0 };
+        // The title row's gaps are outside the fixed-width panel controls:
+        // one before the strip in takeover, three when title, Actions and
+        // spacer are present.
+        let gap_budget = if takeover { row_gap } else { row_gap * 3.0 };
         let right_visible = self.right_visible_width(cx);
         let widths = panel_titlebar_widths(
             right_visible,
@@ -270,13 +272,12 @@ impl Shell {
             };
             surface + widths.files_controls
         };
-        // Budget for the row the project-actions control would claim upstream;
-        // kept so the title-width math matches when that control lands.
-        let _available_titlebar_width =
+        // Width the project-actions control may claim in this row.
+        let available_titlebar_width =
             (self.viewport_width - row_left - right_pad - trailing_width - row_gap * 3.0).max(0.0);
 
         let actions = (!takeover && !on_canvas)
-            .then(|| self.render_project_actions_control(cx))
+            .then(|| self.render_project_actions_control(available_titlebar_width, cx))
             .flatten();
 
         let trailing: Option<gpui::AnyElement> = if on_canvas {
@@ -401,6 +402,7 @@ impl Shell {
                 el.child(
                     div()
                         .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -432,7 +434,8 @@ impl Shell {
                         .when_some(target, |el, target| {
                             el.child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted.opacity(0.5))
                                     .child(target),
