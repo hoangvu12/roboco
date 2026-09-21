@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  commitSessionDrop,
   commitVisiblePinReorder,
   pinOrderedRows,
   pinnedDragScrollDelta,
@@ -9,11 +10,12 @@ import {
   pinnedHeaderKeyedHeight,
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
-  pinnedSessionIsDraggable,
   projectPinnedFirst,
   reorderVisiblePins,
   retainKnownPins,
+  sidebarGapOffset,
   sidebarPinProfileKey,
+  sidebarSessionDropPins,
   SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
   SIDEBAR_SESSION_SLOT,
 } from "../src/lib/sidebar-pins";
@@ -76,14 +78,6 @@ describe("pinnedSessionClampedIndex", () => {
     expect(pinnedSessionClampedIndex(SIDEBAR_SESSION_SLOT, 3)).toBe(1);
     expect(pinnedSessionClampedIndex(500, 3)).toBe(2);
     expect(pinnedSessionClampedIndex(0, 0)).toBe(null);
-  });
-});
-
-describe("pinnedSessionIsDraggable", () => {
-  it("a_single_pin_does_not_start_a_drag", () => {
-    expect(pinnedSessionIsDraggable(0)).toBe(false);
-    expect(pinnedSessionIsDraggable(1)).toBe(false);
-    expect(pinnedSessionIsDraggable(2)).toBe(true);
   });
 });
 
@@ -189,6 +183,91 @@ describe("commitVisiblePinReorder", () => {
     expect(commitVisiblePinReorder(buckets, ["a1", "a2", "s1"], 2, 0)).toEqual({
       local: ["a1", "a2"],
       "synced:device-1": ["s1"],
+    });
+  });
+});
+
+describe("sidebarSessionDropPins", () => {
+  it("session_transfers_only_change_pin_membership_and_order", () => {
+    const saved = ["hidden", "a", "b", "hidden-tail"];
+    const visible = ["a", "b"];
+    // A regular drop on an unpinned chat is a no-op.
+    expect(sidebarSessionDropPins(saved, visible, "normal", { kind: "regular" })).toEqual(saved);
+    // A pinned drop inserts before the visible anchor at the index.
+    expect(sidebarSessionDropPins(saved, visible, "normal", { kind: "pinned", index: 1 })).toEqual([
+      "hidden",
+      "a",
+      "normal",
+      "b",
+      "hidden-tail",
+    ]);
+    expect(sidebarSessionDropPins(saved, visible, "normal", { kind: "pinned", index: 2 })).toEqual([
+      "hidden",
+      "a",
+      "b",
+      "normal",
+      "hidden-tail",
+    ]);
+    // Unpinning removes; a pinned drop of a pinned id reorders it.
+    expect(sidebarSessionDropPins(saved, visible, "a", { kind: "regular" })).toEqual([
+      "hidden",
+      "b",
+      "hidden-tail",
+    ]);
+    expect(sidebarSessionDropPins(saved, visible, "a", { kind: "pinned", index: 1 })).toEqual([
+      "hidden",
+      "b",
+      "a",
+      "hidden-tail",
+    ]);
+    // The first pin lands alone; the last unpin empties the list.
+    expect(sidebarSessionDropPins([], [], "first", { kind: "pinned", index: 0 })).toEqual([
+      "first",
+    ]);
+    expect(sidebarSessionDropPins(["only"], ["only"], "only", { kind: "regular" })).toEqual([]);
+  });
+});
+
+describe("sidebarGapOffset", () => {
+  it("transfer_gaps_shift_neighbors_without_reordering_data", () => {
+    // Entering from another section opens a full slot at the destination.
+    expect(sidebarGapOffset(0, null, 1, 63)).toBe(0);
+    expect(sidebarGapOffset(1, null, 1, 63)).toBe(63);
+    expect(sidebarGapOffset(2, null, 1, 63)).toBe(63);
+    // Within a normal group, its original vacant slot is reused.
+    expect(sidebarGapOffset(0, 2, 0, 63)).toBe(63);
+    expect(sidebarGapOffset(1, 2, 0, 63)).toBe(63);
+    expect(sidebarGapOffset(2, 2, 0, 63)).toBe(0);
+    expect(sidebarGapOffset(1, 0, 3, 63)).toBe(-63);
+    expect(sidebarGapOffset(3, 0, 3, 63)).toBe(0);
+  });
+});
+
+describe("commitSessionDrop", () => {
+  it("an unpin settles the chat out of its bucket; other buckets untouched", () => {
+    const buckets = {
+      local: ["a", "b"],
+      "synced:device-1": ["s1"],
+    };
+    expect(commitSessionDrop(buckets, ["a", "b"], "a", { kind: "regular" })).toEqual({
+      local: ["b"],
+      "synced:device-1": ["s1"],
+    });
+  });
+
+  it("a pin lands in the owning bucket, or the first bucket for a new pin", () => {
+    // The visible pin projection is the merged bucket order; "r1" is a
+    // regular chat being pinned at the top.
+    expect(
+      commitSessionDrop({ local: ["a"], "synced:device-1": ["s1"] }, ["a", "s1"], "r1", {
+        kind: "pinned",
+        index: 0,
+      }),
+    ).toEqual({ local: ["r1", "a"], "synced:device-1": ["s1"] });
+    // A chat with no bucket yet pins into the first bucket (the web's
+    // pin-in path builds one bucket per registry engine).
+    expect(commitSessionDrop({ local: [] }, [], "r1", { kind: "pinned", index: 0 })).toEqual({
+      local: ["r1"],
     });
   });
 });

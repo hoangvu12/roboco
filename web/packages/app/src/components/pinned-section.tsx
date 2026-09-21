@@ -7,7 +7,6 @@ import {
   pinnedSectionBodyHeight,
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
-  pinnedSessionIsDraggable,
   SIDEBAR_DRAG_SCROLL_FRAME_MS,
   SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
   SIDEBAR_PINNED_DIVIDER_KEY,
@@ -22,16 +21,18 @@ import {
 
 /**
  * The pinned section of the sidebar's session list — the desktop's
- * `render_pinned_section` (upstream zeron fd42e2ab…38a8f013, ported
+ * `render_pinned_section` (upstream zeron fd42e2ab…6851fc34, ported
  * local-only: NO registry sync). A collapsible disclosure ("Pinned" open,
  * "Pinned (N)" collapsed) whose body and divider ride the shared disclosure
  * tween; the locally ordered pinned rows sit above the divider, reorderable
  * by dragging a row between slots: siblings slide one slot toward the
  * vacated space on the tab-slide tween and the dragged row rides the
- * pointer's slot. A drop commits the reordered pins to device-local
- * settings; a drag that leaves the sidebar's column (or Escape) cancels, and
- * a commit lands without a resort glide — the rows are already visually in
- * place.
+ * pointer's slot. Dragging a row BELOW the section previews a transfer out
+ * (6851fc34): the siblings settle home and releasing unpins — the FLIP
+ * resort glide carries the row to its live activity position. A drop inside
+ * commits the reordered pins to device-local settings; a drag that leaves
+ * the sidebar's column (or Escape) cancels, and a commit lands without a
+ * resort glide — the rows are already visually in place.
  *
  * The parent renders and keys the rows (so the list-wide FLIP diff still
  * reaches them); this component wraps each in the drag-offset box and owns
@@ -45,6 +46,12 @@ interface PinDrag {
   readonly chatId: string;
   readonly from: number;
   readonly over: number;
+  /**
+   * The pointer left the section downward — a transfer out, not a reorder:
+   * siblings sit at their natural slots and the release unpins
+   * (`SidebarSessionDrop::Regular`).
+   */
+  readonly overRegular: boolean;
   /** The visible pins at arm time — the drag dies with any of them. */
   readonly snapshotIds: readonly string[];
 }
@@ -54,8 +61,11 @@ export function PinnedSection({
   items,
   open,
   hasDivider,
+  dragOverPinned,
   onToggle,
   onCommit,
+  onTransferOut,
+  sectionRef,
 }: {
   /** The visible pinned rows, in display order. */
   readonly rows: readonly ChatRow[];
@@ -65,6 +75,8 @@ export function PinnedSection({
   readonly open: boolean;
   /** The hairline divider renders only when regular rows follow. */
   readonly hasDivider: boolean;
+  /** A regular-row drag hovers this section: the drag-over wash (`drag_over`). */
+  readonly dragOverPinned: boolean;
   /** The header's flip: the parent owns the in-memory open flag. */
   readonly onToggle: () => void;
   /**
@@ -73,6 +85,10 @@ export function PinnedSection({
    * pins are bucketed per workspace profile.
    */
   readonly onCommit: (from: number, to: number) => void;
+  /** A release below the section: the parent unpins (`finish_sidebar_session_transfer`). */
+  readonly onTransferOut: (chatId: string) => void;
+  /** The parent's handle on the section root (its own transfer gesture reads bounds). */
+  readonly sectionRef: React.RefObject<HTMLElement | null>;
 }) {
   const groupRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<PinDrag | null>(null);
@@ -87,6 +103,8 @@ export function PinnedSection({
   rowsRef.current = rows;
   const onCommitRef = useRef(onCommit);
   onCommitRef.current = onCommit;
+  const onTransferOutRef = useRef(onTransferOut);
+  onTransferOutRef.current = onTransferOut;
   const pointerYRef = useRef<number | null>(null);
   const teardownRef = useRef<(() => void) | null>(null);
   // A completed drag suppresses the click its pointerup would fire on the row.
@@ -105,7 +123,9 @@ export function PinnedSection({
   );
   // A collapsed section hides its rows (the body clips at height 0), so no
   // press inside it can arm a drag (`render_active_rows`'s pinned_open gate).
-  const draggable = open && pinnedSessionIsDraggable(count);
+  // A SINGLE pin is draggable now: the press can leave the section and
+  // transfer out (6851fc34 removed the ≥2 gate).
+  const draggable = open && count > 0;
 
   // A teardown outliving its gesture (unmount mid-drag — the space filter
   // flipped) is a cancel, exactly like `set_space_filter`'s guard.
@@ -182,21 +202,29 @@ export function PinnedSection({
         // Arm in its own commit so the slide transition is already live when
         // the first retarget lands; commit/cancel drops class and transform
         // together, snapping instantly like the desktop's state teardown.
-        setDragState({ chatId, from, over: from, snapshotIds });
+        setDragState({ chatId, from, over: from, overRegular: false, snapshotIds });
         return;
       }
-      // The divider is a hard boundary, not an unpin target: the drag
-      // retargets to the NEAREST pinned slot even over regular sessions, so
-      // a release there commits instead of snapping back (1db00587). Only an
-      // in-section pointer feeds the edge autoscroll.
+      // Below the section the drag previews a TRANSFER OUT (6851fc34): the
+      // siblings sit at their natural slots and the release unpins — the
+      // FLIP resort glide carries the row to its live activity position.
+      // Only an in-section pointer retargets and feeds the edge autoscroll.
       const relY = move.clientY - bounds.top;
+      if (move.clientY > bounds.bottom) {
+        const current = dragRef.current;
+        if (current !== null && !current.overRegular) {
+          setDragState({ ...current, overRegular: true, over: current.from });
+        }
+        pointerYRef.current = null;
+        return;
+      }
       const over = pinnedSessionClampedIndex(relY, rowsRef.current.length);
       if (over === null) {
         return;
       }
       const current = dragRef.current;
-      if (current !== null && current.over !== over) {
-        setDragState({ ...current, over });
+      if (current !== null && (current.over !== over || current.overRegular)) {
+        setDragState({ ...current, over, overRegular: false });
       }
       pointerYRef.current = pinnedSessionDropIndex(relY, rowsRef.current.length) === null ? null : move.clientY;
     };
@@ -213,15 +241,27 @@ export function PinnedSection({
       teardown();
       const current = dragRef.current;
       setDragState(null);
-      // `commit_pinned_session_drag`: a no-op move writes nothing; a drag
-      // whose snapshot pins did not all survive cancels instead.
-      if (current !== null && current.from !== current.over) {
-        const visible = rowsRef.current.map((row) => row.chat.id);
-        const stillValid =
-          current.snapshotIds.includes(current.chatId) &&
-          current.snapshotIds.every((id) => visible.includes(id));
-        if (stillValid) {
-          onCommitRef.current(current.from, current.over);
+      // `finish_sidebar_session_transfer`: below the section the release is
+      // a transfer out (the parent unpins; the FLIP resort glide animates
+      // the row to its activity position). Inside, a no-op move writes
+      // nothing; a drag whose snapshot pins did not all survive cancels.
+      if (current !== null) {
+        if (current.overRegular) {
+          const visible = rowsRef.current.map((row) => row.chat.id);
+          const stillValid =
+            current.snapshotIds.includes(current.chatId) &&
+            current.snapshotIds.every((id) => visible.includes(id));
+          if (stillValid) {
+            onTransferOutRef.current(current.chatId);
+          }
+        } else if (current.from !== current.over) {
+          const visible = rowsRef.current.map((row) => row.chat.id);
+          const stillValid =
+            current.snapshotIds.includes(current.chatId) &&
+            current.snapshotIds.every((id) => visible.includes(id));
+          if (stillValid) {
+            onCommitRef.current(current.from, current.over);
+          }
         }
       }
       if (moved) {
@@ -250,7 +290,12 @@ export function PinnedSection({
 
   const draggedIndex = drag === null ? -1 : rows.findIndex((row) => row.chat.id === drag.chatId);
   return (
-    <section className="sidebar-pinned-section" data-testid="sidebar-pinned-section">
+    <section
+      className="sidebar-pinned-section"
+      data-testid="sidebar-pinned-section"
+      ref={sectionRef}
+      data-drag-over={dragOverPinned ? "1" : undefined}
+    >
       <SidebarDisclosureHeader
         id="pinned-toggle"
         label={open ? "Pinned" : `Pinned (${count})`}
@@ -273,7 +318,7 @@ export function PinnedSection({
           <div className="sidebar-pinned" ref={groupRef} data-testid="sidebar-pinned-sessions">
             {rows.map((row, index) => {
               const offset =
-                drag === null || draggedIndex < 0
+                drag === null || draggedIndex < 0 || drag.overRegular
                   ? 0
                   : index === draggedIndex
                     ? (drag.over - drag.from) * SIDEBAR_SESSION_SLOT
@@ -283,6 +328,7 @@ export function PinnedSection({
                   key={row.chat.id}
                   className="pinned-row"
                   data-dragging={drag !== null ? "1" : undefined}
+                  data-transfer={drag?.overRegular ? "1" : undefined}
                   style={offset === 0 ? undefined : { transform: `translateY(${offset}px)` }}
                   onPointerDown={(event) => armDrag(event, row.chat.id, index)}
                   onClickCapture={(event) => {

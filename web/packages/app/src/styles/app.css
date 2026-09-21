@@ -2435,6 +2435,41 @@ a:focus-visible,
   transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
 }
 
+/*
+ * Drag transfers (6851fc34): while a pinned row's drag previews a transfer
+ * out, the row lifts instead of sliding a slot; a regular row under a
+ * transfer drag dims at its source; the pinned section wears the drag-over
+ * wash while a regular row hovers it; and with no regular rows left, the
+ * "Drop here to unpin" strip stands in as the destination.
+ */
+.pinned-row[data-transfer="1"] {
+  opacity: 0.6;
+  transform: scale(1.01);
+}
+
+.regular-row {
+  position: relative;
+}
+
+.regular-row[data-sidebar-dragging="1"] {
+  opacity: 0.6;
+}
+
+.sidebar-pinned-section[data-drag-over="1"] {
+  background: color-mix(in srgb, var(--rb-border) 25%, transparent);
+  border-radius: 8px;
+}
+
+.sidebar-drop-unpin {
+  flex: none;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--rb-text-muted);
+  font-size: 12px;
+}
+
 .sidebar-pinned-divider-frame {
   overflow: hidden;
   flex: none;

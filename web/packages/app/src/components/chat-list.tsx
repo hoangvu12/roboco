@@ -27,9 +27,12 @@ import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { PinnedSection } from "./pinned-section";
 import {
+  commitSessionDrop,
   commitVisiblePinReorder,
   pinOrderedRows,
   pinnedHeaderKeyedHeight,
+  pinnedSessionClampedIndex,
+  pinnedSessionDropIndex,
   sidebarPinProfileKey,
   SIDEBAR_PINNED_DIVIDER_HEIGHT,
   SIDEBAR_PINNED_DIVIDER_KEY,
@@ -237,6 +240,166 @@ export function ChatList() {
   const pinnedOpen = sidebar.pinnedOpen;
   const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
+  // ── Drag transfers between Pinned and regular sessions (6851fc34) ───────
+  // A regular row's press arms a transfer: dragging over the pinned section
+  // highlights it (the desktop's `drag_over` wash), and a release inside
+  // pins the chat at the drop index (`finish_sidebar_session_transfer`'s
+  // `SidebarSessionDrop::Pinned`; a closed section opens on success).
+  // Releasing anywhere else is a no-op — regular rows never acquire a manual
+  // order — and the FLIP resort glide carries the row into the section on
+  // commit. The pinned-section side of the gesture (dragging OUT) lives in
+  // PinnedSection's `onTransferOut`.
+  const [transferIn, setTransferIn] = useState<{ readonly chatId: string; readonly overPinned: boolean } | null>(null);
+  const pinnedSectionRef = useRef<HTMLElement | null>(null);
+  // A completed transfer drag suppresses the click its pointerup would fire.
+  const suppressRowClickRef = useRef(false);
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const bucketsRef = useRef<{ keys: string[]; byProfile: Readonly<Record<string, readonly string[]>>; open: boolean }>({ keys: [], byProfile: {}, open: true });
+  bucketsRef.current = {
+    keys: pinProfileKeys,
+    byProfile: sidebar.pinnedByProfile,
+    open: pinnedOpen,
+  };
+  const visiblePinsRef = useRef<string[]>([]);
+  visiblePinsRef.current = pinnedRows.map((row) => row.chat.id);
+  // The pinned section's root bounds + the rows group's bounds (the drop
+  // index math reads them off the live DOM, like the desktop's prepaint
+  // row_centers).
+  const pinnedDropIndex = (pointer: { clientX: number; clientY: number }): number | null => {
+    const section = pinnedSectionRef.current;
+    if (section === null) {
+      return null;
+    }
+    const sectionBounds = section.getBoundingClientRect();
+    if (
+      pointer.clientX < sectionBounds.left ||
+      pointer.clientX > sectionBounds.right ||
+      pointer.clientY < sectionBounds.top ||
+      pointer.clientY > sectionBounds.bottom
+    ) {
+      return null;
+    }
+    const group = section.querySelector<HTMLElement>('[data-testid="sidebar-pinned-sessions"]');
+    if (group !== null) {
+      const groupBounds = group.getBoundingClientRect();
+      if (pointer.clientY >= groupBounds.top && pointer.clientY <= groupBounds.bottom) {
+        const count = visiblePinsRef.current.length;
+        if (count === 0) {
+          return 0;
+        }
+        const relY = pointer.clientY - groupBounds.top;
+        return pinnedSessionDropIndex(relY, count) ?? pinnedSessionClampedIndex(relY, count) ?? 0;
+      }
+    }
+    // The header (or a collapsed body) pins at the top.
+    return 0;
+  };
+  const setPinnedDrop = (over: boolean): void => {
+    setTransferIn((current) => {
+      if (current === null) {
+        return current;
+      }
+      return current.overPinned === over ? current : { ...current, overPinned: over };
+    });
+  };
+  const finishTransferIn = (chatId: string, pointer: { clientX: number; clientY: number }): void => {
+    const index = pinnedDropIndex(pointer);
+    if (index === null) {
+      // Not over the pinned section: a regular row never reorders — the
+      // drop is a no-op and the row stays at its activity position.
+      return;
+    }
+    const { keys, byProfile, open } = bucketsRef.current;
+    const buckets: Record<string, readonly string[]> = {};
+    for (const key of keys) {
+      buckets[key] = byProfile[key] ?? [];
+    }
+    sidebarStore.replacePinsByProfile(
+      commitSessionDrop(buckets, visiblePinsRef.current, chatId, { kind: "pinned", index }),
+    );
+    if (!open) {
+      sidebarStore.setPinnedOpen(true);
+    }
+  };
+  /** A pointer must travel this far before the press reads as a drag. */
+  const DRAG_ARM_PX = 4;
+  const armTransferIn = (event: React.PointerEvent, chatId: string): void => {
+    if (event.button !== 0) {
+      return;
+    }
+    // Interactive corners (the Archive pill) own their press.
+    if ((event.target as HTMLElement).closest("button") !== null) {
+      return;
+    }
+    // Pinned rows carry their own gesture (PinnedSection's reorder/transfer).
+    if ((event.target as HTMLElement).closest('[data-testid="sidebar-pinned-sessions"]') !== null) {
+      return;
+    }
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let moved = false;
+    let overPinned = false;
+    const onMove = (move: PointerEvent): void => {
+      // `contain_pinned_session_drag`: leaving the sidebar's column cancels.
+      const sidebar = sidebarRef.current;
+      if (sidebar !== null) {
+        const bounds = sidebar.getBoundingClientRect();
+        if (move.clientX < bounds.left || move.clientX > bounds.right) {
+          cancel();
+          return;
+        }
+      }
+      if (!moved) {
+        if (Math.abs(move.clientX - startX) <= DRAG_ARM_PX && Math.abs(move.clientY - startY) <= DRAG_ARM_PX) {
+          return;
+        }
+        moved = true;
+        overPinned = pinnedDropIndex(move) !== null;
+        setTransferIn({ chatId, overPinned });
+        return;
+      }
+      const next = pinnedDropIndex(move) !== null;
+      if (next !== overPinned) {
+        overPinned = next;
+        setPinnedDrop(next);
+      }
+    };
+    const teardown = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", onKey, true);
+    };
+    const finish = (up: PointerEvent): void => {
+      teardown();
+      setTransferIn(null);
+      if (moved) {
+        finishTransferIn(chatId, up);
+        // The pointerup lands as a click on the row's link — swallow it.
+        suppressRowClickRef.current = true;
+        window.setTimeout(() => {
+          suppressRowClickRef.current = false;
+        }, 0);
+      }
+    };
+    const cancel = (): void => {
+      teardown();
+      setTransferIn(null);
+    };
+    const onKey = (key: KeyboardEvent): void => {
+      if (key.key === "Escape") {
+        key.preventDefault();
+        key.stopPropagation();
+        cancel();
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", onKey, true);
+  };
+  const suppressTransferClick = (): boolean => suppressRowClickRef.current;
+
   // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
   // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
   // jump-hint chips all read, so keyboard order never drifts from the screen.
@@ -352,7 +515,17 @@ export function ChatList() {
         });
         entries.push({
           key,
-          element: <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />,
+          element: (
+            <RegularRowDragArm
+              key={row.chat.id}
+              chatId={row.chat.id}
+              onArm={armTransferIn}
+              dragged={transferIn?.chatId === row.chat.id}
+              shouldSuppressClick={suppressTransferClick}
+            >
+              <ChatListRow row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
+            </RegularRowDragArm>
+          ),
         });
       }
       continue;
@@ -374,6 +547,9 @@ export function ChatList() {
           rows={bucket.rows}
           collapsed={collapsed}
           jumpLabelFor={jumpLabelFor}
+          onRowPointerDown={armTransferIn}
+          draggingChatId={transferIn?.chatId ?? null}
+          shouldSuppressClick={suppressTransferClick}
           onToggle={() => {
             setCollapsedGroups((current) => {
               const next = new Set(current);
@@ -437,14 +613,24 @@ export function ChatList() {
   // container and disclosure) and the regular sections.
   const pinnedItems = decorated.slice(0, pinnedRows.length);
   const regularItems = decorated.slice(pinnedRows.length);
+  const pinBuckets = (): Record<string, readonly string[]> => {
+    const buckets: Record<string, readonly string[]> = {};
+    for (const key of pinProfileKeys) {
+      buckets[key] = sidebar.pinnedByProfile[key] ?? [];
+    }
+    return buckets;
+  };
+  const visiblePinIds = pinnedRows.map((row) => row.chat.id);
   return (
-    <div className="chat-list">
+    <div className="chat-list" ref={sidebarRef}>
       {pinnedRows.length > 0 && (
         <PinnedSection
           rows={pinnedRows}
           items={pinnedItems}
           open={pinnedOpen}
           hasDivider={hasPinnedDivider}
+          dragOverPinned={transferIn?.overPinned ?? false}
+          sectionRef={pinnedSectionRef}
           onToggle={() => {
             // The disclosure owns this movement: adopt the new order without
             // a second (FLIP) glide of it — the desktop's header click
@@ -455,18 +641,63 @@ export function ChatList() {
           onCommit={(from, to) => {
             // `commit_pinned_session_drag` over the profile buckets: reorder
             // the visible projection, settle every id back into its own
-            // bucket (`commitVisiblePinReorder`).
-            const buckets: Record<string, readonly string[]> = {};
-            for (const key of pinProfileKeys) {
-              buckets[key] = sidebar.pinnedByProfile[key] ?? [];
-            }
-            const visible = pinnedRows.map((row) => row.chat.id);
-            sidebarStore.replacePinsByProfile(commitVisiblePinReorder(buckets, visible, from, to));
+            // bucket (`commitVisiblePinReorder`). The rows are already
+            // visually in place, so the FLIP diff adopts without gliding.
+            sidebarStore.replacePinsByProfile(
+              commitVisiblePinReorder(pinBuckets(), visiblePinIds, from, to),
+            );
             setPinResetEpoch((epoch) => epoch + 1);
+          }}
+          onTransferOut={(chatId) => {
+            // `finish_sidebar_session_transfer` with `SidebarSessionDrop::Regular`:
+            // only the pin membership changes — the FLIP resort glide carries
+            // the row to its live activity position (the transfer animation).
+            sidebarStore.replacePinsByProfile(
+              commitSessionDrop(pinBuckets(), visiblePinIds, chatId, { kind: "regular" }),
+            );
           }}
         />
       )}
       {regularItems}
+      {pinnedRows.length > 0 && regularRows.length === 0 && transferIn !== null && (
+        <div className="sidebar-drop-unpin">Drop here to unpin</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A regular row's drag arm: the pointer-press starts a sidebar session
+ * transfer (6851fc34). The wrapper stays layout-neutral (a plain div) — the
+ * parent's gesture runs at the window level, and the row's click is
+ * suppressed after a completed drag.
+ */
+function RegularRowDragArm({
+  chatId,
+  onArm,
+  dragged,
+  shouldSuppressClick,
+  children,
+}: {
+  chatId: string;
+  onArm: (event: React.PointerEvent, chatId: string) => void;
+  dragged: boolean;
+  shouldSuppressClick: () => boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="regular-row"
+      data-sidebar-dragging={dragged ? "1" : undefined}
+      onPointerDown={(event) => onArm(event, chatId)}
+      onClickCapture={(event) => {
+        if (shouldSuppressClick()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -512,6 +743,9 @@ function DeviceGroupSection({
   rows,
   collapsed,
   jumpLabelFor,
+  onRowPointerDown,
+  draggingChatId,
+  shouldSuppressClick,
   onToggle,
 }: {
   collapseKey: string;
@@ -519,6 +753,10 @@ function DeviceGroupSection({
   rows: readonly ChatRow[];
   collapsed: boolean;
   jumpLabelFor: (chatId: string) => string | null;
+  /** The parent's transfer-in gesture arm (one per regular row). */
+  onRowPointerDown: (event: React.PointerEvent, chatId: string) => void;
+  draggingChatId: string | null;
+  shouldSuppressClick: () => boolean;
   onToggle: () => void;
 }) {
   const bodyHeight = sidebarGroupBodyHeight(rows);
@@ -543,7 +781,15 @@ function DeviceGroupSection({
       <SidebarDisclosureBody bodyRef={bodyRef}>
         <div className="sidebar-group-rows">
           {rows.map((row) => (
-            <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
+            <RegularRowDragArm
+              key={row.chat.id}
+              chatId={row.chat.id}
+              onArm={onRowPointerDown}
+              dragged={draggingChatId === row.chat.id}
+              shouldSuppressClick={shouldSuppressClick}
+            >
+              <ChatListRow row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
+            </RegularRowDragArm>
           ))}
         </div>
       </SidebarDisclosureBody>

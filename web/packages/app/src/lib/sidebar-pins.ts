@@ -173,6 +173,104 @@ export function retainKnownPins(pinnedIds: string[], knownChatIds: ReadonlySet<s
   return next.length === pinnedIds.length ? null : next;
 }
 
+/** `spaces.rs::SidebarSessionDrop` — where a sidebar drag landed. */
+export type SidebarSessionDrop =
+  | { readonly kind: "pinned"; readonly index: number }
+  | { readonly kind: "regular" };
+
+/**
+ * `spaces.rs::sidebar_session_drop_pins` — a drop can change pin membership
+ * or pinned order, never activity ordering. Unpinning removes the id; a
+ * pinned drop reorders an existing pin, leaves a saved-but-hidden id alone,
+ * or inserts a new pin before the visible anchor at the drop index (falling
+ * back to after the last visible anchor, then the end).
+ */
+export function sidebarSessionDropPins(
+  saved: readonly string[],
+  visible: readonly string[],
+  chatId: string,
+  target: SidebarSessionDrop,
+): string[] {
+  if (target.kind === "regular") {
+    return saved.filter((id) => id !== chatId);
+  }
+  const index = target.index;
+  const from = visible.indexOf(chatId);
+  if (from >= 0) {
+    return reorderVisiblePins(saved, visible, from, Math.min(index, visible.length - 1));
+  }
+  if (saved.includes(chatId)) {
+    return [...saved];
+  }
+  const next = [...saved];
+  const anchorAt = (anchor: string | undefined): number =>
+    anchor === undefined ? -1 : next.indexOf(anchor);
+  const anchor = visible[index];
+  let insertion = anchorAt(anchor);
+  if (insertion < 0) {
+    const tail = visible[visible.length - 1];
+    const tailIndex = anchorAt(tail);
+    insertion = tailIndex < 0 ? next.length : tailIndex + 1;
+  }
+  next.splice(insertion, 0, chatId);
+  return next;
+}
+
+/**
+ * `spaces.rs::sidebar_gap_offset` — preview geometry only: which neighbors
+ * slide, and how far, while a drag's vacancy moves to its destination.
+ * Regular ordering is never persisted by a drag.
+ */
+export function sidebarGapOffset(
+  row: number,
+  source: number | null,
+  boundary: number,
+  height: number,
+): number {
+  if (source === null) {
+    return row >= boundary ? height : 0;
+  }
+  if (row === source) {
+    return 0;
+  }
+  if (row < source && row >= boundary) {
+    return height;
+  }
+  if (row > source && row < boundary) {
+    return -height;
+  }
+  return 0;
+}
+
+/**
+ * `finish_sidebar_session_transfer` over the profile buckets: apply one
+ * drop to the merged pin projection, then settle every id back into its own
+ * bucket (membership never crosses buckets, like
+ * `commitVisiblePinReorder`). A pinned drop keeps the chat in the bucket
+ * that already owns it — or the first bucket when a foreign id pins in.
+ */
+export function commitSessionDrop(
+  buckets: Readonly<Record<string, readonly string[]>>,
+  visibleIds: readonly string[],
+  chatId: string,
+  target: SidebarSessionDrop,
+): Record<string, readonly string[]> {
+  const merged = Object.values(buckets).flat();
+  const next = sidebarSessionDropPins(merged, visibleIds, chatId, target);
+  const owner = Object.keys(buckets).find((key) => buckets[key]!.includes(chatId));
+  const out: Record<string, readonly string[]> = {};
+  let adopted = false;
+  for (const [key, ids] of Object.entries(buckets)) {
+    const members = new Set(ids);
+    const pinnedHere = target.kind === "pinned" && (key === owner || (owner === undefined && !adopted));
+    if (pinnedHere && next.includes(chatId)) {
+      adopted = true;
+    }
+    out[key] = next.filter((id) => members.has(id) || (pinnedHere && id === chatId));
+  }
+  return out;
+}
+
 /** `spaces.rs::pinned_session_drop_index` — strict in-section slot. */
 export function pinnedSessionDropIndex(relY: number, count: number): number | null {
   if (count === 0) {
@@ -191,8 +289,7 @@ export function pinnedSessionDropIndex(relY: number, count: number): number | nu
  * while the pointer is over regular sessions (the strict helper above still
  * identifies whether the pointer is actually inside).
  */
-export function pinnedSessionClampedIndex(relY: number, count: number): number | null {
-  if (count === 0) {
+export function pinnedSessionClampedIndex(relY: number, count: number): number | null {  if (count === 0) {
     return null;
   }
   return Math.min(Math.floor(Math.max(relY, 0) / SIDEBAR_SESSION_SLOT), count - 1);
@@ -221,11 +318,6 @@ export function pinOrderedRows<T extends { chat: { id: string } }>(
   const active = new Set(rows.map((row) => row.chat.id));
   const pinnedCount = new Set(pinnedIds.filter((id) => active.has(id))).size;
   return { pinned: sorted.slice(0, pinnedCount), regular: sorted.slice(pinnedCount) };
-}
-
-/** `spaces.rs::pinned_session_is_draggable` — a single pin has nowhere to go. */
-export function pinnedSessionIsDraggable(count: number): boolean {
-  return count > 1;
 }
 
 /** `spaces.rs::pinned_drag_scroll_delta` — proportional edge autoscroll. */
