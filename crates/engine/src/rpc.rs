@@ -56,6 +56,7 @@ use crate::agent_accounts::AgentAccounts;
 use crate::change_requests::CheckoutChangeRequests;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
+use crate::project_actions::ProjectActionsStore;
 use crate::registry::HarnessRegistry;
 use crate::repos::{Repos, home_dir};
 use crate::sessions::SessionsEngine;
@@ -471,6 +472,7 @@ pub struct EngineRpc {
     repos: Repos,
     workspace_files: crate::WorkspaceFiles,
     terminals: Terminals,
+    project_actions: ProjectActionsStore,
     previews: Option<roboco_preview::PreviewService>,
     change_requests: CheckoutChangeRequests,
     diff_sync: CheckoutDiffSync,
@@ -490,6 +492,7 @@ impl EngineRpc {
         repos: Repos,
         workspace_files: crate::WorkspaceFiles,
         terminals: Terminals,
+        project_actions: ProjectActionsStore,
         change_requests: CheckoutChangeRequests,
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
@@ -510,6 +513,7 @@ impl EngineRpc {
             repos,
             workspace_files,
             terminals,
+            project_actions,
             previews: None,
             change_requests,
             diff_sync,

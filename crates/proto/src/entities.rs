@@ -843,6 +843,61 @@ pub struct AgentUsageWindow {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// Badge icon for a project Action (kebab-case on the wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectActionIcon {
+    Play,
+    Test,
+    Lint,
+    Configure,
+    Build,
+    Debug,
+}
+
+/// A saved project Action: a named shell command scoped to one space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAction {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub icon: ProjectActionIcon,
+    pub run_on_worktree_create: bool,
+}
+
+/// Client-supplied Action payload (create, or full replace by id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionDraft {
+    pub name: String,
+    pub command: String,
+    pub icon: ProjectActionIcon,
+    #[serde(default)]
+    pub run_on_worktree_create: bool,
+}
+
+/// The full Action state for one space: saved actions plus import offers
+/// from the project file (`roboco.json`), and any project-file issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionsSnapshot {
+    pub space_id: String,
+    pub actions: Vec<ProjectAction>,
+    pub importable_actions: Vec<ProjectActionDraft>,
+    pub project_file_issue: Option<String>,
+}
+
+/// `RunProjectAction` reply: the Action echoed with the managed terminal
+/// session running its command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionRun {
+    pub action_id: String,
+    pub action_name: String,
+    pub terminal: TerminalSession,
+}
+
 /// An open PTY session on the owning device (`OpenTerminal` reply).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
