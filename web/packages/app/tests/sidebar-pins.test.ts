@@ -4,6 +4,7 @@ import {
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
   pinnedDragSnapshotIsValid,
+  pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   pinnedSessionIsDraggable,
   projectPinnedFirst,
@@ -61,6 +62,15 @@ describe("pinnedSessionDropIndex", () => {
     expect(pinnedSessionDropIndex(SIDEBAR_SESSION_SLOT, 3)).toBe(1);
     expect(pinnedSessionDropIndex(500, 3)).toBe(null);
     expect(pinnedSessionDropIndex(0, 0)).toBe(null);
+  });
+});
+
+describe("pinnedSessionClampedIndex", () => {
+  it("sidebar_wide_pin_drag_clamps_to_the_nearest_pinned_slot", () => {
+    expect(pinnedSessionClampedIndex(-50, 3)).toBe(0);
+    expect(pinnedSessionClampedIndex(SIDEBAR_SESSION_SLOT, 3)).toBe(1);
+    expect(pinnedSessionClampedIndex(500, 3)).toBe(2);
+    expect(pinnedSessionClampedIndex(0, 0)).toBe(null);
   });
 });
 

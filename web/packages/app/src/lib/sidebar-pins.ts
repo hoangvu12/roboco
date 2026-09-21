@@ -100,6 +100,19 @@ export function pinnedSessionDropIndex(relY: number, count: number): number | nu
 }
 
 /**
+ * `spaces.rs::pinned_session_clamped_index` — keep a sidebar-wide drag
+ * physically bounded to the pinned section: the nearest valid pinned slot
+ * while the pointer is over regular sessions (the strict helper above still
+ * identifies whether the pointer is actually inside).
+ */
+export function pinnedSessionClampedIndex(relY: number, count: number): number | null {
+  if (count === 0) {
+    return null;
+  }
+  return Math.min(Math.floor(Math.max(relY, 0) / SIDEBAR_SESSION_SLOT), count - 1);
+}
+
+/**
  * `render_active_rows`'s pin split: re-sort rows by the projected order
  * (stable — a rank tie keeps the incoming order), then split the leading
  * pinned block off so regular rows group without them.

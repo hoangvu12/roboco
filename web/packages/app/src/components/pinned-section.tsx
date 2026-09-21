@@ -4,6 +4,7 @@ import { slideOffset } from "../lib/queue-row-logic";
 import {
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
+  pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   pinnedSessionIsDraggable,
   reorderVisiblePins,
@@ -133,7 +134,6 @@ export function PinnedSection({
     const snapshotIds = rowsRef.current.map((row) => row.chat.id);
     let moved = false;
     const onMove = (move: PointerEvent): void => {
-      pointerYRef.current = move.clientY;
       const group = groupRef.current;
       if (group === null) {
         return;
@@ -155,7 +155,12 @@ export function PinnedSection({
         setDragState({ chatId, from, over: from, snapshotIds });
         return;
       }
-      const over = pinnedSessionDropIndex(move.clientY - bounds.top, rowsRef.current.length);
+      // The divider is a hard boundary, not an unpin target: the drag
+      // retargets to the NEAREST pinned slot even over regular sessions, so
+      // a release there commits instead of snapping back (1db00587). Only an
+      // in-section pointer feeds the edge autoscroll.
+      const relY = move.clientY - bounds.top;
+      const over = pinnedSessionClampedIndex(relY, rowsRef.current.length);
       if (over === null) {
         return;
       }
@@ -163,6 +168,7 @@ export function PinnedSection({
       if (current !== null && current.over !== over) {
         setDragState({ ...current, over });
       }
+      pointerYRef.current = pinnedSessionDropIndex(relY, rowsRef.current.length) === null ? null : move.clientY;
     };
     const teardown = (): void => {
       teardownRef.current = null;
