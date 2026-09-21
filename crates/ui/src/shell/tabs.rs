@@ -160,7 +160,11 @@ impl Shell {
     /// `[new-session +] [harness icon + session title] … [toggle-changes]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
     /// animated left inset, the toggle-changes button on git projects).
-    pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_session_title_bar(
+        &mut self,
+        viewport_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = Theme::of(cx).clone();
         // The canvas titles as NOTHING (user request — a "New session"
         // header over the empty canvas was noise); the bar keeps its height,
@@ -248,8 +252,10 @@ impl Shell {
         let row_gap = 8.0;
         let files_width = self.files_visible_width(cx);
         let right_pad = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);
-        // The title row's gaps are outside the fixed-width panel controls.
-        let gap_budget = if takeover { 8.0 } else { 16.0 };
+        // The title row's gaps are outside the fixed-width panel controls:
+        // one before the strip in takeover, three when title, Actions and
+        // spacer are present.
+        let gap_budget = if takeover { row_gap } else { row_gap * 3.0 };
         let right_visible = self.right_visible_width(cx);
         let widths = panel_titlebar_widths(
             right_visible,
@@ -270,10 +276,15 @@ impl Shell {
             };
             surface + widths.files_controls
         };
-        // Budget for the row the project-actions control would claim upstream;
-        // kept so the title-width math matches when that control lands.
-        let _available_titlebar_width =
+        // Width the project-actions control may claim in this row.
+        let available_titlebar_width =
             (self.viewport_width - row_left - right_pad - trailing_width - row_gap * 3.0).max(0.0);
+
+        let actions = (!takeover && !on_canvas)
+            .then(|| {
+                self.render_project_actions_control(available_titlebar_width, viewport_height, cx)
+            })
+            .flatten();
 
         let trailing: Option<gpui::AnyElement> = if on_canvas {
             None
@@ -397,6 +408,7 @@ impl Shell {
                 el.child(
                     div()
                         .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -428,7 +440,8 @@ impl Shell {
                         .when_some(target, |el, target| {
                             el.child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted.opacity(0.5))
                                     .child(target),
@@ -437,6 +450,7 @@ impl Shell {
                 )
             })
             .child(div().flex_1())
+            .children(actions)
             .children(trailing);
 
         // The unified window titlebar: full-width on the glass shell, ABOVE

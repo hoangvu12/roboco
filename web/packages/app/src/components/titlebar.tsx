@@ -79,6 +79,12 @@ export interface TitlebarProps {
   readonly onNewSession?: (() => void) | null;
   /** The identity group: harness mark, title, and the `space @ device` tag. */
   readonly identity?: ReactNode;
+  /**
+   * The project-Actions control — the desktop's `render_project_actions_control`
+   * (tabs.rs:316-320): mounted after the `flex_1` spacer (052b4b9a's
+   * right alignment) so it rides the right edge beside the trailing group.
+   */
+  readonly actions?: ReactNode;
   /** The right pane's toggle. Absent when no chat owns a pane. */
   readonly onTogglePane?: (() => void) | null;
   readonly paneOpen?: boolean;
@@ -362,6 +368,7 @@ export function Titlebar({
   islandTarget,
   onNewSession,
   identity,
+  actions,
   onTogglePane,
   paneOpen = false,
   paneTabs,
@@ -445,6 +452,12 @@ export function Titlebar({
         identity is empty so the trailing group stays right-anchored.
       */}
       <div className="titlebar-fill" />
+      {/*
+        The project-Actions control (tabs.rs:316-320, after the spacer —
+        052b4b9a): right-aligned beside the trailing group, hidden in
+        takeover and on the canvas exactly like the desktop's gate.
+      */}
+      {actions !== undefined && !takeover && actions}
       {onTogglePane != null && (
         <div className="titlebar-trailing">
           {/*

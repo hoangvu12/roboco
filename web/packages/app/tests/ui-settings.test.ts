@@ -238,6 +238,25 @@ describe("heal", () => {
     );
     expect(storedWith({}).sidebarPinnedSessionIdsByProfile).toEqual({});
   });
+
+  it("lastProjectActionBySpaceId — defaults empty, heals per-field, survives round trips", () => {
+    // Default: no preferred action anywhere.
+    expect(new UiSettingsStore({ storage: memoryStorage() }).getSnapshot().lastProjectActionBySpaceId).toEqual({});
+    // Healing keeps only non-empty string values (settings.rs parity: the
+    // map is `skip_serializing_if = "HashMap::is_empty"`).
+    const healed = storedWith({
+      lastProjectActionBySpaceId: { "space-1": "dev", "space-2": "", "space-3": 7 },
+    });
+    expect(healed.lastProjectActionBySpaceId).toEqual({ "space-1": "dev" });
+    // A write lands through the debounced update path like every field.
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const store = new UiSettingsStore({ storage });
+    store.updateDebounced({ lastProjectActionBySpaceId: { "space-1": "dev" } });
+    vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+    const persisted = JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!) as UiSettings;
+    expect(persisted.lastProjectActionBySpaceId).toEqual({ "space-1": "dev" });
+  });
 });
 
 describe("migration", () => {

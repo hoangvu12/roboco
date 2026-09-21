@@ -5430,6 +5430,199 @@ a:focus-visible,
   color: var(--rb-text-faint);
 }
 
+/* The editor dialog's multi-line command field (actions_ui.rs:862-871 —
+   a mono 88px box inside `dialog_field`). */
+.dialog-field textarea {
+  display: block;
+  width: 100%;
+  height: 88px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-family: var(--rb-font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  resize: vertical;
+  outline: none;
+}
+
+.dialog-field textarea::placeholder {
+  color: var(--rb-text-faint);
+}
+
+/* ── Project Actions (actions_ui.rs, final post-669d45bd geometry) ─────── */
+
+/* The titlebar control: 24px tall, 6px radius, hairline border
+   (`render_project_actions_control`). */
+.project-action-control {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex: none;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* `action_segment` — 7px side padding, 5px inner gap, 11.5px text. */
+.project-action-main {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  padding: 0 7px;
+  font-size: 11.5px;
+  color: rgb(var(--rb-text) / 0.9);
+}
+
+.project-action-main:hover {
+  background: rgb(var(--rb-ink) / 0.07);
+}
+
+.project-action-disabled {
+  opacity: 0.45;
+}
+
+.project-action-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-action-danger {
+  color: var(--rb-danger, rgb(224 82 82));
+}
+
+/* `action_chevron` — a 23px split segment with a left hairline. */
+.project-action-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 100%;
+  border-left: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  color: var(--rb-text-muted);
+}
+
+.project-action-chevron:hover {
+  background: rgb(var(--rb-ink) / 0.07);
+}
+
+/* The menu card's scroll region (e41f3acd): the card never leaves the
+   window — max-height reserves the titlebar, the trigger gap and the
+   window margin; the wheel never scrolls what is underneath. */
+.project-actions-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.project-actions-error {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--rb-danger, rgb(224 82 82));
+}
+
+.project-actions-issue {
+  margin: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--rb-text-muted);
+}
+
+/* A row's inline edit affordance (actions_ui.rs:640-742 — a 22px hover
+   square inside the menu row). */
+.project-action-edit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.project-action-edit:hover {
+  background: rgb(var(--rb-ink) / 0.08);
+}
+
+/* The editor's icon picker (actions_ui.rs:874-908 — 34px tiles, 6px gap). */
+.dialog-field-label {
+  display: block;
+  margin-top: 12px;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+.project-action-icon-row {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+}
+
+.project-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.03);
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.project-action-icon-selected {
+  border-color: var(--rb-text-muted);
+  background: rgb(var(--rb-ink) / 0.1);
+}
+
+/* The setup flag row (actions_ui.rs:913-942). */
+.project-action-setup {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--rb-text);
+  cursor: pointer;
+}
+
+/* The editor's action row: delete pinned left, cancel/save right
+   (actions_ui.rs:953-997 — `justify_between`). */
+.project-action-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.project-action-actions-row .dialog-actions-row {
+  margin-top: 0;
+}
+
+.project-action-delete-button {
+  color: var(--rb-danger, rgb(224 82 82));
+}
+
 /* The three dialog buttons share one box: px 12 py 6 radius 8, 13px
    (popover.rs:1028-1076). */
 .dialog-btn-ghost,

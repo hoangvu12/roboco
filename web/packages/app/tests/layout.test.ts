@@ -27,6 +27,7 @@ import {
   sidebarTarget,
   stablePanelContentWidth,
   titlebarPaneBandWidth,
+  titlebarAvailableTitlebarWidth,
   titlebarRowLeft,
   titlebarSpacerWidth,
 } from "../src/state/layout";
@@ -194,7 +195,7 @@ describe("phone geometry inputs", () => {
 
   it("titlebarPaneBandWidth phone inputs no longer collapse to zero", () => {
     // rowLeft 136 (the phone identity inset) and a real pane width: the band
-    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 16) - 28 = 41 —
+    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 24) - 28 = 39 —
     // where the live-width inputs collapsed it to 0.
     expect(
       titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
@@ -223,6 +224,8 @@ describe("phone pane drawer inputs (ticket 52)", () => {
     // The phone-corrected inputs (sidebar 0 → rowLeft 136, pane 75): 41 —
     // the band the strip's in-drawer header supersedes, but which the
     // titlebar still consumes so nothing downstream reads 0-by-accident.
+    // (The b1484015 three-gap budget does not bite here: the pane side of
+    // the min — 75 - 6 - 28 — is the narrower one.)
     expect(
       titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
     ).toBe(41);
@@ -296,8 +299,9 @@ describe("titlebarPaneBandWidth", () => {
   it("stays capped to the room the row has left", () => {
     // A pane wider than the row can hold must not overflow and clip right.
     const wide = band(1400);
-    // avail = 1440 - 272 - 6 - 16 = 1146; minus the 28px toggle slot.
-    expect(wide).toBe(1118);
+    // avail = 1440 - 272 - 6 - 24 (three gaps: title, Actions, spacer —
+    // b1484015's budget) = 1138; minus the 28px toggle slot.
+    expect(wide).toBe(1110);
   });
 
   it("still animates in takeover rather than snapping to full width", () => {
@@ -306,6 +310,30 @@ describe("titlebarPaneBandWidth", () => {
     expect(full).toBe(1150);
     // Half way through the glide it is genuinely half way.
     expect(band(700, { takeover: true })).toBe(666);
+  });
+});
+
+describe("titlebarAvailableTitlebarWidth (b1484015 parity, tabs.rs)", () => {
+  it("subtracts the row's left inset, edge inset, trailing strip and three gaps", () => {
+    // 1440 - 272 - 6 - 486 - 24 = 652.
+    expect(
+      titlebarAvailableTitlebarWidth({ viewport: 1440, rowLeft: 272, trailingWidth: 486 }),
+    ).toBe(652);
+  });
+
+  it("reads the full free row while the pane is shut", () => {
+    expect(
+      titlebarAvailableTitlebarWidth({ viewport: 1440, rowLeft: 272, trailingWidth: 0 }),
+    ).toBe(1138);
+  });
+
+  it("never goes negative on phone inputs", () => {
+    expect(
+      titlebarAvailableTitlebarWidth({ viewport: 375, rowLeft: 320, trailingWidth: 0 }),
+    ).toBe(25);
+    expect(
+      titlebarAvailableTitlebarWidth({ viewport: 375, rowLeft: 360, trailingWidth: 75 }),
+    ).toBe(0);
   });
 });
 

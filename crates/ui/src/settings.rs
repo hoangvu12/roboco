@@ -601,6 +601,9 @@ pub struct UiSettings {
     /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
+    /// Last successfully launched Action per space in this viewport.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub last_project_action_by_space_id: std::collections::HashMap<String, String>,
     /// Open session tabs in visual order (drag-reorder edits in place).
     /// Device-local: a tab is a local viewport onto the synced session list —
     /// closing one never archives the session. Ids of archived/deleted chats
@@ -734,6 +737,7 @@ impl Default for UiSettings {
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
             last_space_id: None,
+            last_project_action_by_space_id: std::collections::HashMap::new(),
             open_tabs: None,
             space_filter: None,
             sidebar_pinned_session_ids_by_profile: std::collections::HashMap::new(),
@@ -1829,6 +1833,10 @@ mod tests {
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,
             last_space_id: Some("space-1".into()),
+            last_project_action_by_space_id: std::collections::HashMap::from([(
+                "space-1".into(),
+                "dev".into(),
+            )]),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),
             space_filter: Some("space-1".into()),
             sidebar_pinned_session_ids_by_profile: std::collections::HashMap::from([

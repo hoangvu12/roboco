@@ -407,8 +407,8 @@ const TITLEBAR_TOGGLE_SLOT = 28;
  * one. The `avail` cap matters: the row's left padding is part of its content
  * box, and a strip wider than what is left after it would overflow and clip at
  * the right edge instead of shrinking. The row's child gaps sit OUTSIDE the
- * strip, so they are budgeted too — one in takeover (the strip alone), two
- * with the title row present.
+ * strip, so they are budgeted too — one in takeover (the strip alone), three
+ * when title, Actions and spacer are present (b1484015's budget).
  */
 export function titlebarPaneBandWidth(options: {
   readonly viewport: number;
@@ -417,10 +417,32 @@ export function titlebarPaneBandWidth(options: {
   readonly rowLeft: number;
   readonly takeover: boolean;
 }): number {
-  const gapBudget = options.takeover ? 8 : 16;
+  const gapBudget = options.takeover ? TITLEBAR_GROUP_GAP : TITLEBAR_GROUP_GAP * 3;
   const avail = options.viewport - options.rowLeft - TITLEBAR_EDGE_INSET - gapBudget;
   const width = Math.min(options.paneWidth - TITLEBAR_EDGE_INSET, avail);
   return Math.max(0, width - TITLEBAR_TOGGLE_SLOT);
+}
+
+/**
+ * The room the project-actions control may claim in the title row
+ * (`available_titlebar_width`, tabs.rs): viewport minus the row's left
+ * inset, the edge inset, the trailing strip, and the row's three gaps.
+ * The control's label reacts to THIS, not the raw viewport (b1484015).
+ */
+export function titlebarAvailableTitlebarWidth(options: {
+  readonly viewport: number;
+  readonly rowLeft: number;
+  /** The trailing strip's width (0 when the pane is shut). */
+  readonly trailingWidth: number;
+}): number {
+  return Math.max(
+    0,
+    options.viewport -
+      options.rowLeft -
+      TITLEBAR_EDGE_INSET -
+      options.trailingWidth -
+      TITLEBAR_GROUP_GAP * 3,
+  );
 }
 
 export interface SidebarLayout {

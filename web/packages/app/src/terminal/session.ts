@@ -116,6 +116,22 @@ export class TerminalSessionController {
   }
 
   /**
+   * Adopt a PTY the engine already opened (project Actions' `RunProjectAction`
+   * reply — desktop `attach_reserved_session`, panel.rs:536): no
+   * `OpenTerminal` call, just the id/shell and the replay-then-live stream.
+   * A tab closed while the run was in flight releases the PTY instead.
+   */
+  attach(opened: TerminalSession): void {
+    if (this.#closed) {
+      void this.#client.call(methods.CLOSE_TERMINAL, { terminalId: opened.id }).catch(() => {});
+      return;
+    }
+    this.#terminalId = opened.id;
+    this.#shell = opened.shell;
+    this.#subscribe();
+  }
+
+  /**
    * Queue keyboard bytes (xterm's `onData` payload). Coalesces for 12 ms
    * before the `WriteTerminal` flush; input on an exited tab is dropped
    * (desktop queue_input). A flush while `OpenTerminal` is still in flight

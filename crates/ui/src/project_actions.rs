@@ -68,6 +68,7 @@ pub struct ProjectActionsController {
     mutation_generation: u64,
     pub cache: HashMap<ProjectActionsKey, ProjectActionsStatus>,
     pub menu: popover::Popup<()>,
+    pub menu_scroll: gpui::ScrollHandle,
     pub editor: Option<ProjectActionEditor>,
     pub request_task: Option<Task<()>>,
     pub mutation_task: Option<Task<()>>,
@@ -81,6 +82,7 @@ impl Default for ProjectActionsController {
             mutation_generation: 0,
             cache: HashMap::new(),
             menu: popover::Popup::default(),
+            menu_scroll: gpui::ScrollHandle::new(),
             editor: None,
             request_task: None,
             mutation_task: None,
@@ -96,6 +98,7 @@ impl ProjectActionsController {
         self.active = key;
         self.generation = self.generation.wrapping_add(1);
         self.menu = popover::Popup::default();
+        self.menu_scroll = gpui::ScrollHandle::new();
         self.editor = None;
         self.request_task = None;
         self.invalidate_mutation();
@@ -233,8 +236,10 @@ pub const ACTION_ICONS: [(ProjectActionIcon, &str); 6] = [
     (ProjectActionIcon::Debug, "Debug"),
 ];
 
-pub fn show_action_label(viewport_width: f32) -> bool {
-    viewport_width >= 920.0
+const ACTION_LABEL_MIN_TITLEBAR_WIDTH: f32 = 420.0;
+
+pub fn show_action_label(available_titlebar_width: f32) -> bool {
+    available_titlebar_width >= ACTION_LABEL_MIN_TITLEBAR_WIDTH
 }
 
 pub fn draft_from_action(action: &ProjectAction) -> ProjectActionDraft {
@@ -274,8 +279,8 @@ mod tests {
         );
         assert_eq!(preferred_action(&actions, Some("gone")).unwrap().id, "dev");
         assert_eq!(preferred_action(&actions, None).unwrap().id, "dev");
-        assert!(!show_action_label(919.0));
-        assert!(show_action_label(920.0));
+        assert!(!show_action_label(419.0));
+        assert!(show_action_label(420.0));
     }
 
     #[test]
