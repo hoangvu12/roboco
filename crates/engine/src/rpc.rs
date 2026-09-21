@@ -806,8 +806,14 @@ fn doc_messages_stream(
 ) -> BoxStream<'static, serde_json::Value> {
     use roboco_doc::transcript_delta::{TranscriptFrame, diff_transcript};
     futures::stream::unfold(
-        (rx, None::<crate::doc_host::TranscriptSnapshot>, doc, None),
-        |(mut rx, mut prev, doc, mut previous_usage)| async move {
+        (
+            rx,
+            None::<crate::doc_host::TranscriptSnapshot>,
+            doc,
+            None,
+            roboco_doc::TranscriptBaseline::default(),
+        ),
+        |(mut rx, mut prev, doc, mut previous_usage, mut opening_baseline)| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
@@ -820,14 +826,31 @@ fn doc_messages_stream(
                     Some(prev) => diff_transcript(&prev.entries, &current.entries),
                 };
                 let replay_baseline = match prev.as_ref() {
-                    None => Some(roboco_doc::TranscriptBaseline::capture(&current.entries)),
+                    None => {
+                        opening_baseline =
+                            roboco_doc::TranscriptBaseline::capture(&current.entries);
+                        Some(opening_baseline.clone())
+                    }
                     Some(prev)
                         if !std::sync::Arc::ptr_eq(
                             &prev.replay_baseline,
                             &current.replay_baseline,
                         ) =>
                     {
-                        Some((*current.replay_baseline).clone())
+                        // The tracker only observes changes after attach; its
+                        // baseline omits unchanged cached parts. Preserve this
+                        // subscription's opening cutoff without capturing live
+                        // appends or sharing another viewer's later cutoff.
+                        // Ordinary live updates never rebuild this metadata.
+                        let mut baseline = (*current.replay_baseline).clone();
+                        for (entry, parts) in &opening_baseline.entries {
+                            let merged = baseline.entries.entry(entry.clone()).or_default();
+                            for (part, &len) in parts {
+                                let cutoff = merged.entry(part.clone()).or_default();
+                                *cutoff = (*cutoff).max(len);
+                            }
+                        }
+                        Some(baseline)
                     }
                     _ => None,
                 };
@@ -845,7 +868,7 @@ fn doc_messages_stream(
                     replay_baseline,
                 })
                 .ok()?;
-                return Some((value, (rx, prev, doc, previous_usage)));
+                return Some((value, (rx, prev, doc, previous_usage, opening_baseline)));
             }
         },
     )
@@ -2184,6 +2207,109 @@ mod context_usage_tests {
         assert!(baseline.entries.contains_key("historical"));
         roboco_doc::apply_transcript_frame(&mut entries, update.frame).unwrap();
         assert_eq!(entries.len(), 4);
+        host.shutdown_workers().await;
+    }
+
+    #[tokio::test]
+    async fn replay_preserves_each_watchers_opening_cutoff_without_consuming_live_text() {
+        use crate::doc_host::{DocHost, DocHostConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "viewer".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        let handle = host.open("cached-replay").unwrap();
+        let source = roboco_doc::SessionDoc::init("cached-replay").unwrap();
+        let mut writer = roboco_doc::SegmentWriter::begin(&source, "reply", "host", 0).unwrap();
+        let text = |id: &str, value: &str| roboco_doc::MessagePart::Text {
+            id: id.into(),
+            text: value.into(),
+        };
+        let cached = text("body", "café histórico");
+        writer.sync(&[cached.clone()]).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
+        });
+        // Cached content exists before the first watcher and never enters
+        // the changed-parts tracker. It may not have been painted yet.
+        let mut first = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let opening: roboco_doc::TranscriptUpdate =
+            serde_json::from_value(first.next().await.unwrap()).unwrap();
+        assert_eq!(
+            opening.replay_baseline.unwrap().entries["reply"]["body"],
+            "café histórico".len()
+        );
+
+        let live = text("body", "café histórico y nuevo");
+        writer.sync(&[live.clone()]).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle.doc().doc().import(&snapshot).unwrap();
+        });
+        let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(update.replay_baseline.is_none());
+        // A later subscriber sees a longer historical prefix, but must not
+        // change the first subscriber's ongoing live animation.
+        let mut second = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let opening: roboco_doc::TranscriptUpdate =
+            serde_json::from_value(second.next().await.unwrap()).unwrap();
+        assert_eq!(
+            opening.replay_baseline.unwrap().entries["reply"]["body"],
+            "café histórico y nuevo".len()
+        );
+
+        let mut parts = vec![live];
+        for ix in 0..2 {
+            let id = format!("recovered-{ix}");
+            parts.push(text(&id, "otro bloque histórico"));
+            writer.sync(&parts).unwrap();
+            let snapshot = source.export_snapshot().unwrap();
+            handle.import_transcript(|| {
+                handle
+                    .doc()
+                    .doc()
+                    .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                    .unwrap();
+            });
+            for (stream, expected) in [
+                (&mut first, "café histórico".len()),
+                (&mut second, "café histórico y nuevo".len()),
+            ] {
+                let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
+                    tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+                let baseline = update.replay_baseline.unwrap();
+                assert_eq!(
+                    baseline.entries["reply"].get("body"),
+                    Some(&expected),
+                    "replay must retain this watcher's opening cutoff, excluding later live bytes"
+                );
+                assert_eq!(
+                    baseline.entries["reply"][&id],
+                    "otro bloque histórico".len()
+                );
+                assert_eq!(baseline.entries["reply"].len(), 2 + ix as usize);
+            }
+        }
         host.shutdown_workers().await;
     }
 
