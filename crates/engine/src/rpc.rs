@@ -19,6 +19,11 @@
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
 //!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch}`, `DeleteWorktree
 //!   {repoPath, worktreePath}`; `WatchCheckoutDiffs` → stream of `CheckoutDiff[]`
+//! - Project Actions: `ListProjectActions {spaceId}` → `ProjectActionsSnapshot`
+//!   (saved actions + `roboco.json` import offers), `UpsertProjectAction
+//!   {spaceId, actionId?, action}` / `DeleteProjectAction {spaceId, actionId}`
+//!   replying with the fresh snapshot. Private to the engine owning the space
+//!   row — stored in its profile store root, never the workspace registry.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
 //!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
 //! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
@@ -49,7 +54,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use roboco_doc::{MessagePart, SessionCommandPayload};
-use roboco_proto::{ChatConfig, EngineInfo, HarnessId, ToolCall, WorkspaceScope};
+use roboco_proto::{
+    ChatConfig, EngineInfo, HarnessId, ProjectActionDraft, Space, ToolCall, WorkspaceScope,
+};
 use roboco_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
 use crate::agent_accounts::AgentAccounts;
@@ -213,6 +220,28 @@ struct DeleteWorktreeParams {
     repo_path: String,
     #[serde(alias = "path")]
     worktree_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListProjectActionsParams {
+    space_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpsertProjectActionParams {
+    space_id: String,
+    #[serde(default)]
+    action_id: Option<String>,
+    action: ProjectActionDraft,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteProjectActionParams {
+    space_id: String,
+    action_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -544,6 +573,20 @@ impl EngineRpc {
         self.updater
             .as_ref()
             .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
+    }
+
+    fn local_project_action_space(&self, space_id: &str) -> Result<Space, RpcError> {
+        let space = self
+            .workspace
+            .space(space_id)
+            .map_err(|err| RpcError::Failed(err.to_string()))?
+            .ok_or_else(|| RpcError::Failed("Project space not found".into()))?;
+        if space.device_id != self.doc_host.device_id() {
+            return Err(RpcError::Failed(
+                "Project space belongs to another device".into(),
+            ));
+        }
+        Ok(space)
     }
 
     /// Resolve a mention-search root from synced workspace rows. A client may
@@ -1756,6 +1799,38 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_PROJECT_ACTIONS => {
+                let p: ListProjectActionsParams = parse_params(params)?;
+                let space = self.local_project_action_space(&p.space_id)?;
+                let snapshot = self
+                    .project_actions
+                    .snapshot(&space.id, std::path::Path::new(&space.path))
+                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::UPSERT_PROJECT_ACTION => {
+                let p: UpsertProjectActionParams = parse_params(params)?;
+                let space = self.local_project_action_space(&p.space_id)?;
+                let snapshot = self
+                    .project_actions
+                    .upsert(
+                        &space.id,
+                        std::path::Path::new(&space.path),
+                        p.action_id.as_deref(),
+                        p.action,
+                    )
+                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::DELETE_PROJECT_ACTION => {
+                let p: DeleteProjectActionParams = parse_params(params)?;
+                let space = self.local_project_action_space(&p.space_id)?;
+                let snapshot = self
+                    .project_actions
+                    .delete(&space.id, std::path::Path::new(&space.path), &p.action_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&snapshot)
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
