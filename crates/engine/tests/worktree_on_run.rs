@@ -122,6 +122,7 @@ fn run_payload(message_id: &str, repo_path: &str) -> SessionCommandPayload {
             worktree: Some(WorktreeSpec {
                 repo_path: repo_path.into(),
                 base: "main".into(),
+                space_id: None,
             }),
         },
         message_id: message_id.into(),

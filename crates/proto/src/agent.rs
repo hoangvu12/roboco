@@ -139,6 +139,10 @@ pub struct WorktreeSpec {
     pub repo_path: String,
     /// Base ref the fresh `roboco/<name>` branch is created off.
     pub base: String,
+    /// The space whose setup Action (if any) runs in the fresh worktree.
+    /// Additive + serde-defaulted for wire compat — an old host ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
 }
 
 /// The session-scoped singleton id for the live plan/todo chip. ACP plan
@@ -552,18 +556,26 @@ mod tests {
         // …and `None` serializes away (old readers never see it).
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("worktree").is_none());
-        // A populated spec round-trips camelCased.
+        // A populated spec round-trips camelCased; a spec without spaceId
+        // parses (additive compat for pre-spec hosts) and serializes away.
         let req = RunRequest {
             worktree: Some(WorktreeSpec {
                 repo_path: "/repos/comet".into(),
                 base: "main".into(),
+                space_id: Some("space-1".into()),
             }),
             ..req
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["worktree"]["repoPath"], "/repos/comet");
+        assert_eq!(json["worktree"]["spaceId"], "space-1");
         let round: RunRequest = serde_json::from_value(json).unwrap();
         assert_eq!(round.worktree, req.worktree);
+        let legacy_spec = r#"{"repoPath":"/repos/comet","base":"main"}"#;
+        let spec: WorktreeSpec = serde_json::from_str(legacy_spec).unwrap();
+        assert!(spec.space_id.is_none());
+        let encoded = serde_json::to_value(&spec).unwrap();
+        assert!(encoded.get("spaceId").is_none());
     }
 
     #[test]

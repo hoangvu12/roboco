@@ -262,6 +262,13 @@ struct RunProjectActionParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TakeProjectActionSetupParams {
+    chat_id: String,
+    command_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ListFoldersParams {
     #[serde(default)]
     path: Option<String>,
@@ -994,6 +1001,20 @@ impl RpcService for EngineRpc {
                     .queue_command_with_transfers(&p.chat_id, p.command, p.transfers)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
+            }
+            methods::TAKE_PROJECT_ACTION_SETUP => {
+                let p: TakeProjectActionSetupParams = parse_params(params)?;
+                let outcome = self
+                    .project_actions
+                    .take_setup_handoff(&p.command_id, &p.chat_id);
+                match outcome {
+                    Some(outcome) => RpcReply::value(&serde_json::json!({
+                        "ready": true,
+                        "setupAction": outcome.setup_action,
+                        "setupError": outcome.setup_error,
+                    })),
+                    None => RpcReply::value(&serde_json::json!({ "ready": false })),
+                }
             }
             methods::RETRY_DELIVERY => {
                 let p: ChatParams = parse_params(params)?;

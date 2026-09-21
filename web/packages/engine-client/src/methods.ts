@@ -127,6 +127,8 @@ export const UPSERT_PROJECT_ACTION = "UpsertProjectAction";
 export const DELETE_PROJECT_ACTION = "DeleteProjectAction";
 /** Launch an action in a managed terminal on the chat's checkout (`{spaceId, chatId, actionId, cols, rows}` → `ProjectActionRun`). */
 export const RUN_PROJECT_ACTION = "RunProjectAction";
+/** Poll a queued Run's worktree-setup outcome (`{commandId, chatId}` → `{ready, setupAction?, setupError?}`; single-take, 10-min TTL). */
+export const TAKE_PROJECT_ACTION_SETUP = "TakeProjectActionSetup";
 
 /** Shared remote-safe Git status stream (`{chatId}` → `WorkspaceGitStatusFrame`). */
 export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";

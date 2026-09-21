@@ -229,6 +229,7 @@ impl EngineCore {
             WorkspaceFiles::new(repos.clone(), workspace.clone(), device_id.clone());
         let terminals = Terminals::new();
         let project_actions = ProjectActionsStore::open(profile.store_root())?;
+        doc_host.set_project_action_runtime(project_actions.clone(), terminals.clone());
         let previews = roboco_preview::PreviewService::new(
             profile.store_root().join("previews.json"),
             device_id.clone(),
