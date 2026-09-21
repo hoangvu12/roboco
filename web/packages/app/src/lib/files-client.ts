@@ -10,6 +10,7 @@ import {
   type WorkspaceFileChanges,
   type WorkspaceFileSearchMatch,
   type WorkspaceFileText,
+  type WorkspaceGitStatusFrame,
   type WorkspaceImageChunk,
   type WriteWorkspaceFileOutcome,
   type WriteWorkspaceFileRequest,
@@ -91,6 +92,18 @@ export class WorkspaceFilesClient {
   /** Subscribe the workspace change stream on a connected engine client. */
   watchFiles(client: EngineClient, handlers: WatchHandlers<WorkspaceFileChanges>): WatchHandle {
     return client.watch(methods.WATCH_WORKSPACE_FILES, this.watchParams(), handlers);
+  }
+
+  /**
+   * The shared remote-safe Git status stream (`WatchWorkspaceGitStatus`,
+   * b25dd404): `{ chatId }` → `WorkspaceGitStatusFrame`s, computed on the
+   * OWNING engine — status only, never content or patches.
+   */
+  watchGitStatus(
+    client: EngineClient,
+    handlers: WatchHandlers<WorkspaceGitStatusFrame>,
+  ): WatchHandle {
+    return client.watch(methods.WATCH_WORKSPACE_GIT_STATUS, this.watchParams(), handlers);
   }
 
   /**

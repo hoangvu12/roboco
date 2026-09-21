@@ -74,10 +74,10 @@ export function RightPane({
   // Ticket 72: an expanded close slides away at the width the user was
   // viewing — the logical flags already reset, this holds only the width.
   const holdExpandedClose = usePhoneExpandedCloseHold(chatId, phone, pane.open, pane.expanded, asideRef);
-  // The Files family stays unmounted throughout the closing animation after
+  // The File family stays unmounted throughout the closing animation after
   // its resources are suspended (`shell.rs:6455-6459`); everything else
   // renders until the glide finishes.
-  const filesWhileClosing = closing && (active.kind === "files" || active.kind === "file");
+  const filesWhileClosing = closing && active.kind === "file";
   const entry = surfaceEntry(active.kind);
   const ctx = { chatId };
   const innerRef = useRef<HTMLDivElement | null>(null);

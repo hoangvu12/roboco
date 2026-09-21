@@ -48,6 +48,11 @@ export const SIDEBAR_DEFAULT = 256;
 export const RIGHT_PANE_MIN = 360;
 export const RIGHT_PANE_DEFAULT = 520;
 
+/** `settings.rs` FILES_PANEL_* — the docked explorer column's drag bounds. */
+export const FILES_PANEL_MIN = 220;
+export const FILES_PANEL_MAX = 440;
+export const FILES_PANEL_DEFAULT = 286;
+
 /** The conversation's floor beside an open right pane. */
 export const CHAT_PANEL_MIN = 300;
 
@@ -188,6 +193,8 @@ export interface UiSettings {
   readonly notificationsEnabled: boolean;
   readonly notificationsBackgroundOnly: boolean;
   readonly rightPaneWidth: number;
+  /** The docked explorer column's width (tickets 22/23 parity). */
+  readonly filesPanelWidth: number;
   readonly terminalHeight: number;
   readonly keymap: KeymapConfig;
   readonly escapeStopsActiveAgent: boolean;
@@ -281,6 +288,7 @@ export function defaultUiSettings(): UiSettings {
     notificationsEnabled: true,
     notificationsBackgroundOnly: true,
     rightPaneWidth: RIGHT_PANE_DEFAULT,
+    filesPanelWidth: FILES_PANEL_DEFAULT,
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
     keymap: defaultKeymap(),
     escapeStopsActiveAgent: false,
@@ -473,6 +481,12 @@ export function healUiSettings(value: unknown): UiSettings {
     // No persisted ceiling: the live drag clamps against the window, which is
     // unavailable while loading.
     rightPaneWidth: minOr(raw.rightPaneWidth, RIGHT_PANE_MIN, RIGHT_PANE_DEFAULT),
+    filesPanelWidth: clampOr(
+      raw.filesPanelWidth,
+      FILES_PANEL_MIN,
+      FILES_PANEL_MAX,
+      FILES_PANEL_DEFAULT,
+    ),
     terminalHeight: clampOr(
       raw.terminalHeight,
       TERMINAL_MIN_HEIGHT,
