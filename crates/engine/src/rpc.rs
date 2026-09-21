@@ -1966,7 +1966,8 @@ mod context_usage_tests {
 
     // Upstream drives these imports through the chat2 `EngineChatSink`; roboco
     // has no chat2, so replay/live rows are imported straight through the
-    // handle's import gate with the same replay classification.
+    // handle's import gate, classified by import origin (REPLAY_ORIGIN) the
+    // same way the upstream sink classifies checkpoint/replay vs live rows.
     #[tokio::test]
     async fn replay_cutoff_travels_with_coalesced_backfill_and_live_content() {
         use crate::doc_host::{DocHost, DocHostConfig};
@@ -2004,8 +2005,12 @@ mod context_usage_tests {
         };
         append("cached");
         let snapshot = source.export_snapshot().unwrap();
-        handle.import_transcript(true, || {
-            handle.doc().doc().import(&snapshot).unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
         });
         let checkpoint: roboco_doc::TranscriptUpdate = serde_json::from_value(
             tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
@@ -2028,8 +2033,12 @@ mod context_usage_tests {
             .doc()
             .export(loro::ExportMode::updates(&version))
             .unwrap();
-        handle.import_transcript(true, || {
-            handle.doc().doc().import(&updates).unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&updates, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
         });
         let version = source.doc().oplog_vv();
         append("live");
@@ -2037,7 +2046,7 @@ mod context_usage_tests {
             .doc()
             .export(loro::ExportMode::updates(&version))
             .unwrap();
-        handle.import_transcript(false, || {
+        handle.import_transcript(|| {
             handle.doc().doc().import(&updates).unwrap();
         });
         // Neither the doc worker nor the RPC consumer ran between these
@@ -2063,7 +2072,7 @@ mod context_usage_tests {
             .doc()
             .export(loro::ExportMode::updates(&version))
             .unwrap();
-        handle.import_transcript(false, || {
+        handle.import_transcript(|| {
             handle.doc().doc().import(&updates).unwrap();
         });
         let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
@@ -2084,6 +2093,154 @@ mod context_usage_tests {
             opening.replay_baseline.unwrap().entries.len(),
             4,
             "reopening includes all existing content as history"
+        );
+        host.shutdown_workers().await;
+    }
+
+    #[tokio::test]
+    async fn replay_metadata_and_backfill_leave_interleaved_local_content_live() {
+        use crate::doc_host::{DocHost, DocHostConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "host".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        let handle = host.open("interleaved").unwrap();
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        stream.next().await.unwrap();
+        let source = roboco_doc::SessionDoc::init("interleaved").unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
+        });
+        let entry = |id: &str| roboco_doc::SessionMessageEntry {
+            id: id.into(),
+            role: roboco_doc::MessageRole::Assistant,
+            parts: vec![roboco_doc::MessagePart::Text {
+                id: "text".into(),
+                text: id.into(),
+            }],
+            created_at: 0,
+            device_id: "host".into(),
+            status: Some(roboco_doc::MessageStatus::Streaming),
+            continuation_of: None,
+        };
+        handle.doc().push_message(&entry("local-before")).unwrap();
+        source.update_context_usage(Some(10), Some(100)).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
+        });
+        let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            update.replay_baseline.is_none(),
+            "metadata must not reset ongoing live animations"
+        );
+        let mut entries = vec![];
+        roboco_doc::apply_transcript_frame(&mut entries, update.frame).unwrap();
+        assert_eq!(entries[0].id, "local-before");
+        let version = source.doc().oplog_vv();
+        source.push_message(&entry("historical")).unwrap();
+        handle.doc().push_message(&entry("local-between")).unwrap();
+        let updates = source
+            .doc()
+            .export(loro::ExportMode::updates(&version))
+            .unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&updates, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
+        });
+        handle.doc().push_message(&entry("local-after")).unwrap();
+        let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let baseline = update.replay_baseline.unwrap();
+        assert_eq!(baseline.entries.len(), 1);
+        assert!(baseline.entries.contains_key("historical"));
+        roboco_doc::apply_transcript_frame(&mut entries, update.frame).unwrap();
+        assert_eq!(entries.len(), 4);
+        host.shutdown_workers().await;
+    }
+
+    #[tokio::test]
+    async fn reopening_rearms_history_for_previously_live_text() {
+        use crate::doc_host::{DocHost, DocHostConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "viewer".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        let handle = host.open("reopen").unwrap();
+        let source = roboco_doc::SessionDoc::init("reopen").unwrap();
+        let mut writer = roboco_doc::SegmentWriter::begin(&source, "reply", "host", 0).unwrap();
+        let part = |text: &str| roboco_doc::MessagePart::Text {
+            id: "body".into(),
+            text: text.into(),
+        };
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        stream.next().await.unwrap();
+        writer.sync(&[part("live")]).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle.doc().doc().import(&snapshot).unwrap();
+        });
+        let _: serde_json::Value =
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap();
+        drop(stream);
+        // No unwatched commit clears provenance before the new attach.
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        stream.next().await.unwrap();
+        writer.sync(&[part("live plus recovered")]).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        handle.import_transcript(|| {
+            handle
+                .doc()
+                .doc()
+                .import_with(&snapshot, crate::transcript_history::REPLAY_ORIGIN)
+                .unwrap();
+        });
+        let update: roboco_doc::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            update.replay_baseline.unwrap().entries["reply"]["body"],
+            "live plus recovered".len()
         );
         host.shutdown_workers().await;
     }
