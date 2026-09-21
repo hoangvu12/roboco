@@ -45,7 +45,10 @@ body {
 
 code,
 .mono {
-  font-family: "Geist Mono", ui-monospace, monospace;
+  /* The code/diff family slot (typography.rs `code_font_family`), installed
+     on the root by applyTypographyToDocument; the stack falls back to the
+     bundled monospace before first paint and in tests. */
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
 }
 
 button {
@@ -1435,6 +1438,37 @@ a:focus-visible,
 }
 
 /*
+ * `sidebar_faded_label` (shell.rs, upstream 01b705fe): a nowrap label that
+ * outgrows its slot fades its last band instead of an ellipsis. The mask's
+ * ramp width is --rb-label-fade-inset — 0 while the label fits, easing to
+ * one 20px band as the overflow grows (SidebarFadedLabel measures and sets
+ * it per label; `label_fade_outset` is the onset curve). Ancestor masks
+ * compose: the sidebar's vertical scroll fade above keeps fading rows
+ * INSIDE an overflowing label — the web gets gpui's nested-scope
+ * inheritance for free.
+ */
+.sidebar-label-fade {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - var(--rb-label-fade-inset, 0px)),
+    transparent 100%
+  );
+}
+
+.sidebar-label-fill {
+  flex: 1;
+}
+
+.sidebar-label-fade-inner {
+  flex: none;
+  white-space: nowrap;
+}
+
+/*
  * `#sidebar-lists`: fills the faded wrapper, scrolls alone, and lays out the
  * active list and the archived shelf in one column (px 8, pt 4).
  */
@@ -1538,8 +1572,6 @@ a:focus-visible,
 .space-filter-name {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The "@ device" tag: 10px NORMAL, muted at 45% (`spaces.rs:1063-1068`). */
@@ -1548,7 +1580,6 @@ a:focus-visible,
   font-size: 10px;
   font-weight: 400;
   color: color-mix(in srgb, var(--rb-text-muted) 45%, transparent);
-  white-space: nowrap;
 }
 
 /* Disconnected GLYPH, not the word (`spaces.rs:1071-1078`). */
@@ -1619,6 +1650,15 @@ a:focus-visible,
 .spaces-menu-card {
   display: flex;
   flex-direction: column;
+}
+
+/* The relative host the floating rail positions against (popover.rs rail). */
+.spaces-menu-scroll-host {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .spaces-menu-list {
@@ -2451,8 +2491,6 @@ a:focus-visible,
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /*
@@ -2570,8 +2608,6 @@ a:focus-visible,
   font-size: 13px;
   line-height: 17px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Line 3 is structural, not reserved whitespace. */
@@ -2602,8 +2638,6 @@ a:focus-visible,
   font-size: 11px;
   line-height: 14px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ── Chat page (main panel) ─────────────────────────────────────────── */
@@ -3294,41 +3328,116 @@ a:focus-visible,
 }
 
 /*
- * The failure notice (composer.rs:7381-7411, the transcript ErrorChip
- * palette): `mx-1 mt-1.5 flex items-start gap-2 rounded-xl border px-3 py-2
- * text-[12px] leading-4` with a 14px DangerTriangle — a subtle tinted wash,
- * not a bare red stroke. Amber for the offline-ish case ("Engine not
- * connected"), red for send/run failures. Click dismisses.
+ * The shared stacked notice chip (notice.rs `notice_chip`; composer failure +
+ * transcript ErrorChip): a tinted rounded chip — `border <accent>/[0.16]`
+ * over a `<accent>/[0.05]` wash — with a header row (DangerTriangle + medium
+ * label + copy button pinned top-right) and the wrapping message below.
+ * Amber for the offline-ish case ("Engine not connected"), red for send/run
+ * failures. The composer chip dismisses on click.
  */
-.composer-failure {
+.notice-chip {
   display: flex;
-  align-items: flex-start;
-  gap: var(--rb-space-sm);
-  margin: 6px 4px 0;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
-  border-radius: 12px;
   background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
   font-size: 12px;
   line-height: 16px;
   color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
-  cursor: pointer;
 }
 
-.composer-failure-amber {
+.notice-chip-plain {
+  margin: 6px 4px 0;
+  border-radius: 12px;
+}
+
+.notice-chip-tile {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: inherit;
+}
+
+.notice-chip-warning {
   border-color: color-mix(in srgb, var(--rb-warning) 16%, transparent);
   background: color-mix(in srgb, var(--rb-warning) 5%, transparent);
   color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
 }
 
-.composer-failure-icon {
+.notice-chip-dismissible {
+  cursor: pointer;
+}
+
+.notice-chip-header {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+}
+
+.notice-chip-icon {
   flex: none;
-  margin-top: 2px;
   color: inherit;
 }
 
-.composer-failure-text {
+.notice-chip-header > .notice-chip-tile-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+}
+
+.notice-chip-label {
+  flex: none;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+}
+
+.notice-chip-warning .notice-chip-label {
+  color: color-mix(in srgb, var(--rb-warning-muted) 80%, transparent);
+}
+
+.notice-chip-copy {
+  flex: none;
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
+  cursor: pointer;
+}
+
+.notice-chip-copy:hover {
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+}
+
+.notice-chip-warning .notice-chip-copy {
+  color: color-mix(in srgb, var(--rb-warning-muted) 80%, transparent);
+}
+
+.notice-chip-warning .notice-chip-copy:hover {
+  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+}
+
+.notice-chip-text {
   min-width: 0;
+  width: 100%;
+}
+
+.notice-chip-tile .notice-chip-text {
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
 }
 
 /*
@@ -7152,9 +7261,10 @@ button.files-save-pill:hover {
 
 /* ── Transcript ─────────────────────────────────────────────────────── */
 /* Rows are virtualized by `../components/transcript.tsx`; the geometry
-   constants (736px column, 48px gutters, 64px first-row gap, 32px meta lane,
-   24px fade band) mirror the desktop's transcript.rs, and every color/motion
-   value is a --rb-* token from the generated theme artifact. */
+   constants (the configurable content column — 736px default — 48px
+   gutters, 64px first-row gap, 32px meta lane, 24px fade band) mirror the
+   desktop's transcript.rs, and every color/motion value is a --rb-* token
+   from the generated theme artifact. */
 
 .transcript-wrap {
   position: relative;
@@ -7287,9 +7397,9 @@ button.files-save-pill:hover {
 
 /*
  * A row (transcript.rs:5637-5680): wide gutters (roboco `px-4 @3xl:px-12`)
- * around the 736px content column; the row's own top gap and — on the last
- * row — its chrome-clearance bottom pad. `trow-col` is the column the
- * desktop wraps every row's content in (`w_full max_w(MAX_CONTENT_WIDTH)`).
+ * around the configurable content column; the row's own top gap and — on the
+ * last row — its chrome-clearance bottom pad. `trow-col` is the column the
+ * desktop wraps every row's content in (`w_full max_w(content_width)`).
  */
 .trow {
   min-width: 0;
@@ -7300,7 +7410,9 @@ button.files-save-pill:hover {
 
 .trow-col {
   width: 100%;
-  max-width: 736px;
+  /* `transcript_width` (settings.rs, upstream cbf2ad84): 560–1200 in 16px
+     steps, default 736 — applied by applyConversationWidthToDocument. */
+  max-width: var(--rb-transcript-width, 736px);
   min-width: 0;
 }
 
@@ -8131,6 +8243,10 @@ button.files-save-pill:hover {
 }
 
 .working-elapsed {
+  /* The desktop nudges the timer 1px down to sit on the indicator text's
+     baseline (transcript.rs, 7f73ad79). */
+  position: relative;
+  top: 1px;
   color: var(--rb-text-faint);
 }
 
@@ -8425,14 +8541,15 @@ button.files-save-pill:hover {
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12.5px;
-  line-height: 18px;
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  /* Markdown code blocks scale 1:1 off the code font size (render.rs). */
+  font-size: var(--rb-code-size-px, 12.5px);
+  line-height: var(--rb-code-line-height, 18px);
 }
 
 .md-codeline {
   display: block;
-  min-height: 18px;
+  min-height: var(--rb-code-line-height, 18px);
   white-space: pre;
 }
 
@@ -9297,45 +9414,6 @@ button.files-save-pill:hover {
   width: 100%;
 }
 
-.error-chip {
-  /* min-height, not fixed — the message WRAPS (transcript.rs:6531-6534). */
-  min-height: 34px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--rb-space-sm);
-  overflow: hidden;
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid color-mix(in srgb, var(--rb-danger) 16%, transparent);
-  background: color-mix(in srgb, var(--rb-danger) 5%, transparent);
-  padding: 7px var(--rb-space-sm);
-  font-size: 12px;
-}
-
-.error-chip-tile {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--rb-radius-control);
-  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
-}
-
-.error-chip-label {
-  flex: none;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--rb-danger-muted) 80%, transparent);
-}
-
-.error-chip-text {
-  min-width: 0;
-  flex: 1;
-  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
-}
-
 /* ── Transcript responsive + reduced motion ─────────────────────────── */
 
 @media (max-width: 768px) {
@@ -9495,7 +9573,6 @@ button.files-save-pill:hover {
   font-size: 12px;
   font-weight: 500;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
-  white-space: nowrap;
 }
 
 .sidebar-disclosure-rule {
@@ -9585,8 +9662,6 @@ button.files-save-pill:hover {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 13px;
   color: color-mix(in srgb, var(--rb-text) 55%, transparent);
 }
@@ -10778,6 +10853,96 @@ button.files-save-pill:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* The conversation-width control (appearance.rs `render_transcript_width`,
+ * upstream cbf2ad84): the details occupy the surrounding whitespace, so the
+ * column keeps the same row rhythm as the font controls (my -12). The value +
+ * Reset row and the 560/1,200 scale are laid out even while hidden — only
+ * visibility toggles, exactly like the desktop's `.invisible()`.
+ */
+.settings-width-control {
+  flex: none;
+  margin-block: -12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-width-details,
+.settings-width-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--rb-text-muted);
+}
+
+.settings-width-scale {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.settings-width-details[data-hidden],
+.settings-width-scale[data-hidden] {
+  visibility: hidden;
+}
+
+.settings-width-reset {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.settings-width-reset:hover {
+  color: var(--rb-text);
+}
+
+/* The slider proper: a 240×28 hit area, the rail inset 7px each end and
+ * 4px tall at top 12, a 14px accent knob straddling it — the desktop's
+ * geometry. Focus shows the details row (keyboard users get the same
+ * affordance hover and drag do); the outline stays off the visual.
+ */
+.settings-width-slider {
+  position: relative;
+  width: 240px;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.settings-width-slider:focus-visible {
+  outline: none;
+}
+
+.settings-width-rail {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 12px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--rb-border);
+}
+
+.settings-width-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--rb-accent);
+}
+
+.settings-width-knob {
+  position: absolute;
+  left: var(--rb-width-fraction);
+  top: -5px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 999px;
+  background: var(--rb-accent);
 }
 
 /* The dropdown triggers (appearance.rs:2327-2347, 2397-2417): 220/128×36,
@@ -12667,9 +12832,9 @@ button.segmented-option:hover {
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--rb-bg);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 21px;
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  font-size: var(--rb-diff-text-size, 12px);
+  line-height: var(--rb-diff-line-height, 21px);
   contain: strict;
 }
 
@@ -12844,11 +13009,13 @@ button.segmented-option:hover {
   position: relative;
   display: flex;
   align-items: stretch;
-  min-height: 21px;
-  height: 21px;
+  /* The row box and the painted line scale together off the code font size
+     (changes.rs `diff_line_height`); the surface root sets both vars. */
+  min-height: var(--rb-diff-line-height, 21px);
+  height: var(--rb-diff-line-height, 21px);
   font-family: inherit;
   font-size: inherit;
-  line-height: 21px;
+  line-height: var(--rb-diff-line-height, 21px);
   flex: none;
 }
 
@@ -12938,8 +13105,8 @@ button.segmented-option:hover {
 .diff-code-content {
   display: inline-block;
   white-space: pre;
-  font-size: 12px;
-  line-height: 21px;
+  font-size: var(--rb-diff-text-size, 12px);
+  line-height: var(--rb-diff-line-height, 21px);
   box-sizing: border-box;
   /* Plain text — the base code color both layouts share. */
   color: color-mix(in srgb, var(--rb-text) 92%, transparent);
@@ -13421,11 +13588,11 @@ button.segmented-option:hover {
   }
 }
 
-/* `palette_card` (popover.rs:820-836) at the add-space geometry: explicit
-   width, caller's radius, border 1px hairline(0.10), no padding. */
+/* `palette_card` (popover.rs) at the add-space geometry: explicit width,
+   caller's radius, border 1px hairline(0.10), no padding. */
 .add-space-card {
   box-sizing: border-box;
-  width: 680px;
+  width: 600px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -13437,58 +13604,31 @@ button.segmented-option:hover {
   color: var(--rb-text);
 }
 
-/* -- Input row (spaces.rs:2694-2734) ----------------------------------- */
+/* -- Header: search icon · input · esc (spaces.rs) ---------------------- */
 
-/*
- * The recessed band header (and footer): translucent black over the glass,
- * framed from the body by a 1px hairline.
- */
-.add-space-input-row {
+.add-space-header {
   flex: none;
-  height: 46px;
+  height: 58px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 10px 0 12px;
-  border-radius: 14px 14px 0 0;
+  gap: 12px;
+  padding: 0 18px;
   border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  background: rgb(0 0 0 / var(--rb-band-alpha));
 }
 
-/* The local `key_chip` recipe (spaces.rs:2625-2639): h 22, px 6, radius 5,
-   gap 2, ink(0.05), 11px mono, text_muted@0.7. */
-.add-space-chip {
+/* `palette_search_icon`: the 16px magnifier in a stable 20px slot. */
+.add-space-search-icon {
   flex: none;
-  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  display: flex;
   align-items: center;
-  gap: 2px;
-  height: 22px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 5px;
-  background: rgb(var(--rb-ink) / 0.05);
-}
-
-.add-space-chip-text {
-  font-size: 0.6875rem;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-chip-icon {
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-chip-click {
-  cursor: pointer;
-}
-
-.add-space-chip-click:hover {
-  background: rgb(var(--rb-ink) / 0.09);
+  justify-content: center;
+  color: var(--rb-text-muted);
 }
 
 /* The search field: transparent input over a ghost layer that paints the
-   ? completion suffix (the faint remainder ahead of the caret). */
+   ⇥ completion suffix (the faint remainder ahead of the caret). */
 .add-space-search {
   position: relative;
   flex: 1;
@@ -13502,7 +13642,7 @@ button.segmented-option:hover {
   border: none;
   background: transparent;
   color: var(--rb-text);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   outline: none;
 }
 
@@ -13518,7 +13658,7 @@ button.segmented-option:hover {
   overflow: hidden;
   white-space: nowrap;
   pointer-events: none;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .add-space-ghost-query {
@@ -13529,100 +13669,132 @@ button.segmented-option:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
-/* The ?Enter add chip: btn_primary's text-colored fill at the key-caps'
-   geometry (h 22, px 8, radius 5 — btn_primary's own 8px radius would read
-   as a different component next to them). */
+/* The footer's Add action: `btn_ghost` (transparent → ink 0.06 hover) with
+   the ⌘↵ key-cap nested. */
 .add-space-submit {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   height: 22px;
-  padding: 0 8px;
+  padding: 0 4px 0 8px;
   border: none;
-  border-radius: 5px;
-  background: var(--rb-text);
-  color: var(--rb-on-solid);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
   font-size: 0.75rem;
-  font-weight: 500;
   cursor: pointer;
-  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+  transition:
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.add-space-submit:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+  color: var(--rb-text);
 }
 
 .add-space-submit[data-rb-dim] {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
-.add-space-submit-icon {
-  color: color-mix(in srgb, var(--rb-on-solid) 80%, transparent);
-}
+/* -- Breadcrumbs: back + the step trail (spaces.rs) --------------------- */
 
-/* -- Body (spaces.rs:3196-3210) ----------------------------------------- */
-
-/* FIXED height so sparse folders, skeletons, and device switches never
-   resize the card. */
-.add-space-body {
+.add-space-crumbs {
   flex: none;
-  height: 330px;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 0.75rem;
 }
 
-.add-space-main {
+.add-space-back {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.add-space-back:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumbs-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin-top: 5px;
+  background: rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+}
+
+.add-space-trail {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-}
-
-/* -- Breadcrumbs (spaces.rs:2736-2882) ---------------------------------- */
-
-.add-space-crumbs {
-  display: flex;
   flex-wrap: wrap;
   align-items: center;
-  padding: 10px 13px 2px;
-  font-size: 0.6875rem;
-  font-family: "Geist Mono", ui-monospace, monospace;
+  gap: 2px;
 }
 
-.add-space-crumbs-empty {
-  padding-top: 6px;
-}
-
+/* The crumb chip: h-26 px-7 rounded-6, muted until settled-current (wash)
+   or hovered. The label caps at 140px with ellipsis. */
 .add-space-crumb {
-  padding: 0 3px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 7px;
   border: none;
+  border-radius: 6px;
   background: transparent;
+  color: var(--rb-text-muted);
   font: inherit;
+  cursor: pointer;
 }
 
+.add-space-crumb:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumb-current {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.add-space-crumb-icon {
+  flex: none;
+}
+
+.add-space-crumb-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chevron stays with its destination when a long path wraps. */
 .add-space-crumb-sep {
-  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
+  color: var(--rb-text-faint);
 }
 
 .add-space-crumb-pair {
   display: inline-flex;
   align-items: center;
+  gap: 2px;
 }
 
-.add-space-crumb-click {
-  cursor: pointer;
-  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
-  transition: color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
-}
-
-.add-space-crumb-click:hover {
-  color: var(--rb-text);
-}
-
-/* The current folder is never clickable. */
-.add-space-crumb-current {
-  color: color-mix(in srgb, var(--rb-text) 85%, transparent);
-}
-
-/* -- Folder list (spaces.rs:2884-3003) ---------------------------------- */
+/* -- The step's rows (spaces.rs) ---------------------------------------- */
 
 .add-space-list-state {
   padding: 6px 8px;
@@ -13633,26 +13805,23 @@ button.segmented-option:hover {
 }
 
 .add-space-list-empty {
-  padding: 16px 14px;
+  padding: 24px;
   font-size: 0.78125rem;
   color: var(--rb-text-faint);
 }
 
-/* The 6px gutters live on a WRAPPER outside the scroll viewport — the
-   wheel's max offset eats in-content padding and keyboard scroll-pinning
-   ignores it. */
+/* The desktop caps the results viewport at 424px (viewport − 220, floored
+   at 100) and scrolls; the 10px gutters live on the list itself. */
 .add-space-list-wrap {
-  flex: 1;
-  min-height: 0;
-  padding-block: 6px;
+  flex: none;
+  padding-block: 8px;
 }
 
-/* The app-wide list rhythm (sidebar rows, menu rows): px 8, gap 2. */
 .add-space-list {
-  height: 100%;
+  max-height: min(424px, 100vh - 220px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 8px;
+  padding: 0 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -13663,89 +13832,34 @@ button.segmented-option:hover {
   box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
 }
 
-.add-space-folder-icon {
+.add-space-row-icon {
   flex: none;
   color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
 }
 
-.add-space-folder-name {
-  flex: 1;
+.add-space-row-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.add-space-row-rest {
+  flex: 1;
+  min-width: 0;
+}
+
+/* `search_highlight`'s match wash: mention-style rounded marks. */
+.add-space-hl {
+  border-radius: 3px;
+  background: rgb(var(--rb-ink) / 0.08);
+  color: var(--rb-text);
 }
 
 /* Repos announce themselves — the row you're usually hunting for. */
 .add-space-repo-icon {
   flex: none;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
-}
-
-/* -- The devices + locations rail (spaces.rs:3005-3191) ----------------- */
-
-.add-space-rail {
-  flex: none;
-  width: 196px;
-  border-left: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  /* Locations can outgrow the fixed body on mount-happy machines. */
-  overflow-y: auto;
-}
-
-.add-space-rail-label {
-  padding: 0 8px 4px;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
-}
-
-.add-space-rail-label-first {
-  padding-top: 2px;
-}
-
-/* The tab recipe: h-28 rounded-8 washes, vertical. */
-.add-space-rail-row {
-  width: 100%;
-  height: 28px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 0.78125rem;
-  text-align: left;
-  cursor: pointer;
-  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
-}
-
-.add-space-rail-row:not(.add-space-rail-row-active):hover {
-  background: var(--rb-hover);
-}
-
-/* The floating-card selection language: wash + ring-only inset outline. */
-.add-space-rail-row-active {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
-  box-shadow: inset 0 0 0 1px rgb(var(--rb-hairline) / 0.09);
-  color: var(--rb-text);
-}
-
-.add-space-rail-icon {
-  flex: none;
-  color: color-mix(in srgb, var(--rb-text-muted) 80%, transparent);
-}
-
-.add-space-rail-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Presence: the same signal the sidebar space rows use. */
@@ -13762,53 +13876,34 @@ button.segmented-option:hover {
   box-shadow: 0 0 6px color-mix(in srgb, var(--rb-success) 55%, transparent);
 }
 
-.add-space-rail-divider {
-  flex: none;
-  height: 1px;
-  margin: 6px 2px;
-  background: rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-}
-
-.add-space-rail-info {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 0 8px;
+.add-space-locations-loading {
+  padding: 6px 8px;
   font-size: 0.6875rem;
-  line-height: 15px;
-  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  color: var(--rb-text-muted);
 }
 
-.add-space-rail-info-icon {
+/* The submit/probe failure line between the list and the footer. */
+.add-space-error {
   flex: none;
-  margin-top: 1px;
-  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  padding: 0 18px 8px;
+  font-size: 0.75rem;
+  color: var(--rb-danger);
 }
-
-.add-space-rail-info-text {
-  min-width: 0;
-}
-
-/* -- Footer (spaces.rs:3212-3243) --------------------------------------- */
+/* -- Footer: the key-hint legend + the Add action (spaces.rs) ------------ */
 
 .add-space-footer {
   flex: none;
   border-radius: 0 0 14px 14px;
   border-top: 1px solid rgb(var(--rb-hairline) / calc(0.06 * var(--rb-hairline-scale)));
-  background: rgb(0 0 0 / var(--rb-band-alpha));
-  padding: 8px 12px;
+  padding: 12px 18px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 18px;
 }
 
-.add-space-footer-error {
+.add-space-footer-rest {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.6875rem;
-  color: var(--rb-danger);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -13828,7 +13923,7 @@ button.segmented-option:hover {
   /* Phones: the card fits the viewport instead of overflowing it. */
   .add-space-card {
     width: 100%;
-    max-width: 680px;
+    max-width: 600px;
   }
 }
 
@@ -13862,7 +13957,6 @@ button.segmented-option:hover {
 .md-table-wrap,
 .diff-view,
 .add-space-list,
-.add-space-rail,
 .queue-panel-list,
 .history-list {
   scrollbar-width: none;
@@ -13880,7 +13974,6 @@ button.segmented-option:hover {
 .md-table-wrap::-webkit-scrollbar,
 .diff-view::-webkit-scrollbar,
 .add-space-list::-webkit-scrollbar,
-.add-space-rail::-webkit-scrollbar,
 .queue-panel-list::-webkit-scrollbar,
 .history-list::-webkit-scrollbar {
   display: none;

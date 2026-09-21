@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Icon } from "@roboco/icons";
 import type { Appearance } from "@roboco/theme";
+import { useUiSettings } from "../state/ui-settings";
+import { DIFF_LINE_BASELINE, DIFF_TEXT_BASELINE, diffLineHeight, diffTextSize } from "../lib/typography";
 import {
   ACCENT_BAR_WIDTH,
   BODY_BOTTOM_PAD,
@@ -202,6 +204,12 @@ interface DiffSurfaceProps {
 function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review }: DiffSurfaceProps) {
   const emptyFolds = useRef(EMPTY_FOLDS).current;
   const foldMap = folds ?? emptyFolds;
+  // The code font size drives the diff's text and row geometry together
+  // (`diff_text_size` / `diff_line_height`, changes.rs): the rows paint it
+  // through CSS vars and the virtualizer walks it.
+  const codeFontSize = useUiSettings().codeFontSize;
+  const lineHeight = diffLineHeight(codeFontSize);
+  const textSize = diffTextSize(codeFontSize);
   const rows: DiffRow[] = useMemo(
     () => flattenFiles(files, layout, foldMap, review?.comments, review?.draft ?? null),
     [files, layout, foldMap, review?.comments, review?.draft],
@@ -229,6 +237,8 @@ function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scr
       onHover={handleHover}
       renderAdder={renderAdder}
       review={review}
+      lineHeight={lineHeight}
+      textSize={textSize}
     />
   );
 }
@@ -312,9 +322,13 @@ interface ScrollerProps {
   readonly onHover: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
   readonly review?: DiffReviewWiring | null;
+  /** The code-size-scaled diff row (`diff_line_height`); rows read it via CSS var. */
+  readonly lineHeight: number;
+  /** The code-size-scaled diff text size (`diff_text_size`). */
+  readonly textSize: number;
 }
 
-function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: ScrollerProps) {
+function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight, textSize }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const positionsRef = useRef<readonly number[]>([]);
@@ -331,12 +345,20 @@ function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, ho
     }
   }
 
+  // A code-font change re-sizes every line row through the CSS var: cached
+  // measurements were taken against the old size, so drop them and let the
+  // (exact) estimate stand in until rows re-measure on remount.
+  useEffect(() => {
+    heightsRef.current.clear();
+    bumpMeasure((n) => n + 1);
+  }, [lineHeight]);
+
   const positions: number[] = new Array(rows.length + 1);
   positions[0] = 0;
   for (let ix = 0; ix < rows.length; ix += 1) {
     const row = rows[ix]!;
     const measured = heights.get(row.id);
-    const height = measured !== undefined ? measured : estimateRowHeight(row);
+    const height = measured !== undefined ? measured : estimateRowHeight(row, lineHeight);
     positions[ix + 1] = positions[ix]! + height;
   }
   positionsRef.current = positions;
@@ -386,13 +408,17 @@ function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, ho
     <div
       className={`diff-view ${layout === "split" ? "diff-view-split" : "diff-view-unified"} ${wrap ? "diff-view-wrap" : ""}`}
       ref={scrollerRef}
+      style={{
+        ["--rb-diff-line-height" as string]: `${lineHeight}px`,
+        ["--rb-diff-text-size" as string]: `${textSize}px`,
+      }}
     >
       <div className="diff-spacer" style={{ height: total }} aria-hidden>
         <div className="diff-window" style={{ transform: `translateY(${padTop}px)` }}>
           {rows.slice(first, last + 1).map((row) => {
             const id = row.id;
             const measured = heights.get(id);
-            const height = measured !== undefined ? measured : estimateRowHeight(row);
+            const height = measured !== undefined ? measured : estimateRowHeight(row, lineHeight);
             return (
               <div
                 key={id}
@@ -437,6 +463,7 @@ function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, ho
                   onHover={onHover}
                   renderAdder={renderAdder}
                   review={review}
+                  lineHeight={lineHeight}
                 />
               </div>
             );
@@ -473,9 +500,10 @@ interface RowContentProps {
   readonly onHover: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
   readonly review?: DiffReviewWiring | null;
+  readonly lineHeight: number;
 }
 
-function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review }: RowContentProps) {
+function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight }: RowContentProps) {
   switch (row.kind) {
     case "fileHeader":
       return (
@@ -549,7 +577,7 @@ function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover
     case "bodyPad":
       return <div className="diff-body-pad" aria-hidden />;
     case "foldingBody":
-      return <FoldingBodyRow row={row} layout={layout} scroll={scroll} />;
+      return <FoldingBodyRow row={row} layout={layout} scroll={scroll} lineHeight={lineHeight} />;
   }
 }
 
@@ -931,7 +959,7 @@ function CodePlane({
  * (`FileBodyUpto`, capped at `FOLD_TWEEN_MAX_PX`), so a 50k-line file's
  * fold never builds more than ~2400px of content mid-animation.
  */
-function FoldingBodyRow({ row, layout, scroll }: { row: Extract<DiffRow, { kind: "foldingBody" }>; layout: DiffLayout; scroll: FilePlaneScroll }) {
+function FoldingBodyRow({ row, layout, scroll, lineHeight }: { row: Extract<DiffRow, { kind: "foldingBody" }>; layout: DiffLayout; scroll: FilePlaneScroll; lineHeight: number }) {
   const { file, from, to, epoch } = row;
   const ref = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -954,7 +982,7 @@ function FoldingBodyRow({ row, layout, scroll }: { row: Extract<DiffRow, { kind:
   const capped = Math.min(Math.max(from, to), FOLD_TWEEN_MAX_PX);
   return (
     <div ref={ref} className="diff-folding" style={{ height: from }}>
-      <FileBodyUpto file={file} maxPx={capped} layout={layout} scroll={scroll} />
+      <FileBodyUpto file={file} maxPx={capped} layout={layout} scroll={scroll} lineHeight={lineHeight} />
     </div>
   );
 }
@@ -972,7 +1000,7 @@ function FoldingBodyRow({ row, layout, scroll }: { row: Extract<DiffRow, { kind:
  * stack. The trailing `BODY_BOTTOM_PAD` is the caller's (`bodyHeight`
  * counts it; `bodyPad` renders it).
  */
-export function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; maxPx: number; layout: DiffLayout; scroll: FilePlaneScroll }) {
+export function FileBodyUpto({ file, maxPx, layout, scroll, lineHeight = DIFF_LINE_HEIGHT }: { file: FileDiff; maxPx: number; layout: DiffLayout; scroll: FilePlaneScroll; lineHeight?: number }) {
   const rows: ReactNode[] = [];
   const notices = fileNotices(file);
   let y = 0;
@@ -992,7 +1020,7 @@ export function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; 
       y += HUNK_HEADER_HEIGHT;
       const hunk = file.hunks[hunkIx]!;
       if (layout === "split") {
-        const budget = Math.max(0, Math.ceil((maxPx - y) / LINE_HEIGHT));
+        const budget = Math.max(0, Math.ceil((maxPx - y) / lineHeight));
         const pairs = splitPairsUpto(hunk.lines, budget);
         for (let pairIx = 0; pairIx < pairs.length; pairIx += 1) {
           if (y >= maxPx) {
@@ -1011,7 +1039,7 @@ export function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; 
               onHover={() => {}}
             />,
           );
-          y += LINE_HEIGHT;
+          y += lineHeight;
         }
       } else {
         for (let lineIx = 0; lineIx < hunk.lines.length; lineIx += 1) {
@@ -1029,12 +1057,25 @@ export function FileBodyUpto({ file, maxPx, layout, scroll }: { file: FileDiff; 
               onHover={() => {}}
             />,
           );
-          y += LINE_HEIGHT;
+          y += lineHeight;
         }
       }
     }
   }
-  return <>{rows}</>;
+  // The code-size-scaled row/text reach the rows through CSS vars (the
+  // analytic `y` walk above uses the same value).
+  return (
+    <div
+      className="diff-body-scaled"
+      style={{
+        ["--rb-diff-line-height" as string]: `${lineHeight}px`,
+        ["--rb-diff-text-size" as string]: `${(lineHeight / DIFF_LINE_BASELINE) * DIFF_TEXT_BASELINE}px`,
+        display: "contents",
+      }}
+    >
+      {rows}
+    </div>
+  );
 }
 
 function LineText({ tokens }: { tokens: { lines: { text: string; role: string | null }[][] } }) {

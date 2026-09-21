@@ -59,7 +59,11 @@ describe("defaults", () => {
     expect(settings.sidebarOrganization).toBe("inOneList");
     expect(settings.sidebarSort).toBe("lastUpdated");
     expect(settings.filesAutosaveDelayMs).toBe(900);
-    expect(settings.filesEditorFontSize).toBe(13);
+    expect(settings.terminalFontFamily).toBe("geistMono");
+    expect(settings.terminalFontSize).toBe(13);
+    expect(settings.codeFontFamily).toBe("geistMono");
+    expect(settings.codeFontSize).toBe(12.5);
+    expect(settings.transcriptWidth).toBe(736);
     expect(settings.gitHistoryColumnWidths).toEqual({ author: 88, date: 88, sha: 74 });
     expect(settings.gitHistoryColumnOrder).toEqual(["author", "date", "sha"]);
     expect(settings.newThreadComposerBackground).toBe(null);
@@ -115,9 +119,53 @@ describe("clamp", () => {
     expect(storedWith({ filesAutosaveDelayMs: 1500 }).filesAutosaveDelayMs).toBe(1500);
   });
 
-  it("filesEditorFontSize — clamps into [9, 24]", () => {
-    expect(storedWith({ filesEditorFontSize: 2 }).filesEditorFontSize).toBe(9);
-    expect(storedWith({ filesEditorFontSize: 99 }).filesEditorFontSize).toBe(24);
+  it("codeFontSize — clamps into [8, 32] and folds the legacy filesEditorFontSize", () => {
+    expect(storedWith({ codeFontSize: 2 }).codeFontSize).toBe(8);
+    expect(storedWith({ codeFontSize: 99 }).codeFontSize).toBe(32);
+    expect(storedWith({ codeFontSize: 14 }).codeFontSize).toBe(14);
+    // The legacy files-editor size was the first user-facing code size; it
+    // folds into codeFontSize on load (settings.rs removes the key upstream).
+    expect(storedWith({ filesEditorFontSize: 17 }).codeFontSize).toBe(17);
+    // An explicit codeFontSize wins over the legacy key.
+    expect(storedWith({ filesEditorFontSize: 17, codeFontSize: 14 }).codeFontSize).toBe(14);
+  });
+
+  it("terminalFontSize — clamps into [8, 32]", () => {
+    expect(storedWith({ terminalFontSize: 2 }).terminalFontSize).toBe(8);
+    expect(storedWith({ terminalFontSize: 99 }).terminalFontSize).toBe(32);
+  });
+
+  it("transcriptWidth — loads the legacy default and normalizes persisted values", () => {
+    // `transcript_width_loads_legacy_defaults_and_normalizes_persisted_values`
+    // (settings.rs, upstream cbf2ad84): a pre-field file defaults to 736.
+    expect(storedWith({}).transcriptWidth).toBe(736);
+    for (const [value, expected] of [
+      [100, 560],
+      [2000, 1200],
+      [745, 752],
+      [Number.NaN, 736],
+      ["wide", 736],
+    ] as const) {
+      expect(storedWith({ transcriptWidth: value }).transcriptWidth).toBe(expected);
+    }
+    // A rung lands exactly; an in-between value snaps to the nearest one.
+    expect(storedWith({ transcriptWidth: 736 }).transcriptWidth).toBe(736);
+    expect(storedWith({ transcriptWidth: 741 }).transcriptWidth).toBe(736);
+    expect(storedWith({ transcriptWidth: 749 }).transcriptWidth).toBe(752);
+  });
+
+  it("terminalFontFamily — a persisted proportional family falls back to Geist Mono", () => {
+    expect(storedWith({ terminalFontFamily: "geist" }).terminalFontFamily).toBe("geistMono");
+    expect(storedWith({ terminalFontFamily: "system" }).terminalFontFamily).toBe("geistMono");
+    expect(storedWith({ terminalFontFamily: "installed:Comic Sans" }).terminalFontFamily).toBe(
+      "geistMono",
+    );
+    expect(storedWith({ terminalFontFamily: "geistMono" }).terminalFontFamily).toBe("geistMono");
+    // The code slot keeps the whole catalog, proportional included.
+    expect(storedWith({ codeFontFamily: "geist" }).codeFontFamily).toBe("geist");
+    expect(storedWith({ codeFontFamily: "installed:JetBrains Mono" }).codeFontFamily).toBe(
+      "installed:JetBrains Mono",
+    );
   });
 
   it("gitHistoryColumnWidths — each sub-field clamps to its own bounds", () => {
@@ -350,5 +398,27 @@ describe("save policies", () => {
     expect(store.getSnapshot().sidebarWidth).toBe(400);
     store.update({ rightPaneWidth: 10 }, "immediate");
     expect(store.getSnapshot().rightPaneWidth).toBe(360);
+    // The ladder holds too: an off-rung write normalizes before it lands.
+    store.update({ transcriptWidth: 9001 }, "immediate");
+    expect(store.getSnapshot().transcriptWidth).toBe(1200);
+  });
+
+  it("conversation width drag — coalesces samples and persists the last value", () => {
+    // `conversation_width_drag_coalesces_and_persists_the_last_value`
+    // (settings/appearance.rs, upstream cbf2ad84): pointer samples move the
+    // in-memory snapshot immediately (the column reflows live) while one
+    // coalesced write reaches storage, carrying the LAST sample.
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const store = new UiSettingsStore({ storage });
+    for (const width of [560, 720, 880, 1200, 880]) {
+      store.update({ transcriptWidth: width }, "debounced");
+    }
+    // The snapshot follows every sample; storage still holds the
+    // constructor's default write — the samples coalesce behind the timer.
+    expect(store.getSnapshot().transcriptWidth).toBe(880);
+    expect(JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!).transcriptWidth).toBe(736);
+    store.flush();
+    expect(JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!).transcriptWidth).toBe(880);
   });
 });

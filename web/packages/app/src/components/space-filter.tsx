@@ -24,6 +24,8 @@ import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
 import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
+import { MenuScrollbar } from "./ui/Scrollbar";
+import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 
 /**
@@ -181,10 +183,10 @@ export function SpaceFilter() {
           <button type="button" ref={triggerRef} className={openChipClass("space-filter-trigger", open)}>
             <Icon name="folder" size={16} className="space-filter-icon" />
             <span className="space-filter-label">
-              <span className="space-filter-name">{label}</span>
+              <SidebarFadedLabel className="space-filter-name">{label}</SidebarFadedLabel>
               {deviceTag !== null && (
                 <>
-                  <span className="space-filter-tag">{deviceTag.tag}</span>
+                  <SidebarFadedLabel className="space-filter-tag">{deviceTag.tag}</SidebarFadedLabel>
                   {deviceTag.offline && <Icon name="wifiOff" size={12} className="space-filter-offline" />}
                 </>
               )}
@@ -203,7 +205,8 @@ export function SpaceFilter() {
           placeholder="Search projects…"
           ariaLabel="Search projects"
         />
-        <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
+        <div className="spaces-menu-scroll-host">
+          <div className="spaces-menu-list" id="spaces-menu-list" ref={listRef}>
           {rows.map((row, ix) => {
             if (row === "all") {
               return (
@@ -266,6 +269,8 @@ export function SpaceFilter() {
               />
             );
           })}
+          </div>
+          <MenuScrollbar scrollRef={listRef} />
         </div>
       </PickerCard>
       {spaceOverlay !== null && spaceOverlaySession(sessions, spaceOverlay.space) !== null && (

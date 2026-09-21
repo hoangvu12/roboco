@@ -48,6 +48,7 @@ use crate::markdown::parser::{
 use crate::markdown::render::{self, RenderCache, RenderOptions};
 use crate::markdown::veil::RowVeil;
 use crate::motion::{self, AnimationExt as _, MotionSpecExt as _};
+use crate::notice::{NoticeChipIcon::Tile, notice_chip};
 use crate::state::AppState;
 use crate::syntax_cache::{DocumentHighlightKey, SyntaxHighlightCache};
 use crate::theme::Theme;
@@ -94,8 +95,6 @@ const MAX_PENDING_QUEUED_TURNS: usize = 256;
 const SELECTION_SCROLL_TICK_MS: u64 = 24;
 const SELECTION_SCROLL_EDGE_PX: f32 = 36.0;
 const SELECTION_SCROLL_MAX_STEP_PX: f32 = 24.0;
-/// Transcript column max width (roboco 46rem).
-pub const MAX_CONTENT_WIDTH: f32 = 736.0;
 /// Activity row height / gap — analytic, so fold heights need no measurement.
 /// Ordinary tools place their icon on the rail; subagents retain a 30px card.
 /// Rows stack without a gap so the rail continues alongside expanded output.
@@ -1948,13 +1947,17 @@ pub fn sending_bridge(
     }
 }
 
-/// "1m 32s"-style elapsed formatting.
+/// Compact elapsed formatting, using at most two units up to days.
 pub fn format_elapsed(secs: i64) -> String {
     let secs = secs.max(0);
     if secs < 60 {
         format!("{secs}s")
-    } else {
+    } else if secs < 3_600 {
         format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86_400 {
+        format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86_400, (secs % 86_400) / 3_600)
     }
 }
 
@@ -2765,6 +2768,7 @@ pub struct Transcript {
     /// Family and size changes can alter prose wrapping without changing row
     /// identity, so the virtual list must explicitly discard cached heights.
     typography_generation: u32,
+    content_width: f32,
     /// Last global code-fence layout generation applied to this transcript.
     /// Each instance owns separate scroll handles and list measurements, so
     /// every one must reset itself after a global Fit-mode transition.
@@ -3014,6 +3018,7 @@ impl Transcript {
             workspace_link: None,
             rendered_rows: HashSet::new(),
             typography_generation: crate::typography::generation(cx),
+            content_width: crate::settings::transcript_width(cx),
             code_fences_generation: crate::settings::code_fences_generation(cx),
             highlights: HighlightStore::default(),
             show_jump_button: false,
@@ -5717,6 +5722,8 @@ impl Transcript {
                 .when(!sending, |el| {
                     el.child(
                         div()
+                            .relative()
+                            .top(px(1.0))
                             .text_color(theme.text_faint)
                             .child(SharedString::from(format_elapsed(elapsed_secs))),
                     )
@@ -5826,7 +5833,7 @@ impl Transcript {
                         div().w_full().flex().justify_end().child(
                             div()
                                 .min_w_0()
-                                .max_w(px(MAX_CONTENT_WIDTH * 0.8))
+                                .max_w(px(self.content_width * 0.8))
                                 .bg(crate::theme::user_bubble_bg())
                                 .rounded(px(Theme::BUBBLE_RADIUS))
                                 .px(px(16.0))
@@ -6062,12 +6069,12 @@ impl Transcript {
             .justify_center()
             .pt(px(top_gap))
             .pb(px(bottom_pad))
-            // Wide gutters (roboco `px-4 @3xl:px-12`) around the 46rem column.
+            // Keep side gutters as the configurable column shrinks to fit.
             .px(px(48.0))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(MAX_CONTENT_WIDTH))
+                    .max_w(px(self.content_width))
                     .min_w_0()
                     .child(inner)
                     .children(strip)
@@ -6972,65 +6979,21 @@ fn user_bubble_text(
         .into_any_element()
 }
 
-/// The transcript ErrorChip — a port of roboco chat-view.tsx `ErrorChip`
-/// (34px-minimum row, `rounded-[10px] border border-red-400/[0.16]
-/// bg-red-400/[0.05] px-2 text-[12px]`) with a 20px red-washed tile holding a
-/// 12px DangerTriangle (`bg-red-400/[0.12] text-red-300/80`), a medium
-/// "Error" label, then the human message at `text-foreground/80` — a subtle
-/// red-tinted wash, never a bare red-stroke box. Unlike the web port, the
-/// message WRAPS instead of truncating: startup-crash errors carry the
-/// agent's exit status and stderr, and a one-line ellipsis was exactly what
-/// made zeronsh/comet#95 undiagnosable from the screenshot.
+/// The transcript ErrorChip — the shared [`notice_chip`] in its tile
+/// treatment (a port of roboco chat-view.tsx `ErrorChip`, restacked for long
+/// payloads: header row with the red-washed tile and the medium "Error"
+/// label, then the human message below). Unlike the web port, the message
+/// WRAPS instead of truncating: startup-crash errors carry the agent's exit
+/// status and stderr, and a one-line ellipsis was exactly what made
+/// zeronsh/comet#95 undiagnosable from the screenshot.
 fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
-    let red_300 = theme.danger_muted; // tailwind red-300
-    let danger = theme.danger; // red-400
     div()
         .py(px(4.0))
         .w_full()
         .child(
-            div()
-                .min_h(px(34.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
+            notice_chip(theme, false, "Error", message, Tile)
                 .overflow_hidden()
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(danger.opacity(0.16))
-                .bg(danger.opacity(0.05))
-                .px(px(8.0))
-                .py(px(7.0))
-                .text_size(px(12.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(20.0))
-                        .rounded(px(6.0))
-                        .bg(danger.opacity(0.12))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                .size(px(12.0))
-                                .text_color(red_300.opacity(0.8)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(red_300.opacity(0.8))
-                        .child(SharedString::from("Error")),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .text_color(theme.text.opacity(0.8))
-                        .child(message),
-                ),
+                .w_full(),
         )
         .into_any_element()
 }
@@ -7966,6 +7929,20 @@ impl Render for Transcript {
             }
             // Fit changes every code row from analytic to measured height (or
             // back), including virtual rows outside the current viewport.
+            self.list.remeasure();
+            if self.pinned {
+                self.wake_spring();
+            }
+            if self.own_turn.is_some() {
+                self.own_turn_kick = true;
+            }
+        }
+        let content_width = crate::settings::transcript_width(cx);
+        if self.content_width != content_width {
+            self.content_width = content_width;
+            // The outer list viewport may not resize when only max-width
+            // changes. Invalidate virtual row heights explicitly, retaining
+            // their anchors and all live animation/provenance state.
             self.list.remeasure();
             if self.pinned {
                 self.wake_spring();
@@ -10432,6 +10409,80 @@ mod tests {
             .unwrap();
         }
 
+        #[test]
+        fn conversation_width_reflows_streaming_text_without_restarting_animations() {
+            with_window(|transcript, window, cx| {
+                let dir = tempfile::tempdir().unwrap();
+                crate::settings::init(Default::default(), dir.path(), cx);
+                let text = "Streaming content should wrap at the configured conversation width. "
+                    .repeat(80);
+                let mut entries = vec![assistant(
+                    "reply",
+                    MessageStatus::Streaming,
+                    vec![text_part("body", &text)],
+                )];
+                transcript.update(cx, |this, cx| {
+                    feed(this, entries.clone(), cx);
+                    this.rail_enabled = false;
+                    this.pinned = false;
+                    this.list.scroll_to(ListOffset {
+                        item_ix: 0,
+                        offset_in_item: px(0.0),
+                    });
+                });
+                draw(window, cx);
+                let original_veil =
+                    transcript.read(cx).veils[&SharedString::from("reply#body.0")].clone();
+                crate::settings::set_transcript_width(560.0, cx);
+                draw(window, cx);
+                let narrow = transcript
+                    .read(cx)
+                    .list
+                    .bounds_for_item(0)
+                    .unwrap()
+                    .size
+                    .height;
+                crate::settings::set_transcript_width(1200.0, cx);
+                draw(window, cx);
+                let this = transcript.read(cx);
+                let wide = this.list.bounds_for_item(0).unwrap().size.height;
+                assert!(
+                    wide < narrow,
+                    "width change must remeasure wrapped rows: {wide:?} vs {narrow:?}"
+                );
+                assert!(Rc::ptr_eq(
+                    &original_veil,
+                    &this.veils[&SharedString::from("reply#body.0")]
+                ));
+                assert!(!this.pinned);
+                assert_eq!(this.list.logical_scroll_top().item_ix, 0);
+                assert!(this.list.logical_scroll_top().offset_in_item.abs() <= px(1.0));
+                let bounds = render::selection_test_bounds("reply#body.0:0");
+                assert!(
+                    bounds.size.width <= px(904.0),
+                    "content must fit a 1000px viewport with 48px gutters"
+                );
+                entries[0].parts.push(tool_part("live-tool", "pwd"));
+                transcript.update(cx, |this, cx| {
+                    feed(this, entries, cx);
+                    assert!(
+                        this.tool_group_reveals[&SharedString::from("reply#g0")].starts[0]
+                            .is_some()
+                    );
+                    this.pinned = true;
+                    this.list.scroll_to(ListOffset {
+                        item_ix: this.list.item_count(),
+                        offset_in_item: px(0.0),
+                    });
+                });
+                crate::settings::set_transcript_width(560.0, cx);
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                assert!(transcript.read(cx).distance_from_bottom() <= 1.0);
+            });
+        }
+
         // These exercise frame-by-frame geometry, including the first paint
         // after a row append. Eventual settling alone misses visible jumps.
         #[test]
@@ -12440,9 +12491,26 @@ mod tests {
         assert_ne!(flavour_word(seed, 0), flavour_word(seed, 7));
         // Deterministic per chat; different chats usually differ in phase.
         assert_eq!(flavour_word(seed, 3), flavour_word(seed, 3));
-        assert_eq!(format_elapsed(59), "59s");
-        assert_eq!(format_elapsed(92), "1m 32s");
-        assert_eq!(format_elapsed(-5), "0s");
+    }
+
+    #[test]
+    fn elapsed_format_scales_from_seconds_to_days() {
+        for (secs, expected) in [
+            (-5, "0s"),
+            (0, "0s"),
+            (59, "59s"),
+            (60, "1m 0s"),
+            (92, "1m 32s"),
+            (3_599, "59m 59s"),
+            (3_600, "1h 0m"),
+            (4_800, "1h 20m"),
+            (6_000, "1h 40m"),
+            (86_399, "23h 59m"),
+            (86_400, "1d 0h"),
+            (183_845, "2d 3h"),
+        ] {
+            assert_eq!(format_elapsed(secs), expected, "elapsed seconds: {secs}");
+        }
     }
 
     #[test]

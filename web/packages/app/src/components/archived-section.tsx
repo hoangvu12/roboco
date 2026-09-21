@@ -11,6 +11,7 @@ import { sidebarNotice } from "../state/notice";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
 import { archivedRows, healedSpaceFilter, type ArchivedRow as ArchivedRowData } from "../lib/view";
 import { useChatMenu } from "./chat-menu";
+import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { SidebarDisclosureBody, SidebarDisclosureHeader, useSidebarDisclosure } from "./sidebar-disclosure";
 
 const INITIAL = 10;
@@ -174,7 +175,9 @@ function ArchivedRow({ row, showHarness }: { row: ArchivedRowData; showHarness: 
               style={brand.tint === null ? undefined : { color: brand.tint }}
             />
           )}
-          <span className="arch-row-title">{row.title}</span>
+          <SidebarFadedLabel className="arch-row-title" fill>
+            {row.title}
+          </SidebarFadedLabel>
           {archivedRightSlot(hovered) === "pill" ? (
             <button
               type="button"

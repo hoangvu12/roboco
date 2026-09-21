@@ -464,7 +464,7 @@ function TextViewer({
             path={path}
             editable
             onChange={(text) => doc?.edit(text)}
-            fontSize={settings.filesEditorFontSize}
+            codeFontSize={settings.codeFontSize}
             wordWrap={settings.filesWordWrap}
             autoFocus={markdownFocus}
             inputRef={editorInputRef}
@@ -483,7 +483,7 @@ function TextViewer({
           path={path}
           editable={false}
           onChange={() => {}}
-          fontSize={settings.filesEditorFontSize}
+          codeFontSize={settings.codeFontSize}
           wordWrap={settings.filesWordWrap}
         />
       </div>

@@ -4,6 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { EngineSession } from "../state/engine-session";
 import { useEngineSession } from "../state/session-provider";
 import { uiSettings } from "../state/ui-settings";
+import { effectiveTerminalFontFamily, fontFamilyStack } from "../lib/appearance-store";
+import { terminalLineHeight } from "../lib/typography";
 import { TerminalSessionController } from "./session";
 import { currentTerminalTheme } from "./theme";
 import { pasteBytes } from "./tabs";
@@ -126,15 +128,46 @@ function attachClipboardPolicy(term: XTerm, controller: TerminalSessionControlle
   });
 }
 
+/** The live terminal font slot, resolved to an XTerm family stack + size. */
+function terminalFonts(): { family: string; size: number } {
+  const settings = uiSettings.getSnapshot();
+  return {
+    family: fontFamilyStack(effectiveTerminalFontFamily(settings.terminalFontFamily)),
+    size: settings.terminalFontSize,
+  };
+}
+
 export class TerminalStore {
   readonly #mode: "drawer" | "embedded";
   #session: EngineSession | null = null;
   readonly #chats = new Map<string, ChatTerminals>();
   readonly #listeners = new Set<TerminalStoreListener>();
   #version = 0;
+  #fonts: { family: string; size: number };
+  readonly #unsubscribeFonts: () => void;
 
   constructor(mode: "drawer" | "embedded") {
     this.#mode = mode;
+    // The terminal font slot (typography.rs `terminal_*`): read live at tab
+    // creation, then re-applied to every live tab on change — the desktop's
+    // row-height-from-live-value fix (cursor/selection drift) maps to a
+    // refit here, since XTerm's cell grid is measured off the options.
+    this.#fonts = terminalFonts();
+    this.#unsubscribeFonts = uiSettings.subscribe(() => {
+      const next = terminalFonts();
+      if (next.family === this.#fonts.family && next.size === this.#fonts.size) {
+        return;
+      }
+      this.#fonts = next;
+      for (const chat of this.#chats.values()) {
+        for (const tab of chat.tabs) {
+          tab.term.options.fontFamily = next.family;
+          tab.term.options.fontSize = next.size;
+          tab.term.options.lineHeight = terminalLineHeight(next.size);
+          tab.fitter.fit();
+        }
+      }
+    });
   }
 
   subscribe = (listener: TerminalStoreListener): (() => void) => {
@@ -163,6 +196,7 @@ export class TerminalStore {
   }
 
   dispose(): void {
+    this.#unsubscribeFonts();
     this.bindSession(null);
     this.#listeners.clear();
   }
@@ -370,10 +404,11 @@ export class TerminalStore {
     const client = this.#session.client;
     const tabKey = key ?? `${chat.nextKey++}`;
     const theme = currentTerminalTheme();
+    const fonts = this.#fonts;
     const term = new XTerm({
-      fontFamily: '"Geist Mono", ui-monospace, monospace',
-      fontSize: 13,
-      lineHeight: 18 / 13,
+      fontFamily: fonts.family,
+      fontSize: fonts.size,
+      lineHeight: terminalLineHeight(fonts.size),
       cursorStyle: "block",
       // Desktop view.rs: the unfocused cursor is an outline of the same
       // translucent `theme.cursor` color.

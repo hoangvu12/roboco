@@ -57,9 +57,6 @@ pub const SAVE_DEBOUNCE_MS: u64 = 400;
 pub const FILES_AUTOSAVE_DELAY_DEFAULT_MS: u64 = 900;
 pub const FILES_AUTOSAVE_DELAY_MIN_MS: u64 = 100;
 pub const FILES_AUTOSAVE_DELAY_MAX_MS: u64 = 10_000;
-pub const FILES_EDITOR_FONT_SIZE_DEFAULT: f32 = 13.0;
-pub const FILES_EDITOR_FONT_SIZE_MIN: f32 = 9.0;
-pub const FILES_EDITOR_FONT_SIZE_MAX: f32 = 24.0;
 
 const FILE_NAME: &str = "ui-settings.json";
 const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
@@ -254,6 +251,36 @@ impl Default for GitHistoryColumnWidths {
             date: 88.0,
             sha: 74.0,
         }
+    }
+}
+
+pub const TRANSCRIPT_WIDTH_MIN: f32 = 560.0;
+pub const TRANSCRIPT_WIDTH_MAX: f32 = 1200.0;
+pub const TRANSCRIPT_WIDTH_DEFAULT: f32 = 736.0;
+pub const TRANSCRIPT_WIDTH_STEP: f32 = 16.0;
+
+pub fn normalize_transcript_width(width: f32) -> f32 {
+    let width = clamp_or(
+        width,
+        TRANSCRIPT_WIDTH_MIN,
+        TRANSCRIPT_WIDTH_MAX,
+        TRANSCRIPT_WIDTH_DEFAULT,
+    );
+    TRANSCRIPT_WIDTH_MIN
+        + ((width - TRANSCRIPT_WIDTH_MIN) / TRANSCRIPT_WIDTH_STEP).round() * TRANSCRIPT_WIDTH_STEP
+}
+
+pub fn transcript_width(cx: &App) -> f32 {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.current.transcript_width)
+        .unwrap_or(TRANSCRIPT_WIDTH_DEFAULT)
+}
+
+pub fn set_transcript_width(width: f32, cx: &mut App) {
+    if update(SavePolicy::Debounced, cx, |settings| {
+        settings.transcript_width = normalize_transcript_width(width);
+    }) {
+        cx.refresh_windows();
     }
 }
 
@@ -641,9 +668,15 @@ pub struct UiSettings {
     pub git_history_author_display: GitHistoryAuthorDisplay,
     /// Interface and conversational-prose family. Device-local by design.
     pub ui_font_family: crate::typography::UiFontFamily,
-    /// Base size for interface and conversational prose. Code-related surfaces
-    /// retain their fixed metrics.
+    /// Base size for interface and conversational prose.
     pub ui_font_size: crate::typography::UiFontSize,
+    /// Terminal family and absolute pixel size. Only fixed-width families
+    /// qualify, including compatible Nerd Fonts.
+    pub terminal_font_family: crate::typography::UiFontFamily,
+    pub terminal_font_size: f32,
+    /// Family and absolute pixel size for code, diffs, and file editors.
+    pub code_font_family: crate::typography::UiFontFamily,
+    pub code_font_size: f32,
     /// Independently selected light and dark theme variants.
     pub theme_selection: roboco_theme::ThemeSelection,
     /// Changes pane: side-by-side diffs instead of the unified stack.
@@ -653,6 +686,8 @@ pub struct UiSettings {
     /// Agent-sent Markdown fences: wrap long lines to the chat width instead
     /// of exposing their horizontal scroll plane.
     pub code_fences_fit_content: bool,
+    /// Maximum conversation width in logical pixels; composer width is independent.
+    pub transcript_width: f32,
     /// Open a normal web-link activation in the session Browser. Explicit
     /// context-menu actions remain available regardless of this preference.
     pub open_web_links_in_roboco: bool,
@@ -662,8 +697,6 @@ pub struct UiSettings {
     pub files_autosave_delay_ms: u64,
     /// Wrap long lines in workspace file editors and previews.
     pub files_word_wrap: bool,
-    /// Font size used by editable workspace-file buffers.
-    pub files_editor_font_size: f32,
     /// Include hidden and ignored entries in workspace file trees.
     pub files_show_all: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
@@ -721,15 +754,19 @@ impl Default for UiSettings {
             git_history_author_display: GitHistoryAuthorDisplay::default(),
             ui_font_family: crate::typography::UiFontFamily::default(),
             ui_font_size: crate::typography::UiFontSize::default(),
+            terminal_font_family: crate::typography::UiFontFamily::GeistMono,
+            terminal_font_size: crate::typography::TERMINAL_FONT_SIZE_DEFAULT,
+            code_font_family: crate::typography::UiFontFamily::GeistMono,
+            code_font_size: crate::typography::CODE_FONT_SIZE_DEFAULT,
             theme_selection: roboco_theme::ThemeSelection::default(),
             diff_split: false,
             diff_wrap: false,
             code_fences_fit_content: false,
+            transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
             open_web_links_in_roboco: true,
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
             files_word_wrap: false,
-            files_editor_font_size: FILES_EDITOR_FONT_SIZE_DEFAULT,
             files_show_all: false,
             accent: roboco_theme::AccentSelection::default(),
             surface: roboco_theme::SurfacePreference::default(),
@@ -1176,6 +1213,7 @@ impl UiSettings {
 
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
     pub fn clamped(mut self) -> Self {
+        self.transcript_width = normalize_transcript_width(self.transcript_width);
         if self.sidebar_organization == SidebarOrganization::ByProject {
             self.sidebar_organization = SidebarOrganization::InOneList;
         }
@@ -1203,11 +1241,17 @@ impl UiSettings {
         self.files_autosave_delay_ms = self
             .files_autosave_delay_ms
             .clamp(FILES_AUTOSAVE_DELAY_MIN_MS, FILES_AUTOSAVE_DELAY_MAX_MS);
-        self.files_editor_font_size = clamp_or(
-            self.files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_MIN,
-            FILES_EDITOR_FONT_SIZE_MAX,
-            FILES_EDITOR_FONT_SIZE_DEFAULT,
+        self.terminal_font_size = clamp_or(
+            self.terminal_font_size,
+            crate::typography::FONT_SIZE_MIN,
+            crate::typography::FONT_SIZE_MAX,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT,
+        );
+        self.code_font_size = clamp_or(
+            self.code_font_size,
+            crate::typography::FONT_SIZE_MIN,
+            crate::typography::FONT_SIZE_MAX,
+            crate::typography::CODE_FONT_SIZE_DEFAULT,
         );
         self.git_history_column_widths = self.git_history_column_widths.clamped();
         self.git_history_column_order = self.git_history_column_order.normalized();
@@ -1230,6 +1274,11 @@ impl UiSettings {
                         settings
                             .entry("appshotSoundEnabled")
                             .or_insert(serde_json::Value::Bool(previous_sound));
+                        // The files-editor size was the first user-facing code
+                        // size; it now drives every code surface.
+                        if let Some(legacy) = settings.remove("filesEditorFontSize") {
+                            settings.entry("codeFontSize").or_insert(legacy);
+                        }
                     }
                     if let Some(keymap) = value
                         .get_mut("keymap")
@@ -1426,6 +1475,34 @@ mod tests {
             assert_eq!(resolved.name, "Roboco");
             assert_eq!(PathBuf::from(&resolved.path), PathBuf::from(&default.path));
         });
+    }
+
+    #[test]
+    fn unknown_keys_from_a_newer_build_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"sidebarWidth":300.0,"someFutureKey":"whatever","anotherOne":{"nested":1}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert_eq!(
+            loaded.terminal_font_family,
+            crate::typography::UiFontFamily::GeistMono
+        );
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
+        );
+        assert_eq!(
+            loaded.code_font_family,
+            crate::typography::UiFontFamily::GeistMono
+        );
+        assert_eq!(
+            loaded.code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1769,11 +1846,15 @@ mod tests {
             diff_split: true,
             diff_wrap: true,
             code_fences_fit_content: true,
+            transcript_width: 960.0,
             open_web_links_in_roboco: false,
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
             files_word_wrap: true,
-            files_editor_font_size: 15.0,
+            terminal_font_family: crate::typography::UiFontFamily::Installed("Menlo".into()),
+            terminal_font_size: 15.0,
+            code_font_family: crate::typography::UiFontFamily::Geist,
+            code_font_size: 11.0,
             files_show_all: true,
             accent: roboco_theme::AccentSelection::Preset(roboco_theme::AccentPreset::Cyan),
             surface: roboco_theme::SurfacePreference::Frosted,
@@ -1795,6 +1876,10 @@ mod tests {
         // the field is absent from a default settings file.
         let default_json = serde_json::to_value(UiSettings::default()).unwrap();
         assert!(default_json.get("newThreadComposerBackground").is_none());
+        assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
+        assert!(json.contains(r#""terminalFontSize": 15.0"#));
+        assert!(json.contains(r#""codeFontFamily": "geist""#));
+        assert!(json.contains(r#""codeFontSize": 11.0"#));
     }
 
     #[test]
@@ -1827,6 +1912,32 @@ mod tests {
             reloaded.ui_font_family,
             crate::typography::UiFontFamily::Installed("Arial".into())
         );
+    }
+
+    #[test]
+    fn transcript_width_loads_legacy_defaults_and_normalizes_persisted_values() {
+        let legacy: UiSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.transcript_width, 736.0);
+        for (value, expected) in [
+            (100.0, 560.0),
+            (2000.0, 1200.0),
+            (745.0, 752.0),
+            (f32::NAN, 736.0),
+        ] {
+            let settings = UiSettings {
+                transcript_width: value,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(settings.transcript_width, expected);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let settings = UiSettings {
+            transcript_width: 1024.0,
+            ..Default::default()
+        };
+        settings.save(dir.path()).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).transcript_width, 1024.0);
     }
 
     #[test]
@@ -1895,8 +2006,12 @@ mod tests {
         assert!(!loaded.files_autosave_enabled);
         assert!(!loaded.files_word_wrap);
         assert_eq!(
-            loaded.files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_DEFAULT
+            loaded.code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
         );
         assert!(!loaded.files_show_all);
         assert!(
@@ -2088,12 +2203,46 @@ mod tests {
         );
         assert_eq!(
             UiSettings {
-                files_editor_font_size: 100.0,
+                code_font_size: 100.0,
                 ..Default::default()
             }
             .clamped()
-            .files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_MAX
+            .code_font_size,
+            crate::typography::FONT_SIZE_MAX
+        );
+        assert_eq!(
+            UiSettings {
+                terminal_font_size: 1.0,
+                ..Default::default()
+            }
+            .clamped()
+            .terminal_font_size,
+            crate::typography::FONT_SIZE_MIN
+        );
+        assert_eq!(
+            UiSettings {
+                code_font_size: f32::NAN,
+                ..Default::default()
+            }
+            .clamped()
+            .code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
+    }
+
+    #[test]
+    fn legacy_files_editor_font_size_becomes_the_code_font_size() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"filesEditorFontSize": 15.0}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.code_font_size, 15.0);
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
         );
     }
 

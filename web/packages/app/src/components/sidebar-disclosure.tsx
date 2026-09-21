@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { Icon } from "@roboco/icons";
+import { SidebarFadedLabel } from "./sidebar-faded-label";
 
 /**
  * The sidebar's shared disclosure section — the desktop's
@@ -230,7 +231,7 @@ export function SidebarDisclosureHeader({
 }) {
   return (
     <button type="button" id={id} className="sidebar-disclosure-header" aria-expanded={open} onClick={onToggle}>
-      <span className="sidebar-disclosure-label">{label}</span>
+      <SidebarFadedLabel className="sidebar-disclosure-label">{label}</SidebarFadedLabel>
       <span className="sidebar-disclosure-rule" />
       <span ref={chevronRef} className="sidebar-disclosure-chevron">
         <Icon name="altArrowRight" size={12} />

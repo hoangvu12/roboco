@@ -70,9 +70,19 @@ export const FILES_AUTOSAVE_DELAY_DEFAULT_MS = 900;
 export const FILES_AUTOSAVE_DELAY_MIN_MS = 100;
 export const FILES_AUTOSAVE_DELAY_MAX_MS = 10_000;
 
-export const FILES_EDITOR_FONT_SIZE_DEFAULT = 13;
-export const FILES_EDITOR_FONT_SIZE_MIN = 9;
-export const FILES_EDITOR_FONT_SIZE_MAX = 24;
+/** `typography.rs` font-size bounds (FONT_SIZE_MIN / FONT_SIZE_MAX). */
+export const FONT_SIZE_MIN = 8;
+export const FONT_SIZE_MAX = 32;
+/** `CODE_FONT_SIZE_DEFAULT` — markdown code blocks scale 1:1 off this. */
+export const CODE_FONT_SIZE_DEFAULT = 12.5;
+/** `TERMINAL_FONT_SIZE_DEFAULT`. */
+export const TERMINAL_FONT_SIZE_DEFAULT = 13;
+
+/** `settings.rs`'s transcript column bounds (upstream cbf2ad84). */
+export const TRANSCRIPT_WIDTH_MIN = 560;
+export const TRANSCRIPT_WIDTH_MAX = 1200;
+export const TRANSCRIPT_WIDTH_DEFAULT = 736;
+export const TRANSCRIPT_WIDTH_STEP = 16;
 
 /** How many sidebar rows the jump shortcuts reach. */
 export const JUMP_SLOTS = 9;
@@ -214,10 +224,25 @@ export interface UiSettings {
   readonly diffSplit: boolean;
   readonly diffWrap: boolean;
   readonly codeFencesFitContent: boolean;
+  /**
+   * Maximum conversation width in logical pixels (`transcript_width`);
+   * the composer's width is independent. Snapped to the 16px ladder.
+   */
+  readonly transcriptWidth: number;
   readonly filesAutosaveEnabled: boolean;
   readonly filesAutosaveDelayMs: number;
   readonly filesWordWrap: boolean;
-  readonly filesEditorFontSize: number;
+  /**
+   * The terminal family's slot (typography.rs `terminal_font_family`).
+   * Constrained to fixed-width choices on write; a persisted proportional
+   * family heals to Geist Mono (the terminal grid's hit-testing assumes one
+   * advance per cell).
+   */
+  readonly terminalFontFamily: UiFontFamily;
+  readonly terminalFontSize: number;
+  /** The code/diff slots (`code_font_family` / `code_font_size`). */
+  readonly codeFontFamily: UiFontFamily;
+  readonly codeFontSize: number;
   readonly filesShowAll: boolean;
   readonly accent: UiAccentSelection;
   readonly surface: UiSurfacePreference;
@@ -304,10 +329,14 @@ export function defaultUiSettings(): UiSettings {
     diffSplit: false,
     diffWrap: false,
     codeFencesFitContent: false,
+    transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT,
     filesAutosaveEnabled: false,
     filesAutosaveDelayMs: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     filesWordWrap: false,
-    filesEditorFontSize: FILES_EDITOR_FONT_SIZE_DEFAULT,
+    terminalFontFamily: TERMINAL_FONT_FAMILY_DEFAULT,
+    terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
+    codeFontFamily: "geistMono",
+    codeFontSize: CODE_FONT_SIZE_DEFAULT,
     filesShowAll: false,
     accent: "themeDefault",
     surface: "themeDefault",
@@ -334,6 +363,12 @@ export function minOr(value: unknown, min: number, fallback: number): number {
     return fallback;
   }
   return Math.max(min, value);
+}
+
+/** `settings.rs::normalize_transcript_width` — clamp, then snap to the ladder. */
+export function normalizeTranscriptWidth(value: unknown): number {
+  const width = clampOr(value, TRANSCRIPT_WIDTH_MIN, TRANSCRIPT_WIDTH_MAX, TRANSCRIPT_WIDTH_DEFAULT);
+  return TRANSCRIPT_WIDTH_MIN + Math.round((width - TRANSCRIPT_WIDTH_MIN) / TRANSCRIPT_WIDTH_STEP) * TRANSCRIPT_WIDTH_STEP;
 }
 
 /** `UiFontSize::normalized` — snap to the nearest offered size, ties low. */
@@ -394,14 +429,28 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function healUiFontFamily(value: unknown): UiFontFamily {
+function healUiFontFamily(value: unknown, fallback: UiFontFamily = "geist"): UiFontFamily {
   if (value === "geist" || value === "geistMono" || value === "system") {
     return value;
   }
   if (typeof value === "string" && value.startsWith("installed:") && value.length > "installed:".length) {
     return value as UiFontFamily;
   }
-  return "geist";
+  return fallback;
+}
+
+/** The terminal catalog is fixed-width only (typography.rs
+ * `fixed_width_choices`); with no OS advance probe the web can vouch for
+ * exactly one family. */
+export const TERMINAL_FONT_FAMILY_DEFAULT: UiFontFamily = "geistMono";
+
+/**
+ * A persisted terminal family heals to the bundled monospace unless it IS
+ * that family — including a proportional choice a desktop peer persisted
+ * (typography.rs `persisted_proportional_terminal_family_falls_back`).
+ */
+export function healTerminalFontFamily(value: unknown): UiFontFamily {
+  return value === "geistMono" ? "geistMono" : TERMINAL_FONT_FAMILY_DEFAULT;
 }
 
 function healBackground(value: unknown): NewThreadComposerBackground | null {
@@ -518,6 +567,7 @@ export function healUiSettings(value: unknown): UiSettings {
     diffSplit: bool(raw.diffSplit, false),
     diffWrap: bool(raw.diffWrap, false),
     codeFencesFitContent: bool(raw.codeFencesFitContent, false),
+    transcriptWidth: normalizeTranscriptWidth(raw.transcriptWidth),
     filesAutosaveEnabled: bool(raw.filesAutosaveEnabled, false),
     filesAutosaveDelayMs: clampOr(
       raw.filesAutosaveDelayMs,
@@ -526,11 +576,26 @@ export function healUiSettings(value: unknown): UiSettings {
       FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     ),
     filesWordWrap: bool(raw.filesWordWrap, false),
-    filesEditorFontSize: clampOr(
-      raw.filesEditorFontSize,
-      FILES_EDITOR_FONT_SIZE_MIN,
-      FILES_EDITOR_FONT_SIZE_MAX,
-      FILES_EDITOR_FONT_SIZE_DEFAULT,
+    // The terminal slot takes fixed-width families only; the web catalog has
+    // no OS advance probe, so the one bundled monospace qualifies and a
+    // persisted proportional choice falls back to it (typography.rs
+    // `persisted_proportional_terminal_family_falls_back`).
+    terminalFontFamily: healTerminalFontFamily(raw.terminalFontFamily),
+    terminalFontSize: clampOr(
+      raw.terminalFontSize,
+      FONT_SIZE_MIN,
+      FONT_SIZE_MAX,
+      TERMINAL_FONT_SIZE_DEFAULT,
+    ),
+    codeFontFamily: healUiFontFamily(raw.codeFontFamily, "geistMono"),
+    // The files-editor size was the first user-facing code size; it now
+    // drives every code surface (settings.rs folds `filesEditorFontSize`
+    // into `codeFontSize` on load).
+    codeFontSize: clampOr(
+      raw.codeFontSize ?? raw.filesEditorFontSize,
+      FONT_SIZE_MIN,
+      FONT_SIZE_MAX,
+      CODE_FONT_SIZE_DEFAULT,
     ),
     filesShowAll: bool(raw.filesShowAll, false),
     accent: oneOf(raw.accent, ACCENT_IDS, "themeDefault"),

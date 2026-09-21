@@ -4,16 +4,35 @@ import {
   accentHelper,
   accentSwatchColor,
   AppearanceStore,
+  CODE_FONT_CHOICES,
   DEFAULT_APPEARANCE,
+  effectiveCodeFontFamily,
+  effectiveTerminalFontFamily,
   effectiveUiFontFamily,
+  fontSizePxLabel,
+  MONO_FONT_SIZES,
+  nearestMonoFontSize,
   resolveAppearance,
   resolveSurfaceTreatment,
   resolveVariantId,
   stepFont,
   SURFACE_PREFERENCES,
   surfaceHelper,
+  TERMINAL_FONT_CHOICES,
+  UI_FONT_CHOICES,
   variantChoices,
 } from "../src/lib/appearance-store";
+import {
+  codeBlockLineHeight,
+  codeBlockTextSize,
+  diffLineHeight,
+  diffTextSize,
+  editorTextSize,
+  PREVIEW_LINE_HEIGHT_BASELINE,
+  previewLineHeight,
+  previewTextSize,
+} from "../src/lib/typography";
+import { CODE_FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN } from "../src/state/ui-settings";
 import { sourceName, slug } from "../src/lib/theme-library";
 import {
   backgroundRowState,
@@ -239,6 +258,76 @@ describe("interface font (ticket 28)", () => {
     expect(effectiveUiFontFamily("system")).toBe("system");
     expect(effectiveUiFontFamily("installed:Inter")).toBe("geist");
     expect(effectiveUiFontFamily("inter")).toBe("geist");
+  });
+});
+
+describe("terminal and code fonts (upstream #374)", () => {
+  it("narrows the terminal catalog to the fixed-width choices", () => {
+    // `only_the_terminal_catalog_is_narrowed_to_fixed_width`: no OS advance
+    // probe exists on the web, so the bundled monospace is the one choice.
+    expect(TERMINAL_FONT_CHOICES).toEqual(["geistMono"]);
+    expect(CODE_FONT_CHOICES).toEqual(UI_FONT_CHOICES);
+  });
+
+  it("resolves a proportional terminal request to Geist Mono", () => {
+    // `persisted_proportional_terminal_family_falls_back`.
+    expect(effectiveTerminalFontFamily("geistMono")).toBe("geistMono");
+    expect(effectiveTerminalFontFamily("geist")).toBe("geistMono");
+    expect(effectiveTerminalFontFamily("system")).toBe("geistMono");
+    expect(effectiveTerminalFontFamily("installed:Inter")).toBe("geistMono");
+  });
+
+  it("keeps the whole catalog for code, falling back to Geist Mono", () => {
+    expect(effectiveCodeFontFamily("geist")).toBe("geist");
+    expect(effectiveCodeFontFamily("geistMono")).toBe("geistMono");
+    expect(effectiveCodeFontFamily("system")).toBe("system");
+    expect(effectiveCodeFontFamily("installed:Inter")).toBe("geistMono");
+  });
+
+  it("mono_size_ladder_keeps_both_defaults_exactly_reachable", () => {
+    expect(MONO_FONT_SIZES).toContain(13);
+    expect(MONO_FONT_SIZES).toContain(12.5);
+    // Off-ladder values (older settings, hand edits) snap, never drop.
+    expect(nearestMonoFontSize(12.4)).toBe(12.5);
+    expect(nearestMonoFontSize(13.4)).toBe(13);
+    expect(nearestMonoFontSize(100)).toBe(20);
+  });
+
+  it("labels every rung in pixels, whole and fractional", () => {
+    expect(MONO_FONT_SIZES.map(fontSizePxLabel)).toEqual([
+      "10 px",
+      "11 px",
+      "12 px",
+      "12.5 px",
+      "13 px",
+      "14 px",
+      "15 px",
+      "16 px",
+      "18 px",
+      "20 px",
+    ]);
+  });
+});
+
+describe("code surface scaling (lib/typography.ts)", () => {
+  it("reproduces every surface's historical size at the default", () => {
+    // 12.5 markdown code / 12.0 diff / 13.0 editor / 11.5 preview, exactly.
+    expect(codeBlockTextSize(CODE_FONT_SIZE_DEFAULT)).toBe(12.5);
+    expect(codeBlockLineHeight(CODE_FONT_SIZE_DEFAULT)).toBe(18);
+    expect(diffTextSize(CODE_FONT_SIZE_DEFAULT)).toBe(12);
+    expect(diffLineHeight(CODE_FONT_SIZE_DEFAULT)).toBe(21);
+    expect(editorTextSize(CODE_FONT_SIZE_DEFAULT)).toBe(13);
+    expect(previewTextSize(CODE_FONT_SIZE_DEFAULT)).toBe(11.5);
+    expect(previewLineHeight(CODE_FONT_SIZE_DEFAULT)).toBe(20);
+  });
+
+  it("scaled sizes keep their proportions and stay clamped", () => {
+    // `scaled_diff_sizes_keep_their_proportions_and_stay_clamped`.
+    expect(diffTextSize(25)).toBe(24);
+    expect(diffLineHeight(25)).toBe(42);
+    expect(diffTextSize(FONT_SIZE_MAX)).toBeLessThanOrEqual(FONT_SIZE_MAX);
+    expect(editorTextSize(4)).toBe(FONT_SIZE_MIN);
+    expect(previewLineHeight(FONT_SIZE_MIN)).toBe(PREVIEW_LINE_HEIGHT_BASELINE);
   });
 });
 
