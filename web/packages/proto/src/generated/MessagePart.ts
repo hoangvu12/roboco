@@ -9,7 +9,7 @@ import type { UserInputQuestion } from "./UserInputQuestion";
 /**
  * One rendered part of an assistant message.
  */
-export type MessagePart = { "kind": "text", id: string, text: string, } | { "kind": "reasoning", id: string, text: string, } | { "kind": "tool", id: string, call: ToolCall, isError: boolean, 
+export type MessagePart = { "kind": "text", id: string, text: string, } | { "kind": "image", id: string, path: string, name: string, mimeType: string, } | { "kind": "reasoning", id: string, text: string, } | { "kind": "tool", id: string, call: ToolCall, isError: boolean, 
 /**
  * True once a ToolResult arrived.
  */
