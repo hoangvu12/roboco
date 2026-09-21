@@ -1454,6 +1454,10 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    // Generated-image rendering is not ported yet (engine
+                    // intake landed first): the part persists in the doc and
+                    // simply renders no row here until the UI port lands.
+                    MessagePart::Image { .. } => {}
                 }
             }
         }

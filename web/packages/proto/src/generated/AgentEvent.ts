@@ -16,7 +16,7 @@ export type AgentEvent = { "type": "sessionStarted", harness: HarnessId, model: 
 /**
  * Harness-native session id (used for resume).
  */
-sessionId: string, assistantMessageId: string, } | { "type": "textDelta", text: string, } | { "type": "reasoningDelta", text: string, } | { "type": "assistantMessageCompleted", assistantMessageId: string, } | { "type": "toolCall", id: string, call: ToolCall, } | { "type": "toolResult", id: string, isError: boolean, 
+sessionId: string, assistantMessageId: string, } | { "type": "textDelta", text: string, } | { "type": "generatedImage", id: string, path: string, name: string, mimeType: string, } | { "type": "reasoningDelta", text: string, } | { "type": "assistantMessageCompleted", assistantMessageId: string, } | { "type": "toolCall", id: string, call: ToolCall, } | { "type": "toolResult", id: string, isError: boolean, 
 /**
  * Tool output text, capped by the emitting harness (ACP tool-call
  * content; claude/codex adapters never populate it). The doc-side
