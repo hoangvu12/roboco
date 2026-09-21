@@ -7,6 +7,7 @@ import {
 } from "@roboco/theme";
 import {
   DEFAULT_APPEARANCE,
+  effectiveCodeFontFamily,
   effectiveUiFontFamily,
   fontFamilyStack,
   resolveAppearance,
@@ -84,13 +85,33 @@ export function applyAppearanceToDocument(
  * every settings write; the font-picker block itself stays on
  * `--rb-font-sans-fixed` so the control never renders in a font it just
  * broke.
+ *
+ * The independent code/diff slot (upstream #374) lands on `--rb-font-mono`
+ * (the variable `.mono` consumes) and `--rb-code-size` (the shared code
+ * size the per-surface baselines scale from, lib/typography.ts). The
+ * terminal slot bypasses CSS entirely — XTerm reads options, so
+ * `terminal/store.tsx` applies it.
  */
 export function applyTypographyToDocument(
-  typography: { readonly uiFontFamily: string; readonly uiFontSize: number },
+  typography: {
+    readonly uiFontFamily: string;
+    readonly uiFontSize: number;
+    readonly codeFontFamily?: string;
+    readonly codeFontSize?: number;
+  },
   root: HTMLElement = document.documentElement,
 ): void {
   root.style.setProperty("--rb-font-sans", fontFamilyStack(effectiveUiFontFamily(typography.uiFontFamily)));
   root.style.setProperty("--rb-ui-size", String(typography.uiFontSize));
+  if (typography.codeFontFamily !== undefined) {
+    root.style.setProperty(
+      "--rb-font-mono",
+      fontFamilyStack(effectiveCodeFontFamily(typography.codeFontFamily)),
+    );
+  }
+  if (typography.codeFontSize !== undefined) {
+    root.style.setProperty("--rb-code-size", String(typography.codeFontSize));
+  }
 }
 
 /**

@@ -222,6 +222,68 @@ export function stepFont(current: UiFontChoice, delta: number): UiFontChoice {
   return UI_FONT_CHOICES[next]!;
 }
 
+// ---------------------------------------------------------------------------
+// Terminal + code fonts (typography.rs, upstream #374)
+// ---------------------------------------------------------------------------
+
+/**
+ * The terminal's catalog is narrowed to fixed-width families
+ * (`fixed_width_choices`): the terminal grid's cursor, selection and
+ * cell_at all assume one advance per cell, and the desktop qualifies
+ * families by comparing real i/m/W/0 advances. No OS font probe exists on
+ * the web, so the catalog is exactly the bundled monospace.
+ */
+export const TERMINAL_FONT_CHOICES: readonly UiFontChoice[] = ["geistMono"];
+
+/** Code and diffs lay text out naturally; the whole catalog qualifies. */
+export const CODE_FONT_CHOICES: readonly UiFontChoice[] = UI_FONT_CHOICES;
+
+/**
+ * `terminal_effective` (typography.rs): a persisted proportional family
+ * falls back to Geist Mono. The store heals writes the same way
+ * (`healTerminalFontFamily`); this is the read-side guard.
+ */
+export function effectiveTerminalFontFamily(requested: string): UiFontChoice {
+  return TERMINAL_FONT_CHOICES.includes(requested as UiFontChoice)
+    ? (requested as UiFontChoice)
+    : TERMINAL_FONT_CHOICES[0]!;
+}
+
+/**
+ * `code_effective` (typography.rs): like the interface resolver, except the
+ * fallback for an unsatisfiable request (`installed:*` the web cannot
+ * probe) is the code default, Geist Mono — not Geist.
+ */
+export function effectiveCodeFontFamily(requested: string): UiFontChoice {
+  if (requested === "geist" || requested === "geistMono" || requested === "system") {
+    return requested;
+  }
+  return "geistMono";
+}
+
+/**
+ * `MONO_FONT_SIZES` (settings/appearance.rs): the pixel ladder behind the
+ * terminal and code size dropdowns. Both defaults (terminal 13, code 12.5)
+ * are rungs, so today's rendering is exactly reachable.
+ */
+export const MONO_FONT_SIZES: readonly number[] = [10, 11, 12, 12.5, 13, 14, 15, 16, 18, 20];
+
+/** `nearest_mono_ix`: off-ladder values (older settings, hand edits) snap. */
+export function nearestMonoFontSize(size: number): number {
+  let best = MONO_FONT_SIZES[0]!;
+  for (const rung of MONO_FONT_SIZES) {
+    if (Math.abs(rung - size) < Math.abs(best - size)) {
+      best = rung;
+    }
+  }
+  return best;
+}
+
+/** `format_px`: ladder labels read as plain pixel values ("12.5 px"). */
+export function fontSizePxLabel(size: number): string {
+  return `${Number.isInteger(size) ? size : size.toFixed(1)} px`;
+}
+
 /** A variant id is only valid for the appearance it was authored for. */
 function variantForAppearance(id: unknown, appearance: Appearance): string | null {
   if (typeof id !== "string") {

@@ -19,6 +19,7 @@ import {
   type ReviewComment,
 } from "../../lib/review-comments";
 import { HorizontalScrollbar, MenuScrollbar } from "../ui/Scrollbar";
+import { editorTextSize, previewLineHeight, previewTextSize } from "../../lib/typography";
 import { EditorCommentCard } from "../review-comments/editor-comment-card";
 import { EditorCommentDraft } from "../review-comments/editor-comment-draft";
 
@@ -49,10 +50,8 @@ import { EditorCommentDraft } from "../review-comments/editor-comment-draft";
  * loop.
  */
 
-/** `PREVIEW_LINE_HEIGHT` (preview.rs:34). */
+/** `PREVIEW_LINE_HEIGHT` (preview.rs:34) — the editor row-height floor. */
 const PREVIEW_LINE_HEIGHT = 20;
-/** The read-only code text size (preview.rs:3181). */
-const PREVIEW_TEXT_PX = 11.5;
 /** The highlight debounce (preview.rs request_editor_highlight: 120ms). */
 const HIGHLIGHT_DEBOUNCE_MS = 120;
 
@@ -62,8 +61,12 @@ export interface CodeViewProps {
   /** Whether the input layer accepts keystrokes. */
   readonly editable: boolean;
   readonly onChange: (text: string) => void;
-  /** `filesEditorFontSize` — only meaningful while editable. */
-  readonly fontSize: number;
+  /**
+   * `codeFontSize` — the shared code setting (typography.rs): the editable
+   * editor scales off its 13px baseline, the read-only preview off its
+   * 11.5px one (`editor_text_size` / `preview_text_size`).
+   */
+  readonly codeFontSize: number;
   readonly wordWrap: boolean;
   /** Focus the input layer once mounted (the markdown toggle's off-ramp). */
   readonly autoFocus?: boolean;
@@ -105,7 +108,7 @@ function languageForPath(path: string): string | null {
   return name.slice(dot + 1).toLowerCase();
 }
 
-export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, autoFocus, inputRef, review }: CodeViewProps) {
+export function CodeView({ text, path, editable, onChange, codeFontSize, wordWrap, autoFocus, inputRef, review }: CodeViewProps) {
   const language = useMemo(() => languageForPath(path), [path]);
   // Markdown files highlight as markdown; everything else keys off its
   // extension (`lib/syntax.ts` resolves aliases).
@@ -161,7 +164,7 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
     const horizontal = editorCommentOverlayHorizontal(gutterPx, scroller.clientWidth);
     const top = editorCommentOverlayTop(rowTop, rowRect.height, overlayHeight, scroller.clientHeight);
     setOverlay(top === null ? null : { left: horizontal.left, top, width: horizontal.width });
-  }, [overlayAnchorLine, overlayHeight, scrollTick, lines.length, text, fontSize, wordWrap, editable, review?.activeId, overlayDraft]);
+  }, [overlayAnchorLine, overlayHeight, scrollTick, lines.length, text, codeFontSize, wordWrap, editable, review?.activeId, overlayDraft]);
 
   // Keep the host's handle (the editor context menu's target) live.
   useEffect(() => {
@@ -229,10 +232,13 @@ export function CodeView({ text, path, editable, onChange, fontSize, wordWrap, a
       style={
         editable
           ? {
-              fontSize: `${fontSize}px`,
-              lineHeight: `${Math.max(fontSize + 8.5, PREVIEW_LINE_HEIGHT)}px`,
+              fontSize: `${editorTextSize(codeFontSize)}px`,
+              lineHeight: `${Math.max(editorTextSize(codeFontSize) + 8.5, PREVIEW_LINE_HEIGHT)}px`,
             }
-          : { fontSize: `${PREVIEW_TEXT_PX}px`, lineHeight: `${PREVIEW_LINE_HEIGHT}px` }
+          : {
+              fontSize: `${previewTextSize(codeFontSize)}px`,
+              lineHeight: `${previewLineHeight(codeFontSize)}px`,
+            }
       }
     >
       <div ref={scrollRef} className="files-code-scroll">

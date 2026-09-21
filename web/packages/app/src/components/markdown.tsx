@@ -17,6 +17,7 @@ import { hasSpecificFileIcon, wellBg } from "../lib/file-icons";
 import { highlightCode, splitTokenLines, type SyntaxRole, type SyntaxToken } from "../lib/syntax";
 import { sliceTokensForVeil } from "../lib/veil";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
+import { codeBlockLineHeight, codeBlockTextSize } from "../lib/typography";
 import { useResolvedAppearance } from "../state/appearance";
 import { FileIcon } from "./files/file-icon";
 import {
@@ -731,7 +732,12 @@ export function CodeBlock({
   onChunkEnd?: (key: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const fit = useUiSettings().codeFencesFitContent;
+  const settings = useUiSettings();
+  const fit = settings.codeFencesFitContent;
+  // Code blocks scale 1:1 off the code font size (render.rs) — the same
+  // value the transcript estimator's analytic code-row height reads.
+  const codeTextPx = codeBlockTextSize(settings.codeFontSize);
+  const codeLinePx = codeBlockLineHeight(settings.codeFontSize);
   const lines = useMemo(() => splitTokenLines(highlightCode(code, language)), [code, language]);
 
   const copy = (): void => {
@@ -752,7 +758,13 @@ export function CodeBlock({
   };
 
   return (
-    <div className={`md-codeblock${fit ? " md-codeblock-fit" : ""}`}>
+    <div
+      className={`md-codeblock${fit ? " md-codeblock-fit" : ""}`}
+      style={{
+        ["--rb-code-size-px" as string]: `${codeTextPx}px`,
+        ["--rb-code-line-height" as string]: `${codeLinePx}px`,
+      }}
+    >
       <div className="md-codehead">
         <div className="md-codehead-lang">{language ?? ""}</div>
         <div className="md-codehead-actions">

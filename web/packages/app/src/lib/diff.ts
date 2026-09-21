@@ -890,13 +890,17 @@ export function bodyHeightWith(
   mode: DiffMode,
   comments: readonly ReviewComment[] = [],
   draft: DiffDraftAnchor | null = null,
+  lineHeight: number = DIFF_LINE_HEIGHT,
 ): number {
-  return bodyRows(file, 0, mode, comments, draft).reduce((sum, row) => sum + estimateRowHeight(row), 0);
+  return bodyRows(file, 0, mode, comments, draft).reduce(
+    (sum, row) => sum + estimateRowHeight(row, lineHeight),
+    0,
+  );
 }
 
 /** `body_height(file)` — the unified analytic height. */
-export function bodyHeight(file: FileDiff): number {
-  return bodyHeightWith(file, "unified");
+export function bodyHeight(file: FileDiff, lineHeight: number = DIFF_LINE_HEIGHT): number {
+  return bodyHeightWith(file, "unified", [], null, lineHeight);
 }
 
 /**
@@ -963,8 +967,13 @@ export function splitAdderLeft(gutterPx: number): number {
   return ACCENT_BAR_WIDTH + (gutterPx - COMMENT_ADDER_SIZE) / 2;
 }
 
-/** Estimate the rendered height of one row (analytic until measured). */
-export function estimateRowHeight(row: DiffRow): number {
+/**
+ * Estimate the rendered height of one row (analytic until measured).
+ * `lineHeight` is the code-size-scaled row (`diff_line_height`,
+ * lib/typography.ts); it defaults to the 12.5px-code setting's 21px so pure
+ * callers and older tests need no setting.
+ */
+export function estimateRowHeight(row: DiffRow, lineHeight: number = DIFF_LINE_HEIGHT): number {
   switch (row.kind) {
     case "fileHeader":
       return FILE_HEADER_HEIGHT;
@@ -974,7 +983,7 @@ export function estimateRowHeight(row: DiffRow): number {
       return NOTICE_HEIGHT;
     case "line":
     case "splitLine":
-      return DIFF_LINE_HEIGHT;
+      return lineHeight;
     case "commentCard":
       // Analytic, never measured (`DiffRow::height`, changes.rs:1234-1237).
       return cardHeight(row.comment.body);

@@ -31,9 +31,12 @@ pub const MD_BLOCK_GAP: f32 = 12.0;
 /// Body text size / line height (roboco: 14px / 22px).
 pub const MD_TEXT_SIZE: f32 = 14.0;
 pub const MD_LINE_HEIGHT: f32 = 22.0;
-/// Code block metrics — height is `lines × CODE_LINE_HEIGHT + padding + header`.
+/// Default code block metrics; the rendered size comes from the theme.
 pub const CODE_TEXT_SIZE: f32 = 12.5;
 pub const CODE_LINE_HEIGHT: f32 = 18.0;
+/// Line height as a multiple of the code size, so a user-chosen size keeps the
+/// default's row rhythm.
+const CODE_LINE_HEIGHT_RATIO: f32 = CODE_LINE_HEIGHT / CODE_TEXT_SIZE;
 pub const CODE_PADDING_X: f32 = 12.0;
 pub const CODE_PADDING_Y: f32 = 10.0;
 const CODE_HEADER_HEIGHT: f32 = 28.0;
@@ -2127,8 +2130,8 @@ fn render_code_block_source_with_actions(
         .px(px(CODE_PADDING_X))
         .py(px(CODE_PADDING_Y))
         .font_family(theme.font_mono.clone())
-        .text_size(px(CODE_TEXT_SIZE))
-        .line_height(px(CODE_LINE_HEIGHT))
+        .text_size(px(theme.code_font_size))
+        .line_height(px(theme.code_font_size * CODE_LINE_HEIGHT_RATIO))
         .map(|el| {
             if fit_content {
                 el.whitespace_normal()
@@ -2148,9 +2151,12 @@ fn render_code_block_source_with_actions(
                 div()
                     .map(|el| {
                         if fit_content {
-                            el.w_full().min_w_0().min_h(px(CODE_LINE_HEIGHT))
+                            el.w_full()
+                                .min_w_0()
+                                .min_h(px(theme.code_font_size * CODE_LINE_HEIGHT_RATIO))
                         } else {
-                            el.h(px(CODE_LINE_HEIGHT)).flex_none()
+                            el.h(px(theme.code_font_size * CODE_LINE_HEIGHT_RATIO))
+                                .flex_none()
                         }
                     })
                     .child(StyledText::new(line.clone()).with_runs(runs)),
@@ -2333,6 +2339,19 @@ pub fn runs_for_syntax_line_with_plain(
 mod tests {
     use super::*;
     use crate::markdown::parser::{InlineStyle, parse_full};
+
+    /// Markdown code blocks are the surface the shared setting's default was
+    /// taken from, so they scale 1:1 and need no ratio of their own.
+    #[test]
+    fn the_default_code_font_size_reproduces_the_historical_code_block_size() {
+        assert_eq!(CODE_TEXT_SIZE, crate::typography::CODE_FONT_SIZE_DEFAULT);
+        let theme = crate::theme::Theme::dark();
+        assert_eq!(theme.code_font_size, CODE_TEXT_SIZE);
+        assert_eq!(
+            theme.code_font_size * CODE_LINE_HEIGHT_RATIO,
+            CODE_LINE_HEIGHT
+        );
+    }
 
     #[test]
     fn code_block_indices_include_nested_quotes_and_lists() {

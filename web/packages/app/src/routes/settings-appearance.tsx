@@ -25,10 +25,17 @@ import {
   accentHelper,
   APPEARANCE_MODES,
   appearanceModeLabel,
+  CODE_FONT_CHOICES,
   DEFAULT_APPEARANCE,
+  effectiveCodeFontFamily,
+  effectiveTerminalFontFamily,
   effectiveUiFontFamily,
   fontFamilyLabel,
+  fontSizePxLabel,
+  MONO_FONT_SIZES,
+  nearestMonoFontSize,
   resolveAppearance,
+  TERMINAL_FONT_CHOICES,
   UI_FONT_CHOICES,
   variantChoices,
   type AccentSelection,
@@ -327,6 +334,8 @@ export function AppearanceSettingsPage() {
       </section>
 
       <InterfaceFontBlock settings={settings} />
+      <MonoFontBlock kind="terminal" settings={settings} />
+      <MonoFontBlock kind="code" settings={settings} />
 
       {(libraryError ?? libraryWarning) !== null && (
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
@@ -470,17 +479,20 @@ function InterfaceFontBlock(props: {
         <div className="settings-font-copy">
           <span className="settings-field-label">Interface font</span>
           <p className="settings-font-description">
-            Used across the interface and conversations. Code, diffs, and terminal keep their current fonts and
-            sizes.
+            Menus, sidebars, and conversation text.
           </p>
         </div>
         <div className="settings-font-controls">
           <FontFamilySelect
             value={effectiveFont}
+            choices={UI_FONT_CHOICES}
+            ariaLabel="Interface font"
             onCommit={(family) => uiSettings.updateImmediate({ uiFontFamily: family })}
           />
           <FontSizeSelect
             value={props.settings.uiFontSize}
+            sizes={UI_FONT_SIZES}
+            ariaLabel="Interface font size"
             onCommit={(size) => uiSettings.updateImmediate({ uiFontSize: size })}
           />
         </div>
@@ -488,7 +500,73 @@ function InterfaceFontBlock(props: {
       {props.settings.uiFontFamily !== effectiveFont && (
         <p className="error-strip font-error-strip">
           <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
-          This font could not be loaded. Comet is using Geist.
+          This font could not be loaded. Roboco is using Geist.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The terminal and code/diff slots (settings/appearance.rs FontKind::Terminal
+ * / ::Code): independent families and sizes on the shared mono ladder. The
+ * terminal's catalog is the fixed-width subset only.
+ */
+function MonoFontBlock(props: {
+  readonly kind: "terminal" | "code";
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const terminal = props.kind === "terminal";
+  const requested = terminal
+    ? props.settings.terminalFontFamily
+    : props.settings.codeFontFamily;
+  const effectiveFont = terminal
+    ? effectiveTerminalFontFamily(requested)
+    : effectiveCodeFontFamily(requested);
+  const size = terminal ? props.settings.terminalFontSize : props.settings.codeFontSize;
+  const choices = terminal ? TERMINAL_FONT_CHOICES : CODE_FONT_CHOICES;
+  return (
+    <div className="settings-font-block">
+      <div className="settings-font-row">
+        <div className="settings-font-copy">
+          <span className="settings-field-label">
+            {terminal ? "Terminal font" : "Code & diff font"}
+          </span>
+          <p className="settings-font-description">
+            {terminal
+              ? "Terminal panes and shell output. Fixed-width families only."
+              : "Code blocks, diffs, and workspace file editors."}
+          </p>
+        </div>
+        <div className="settings-font-controls">
+          <FontFamilySelect
+            value={effectiveFont}
+            choices={choices}
+            ariaLabel={terminal ? "Terminal font" : "Code font"}
+            onCommit={(family) =>
+              uiSettings.updateImmediate(
+                terminal ? { terminalFontFamily: family } : { codeFontFamily: family },
+              )
+            }
+          />
+          <FontSizeSelect
+            value={nearestMonoFontSize(size)}
+            sizes={MONO_FONT_SIZES}
+            ariaLabel={terminal ? "Terminal font size" : "Code font size"}
+            onCommit={(next) =>
+              uiSettings.updateImmediate(
+                terminal ? { terminalFontSize: next } : { codeFontSize: next },
+              )
+            }
+          />
+        </div>
+      </div>
+      {requested !== effectiveFont && (
+        <p className="error-strip font-error-strip">
+          <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
+          {terminal
+            ? `Proportional fonts can't drive the terminal grid. Roboco is using ${fontFamilyLabel(effectiveFont)}.`
+            : `This font could not be loaded. Roboco is using ${fontFamilyLabel(effectiveFont)}.`}
         </p>
       )}
     </div>
@@ -497,6 +575,8 @@ function InterfaceFontBlock(props: {
 
 function FontFamilySelect(props: {
   readonly value: UiFontChoice;
+  readonly choices: readonly UiFontChoice[];
+  readonly ariaLabel: string;
   readonly onCommit: (family: UiFontChoice) => void;
 }) {
   return (
@@ -509,14 +589,14 @@ function FontFamilySelect(props: {
       }}
       overlaySource="settings-font-family"
     >
-      <RbSelectTrigger className="settings-select-trigger font-trigger" aria-label="Interface font">
+      <RbSelectTrigger className="settings-select-trigger font-trigger" aria-label={props.ariaLabel}>
         <span className="settings-select-label">{fontFamilyLabel(props.value)}</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
       </RbSelectTrigger>
       <RbSelectPortal>
         <RbSelectPositioner>
           <RbSelectPopup className="popover-card settings-select-menu font-menu">
-            {UI_FONT_CHOICES.map((family) => (
+            {props.choices.map((family) => (
               <RbSelectItem key={family} value={family} className="settings-select-item">
                 <span className="settings-select-item-label">{fontFamilyLabel(family)}</span>
                 <span className="settings-select-check">
@@ -533,6 +613,8 @@ function FontFamilySelect(props: {
 
 function FontSizeSelect(props: {
   readonly value: number;
+  readonly sizes: readonly number[];
+  readonly ariaLabel: string;
   readonly onCommit: (size: number) => void;
 }) {
   return (
@@ -545,16 +627,16 @@ function FontSizeSelect(props: {
       }}
       overlaySource="settings-font-size"
     >
-      <RbSelectTrigger className="settings-select-trigger size-trigger" aria-label="Interface font size">
-        <span className="settings-select-label">{props.value} px</span>
+      <RbSelectTrigger className="settings-select-trigger size-trigger" aria-label={props.ariaLabel}>
+        <span className="settings-select-label">{fontSizePxLabel(props.value)}</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
       </RbSelectTrigger>
       <RbSelectPortal>
         <RbSelectPositioner>
           <RbSelectPopup className="popover-card settings-select-menu size-menu">
-            {UI_FONT_SIZES.map((size) => (
+            {props.sizes.map((size) => (
               <RbSelectItem key={size} value={size} className="settings-select-item">
-                <span className="settings-select-item-label">{size} px</span>
+                <span className="settings-select-item-label">{fontSizePxLabel(size)}</span>
                 <span className="settings-select-check">
                   {size === props.value && <Icon name="check" size={14} />}
                 </span>

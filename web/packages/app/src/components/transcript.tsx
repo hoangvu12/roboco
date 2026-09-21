@@ -27,6 +27,12 @@ import {
 } from "../state/transcript-store";
 import { transcriptFoldCache } from "../state/transcript-fold-state";
 import { NoticeChip } from "./notice-chip";
+import { useUiSettings } from "../state/ui-settings";
+import {
+  CODE_BLOCK_LINE_HEIGHT_BASELINE,
+  codeBlockLineHeight,
+  diffLineHeight,
+} from "../lib/typography";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
@@ -655,6 +661,10 @@ function TranscriptScroller({
   chatArrival,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  // The code font size scales code-block and embedded-diff rows (render.rs /
+  // changes.rs baselines, lib/typography.ts); the estimator's context carries
+  // the same value the renderers paint against.
+  const codeFontSize = useUiSettings().codeFontSize;
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
   // renders nothing when empty, exactly like the desktop). The attach effect
   // below keys off this presence state so a scroller that mounts after the
@@ -771,7 +781,7 @@ function TranscriptScroller({
   // that row's cached height, so the analytic-exact estimate stands in until
   // the row remounts and re-measures. Unchanged inputs keep their
   // measurements; this pass fetches nothing and notifies no one.
-  const toolKeys = computeToolMeasurementKeys(rows, toolMotion);
+  const toolKeys = computeToolMeasurementKeys(rows, toolMotion, diffLineHeight(codeFontSize));
   toolKeysRef.current = toolKeys;
   pruneStaleToolMeasurements(heights, heightKeysRef.current, toolKeys);
 
@@ -817,6 +827,8 @@ function TranscriptScroller({
     state: toolMotion,
     now: performance.now(),
     reduced: reduced?.matches === true,
+    diffLineHeight: diffLineHeight(codeFontSize),
+    codeLineHeight: codeBlockLineHeight(codeFontSize),
   });
   const estimateCtx = toolEstimateContext();
   const anchorFold = anchorIx >= 0 ? userFolds.get(rows[anchorIx]!.id) ?? null : null;
@@ -947,13 +959,13 @@ function TranscriptScroller({
   // pass above then drops exactly the stale cached measurements.
   useEffect(() => {
     return toolMotion.subscribe(() => {
-      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion);
+      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion, diffLineHeight(codeFontSize));
       const prev = toolKeysRef.current;
       if (next.size !== prev.size || [...next].some(([id, key]) => prev.get(id) !== key)) {
         bumpMeasure((tick) => tick + 1);
       }
     });
-  }, [toolMotion]);
+  }, [toolMotion, codeFontSize]);
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
     const observer = observerRef.current;
     const els = rowElsRef.current;
@@ -1763,8 +1775,10 @@ export function estimateRowHeight(
     case "liveMarkdown": {
       const block = kind.tree.blocks[kind.blockIx]?.block;
       if (block !== undefined && block.kind === "codeBlock") {
-        // Code rows are nowrap: the height is analytic (render.rs constants).
-        return block.code.split("\n").length * 18 + 28;
+        // Code rows are nowrap: the height is analytic (render.rs constants),
+        // scaled by the code font size the fence renders at.
+        const lineHeight = toolGeometry?.codeLineHeight ?? CODE_BLOCK_LINE_HEIGHT_BASELINE;
+        return block.code.split("\n").length * lineHeight + 28;
       }
       return 30;
     }
@@ -1780,6 +1794,7 @@ export function estimateRowHeight(
         state: ctx.state,
         now: ctx.now,
         reduced: ctx.reduced,
+        diffLineHeight: ctx.diffLineHeight,
       }).totalHeight;
     }
     case "inputChip":

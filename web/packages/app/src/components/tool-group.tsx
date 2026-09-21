@@ -12,6 +12,8 @@ import { Icon } from "@roboco/icons";
 import type { FetchToolBlobReply } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
 import { useResolvedAppearance } from "../state/appearance";
+import { useUiSettings } from "../state/ui-settings";
+import { diffLineHeight as scaledDiffLineHeight } from "../lib/typography";
 import type { FileDiff } from "../lib/diff";
 import type { InlineRun } from "../lib/markdown";
 import {
@@ -121,11 +123,13 @@ export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, o
   useSyncExternalStore(motion.subscribe, motion.getVersion);
   const reduced = prefersReducedMotion();
   const [now, setNow] = useState(() => performance.now());
+  const diffLine = scaledDiffLineHeight(useUiSettings().codeFontSize);
 
   // The SHARED geometry contract (ticket 70): the scroller's estimator calls
-  // the same pure resolver with the same inputs, so an unmeasured group
-  // mounts at the height this row actually renders.
-  const geometry = toolGroupGeometry({ rowId, tools, autoOpen, state: motion, now, reduced });
+  // the same pure resolver with the same inputs — including the code-size-
+  // scaled diff row — so an unmeasured group mounts at the height this row
+  // actually renders.
+  const geometry = toolGroupGeometry({ rowId, tools, autoOpen, state: motion, now, reduced, diffLineHeight: diffLine });
   const {
     collapses,
     open,
@@ -737,9 +741,10 @@ function ToolDiffBody({ file }: { file: FileDiff }) {
   if (scrollRef.current === null) {
     scrollRef.current = new FilePlaneScroll();
   }
+  const lineHeight = scaledDiffLineHeight(useUiSettings().codeFontSize);
   return (
     <div className="tool-diff-body">
-      <FileBodyUpto file={file} maxPx={Number.POSITIVE_INFINITY} layout="unified" scroll={scrollRef.current} />
+      <FileBodyUpto file={file} maxPx={Number.POSITIVE_INFINITY} layout="unified" scroll={scrollRef.current} lineHeight={lineHeight} />
       <div className="diff-body-pad" aria-hidden />
     </div>
   );

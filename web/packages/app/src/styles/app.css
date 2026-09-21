@@ -45,7 +45,10 @@ body {
 
 code,
 .mono {
-  font-family: "Geist Mono", ui-monospace, monospace;
+  /* The code/diff family slot (typography.rs `code_font_family`), installed
+     on the root by applyTypographyToDocument; the stack falls back to the
+     bundled monospace before first paint and in tests. */
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
 }
 
 button {
@@ -8509,14 +8512,15 @@ button.files-save-pill:hover {
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12.5px;
-  line-height: 18px;
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  /* Markdown code blocks scale 1:1 off the code font size (render.rs). */
+  font-size: var(--rb-code-size-px, 12.5px);
+  line-height: var(--rb-code-line-height, 18px);
 }
 
 .md-codeline {
   display: block;
-  min-height: 18px;
+  min-height: var(--rb-code-line-height, 18px);
   white-space: pre;
 }
 
@@ -12712,9 +12716,9 @@ button.segmented-option:hover {
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--rb-bg);
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 21px;
+  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  font-size: var(--rb-diff-text-size, 12px);
+  line-height: var(--rb-diff-line-height, 21px);
   contain: strict;
 }
 
@@ -12889,11 +12893,13 @@ button.segmented-option:hover {
   position: relative;
   display: flex;
   align-items: stretch;
-  min-height: 21px;
-  height: 21px;
+  /* The row box and the painted line scale together off the code font size
+     (changes.rs `diff_line_height`); the surface root sets both vars. */
+  min-height: var(--rb-diff-line-height, 21px);
+  height: var(--rb-diff-line-height, 21px);
   font-family: inherit;
   font-size: inherit;
-  line-height: 21px;
+  line-height: var(--rb-diff-line-height, 21px);
   flex: none;
 }
 
@@ -12983,8 +12989,8 @@ button.segmented-option:hover {
 .diff-code-content {
   display: inline-block;
   white-space: pre;
-  font-size: 12px;
-  line-height: 21px;
+  font-size: var(--rb-diff-text-size, 12px);
+  line-height: var(--rb-diff-line-height, 21px);
   box-sizing: border-box;
   /* Plain text — the base code color both layouts share. */
   color: color-mix(in srgb, var(--rb-text) 92%, transparent);

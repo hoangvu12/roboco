@@ -319,7 +319,12 @@ export function initAppearance(): () => void {
   // any snapshot change carries it.
   const applyTypography = () => {
     const settings = uiSettings.getSnapshot();
-    applyTypographyToDocument({ uiFontFamily: settings.uiFontFamily, uiFontSize: settings.uiFontSize });
+    applyTypographyToDocument({
+      uiFontFamily: settings.uiFontFamily,
+      uiFontSize: settings.uiFontSize,
+      codeFontFamily: settings.codeFontFamily,
+      codeFontSize: settings.codeFontSize,
+    });
   };
   applyTypography();
   const unsubscribe = appearanceStore.subscribe(apply);

@@ -19,7 +19,7 @@ import type {
 } from "@roboco/proto";
 import type { IconName } from "@roboco/icons";
 import { layout } from "@roboco/theme";
-import { bodyHeight, truncateFileLines, type FileDiff } from "./diff";
+import { bodyHeight, DIFF_LINE_HEIGHT, truncateFileLines, type FileDiff } from "./diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
 import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
@@ -1054,9 +1054,11 @@ export function chipsHeight(count: number): number {
 /**
  * Analytic height an open detail adds to its chip's card (separator + body)
  * (transcript.rs:1814) — output/thought by line count, diff via the changes
- * pane's own `body_height`, stats one row each.
+ * pane's own `body_height`, stats one row each. `diffLine` is the
+ * code-size-scaled diff row (`diff_line_height`); it defaults to the
+ * 12.5px-code setting's 21px.
  */
-export function detailHeight(detail: ToolDetail): number {
+export function detailHeight(detail: ToolDetail, diffLine: number = DIFF_LINE_HEIGHT): number {
   let body: number;
   switch (detail.kind) {
     case "output":
@@ -1064,7 +1066,7 @@ export function detailHeight(detail: ToolDetail): number {
       body = (detail.lines.length + (detail.truncatedBy > 0 ? 1 : 0)) * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
       break;
     case "diff":
-      body = bodyHeight(detail.file);
+      body = bodyHeight(detail.file, diffLine);
       break;
     case "stats":
       body = detail.stats.length * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
