@@ -95,8 +95,24 @@ jobs:
           $env:ROBOCO_IPC_PORT = '0'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "roboco smoke O'Brien 日本語"
           $expected = Join-Path $env:LOCALAPPDATA 'Roboco'
-          $output = & ./target/release/roboco.exe status
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $probe = [Diagnostics.ProcessStartInfo]::new()
+          $probe.FileName = (Resolve-Path -LiteralPath './target/release/roboco.exe').Path
+          $probe.Arguments = 'status'
+          $probe.UseShellExecute = $false
+          $probe.CreateNoWindow = $true
+          $probe.RedirectStandardOutput = $true
+          $probe.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($probe)
+          try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(10000)) {
+              $process.Kill()
+              throw 'Isolated status probe timed out'
+            }
+            if ($process.ExitCode -ne 0) { throw "Status failed: $($stderr.Result)" }
+            $output = $stdout.Result -split '\r?\n'
+          } finally { $process.Dispose() }
           $output
           if (-not ($output -contains "Data dir: $expected")) {
             throw 'Windows startup did not select LOCALAPPDATA/Roboco'
