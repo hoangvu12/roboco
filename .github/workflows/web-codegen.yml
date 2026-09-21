@@ -12,12 +12,15 @@ on:
       - 'crates/doc/**'
       - 'crates/update/**'
       - 'crates/wiregen/**'
-      # Engine files carrying wire types (registry/uploads/doc_host/pairing/rpc).
+      # Engine files carrying wire types (registry/uploads/doc_host/pairing/rpc
+      # and diff_sync's Git status surfaces behind the rpc subscription).
       - 'crates/engine/src/registry.rs'
       - 'crates/engine/src/uploads.rs'
       - 'crates/engine/src/doc_host.rs'
       - 'crates/engine/src/pairing.rs'
       - 'crates/engine/src/rpc.rs'
+      - 'crates/engine/src/diff_sync.rs'
+      - 'crates/engine/src/diff_sync/**'
       - 'web/**'
       - '.github/workflows/web-codegen.yml'
   push:
@@ -34,6 +37,8 @@ on:
       - 'crates/engine/src/doc_host.rs'
       - 'crates/engine/src/pairing.rs'
       - 'crates/engine/src/rpc.rs'
+      - 'crates/engine/src/diff_sync.rs'
+      - 'crates/engine/src/diff_sync/**'
       - 'web/**'
       - '.github/workflows/web-codegen.yml'
   workflow_dispatch:

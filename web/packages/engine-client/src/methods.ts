@@ -117,6 +117,8 @@ export const CLOSE_TERMINAL = "CloseTerminal";
 
 /** Per-checkout working-tree diffs (DataRpc, relay-forwardable). */
 export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
+/** Shared remote-safe Git status stream (`{chatId}` → `WorkspaceGitStatusFrame`). */
+export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";
 /** One-shot scoped capture (`mode` = workingTree | branch | turn). */
 export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
 /** Full text of one side of a file in a diff (used for non-truncated text view). */
