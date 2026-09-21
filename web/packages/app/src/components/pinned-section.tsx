@@ -61,7 +61,6 @@ export function PinnedSection({
   items,
   open,
   hasDivider,
-  dragOverPinned,
   onToggle,
   onCommit,
   onTransferOut,
@@ -75,8 +74,6 @@ export function PinnedSection({
   readonly open: boolean;
   /** The hairline divider renders only when regular rows follow. */
   readonly hasDivider: boolean;
-  /** A regular-row drag hovers this section: the drag-over wash (`drag_over`). */
-  readonly dragOverPinned: boolean;
   /** The header's flip: the parent owns the in-memory open flag. */
   readonly onToggle: () => void;
   /**
@@ -294,7 +291,6 @@ export function PinnedSection({
       className="sidebar-pinned-section"
       data-testid="sidebar-pinned-section"
       ref={sectionRef}
-      data-drag-over={dragOverPinned ? "1" : undefined}
     >
       <SidebarDisclosureHeader
         id="pinned-toggle"

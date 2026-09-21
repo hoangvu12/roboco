@@ -2438,9 +2438,9 @@ a:focus-visible,
 /*
  * Drag transfers (6851fc34): while a pinned row's drag previews a transfer
  * out, the row lifts instead of sliding a slot; a regular row under a
- * transfer drag dims at its source; the pinned section wears the drag-over
- * wash while a regular row hovers it; and with no regular rows left, the
- * "Drop here to unpin" strip stands in as the destination.
+ * transfer drag dims at its source; and with no regular rows left, the
+ * "Drop here to unpin" strip stands in as the destination. (0f152647
+ * removed the drag-over highlights on the sections themselves.)
  */
 .pinned-row[data-transfer="1"] {
   opacity: 0.6;
@@ -2453,11 +2453,6 @@ a:focus-visible,
 
 .regular-row[data-sidebar-dragging="1"] {
   opacity: 0.6;
-}
-
-.sidebar-pinned-section[data-drag-over="1"] {
-  background: color-mix(in srgb, var(--rb-border) 25%, transparent);
-  border-radius: 8px;
 }
 
 .sidebar-drop-unpin {

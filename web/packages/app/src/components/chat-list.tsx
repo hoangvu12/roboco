@@ -241,15 +241,17 @@ export function ChatList() {
   const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
   // ── Drag transfers between Pinned and regular sessions (6851fc34) ───────
-  // A regular row's press arms a transfer: dragging over the pinned section
-  // highlights it (the desktop's `drag_over` wash), and a release inside
-  // pins the chat at the drop index (`finish_sidebar_session_transfer`'s
-  // `SidebarSessionDrop::Pinned`; a closed section opens on success).
-  // Releasing anywhere else is a no-op — regular rows never acquire a manual
-  // order — and the FLIP resort glide carries the row into the section on
-  // commit. The pinned-section side of the gesture (dragging OUT) lives in
-  // PinnedSection's `onTransferOut`.
-  const [transferIn, setTransferIn] = useState<{ readonly chatId: string; readonly overPinned: boolean } | null>(null);
+  // A regular row's press arms a transfer: a release inside the pinned
+  // section pins the chat at the drop index
+  // (`finish_sidebar_session_transfer`'s `SidebarSessionDrop::Pinned`; a
+  // closed section opens on success). Releasing anywhere else is a no-op —
+  // regular rows never acquire a manual order — and the FLIP resort glide
+  // carries the row into the section on commit. The pinned-section side of
+  // the gesture (dragging OUT) lives in PinnedSection's `onTransferOut`.
+  // The state is the dragging chat alone (0f152647 removed the highlights);
+  // the drop index reads the live DOM at release, like the desktop's
+  // prepaint row centers.
+  const [transferIn, setTransferIn] = useState<string | null>(null);
   const pinnedSectionRef = useRef<HTMLElement | null>(null);
   // A completed transfer drag suppresses the click its pointerup would fire.
   const suppressRowClickRef = useRef(false);
@@ -294,14 +296,6 @@ export function ChatList() {
     // The header (or a collapsed body) pins at the top.
     return 0;
   };
-  const setPinnedDrop = (over: boolean): void => {
-    setTransferIn((current) => {
-      if (current === null) {
-        return current;
-      }
-      return current.overPinned === over ? current : { ...current, overPinned: over };
-    });
-  };
   const finishTransferIn = (chatId: string, pointer: { clientX: number; clientY: number }): void => {
     const index = pinnedDropIndex(pointer);
     if (index === null) {
@@ -338,7 +332,6 @@ export function ChatList() {
     const startX = event.clientX;
     const startY = event.clientY;
     let moved = false;
-    let overPinned = false;
     const onMove = (move: PointerEvent): void => {
       // `contain_pinned_session_drag`: leaving the sidebar's column cancels.
       const sidebar = sidebarRef.current;
@@ -354,14 +347,7 @@ export function ChatList() {
           return;
         }
         moved = true;
-        overPinned = pinnedDropIndex(move) !== null;
-        setTransferIn({ chatId, overPinned });
-        return;
-      }
-      const next = pinnedDropIndex(move) !== null;
-      if (next !== overPinned) {
-        overPinned = next;
-        setPinnedDrop(next);
+        setTransferIn(chatId);
       }
     };
     const teardown = (): void => {
@@ -520,7 +506,7 @@ export function ChatList() {
               key={row.chat.id}
               chatId={row.chat.id}
               onArm={armTransferIn}
-              dragged={transferIn?.chatId === row.chat.id}
+              dragged={transferIn === row.chat.id}
               shouldSuppressClick={suppressTransferClick}
             >
               <ChatListRow row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
@@ -548,7 +534,7 @@ export function ChatList() {
           collapsed={collapsed}
           jumpLabelFor={jumpLabelFor}
           onRowPointerDown={armTransferIn}
-          draggingChatId={transferIn?.chatId ?? null}
+          draggingChatId={transferIn}
           shouldSuppressClick={suppressTransferClick}
           onToggle={() => {
             setCollapsedGroups((current) => {
@@ -629,7 +615,6 @@ export function ChatList() {
           items={pinnedItems}
           open={pinnedOpen}
           hasDivider={hasPinnedDivider}
-          dragOverPinned={transferIn?.overPinned ?? false}
           sectionRef={pinnedSectionRef}
           onToggle={() => {
             // The disclosure owns this movement: adopt the new order without
