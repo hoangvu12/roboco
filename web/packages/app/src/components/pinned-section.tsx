@@ -7,7 +7,6 @@ import {
   pinnedSessionClampedIndex,
   pinnedSessionDropIndex,
   pinnedSessionIsDraggable,
-  reorderVisiblePins,
   SIDEBAR_DRAG_SCROLL_FRAME_MS,
   SIDEBAR_SESSION_SLOT,
 } from "../lib/sidebar-pins";
@@ -41,18 +40,19 @@ interface PinDrag {
 
 export function PinnedSection({
   rows,
-  pinnedIds,
   items,
   onCommit,
 }: {
   /** The visible pinned rows, in display order. */
   readonly rows: readonly ChatRow[];
-  /** The full saved pin order (hidden pins included) — the commit base. */
-  readonly pinnedIds: readonly string[];
   /** The parent's keyed element per row, aligned with `rows`. */
   readonly items: readonly React.ReactNode[];
-  /** A drop's commit: the full next pin order (`commit_pinned_session_drag`). */
-  readonly onCommit: (nextPinnedIds: string[]) => void;
+  /**
+   * A drop's commit: the from/to slots in the CURRENT visible order — the
+   * parent owns the saved-order math (`commit_pinned_session_drag`), since
+   * pins are bucketed per workspace profile.
+   */
+  readonly onCommit: (from: number, to: number) => void;
 }) {
   const groupRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<PinDrag | null>(null);
@@ -65,8 +65,6 @@ export function PinnedSection({
   };
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
-  const pinnedIdsRef = useRef(pinnedIds);
-  pinnedIdsRef.current = pinnedIds;
   const onCommitRef = useRef(onCommit);
   onCommitRef.current = onCommit;
   const pointerYRef = useRef<number | null>(null);
@@ -191,7 +189,7 @@ export function PinnedSection({
           current.snapshotIds.includes(current.chatId) &&
           current.snapshotIds.every((id) => visible.includes(id));
         if (stillValid) {
-          onCommitRef.current(reorderVisiblePins(pinnedIdsRef.current, visible, current.from, current.over));
+          onCommitRef.current(current.from, current.over);
         }
       }
       if (moved) {

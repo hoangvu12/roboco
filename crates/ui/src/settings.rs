@@ -580,10 +580,13 @@ pub struct UiSettings {
     /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
-    /// Device-local pinned sessions in their visual order. This preference is
-    /// presentation-only and never enters the synchronized workspace.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sidebar_pinned_session_ids: Vec<String>,
+    /// Device-local pinned sessions in visual order, isolated by workspace
+    /// profile. This preference is presentation-only and never synchronized.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty"
+    )]
+    pub sidebar_pinned_session_ids_by_profile: std::collections::HashMap<String, Vec<String>>,
     /// Legacy: per-space tab order, from when tabs were the selected space's
     /// non-archived sessions. Kept for file compatibility; no longer read.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -694,7 +697,7 @@ impl Default for UiSettings {
             last_space_id: None,
             open_tabs: None,
             space_filter: None,
-            sidebar_pinned_session_ids: Vec::new(),
+            sidebar_pinned_session_ids_by_profile: std::collections::HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sound_enabled: true,
@@ -910,6 +913,27 @@ impl Default for KeymapConfig {
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
+        }
+    }
+}
+
+/// Stable key for device-local preferences that belong to one workspace
+/// profile. `EngineInfo` arrives after the first engine frame, so callers
+/// must treat `None` as "identity not ready" and avoid destructive cleanup.
+///
+/// Roboco has no account sign-in (upstream keyed synced/development profiles
+/// by org + user from its auth token). The wire identity an engine exposes is
+/// its scope plus its device id, so non-local profiles key on that: a profile
+/// switch on one install re-keys the pins instead of leaking them across.
+pub fn sidebar_pin_profile_key(
+    scope: Option<roboco_proto::WorkspaceScope>,
+    device_id: Option<&str>,
+) -> Option<String> {
+    match scope? {
+        roboco_proto::WorkspaceScope::Local => Some("local".to_string()),
+        roboco_proto::WorkspaceScope::Synced => Some(format!("synced:{}", device_id?)),
+        roboco_proto::WorkspaceScope::Development => {
+            Some(format!("development:{}", device_id?))
         }
     }
 }
@@ -1162,6 +1186,19 @@ pub fn badge_combo_on(mac: bool, combo: &str) -> String {
 }
 
 impl UiSettings {
+    pub fn sidebar_pins(&self, profile_key: &str) -> &[String] {
+        self.sidebar_pinned_session_ids_by_profile
+            .get(profile_key)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn sidebar_pins_mut(&mut self, profile_key: String) -> &mut Vec<String> {
+        self.sidebar_pinned_session_ids_by_profile
+            .entry(profile_key)
+            .or_default()
+    }
+
     /// Whether this session event may produce audio. Appshot capture has its
     /// own feature-local preference once the Appshots contribution lands.
     pub fn session_sound_enabled(&self, sound: crate::sound::Sound) -> bool {
@@ -1704,7 +1741,16 @@ mod tests {
             last_space_id: Some("space-1".into()),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),
             space_filter: Some("space-1".into()),
-            sidebar_pinned_session_ids: vec!["chat-2".to_string(), "chat-1".to_string()],
+            sidebar_pinned_session_ids_by_profile: std::collections::HashMap::from([
+                (
+                    "local".to_string(),
+                    vec!["local-2".to_string(), "local-1".to_string()],
+                ),
+                (
+                    "synced:device-1".to_string(),
+                    vec!["synced-1".to_string()],
+                ),
+            ]),
             tab_order: std::collections::HashMap::from([(
                 "space-1".to_string(),
                 vec!["b".to_string(), "a".to_string()],
@@ -1861,6 +1907,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sidebar_pin_profile_keys_include_the_full_workspace_identity() {
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Local), None).as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(
+                Some(roboco_proto::WorkspaceScope::Synced),
+                Some("device-1"),
+            )
+            .as_deref(),
+            Some("synced:device-1")
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(
+                Some(roboco_proto::WorkspaceScope::Development),
+                Some("device-2"),
+            )
+            .as_deref(),
+            Some("development:device-2")
+        );
+    }
+
+    #[test]
+    fn sidebar_pin_profile_key_waits_for_engine_info() {
+        // No scope yet (the engine's first frame has not landed): no key, and
+        // therefore no destructive cleanup against an unknown identity.
+        assert_eq!(sidebar_pin_profile_key(None, Some("device-1")), None);
+        // A non-local scope without the engine's device id is equally unready.
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Synced), None),
+            None
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Development), None),
+            None
+        );
+        // A local profile needs no device id, exactly like upstream.
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Local), None),
+            Some("local".to_string())
+        );
+    }
+
+    #[test]
+    fn local_synced_local_switch_restores_each_profiles_pins() {
+        let mut settings = UiSettings::default();
+        settings
+            .sidebar_pins_mut("local".to_string())
+            .extend(["local-1".to_string(), "local-2".to_string()]);
+        settings
+            .sidebar_pins_mut("synced:device-1".to_string())
+            .push("synced-1".to_string());
+
+        assert_eq!(settings.sidebar_pins("local"), ["local-1", "local-2"]);
+        assert_eq!(settings.sidebar_pins("synced:device-1"), ["synced-1"]);
+        assert_eq!(settings.sidebar_pins("local"), ["local-1", "local-2"]);
+    }
+
+    #[test]
+    fn account_switch_restores_each_accounts_pins() {
+        let mut settings = UiSettings::default();
+        settings
+            .sidebar_pins_mut("synced:device-a".to_string())
+            .push("a-1".to_string());
+        settings
+            .sidebar_pins_mut("synced:device-b".to_string())
+            .push("b-1".to_string());
+
+        assert_eq!(settings.sidebar_pins("synced:device-a"), ["a-1"]);
+        assert_eq!(settings.sidebar_pins("synced:device-b"), ["b-1"]);
+        assert_eq!(settings.sidebar_pins("synced:device-a"), ["a-1"]);
+    }
+
     /// A settings file written before light mode existed has no `appearance`
     /// key; it must load as "follow the OS" rather than failing the whole parse
     /// and resetting every other preference to defaults.
@@ -1877,7 +1998,7 @@ mod tests {
         assert_eq!(loaded.accent, roboco_theme::AccentSelection::ThemeDefault);
         assert_eq!(loaded.surface, roboco_theme::SurfacePreference::ThemeDefault);
         assert_eq!(loaded.sidebar_width, 300.0);
-        assert!(loaded.sidebar_pinned_session_ids.is_empty());
+        assert!(loaded.sidebar_pinned_session_ids_by_profile.is_empty());
         assert!(!loaded.sound_enabled, "other keys still parse");
         assert!(loaded.sound_completion_enabled);
         assert!(loaded.sound_input_enabled);

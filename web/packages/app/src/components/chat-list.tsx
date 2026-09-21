@@ -27,7 +27,9 @@ import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { PinnedSection } from "./pinned-section";
 import {
+  commitVisiblePinReorder,
   pinOrderedRows,
+  sidebarPinProfileKey,
   SIDEBAR_PINNED_DIVIDER_HEIGHT,
   SIDEBAR_PINNED_DIVIDER_KEY,
 } from "../lib/sidebar-pins";
@@ -200,24 +202,42 @@ export function ChatList() {
         })
       : [];
 
-  // `retain_known_pins` on the desktop's synced-chats tick: archived ids
-  // survive (unarchiving restores the pin); only a confirmed deletion prunes.
+  // Pins are bucketed per workspace profile (settings.rs's
+  // `sidebar_pinned_session_ids_by_profile`) — one bucket per registry engine
+  // in pairing order; roboco engines are all local-scoped in practice, so
+  // this is usually the one shared "local" bucket.
+  const pinProfileKeys: string[] = [];
+  for (const engine of registry.engines) {
+    const key = sidebarPinProfileKey(engine.info?.workspaceScope ?? null, engine.info?.deviceId ?? null);
+    if (key !== null && !pinProfileKeys.includes(key)) {
+      pinProfileKeys.push(key);
+    }
+  }
+  const pinnedIds = pinProfileKeys.flatMap((key) => sidebar.pinnedByProfile[key] ?? []);
+
+  // `retain_known_pins` on the desktop's synced-chats tick, per ACTIVE
+  // profile: another profile's absent chats are not deletions, and an engine
+  // that has not loaded yet never judges its own pins.
   useEffect(() => {
     if (!chats.loaded || chats.error !== null) {
       return;
     }
-    sidebarStore.pruneUnknownPins(new Set(chats.rows.map((chat) => chat.id)));
-  }, [chats.loaded, chats.error, chats.rows]);
+    const keys = registry.engines
+      .filter((engine) => engine.chats.loaded)
+      .map((engine) => sidebarPinProfileKey(engine.info?.workspaceScope ?? null, engine.info?.deviceId ?? null))
+      .filter((key): key is string => key !== null);
+    sidebarStore.pruneUnknownPins(keys, new Set(chats.rows.map((chat) => chat.id)));
+  }, [chats.loaded, chats.error, chats.rows, registry]);
 
   // The pinned section leads; regular rows keep the existing grouping.
-  const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, sidebar.pinnedSessionIds);
+  const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, pinnedIds);
   const hasPinnedDivider = pinnedRows.length > 0 && regularRows.length > 0;
   const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
   // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
   // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
   // jump-hint chips all read, so keyboard order never drifts from the screen.
-  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId, sidebar.pinnedSessionIds);
+  const order = sidebarVisibleOrder(rows, sidebar.organization, localDeviceId, pinnedIds);
 
   // The chips: while the hints are visible, the first nine rows carry the
   // slot's `badgeCombo` text in the corner — ticket 08's `.chat-row-jump`
@@ -399,10 +419,17 @@ export function ChatList() {
       {pinnedRows.length > 0 && (
         <PinnedSection
           rows={pinnedRows}
-          pinnedIds={sidebar.pinnedSessionIds}
           items={pinnedItems}
-          onCommit={(nextPinnedIds) => {
-            sidebarStore.replacePinnedSessionIds(nextPinnedIds);
+          onCommit={(from, to) => {
+            // `commit_pinned_session_drag` over the profile buckets: reorder
+            // the visible projection, settle every id back into its own
+            // bucket (`commitVisiblePinReorder`).
+            const buckets: Record<string, readonly string[]> = {};
+            for (const key of pinProfileKeys) {
+              buckets[key] = sidebar.pinnedByProfile[key] ?? [];
+            }
+            const visible = pinnedRows.map((row) => row.chat.id);
+            sidebarStore.replacePinsByProfile(commitVisiblePinReorder(buckets, visible, from, to));
             setPinResetEpoch((epoch) => epoch + 1);
           }}
         />

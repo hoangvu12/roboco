@@ -182,11 +182,11 @@ export interface UiSettings {
   readonly lastSpaceId: string | null;
   readonly spaceFilter: string | null;
   /**
-   * Device-local pinned sessions in their visual order
-   * (`UiSettings::sidebar_pinned_session_ids`). Presentation-only; never
-   * synchronized.
+   * Device-local pinned sessions in visual order, isolated by workspace
+   * profile (`UiSettings::sidebar_pinned_session_ids_by_profile`).
+   * Presentation-only; never synchronized.
    */
-  readonly sidebarPinnedSessionIds: readonly string[];
+  readonly sidebarPinnedSessionIdsByProfile: Readonly<Record<string, readonly string[]>>;
   readonly soundEnabled: boolean;
   readonly soundCompletionEnabled: boolean;
   readonly soundInputEnabled: boolean;
@@ -280,7 +280,7 @@ export function defaultUiSettings(): UiSettings {
     sidebarShowPullRequest: true,
     lastSpaceId: null,
     spaceFilter: null,
-    sidebarPinnedSessionIds: [],
+    sidebarPinnedSessionIdsByProfile: {},
     soundEnabled: true,
     soundCompletionEnabled: true,
     soundInputEnabled: true,
@@ -395,6 +395,26 @@ function healStringList(value: unknown): string[] {
   return out;
 }
 
+/** Per-profile pin lists — junk buckets and entries heal out one by one. */
+function healPinnedByProfile(value: unknown): Record<string, readonly string[]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string[]> = {};
+  for (const [key, list] of Object.entries(value)) {
+    if (key.length === 0) {
+      continue;
+    }
+    const healed = healStringList(list);
+    // An emptied bucket drops out of the map, exactly like the desktop's
+    // removal on the last unpin/prune.
+    if (healed.length > 0) {
+      out[key] = healed;
+    }
+  }
+  return out;
+}
+
 function text(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -487,7 +507,7 @@ export function healUiSettings(value: unknown): UiSettings {
     sidebarShowPullRequest: bool(raw.sidebarShowPullRequest, true),
     lastSpaceId: nullableString(raw.lastSpaceId),
     spaceFilter: nullableString(raw.spaceFilter),
-    sidebarPinnedSessionIds: healStringList(raw.sidebarPinnedSessionIds),
+    sidebarPinnedSessionIdsByProfile: healPinnedByProfile(raw.sidebarPinnedSessionIdsByProfile),
     soundEnabled: bool(raw.soundEnabled, true),
     soundCompletionEnabled: bool(raw.soundCompletionEnabled, true),
     soundInputEnabled: bool(raw.soundInputEnabled, true),

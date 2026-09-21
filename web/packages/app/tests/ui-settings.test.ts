@@ -175,13 +175,20 @@ describe("heal", () => {
     ]);
   });
 
-  it("sidebarPinnedSessionIds — a list of chat ids, healed per entry", () => {
-    expect(storedWith({ sidebarPinnedSessionIds: ["a", "a", 7, "", "b"] }).sidebarPinnedSessionIds).toEqual([
-      "a",
-      "b",
-    ]);
-    expect(storedWith({ sidebarPinnedSessionIds: "a" }).sidebarPinnedSessionIds).toEqual([]);
-    expect(storedWith({}).sidebarPinnedSessionIds).toEqual([]);
+  it("sidebarPinnedSessionIdsByProfile — per-profile id lists, healed per entry", () => {
+    expect(
+      storedWith({ sidebarPinnedSessionIdsByProfile: { local: ["a", "a", 7, "", "b"] } })
+        .sidebarPinnedSessionIdsByProfile,
+    ).toEqual({ local: ["a", "b"] });
+    // An emptied bucket heals out of the map; junk keys and junk values go.
+    expect(
+      storedWith({ sidebarPinnedSessionIdsByProfile: { "": ["a"], local: ["", 7], "synced:d1": "a" } })
+        .sidebarPinnedSessionIdsByProfile,
+    ).toEqual({});
+    expect(storedWith({ sidebarPinnedSessionIdsByProfile: "local" }).sidebarPinnedSessionIdsByProfile).toEqual(
+      {},
+    );
+    expect(storedWith({}).sidebarPinnedSessionIdsByProfile).toEqual({});
   });
 });
 

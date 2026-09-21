@@ -27,8 +27,12 @@ export interface SidebarState {
   readonly lastSpaceId: string | null;
   /** The archived shelf's disclosure (in-memory, like the desktop). */
   readonly archivedOpen: boolean;
-  /** Device-local pinned sessions in visual order (ui-settings, never synced). */
-  readonly pinnedSessionIds: readonly string[];
+  /**
+   * Device-local pinned sessions per workspace profile, in visual order
+   * (`UiSettings::sidebar_pinned_session_ids_by_profile`; ui-settings, never
+   * synced). Callers resolve the active bucket(s) off the fleet registry.
+   */
+  readonly pinnedByProfile: Readonly<Record<string, readonly string[]>>;
   /** ByDevice buckets the list under per-device disclosures; InOneList is flat. */
   readonly organization: SidebarOrganization;
   /** The comparator the active list, jump order, and archived shelf share. */
@@ -96,46 +100,82 @@ export class SidebarStore {
   }
 
   /**
-   * `Shell::set_chat_pinned`: pins append in click order, unpins leave the
-   * rest untouched. A no-op writes nothing (and notifies nobody).
+   * `Shell::set_chat_pinned`: pins append in click order under their profile,
+   * unpins leave the rest untouched, and an emptied bucket drops out of the
+   * map. A null profile key is the desktop's "identity not ready" early
+   * return; a no-op writes nothing (and notifies nobody).
    */
-  setChatPinned(chatId: string, pinned: boolean): void {
-    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
-    let next: string[];
-    if (pinned) {
-      if (current.includes(chatId)) {
-        return;
-      }
-      next = [...current, chatId];
-    } else {
-      if (!current.includes(chatId)) {
-        return;
-      }
-      next = current.filter((id) => id !== chatId);
-    }
-    this.#settings.update({ sidebarPinnedSessionIds: next }, "immediate");
-  }
-
-  /** Replace the whole pin order (a committed drag reorder). */
-  replacePinnedSessionIds(pinnedSessionIds: string[]): void {
-    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
-    if (current.length === pinnedSessionIds.length && current.every((id, ix) => id === pinnedSessionIds[ix])) {
+  setChatPinned(profileKey: string | null, chatId: string, pinned: boolean): void {
+    if (profileKey === null) {
       return;
     }
-    this.#settings.update({ sidebarPinnedSessionIds: pinnedSessionIds }, "immediate");
+    const current = this.#settings.getSnapshot().sidebarPinnedSessionIdsByProfile;
+    const bucket = current[profileKey] ?? [];
+    let next: readonly string[];
+    if (pinned) {
+      if (bucket.includes(chatId)) {
+        return;
+      }
+      next = [...bucket, chatId];
+    } else {
+      if (!bucket.includes(chatId)) {
+        return;
+      }
+      next = bucket.filter((id) => id !== chatId);
+    }
+    const map: Record<string, readonly string[]> = { ...current };
+    if (next.length === 0) {
+      delete map[profileKey];
+    } else {
+      map[profileKey] = next;
+    }
+    this.#settings.update({ sidebarPinnedSessionIdsByProfile: map }, "immediate");
   }
 
   /**
-   * `retain_known_pins` on the desktop's synced-chats tick: archived ids
-   * survive (unarchiving restores the pin); only a chat the loaded list
-   * confirms deleted loses its pin. A prune is a settings write like any
-   * other; a no-op notifies nobody.
+   * Settle the buckets after a committed drag reorder
+   * (`commit_pinned_session_drag`): the input is `commitVisiblePinReorder`'s
+   * output; emptied buckets drop out. A no-op writes nothing.
    */
-  pruneUnknownPins(knownChatIds: ReadonlySet<string>): void {
-    const current = this.#settings.getSnapshot().sidebarPinnedSessionIds;
-    const next = retainKnownPins([...current], knownChatIds);
-    if (next !== null) {
-      this.#settings.update({ sidebarPinnedSessionIds: next }, "immediate");
+  replacePinsByProfile(pinnedByProfile: Readonly<Record<string, readonly string[]>>): void {
+    const clean: Record<string, readonly string[]> = {};
+    for (const [key, ids] of Object.entries(pinnedByProfile)) {
+      if (ids.length > 0) {
+        clean[key] = ids;
+      }
+    }
+    if (pinMapsEqual(this.#settings.getSnapshot().sidebarPinnedSessionIdsByProfile, clean)) {
+      return;
+    }
+    this.#settings.update({ sidebarPinnedSessionIdsByProfile: clean }, "immediate");
+  }
+
+  /**
+   * `retain_known_pins` on the desktop's synced-chats tick, per ACTIVE
+   * profile: another profile's absent chats are not deletions. Archived ids
+   * survive (unarchiving restores the pin); only a chat the loaded list
+   * confirms deleted loses its pin. A no-op notifies nobody.
+   */
+  pruneUnknownPins(profileKeys: readonly string[], knownChatIds: ReadonlySet<string>): void {
+    const current = this.#settings.getSnapshot().sidebarPinnedSessionIdsByProfile;
+    let map: Record<string, readonly string[]> | null = null;
+    for (const key of profileKeys) {
+      const bucket = current[key];
+      if (bucket === undefined) {
+        continue;
+      }
+      const next = retainKnownPins([...bucket], knownChatIds);
+      if (next !== null) {
+        map ??= { ...current };
+        if (next.length === 0) {
+          delete map[key];
+        } else {
+          map[key] = next;
+        }
+      }
+    }
+    if (map !== null) {
+      this.#settings.update({ sidebarPinnedSessionIdsByProfile: map }, "immediate");
     }
   }
 
@@ -144,7 +184,7 @@ export class SidebarStore {
       spaceFilter: settings.spaceFilter,
       lastSpaceId: settings.lastSpaceId,
       archivedOpen: this.#archivedOpen,
-      pinnedSessionIds: settings.sidebarPinnedSessionIds,
+      pinnedByProfile: settings.sidebarPinnedSessionIdsByProfile,
       organization: settings.sidebarOrganization,
       sort: settings.sidebarSort,
       showHarness: settings.sidebarShowHarness,
@@ -158,9 +198,8 @@ export class SidebarStore {
       state.spaceFilter === this.#state.spaceFilter &&
       state.lastSpaceId === this.#state.lastSpaceId &&
       state.archivedOpen === this.#state.archivedOpen &&
-      // Healed snapshots allocate a fresh array per write — compare contents.
-      state.pinnedSessionIds.length === this.#state.pinnedSessionIds.length &&
-      state.pinnedSessionIds.every((id, ix) => id === this.#state.pinnedSessionIds[ix]) &&
+      // Healed snapshots allocate fresh containers per write — compare contents.
+      pinMapsEqual(state.pinnedByProfile, this.#state.pinnedByProfile) &&
       state.organization === this.#state.organization &&
       state.sort === this.#state.sort &&
       state.showHarness === this.#state.showHarness &&
@@ -174,4 +213,25 @@ export class SidebarStore {
       listener();
     }
   }
+}
+
+/** Content comparison for per-profile pin maps (healed snapshots reallocate). */
+function pinMapsEqual(
+  left: Readonly<Record<string, readonly string[]>>,
+  right: Readonly<Record<string, readonly string[]>>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => {
+      const leftBucket = left[key]!;
+      const rightBucket = right[key];
+      return (
+        rightBucket !== undefined &&
+        rightBucket.length === leftBucket.length &&
+        leftBucket.every((id, ix) => id === rightBucket[ix])
+      );
+    })
+  );
 }

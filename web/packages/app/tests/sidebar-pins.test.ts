@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  commitVisiblePinReorder,
   pinOrderedRows,
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
@@ -10,6 +11,7 @@ import {
   projectPinnedFirst,
   reorderVisiblePins,
   retainKnownPins,
+  sidebarPinProfileKey,
   SIDEBAR_SESSION_SLOT,
 } from "../src/lib/sidebar-pins";
 import type { ChatRow } from "../src/lib/view";
@@ -100,6 +102,57 @@ describe("pinnedDragSnapshotIsValid", () => {
     const snapshot = ["a", "b"];
     expect(pinnedDragSnapshotIsValid("a", snapshot, new Set(["new", "a", "b"]))).toBe(true);
     expect(pinnedDragSnapshotIsValid("a", snapshot, new Set(["a"]))).toBe(false);
+  });
+});
+
+describe("sidebarPinProfileKey", () => {
+  it("sidebar_pin_profile_keys_include_the_full_workspace_identity", () => {
+    expect(sidebarPinProfileKey("local", null)).toBe("local");
+    expect(sidebarPinProfileKey("synced", "device-1")).toBe("synced:device-1");
+    expect(sidebarPinProfileKey("development", "device-2")).toBe("development:device-2");
+  });
+
+  it("sidebar_pin_profile_key_waits_for_engine_info", () => {
+    // No scope yet (the engine's first frame has not landed): no key.
+    expect(sidebarPinProfileKey(null, "device-1")).toBe(null);
+    // A non-local scope without the engine's device id is equally unready.
+    expect(sidebarPinProfileKey("synced", null)).toBe(null);
+    expect(sidebarPinProfileKey("development", null)).toBe(null);
+    // A local profile needs no device id, exactly like the desktop.
+    expect(sidebarPinProfileKey("local", null)).toBe("local");
+  });
+});
+
+describe("commitVisiblePinReorder", () => {
+  it("a single bucket reorders exactly like the desktop (hidden pins hold their slots)", () => {
+    const buckets = { local: ["a1", "b1", "a2", "archived", "b2"] };
+    // The visible projection of that bucket in display order; drag a1 onto a2's slot.
+    expect(commitVisiblePinReorder(buckets, ["a1", "b1", "a2", "b2"], 0, 2)).toEqual({
+      local: ["b1", "a2", "a1", "archived", "b2"],
+    });
+  });
+
+  it("a within-bucket drag reorders it while other buckets stay untouched", () => {
+    const buckets = {
+      local: ["a1", "a2"],
+      "synced:device-1": ["s1"],
+    };
+    // Merged visible projection [a1, a2, s1]; drag a2 to the top.
+    const next = commitVisiblePinReorder(buckets, ["a1", "a2", "s1"], 1, 0);
+    expect(next).toEqual({ local: ["a2", "a1"], "synced:device-1": ["s1"] });
+  });
+
+  it("membership never crosses buckets: a cross-bucket drag settles back into blocks", () => {
+    const buckets = {
+      local: ["a1", "a2"],
+      "synced:device-1": ["s1"],
+    };
+    // Drag s1 to the top of the merged projection — ids never change buckets,
+    // so the re-projection reads as the same bucket blocks.
+    expect(commitVisiblePinReorder(buckets, ["a1", "a2", "s1"], 2, 0)).toEqual({
+      local: ["a1", "a2"],
+      "synced:device-1": ["s1"],
+    });
   });
 });
 

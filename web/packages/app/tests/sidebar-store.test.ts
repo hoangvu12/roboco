@@ -18,7 +18,7 @@ describe("SidebarStore", () => {
       spaceFilter: null,
       lastSpaceId: null,
       archivedOpen: false,
-      pinnedSessionIds: [],
+      pinnedByProfile: {},
       // The five view options ride along at their desktop defaults
       // (settings.rs:658-665) — ticket 10's menu writes them.
       organization: "inOneList",
@@ -73,53 +73,74 @@ describe("SidebarStore", () => {
     expect(fired).toBe(2);
   });
 
-  it("set_chat_pinned: pins append in click order, unpins leave the rest", () => {
+  it("set_chat_pinned: pins append in click order under their profile, unpins leave the rest", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
-    store.setChatPinned("a", true);
-    store.setChatPinned("b", true);
-    store.setChatPinned("c", true);
-    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a", "b", "c"]);
-    store.setChatPinned("b", false);
-    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a", "c"]);
+    store.setChatPinned("local", "a", true);
+    store.setChatPinned("local", "b", true);
+    store.setChatPinned("synced:device-1", "s1", true);
+    store.setChatPinned("local", "c", true);
+    expect(store.getSnapshot().pinnedByProfile).toEqual({
+      local: ["a", "b", "c"],
+      "synced:device-1": ["s1"],
+    });
+    store.setChatPinned("local", "b", false);
+    expect(store.getSnapshot().pinnedByProfile).toEqual({
+      local: ["a", "c"],
+      "synced:device-1": ["s1"],
+    });
+    // The last unpin drops the bucket from the map.
+    store.setChatPinned("synced:device-1", "s1", false);
+    expect(store.getSnapshot().pinnedByProfile).toEqual({ local: ["a", "c"] });
   });
 
-  it("pin no-ops write nothing and notify nobody", () => {
+  it("pin no-ops write nothing and notify nobody — including a null profile key", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
-    store.setChatPinned("a", true);
+    store.setChatPinned("local", "a", true);
     let fired = 0;
     store.subscribe(() => {
       fired += 1;
     });
-    store.setChatPinned("a", true);
-    store.setChatPinned("ghost", false);
-    store.replacePinnedSessionIds(["a"]);
+    store.setChatPinned("local", "a", true);
+    store.setChatPinned("local", "ghost", false);
+    // "Identity not ready": the desktop's early return.
+    store.setChatPinned(null, "b", true);
+    store.replacePinsByProfile({ local: ["a"] });
     expect(fired).toBe(0);
-    expect(store.getSnapshot().pinnedSessionIds).toEqual(["a"]);
+    expect(store.getSnapshot().pinnedByProfile).toEqual({ local: ["a"] });
   });
 
-  it("persists the pin order across reloads, device-local only", () => {
+  it("local_synced_local_switch_restores_each_profiles_pins", () => {
     const storage = memoryStorage();
     const first = new SidebarStore({ storage });
-    first.setChatPinned("a", true);
-    first.setChatPinned("b", true);
-    first.replacePinnedSessionIds(["b", "a"]);
+    first.setChatPinned("local", "a", true);
+    first.setChatPinned("local", "b", true);
+    first.replacePinsByProfile({ local: ["b", "a"], "synced:device-1": ["s1"] });
     const second = new SidebarStore({ storage });
-    expect(second.getSnapshot().pinnedSessionIds).toEqual(["b", "a"]);
+    expect(second.getSnapshot().pinnedByProfile).toEqual({ local: ["b", "a"], "synced:device-1": ["s1"] });
   });
 
-  it("retain_known_pins: archived ids survive, deletions prune, a no-op stays silent", () => {
+  it("pin_cleanup_for_one_profile_leaves_other_profiles_untouched", () => {
     const store = new SidebarStore({ storage: memoryStorage() });
-    store.setChatPinned("active", true);
-    store.setChatPinned("archived", true);
-    store.setChatPinned("deleted", true);
+    store.setChatPinned("local", "active", true);
+    store.setChatPinned("local", "archived", true);
+    store.setChatPinned("local", "deleted", true);
+    store.setChatPinned("synced:device-1", "synced-pin", true);
     let fired = 0;
     store.subscribe(() => {
       fired += 1;
     });
-    store.pruneUnknownPins(new Set(["active", "archived"]));
-    expect(store.getSnapshot().pinnedSessionIds).toEqual(["active", "archived"]);
+    // Only the active profiles are judged; "synced:device-1" is not among
+    // them, so its pin is nobody's deletion.
+    store.pruneUnknownPins(["local"], new Set(["active", "archived"]));
+    expect(store.getSnapshot().pinnedByProfile).toEqual({
+      local: ["active", "archived"],
+      "synced:device-1": ["synced-pin"],
+    });
     expect(fired).toBe(1);
-    store.pruneUnknownPins(new Set(["active", "archived"]));
+    store.pruneUnknownPins(["local"], new Set(["active", "archived"]));
     expect(fired).toBe(1);
+    // A bucket pruned to empty drops out of the map.
+    store.pruneUnknownPins(["synced:device-1"], new Set(["active"]));
+    expect(store.getSnapshot().pinnedByProfile).toEqual({ local: ["active", "archived"] });
   });
 });

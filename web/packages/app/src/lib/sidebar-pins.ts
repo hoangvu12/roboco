@@ -2,10 +2,36 @@
  * Pinned sidebar sessions — the web peer of the desktop's pin machinery
  * (`shell.rs` + `shell/spaces.rs`, upstream zeron fd42e2ab…da041aab, ported
  * local-only: NO registry sync). Pins are a device-local, presentation-only
- * preference persisted in `ui-settings.ts`; the pure projection, reorder,
- * cleanup, and drag-geometry rules live here so the components stay thin and
- * the unit tests mirror the Rust `pinned_session_tests` one-for-one.
+ * preference persisted in `ui-settings.ts`, bucketed per workspace profile
+ * (3cad1c25); the pure projection, reorder, cleanup, and drag-geometry rules
+ * live here so the components stay thin and the unit tests mirror the Rust
+ * `pinned_session_tests` one-for-one.
  */
+import type { WorkspaceScope } from "@roboco/proto";
+
+/**
+ * `settings.rs::sidebar_pin_profile_key` — the bucket one workspace
+ * profile's pins live under. Roboco has no account sign-in, so a non-local
+ * scope keys on the engine's device id; null means "identity not ready"
+ * (callers skip destructive cleanup against it). Every roboco engine is
+ * local-scoped in practice, so the fleet usually shares the one "local"
+ * bucket — scoped chat ids keep engines apart inside it.
+ */
+export function sidebarPinProfileKey(
+  scope: WorkspaceScope | null,
+  deviceId: string | null,
+): string | null {
+  if (scope === null) {
+    return null;
+  }
+  if (scope === "local") {
+    return "local";
+  }
+  if (deviceId === null) {
+    return null;
+  }
+  return `${scope}:${deviceId}`;
+}
 
 /** `shell.rs::SIDEBAR_LIST_GAP` — the flex gap between sidebar rows. */
 export const SIDEBAR_LIST_GAP = 2;
@@ -68,6 +94,29 @@ export function reorderVisiblePins(
   const visible = new Set(visibleIds);
   const replacements = reordered.values();
   return pinnedIds.map((id) => (visible.has(id) ? (replacements.next().value ?? id) : id));
+}
+
+/**
+ * `commit_pinned_session_drag` over the fleet: reorder the visible pins in
+ * the merged projection (hidden pins hold their slots, exactly like the
+ * desktop's single-bucket `reorder_visible_pins`), then settle every id back
+ * into its own profile's bucket. Membership never crosses buckets — a drag
+ * between two engines' pins reads as bucket blocks on the next projection.
+ */
+export function commitVisiblePinReorder(
+  buckets: Readonly<Record<string, readonly string[]>>,
+  visibleIds: readonly string[],
+  from: number,
+  to: number,
+): Record<string, string[]> {
+  const merged = Object.values(buckets).flat();
+  const next = reorderVisiblePins(merged, visibleIds, from, to);
+  const out: Record<string, string[]> = {};
+  for (const [key, ids] of Object.entries(buckets)) {
+    const members = new Set(ids);
+    out[key] = next.filter((id) => members.has(id));
+  }
+  return out;
 }
 
 /**
