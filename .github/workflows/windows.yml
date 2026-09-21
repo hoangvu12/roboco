@@ -74,7 +74,7 @@ jobs:
       - name: Application and updater tests
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
       - name: Engine and harness unit tests
-        run: cargo nextest run --release --locked -p roboco-engine -p roboco-harness --lib -P ci
+        run: cargo nextest run --release --locked -p roboco-engine -p roboco-harness -p roboco-rpc --lib -P ci
       - name: Native harness integration tests
         run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native -P ci
       - name: Harness catalog tests

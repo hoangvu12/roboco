@@ -3,16 +3,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
-use crate::{ClientFrame, RpcError, RpcReply, RpcService, ServerFrame};
+use crate::{ClientFrame, Connection, RpcError, RpcReply, RpcService, ServerFrame};
 
 struct AbortTask(tokio::task::AbortHandle);
 
@@ -182,54 +181,39 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
         }
         Ok(resp)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, reject_cross_origin).await {
+    let (io, progress) = crate::pump::ProgressIo::new(stream);
+    let ws = match tokio_tungstenite::accept_hdr_async(io, reject_cross_origin).await {
         Ok(ws) => ws,
         Err(err) => {
             tracing::warn!(error = %err, "rpc: websocket handshake failed");
             return;
         }
     };
-    serve_websocket(ws, service).await;
+    serve_websocket(
+        Connection {
+            socket: ws,
+            progress,
+        },
+        service,
+    )
+    .await;
 }
 
 /// Run the same RPC dispatch over an already upgraded HTTP connection.
-pub async fn serve_websocket<S>(
-    ws: tokio_tungstenite::WebSocketStream<S>,
-    service: Arc<dyn RpcService>,
-) where
+///
+/// The connection rides the bounded pump: a stalled socket (write that stops
+/// progressing, silent peer, wedged consumer) tears the session down instead
+/// of wedging the dispatch loop forever, and large frames are fragmented with
+/// interleaved pings so slow transfers keep progressing.
+pub async fn serve_websocket<S>(ws: Connection<S>, service: Arc<dyn RpcService>)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sink, mut ws_stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
 
     // Pump: socket <-> string channels. Ends when either side closes.
-    let pump = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                frame = out_rx.recv() => match frame {
-                    Some(text) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => {
-                        let _ = sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-                },
-                message = ws_stream.next() => match message {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if in_tx.send(text).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {} // ping/pong/binary — ignored
-                },
-            }
-        }
-    });
+    let pump = tokio::spawn(crate::pump::pump(ws, out_rx, in_tx));
 
     let _pump_on_drop = AbortTask(pump.abort_handle());
     serve_connection(service, out_tx, in_rx).await;

@@ -2429,9 +2429,8 @@ mod tests {
                 };
                 let mut head = [0u8; 1024];
                 let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut head).await;
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                );
+                let response =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
             }
         });

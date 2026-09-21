@@ -19,9 +19,11 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 mod client;
+mod pump;
 mod server;
 
 pub use client::{RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated};
+pub use pump::{Connection, Progress, ProgressIo};
 pub use server::{serve_connection, serve_websocket, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
@@ -444,6 +446,38 @@ mod tests {
         let client = connect_ws(&format!("ws://127.0.0.1:{port}")).await.unwrap();
         let echoed = client.call("Echo", serde_json::json!("ok")).await.unwrap();
         assert_eq!(echoed, serde_json::json!("ok"));
+    }
+
+    #[tokio::test]
+    async fn stalled_upgrade_has_an_overall_deadline() {
+        // A stranger on the port accepts TCP but never answers the WebSocket
+        // upgrade: the dial must give up within its connect timeout instead
+        // of hanging the caller forever.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            accepted_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let dial = tokio::spawn(async move { connect_ws(&url).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), accepted_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        // TCP is established. The peer never answers the HTTP upgrade.
+        tokio::time::pause();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(21), dial).await;
+        server.abort();
+        let error = match result
+            .expect("dial remained stuck after 21 seconds")
+            .unwrap()
+        {
+            Err(error) => error,
+            Ok(_) => panic!("the stalled upgrade must fail"),
+        };
+        assert!(matches!(error, RpcError::Transport(_)));
     }
 
     #[tokio::test]
