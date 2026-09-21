@@ -125,6 +125,8 @@ export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
 export const LIST_PROJECT_ACTIONS = "ListProjectActions";
 export const UPSERT_PROJECT_ACTION = "UpsertProjectAction";
 export const DELETE_PROJECT_ACTION = "DeleteProjectAction";
+/** Launch an action in a managed terminal on the chat's checkout (`{spaceId, chatId, actionId, cols, rows}` → `ProjectActionRun`). */
+export const RUN_PROJECT_ACTION = "RunProjectAction";
 
 /** Shared remote-safe Git status stream (`{chatId}` → `WorkspaceGitStatusFrame`). */
 export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";

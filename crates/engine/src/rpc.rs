@@ -22,7 +22,9 @@
 //! - Project Actions: `ListProjectActions {spaceId}` → `ProjectActionsSnapshot`
 //!   (saved actions + `roboco.json` import offers), `UpsertProjectAction
 //!   {spaceId, actionId?, action}` / `DeleteProjectAction {spaceId, actionId}`
-//!   replying with the fresh snapshot. Private to the engine owning the space
+//!   replying with the fresh snapshot, and `RunProjectAction {spaceId, chatId,
+//!   actionId, cols, rows}` → `ProjectActionRun` (a managed terminal on the
+//!   chat's checkout). Private to the engine owning the space
 //!   row — stored in its profile store root, never the workspace registry.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
 //!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
@@ -242,6 +244,16 @@ struct UpsertProjectActionParams {
 struct DeleteProjectActionParams {
     space_id: String,
     action_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunProjectActionParams {
+    space_id: String,
+    chat_id: String,
+    action_id: String,
+    cols: u16,
+    rows: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1875,6 +1887,53 @@ impl RpcService for EngineRpc {
                 .map_err(|err| RpcError::Failed(err.to_string()))?
                 .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::RUN_PROJECT_ACTION => {
+                let p: RunProjectActionParams = parse_params(params)?;
+                let space = self.local_project_action_space(&p.space_id)?;
+                let chat = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("Project chat not found".into()))?;
+                if chat.device_id != self.doc_host.device_id() {
+                    return Err(RpcError::Failed(
+                        "Project chat belongs to another device".into(),
+                    ));
+                }
+                if chat.space_id.as_deref() != Some(space.id.as_str()) {
+                    return Err(RpcError::Failed(
+                        "Project chat belongs to another space".into(),
+                    ));
+                }
+                let cwd = chat
+                    .cwd
+                    .map(std::path::PathBuf::from)
+                    .ok_or_else(|| RpcError::Failed("Project chat has no checkout".into()))?;
+                let checkout = self
+                    .repos
+                    .workspace_checkout(std::path::Path::new(&space.path), &cwd)
+                    .await
+                    .ok_or_else(|| {
+                        RpcError::Failed("Project chat checkout is unavailable".into())
+                    })?;
+                let project_root = std::fs::canonicalize(&space.path)
+                    .map_err(|_| RpcError::Failed("Project root is unavailable".into()))?;
+                let action = self
+                    .project_actions
+                    .action(&space.id, std::path::Path::new(&space.path), &p.action_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("Project action not found".into()))?;
+                let run = crate::project_actions::launch_project_action(
+                    &self.terminals,
+                    &action,
+                    &project_root,
+                    &checkout,
+                    p.cols,
+                    p.rows,
+                )
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;

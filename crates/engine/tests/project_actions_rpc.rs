@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use roboco_engine::{EngineCore, HarnessRegistry};
 use roboco_proto::HarnessId;
 use roboco_rpc::{memory_client, methods};
@@ -206,6 +208,151 @@ async fn project_actions_manage_on_owning_engine_and_fail_closed_elsewhere() {
             .to_string()
             .contains("identity no longer matches")
     );
+
+    core_a.shutdown().await;
+    core_b.shutdown().await;
+}
+
+/// Re-home of upstream ad95d98b's remote action RUN over the relay: with no
+/// relay, the client runs the action over the OWNING engine's direct
+/// connection — execution and the terminal live on B's filesystem, and a
+/// `targetDeviceId` naming B from A's connection fails closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_action_run_executes_on_owning_engine_over_direct_connection() {
+    let dirs = tempfile::tempdir().expect("tempdir");
+
+    let core_a = assemble(&dirs.path().join("a"), "device-a");
+    let core_b = assemble(&dirs.path().join("b"), "device-b");
+
+    let project_root = dirs.path().join("project-run-on-b");
+    std::fs::create_dir_all(&project_root).expect("project root on B");
+    core_b
+        .workspace
+        .create_space(
+            "space-actions",
+            "device-b",
+            &project_root.to_string_lossy(),
+            None,
+            true,
+        )
+        .expect("space row on B");
+    core_b
+        .workspace
+        .create_chat(
+            "chat-actions",
+            Some("space-actions"),
+            None,
+            None,
+            Some(project_root.to_string_lossy().into_owned()),
+        )
+        .expect("action chat on B");
+
+    let client_b = memory_client(core_b.rpc_service());
+    let client_a = memory_client(core_a.rpc_service());
+
+    let marker_command = if cfg!(windows) {
+        "echo remote-action>action-marker&& echo remote-action"
+    } else {
+        "printf 'remote-action\\n' > action-marker && printf 'remote-action\\n'"
+    };
+    let saved = client_b
+        .call(
+            methods::UPSERT_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "targetDeviceId": "device-b",
+                "action": {
+                    "name": "Remote",
+                    "command": marker_command,
+                    "icon": "lint",
+                },
+            }),
+        )
+        .await
+        .expect("save action on B");
+    let action_id = saved["actions"][0]["id"]
+        .as_str()
+        .expect("normalized action id")
+        .to_string();
+
+    let run = client_b
+        .call(
+            methods::RUN_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "chatId": "chat-actions",
+                "actionId": action_id,
+                "cols": 80,
+                "rows": 24,
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("run action on B");
+    let action_terminal = run["terminal"]["id"]
+        .as_str()
+        .expect("Action terminal id")
+        .to_string();
+
+    // A wrong-target RUN fails closed at A's entry check, never forwards.
+    let wrong_target = client_a
+        .call(
+            methods::RUN_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "chatId": "chat-actions",
+                "actionId": action_id,
+                "cols": 80,
+                "rows": 24,
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect_err("wrong target must fail closed");
+    assert!(
+        wrong_target.to_string().contains("not connected"),
+        "got: {wrong_target}"
+    );
+
+    let mut action_stream = core_b
+        .terminals
+        .subscribe(&action_terminal, None)
+        .expect("subscribe action terminal");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let event = tokio::time::timeout_at(deadline, action_stream.recv())
+            .await
+            .expect("action output before timeout")
+            .expect("action stream alive");
+        if let roboco_proto::TerminalEvent::Data { data, .. } = event {
+            let output = BASE64.decode(&data).expect("action data base64");
+            if String::from_utf8_lossy(&output).contains("remote-action")
+                && project_root.join("action-marker").exists()
+            {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(project_root.join("action-marker"))
+            .expect("marker on B")
+            .trim(),
+        "remote-action"
+    );
+    assert!(
+        !dirs.path().join("a").join("action-marker").exists(),
+        "remote execution must not fall back to A's filesystem"
+    );
+    client_b
+        .call(
+            methods::CLOSE_TERMINAL,
+            serde_json::json!({
+                "terminalId": action_terminal,
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("close action terminal");
 
     core_a.shutdown().await;
     core_b.shutdown().await;

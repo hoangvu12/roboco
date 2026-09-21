@@ -13,7 +13,9 @@ use roboco_engine::{
     capture_diff_against, capture_turn_diff, merge_base, read_diff_file_text, snapshot_tree,
     working_diff_base,
 };
-use roboco_proto::{GitHistoryRefKind, TerminalEvent};
+use roboco_proto::{
+    GitHistoryRefKind, ProjectActionDraft, ProjectActionIcon, ProjectActionRun, TerminalEvent,
+};
 use roboco_rpc::methods;
 
 // ---------------------------------------------------------------------------
@@ -1458,6 +1460,241 @@ async fn project_actions_crud_preserves_saved_actions_with_invalid_imports() {
     assert!(recovered["projectFileIssue"].is_null());
     assert_eq!(recovered["importableActions"].as_array().unwrap().len(), 1);
     assert!(recovered["actions"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_actions_run_in_fresh_host_resolved_terminals() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    let worktree = tmp.path().join("worktree");
+    init_repo(&repo).await;
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "actions-test",
+            worktree.to_str().expect("utf8 worktree path"),
+        ],
+    )
+    .await;
+    let canonical_repo = std::fs::canonicalize(&repo).expect("canonical repo");
+    let canonical_worktree = std::fs::canonicalize(&worktree).expect("canonical worktree");
+    // cmd's %CD% reports the plain drive form, not the \\?\ canonical form.
+    let plain = |path: &Path| {
+        path.to_string_lossy()
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&path.to_string_lossy())
+            .to_string()
+    };
+
+    let core = assemble(&tmp.path().join("data"));
+    core.workspace
+        .create_space(
+            "space-actions",
+            &core.device_id,
+            &repo.to_string_lossy(),
+            None,
+            true,
+        )
+        .expect("space");
+    core.workspace
+        .create_chat("chat-main", Some("space-actions"), None, None, None)
+        .expect("main chat");
+    core.workspace
+        .create_chat(
+            "chat-worktree",
+            Some("space-actions"),
+            None,
+            None,
+            Some(worktree.to_string_lossy().into_owned()),
+        )
+        .expect("worktree chat");
+    let action_command = if cfg!(windows) {
+        // cmd.exe: an undefined %VAR% stays literal — the unset marker.
+        "echo ROOT=%ROBOCO_PROJECT_ROOT%&& echo WT=%ROBOCO_WORKTREE_PATH%&& echo CWD=%CD%"
+    } else {
+        concat!(
+            "printf 'ROOT=%s|WT=%s|CWD=%s\\n' ",
+            "\"$ROBOCO_PROJECT_ROOT\" ",
+            "\"${ROBOCO_WORKTREE_PATH-unset}\" ",
+            "\"$PWD\""
+        )
+    };
+    let snapshot = core
+        .project_actions
+        .upsert(
+            "space-actions",
+            &repo,
+            None,
+            ProjectActionDraft {
+                name: "Environment".into(),
+                command: action_command.into(),
+                icon: ProjectActionIcon::Debug,
+                run_on_worktree_create: false,
+            },
+        )
+        .expect("save Action");
+    let action_id = snapshot.actions[0].id.clone();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+
+    let run = client
+        .call_as::<ProjectActionRun>(
+            methods::RUN_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "chatId": "chat-main",
+                "actionId": action_id,
+                "cols": 80,
+                "rows": 24,
+            }),
+        )
+        .await
+        .expect("run in main checkout");
+    let mut main_rx = core
+        .terminals
+        .subscribe(&run.terminal.id, None)
+        .expect("main replay");
+    let mut main_events = Vec::new();
+    drain_until(&mut main_rx, &mut main_events, |events| {
+        decoded(events).contains(&format!("ROOT={}", canonical_repo.display()))
+    })
+    .await;
+    let main_output = decoded(&main_events);
+    assert!(main_output.contains(&format!("ROOT={}", canonical_repo.display())));
+    assert!(main_output.contains(&format!("CWD={}", plain(&canonical_repo))));
+    if cfg!(windows) {
+        assert!(main_output.contains("WT=%ROBOCO_WORKTREE_PATH%"));
+    } else {
+        assert!(main_output.contains("|WT=unset|"));
+    }
+
+    let second = client
+        .call_as::<ProjectActionRun>(
+            methods::RUN_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "chatId": "chat-main",
+                "actionId": action_id,
+                "cols": 80,
+                "rows": 24,
+            }),
+        )
+        .await
+        .expect("second run");
+    assert_ne!(run.terminal.id, second.terminal.id);
+
+    let worktree_run = client
+        .call_as::<ProjectActionRun>(
+            methods::RUN_PROJECT_ACTION,
+            serde_json::json!({
+                "spaceId": "space-actions",
+                "chatId": "chat-worktree",
+                "actionId": action_id,
+                "cols": 80,
+                "rows": 24,
+            }),
+        )
+        .await
+        .expect("run in worktree");
+    let mut worktree_rx = core
+        .terminals
+        .subscribe(&worktree_run.terminal.id, None)
+        .expect("worktree replay");
+    let mut worktree_events = Vec::new();
+    drain_until(&mut worktree_rx, &mut worktree_events, |events| {
+        decoded(events).contains(&format!("WT={}", canonical_worktree.display()))
+    })
+    .await;
+    let worktree_output = decoded(&worktree_events);
+    assert!(worktree_output.contains(&format!("ROOT={}", canonical_repo.display())));
+    assert!(worktree_output.contains(&format!("WT={}", canonical_worktree.display())));
+    assert!(worktree_output.contains(&format!("CWD={}", plain(&canonical_worktree))));
+
+    core.workspace
+        .create_space(
+            "space-other",
+            &core.device_id,
+            &tmp.path().to_string_lossy(),
+            None,
+            false,
+        )
+        .expect("other space");
+    core.workspace
+        .create_chat("chat-other", Some("space-other"), None, None, None)
+        .expect("other chat");
+    assert!(
+        client
+            .call(
+                methods::RUN_PROJECT_ACTION,
+                serde_json::json!({
+                    "spaceId": "space-actions",
+                    "chatId": "chat-other",
+                    "actionId": action_id,
+                    "cols": 80,
+                    "rows": 24,
+                }),
+            )
+            .await
+            .expect_err("cross-space chat rejected")
+            .to_string()
+            .contains("another space")
+    );
+    let outside = tmp.path().join("outside-actions");
+    std::fs::create_dir(&outside).expect("outside Action cwd");
+    core.workspace
+        .create_chat(
+            "chat-invalid-cwd",
+            Some("space-actions"),
+            None,
+            None,
+            Some(outside.to_string_lossy().into_owned()),
+        )
+        .expect("invalid cwd chat");
+    assert!(
+        client
+            .call(
+                methods::RUN_PROJECT_ACTION,
+                serde_json::json!({
+                    "spaceId": "space-actions",
+                    "chatId": "chat-invalid-cwd",
+                    "actionId": action_id,
+                    "cols": 80,
+                    "rows": 24,
+                }),
+            )
+            .await
+            .expect_err("outside checkout rejected")
+            .to_string()
+            .contains("checkout is unavailable")
+    );
+    assert!(
+        client
+            .call(
+                methods::RUN_PROJECT_ACTION,
+                serde_json::json!({
+                    "spaceId": "space-actions",
+                    "chatId": "chat-main",
+                    "actionId": "missing",
+                    "cols": 80,
+                    "rows": 24,
+                }),
+            )
+            .await
+            .expect_err("missing Action rejected")
+            .to_string()
+            .contains("not found")
+    );
+
+    for terminal_id in [
+        &run.terminal.id,
+        &second.terminal.id,
+        &worktree_run.terminal.id,
+    ] {
+        core.terminals.close(terminal_id).expect("close Action PTY");
+    }
+    core.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------

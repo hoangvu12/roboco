@@ -285,10 +285,25 @@ mod resolution_tests {
     }
 }
 
+/// CreateProcessW current directories do not accept `\\?\`-prefixed verbatim
+/// paths — cmd.exe treats them as UNC and silently falls back to the Windows
+/// directory. Canonicalized paths (checkout resolution in the RPC layer) must
+/// be de-verbatimed so terminal sessions actually start in the checkout.
+fn plain_current_dir(cwd: &str) -> String {
+    if let Some(rest) = cwd.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        cwd.strip_prefix(r"\\?\")
+            .map(str::to_string)
+            .unwrap_or_else(|| cwd.to_string())
+    }
+}
+
 pub(super) fn open(
     shell: &str,
     cwd: &str,
     size: PtySize,
+    overrides: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>)> {
     // Only an executable name is accepted, matching Terminals::open_with_shell.
     // Quotes cannot occur in a Windows file name; reject instead of interpreting.
@@ -301,7 +316,7 @@ pub(super) fn open(
     let mut command = vec![b'"' as u16];
     command.extend_from_slice(&executable[..executable.len() - 1]);
     command.extend([b'"' as u16, 0]);
-    let cwd = wide(OsStr::new(cwd))?;
+    let cwd = wide(OsStr::new(&plain_current_dir(cwd)))?;
     let mut environment = std::collections::BTreeMap::new();
     let env_key = |key: &OsStr| -> OsString {
         key.to_str()
@@ -321,6 +336,13 @@ pub(super) fn open(
         ("TERM_PROGRAM", "Roboco"),
     ] {
         environment.insert(env_key(OsStr::new(key)), (key.into(), value.into()));
+    }
+    // Host-resolved overrides (project Action runs) come last: same-key
+    // replacement through the lowercase-normalized map.
+    for (key, value) in overrides {
+        let key = OsString::from(key);
+        let value = OsString::from(value);
+        environment.insert(env_key(&key), (key, value));
     }
     let mut block = Vec::new();
     for (_, (key, value)) in environment {
