@@ -82,8 +82,13 @@ export function PinnedSection({
    * pins are bucketed per workspace profile.
    */
   readonly onCommit: (from: number, to: number) => void;
-  /** A release below the section: the parent unpins (`finish_sidebar_session_transfer`). */
-  readonly onTransferOut: (chatId: string) => void;
+  /**
+   * A release below the section: the parent resolves the target
+   * (`finish_sidebar_session_transfer`) — a custom section under the
+   * pointer claims it (Section arm: unpin + assign); anywhere else is the
+   * Regular arm (unpin, membership clears).
+   */
+  readonly onTransferOut: (chatId: string, pointer: { clientX: number; clientY: number }) => void;
   /** The parent's handle on the section root (its own transfer gesture reads bounds). */
   readonly sectionRef: React.RefObject<HTMLElement | null>;
 }) {
@@ -234,14 +239,15 @@ export function PinnedSection({
       pointerYRef.current = null;
     };
     teardownRef.current = teardown;
-    const finish = (): void => {
+    const finish = (up: PointerEvent): void => {
       teardown();
       const current = dragRef.current;
       setDragState(null);
       // `finish_sidebar_session_transfer`: below the section the release is
-      // a transfer out (the parent unpins; the FLIP resort glide animates
-      // the row to its activity position). Inside, a no-op move writes
-      // nothing; a drag whose snapshot pins did not all survive cancels.
+      // a transfer out — the parent hit-tests the release point for a
+      // custom section (Section arm) and falls back to the regular unpin.
+      // Inside, a no-op move writes nothing; a drag whose snapshot pins did
+      // not all survive cancels.
       if (current !== null) {
         if (current.overRegular) {
           const visible = rowsRef.current.map((row) => row.chat.id);
@@ -249,7 +255,10 @@ export function PinnedSection({
             current.snapshotIds.includes(current.chatId) &&
             current.snapshotIds.every((id) => visible.includes(id));
           if (stillValid) {
-            onTransferOutRef.current(current.chatId);
+            onTransferOutRef.current(current.chatId, {
+              clientX: up.clientX,
+              clientY: up.clientY,
+            });
           }
         } else if (current.from !== current.over) {
           const visible = rowsRef.current.map((row) => row.chat.id);

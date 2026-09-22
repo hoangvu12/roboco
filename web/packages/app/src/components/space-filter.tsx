@@ -8,10 +8,12 @@ import { engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fle
 import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
+import { HoverIntent, HOVER_INTENT_GRACE_MS, type Bounds, type Point } from "../lib/hover-intent";
 import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
+import { RbSwitch } from "./base/switch";
 import {
   RbContextMenu,
   RbContextMenuPopup,
@@ -382,10 +384,9 @@ type ViewRow =
   | { readonly kind: "Compact" };
 
 /**
- * `SIDEBAR_VIEW_ROWS` — the exact row order and labels (spaces.rs, after
- * upstream 78e9e6ae → 378a1945: By project joins Organize, the three Show
- * toggles grow Project icon and Location, and Compact mode moves into its
- * own Layout section last).
+ * `SIDEBAR_VIEW_ROWS` — the submenu rows in group order (spaces.rs, after
+ * upstream f9563394's nesting): Compact moved out of the list into its own
+ * switch row and 86249cf0's Create Section joins it below the groups.
  */
 const SIDEBAR_VIEW_ROWS: readonly { row: ViewRow; label: string; icon: IconName }[] = [
   { row: { kind: "ByDevice" }, label: "By device", icon: "laptop" },
@@ -396,10 +397,23 @@ const SIDEBAR_VIEW_ROWS: readonly { row: ViewRow; label: string; icon: IconName 
   { row: { kind: "ShowBranch" }, label: "Branch", icon: "gitBranch" },
   { row: { kind: "ShowPullRequest" }, label: "Pull request", icon: "pullRequest" },
   { row: { kind: "ShowHarness" }, label: "Harness", icon: "bot" },
-  { row: { kind: "ShowProjectIcon" }, label: "Project icon", icon: "folderWithFiles" },
+  { row: { kind: "ShowProjectIcon" }, label: "Project icon", icon: "projectDefault" },
   { row: { kind: "ShowProjectLabel" }, label: "Location", icon: "folder" },
-  { row: { kind: "Compact" }, label: "Compact mode", icon: "list" },
 ];
+
+/**
+ * `SIDEBAR_VIEW_GROUPS` — the nested menu's three triggers (upstream
+ * f9563394): Organize/Sort/Show become fly-out submenus with value
+ * summaries; Compact and Create Section (86249cf0) ride below as rows.
+ */
+const SIDEBAR_VIEW_GROUPS: readonly { label: string; rows: readonly number[] }[] = [
+  { label: "Organize", rows: [0, 1, 2] },
+  { label: "Sort", rows: [3, 4] },
+  { label: "Show", rows: [5, 6, 7, 8, 9] },
+];
+
+/** The fly-out submenu card's width (`spaces.rs`'s 232px child). */
+const VIEW_SUBMENU_WIDTH = 232;
 
 /**
  * The "Sidebar view options" label's show/hide controller — the web port
@@ -456,13 +470,46 @@ export function SidebarViewMenu() {
   const [open, setOpen] = useState(false);
   const [tooltip, setTooltip] = useState(false);
 
+  // The nested menu's state (upstream f9563394's `SidebarViewMenu` fields):
+  // which group's submenu is open, the keyboard cursors for the top rows
+  // and the open child, and the child's side (it flips left when the row's
+  // right edge + 236px would pass the window's right edge — the desktop's
+  // canvas probe).
+  const [submenu, setSubmenu] = useState<number | null>(null);
+  const [submenuActive, setSubmenuActive] = useState<number | null>(null);
+  const [active, setActive] = useState<number | null>(null);
+  const [submenuOnLeft, setSubmenuOnLeft] = useState(false);
+  const hoverIntent = useMemo(() => new HoverIntent<number>(), []);
+  const deferredRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+  const groupRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // The window-level timer outlives renders; the open submenu rides a ref
+  // mirror so the deferred callback can re-check its guard.
+  const submenuStateRef = useRef<number | null>(null);
+  submenuStateRef.current = submenu;
+
   // The label's contract rides the controller above; hovering shorter
   // than the 350ms delay shows nothing. Unmounting the sidebar clears
   // any pending arm.
   const tooltipControl = useMemo(() => createViewOptionsTooltip(setTooltip), []);
   useEffect(() => {
-    return () => tooltipControl.dispose();
+    return () => {
+      tooltipControl.dispose();
+      cancelDeferred();
+    };
   }, [tooltipControl]);
+
+  function cancelDeferred(): void {
+    if (deferredRef.current !== null) {
+      clearTimeout(deferredRef.current);
+      deferredRef.current = null;
+    }
+  }
+
+  function closeSubmenu(): void {
+    setSubmenu(null);
+    setSubmenuActive(null);
+  }
 
   function isSelected(row: ViewRow): boolean {
     switch (row.kind) {
@@ -491,8 +538,8 @@ export function SidebarViewMenu() {
     }
   }
 
-  /** Radio rows (organization + sort) dismiss on pick; toggles stay open. */
-  function closes(row: ViewRow): boolean {
+  /** Radio rows (organization + sort) close the submenu; toggles stay open. */
+  function closesSubmenu(row: ViewRow): boolean {
     return (
       row.kind === "ByDevice" ||
       row.kind === "ByProject" ||
@@ -505,7 +552,8 @@ export function SidebarViewMenu() {
   function activate(row: ViewRow): void {
     // A mouse-driven pick clears the cursor so it doesn't linger
     // (spaces.rs:900-908).
-    setCursor(null);
+    setActive(null);
+    hoverIntent.cancel();
     switch (row.kind) {
       case "ByDevice":
         uiSettings.updateImmediate({ sidebarOrganization: "byDevice" });
@@ -542,29 +590,153 @@ export function SidebarViewMenu() {
         uiSettings.updateImmediate({ sidebarCompact: !sidebar.compact });
         break;
     }
-    if (closes(row)) {
-      setOpen(false);
+    if (closesSubmenu(row)) {
+      closeSubmenu();
     }
   }
 
-  // The desktop's view menu is a CURSOR menu (menu_step over the seven
-  // rows, `Option<usize>` starting at None, Enter/Cmd+Enter activate,
-  // "click clears the cursor"), not a roving-focus menu — so the card
-  // rides `PickerCard` over the popover part, with the cursor model's
-  // `nullable` mode keeping the keyboard semantics verbatim (§6.5's
-  // split; a focus-walking `RbMenu` would change them). Escape is Base
-  // UI's dismiss.
-  const { cursor, setCursor, onKeyDown: onKeyDownCard } = useCursorList({
-    enabled: open,
-    count: SIDEBAR_VIEW_ROWS.length,
-    mode: "nullable",
-    onActivate: (ix) => {
-      const entry = SIDEBAR_VIEW_ROWS[ix];
-      if (entry !== undefined) {
-        activate(entry.row);
+  /** `open_section_dialog(None, ..)`: the menu closes, the chat list's dialog opens. */
+  function createSection(): void {
+    setOpen(false);
+    cancelDeferred();
+    hoverIntent.reset();
+    closeSubmenu();
+    setActive(null);
+    sidebarStore.openSectionDialog();
+  }
+
+  /** `open_sidebar_view_submenu` — resets the intent and opens the child. */
+  function openSubmenu(group: number, keyboard: boolean): void {
+    cancelDeferred();
+    hoverIntent.reset();
+    setActive(group);
+    setSubmenu(group);
+    setSubmenuActive(keyboard ? 0 : null);
+    const row = groupRowRefs.current[group];
+    if (row != null) {
+      const bounds = row.getBoundingClientRect();
+      setSubmenuOnLeft(bounds.right + VIEW_SUBMENU_WIDTH + 4 > window.innerWidth);
+    }
+  }
+
+  /** `hover_sidebar_view_group` — enter/move over one group trigger. */
+  function hoverGroup(group: number, pointer: Point, moved: boolean): void {
+    const child =
+      submenuRef.current === null ? null : boundsOf(submenuRef.current.getBoundingClientRect());
+    const action = moved
+      ? hoverIntent.moved(submenu, group, pointer, child, submenuOnLeft)
+      : hoverIntent.enter(submenu, group, pointer, child, submenuOnLeft);
+    if (action === "open") {
+      openSubmenu(group, false);
+      hoverIntent.recordOrigin(pointer);
+      return;
+    }
+    if (action === "defer") {
+      // The caller's 300ms timer (the class stays pure): the deferred arm
+      // re-checks that the source submenu is still open and this target is
+      // still pending before it opens.
+      const source = submenu;
+      cancelDeferred();
+      deferredRef.current = setTimeout(() => {
+        deferredRef.current = null;
+        if (submenuStateRef.current === source && hoverIntent.pending() === group) {
+          openSubmenu(group, false);
+          hoverIntent.recordOrigin(pointer);
+        }
+      }, HOVER_INTENT_GRACE_MS);
+    }
+  }
+
+  /**
+   * The card's corridor dismissal (the desktop's exit canvas on the group
+   * row): a pointer outside the trigger row, the child, and the safe
+   * corridor between them closes the child and resets the intent.
+   */
+  function onCardMouseMove(event: React.MouseEvent): void {
+    if (submenu === null) {
+      return;
+    }
+    const row = groupRowRefs.current[submenu];
+    if (row == null) {
+      return;
+    }
+    const child = submenuRef.current === null ? null : boundsOf(submenuRef.current.getBoundingClientRect());
+    const pointer = { x: event.clientX, y: event.clientY };
+    if (!hoverIntent.containsPointer(boundsOf(row.getBoundingClientRect()), child, pointer, submenuOnLeft)) {
+      hoverIntent.reset();
+      closeSubmenu();
+      setActive(null);
+    }
+  }
+
+  /**
+   * `sidebar_view_menu_key` — the cursor menu's keyboard half: up/down walk
+   * the open child's rows or the five top rows (three groups + Compact +
+   * Create Section), right/enter open a child (space does not, matching
+   * the desktop's held-key guards), enter/space activate Compact and
+   * Create Section, and escape/left close the child only (the card's own
+   * escape — Base UI's dismiss — owns the no-child case).
+   */
+  function onKey(event: React.KeyboardEvent): void {
+    if (submenu !== null) {
+      const count = SIDEBAR_VIEW_GROUPS[submenu]!.rows.length;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setSubmenuActive((current) => menuStep(current, count, event.key === "ArrowDown" ? 1 : -1));
+        return;
       }
-    },
-  });
+      if (event.key === "Enter") {
+        if (submenuActive !== null) {
+          event.preventDefault();
+          const row = SIDEBAR_VIEW_ROWS[SIDEBAR_VIEW_GROUPS[submenu]!.rows[submenuActive] ?? -1];
+          if (row !== undefined) {
+            activate(row.row);
+          }
+        }
+        return;
+      }
+      if (event.key === "Escape" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelDeferred();
+        hoverIntent.reset();
+        closeSubmenu();
+        return;
+      }
+      return;
+    }
+    const TOP_ROW_COUNT = SIDEBAR_VIEW_GROUPS.length + 2;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setActive((current) => menuStep(current, TOP_ROW_COUNT, event.key === "ArrowDown" ? 1 : -1));
+      return;
+    }
+    if (active === null) {
+      return;
+    }
+    if (event.key === "ArrowRight" || (event.key === "Enter" && active < SIDEBAR_VIEW_GROUPS.length)) {
+      if (active < SIDEBAR_VIEW_GROUPS.length) {
+        event.preventDefault();
+        openSubmenu(active, true);
+      }
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (active === SIDEBAR_VIEW_GROUPS.length) {
+        activate({ kind: "Compact" });
+      } else if (active === SIDEBAR_VIEW_GROUPS.length + 1) {
+        createSection();
+      }
+    }
+  }
+
+  // The group triggers' value summaries (`values` in spaces.rs): the
+  // current organization and sort labels; the Show toggles carry none.
+  const values: readonly string[] = [
+    SIDEBAR_VIEW_ROWS[0 + ([isSelected({ kind: "ByDevice" }), isSelected({ kind: "ByProject" }), isSelected({ kind: "InOneList" })].indexOf(true))]!.label,
+    SIDEBAR_VIEW_ROWS[3 + (isSelected({ kind: "LastUpdated" }) ? 0 : 1)]!.label,
+  ];
 
   // `anchorBelowEnd` — right-aligned so the full-width card opens leftward
   // without leaving the sidebar.
@@ -572,13 +744,21 @@ export function SidebarViewMenu() {
     <>
       <PickerCard
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) {
+            cancelDeferred();
+            hoverIntent.reset();
+            closeSubmenu();
+            setActive(null);
+          }
+        }}
         placement="anchorBelowEnd"
         cardClassName="popover-card spaces-menu-card"
         role="menu"
         ariaLabel="Sidebar view options"
         width={rowContentWidth(buttonRef.current)}
-        onKeyDown={onKeyDownCard}
+        onKeyDown={onKey}
         trigger={
           <button
             type="button"
@@ -605,7 +785,9 @@ export function SidebarViewMenu() {
               }
             }}
           >
-            <Icon name="sort" size={16} />
+            {/* 86249cf0 swaps the SORT glyph for MORE_HORIZONTAL at the
+                trigger, matching the model pickers' overflow mark. */}
+            <Icon name="moreHorizontal" size={16} />
             {tooltip && !open && (
               <span className="space-filter-sort-tooltip" role="tooltip">
                 Sidebar view options
@@ -614,56 +796,106 @@ export function SidebarViewMenu() {
           </button>
         }
       >
-        <MenuHeading>Organize</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 3)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-        <MenuSeparator />
-        <MenuHeading>Sort</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(3, 5)} offset={3} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-        <MenuSeparator />
-        <MenuHeading>Show</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(5, 10)} offset={5} cursor={cursor} isSelected={isSelected} onActivate={activate} />
-        <MenuSeparator />
-        <MenuHeading>Layout</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(10)} offset={10} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <div className="view-menu-rows" onMouseMove={onCardMouseMove}>
+          {SIDEBAR_VIEW_GROUPS.map((group, ix) => (
+            <div
+              key={group.label}
+              className={`menu-row view-menu-group-row ${active === ix ? "menu-row-highlighted" : ""} ${
+                submenu === ix ? "menu-row-open" : ""
+              }`}
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={submenu === ix}
+              ref={(el) => {
+                groupRowRefs.current[ix] = el;
+              }}
+              onMouseEnter={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, false)}
+              onMouseMove={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, true)}
+              onMouseLeave={() => hoverIntent.leave(ix)}
+              onClick={() => {
+                // Match model settings: hover opens; clicking dismisses,
+                // including a sibling crossed during hover grace, without
+                // delayed reopening.
+                cancelDeferred();
+                hoverIntent.reset();
+                setActive(ix);
+                closeSubmenu();
+              }}
+            >
+              <span className="menu-row-label">{group.label}</span>
+              {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
+              <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
+              {submenu === ix && (
+                <div
+                  className={`view-menu-submenu popover-card ${submenuOnLeft ? "view-menu-submenu-left" : ""}`}
+                  ref={submenuRef}
+                  role="menu"
+                  aria-label={group.label}
+                >
+                  <MenuHeading>{group.label}</MenuHeading>
+                  <div className="view-menu-rows">
+                    {group.rows.map((rowIx, choice) => {
+                      const entry = SIDEBAR_VIEW_ROWS[rowIx]!;
+                      return (
+                        <MenuRowNav
+                          key={entry.row.kind}
+                          fadeKey={entry.row.kind}
+                          highlighted={submenuActive === choice && !isSelected(entry.row)}
+                          selected={isSelected(entry.row)}
+                          onClick={() => activate(entry.row)}
+                        >
+                          <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
+                          <span className="menu-row-label">{entry.label}</span>
+                          {/* The 14px check slot is always reserved so labels never shift. */}
+                          <span className="view-menu-check">
+                            {isSelected(entry.row) && <Icon name="check" size={14} />}
+                          </span>
+                        </MenuRowNav>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          <MenuSeparator />
+          <div
+            className={`menu-row view-menu-switch-row ${
+              active === SIDEBAR_VIEW_GROUPS.length ? "menu-row-highlighted" : ""
+            }`}
+            role="menuitem"
+            onClick={() => activate({ kind: "Compact" })}
+          >
+            <span className="menu-row-label">Compact</span>
+            {/* The switch is presentation: the row's click owns the write. */}
+            <RbSwitch checked={sidebar.compact} aria-label="Compact" tabIndex={-1} />
+          </div>
+          <div
+            className={`menu-row view-menu-create-section ${
+              active === SIDEBAR_VIEW_GROUPS.length + 1 ? "menu-row-highlighted" : ""
+            }`}
+            role="menuitem"
+            onClick={createSection}
+          >
+            <Icon name="plus" size={14} className="view-menu-create-icon" />
+            <span className="menu-row-label">Create Section</span>
+          </div>
+        </div>
       </PickerCard>
     </>
   );
 }
 
-function ViewMenuRows({
-  entries,
-  cursor,
-  offset,
-  isSelected,
-  onActivate,
-}: {
-  readonly entries: readonly { row: ViewRow; label: string; icon: IconName }[];
-  readonly cursor: number | null;
-  readonly offset: number;
-  readonly isSelected: (row: ViewRow) => boolean;
-  readonly onActivate: (row: ViewRow) => void;
-}) {
-  return (
-    <div className="view-menu-rows">
-      {entries.map((entry, ix) => {
-        const globalIx = ix + offset;
-        return (
-          <MenuRowNav
-            key={entry.row.kind}
-            fadeKey={entry.row.kind}
-            highlighted={cursor === globalIx && !isSelected(entry.row)}
-            selected={isSelected(entry.row)}
-            onClick={() => onActivate(entry.row)}
-          >
-            <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
-            <span className="menu-row-label">{entry.label}</span>
-            {/* The 14px check slot is always reserved so labels never shift. */}
-            <span className="view-menu-check">{isSelected(entry.row) && <Icon name="check" size={14} />}</span>
-          </MenuRowNav>
-        );
-      })}
-    </div>
-  );
+/** `popover::menu_step` — the cursor menu's wraparound stepper. */
+function menuStep(current: number | null, count: number, delta: number): number | null {
+  if (current === null) {
+    return delta > 0 ? 0 : count - 1;
+  }
+  return (current + delta + count) % count;
+}
+
+function boundsOf(rect: DOMRect): Bounds {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
 // ---------------------------------------------------------------------------

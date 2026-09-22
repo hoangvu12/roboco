@@ -1,7 +1,7 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { parseScopedId } from "@roboco/engine-client";
-import type { SidebarOrganization, SidebarSort } from "../state/ui-settings";
+import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
 import { projectPinnedFirst } from "./sidebar-pins";
 
 /**
@@ -360,11 +360,13 @@ export function sidebarGroups(
 
 /**
  * The flat, top-to-bottom chat ids exactly as the sidebar draws them —
- * pins first, then grouping and local-device promotion applied, headers not
- * counted (`spaces.rs::sidebar_visible_order`). The jump shortcuts and
- * session cycling read THIS order so keyboard order never drifts from the
- * screen. While the pinned disclosure is collapsed the hidden pins hold no
- * slot (they are not on the screen).
+ * pins first, then OPEN custom sections' members in section order, then the
+ * grouping and local-device promotion of the UNCLAIMED rows, headers not
+ * counted (`spaces.rs::sidebar_visible_order`, upstream 86249cf0's custom
+ * sections). The jump shortcuts and session cycling read THIS order so
+ * keyboard order never drifts from the screen. While the pinned disclosure
+ * is collapsed the hidden pins hold no slot (they are not on the screen),
+ * and a collapsed section's members hold no slot either.
  */
 export function sidebarVisibleOrder(
   rows: readonly ChatRow[],
@@ -372,11 +374,18 @@ export function sidebarVisibleOrder(
   localDeviceId: string | null,
   pinnedIds: readonly string[] = [],
   pinnedOpen = true,
+  sections: readonly SidebarSection[] = [],
 ): string[] {
-  const flat = sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
+  const claimed = new Set(sections.flatMap((section) => section.sessionIds));
+  const unclaimed = rows.filter((row) => !claimed.has(row.chat.id));
+  const flat = sidebarGroups(unclaimed, organization, localDeviceId).flatMap((bucket) =>
     bucket.rows.map((row) => row.chat.id),
   );
-  const visible = projectPinnedFirst(flat, pinnedIds);
+  const ids = new Set(rows.map((row) => row.chat.id));
+  const customOrder = sections
+    .filter((section) => !section.collapsed)
+    .flatMap((section) => section.sessionIds.filter((id) => ids.has(id)));
+  const visible = projectPinnedFirst([...customOrder, ...flat], pinnedIds);
   if (!pinnedOpen) {
     const pins = new Set(pinnedIds);
     return visible.filter((id) => !pins.has(id));
