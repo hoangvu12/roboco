@@ -148,6 +148,7 @@ export interface KeymapConfig {
   readonly toggleChanges: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
+  readonly newProject: string;
   readonly nextSession: string;
   readonly prevSession: string;
   readonly archiveSession: string;
@@ -297,6 +298,7 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     toggleChanges: "mod-r",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
+    newProject: "mod-shift-n",
     nextSession: mac ? "ctrl-tab" : "mod-tab",
     prevSession: mac ? "ctrl-shift-tab" : "mod-shift-tab",
     // Mod+A is the composer's Select all, so archiving takes the shifted combo.
@@ -546,6 +548,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     toggleChanges: combo("toggleChanges"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
+    newProject: combo("newProject"),
     nextSession: combo("nextSession"),
     prevSession: combo("prevSession"),
     archiveSession: combo("archiveSession"),

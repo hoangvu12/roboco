@@ -57,12 +57,13 @@ export type ShortcutId =
   | "toggleChanges"
   | "toggleTerminal"
   | "newSession"
+  | "newProject"
   | "nextSession"
   | "prevSession"
   | "archiveSession"
   | { jumpSession: number };
 
-/** `ShortcutId::ALL` — 19 entries, in `settings.rs:756-776`'s order. */
+/** `ShortcutId::ALL` — 20 entries, in `settings.rs`'s order. */
 export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "captureAppshot",
   "saveFile",
@@ -71,6 +72,7 @@ export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "toggleChanges",
   "toggleTerminal",
   "newSession",
+  "newProject",
   "nextSession",
   "prevSession",
   "archiveSession",
@@ -106,6 +108,8 @@ export function shortcutLabel(id: ShortcutId): string {
       return "Toggle terminal";
     case "newSession":
       return "New session";
+    case "newProject":
+      return "New project";
     case "nextSession":
       return "Next session";
     case "prevSession":
@@ -131,6 +135,8 @@ export function shortcutGroup(id: ShortcutId): string {
     case "toggleChanges":
     case "toggleTerminal":
       return "Panels";
+    case "newProject":
+      return "Projects";
     case "newSession":
     case "nextSession":
     case "prevSession":
@@ -149,6 +155,7 @@ export const SHORTCUT_GROUPS: readonly string[] = [
   "Browser",
   "Panels",
   "Sessions",
+  "Projects",
   "Jump to session",
   "Appshots",
 ];
@@ -566,6 +573,10 @@ function bindingFor(id: ShortcutId): Keybinding {
       return { event: "toggle-terminal", bare: false };
     case "newSession":
       return { event: "new-chat", bare: false };
+    case "newProject":
+      // The desktop binds `ShortcutId::NewProject` to the `AddSpacePalette`
+      // action (the New project flow's own toggle).
+      return { event: "add-space-palette", bare: false };
     case "nextSession":
       return { event: "next-session", bare: false };
     case "prevSession":
@@ -725,6 +736,7 @@ export function healReservedComposerShortcuts(
     toggleChanges: heal(config.toggleChanges, defaults.toggleChanges),
     toggleTerminal: heal(config.toggleTerminal, defaults.toggleTerminal),
     newSession: heal(config.newSession, defaults.newSession),
+    newProject: heal(config.newProject, defaults.newProject),
     nextSession: heal(config.nextSession, defaults.nextSession),
     prevSession: heal(config.prevSession, defaults.prevSession),
     archiveSession: heal(config.archiveSession, defaults.archiveSession),
