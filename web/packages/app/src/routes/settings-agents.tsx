@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
@@ -16,13 +16,19 @@ import {
   getTitleSettings,
   listHarnesses,
   listModels,
+  nextSignInPhase,
   notInstalledHint,
   setHarnessEnabled,
   setTitleSettings as saveTitleSettings,
+  signInFailureLabel,
+  signInPendingLabel,
+  signsInOnEnable,
   supportsTitles,
   titleHarnessLabel,
   visibleHarnesses,
+  type SignInPhase,
 } from "../lib/harnesses";
+import { cancelAgentLogin, pollAgentLoginOnce, startAgentLogin } from "../lib/accounts";
 
 /**
  * Agents settings — the desktop's HarnessesPage (nav label "Agents"):
@@ -41,6 +47,22 @@ type Loadable<T> =
 
 type TitleModels = Loadable<readonly Model[]>;
 
+/** An enable-with-sign-in in flight (harnesses.rs `SignIn`). */
+interface SignInState {
+  readonly harness: HarnessId;
+  /** Known once the engine accepted the start. */
+  loginId: string | null;
+  message: string | null;
+  phase: SignInPhase;
+}
+
+/** A sign-in that failed at a phase (harnesses.rs `SignInFailure`). */
+interface SignInFailure {
+  readonly harness: HarnessId;
+  readonly message: string;
+  readonly phase: SignInPhase;
+}
+
 export function AgentsSettingsPage() {
   const session = useEngineSession();
   const client = session?.client ?? null;
@@ -53,6 +75,11 @@ export function AgentsSettingsPage() {
   const [titleMenu, setTitleMenu] = useState<boolean | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** An enable-with-sign-in in flight (antigravity). */
+  const [signIn, setSignIn] = useState<SignInState | null>(null);
+  const [signInFailure, setSignInFailure] = useState<SignInFailure | null>(null);
+  /** Invalidates the poll loop of a cancelled/superseded sign-in. */
+  const signInSeq = useRef(0);
 
   const devices = (snapshot?.devices.rows ?? [])
     .slice()
@@ -121,8 +148,20 @@ export function AgentsSettingsPage() {
     void load();
   }, [load]);
 
+  // Unmount drops any in-flight sign-in poll loop (the cancel itself is
+  // best-effort and only logged; harnesses.rs drop semantics).
+  useEffect(() => {
+    return () => {
+      signInSeq.current += 1;
+    };
+  }, []);
+
   function toggle(harness: HarnessId, enabled: boolean) {
     if (client === null) {
+      return;
+    }
+    if (enabled && signsInOnEnable(harness)) {
+      startSignIn(harness);
       return;
     }
     setError(null);
@@ -137,10 +176,147 @@ export function AgentsSettingsPage() {
     })();
   }
 
+  /**
+   * Sign in first, then switch on (harnesses.rs `start_sign_in`):
+   * StartAgentLogin, then PollAgentLogin until the engine reports the
+   * outcome, opening the sign-in page the first time a poll names it.
+   */
+  function startSignIn(harness: HarnessId) {
+    if (client === null) {
+      return;
+    }
+    if (target !== null) {
+      // The sign-in redirect lands on a loopback port of the device running
+      // the agent, which a browser here can't reach.
+      setError("Turn this agent on from its own device to sign in.");
+      return;
+    }
+    setError(null);
+    setSignInFailure(null);
+    setSignIn({ harness, loginId: null, message: null, phase: "starting" });
+    const seq = signInSeq.current + 1;
+    signInSeq.current = seq;
+    // The loop's own phase tracker (state reads inside the async closure
+    // would see the phase at start time, not the current one).
+    let phase: SignInPhase = "starting";
+    const failure = (message: string) => {
+      if (signInSeq.current !== seq) {
+        return;
+      }
+      setSignIn(null);
+      setSignInFailure({ harness, message, phase });
+    };
+    void (async () => {
+      let loginId: string;
+      try {
+        const start = await startAgentLogin(client, harness, target);
+        if (signInSeq.current !== seq) {
+          return;
+        }
+        loginId = start.loginId;
+        phase = "installing";
+        setSignIn((current) =>
+          current === null || current.harness !== harness
+            ? current
+            : { ...current, loginId, phase },
+        );
+      } catch (cause) {
+        failure(`Sign-in failed to start: ${describe(cause)}`);
+        return;
+      }
+      // Pre-open a blank tab inside the click gesture so the poll-carried
+      // url can navigate it (popup blockers eat post-await opens; the CLI's
+      // own open is suppressed engine-side, settings-accounts parity).
+      const tab = window.open("about:blank", "_blank");
+      let opened = false;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (signInSeq.current !== seq) {
+          tab?.close();
+          return;
+        }
+        let poll;
+        try {
+          poll = await pollAgentLoginOnce(client, loginId, target);
+        } catch (cause) {
+          tab?.close();
+          failure(describe(cause));
+          return;
+        }
+        if (signInSeq.current !== seq) {
+          tab?.close();
+          return;
+        }
+        if (poll.status === "pending") {
+          if (!opened && poll.url != null) {
+            opened = true;
+            if (tab !== null) {
+              tab.location.href = poll.url;
+              tab.opener = null;
+            } else {
+              window.open(poll.url, "_blank", "noopener,noreferrer");
+            }
+          }
+          phase = nextSignInPhase(poll) ?? phase;
+          setSignIn((current) =>
+            current === null || current.harness !== harness
+              ? current
+              : { ...current, phase, message: poll.message ?? current.message },
+          );
+          continue;
+        }
+        if (poll.status === "done") {
+          tab?.close();
+          // The toggle itself, now that the sign-in succeeded — a failure
+          // here lands as an Enable failure with the fresh catalog intact.
+          phase = "enabling";
+          setSignIn((current) =>
+            current === null || current.harness !== harness
+              ? current
+              : { ...current, phase, message: null },
+          );
+          try {
+            const fresh = await setHarnessEnabled(client, harness, true, target);
+            if (signInSeq.current !== seq) {
+              return;
+            }
+            setHarnesses({ kind: "ready", value: fresh });
+            setSignIn(null);
+            setSignInFailure(null);
+            bumpHarnessCatalog(session);
+          } catch (cause) {
+            failure(describe(cause));
+          }
+          return;
+        }
+        tab?.close();
+        failure(poll.message ?? "Unknown error");
+        return;
+      }
+    })();
+  }
+
+  function cancelSignIn() {
+    const current = signIn;
+    if (current === null || client === null) {
+      return;
+    }
+    signInSeq.current += 1;
+    setSignIn(null);
+    if (current.loginId !== null) {
+      // Best-effort; the desktop only debug-logs a failure.
+      void cancelAgentLogin(client, current.loginId, target).catch(() => undefined);
+    }
+  }
+
   function setTargetDevice(next: string | null) {
     if (next === target) {
       return;
     }
+    // A retarget drops any in-flight sign-in (set_target_device cancels).
+    signInSeq.current += 1;
+    setSignIn(null);
+    setSignInFailure(null);
     setTarget(next);
     setTitleMenu(null);
     setTitleSaving(false);
@@ -185,7 +361,14 @@ export function AgentsSettingsPage() {
         </div>
       ) : (
         <section className="settings-card">
-          <HarnessRows list={harnesses.value} onToggle={toggle} />
+          <HarnessRows
+            list={harnesses.value}
+            onToggle={toggle}
+            signIn={signIn}
+            signInFailure={signInFailure}
+            onCancelSignIn={cancelSignIn}
+            onRetrySignIn={startSignIn}
+          />
         </section>
       )}
 
@@ -205,6 +388,10 @@ export function AgentsSettingsPage() {
 function HarnessRows(props: {
   readonly list: readonly HarnessDescriptor[];
   readonly onToggle: (harness: HarnessId, enabled: boolean) => void;
+  readonly signIn: SignInState | null;
+  readonly signInFailure: SignInFailure | null;
+  readonly onCancelSignIn: () => void;
+  readonly onRetrySignIn: (harness: HarnessId) => void;
 }) {
   const descriptors = visibleHarnesses(props.list);
   const enabledCount = descriptors.filter((descriptor) => descriptorEnabled(descriptor)).length;
@@ -213,16 +400,27 @@ function HarnessRows(props: {
       {descriptors.map((descriptor, ix) => {
         const enabled = descriptorEnabled(descriptor);
         const installed = descriptor.installed;
+        const signingIn =
+          props.signIn !== null && props.signIn.harness === descriptor.id ? props.signIn : null;
+        const signInFailure =
+          props.signInFailure !== null && props.signInFailure.harness === descriptor.id
+            ? props.signInFailure
+            : null;
+        const signInCancellable = signingIn !== null && signingIn.phase !== "enabling";
         // The one enabled harness left can't be switched off — the composer
         // needs something to run — but only when it could actually run; and
-        // turning OFF never needs the CLI, turning ON still does.
+        // turning OFF never needs the CLI, turning ON still does. A row
+        // mid-sign-in (or showing its failure) is inert until it resolves.
         const lastEnabled = enabled && enabledCount === 1 && installed;
-        const interactive = !lastEnabled && (enabled || installed);
+        const interactive =
+          signingIn === null && signInFailure === null && !lastEnabled && (enabled || installed);
         const brand = harnessBrandIcon(descriptor.id);
         return (
           <div
             key={descriptor.id}
-            className={`settings-row harness-row ${!installed ? "harness-row-uninstalled" : ""}`}
+            className={`settings-row harness-row ${!installed ? "harness-row-uninstalled" : ""} ${
+              signingIn !== null ? "harness-row-signing-in" : ""
+            }`}
           >
             <div className="row-tile harness-tile" aria-hidden="true">
               <Icon
@@ -236,6 +434,22 @@ function HarnessRows(props: {
               <span className="settings-row-title">{descriptor.name}</span>
               <span className="settings-meta-line">
                 {blurb(descriptor.id)}
+                {signingIn !== null && (
+                  <>
+                    <span className="settings-meta-dot" aria-hidden="true">·</span>
+                    <span className="harness-sign-in-status">
+                      {signingIn.message ?? signInPendingLabel(signingIn.phase)}
+                    </span>
+                  </>
+                )}
+                {signInFailure !== null && (
+                  <>
+                    <span className="settings-meta-dot" aria-hidden="true">·</span>
+                    <span className="harness-sign-in-failure">
+                      {signInFailureLabel(signInFailure.phase)} — {signInFailure.message}
+                    </span>
+                  </>
+                )}
                 {!installed && (
                   <>
                     <span className="settings-meta-dot" aria-hidden="true">·</span>
@@ -244,6 +458,24 @@ function HarnessRows(props: {
                 )}
               </span>
             </div>
+            {signInCancellable && (
+              <button
+                type="button"
+                className="btn btn-ghost harness-sign-in-cancel"
+                onClick={props.onCancelSignIn}
+              >
+                Cancel
+              </button>
+            )}
+            {signInFailure !== null && (
+              <button
+                type="button"
+                className="btn btn-ghost harness-sign-in-retry"
+                onClick={() => props.onRetrySignIn(descriptor.id)}
+              >
+                Retry
+              </button>
+            )}
             {interactive ? (
               <RbSwitch
                 checked={enabled}

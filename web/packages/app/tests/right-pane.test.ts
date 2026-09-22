@@ -10,6 +10,7 @@ import {
   type RightSurface,
 } from "../src/state/right-pane";
 import { dropIndex, slideOffset } from "../src/components/right-tab-strip";
+import { uiSettings } from "../src/state/ui-settings";
 
 /**
  * The right pane's surface model, against the desktop's (`shell.rs:457-532`,
@@ -105,7 +106,7 @@ describe("session_panels_both_flags_coexist_per_chat", () => {
 describe("close_resets_logical_flags_immediately (ticket 72)", () => {
   it("close and toggle clear open+expanded in the same commit — no presentation state in the store", () => {
     const { store } = fresh();
-    store.addFilesSurface("chat-1");
+    store.setSurfacesOpen("chat-1", true);
     store.toggleExpanded("chat-1");
     expect(store.stateFor("chat-1")).toMatchObject({ open: true, expanded: true });
 
@@ -129,6 +130,7 @@ describe("close_resets_logical_flags_immediately (ticket 72)", () => {
     expect(Object.keys(store.stateFor("chat-1")).sort()).toEqual([
       "active",
       "expanded",
+      "filesOpen",
       "open",
       "tabs",
       "width",
@@ -139,7 +141,7 @@ describe("close_resets_logical_flags_immediately (ticket 72)", () => {
 describe("session_panels_update_tracks_right_surfaces", () => {
   it("resolvedActive follows the live tab list and falls back to the picker", () => {
     const { store } = fresh();
-    store.addFilesSurface("chat-1");
+    store.addFileSurface("chat-1", "src/main.rs");
     store.addTerminalSurface("chat-1");
     // The surface id IS the embedded terminal tab's key.
     expect(resolvedActive(store.stateFor("chat-1"))).toEqual({ kind: "terminal", id: "t1" });
@@ -147,13 +149,20 @@ describe("session_panels_update_tracks_right_surfaces", () => {
     // The stored pick goes stale when its tab closes — never render a dead
     // surface; the first remaining tab wins.
     store.closeSurface("chat-1", { kind: "terminal", id: "t1" });
-    expect(resolvedActive(store.stateFor("chat-1"))).toEqual({ kind: "files" });
+    expect(resolvedActive(store.stateFor("chat-1"))).toEqual({ kind: "file", id: "f1" });
 
-    // Emptied, the pane lands on the picker — it does not close.
-    store.closeSurface("chat-1", { kind: "files" });
-    const pane = store.stateFor("chat-1");
-    expect(pane.open).toBe(true);
+    // Emptied, the surface host collapses (fe45a1cd collapse_surfaces_if_empty)
+    // unless the docked explorer keeps the pane alive.
+    store.closeSurface("chat-1", { kind: "file", id: "f1" });
+    let pane = store.stateFor("chat-1");
+    expect(pane.open).toBe(false);
     expect(resolvedActive(pane)).toEqual({ kind: "picker" });
+    store.openFilesPanel("chat-1");
+    store.addTerminalSurface("chat-1");
+    store.closeSurface("chat-1", { kind: "terminal", id: "t2" });
+    pane = store.stateFor("chat-1");
+    expect(pane.open).toBe(true);
+    expect(pane.filesOpen).toBe(true);
   });
 });
 
@@ -187,15 +196,49 @@ describe("terminal_surfaces_are_per_instance (add_terminal_surface, shell.rs:263
   });
 });
 
-describe("files_surface_is_single_instance_per_tab_list", () => {
-  it("repeat opens focus the one Files tab instead of adding a second", () => {
+describe("explorer_is_a_docked_portion_of_one_right_pane (tickets 22/23)", () => {
+  it("the files toggle opens the pane alone; the pane toggle drives only the surface host", () => {
     const { store } = fresh();
-    store.addFilesSurface("chat-1");
-    store.addDiffSurface("chat-1", "diff");
-    store.addFilesSurface("chat-1");
-    const pane = store.stateFor("chat-1");
-    expect(pane.tabs.filter((tab) => tab.kind === "files")).toHaveLength(1);
-    expect(resolvedActive(pane)).toEqual({ kind: "files" });
+    // The explorer toggle opens the pane with only its portion.
+    store.toggleFilesPanel("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: false, filesOpen: true });
+    // The pane toggle drives only the host: the explorer stays docked.
+    store.toggle("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: true });
+    store.toggle("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: false, filesOpen: true });
+    store.toggleFilesPanel("chat-1");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: false, filesOpen: false });
+    // The Files chord routes to the docked portion, never a tab.
+    store.revealSurface("chat-1", "files");
+    expect(store.stateFor("chat-1").tabs).toHaveLength(0);
+    expect(store.stateFor("chat-1").filesOpen).toBe(true);
+  });
+
+  it("programmatic file opens never close an open pane (set_surfaces_open)", () => {
+    const { store } = fresh();
+    store.openFilesPanel("chat-1");
+    store.addFileSurface("chat-1", "src/main.rs");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: true });
+    store.setSurfacesOpen("chat-1", true);
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: true });
+  });
+
+  it("reveal requests dock the explorer and queue one reveal per path", () => {
+    const { store } = fresh();
+    store.revealInFilesPanel("chat-1", "src/lib.rs");
+    expect(store.stateFor("chat-1").filesOpen).toBe(true);
+    expect(store.pendingFilesReveal()).toMatchObject({ chatId: "chat-1", path: "src/lib.rs" });
+    store.clearFilesReveal();
+    expect(store.pendingFilesReveal()).toBeNull();
+  });
+
+  it("the files panel width clamps into the drag bounds", () => {
+    const { store } = fresh();
+    store.setFilesPanelWidth(40);
+    expect(uiSettings.getSnapshot().filesPanelWidth).toBe(220);
+    store.setFilesPanelWidth(9000);
+    expect(uiSettings.getSnapshot().filesPanelWidth).toBe(440);
   });
 });
 
@@ -274,12 +317,12 @@ describe("file_editors_are_distinct_surface_tabs_with_stable_titles", () => {
 
 describe("surface keys and value equality", () => {
   it("compares surfaces by kind + id", () => {
-    expect(surfaceKey({ kind: "files" })).toBe("files");
+    expect(surfaceKey({ kind: "picker" })).toBe("picker");
     expect(surfaceKey({ kind: "file", id: "f1" })).toBe("file:f1");
-    expect(pushUniqueRightSurface([{ kind: "files" }], { kind: "files" })).toBe(false);
-    const tabs: RightSurface[] = [{ kind: "files" }];
+    expect(pushUniqueRightSurface([{ kind: "file", id: "f1" }], { kind: "file", id: "f1" })).toBe(false);
+    const tabs: RightSurface[] = [{ kind: "file", id: "f1" }];
     expect(pushUniqueRightSurface(tabs, { kind: "terminal", id: "t1" })).toBe(true);
-    expect(tabs).toEqual([{ kind: "files" }, { kind: "terminal", id: "t1" }]);
+    expect(tabs).toEqual([{ kind: "file", id: "f1" }, { kind: "terminal", id: "t1" }]);
   });
 
   it("derives the basename title from either separator shape", () => {

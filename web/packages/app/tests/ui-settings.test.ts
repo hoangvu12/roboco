@@ -9,6 +9,7 @@ import {
   UI_SETTINGS_STORAGE_KEY,
   UiSettingsStore,
   defaultUiSettings,
+  healUiSettings,
   type UiSettings,
 } from "../src/state/ui-settings";
 
@@ -58,8 +59,17 @@ describe("defaults", () => {
     expect(settings.notificationsBackgroundOnly).toBe(true);
     expect(settings.sidebarOrganization).toBe("inOneList");
     expect(settings.sidebarSort).toBe("lastUpdated");
+    // Upstream 78e9e6ae/ffaa3102's display toggles: compact defaults ON,
+    // project icon and Location label default on.
+    expect(settings.sidebarCompact).toBe(true);
+    expect(settings.sidebarShowProjectIcon).toBe(true);
+    expect(settings.sidebarShowProjectLabel).toBe(true);
     expect(settings.filesAutosaveDelayMs).toBe(900);
-    expect(settings.filesEditorFontSize).toBe(13);
+    expect(settings.terminalFontFamily).toBe("geistMono");
+    expect(settings.terminalFontSize).toBe(13);
+    expect(settings.codeFontFamily).toBe("geistMono");
+    expect(settings.codeFontSize).toBe(12.5);
+    expect(settings.transcriptWidth).toBe(736);
     expect(settings.gitHistoryColumnWidths).toEqual({ author: 88, date: 88, sha: 74 });
     expect(settings.gitHistoryColumnOrder).toEqual(["author", "date", "sha"]);
     expect(settings.newThreadComposerBackground).toBe(null);
@@ -115,9 +125,53 @@ describe("clamp", () => {
     expect(storedWith({ filesAutosaveDelayMs: 1500 }).filesAutosaveDelayMs).toBe(1500);
   });
 
-  it("filesEditorFontSize — clamps into [9, 24]", () => {
-    expect(storedWith({ filesEditorFontSize: 2 }).filesEditorFontSize).toBe(9);
-    expect(storedWith({ filesEditorFontSize: 99 }).filesEditorFontSize).toBe(24);
+  it("codeFontSize — clamps into [8, 32] and folds the legacy filesEditorFontSize", () => {
+    expect(storedWith({ codeFontSize: 2 }).codeFontSize).toBe(8);
+    expect(storedWith({ codeFontSize: 99 }).codeFontSize).toBe(32);
+    expect(storedWith({ codeFontSize: 14 }).codeFontSize).toBe(14);
+    // The legacy files-editor size was the first user-facing code size; it
+    // folds into codeFontSize on load (settings.rs removes the key upstream).
+    expect(storedWith({ filesEditorFontSize: 17 }).codeFontSize).toBe(17);
+    // An explicit codeFontSize wins over the legacy key.
+    expect(storedWith({ filesEditorFontSize: 17, codeFontSize: 14 }).codeFontSize).toBe(14);
+  });
+
+  it("terminalFontSize — clamps into [8, 32]", () => {
+    expect(storedWith({ terminalFontSize: 2 }).terminalFontSize).toBe(8);
+    expect(storedWith({ terminalFontSize: 99 }).terminalFontSize).toBe(32);
+  });
+
+  it("transcriptWidth — loads the legacy default and normalizes persisted values", () => {
+    // `transcript_width_loads_legacy_defaults_and_normalizes_persisted_values`
+    // (settings.rs, upstream cbf2ad84): a pre-field file defaults to 736.
+    expect(storedWith({}).transcriptWidth).toBe(736);
+    for (const [value, expected] of [
+      [100, 560],
+      [2000, 1200],
+      [745, 752],
+      [Number.NaN, 736],
+      ["wide", 736],
+    ] as const) {
+      expect(storedWith({ transcriptWidth: value }).transcriptWidth).toBe(expected);
+    }
+    // A rung lands exactly; an in-between value snaps to the nearest one.
+    expect(storedWith({ transcriptWidth: 736 }).transcriptWidth).toBe(736);
+    expect(storedWith({ transcriptWidth: 741 }).transcriptWidth).toBe(736);
+    expect(storedWith({ transcriptWidth: 749 }).transcriptWidth).toBe(752);
+  });
+
+  it("terminalFontFamily — a persisted proportional family falls back to Geist Mono", () => {
+    expect(storedWith({ terminalFontFamily: "geist" }).terminalFontFamily).toBe("geistMono");
+    expect(storedWith({ terminalFontFamily: "system" }).terminalFontFamily).toBe("geistMono");
+    expect(storedWith({ terminalFontFamily: "installed:Comic Sans" }).terminalFontFamily).toBe(
+      "geistMono",
+    );
+    expect(storedWith({ terminalFontFamily: "geistMono" }).terminalFontFamily).toBe("geistMono");
+    // The code slot keeps the whole catalog, proportional included.
+    expect(storedWith({ codeFontFamily: "geist" }).codeFontFamily).toBe("geist");
+    expect(storedWith({ codeFontFamily: "installed:JetBrains Mono" }).codeFontFamily).toBe(
+      "installed:JetBrains Mono",
+    );
   });
 
   it("gitHistoryColumnWidths — each sub-field clamps to its own bounds", () => {
@@ -133,10 +187,34 @@ describe("clamp", () => {
 });
 
 describe("heal", () => {
-  it("sidebarOrganization — a stored \"byProject\" heals to \"inOneList\"", () => {
-    expect(storedWith({ sidebarOrganization: "byProject" }).sidebarOrganization).toBe("inOneList");
+  it("sidebarOrganization — a stored \"byProject\" round-trips (upstream 78e9e6ae removed the downgrade)", () => {
+    expect(storedWith({ sidebarOrganization: "byProject" }).sidebarOrganization).toBe("byProject");
     expect(storedWith({ sidebarOrganization: "byDevice" }).sidebarOrganization).toBe("byDevice");
     expect(storedWith({ sidebarOrganization: "sideways" }).sidebarOrganization).toBe("inOneList");
+  });
+
+  it("sidebar display preferences — compact/icon/label heal independently", () => {
+    expect(storedWith({ sidebarCompact: false }).sidebarCompact).toBe(false);
+    expect(storedWith({ sidebarCompact: "junk" }).sidebarCompact).toBe(true);
+    expect(storedWith({ sidebarShowProjectIcon: false }).sidebarShowProjectIcon).toBe(false);
+    expect(storedWith({ sidebarShowProjectLabel: false }).sidebarShowProjectLabel).toBe(false);
+  });
+
+  it("sidebar_display_defaults_and_preferences_round_trip", () => {
+    // The desktop's round-trip test (settings.rs): a fully customized
+    // display slice survives a serialize→heal cycle, including ByProject.
+    const store = new UiSettingsStore({ storage: memoryStorage() });
+    store.updateImmediate({
+      sidebarCompact: false,
+      sidebarShowProjectIcon: false,
+      sidebarShowProjectLabel: false,
+      sidebarOrganization: "byProject",
+    });
+    const restored = healUiSettings(JSON.parse(JSON.stringify(store.getSnapshot())));
+    expect(restored.sidebarCompact).toBe(false);
+    expect(restored.sidebarShowProjectIcon).toBe(false);
+    expect(restored.sidebarShowProjectLabel).toBe(false);
+    expect(restored.sidebarOrganization).toBe("byProject");
   });
 
   it("jumpSession — pads a short list and truncates a long one to 9 slots", () => {
@@ -162,6 +240,28 @@ describe("heal", () => {
     expect(keymap.toggleChanges).toBe("mod-shift-k");
   });
 
+  it("keymap — newProject migrates to its default and keeps a custom combo", () => {
+    // The web port of new_project_shortcut_migrates_and_persists
+    // (settings.rs, upstream 74558a2c): an older file has no newProject,
+    // and heal fills the default without touching its siblings.
+    const keymap = storedWith({ keymap: { newSession: "mod-alt-n" } }).keymap;
+    expect(keymap.newProject).toBe("mod-shift-n");
+    expect(keymap.newSession).toBe("mod-alt-n");
+    const custom = storedWith({ keymap: { newProject: "mod-alt-p" } }).keymap;
+    expect(custom.newProject).toBe("mod-alt-p");
+  });
+
+  it("keymap — openModelPicker keeps a stored rebind and defaults to mod-/", () => {
+    // Upstream faac7432: the configurable model-picker shortcut heals like
+    // every scalar combo — stored rebinds survive, missing goes to mod-/.
+    const stored = storedWith({ keymap: { openModelPicker: "mod-shift-m" } }).keymap;
+    expect(stored.openModelPicker).toBe("mod-shift-m");
+    const fresh = storedWith({}).keymap;
+    expect(fresh.openModelPicker).toBe("mod-/");
+    const reserved = storedWith({ keymap: { openModelPicker: "mod-enter" } }).keymap;
+    expect(reserved.openModelPicker).toBe("mod-/");
+  });
+
   it("gitHistoryColumnOrder — dedups and appends the missing columns", () => {
     expect(storedWith({ gitHistoryColumnOrder: ["sha", "sha", "date"] }).gitHistoryColumnOrder).toEqual([
       "sha",
@@ -173,6 +273,41 @@ describe("heal", () => {
       "date",
       "sha",
     ]);
+  });
+
+  it("sidebarPinnedSessionIdsByProfile — per-profile id lists, healed per entry", () => {
+    expect(
+      storedWith({ sidebarPinnedSessionIdsByProfile: { local: ["a", "a", 7, "", "b"] } })
+        .sidebarPinnedSessionIdsByProfile,
+    ).toEqual({ local: ["a", "b"] });
+    // An emptied bucket heals out of the map; junk keys and junk values go.
+    expect(
+      storedWith({ sidebarPinnedSessionIdsByProfile: { "": ["a"], local: ["", 7], "synced:d1": "a" } })
+        .sidebarPinnedSessionIdsByProfile,
+    ).toEqual({});
+    expect(storedWith({ sidebarPinnedSessionIdsByProfile: "local" }).sidebarPinnedSessionIdsByProfile).toEqual(
+      {},
+    );
+    expect(storedWith({}).sidebarPinnedSessionIdsByProfile).toEqual({});
+  });
+
+  it("lastProjectActionBySpaceId — defaults empty, heals per-field, survives round trips", () => {
+    // Default: no preferred action anywhere.
+    expect(new UiSettingsStore({ storage: memoryStorage() }).getSnapshot().lastProjectActionBySpaceId).toEqual({});
+    // Healing keeps only non-empty string values (settings.rs parity: the
+    // map is `skip_serializing_if = "HashMap::is_empty"`).
+    const healed = storedWith({
+      lastProjectActionBySpaceId: { "space-1": "dev", "space-2": "", "space-3": 7 },
+    });
+    expect(healed.lastProjectActionBySpaceId).toEqual({ "space-1": "dev" });
+    // A write lands through the debounced update path like every field.
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const store = new UiSettingsStore({ storage });
+    store.updateDebounced({ lastProjectActionBySpaceId: { "space-1": "dev" } });
+    vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+    const persisted = JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!) as UiSettings;
+    expect(persisted.lastProjectActionBySpaceId).toEqual({ "space-1": "dev" });
   });
 });
 
@@ -350,5 +485,27 @@ describe("save policies", () => {
     expect(store.getSnapshot().sidebarWidth).toBe(400);
     store.update({ rightPaneWidth: 10 }, "immediate");
     expect(store.getSnapshot().rightPaneWidth).toBe(360);
+    // The ladder holds too: an off-rung write normalizes before it lands.
+    store.update({ transcriptWidth: 9001 }, "immediate");
+    expect(store.getSnapshot().transcriptWidth).toBe(1200);
+  });
+
+  it("conversation width drag — coalesces samples and persists the last value", () => {
+    // `conversation_width_drag_coalesces_and_persists_the_last_value`
+    // (settings/appearance.rs, upstream cbf2ad84): pointer samples move the
+    // in-memory snapshot immediately (the column reflows live) while one
+    // coalesced write reaches storage, carrying the LAST sample.
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    const store = new UiSettingsStore({ storage });
+    for (const width of [560, 720, 880, 1200, 880]) {
+      store.update({ transcriptWidth: width }, "debounced");
+    }
+    // The snapshot follows every sample; storage still holds the
+    // constructor's default write — the samples coalesce behind the timer.
+    expect(store.getSnapshot().transcriptWidth).toBe(880);
+    expect(JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!).transcriptWidth).toBe(736);
+    store.flush();
+    expect(JSON.parse(storage.getItem(UI_SETTINGS_STORAGE_KEY)!).transcriptWidth).toBe(880);
   });
 });

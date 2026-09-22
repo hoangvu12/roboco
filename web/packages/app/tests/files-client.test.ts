@@ -37,6 +37,30 @@ function caller(respond: (method: string, params: Record<string, unknown>) => un
 }
 
 describe("WorkspaceFilesClient", () => {
+  it("the Git status watch targets the chat and carries the wire frame shape", () => {
+    const transport = caller(() => ({ status: null }));
+    const client = new WorkspaceFilesClient(transport, { chatId: "chat-1" });
+    const seen: { onItem: (frame: unknown) => void }[] = [];
+    const engine = {
+      watch(
+        method: string,
+        params: unknown,
+        handlers: { onItem: (frame: unknown) => void },
+      ): { cancel(): void } {
+        expect(method).toBe(methods.WATCH_WORKSPACE_GIT_STATUS);
+        expect(params).toEqual({ chatId: "chat-1" });
+        seen.push(handlers);
+        return { cancel: () => undefined };
+      },
+    };
+    const handle = client.watchGitStatus(
+      engine as unknown as Parameters<typeof client.watchGitStatus>[0],
+      { onItem: () => undefined },
+    );
+    expect(seen).toHaveLength(1);
+    handle.cancel();
+  });
+
   it("flattens the space target into every request (serde flatten parity)", async () => {
     const transport = caller(() => ({ directory: "", entries: [], truncated: false }));
     const client = new WorkspaceFilesClient(transport, { spaceId: "space-1" });

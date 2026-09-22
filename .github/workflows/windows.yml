@@ -10,6 +10,7 @@ on:
       - 'dist/windows/**'
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
+      - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
   workflow_dispatch:
     inputs:
@@ -67,25 +68,47 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.144
+      - name: Native harness security and integration tests
+        # Runs before the full application build: the hardened process
+        # behavior must fail the PR early, not after the expensive build.
+        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --lib --test codex_availability --test windows_native -P ci
       - name: Build application
         run: cargo build --release --locked -p roboco
+      - name: Verify portable packaging
+        # Exercise the release packaging script on every PR. -SkipWebBuild:
+        # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
+        # and the real web bundle is built by web-codegen/release workflows.
+        run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Shader layout tests
         run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
       - name: Application and updater tests
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
-      - name: Engine and harness unit tests
-        run: cargo nextest run --release --locked -p roboco-engine -p roboco-harness --lib -P ci
+      - name: Engine, RPC, and harness unit tests
+        run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
+      - name: OpenCode wire integration tests
+        run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests
         run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native -P ci
       - name: Harness catalog tests
         run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
-        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles -P ci
-      - name: UI tests
+        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles --test project_actions_rpc -P ci
+      - name: UI native font geometry test
+        # Upstream 3f19c19e: the real-font assertion measures diff geometry
+        # against DirectWrite (non-headless platform). nextest runs it in its
+        # own process, isolated from the headless suite; the split keeps the
+        # real-font assertion and the complete headless suite separately
+        # attributed and both mandatory.
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'test(native_diff_font_geometry)' -P ci
+      - name: UI headless tests
         # Serial on purpose: the gpui test scheduler is not safe under
         # intra-process parallelism (same constraint as the old
         # --test-threads=1). Retries come from the ci nextest profile.
-        run: cargo nextest run --release --locked -p roboco-ui --lib -j 1 -P ci
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'not(test(native_diff_font_geometry))' -j 1 -P ci
       - name: CLI startup without HOME
         run: |
           # Exercise real path resolution without touching the runner's account.
@@ -95,8 +118,24 @@ jobs:
           $env:ROBOCO_IPC_PORT = '0'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "roboco smoke O'Brien 日本語"
           $expected = Join-Path $env:LOCALAPPDATA 'Roboco'
-          $output = & ./target/release/roboco.exe status
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $probe = [Diagnostics.ProcessStartInfo]::new()
+          $probe.FileName = (Resolve-Path -LiteralPath './target/release/roboco.exe').Path
+          $probe.Arguments = 'status'
+          $probe.UseShellExecute = $false
+          $probe.CreateNoWindow = $true
+          $probe.RedirectStandardOutput = $true
+          $probe.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($probe)
+          try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(10000)) {
+              $process.Kill()
+              throw 'Isolated status probe timed out'
+            }
+            if ($process.ExitCode -ne 0) { throw "Status failed: $($stderr.Result)" }
+            $output = $stdout.Result -split '\r?\n'
+          } finally { $process.Dispose() }
           $output
           if (-not ($output -contains "Data dir: $expected")) {
             throw 'Windows startup did not select LOCALAPPDATA/Roboco'

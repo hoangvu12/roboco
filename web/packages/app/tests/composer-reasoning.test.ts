@@ -21,6 +21,7 @@ import type { DraftConfig } from "../src/lib/composer-actions";
 import { ComposerPickers } from "../src/components/composer-pickers";
 import { useDraftModelReconciliation } from "../src/lib/composer-reconciliation";
 import { PickerCatalog } from "../src/state/picker-catalog";
+import { emitShortcut } from "../src/state/shortcuts";
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
 // matchMedia (useIsPhone in PickerCard), ResizeObserver (MenuScrollbar),
@@ -234,19 +235,52 @@ async function openCard(handle: MountedPicker): Promise<void> {
 
 function reasoningRow(level: string): HTMLElement | null {
   // The card renders through a portal — query the document, not the container.
-  return document.querySelector<HTMLElement>(`.model-traits [data-rb-row-key="${level}"]`);
+  // The nested tray (upstream 9a4757be): reasoning choices live under the
+  // Reasoning trigger's expanded menu, keyed `setting-choice-reasoning-<level>`.
+  return document.querySelector<HTMLElement>(
+    `.model-traits [data-rb-row-key="setting-choice-reasoning-${level}"]`,
+  );
 }
 
-function traitHeadings(): string[] {
-  return Array.from(document.querySelectorAll(".model-traits .menu-heading")).map((el) => el.textContent ?? "");
+function traitTriggers(): string[] {
+  return Array.from(document.querySelectorAll(".model-traits .model-setting-row .menu-row-label")).map(
+    (el) => el.textContent ?? "",
+  );
+}
+
+function settingTrigger(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `.model-traits [data-rb-row-key="model-setting-${id}"]`,
+  );
+}
+
+function settingChoice(id: string, value: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `.model-traits [data-rb-row-key="setting-choice-${id}-${value}"]`,
+  );
+}
+
+/** Click a settings trigger open (the nested menu expands inline). */
+async function openSetting(id: string): Promise<void> {
+  await act(async () => {
+    settingTrigger(id)!.click();
+  });
+}
+
+/** The card-level keydown path (the capture-phase window listener). Each key
+ *  flushes React so the next key runs against the re-armed listener. */
+function pressKey(key: string): void {
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
 }
 
 describe("ComposerPickers reasoning over the effective ladder", () => {
   it("shows the descriptor's ladder for an empty model list and keeps the click through the draft", async () => {
     // §2.3 step 1's ready-catalog fixture: selected model has [], the
     // matching descriptor has [low, medium, high], the selected preference is
-    // low. The picker must show all three rows and selecting high must update
-    // the draft to high.
+    // low. The tray's Reasoning trigger must offer all three choices and
+    // selecting high must update the draft to high.
     const client = new FakeClient();
     client.harnesses = [CLAUDE];
     client.modelsByHarness.set("claude-code", [HAIKU]);
@@ -254,9 +288,10 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     await flush();
     await openCard(handle);
 
-    // The descriptor-backed ladder renders beneath the model list, ahead of
-    // the model's own options; the retained preference reads selected.
-    expect(traitHeadings()).toEqual(["Reasoning", "Thinking"]);
+    // The descriptor-backed ladder trigger renders beneath the model list,
+    // ahead of the model's own options.
+    expect(traitTriggers()).toEqual(["Reasoning", "Thinking"]);
+    await openSetting("reasoning");
     expect(reasoningRow("low")).not.toBeNull();
     expect(reasoningRow("medium")).not.toBeNull();
     expect(reasoningRow("high")).not.toBeNull();
@@ -274,7 +309,13 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     // New chat: the draft is retained, nothing persists yet.
     expect(handle.persists).toHaveLength(0);
 
-    // The mounted row and the chip summary agree on the effective level.
+    // The pick closes the nested menu but keeps the card open for
+    // multi-adjust (`activate_setting_choice`).
+    expect(reasoningRow("high")).toBeNull();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+
+    // Reopening lands the check on the picked level.
+    await openSetting("reasoning");
     expect(reasoningRow("high")?.getAttribute("aria-selected")).toBe("true");
     expect(handle.container.querySelector(".identity-chip-suffix")?.textContent).toContain("High");
   });
@@ -293,6 +334,7 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     const handle = mountPicker({ client, initial: draft(), chatConfig: persisted });
     await flush();
     await openCard(handle);
+    await openSetting("reasoning");
 
     await act(async () => {
       reasoningRow("high")!.click();
@@ -314,7 +356,8 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     await flush();
     await openCard(handle);
 
-    expect(traitHeadings()).toEqual(["Reasoning"]);
+    expect(traitTriggers()).toEqual(["Reasoning"]);
+    await openSetting("reasoning");
     // Only the model's own levels, in its advertised order.
     expect(reasoningRow("low")).not.toBeNull();
     expect(reasoningRow("high")).not.toBeNull();
@@ -333,9 +376,12 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     await flush();
     await openCard(handle);
 
-    // Model options still render independently; no Reasoning section appears.
-    expect(traitHeadings()).toEqual(["Thinking"]);
-    expect(reasoningRow("low")).toBeNull();
+    // Model options still render independently; no Reasoning trigger appears.
+    expect(traitTriggers()).toEqual(["Thinking"]);
+    expect(settingTrigger("reasoning")).toBeNull();
+    await openSetting("thinking");
+    expect(settingChoice("thinking", "off")).not.toBeNull();
+    expect(settingChoice("thinking", "on")).not.toBeNull();
   });
 
   it("keeps the picked level through an equivalent catalog refresh while open", async () => {
@@ -345,6 +391,7 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     const handle = mountPicker({ client, initial: draft() });
     await flush();
     await openCard(handle);
+    await openSetting("reasoning");
     await act(async () => {
       reasoningRow("high")!.click();
     });
@@ -358,7 +405,165 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     });
     await flush();
     expect(handle.observed.current.reasoning).toBe("high");
+    await openSetting("reasoning");
     expect(reasoningRow("high")?.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+// ── Nested settings: keyboard + independent choices (9a4757be) ──────────────
+
+/** Two-option model — the desktop nested test's `contextWindow`/`serviceTier`. */
+const GPT: Model = {
+  id: "gpt-5.4",
+  label: "GPT-5.4",
+  description: null,
+  reasoningLevels: ["low", "high"],
+  options: [
+    {
+      id: "contextWindow",
+      label: "Context window",
+      defaultChoice: "standard",
+      choices: [
+        { id: "standard", label: "Standard" },
+        { id: "extended", label: "Extended" },
+      ],
+    },
+    {
+      id: "serviceTier",
+      label: "Service tier",
+      defaultChoice: "auto",
+      choices: [
+        { id: "auto", label: "Standard" },
+        { id: "fast", label: "Fast" },
+      ],
+    },
+  ],
+};
+
+describe("ComposerPickers nested model settings", () => {
+  async function mountGptPicker(): Promise<MountedPicker> {
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    await openCard(handle);
+    return handle;
+  }
+
+  it("keyboard walk continues into the triggers and → opens the nested menu", async () => {
+    const handle = await mountGptPicker();
+    expect(traitTriggers()).toEqual(["Reasoning", "Context window", "Service tier"]);
+
+    // One ↓ moves the cursor from the selected model row onto the first
+    // settings trigger; → opens it (on_key_down's right arm).
+    pressKey("ArrowDown");
+    pressKey("ArrowRight");
+    expect(settingChoice("reasoning", "low")).not.toBeNull();
+
+    // Enter applies the highlighted choice — the anchored selected one —
+    // and closes just the nested menu.
+    pressKey("Enter");
+    expect(handle.observed.current.reasoning).toBe("low");
+    expect(settingChoice("reasoning", "low")).toBeNull();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+  });
+
+  it("navigate_and_preserve_independent_choices (the desktop port)", async () => {
+    const handle = await mountGptPicker();
+
+    // Open Context window via the keyboard, step to Extended, apply.
+    pressKey("ArrowDown");
+    pressKey("ArrowDown");
+    pressKey("ArrowRight");
+    expect(settingChoice("contextWindow", "standard")).not.toBeNull();
+    pressKey("ArrowDown");
+    pressKey("Enter");
+    expect(handle.observed.current.modelOptions.contextWindow).toBe("extended");
+
+    // The same walk on Service tier: an independent pick.
+    pressKey("ArrowDown");
+    pressKey("ArrowRight");
+    pressKey("ArrowDown");
+    pressKey("Enter");
+    expect(handle.observed.current.modelOptions.serviceTier).toBe("fast");
+
+    // Reopening Context window anchors on its kept choice; restoring the
+    // default does not reset the sibling option.
+    await act(async () => {
+      settingTrigger("contextWindow")!.click();
+    });
+    expect(settingChoice("contextWindow", "extended")?.getAttribute("aria-selected")).toBe("true");
+    pressKey("ArrowUp");
+    pressKey("Enter");
+    expect(handle.observed.current.modelOptions.contextWindow).toBeUndefined();
+    expect(handle.observed.current.modelOptions.serviceTier).toBe("fast");
+    expect(settingTrigger("contextWindow")).not.toBeNull();
+  });
+
+  it("escape closes only the nested menu; the card stays open", async () => {
+    const handle = await mountGptPicker();
+    await openSetting("reasoning");
+    expect(settingChoice("reasoning", "low")).not.toBeNull();
+
+    pressKey("Escape");
+    expect(settingChoice("reasoning", "low")).toBeNull();
+    // The card itself is still up (the desktop's escape arm in the
+    // setting_menu branch).
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    expect(handle.observed.current.reasoning).toBeNull();
+  });
+
+  it("a model pick closes any open nested menu", async () => {
+    await mountGptPicker();
+    await openSetting("reasoning");
+    expect(settingChoice("reasoning", "low")).not.toBeNull();
+
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>('.model-list-scroll [data-model-index="0"] .model-row')!
+        .click();
+    });
+    expect(settingChoice("reasoning", "low")).toBeNull();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+  });
+
+  it("the open-model-picker shortcut opens the card and never closes it", async () => {
+    // Upstream faac7432 + 9abe0167: OpenModelPicker routes to the composer's
+    // picker (open_model_menu) — open only, so a second press does not
+    // toggle — and the mount transfers focus into the search input even
+    // though the press landed on the host's editor focus.
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    // Card closed: the trigger click never happened.
+    expect(settingTrigger("reasoning")).toBeNull();
+
+    await act(async () => {
+      emitShortcut("open-model-picker");
+    });
+    await flush();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    // Keyboard focus follows the mount: the search input owns it, so down/
+    // enter route to the picker (the 9abe0167 regression).
+    const input = document.querySelector<HTMLInputElement>(".model-search-row input");
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      emitShortcut("open-model-picker");
+    });
+    await flush();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    expect(handle.observed.current.model).toBe("gpt-5.4");
   });
 });
 

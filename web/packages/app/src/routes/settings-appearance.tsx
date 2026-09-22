@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
   accentForVariant,
   accentPresets,
@@ -20,15 +20,32 @@ import {
 import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
 import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
-import { uiSettings, useUiSettings, UI_FONT_SIZES, type NewThreadBackgroundEffect } from "../state/ui-settings";
+import {
+  normalizeTranscriptWidth,
+  TRANSCRIPT_WIDTH_DEFAULT,
+  TRANSCRIPT_WIDTH_MAX,
+  TRANSCRIPT_WIDTH_MIN,
+  TRANSCRIPT_WIDTH_STEP,
+  uiSettings,
+  useUiSettings,
+  UI_FONT_SIZES,
+  type NewThreadBackgroundEffect,
+} from "../state/ui-settings";
 import {
   accentHelper,
   APPEARANCE_MODES,
   appearanceModeLabel,
+  CODE_FONT_CHOICES,
   DEFAULT_APPEARANCE,
+  effectiveCodeFontFamily,
+  effectiveTerminalFontFamily,
   effectiveUiFontFamily,
   fontFamilyLabel,
+  fontSizePxLabel,
+  MONO_FONT_SIZES,
+  nearestMonoFontSize,
   resolveAppearance,
+  TERMINAL_FONT_CHOICES,
   UI_FONT_CHOICES,
   variantChoices,
   type AccentSelection,
@@ -327,6 +344,9 @@ export function AppearanceSettingsPage() {
       </section>
 
       <InterfaceFontBlock settings={settings} />
+      <MonoFontBlock kind="terminal" settings={settings} />
+      <MonoFontBlock kind="code" settings={settings} />
+      <ConversationWidthBlock settings={settings} />
 
       {(libraryError ?? libraryWarning) !== null && (
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
@@ -470,17 +490,20 @@ function InterfaceFontBlock(props: {
         <div className="settings-font-copy">
           <span className="settings-field-label">Interface font</span>
           <p className="settings-font-description">
-            Used across the interface and conversations. Code, diffs, and terminal keep their current fonts and
-            sizes.
+            Menus, sidebars, and conversation text.
           </p>
         </div>
         <div className="settings-font-controls">
           <FontFamilySelect
             value={effectiveFont}
+            choices={UI_FONT_CHOICES}
+            ariaLabel="Interface font"
             onCommit={(family) => uiSettings.updateImmediate({ uiFontFamily: family })}
           />
           <FontSizeSelect
             value={props.settings.uiFontSize}
+            sizes={UI_FONT_SIZES}
+            ariaLabel="Interface font size"
             onCommit={(size) => uiSettings.updateImmediate({ uiFontSize: size })}
           />
         </div>
@@ -488,7 +511,73 @@ function InterfaceFontBlock(props: {
       {props.settings.uiFontFamily !== effectiveFont && (
         <p className="error-strip font-error-strip">
           <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
-          This font could not be loaded. Comet is using Geist.
+          This font could not be loaded. Roboco is using Geist.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The terminal and code/diff slots (settings/appearance.rs FontKind::Terminal
+ * / ::Code): independent families and sizes on the shared mono ladder. The
+ * terminal's catalog is the fixed-width subset only.
+ */
+function MonoFontBlock(props: {
+  readonly kind: "terminal" | "code";
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const terminal = props.kind === "terminal";
+  const requested = terminal
+    ? props.settings.terminalFontFamily
+    : props.settings.codeFontFamily;
+  const effectiveFont = terminal
+    ? effectiveTerminalFontFamily(requested)
+    : effectiveCodeFontFamily(requested);
+  const size = terminal ? props.settings.terminalFontSize : props.settings.codeFontSize;
+  const choices = terminal ? TERMINAL_FONT_CHOICES : CODE_FONT_CHOICES;
+  return (
+    <div className="settings-font-block">
+      <div className="settings-font-row">
+        <div className="settings-font-copy">
+          <span className="settings-field-label">
+            {terminal ? "Terminal font" : "Code & diff font"}
+          </span>
+          <p className="settings-font-description">
+            {terminal
+              ? "Terminal panes and shell output. Fixed-width families only."
+              : "Code blocks, diffs, and workspace file editors."}
+          </p>
+        </div>
+        <div className="settings-font-controls">
+          <FontFamilySelect
+            value={effectiveFont}
+            choices={choices}
+            ariaLabel={terminal ? "Terminal font" : "Code font"}
+            onCommit={(family) =>
+              uiSettings.updateImmediate(
+                terminal ? { terminalFontFamily: family } : { codeFontFamily: family },
+              )
+            }
+          />
+          <FontSizeSelect
+            value={nearestMonoFontSize(size)}
+            sizes={MONO_FONT_SIZES}
+            ariaLabel={terminal ? "Terminal font size" : "Code font size"}
+            onCommit={(next) =>
+              uiSettings.updateImmediate(
+                terminal ? { terminalFontSize: next } : { codeFontSize: next },
+              )
+            }
+          />
+        </div>
+      </div>
+      {requested !== effectiveFont && (
+        <p className="error-strip font-error-strip">
+          <Icon name="dangerTriangle" size={16} className="error-strip-icon" />
+          {terminal
+            ? `Proportional fonts can't drive the terminal grid. Roboco is using ${fontFamilyLabel(effectiveFont)}.`
+            : `This font could not be loaded. Roboco is using ${fontFamilyLabel(effectiveFont)}.`}
         </p>
       )}
     </div>
@@ -497,6 +586,8 @@ function InterfaceFontBlock(props: {
 
 function FontFamilySelect(props: {
   readonly value: UiFontChoice;
+  readonly choices: readonly UiFontChoice[];
+  readonly ariaLabel: string;
   readonly onCommit: (family: UiFontChoice) => void;
 }) {
   return (
@@ -509,14 +600,14 @@ function FontFamilySelect(props: {
       }}
       overlaySource="settings-font-family"
     >
-      <RbSelectTrigger className="settings-select-trigger font-trigger" aria-label="Interface font">
+      <RbSelectTrigger className="settings-select-trigger font-trigger" aria-label={props.ariaLabel}>
         <span className="settings-select-label">{fontFamilyLabel(props.value)}</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
       </RbSelectTrigger>
       <RbSelectPortal>
         <RbSelectPositioner>
           <RbSelectPopup className="popover-card settings-select-menu font-menu">
-            {UI_FONT_CHOICES.map((family) => (
+            {props.choices.map((family) => (
               <RbSelectItem key={family} value={family} className="settings-select-item">
                 <span className="settings-select-item-label">{fontFamilyLabel(family)}</span>
                 <span className="settings-select-check">
@@ -533,6 +624,8 @@ function FontFamilySelect(props: {
 
 function FontSizeSelect(props: {
   readonly value: number;
+  readonly sizes: readonly number[];
+  readonly ariaLabel: string;
   readonly onCommit: (size: number) => void;
 }) {
   return (
@@ -545,16 +638,16 @@ function FontSizeSelect(props: {
       }}
       overlaySource="settings-font-size"
     >
-      <RbSelectTrigger className="settings-select-trigger size-trigger" aria-label="Interface font size">
-        <span className="settings-select-label">{props.value} px</span>
+      <RbSelectTrigger className="settings-select-trigger size-trigger" aria-label={props.ariaLabel}>
+        <span className="settings-select-label">{fontSizePxLabel(props.value)}</span>
         <Icon name="altArrowDown" size={14} className="settings-select-caret" />
       </RbSelectTrigger>
       <RbSelectPortal>
         <RbSelectPositioner>
           <RbSelectPopup className="popover-card settings-select-menu size-menu">
-            {UI_FONT_SIZES.map((size) => (
+            {props.sizes.map((size) => (
               <RbSelectItem key={size} value={size} className="settings-select-item">
-                <span className="settings-select-item-label">{size} px</span>
+                <span className="settings-select-item-label">{fontSizePxLabel(size)}</span>
                 <span className="settings-select-check">
                   {size === props.value && <Icon name="check" size={14} />}
                 </span>
@@ -564,6 +657,138 @@ function FontSizeSelect(props: {
         </RbSelectPositioner>
       </RbSelectPortal>
     </RbSelect>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The conversation-width slider (appearance.rs render_transcript_width,
+// upstream cbf2ad84)
+// ---------------------------------------------------------------------------
+
+/**
+ * The conversation column's maximum width: a 240px slider on the 560–1200
+ * ladder with a 16px step. Drag samples write through the debounced policy —
+ * the snapshot moves synchronously so the transcript reflows live under the
+ * pointer, while one coalesced write reaches storage; releasing the pointer
+ * flushes it. The value/Reset row and the scale labels share the surrounding
+ * whitespace (invisible, never reflowing) and reveal on hover, drag, and
+ * keyboard focus, as on the desktop.
+ */
+function ConversationWidthBlock(props: {
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const width = props.settings.transcriptWidth;
+  const fraction =
+    (width - TRANSCRIPT_WIDTH_MIN) / (TRANSCRIPT_WIDTH_MAX - TRANSCRIPT_WIDTH_MIN);
+  const sliderRef = useRef<HTMLDivElement | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [keyboard, setKeyboard] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const showDetails = hovered || dragging || (keyboard && focused);
+
+  /** `drag_width` — the pointer's x, mapped across the 7px end insets. */
+  const widthFromPointerX = (x: number): number => {
+    const bounds = sliderRef.current?.getBoundingClientRect();
+    if (bounds === undefined) {
+      return width;
+    }
+    const raw = (x - bounds.left - 7) / Math.max(bounds.width - 14, 1);
+    const clamped = Math.min(Math.max(raw, 0), 1);
+    return normalizeTranscriptWidth(
+      TRANSCRIPT_WIDTH_MIN + clamped * (TRANSCRIPT_WIDTH_MAX - TRANSCRIPT_WIDTH_MIN),
+    );
+  };
+
+  return (
+    <div className="settings-font-block">
+      <div className="settings-font-row">
+        <div className="settings-font-copy">
+          <span className="settings-field-label">Conversation width</span>
+          <p className="settings-font-description">
+            Maximum width of messages. Adapts to smaller windows.
+          </p>
+        </div>
+        <div
+          className="settings-width-control"
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+        >
+          <div className="settings-width-details" data-hidden={showDetails ? undefined : "hidden"}>
+            <span>{`${Math.round(width)} px`}</span>
+            <button
+              type="button"
+              className="settings-width-reset"
+              onClick={() => uiSettings.updateImmediate({ transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT })}
+            >
+              Reset
+            </button>
+          </div>
+          <div
+            ref={sliderRef}
+            className="settings-width-slider"
+            role="slider"
+            tabIndex={0}
+            aria-label="Conversation width"
+            aria-valuemin={TRANSCRIPT_WIDTH_MIN}
+            aria-valuemax={TRANSCRIPT_WIDTH_MAX}
+            aria-valuenow={width}
+            aria-valuetext={`${Math.round(width)} px`}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDragging(true);
+              setKeyboard(false);
+              uiSettings.updateDebounced({
+                transcriptWidth: widthFromPointerX(event.clientX),
+              });
+            }}
+            onPointerMove={(event) => {
+              if (dragging) {
+                uiSettings.updateDebounced({
+                  transcriptWidth: widthFromPointerX(event.clientX),
+                });
+              }
+            }}
+            onLostPointerCapture={() => {
+              setDragging(false);
+              uiSettings.flush();
+            }}
+            onKeyDown={(event) => {
+              const next =
+                event.key === "left" || event.key === "down"
+                  ? width - TRANSCRIPT_WIDTH_STEP
+                  : event.key === "right" || event.key === "up"
+                    ? width + TRANSCRIPT_WIDTH_STEP
+                    : event.key === "home"
+                      ? TRANSCRIPT_WIDTH_MIN
+                      : event.key === "end"
+                        ? TRANSCRIPT_WIDTH_MAX
+                        : null;
+              if (next === null) {
+                return;
+              }
+              setKeyboard(true);
+              event.preventDefault();
+              uiSettings.updateDebounced({ transcriptWidth: next });
+            }}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+          >
+            <div className="settings-width-rail">
+              <div className="settings-width-fill" style={{ width: `${fraction * 100}%` }} />
+              <div
+                className="settings-width-knob"
+                style={{ "--rb-width-fraction": `${fraction * 100}%` } as CSSProperties}
+              />
+            </div>
+          </div>
+          <div className="settings-width-scale" data-hidden={showDetails ? undefined : "hidden"}>
+            <span>560 px</span>
+            <span>1,200 px</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

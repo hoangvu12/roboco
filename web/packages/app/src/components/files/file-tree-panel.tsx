@@ -53,10 +53,20 @@ export function FileTreePanel({
   model,
   client,
   onOpenFile,
+  gitStatus,
 }: {
   model: FileTreeModel;
   client: WorkspaceFilesClient;
   onOpenFile: (path: string) => void;
+  /**
+   * The shared remote-safe Git status stream (b25dd404 parity): subscribe
+   * through the files client and feed frames to the model. The host owns
+   * the engine session wiring; omitting it leaves the tree uncolored.
+   */
+  gitStatus?: (handlers: {
+    onItem: (frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }) => void;
+    onEnd?: (error?: unknown) => void;
+  }) => { cancel(): void };
 }) {
   const subscribe = useCallback((listener: () => void) => model.subscribe(listener), [model]);
   const getSnapshot = useCallback(() => model.getSnapshot(), [model]);
@@ -76,6 +86,21 @@ export function FileTreePanel({
       setQuery("");
     }
   }, [model, settings.filesShowAll]);
+
+  // The Git status stream (b25dd404): frames decorate the tree rows; an
+  // unavailable status clears the decorations (never reads as clean).
+  useEffect(() => {
+    if (gitStatus === undefined) {
+      return;
+    }
+    const handle = gitStatus({
+      onItem: (frame) => model.applyGitStatus(frame.status === null ? null : frame.status.files),
+    });
+    return () => {
+      handle.cancel();
+      model.applyGitStatus(null);
+    };
+  }, [gitStatus, model]);
 
   const includeIgnored = snapshot.includeIgnored;
   const trimmed = query.trim();
@@ -318,6 +343,7 @@ function TreeRowView({
     case "entry": {
       const entry = row.entry;
       const isDirectory = entry.kind === "directory";
+      const git = snapshot.gitStatus.get(row.path);
       const classes = [
         "files-row",
         selected ? "files-row-active" : "",
@@ -332,10 +358,19 @@ function TreeRowView({
             className={classes}
             style={{ paddingLeft: `${8 + row.depth * TREE_INDENT}px` }}
             data-row-index={index}
+            data-git={git ?? undefined}
             draggable
             onDragStart={(event) => beginRowDrag(event, row.path, isDirectory, appearance)}
             onClick={() => activateTreePath(model, snapshot.rows, row.path, onOpenFile)}
           >
+            {/* Theme-aware indentation guides (c4d63fa8, tree.rs). */}
+            {row.depth > 0 && (
+              <span className="files-row-guides" aria-hidden>
+                {Array.from({ length: row.depth }, (_, level) => (
+                  <span key={level} className="files-row-guide" />
+                ))}
+              </span>
+            )}
             <span className="files-chevron" aria-hidden>
               {isDirectory ? <Icon name={row.expanded ? "altArrowDown" : "altArrowRight"} size={11} /> : null}
             </span>

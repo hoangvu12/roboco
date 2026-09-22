@@ -4,24 +4,18 @@ import { uiSettings, useUiSettings } from "../state/ui-settings";
 
 /**
  * Files settings (desktop settings/files.rs parity): local preferences for
- * workspace-file editing — autosave and its delay pills, the editor
- * font-size pills, word wrap, and show-all. Every control commits
- * immediately through ticket 03's settings store; the live-apply side (file
- * surfaces reading the store) already rides `useUiSettings` in the viewers.
+ * workspace-file editing — autosave and its delay pills, word wrap, and
+ * show-all. Every control commits immediately through ticket 03's settings
+ * store; the live-apply side (file surfaces reading the store) already
+ * rides `useUiSettings` in the viewers. The editor font size moved to
+ * Appearance when the code font became its own setting (upstream #374).
  */
 
 /** `DELAY_OPTIONS` (files.rs:8) — the autosave delay pills, in ms. */
 const DELAY_OPTIONS: readonly number[] = [300, 600, 900, 1_500, 3_000];
 
-/** `FONT_SIZE_OPTIONS` (files.rs:9) — the editor font-size pills, in px. */
-const FONT_SIZE_OPTIONS: readonly number[] = [10, 11.5, 13, 15, 17];
-
 function delayLabel(ms: number): string {
   return ms >= 1_000 ? `${ms / 1_000} s` : `${ms} ms`;
-}
-
-function fontSizeLabel(px: number): string {
-  return Number.isInteger(px) ? `${px} px` : `${px.toFixed(1)} px`;
 }
 
 export function FilesSettingsPage() {
@@ -63,23 +57,6 @@ export function FilesSettingsPage() {
             </div>
           </div>
         )}
-        <div className="settings-row settings-files-row settings-files-nosep settings-files-pills">
-          <RowTile icon="tuning" />
-          <div className="settings-row-main">
-            <span className="settings-row-title">Editor font size</span>
-            <span className="settings-row-meta">Set the text size in workspace file editors.</span>
-            <div className="pill-row" role="radiogroup" aria-label="Editor font size">
-              {FONT_SIZE_OPTIONS.map((px) => (
-                <Pill
-                  key={px}
-                  label={fontSizeLabel(px)}
-                  selected={settings.filesEditorFontSize === px}
-                  onSelect={() => uiSettings.updateImmediate({ filesEditorFontSize: px })}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
         <div className="settings-row settings-files-row settings-files-nosep">
           <RowTile icon="list" />
           <div className="settings-row-main">

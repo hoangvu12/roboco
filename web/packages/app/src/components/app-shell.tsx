@@ -15,6 +15,7 @@ import {
 } from "../state/shortcuts";
 import { overlayOwnsKeyboard, useKeymap, keystrokesIntercepted } from "../state/keymap";
 import { toggleAddSpace } from "../state/add-space";
+import { toggleCommandPalette } from "../state/command-palette";
 import { installJumpHintModifierListeners } from "../state/jump-hints";
 import { useChrome } from "../state/chrome";
 import {
@@ -39,6 +40,7 @@ import {
   rightPaneMaxWidth,
   sidebarLayout,
   sidebarTarget,
+  titlebarAvailableTitlebarWidth,
   titlebarNewSessionAlpha,
   titlebarPaneBandWidth,
   titlebarRowLeft,
@@ -50,7 +52,7 @@ import { useIsPhone } from "../state/media";
 import { effectiveIndicator } from "../lib/view";
 import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
-import { uiSettings } from "../state/ui-settings";
+import { uiSettings, FILES_PANEL_MAX, FILES_PANEL_MIN, FILES_PANEL_DEFAULT } from "../state/ui-settings";
 import {
   RIGHT_PANE_MIN,
   panelKey,
@@ -65,9 +67,11 @@ import { SidebarBody } from "./sidebar-body";
 import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
+import { FilesPaneColumn } from "./files/files-pane-column";
 import { RightTabStrip } from "./right-tab-strip";
 import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
+import { ProjectActionsControl } from "./project-actions-control";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
 
 /**
@@ -302,7 +306,7 @@ export function AppShell() {
           // the live pane state so a tab switch mid-listener still guards.
           if (route === "chat" && paneChatId !== null && pane.open) {
             const active = resolvedActive(rightPaneStore.stateFor(paneChatId));
-            if (active.kind === "files" || active.kind === "file") {
+            if (active.kind === "file") {
               emitShortcut("save-file");
             }
           }
@@ -327,6 +331,13 @@ export function AppShell() {
             emitShortcut(binding.event);
           }
           return;
+        case "open-model-picker":
+          // `OpenModelPicker` (upstream faac7432): only on the chat route,
+          // and quiet under an overlay that owns the keyboard.
+          if (route === "chat" && !overlayOwnsKeyboard()) {
+            emitShortcut(binding.event);
+          }
+          return;
         case "jump-session":
           // Ticket 10 gives the composer's model picker first refusal on
           // the slot; until then the jump routes straight to the row, from
@@ -336,6 +347,7 @@ export function AppShell() {
           }
           return;
         case "add-space-palette":
+        case "command-palette":
         case "open-settings":
           emitShortcut(binding.event);
           return;
@@ -375,10 +387,14 @@ export function AppShell() {
       }),
     [navigate],
   );
-  // Mod+K toggles the add-space palette (the fixed `AddSpacePalette`
-  // binding, shell.rs:7832-7839 — ticket 11's store owns the surface; the
-  // binding was a quiet no-op until it landed).
+  // Mod+K toggles the add-space palette (the New project binding,
+  // `ShortcutId::NewProject` — mod-shift-n — resolves through the keymap
+  // table to the same event; the fixed binding was mod-k until ticket 16
+  // moved that chord to the command palette).
   useEffect(() => onShortcut("add-space-palette", toggleAddSpace), []);
+  // Mod+K toggles the command palette (the fixed `ToggleCommandPalette`
+  // binding, shell.rs — the desktop's mod-k rebind, ticket 16).
+  useEffect(() => onShortcut("command-palette", toggleCommandPalette), []);
 
   // The modifier-hold lifecycle for the sidebar's jump chips (§2.4) — one
   // install, capture-phase observers that never preventDefault.
@@ -515,6 +531,19 @@ export function AppShell() {
         takeover,
       })
     : TITLEBAR_CONTENT_START;
+  // ── The project-Actions control (tabs.rs:316-320) ─────────────────────
+  // The desktop's `!takeover && !on_canvas` gate: the chat route with a
+  // selected chat. `available_titlebar_width` (b1484015) measures the room
+  // the control may claim after the trailing strip — the trailing group is
+  // the pane's band plus its fixed 28px toggle slot, or just the toggle
+  // while the pane is shut.
+  const paneBandWidth = titlebarPaneBandWidth({ viewport, paneWidth, rowLeft, takeover });
+  const showActionsControl = isChatRoute && paneChatId !== null && !takeover;
+  const actionsTitlebarWidth = titlebarAvailableTitlebarWidth({
+    viewport,
+    rowLeft,
+    trailingWidth: paneWidth > 0 ? paneBandWidth + 28 : 28,
+  });
   const shellClass = [
     "shell",
     sidebar.collapsed ? "shell-sidebar-collapsed" : "",
@@ -580,6 +609,8 @@ export function AppShell() {
           "--rb-sidebar-content": `${sidebar.width}px`,
           "--rb-pane-now": `${paneWidth}px`,
           "--rb-pane-open": `${hasPane ? paneOpenWidth : 0}px`,
+          // The docked explorer column's laid-out width (zero when shut).
+          "--rb-files-now": `${hasPane && pane.filesOpen ? uiSettings.getSnapshot().filesPanelWidth : 0}px`,
           // The title row's left inset, which tracks the sidebar so the
           // identity sits on the conversation's own edge and glides with a
           // collapse — `render_session_title_bar`'s `row_left`.
@@ -587,12 +618,7 @@ export function AppShell() {
           // The header strip rides the pane's animated width, capped to the
           // room the row has left — `animated_width`. Never `auto`: that made
           // it snap to full width in takeover while the column glided.
-          "--rb-pane-band": `${titlebarPaneBandWidth({
-            viewport,
-            paneWidth,
-            rowLeft,
-            takeover,
-          })}px`,
+          "--rb-pane-band": `${paneBandWidth}px`,
           // Auto outside a takeover glide, so the column is plain flex again.
           "--rb-main-stable": conversationStable === null ? "auto" : `${conversationStable}px`,
         } as CSSProperties
@@ -610,6 +636,13 @@ export function AppShell() {
         // one (a selected chat), exactly `titlebar_plus_alpha`'s gate.
         onNewSession={chrome.onNewSession}
         identity={chrome.identity}
+        // The project-Actions control (tabs.rs:316-320): the desktop's
+        // `!takeover && !on_canvas` gate, sized to the titlebar room left.
+        actions={
+          showActionsControl && paneChatId !== null ? (
+            <ProjectActionsControl chatId={paneChatId} availableTitlebarWidth={actionsTitlebarWidth} />
+          ) : undefined
+        }
         // Every pane control is shell-owned and synchronous with the store, so
         // the toggle, the strip and the column all move on the same frame.
         onTogglePane={hasPane ? () => rightPaneStore.toggle(paneChatId) : null}
@@ -746,7 +779,15 @@ export function AppShell() {
           — their per-chat open flags survive the round trip untouched.
         */}
         {hasPane && (
-          <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+          <>
+            <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+            {/*
+              The docked explorer portion of the one right pane
+              (`render_files_panel`): independent of the surface host, sharing
+              its height with a left hairline, resized through its own seam.
+            */}
+            <FilesPaneColumn chatId={paneChatId} pane={pane} />
+          </>
         )}
       </TerminalProvider>
       {/*
@@ -777,6 +818,16 @@ export function AppShell() {
           // wins and the pane yields.
           bounds={{ min: RIGHT_PANE_MIN, max: rightPaneMaxWidth(viewport, sidebarWidth) }}
           bounceVar="--rb-pane-edge-offset"
+        />
+      )}
+      {hasPane && pane.filesOpen && (
+        <PaneSeam
+          label="Resize files"
+          widthAt={(clientX) => viewport - clientX}
+          onWidth={(width) => rightPaneStore.setFilesPanelWidth(width)}
+          onReset={() => uiSettings.updateImmediate({ filesPanelWidth: FILES_PANEL_DEFAULT })}
+          className="pane-seam-files"
+          bounds={{ min: FILES_PANEL_MIN, max: FILES_PANEL_MAX }}
         />
       )}
       {/*

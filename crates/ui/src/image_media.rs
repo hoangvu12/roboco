@@ -171,6 +171,30 @@ pub(crate) fn decode_image(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, Str
         };
         return Ok(media.preview_for_view((900.0, 480.0), 2.0));
     }
+    decode_raster_image(bytes, roboco_proto::MAX_WORKSPACE_IMAGE_BYTES)
+}
+
+/// Repository icons retain only a small static thumbnail, even for large source logos.
+pub(crate) fn decode_project_icon(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, String> {
+    if mime == "image/svg+xml" {
+        decode_image(mime, bytes).map(|media| media.for_view((16.0, 16.0), 2.0, 4096))
+    } else {
+        decode_raster_image_bounded(bytes, roboco_proto::MAX_WORKSPACE_IMAGE_BYTES, Some(64))
+    }
+}
+
+pub(crate) fn decode_raster_image(bytes: Vec<u8>, max_bytes: usize) -> Result<MediaImage, String> {
+    decode_raster_image_bounded(bytes, max_bytes, None)
+}
+
+fn decode_raster_image_bounded(
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    max_side: Option<u32>,
+) -> Result<MediaImage, String> {
+    if bytes.len() > max_bytes {
+        return Err("Image exceeds preview size limit".into());
+    }
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
@@ -181,6 +205,14 @@ pub(crate) fn decode_image(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, Str
     reader.limits(limits);
     // Decode one frame and encode a static PNG so GPUI cannot expand unbounded animation frames.
     let decoded = reader.decode().map_err(|e| e.to_string())?;
+    // Generated previews retain one bounded 8-bit frame. This keeps each
+    // cache entry below the cache budget, including CPU and GPU copies.
+    let decoded = if let Some(side) = max_side {
+        let side = side.min(decoded.width().max(decoded.height()));
+        image::DynamicImage::ImageRgba8(decoded.thumbnail(side, side).to_rgba8())
+    } else {
+        decoded
+    };
     let (width, height) = (decoded.width() as f32, decoded.height() as f32);
     let mut png = Cursor::new(Vec::new());
     decoded

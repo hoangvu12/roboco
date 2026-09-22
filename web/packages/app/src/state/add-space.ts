@@ -14,25 +14,30 @@ import {
   addSpaceCompletion,
   browserRows,
   childPath,
+  deviceRows,
   filteredFolders,
   isStaleResponse,
+  locationRows,
   manualPathQuery,
   parentPath,
   segmentTarget,
   typedPathTarget,
+  type LocationRowEntry,
   type StaleGuard,
 } from "../lib/add-space";
 import type { EngineSession } from "./engine-session";
 import { mintId } from "../lib/id";
+import { commandPaletteStore } from "./command-palette";
 import { sidebarStore } from "./sidebar";
 import { uiSettings } from "./ui-settings";
 
 /**
  * The add-space palette's state machine — the web port of the desktop's
- * `AddSpaceFlow` (`crates/ui/src/shell/spaces.rs:186-227`) plus its whole
- * action surface (`:1825-2522`): open/close, device pick, browse/load, the
- * search-edit decision tree, the keyboard handler, manual-path prepare, and
- * submit with its optimistic space row.
+ * `AddSpaceFlow` (`crates/ui/src/shell/spaces.rs:186-231`) plus its whole
+ * action surface: open/close, the Devices → Locations → Folders step
+ * ladder with its breadcrumbs and back navigation, the search-edit
+ * decision tree, the keyboard handler, manual-path prepare, and submit
+ * with its optimistic space row.
  *
  * The mount lifecycle rides the Base UI dialog (`RbDialogGlass` in the
  * palette component): `open` is the dialog's open flag, and the exit
@@ -47,18 +52,11 @@ import { uiSettings } from "./ui-settings";
  * open this surface (the desktop's `open_add_space`).
  */
 
-/**
- * How long an open palette waits for the routed engine's first device row
- * before the deviceless error replaces the skeleton (ticket 43). Devices
- * always exist on a connected engine — the desktop has no deviceless
- * state — so the wait only covers streaming lag; a named constant, never
- * an inline literal (family precedent: the registry's 10s identity-call
- * ceiling).
- */
-export const ADD_SPACE_DEVICE_WAIT_MS = 10_000;
-
 /** The palette's mount phases, as the component and CSS read them. */
 export type AddSpaceStatus = "closed" | "open" | "closing";
+
+/** New project's step ladder: devices, then locations, then folders. */
+export type AddSpaceStep = "devices" | "locations" | "folders";
 
 export type AddSpaceListing =
   | "idle"
@@ -73,31 +71,31 @@ export interface AddSpaceManualPath {
   readonly gitDetected: boolean;
 }
 
-/** The single flow state object — one card, never a stack of steps. */
+/** The single flow state object, carrying the current step's own state. */
 export interface AddSpaceFlow {
   /** Stamped once per open; responses from a prior open are dropped. */
   readonly identity: string;
   /** Bumped on every browse/device-switch; drops superseded in-flight work. */
   readonly revision: number;
-  /** The currently browsed device; null before any device is known. */
+  /** The step the card renders: devices, then locations, then folders. */
+  readonly step: AddSpaceStep;
+  /** The chosen location (the Folders step's browse root). */
+  readonly location: LocationRowEntry | null;
+  /** The selected device; null on the Devices step. */
   readonly deviceId: string | null;
-  /**
-   * The deviceless-open phase (ticket 43): "waiting" while the flow is
-   * open with no device row and inside the deadline, "timeout" once it
-   * expires — terminal until Retry; null whenever a device is known.
-   */
-  readonly deviceWait: "waiting" | "timeout" | null;
   /** The requested listing path; null = "home, not yet resolved". */
   readonly browserPath: string | null;
-  /** The device's resolved home — what the device crumb folds over. */
+  /** The device's resolved home — what the location crumb folds over. */
   readonly home: string | null;
   readonly query: string;
   /** A leading `.` in the query reveals dotfiles (and reloads the folder). */
   readonly hiddenQuery: boolean;
   readonly listing: AddSpaceListing;
-  /** Best-effort Locations rail rows; empty on failure — no error UI. */
+  /** The selected device's mounted drives; empty on failure — no error UI. */
   readonly drives: readonly DriveEntry[];
-  /** Keyboard highlight within the FILTERED rows. */
+  /** True while the Locations step's drive load is in flight. */
+  readonly drivesLoading: boolean;
+  /** Keyboard highlight within the current step's FILTERED rows. */
   readonly active: number;
   readonly manualPath: AddSpaceManualPath | null;
   readonly submitBusy: boolean;
@@ -139,8 +137,6 @@ export class AddSpaceStore {
   #context: AddSpaceContext | null = null;
   #manualInFlight = false;
   #submitInFlight = false;
-  /** The armed deviceless-wait deadline, if any (ticket 43's state machine). */
-  #deviceWaitTimer: ReturnType<typeof setTimeout> | null = null;
   #snapshot: AddSpaceSnapshot = { status: "closed", flow: null, pendingSpaces: [] };
   readonly #listeners = new Set<() => void>();
 
@@ -156,37 +152,32 @@ export class AddSpaceStore {
   }
 
   /**
-   * `open_add_space` (spaces.rs:1825-1904): mint a fresh identity, land on
-   * the local device (else the first registered device), and kick off the
-   * home browse and the drives load concurrently. An explicit
-   * `startDeviceId` (a device row the caller knows about) wins over the
-   * local default. No device row streamed yet (the deviceless open,
-   * ticket 43): the flow opens on the armed device wait instead —
-   * `resolveDevice()` finishes the pick when a row lands, and the
-   * deadline turns the wait into the deviceless error.
+   * `open_add_space` (spaces.rs): mint a fresh identity and land on the
+   * Devices step — no device is picked, nothing loads. Devices stream in
+   * live from the watch snapshot, so a deviceless open simply renders an
+   * empty device list (the old ticket-43 wait died with the auto-pick:
+   * there is no pick to wait for anymore).
    */
-  open(startDeviceId?: string): void {
-    const devices = this.#devices();
-    const local = this.#localDeviceId();
-    const device =
-      (startDeviceId !== undefined ? devices.find((row) => row.id === startDeviceId) : undefined) ??
-      devices.find((row) => row.id === local) ??
-      (devices[0] ?? null);
+  open(): void {
+    // The desktop's `open_add_space` clears the command palette first —
+    // Mod+Shift+N (the New project binding) must not stack two cards.
+    commandPaletteStore.close();
     this.#manualInFlight = false;
     this.#submitInFlight = false;
     this.#pending = [];
-    this.#clearDeviceWait();
     this.#flow = {
       identity: mintId(),
       revision: 0,
-      deviceId: device?.id ?? null,
-      deviceWait: device !== null && device !== undefined ? null : "waiting",
+      step: "devices",
+      location: null,
+      deviceId: null,
       browserPath: null,
       home: null,
       query: "",
       hiddenQuery: false,
       listing: "idle",
       drives: [],
+      drivesLoading: false,
       active: 0,
       manualPath: null,
       submitBusy: false,
@@ -196,12 +187,6 @@ export class AddSpaceStore {
     this.#open = true;
     this.#mounted = true;
     this.#commit();
-    if (device !== undefined && device !== null) {
-      this.#loadFolders(null);
-      this.#loadDrives();
-    } else {
-      this.#armDeviceWait();
-    }
   }
 
   /** Every close path funnels here: the exit window, then the drain. */
@@ -225,7 +210,6 @@ export class AddSpaceStore {
     this.#flow = null;
     this.#manualInFlight = false;
     this.#submitInFlight = false;
-    this.#clearDeviceWait();
     this.#commit();
   }
 
@@ -243,12 +227,14 @@ export class AddSpaceStore {
     this.#context = context;
   }
 
-  // ── Search edits (the Edited decision tree, spaces.rs:1839-1873) ──────
+  // ── Search edits (the Edited decision tree) ───────────────────────────
 
   /**
-   * A keystroke landed in the search input. Runs the desktop's decision
-   * tree in order: slash-descend, then the manual-path fork, then the
-   * plain-filter branch with its dotfile reload.
+   * A keystroke landed in the search input. Every edit resets the
+   * highlight to the first row; on the Folders step the desktop's
+   * decision tree runs in order — slash-descend, then the manual-path
+   * fork, then the plain-filter branch with its dotfile reload. On the
+   * Devices/Locations steps the query only filters the pick-list.
    */
   setQuery(text: string): void {
     const flow = this.#aliveFlow();
@@ -258,7 +244,12 @@ export class AddSpaceStore {
     if (this.#slashDescend(text)) {
       return;
     }
-    let next: AddSpaceFlow = { ...flow, query: text };
+    let next: AddSpaceFlow = { ...flow, query: text, active: 0 };
+    if (flow.step !== "folders") {
+      this.#flow = next;
+      this.#commit();
+      return;
+    }
     if (this.#manualInFlight && !this.#submitInFlight) {
       next = { ...next, submitBusy: false };
     }
@@ -271,7 +262,7 @@ export class AddSpaceStore {
     }
     const showHidden = text.startsWith(".");
     const reload = showHidden !== next.hiddenQuery;
-    this.#flow = { ...next, hiddenQuery: showHidden, active: 0 };
+    this.#flow = { ...next, hiddenQuery: showHidden };
     if (reload) {
       this.#loadFolders(this.#flow.browserPath);
       return;
@@ -288,7 +279,8 @@ export class AddSpaceStore {
    */
   #slashDescend(text: string): boolean {
     const flow = this.#flow;
-    if (flow === null) {
+    // Slash navigation only applies to folders, never device/location search.
+    if (flow === null || flow.step !== "folders") {
       return false;
     }
     if (text.endsWith("/") && (text.startsWith("/") || text.startsWith("~"))) {
@@ -324,23 +316,27 @@ export class AddSpaceStore {
   // ── Browsing ───────────────────────────────────────────────────────────
 
   /**
-   * `add_space_pick_device` (spaces.rs:1907-1936): rebrowse the same card
-   * on another device — reset, clear the query, reload home + drives.
+   * `add_space_pick_device`: selecting a device advances to its Locations.
+   * The pick retires the old device's in-flight probes and manual-path
+   * state, clears the query, and loads the drives.
    */
   pickDevice(deviceId: string): void {
     const flow = this.#aliveFlow();
-    if (flow === null || flow.deviceId === deviceId || flow.submitBusy) {
+    if (flow === null) {
       return;
     }
     this.#manualInFlight = false;
     this.#flow = {
       ...flow,
+      step: "locations",
+      location: null,
       revision: flow.revision + 1,
       manualPath: null,
       hiddenQuery: false,
       deviceId,
       listing: "idle",
       drives: [],
+      drivesLoading: true,
       browserPath: null,
       home: null,
       browserRepo: false,
@@ -349,47 +345,73 @@ export class AddSpaceStore {
       error: null,
     };
     this.#commit();
-    this.#loadFolders(null);
     this.#loadDrives();
   }
 
-  /** `add_space_goto_location` (spaces.rs:1940-1955): rebrowse at a drive's
-   *  mount (or home). Standing on that root already is a no-op. */
-  gotoLocation(path: string | null): void {
+  /** `add_space_goto_location`: selecting a location advances to its
+   *  folders — the Folders step browses the drive's mount (or home). */
+  gotoLocation(name: string, path: string | null): void {
     const flow = this.#aliveFlow();
     if (flow === null) {
       return;
     }
-    const listing = this.#readyListing();
-    if (listing !== null) {
-      const standing = path !== null ? listing.path === path : flow.home === listing.path;
-      if (standing) {
-        return;
-      }
-    }
-    this.#flow = { ...flow, browserRepo: false, query: "" };
+    this.#flow = {
+      ...flow,
+      step: "folders",
+      location: { name, path },
+      browserRepo: false,
+      query: "",
+    };
     this.#loadFolders(path);
   }
 
   /**
-   * A breadcrumb click: rebrowse that path with the repo seed reset and
-   * the query PRESERVED (the segment crumb handlers, spaces.rs:2868-2873 —
-   * only goto-location and descend clear the search text).
+   * `add_space_back_to`: the breadcrumb/← retreat. Drops the browse state
+   * and the location; backing out to Devices also drops the device, its
+   * drives, and the resolved home.
    */
-  browse(path: string | null): void {
+  backTo(step: AddSpaceStep): void {
     const flow = this.#aliveFlow();
     if (flow === null) {
       return;
     }
-    this.#flow = { ...flow, browserRepo: false };
-    this.#loadFolders(path);
+    this.#manualInFlight = false;
+    this.#flow = {
+      ...flow,
+      step,
+      revision: flow.revision + 1,
+      location: null,
+      listing: "idle",
+      browserPath: null,
+      browserRepo: false,
+      active: 0,
+      error: null,
+      query: "",
+      ...(step === "devices" ? { deviceId: null, drives: [], drivesLoading: false, home: null } : {}),
+    };
+    this.#commit();
   }
 
-  /** `add_space_open_active` (spaces.rs:2035-2072): → / Enter — open the
-   *  highlighted folder, or resolve a typed path when nothing matches. */
+  /** `add_space_open_active`: → / Enter — on Devices/Locations, open the
+   *  highlighted row's step; on Folders, open the highlighted folder, or
+   *  resolve a typed path when nothing matches. */
   openActive(): void {
     const flow = this.#aliveFlow();
     if (flow === null) {
+      return;
+    }
+    if (flow.step === "devices") {
+      const device = this.#deviceRows()[flow.active];
+      if (device !== undefined) {
+        this.pickDevice(device.id);
+      }
+      return;
+    }
+    if (flow.step === "locations") {
+      const location = this.#locationRows()[flow.active];
+      if (location !== undefined) {
+        this.gotoLocation(location.name, location.path);
+      }
       return;
     }
     if (manualPathQuery(flow.query)) {
@@ -417,19 +439,32 @@ export class AddSpaceStore {
     this.#descend(childPath(listing.path, entry.name), entry.isRepo);
   }
 
-  /** `add_space_go_up` (spaces.rs:2440-2452): ←, and ⌫ on an empty query. */
+  /**
+   * `add_space_go_up`: ←, and ⌫ on an empty query. Back traverses folders
+   * (parent directory), then locations, then devices; standing on the
+   * location's root (or with nothing loaded) retreats to Locations.
+   */
   goUp(): void {
     const flow = this.#aliveFlow();
-    const listing = flow === null ? null : this.#readyListing();
-    if (flow === null || listing === null) {
+    if (flow === null) {
       return;
     }
-    const parent = parentPath(listing.path);
-    if (parent === null) {
+    if (flow.step === "devices") {
       return;
     }
-    this.#flow = { ...flow, browserRepo: false };
-    this.#loadFolders(parent);
+    if (flow.step === "locations") {
+      this.backTo("devices");
+      return;
+    }
+    const listing = this.#readyListing();
+    const root = flow.location?.path ?? flow.home;
+    const atRoot = listing !== null && root !== null && listing.path === root;
+    const parent = listing !== null && !atRoot ? parentPath(listing.path) : null;
+    if (parent !== null) {
+      this.#descend(parent, false);
+      return;
+    }
+    this.backTo("locations");
   }
 
   /** `add_space_accept_completion` (spaces.rs:2158-2166): ⇥ fills the query
@@ -458,9 +493,8 @@ export class AddSpaceStore {
   }
 
   /**
-   * The folder-level Retry chip: reload at the current browser path. The
-   * deviceless error's Retry is `retryDeviceWait()`, never this one — a
-   * path reload presumes a device and would silently early-return again.
+   * The folder-level Retry chip: reload at the current browser path.
+   * Only the Folders step renders it — a path reload presumes a device.
    */
   retryLoad(): void {
     const flow = this.#aliveFlow();
@@ -471,51 +505,18 @@ export class AddSpaceStore {
   }
 
   /**
-   * The deviceless wait's resolve seam (ticket 43): the mounted palette
-   * calls it on every devices frame of the routed session. A waiting flow
-   * finishes `open()`'s pick — the local device, else the first registered
-   * row — and kicks the home browse and the drives load; every other
-   * state no-ops, so a resolved, timed-out, or closed flow is untouched.
-   */
-  resolveDevice(): void {
-    const flow = this.#aliveFlow();
-    if (flow === null || flow.deviceId !== null || flow.deviceWait !== "waiting") {
-      return;
-    }
-    const devices = this.#devices();
-    const local = this.#localDeviceId();
-    const device = devices.find((row) => row.id === local) ?? devices[0];
-    if (device === undefined) {
-      return;
-    }
-    this.#clearDeviceWait();
-    this.#flow = { ...flow, deviceId: device.id, deviceWait: null };
-    this.#commit();
-    this.#loadFolders(null);
-    this.#loadDrives();
-  }
-
-  /**
-   * The deviceless error's Retry: re-run `open()`'s full pick — a fresh
-   * identity and a re-armed wait. Not `retryLoad()`'s current-path reload,
-   * which presumes a device and would silently early-return again.
-   */
-  retryDeviceWait(): void {
-    this.open();
-  }
-
-  /**
-   * `add_space_key` (spaces.rs:2460-2522): the palette's keyboard map,
-   * bubbling from the focused search input. Returns whether the key was
-   * consumed (the caller prevents the browser default then).
+   * `add_space_key`: the palette's keyboard map, bubbling from the focused
+   * search input. Returns whether the key was consumed (the caller
+   * prevents the browser default then).
    */
   keyDown(event: KeyboardEvent): boolean {
     const flow = this.#aliveFlow();
     if (flow === null) {
       return false;
     }
-    // ←/→ act on the FOLDERS, not the text caret; ⇥ completes — all three
-    // unbound in the desktop's "PaletteSearch" context so they bubble here.
+    // ←/→ act on the current step's rows, not the text caret; ⇥ completes
+    // — all three unbound in the desktop's "PaletteSearch" context so
+    // they bubble here.
     switch (event.key) {
       case "ArrowRight":
         this.openActive();
@@ -536,10 +537,17 @@ export class AddSpaceStore {
         return true;
       case "up":
       case "down": {
-        const listing = this.#readyListing();
-        const rows = listing === null ? [] : filteredFolders(listing.entries, flow.query);
+        const count =
+          flow.step === "devices"
+            ? this.#deviceRows().length
+            : flow.step === "locations"
+              ? this.#locationRows().length
+              : (() => {
+                  const listing = this.#readyListing();
+                  return listing === null ? 0 : filteredFolders(listing.entries, flow.query).length;
+                })();
         const delta = key === "up" ? -1 : 1;
-        const next = menuStep(flow.active, rows.length, delta);
+        const next = menuStep(flow.active, count, delta);
         this.#flow = { ...flow, active: next ?? 0 };
         this.#commit();
         return true;
@@ -548,7 +556,10 @@ export class AddSpaceStore {
         this.openActive();
         return true;
       case "mod-enter":
-        this.submit();
+        // ⌘⏎ adds the folder open in the breadcrumbs — the Folders step.
+        if (flow.step === "folders") {
+          this.submit();
+        }
         return true;
       case "backspace":
         if (flow.query.length === 0) {
@@ -564,13 +575,13 @@ export class AddSpaceStore {
   // ── Submit ─────────────────────────────────────────────────────────────
 
   /**
-   * `submit_add_space` (spaces.rs:2309-2324): ⌘⏎. A typed path re-prepares
+   * `submit_add_space`: ⌘⏎ on the Folders step. A typed path re-prepares
    * with create when the manual probe said it does not exist; a browsed
    * folder goes straight to the create.
    */
   submit(): void {
     const flow = this.#aliveFlow();
-    if (flow === null) {
+    if (flow === null || flow.step !== "folders") {
       return;
     }
     if (manualPathQuery(flow.query)) {
@@ -590,7 +601,13 @@ export class AddSpaceStore {
   #submitBrowsed(): void {
     const flow = this.#aliveFlow();
     const session = this.#session();
-    if (flow === null || session === null || flow.submitBusy || flow.deviceId === null) {
+    if (
+      flow === null ||
+      session === null ||
+      flow.submitBusy ||
+      flow.step !== "folders" ||
+      flow.deviceId === null
+    ) {
       return;
     }
     const listing = this.#readyListing();
@@ -669,18 +686,21 @@ export class AddSpaceStore {
   // ── Loads ──────────────────────────────────────────────────────────────
 
   /**
-   * `load_space_folders` (spaces.rs:2180-2253): ListFolders on the flow's
-   * device (relay-forwarded only when remote). Guards the response with
-   * the identity/device check plus the browser path, the hidden-query
-   * flag, and "the search has since become a manual path".
+   * `load_space_folders`: ListFolders on the flow's device (targeted when
+   * remote). The step machine's state advances FIRST — with no route to
+   * the device the Folders step still leaves the skeleton for the error
+   * row, never a forever-skeleton. Guards the response with the
+   * identity/device check plus the browser path, the hidden-query flag,
+   * and "the search has since become a manual path".
    */
   #loadFolders(path: string | null): void {
     const flow = this.#flow;
-    const session = this.#session();
-    if (flow === null || session === null || flow.deviceId === null) {
+    if (flow === null) {
       return;
     }
-    const request: StaleGuard = { identity: flow.identity, revision: null, deviceId: flow.deviceId };
+    const session = this.#session();
+    const deviceId = flow.deviceId;
+    const request: StaleGuard = { identity: flow.identity, revision: null, deviceId };
     const query = flow.query;
     const hiddenQuery = query.startsWith(".");
     this.#manualInFlight = false;
@@ -693,14 +713,19 @@ export class AddSpaceStore {
       listing: "loading",
       active: 0,
     };
+    if (session === null || deviceId === null) {
+      this.#flow = { ...this.#flow, listing: { error: "Device is not connected" } };
+      this.#commit();
+      return;
+    }
     this.#commit();
     const params: Record<string, unknown> = { query };
     if (path !== null) {
       params.path = path;
     }
     // Only target remote devices — local calls skip the relay.
-    if (this.#localDeviceId() !== flow.deviceId) {
-      params.targetDeviceId = flow.deviceId;
+    if (this.#localDeviceId() !== deviceId) {
+      params.targetDeviceId = deviceId;
     }
     void session.client
       .call<FolderListing>(methods.LIST_FOLDERS, params)
@@ -739,6 +764,10 @@ export class AddSpaceStore {
     const flow = this.#flow;
     const session = this.#session();
     if (flow === null || session === null || flow.deviceId === null) {
+      if (flow !== null && flow.drivesLoading) {
+        this.#flow = { ...flow, drivesLoading: false };
+        this.#commit();
+      }
       return;
     }
     const request: StaleGuard = { identity: flow.identity, revision: null, deviceId: flow.deviceId };
@@ -753,7 +782,7 @@ export class AddSpaceStore {
         if (current === null) {
           return;
         }
-        this.#flow = { ...current, drives: listing.drives };
+        this.#flow = { ...current, drives: listing.drives, drivesLoading: false };
         this.#commit();
       })
       .catch(() => {
@@ -761,7 +790,7 @@ export class AddSpaceStore {
         if (current === null) {
           return;
         }
-        this.#flow = { ...current, drives: [] };
+        this.#flow = { ...current, drives: [], drivesLoading: false };
         this.#commit();
       });
   }
@@ -849,6 +878,24 @@ export class AddSpaceStore {
     return this.#session()?.cache.getSnapshot().devices.rows ?? [];
   }
 
+  /** The Devices step's filtered rows (`add_space_devices`). */
+  #deviceRows(): Device[] {
+    const flow = this.#flow;
+    if (flow === null) {
+      return [];
+    }
+    return deviceRows(this.#devices(), flow.query);
+  }
+
+  /** The Locations step's filtered rows (`add_space_locations`). */
+  #locationRows(): LocationRowEntry[] {
+    const flow = this.#flow;
+    if (flow === null) {
+      return [];
+    }
+    return locationRows(flow.drives, flow.query);
+  }
+
   #localDeviceId(): string | null {
     return this.#session()?.client.engineInfo?.deviceId ?? null;
   }
@@ -895,43 +942,6 @@ export class AddSpaceStore {
     }
     this.#flow = { ...flow, browserRepo: isRepo, query: "" };
     this.#loadFolders(full);
-  }
-
-  /**
-   * Arm the deviceless wait's deadline (ticket 43): on expiry, a flow
-   * still open, still deviceless, and from the same open era flips to the
-   * terminal deviceless error — what the palette renders as the error row
-   * with the Retry chip. A re-open, a resolve, or a close clears the timer
-   * first, so a stale fire can only ever meet these guards and no-op.
-   */
-  #armDeviceWait(): void {
-    this.#clearDeviceWait();
-    const identity = this.#flow?.identity;
-    const timer = setTimeout(() => {
-      if (this.#deviceWaitTimer !== timer) {
-        return;
-      }
-      this.#deviceWaitTimer = null;
-      const flow = this.#aliveFlow();
-      if (
-        flow === null ||
-        flow.identity !== identity ||
-        flow.deviceId !== null ||
-        flow.deviceWait !== "waiting"
-      ) {
-        return;
-      }
-      this.#flow = { ...flow, deviceWait: "timeout" };
-      this.#commit();
-    }, ADD_SPACE_DEVICE_WAIT_MS);
-    this.#deviceWaitTimer = timer;
-  }
-
-  #clearDeviceWait(): void {
-    if (this.#deviceWaitTimer !== null) {
-      clearTimeout(this.#deviceWaitTimer);
-      this.#deviceWaitTimer = null;
-    }
   }
 
   #commit(): void {

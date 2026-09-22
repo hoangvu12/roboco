@@ -12,12 +12,15 @@ import { TOOLTIP_CONTEXT_METER_MS } from "./ui/Tooltip";
  * muted below 75%, warning from 75%, danger from 90% — and an unknown window
  * reads as a faint em dash rather than a guess.
  *
- * The 260px `Context window` card (context_usage.rs:71-137) opens on a 500ms
+ * The `Context window` card (context_usage.rs:71-137) opens on a 500ms
  * hover (gpui `DEFAULT_TOOLTIP_SHOW_DELAY`) through `PickerCard`'s
  * hover-open shape — a content card, not the label tooltip
  * (`base/tooltip.tsx`'s own routing rule). While open it live-updates: the
  * usage flows through the footer's props, and Base UI keeps the popup
- * mounted (a re-render, never a re-mount). The native `title=` stand-in is
+ * mounted (a re-render, never a re-mount). The card carries no fixed width:
+ * the lines break only at their own newlines and the card sizes from the
+ * unwrapped text (context_usage.rs render — the old fixed 260px soft-wrapped
+ * and clipped the last line). The native `title=` stand-in is
  * gone — both tooltips would otherwise show at once.
  */
 
@@ -34,6 +37,32 @@ export function usageFraction(usage: ContextUsage | null): number | null {
 }
 
 /**
+ * `with_separators` (context_usage.rs:85-101) — counts grouped by thousands,
+ * so the tooltip reads like a token meter, not a wall of digits.
+ */
+export function withSeparators(count: number): string {
+  const digits = String(count);
+  let grouped = "";
+  for (let index = 0; index < digits.length; index += 1) {
+    if (index > 0 && (digits.length - index) % 3 === 0) {
+      grouped += ",";
+    }
+    grouped += digits[index];
+  }
+  return grouped;
+}
+
+/**
+ * `has_window` (context_usage.rs:105-111) — whether the indicator has
+ * anything to measure against: harnesses that never report a window
+ * (antigravity) get no indicator at all, rather than a permanently empty
+ * ring.
+ */
+export function hasWindow(usage: ContextUsage | null): boolean {
+  return usage?.window != null && usage.window > 0;
+}
+
+/**
  * `details` (context_usage.rs:85-108) — the card body's four verbatim cases.
  */
 export function usageDetails(usage: ContextUsage | null): string {
@@ -41,13 +70,13 @@ export function usageDetails(usage: ContextUsage | null): string {
   const window = usage?.window ?? null;
   if (tokens !== null && window !== null && window > 0) {
     const remaining = Math.max(window - tokens, 0);
-    return `${tokens} / ${window} tokens\n${remaining} tokens remaining`;
+    return `${withSeparators(tokens)} / ${withSeparators(window)} tokens\n${withSeparators(remaining)} tokens remaining`;
   }
   if (tokens !== null) {
-    return `${tokens} tokens used\nContext limit not reported`;
+    return `${withSeparators(tokens)} tokens used\nContext limit not reported`;
   }
   if (window !== null && window > 0) {
-    return `${window} token capacity\nWaiting for context usage`;
+    return `${withSeparators(window)} token capacity\nWaiting for context usage`;
   }
   return "Context usage not reported by this harness yet";
 }
@@ -69,7 +98,6 @@ export function ContextUsageIndicator({ usage }: { usage: ContextUsage | null })
       placement={{ side: "top", align: "center" }}
       cardClassName="popover-card context-usage-card"
       ariaLabel="Context window"
-      width={260}
       openOnHover
       hoverDelayMs={TOOLTIP_CONTEXT_METER_MS}
       trigger={

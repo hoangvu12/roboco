@@ -15,4 +15,9 @@ repoPath: string,
 /**
  * Base ref the fresh `roboco/<name>` branch is created off.
  */
-base: string, };
+base: string, 
+/**
+ * The space whose setup Action (if any) runs in the fresh worktree.
+ * Additive + serde-defaulted for wire compat — an old host ignores it.
+ */
+spaceId?: string | null, };

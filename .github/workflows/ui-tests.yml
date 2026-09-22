@@ -43,10 +43,15 @@ jobs:
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - name: OpenCode protocol and permission regressions
+        run: |
+          cargo test --locked -p roboco-harness --lib opencode::
+          cargo test --locked -p roboco-harness --test opencode
       - name: Engine-local storage and recovery
         run: |
           cargo test --locked -p roboco-sync --lib
-          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles
+          cargo test --locked -p roboco-update --lib
+          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote
 
   ui-tests:
     runs-on: ubuntu-24.04

@@ -26,6 +26,13 @@ import {
   type PendingSend,
 } from "../state/transcript-store";
 import { transcriptFoldCache } from "../state/transcript-fold-state";
+import { NoticeChip } from "./notice-chip";
+import { useUiSettings } from "../state/ui-settings";
+import {
+  CODE_BLOCK_LINE_HEIGHT_BASELINE,
+  codeBlockLineHeight,
+  diffLineHeight,
+} from "../lib/typography";
 import { useNow } from "../state/hooks";
 import { withAttachments } from "../lib/attachments";
 import { parseMarkdown, blockFlatText, type Block, type InlineRun } from "../lib/markdown";
@@ -654,6 +661,14 @@ function TranscriptScroller({
   chatArrival,
 }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  // The code font size scales code-block and embedded-diff rows (render.rs /
+  // changes.rs baselines, lib/typography.ts); the estimator's context carries
+  // the same value the renderers paint against.
+  const codeFontSize = useUiSettings().codeFontSize;
+  // The configurable content column (settings.rs `transcript_width`, upstream
+  // cbf2ad84): the `.trow-col` max-width lands through --rb-transcript-width,
+  // and every cached row height was measured under the PREVIOUS column.
+  const transcriptWidth = useUiSettings().transcriptWidth;
   // The scroller MOUNTS AND UNMOUNTS with the empty state (the transcript
   // renders nothing when empty, exactly like the desktop). The attach effect
   // below keys off this presence state so a scroller that mounts after the
@@ -674,6 +689,12 @@ function TranscriptScroller({
   // keys refreshed every render (toolKeysRef, also the observer's tag source).
   const heightKeysRef = useRef(new Map<string, string>());
   const toolKeysRef = useRef(new Map<string, string>());
+  // The column width the current measurements were taken under (the web peer
+  // of Transcript::content_width): a change drops every cached height —
+  // `list.remeasure()` on the desktop — retaining row identity and every
+  // animation/provenance state, so the ResizeObserver re-measures mounted
+  // rows in place and unmounted rows fall back to estimates until remount.
+  const measuredWidthRef = useRef(transcriptWidth);
   const anchorRef = useRef<{ id: string; offset: number; top: number } | null>(null);
   const rowsRef = useRef(rows);
   const positionsRef = useRef<readonly number[]>([]);
@@ -762,6 +783,17 @@ function TranscriptScroller({
     }
   }
 
+  // A conversation-width change re-wraps every row through the CSS variable
+  // without remounting any of them (transcript.rs `content_width != width`),
+  // so prefix sums must not trust heights measured under the old column: drop
+  // the whole cache — mounted rows re-measure through the observer on the
+  // reflow, unmounted rows stand on estimates until they return.
+  if (measuredWidthRef.current !== transcriptWidth) {
+    measuredWidthRef.current = transcriptWidth;
+    heightsRef.current.clear();
+    heightKeysRef.current.clear();
+  }
+
   // Bounded tool-row measurement validity (ticket 70 §2.4): a cached tool
   // measurement is valid only for the semantic geometry inputs it was taken
   // under — fold pins, the effective detail/invocation heights, the payload
@@ -770,7 +802,7 @@ function TranscriptScroller({
   // that row's cached height, so the analytic-exact estimate stands in until
   // the row remounts and re-measures. Unchanged inputs keep their
   // measurements; this pass fetches nothing and notifies no one.
-  const toolKeys = computeToolMeasurementKeys(rows, toolMotion);
+  const toolKeys = computeToolMeasurementKeys(rows, toolMotion, diffLineHeight(codeFontSize));
   toolKeysRef.current = toolKeys;
   pruneStaleToolMeasurements(heights, heightKeysRef.current, toolKeys);
 
@@ -816,6 +848,8 @@ function TranscriptScroller({
     state: toolMotion,
     now: performance.now(),
     reduced: reduced?.matches === true,
+    diffLineHeight: diffLineHeight(codeFontSize),
+    codeLineHeight: codeBlockLineHeight(codeFontSize),
   });
   const estimateCtx = toolEstimateContext();
   const anchorFold = anchorIx >= 0 ? userFolds.get(rows[anchorIx]!.id) ?? null : null;
@@ -946,13 +980,13 @@ function TranscriptScroller({
   // pass above then drops exactly the stale cached measurements.
   useEffect(() => {
     return toolMotion.subscribe(() => {
-      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion);
+      const next = computeToolMeasurementKeys(rowsRef.current, toolMotion, diffLineHeight(codeFontSize));
       const prev = toolKeysRef.current;
       if (next.size !== prev.size || [...next].some(([id, key]) => prev.get(id) !== key)) {
         bumpMeasure((tick) => tick + 1);
       }
     });
-  }, [toolMotion]);
+  }, [toolMotion, codeFontSize]);
   const registerRow = useCallback((id: string, el: HTMLDivElement | null) => {
     const observer = observerRef.current;
     const els = rowElsRef.current;
@@ -1762,8 +1796,10 @@ export function estimateRowHeight(
     case "liveMarkdown": {
       const block = kind.tree.blocks[kind.blockIx]?.block;
       if (block !== undefined && block.kind === "codeBlock") {
-        // Code rows are nowrap: the height is analytic (render.rs constants).
-        return block.code.split("\n").length * 18 + 28;
+        // Code rows are nowrap: the height is analytic (render.rs constants),
+        // scaled by the code font size the fence renders at.
+        const lineHeight = toolGeometry?.codeLineHeight ?? CODE_BLOCK_LINE_HEIGHT_BASELINE;
+        return block.code.split("\n").length * lineHeight + 28;
       }
       return 30;
     }
@@ -1779,6 +1815,7 @@ export function estimateRowHeight(
         state: ctx.state,
         now: ctx.now,
         reduced: ctx.reduced,
+        diffLineHeight: ctx.diffLineHeight,
       }).totalHeight;
     }
     case "inputChip":
@@ -1850,8 +1887,9 @@ function RowShell({
 }) {
   const ref = useCallback((el: HTMLDivElement | null) => register(row.id, el), [register, row.id]);
   return (
-    // Wide gutters (roboco `px-4 @3xl:px-12`) around the 736px column; the
-    // last row's bottom pad clears the chrome the list scrolls under.
+    // Wide gutters (roboco `px-4 @3xl:px-12`) around the configurable
+    // conversation-width column; the last row's bottom pad clears the chrome
+    // the list scrolls under.
     <div
       ref={ref}
       data-rid={row.id}
@@ -2415,17 +2453,12 @@ function InputChipRow({ header, resolved }: { header: string; resolved: boolean 
 }
 
 function ErrorChipRow({ message }: { message: string }) {
+  // The shared stacked notice chip in its tile treatment (notice.rs). The
+  // message WRAPS: a one-line ellipsis made a startup-crash report
+  // undiagnosable (zeronsh/comet#95).
   return (
     <div className="error-chip-row">
-      <div className="error-chip" role="alert">
-        <span className="error-chip-tile" aria-hidden>
-          <Icon name="dangerTriangle" size={12} />
-        </span>
-        <span className="error-chip-label">Error</span>
-        {/* The message WRAPS: a one-line ellipsis made a startup-crash report
-            undiagnosable (transcript.rs:6531-6534). */}
-        <span className="error-chip-text">{message}</span>
-      </div>
+      <NoticeChip tone="danger" variant="tile" label="Error" message={message} role="alert" />
     </div>
   );
 }

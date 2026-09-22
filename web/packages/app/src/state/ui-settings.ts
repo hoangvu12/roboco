@@ -48,6 +48,11 @@ export const SIDEBAR_DEFAULT = 256;
 export const RIGHT_PANE_MIN = 360;
 export const RIGHT_PANE_DEFAULT = 520;
 
+/** `settings.rs` FILES_PANEL_* — the docked explorer column's drag bounds. */
+export const FILES_PANEL_MIN = 220;
+export const FILES_PANEL_MAX = 440;
+export const FILES_PANEL_DEFAULT = 286;
+
 /** The conversation's floor beside an open right pane. */
 export const CHAT_PANEL_MIN = 300;
 
@@ -65,9 +70,19 @@ export const FILES_AUTOSAVE_DELAY_DEFAULT_MS = 900;
 export const FILES_AUTOSAVE_DELAY_MIN_MS = 100;
 export const FILES_AUTOSAVE_DELAY_MAX_MS = 10_000;
 
-export const FILES_EDITOR_FONT_SIZE_DEFAULT = 13;
-export const FILES_EDITOR_FONT_SIZE_MIN = 9;
-export const FILES_EDITOR_FONT_SIZE_MAX = 24;
+/** `typography.rs` font-size bounds (FONT_SIZE_MIN / FONT_SIZE_MAX). */
+export const FONT_SIZE_MIN = 8;
+export const FONT_SIZE_MAX = 32;
+/** `CODE_FONT_SIZE_DEFAULT` — markdown code blocks scale 1:1 off this. */
+export const CODE_FONT_SIZE_DEFAULT = 12.5;
+/** `TERMINAL_FONT_SIZE_DEFAULT`. */
+export const TERMINAL_FONT_SIZE_DEFAULT = 13;
+
+/** `settings.rs`'s transcript column bounds (upstream cbf2ad84). */
+export const TRANSCRIPT_WIDTH_MIN = 560;
+export const TRANSCRIPT_WIDTH_MAX = 1200;
+export const TRANSCRIPT_WIDTH_DEFAULT = 736;
+export const TRANSCRIPT_WIDTH_STEP = 16;
 
 /** How many sidebar rows the jump shortcuts reach. */
 export const JUMP_SLOTS = 9;
@@ -133,6 +148,9 @@ export interface KeymapConfig {
   readonly toggleChanges: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
+  readonly newProject: string;
+  /** Mod+/ — opens the composer's model picker (upstream faac7432). */
+  readonly openModelPicker: string;
   readonly nextSession: string;
   readonly prevSession: string;
   readonly archiveSession: string;
@@ -168,6 +186,19 @@ export interface NewThreadComposerBackground {
   readonly name: string;
 }
 
+/**
+ * A user-named sidebar section (`settings.rs::SidebarSection`, upstream
+ * 86249cf0). Archived sessions keep their membership so unarchiving restores
+ * the section; deleting a section never deletes sessions. Device-local and
+ * profile-isolated like the pin buckets — never synchronized.
+ */
+export interface SidebarSection {
+  readonly id: string;
+  readonly name: string;
+  readonly sessionIds: readonly string[];
+  readonly collapsed: boolean;
+}
+
 export interface UiSettings {
   readonly composerSendBehavior: ComposerSendBehavior;
   readonly sidebarWidth: number;
@@ -176,11 +207,38 @@ export interface UiSettings {
   readonly sidebarGrouped: boolean;
   readonly sidebarOrganization: SidebarOrganization;
   readonly sidebarSort: SidebarSort;
+  /**
+   * Upstream 78e9e6ae's three display toggles: the "project @ device" line
+   * (Location), compact one-line rows, and per-project artwork/monograms.
+   * `sidebarCompact` defaults ON (upstream ffaa3102); explicit detailed-mode
+   * preferences persist unchanged.
+   */
+  readonly sidebarShowProjectLabel: boolean;
+  readonly sidebarCompact: boolean;
+  readonly sidebarShowProjectIcon: boolean;
   readonly sidebarShowHarness: boolean;
   readonly sidebarShowBranch: boolean;
   readonly sidebarShowPullRequest: boolean;
   readonly lastSpaceId: string | null;
+  /**
+   * Last successfully launched Action per space in this viewport
+   * (`last_project_action_by_space_id`, settings.rs): the titlebar control's
+   * preferred action. Keys are engine-scoped space ids.
+   */
+  readonly lastProjectActionBySpaceId: Record<string, string>;
   readonly spaceFilter: string | null;
+  /**
+   * Device-local pinned sessions in visual order, isolated by workspace
+   * profile (`UiSettings::sidebar_pinned_session_ids_by_profile`).
+   * Presentation-only; never synchronized.
+   */
+  readonly sidebarPinnedSessionIdsByProfile: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Custom sidebar sections per workspace profile
+   * (`UiSettings::sidebar_sections_by_profile`, upstream 86249cf0).
+   * Device-local presentation state; never synchronized.
+   */
+  readonly sidebarSectionsByProfile: Readonly<Record<string, readonly SidebarSection[]>>;
   readonly soundEnabled: boolean;
   readonly soundCompletionEnabled: boolean;
   readonly soundInputEnabled: boolean;
@@ -188,6 +246,8 @@ export interface UiSettings {
   readonly notificationsEnabled: boolean;
   readonly notificationsBackgroundOnly: boolean;
   readonly rightPaneWidth: number;
+  /** The docked explorer column's width (tickets 22/23 parity). */
+  readonly filesPanelWidth: number;
   readonly terminalHeight: number;
   readonly keymap: KeymapConfig;
   readonly escapeStopsActiveAgent: boolean;
@@ -207,10 +267,25 @@ export interface UiSettings {
   readonly diffSplit: boolean;
   readonly diffWrap: boolean;
   readonly codeFencesFitContent: boolean;
+  /**
+   * Maximum conversation width in logical pixels (`transcript_width`);
+   * the composer's width is independent. Snapped to the 16px ladder.
+   */
+  readonly transcriptWidth: number;
   readonly filesAutosaveEnabled: boolean;
   readonly filesAutosaveDelayMs: number;
   readonly filesWordWrap: boolean;
-  readonly filesEditorFontSize: number;
+  /**
+   * The terminal family's slot (typography.rs `terminal_font_family`).
+   * Constrained to fixed-width choices on write; a persisted proportional
+   * family heals to Geist Mono (the terminal grid's hit-testing assumes one
+   * advance per cell).
+   */
+  readonly terminalFontFamily: UiFontFamily;
+  readonly terminalFontSize: number;
+  /** The code/diff slots (`code_font_family` / `code_font_size`). */
+  readonly codeFontFamily: UiFontFamily;
+  readonly codeFontSize: number;
   readonly filesShowAll: boolean;
   readonly accent: UiAccentSelection;
   readonly surface: UiSurfacePreference;
@@ -253,6 +328,8 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     toggleChanges: "mod-r",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
+    newProject: "mod-shift-n",
+    openModelPicker: "mod-/",
     nextSession: mac ? "ctrl-tab" : "mod-tab",
     prevSession: mac ? "ctrl-shift-tab" : "mod-shift-tab",
     // Mod+A is the composer's Select all, so archiving takes the shifted combo.
@@ -269,11 +346,17 @@ export function defaultUiSettings(): UiSettings {
     sidebarGrouped: false,
     sidebarOrganization: "inOneList",
     sidebarSort: "lastUpdated",
+    sidebarShowProjectLabel: true,
+    sidebarCompact: true,
+    sidebarShowProjectIcon: true,
     sidebarShowHarness: true,
     sidebarShowBranch: true,
     sidebarShowPullRequest: true,
     lastSpaceId: null,
+    lastProjectActionBySpaceId: {},
     spaceFilter: null,
+    sidebarPinnedSessionIdsByProfile: {},
+    sidebarSectionsByProfile: {},
     soundEnabled: true,
     soundCompletionEnabled: true,
     soundInputEnabled: true,
@@ -281,6 +364,7 @@ export function defaultUiSettings(): UiSettings {
     notificationsEnabled: true,
     notificationsBackgroundOnly: true,
     rightPaneWidth: RIGHT_PANE_DEFAULT,
+    filesPanelWidth: FILES_PANEL_DEFAULT,
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
     keymap: defaultKeymap(),
     escapeStopsActiveAgent: false,
@@ -296,10 +380,14 @@ export function defaultUiSettings(): UiSettings {
     diffSplit: false,
     diffWrap: false,
     codeFencesFitContent: false,
+    transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT,
     filesAutosaveEnabled: false,
     filesAutosaveDelayMs: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     filesWordWrap: false,
-    filesEditorFontSize: FILES_EDITOR_FONT_SIZE_DEFAULT,
+    terminalFontFamily: TERMINAL_FONT_FAMILY_DEFAULT,
+    terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
+    codeFontFamily: "geistMono",
+    codeFontSize: CODE_FONT_SIZE_DEFAULT,
     filesShowAll: false,
     accent: "themeDefault",
     surface: "themeDefault",
@@ -326,6 +414,12 @@ export function minOr(value: unknown, min: number, fallback: number): number {
     return fallback;
   }
   return Math.max(min, value);
+}
+
+/** `settings.rs::normalize_transcript_width` — clamp, then snap to the ladder. */
+export function normalizeTranscriptWidth(value: unknown): number {
+  const width = clampOr(value, TRANSCRIPT_WIDTH_MIN, TRANSCRIPT_WIDTH_MAX, TRANSCRIPT_WIDTH_DEFAULT);
+  return TRANSCRIPT_WIDTH_MIN + Math.round((width - TRANSCRIPT_WIDTH_MIN) / TRANSCRIPT_WIDTH_STEP) * TRANSCRIPT_WIDTH_STEP;
 }
 
 /** `UiFontSize::normalized` — snap to the nearest offered size, ties low. */
@@ -372,6 +466,84 @@ function nullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/** A list of chat ids — non-strings drop out, duplicates collapse in place. */
+function healStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string" && entry.length > 0 && !seen.has(entry)) {
+      seen.add(entry);
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/** Per-profile pin lists — junk buckets and entries heal out one by one. */
+function healPinnedByProfile(value: unknown): Record<string, readonly string[]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string[]> = {};
+  for (const [key, list] of Object.entries(value)) {
+    if (key.length === 0) {
+      continue;
+    }
+    const healed = healStringList(list);
+    // An emptied bucket drops out of the map, exactly like the desktop's
+    // removal on the last unpin/prune.
+    if (healed.length > 0) {
+      out[key] = healed;
+    }
+  }
+  return out;
+}
+
+/**
+ * Per-profile custom sections (`sidebar_sections_by_profile`, upstream
+ * 86249cf0): each section needs a non-empty id and name; junk sections heal
+ * out one by one, an empty name/id taking only itself. Empty sections are
+ * RETAINED (the desktop keeps them — "Drop sessions here").
+ */
+export function healSidebarSectionsByProfile(
+  value: unknown,
+): Record<string, readonly SidebarSection[]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, SidebarSection[]> = {};
+  for (const [key, list] of Object.entries(value)) {
+    if (key.length === 0 || !Array.isArray(list)) {
+      continue;
+    }
+    const sections: SidebarSection[] = [];
+    const seenIds = new Set<string>();
+    for (const entry of list) {
+      const raw = record(entry);
+      const id = typeof raw.id === "string" ? raw.id : "";
+      const name = typeof raw.name === "string" ? raw.name : "";
+      if (id.length === 0 || name.length === 0 || name.length > 120 || seenIds.has(id)) {
+        continue;
+      }
+      seenIds.add(id);
+      sections.push({
+        id,
+        name,
+        sessionIds: healStringList(raw.sessionIds),
+        collapsed: bool(raw.collapsed, false),
+      });
+    }
+    // Empty buckets drop out of the map, like the pin buckets.
+    if (sections.length > 0) {
+      out[key] = sections;
+    }
+  }
+  return out;
+}
+
 function text(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -386,14 +558,39 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function healUiFontFamily(value: unknown): UiFontFamily {
+/** `last_project_action_by_space_id`: keep only non-empty string values. */
+function healStringMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(record(value))) {
+    if (typeof entry === "string" && entry.length > 0) {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+function healUiFontFamily(value: unknown, fallback: UiFontFamily = "geist"): UiFontFamily {
   if (value === "geist" || value === "geistMono" || value === "system") {
     return value;
   }
   if (typeof value === "string" && value.startsWith("installed:") && value.length > "installed:".length) {
     return value as UiFontFamily;
   }
-  return "geist";
+  return fallback;
+}
+
+/** The terminal catalog is fixed-width only (typography.rs
+ * `fixed_width_choices`); with no OS advance probe the web can vouch for
+ * exactly one family. */
+export const TERMINAL_FONT_FAMILY_DEFAULT: UiFontFamily = "geistMono";
+
+/**
+ * A persisted terminal family heals to the bundled monospace unless it IS
+ * that family — including a proportional choice a desktop peer persisted
+ * (typography.rs `persisted_proportional_terminal_family_falls_back`).
+ */
+export function healTerminalFontFamily(value: unknown): UiFontFamily {
+  return value === "geistMono" ? "geistMono" : TERMINAL_FONT_FAMILY_DEFAULT;
 }
 
 function healBackground(value: unknown): NewThreadComposerBackground | null {
@@ -428,6 +625,8 @@ export function healKeymap(value: unknown): KeymapConfig {
     toggleChanges: combo("toggleChanges"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
+    newProject: combo("newProject"),
+    openModelPicker: combo("openModelPicker"),
     nextSession: combo("nextSession"),
     prevSession: combo("prevSession"),
     archiveSession: combo("archiveSession"),
@@ -456,14 +655,21 @@ export function healUiSettings(value: unknown): UiSettings {
     sidebarWidth: clampOr(raw.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT),
     sidebarCollapsed: bool(raw.sidebarCollapsed, false),
     sidebarGrouped: bool(raw.sidebarGrouped, false),
-    // "By project" is no longer selectable; a stored one heals to the flat list.
-    sidebarOrganization: organization === "byProject" ? "inOneList" : organization,
+    // "By project" is selectable again (upstream 78e9e6ae removed the
+    // ByProject -> InOneList downgrade in clamped()); it round-trips.
+    sidebarOrganization: organization,
     sidebarSort: oneOf(raw.sidebarSort, ["lastUpdated", "created"], "lastUpdated"),
+    sidebarShowProjectLabel: bool(raw.sidebarShowProjectLabel, true),
+    sidebarCompact: bool(raw.sidebarCompact, true),
+    sidebarShowProjectIcon: bool(raw.sidebarShowProjectIcon, true),
     sidebarShowHarness: bool(raw.sidebarShowHarness, true),
     sidebarShowBranch: bool(raw.sidebarShowBranch, true),
     sidebarShowPullRequest: bool(raw.sidebarShowPullRequest, true),
     lastSpaceId: nullableString(raw.lastSpaceId),
+    lastProjectActionBySpaceId: healStringMap(raw.lastProjectActionBySpaceId),
     spaceFilter: nullableString(raw.spaceFilter),
+    sidebarPinnedSessionIdsByProfile: healPinnedByProfile(raw.sidebarPinnedSessionIdsByProfile),
+    sidebarSectionsByProfile: healSidebarSectionsByProfile(raw.sidebarSectionsByProfile),
     soundEnabled: bool(raw.soundEnabled, true),
     soundCompletionEnabled: bool(raw.soundCompletionEnabled, true),
     soundInputEnabled: bool(raw.soundInputEnabled, true),
@@ -473,6 +679,12 @@ export function healUiSettings(value: unknown): UiSettings {
     // No persisted ceiling: the live drag clamps against the window, which is
     // unavailable while loading.
     rightPaneWidth: minOr(raw.rightPaneWidth, RIGHT_PANE_MIN, RIGHT_PANE_DEFAULT),
+    filesPanelWidth: clampOr(
+      raw.filesPanelWidth,
+      FILES_PANEL_MIN,
+      FILES_PANEL_MAX,
+      FILES_PANEL_DEFAULT,
+    ),
     terminalHeight: clampOr(
       raw.terminalHeight,
       TERMINAL_MIN_HEIGHT,
@@ -504,6 +716,7 @@ export function healUiSettings(value: unknown): UiSettings {
     diffSplit: bool(raw.diffSplit, false),
     diffWrap: bool(raw.diffWrap, false),
     codeFencesFitContent: bool(raw.codeFencesFitContent, false),
+    transcriptWidth: normalizeTranscriptWidth(raw.transcriptWidth),
     filesAutosaveEnabled: bool(raw.filesAutosaveEnabled, false),
     filesAutosaveDelayMs: clampOr(
       raw.filesAutosaveDelayMs,
@@ -512,11 +725,26 @@ export function healUiSettings(value: unknown): UiSettings {
       FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     ),
     filesWordWrap: bool(raw.filesWordWrap, false),
-    filesEditorFontSize: clampOr(
-      raw.filesEditorFontSize,
-      FILES_EDITOR_FONT_SIZE_MIN,
-      FILES_EDITOR_FONT_SIZE_MAX,
-      FILES_EDITOR_FONT_SIZE_DEFAULT,
+    // The terminal slot takes fixed-width families only; the web catalog has
+    // no OS advance probe, so the one bundled monospace qualifies and a
+    // persisted proportional choice falls back to it (typography.rs
+    // `persisted_proportional_terminal_family_falls_back`).
+    terminalFontFamily: healTerminalFontFamily(raw.terminalFontFamily),
+    terminalFontSize: clampOr(
+      raw.terminalFontSize,
+      FONT_SIZE_MIN,
+      FONT_SIZE_MAX,
+      TERMINAL_FONT_SIZE_DEFAULT,
+    ),
+    codeFontFamily: healUiFontFamily(raw.codeFontFamily, "geistMono"),
+    // The files-editor size was the first user-facing code size; it now
+    // drives every code surface (settings.rs folds `filesEditorFontSize`
+    // into `codeFontSize` on load).
+    codeFontSize: clampOr(
+      raw.codeFontSize ?? raw.filesEditorFontSize,
+      FONT_SIZE_MIN,
+      FONT_SIZE_MAX,
+      CODE_FONT_SIZE_DEFAULT,
     ),
     filesShowAll: bool(raw.filesShowAll, false),
     accent: oneOf(raw.accent, ACCENT_IDS, "themeDefault"),

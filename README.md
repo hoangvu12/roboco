@@ -1,6 +1,6 @@
 # Roboco
 
-Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi) on your own machines. Sessions and files belong to the engine that runs them.
+Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi, Antigravity) on your own machines. Sessions and files belong to the engine that runs them.
 
 *English | [简体中文](README.zh-CN.md)*
 

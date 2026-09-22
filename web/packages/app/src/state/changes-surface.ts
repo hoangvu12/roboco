@@ -9,6 +9,7 @@ import {
   type FileFold,
 } from "../lib/diff";
 import type { ReviewComment } from "../lib/review-comments";
+import { diffLineHeight } from "../lib/typography";
 import { uiSettings } from "./ui-settings";
 
 /**
@@ -254,13 +255,16 @@ export class ChangesSurfaceStore {
       const current = state.folds.get(path);
       const collapsed = !(current?.collapsed ?? false);
       const steady = state.wrap || reducedMotion();
+      // `bodyHeightWith` reads the live code size at toggle time (the same
+      // value the renderer's FileBodyUpto paints against).
+      const bodyLineHeight = diffLineHeight(uiSettings.getSnapshot().codeFontSize);
       const fold: FileFold = steady
         ? { collapsed, epoch: (current?.epoch ?? 0) + 1, from: 0, to: 0, toggledAt: null, folding: false }
         : {
           collapsed,
           epoch: (current?.epoch ?? 0) + 1,
-          from: current?.collapsed === true ? 0 : bodyHeightWith(file, state.layout, fileComments, fileDraft),
-          to: current?.collapsed === true ? bodyHeightWith(file, state.layout, fileComments, fileDraft) : 0,
+          from: current?.collapsed === true ? 0 : bodyHeightWith(file, state.layout, fileComments, fileDraft, bodyLineHeight),
+          to: current?.collapsed === true ? bodyHeightWith(file, state.layout, fileComments, fileDraft, bodyLineHeight) : 0,
           toggledAt: Date.now(),
           folding: true,
         };

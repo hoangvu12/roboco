@@ -1,7 +1,8 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { parseScopedId } from "@roboco/engine-client";
-import type { SidebarOrganization, SidebarSort } from "../state/ui-settings";
+import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
+import { projectPinnedFirst } from "./sidebar-pins";
 
 /**
  * The desktop's view derivations, ported 1:1 from `roboco_proto::view` and
@@ -90,6 +91,11 @@ export interface ChatRow {
   readonly status: ChatIndicator;
   /** Line 1 left — the space's display name, or the cwd label, or "~". */
   readonly project: string;
+  /**
+   * The space's path — the monogram's stable seed (project_icon.rs).
+   * Null for project-less sessions (seed "home", name "Home").
+   */
+  readonly projectPath: string | null;
   /**
    * Line 1 left as the desktop writes it: `"project @ device"`, or bare
    * `project` when the device is unknown (shell/spaces.rs render_active_rows
@@ -283,7 +289,7 @@ export function promoteLocalDeviceGroup<T>(
     return groups as SidebarBucket<T>[];
   }
   const index = groups.findIndex(
-    (bucket) => bucket.group !== null && bucket.group.deviceId === localDeviceId,
+    (bucket) => bucket.group !== null && bucket.group.kind === "device" && bucket.group.key === localDeviceId,
   );
   if (index <= 0) {
     return groups as SidebarBucket<T>[];
@@ -294,17 +300,29 @@ export function promoteLocalDeviceGroup<T>(
   return next;
 }
 
-/** One ByDevice bucket: the group identity plus its rows in draw order. */
+/** One grouping key: identity for collapsing, a label, and its flavor. */
+export interface SidebarGroup {
+  /** The collapse key's raw id — a device id or a space id. */
+  readonly key: string;
+  /** The disclosure header's label — the device or project display name. */
+  readonly label: string;
+  /** Which grouping produced this bucket. */
+  readonly kind: "device" | "project";
+}
+
+/** One disclosure bucket: the group identity plus its rows in draw order. */
 export interface SidebarBucket<T> {
-  readonly group: { readonly deviceId: string; readonly deviceName: string } | null;
+  readonly group: SidebarGroup | null;
   readonly rows: readonly T[];
 }
 
 /**
  * Bucket the sorted rows for drawing: under `byDevice`, chats group by host
- * device preserving first-seen order, the local device's bucket promoted to
- * the top (`render_active_rows`). Every other organization is one flat,
- * header-less bucket.
+  * device preserving first-seen order, the local device's bucket promoted to
+  * the top (`render_active_rows`); under `byProject` (upstream 78e9e6ae),
+  * chats group by their space — `home:{device}` for project-less sessions —
+  * with the project's display name as the label. Every other organization is
+  * one flat, header-less bucket.
  */
 export function sidebarGroups(
   rows: readonly ChatRow[],
@@ -313,14 +331,20 @@ export function sidebarGroups(
 ): SidebarBucket<ChatRow>[] {
   const buckets: SidebarBucket<ChatRow>[] = [];
   for (const row of rows) {
-    const group =
-      organization === "byDevice"
-        ? { deviceId: row.deviceId, deviceName: row.deviceName ?? "Unknown device" }
-        : null;
+    let group: SidebarGroup | null = null;
+    if (organization === "byDevice") {
+      group = { key: row.deviceId, label: row.deviceName ?? "Unknown device", kind: "device" };
+    } else if (organization === "byProject") {
+      group = {
+        key: row.chat.spaceId ?? `home:${row.deviceId}`,
+        label: row.project,
+        kind: "project",
+      };
+    }
     const existing = buckets.find((bucket) =>
       bucket.group === null
         ? group === null
-        : group !== null && bucket.group.deviceId === group.deviceId,
+        : group !== null && bucket.group.key === group.key && bucket.group.kind === group.kind,
     );
     if (existing !== undefined) {
       (existing.rows as ChatRow[]).push(row);
@@ -336,18 +360,37 @@ export function sidebarGroups(
 
 /**
  * The flat, top-to-bottom chat ids exactly as the sidebar draws them —
- * grouping and local-device promotion applied, headers not counted
- * (`spaces.rs::sidebar_visible_order`). The jump shortcuts and session
- * cycling read THIS order so keyboard order never drifts from the screen.
+ * pins first, then OPEN custom sections' members in section order, then the
+ * grouping and local-device promotion of the UNCLAIMED rows, headers not
+ * counted (`spaces.rs::sidebar_visible_order`, upstream 86249cf0's custom
+ * sections). The jump shortcuts and session cycling read THIS order so
+ * keyboard order never drifts from the screen. While the pinned disclosure
+ * is collapsed the hidden pins hold no slot (they are not on the screen),
+ * and a collapsed section's members hold no slot either.
  */
 export function sidebarVisibleOrder(
   rows: readonly ChatRow[],
   organization: SidebarOrganization,
   localDeviceId: string | null,
+  pinnedIds: readonly string[] = [],
+  pinnedOpen = true,
+  sections: readonly SidebarSection[] = [],
 ): string[] {
-  return sidebarGroups(rows, organization, localDeviceId).flatMap((bucket) =>
+  const claimed = new Set(sections.flatMap((section) => section.sessionIds));
+  const unclaimed = rows.filter((row) => !claimed.has(row.chat.id));
+  const flat = sidebarGroups(unclaimed, organization, localDeviceId).flatMap((bucket) =>
     bucket.rows.map((row) => row.chat.id),
   );
+  const ids = new Set(rows.map((row) => row.chat.id));
+  const customOrder = sections
+    .filter((section) => !section.collapsed)
+    .flatMap((section) => section.sessionIds.filter((id) => ids.has(id)));
+  const visible = projectPinnedFirst([...customOrder, ...flat], pinnedIds);
+  if (!pinnedOpen) {
+    const pins = new Set(pinnedIds);
+    return visible.filter((id) => !pins.has(id));
+  }
+  return visible;
 }
 
 /**
@@ -364,6 +407,23 @@ export function chatRowHeight(showsBranch: boolean, showsPullRequest: boolean): 
     metadataHeight = Math.max(metadataHeight, 16);
   }
   return metadataHeight === 0 ? 45 : 47 + metadataHeight;
+}
+
+/**
+ * `shell.rs::sidebar_row_height` (upstream 78e9e6ae): compact rows are
+ * one-line 29px cards; detailed rows are the classic card, losing 16px
+ * when the "project @ device" label is hidden.
+ */
+export function sidebarRowHeight(
+  compact: boolean,
+  showLabel: boolean,
+  showsBranch: boolean,
+  showsPullRequest: boolean,
+): number {
+  if (compact) {
+    return 29;
+  }
+  return chatRowHeight(showsBranch, showsPullRequest) - (showLabel ? 0 : 16);
 }
 
 /** A keyed sidebar list entry: identity plus its FLIP height estimate. */
@@ -506,6 +566,7 @@ function toChatRow(
     chat,
     status: displayStatus(chat, statusByChat.get(chat.id), now),
     project,
+    projectPath: space?.path ?? null,
     folder: device !== undefined ? `${project} @ ${device.name}` : project,
     harness,
     branch: options.showBranch === false ? null : branch,
@@ -613,6 +674,48 @@ export function archivedRows(
       timeAgo: timeAgo(recencyKey(chat), now),
     };
   });
+}
+
+/**
+ * The archived shelf's SHARED row data (upstream dfd2fc0c's
+ * `sidebar_chat_data`): archived sessions derive the same `ChatRow` shape
+ * the active list draws — project @ device folder, branch, PR, harness,
+ * statuses — so the shelf shares layout and metadata in every sidebar
+ * mode. Same filter scope and comparator as `archivedRows`.
+ */
+export function archivedChatRows(
+  chats: readonly Chat[],
+  spaces: readonly Space[],
+  spaceFilter: string | null,
+  statuses: readonly ChatStatus[],
+  now: number,
+  devices: readonly Device[] = [],
+  options: SidebarRowOptions = {},
+): ChatRow[] {
+  const spaceById = new Map(spaces.map((space) => [space.id, space]));
+  const statusByChat = new Map(statuses.map((row) => [row.chatId, row]));
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
+  const rows: ChatRow[] = [];
+  for (const chat of chats) {
+    if (
+      !chat.archived ||
+      (spaceFilter !== null && (chat.spaceId === undefined || chat.spaceId !== spaceFilter))
+    ) {
+      continue;
+    }
+    // The shelf never hides a dangling-space row (the desktop's
+    // `sidebar_chat_data` renders the "?" project label) — so the shared
+    // row derivation's loaded-only hide stays off here.
+    const row = toChatRow(chat, spaceById, statusByChat, now, deviceById, {
+      ...options,
+      spacesLoaded: false,
+    });
+    if (row !== null) {
+      rows.push(row);
+    }
+  }
+  const sort = options.sort ?? "lastUpdated";
+  return rows.sort((left, right) => compareSidebarChats(sort, left.chat, right.chat));
 }
 
 /** Project label from a cwd (project_label): its basename, or null. */

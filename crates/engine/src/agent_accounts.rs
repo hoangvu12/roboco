@@ -214,14 +214,30 @@ enum LoginFlow {
         /// `Some(code)` once the child exited (`None` code = killed by signal).
         exit: Arc<Mutex<Option<Option<i32>>>>,
     },
+    /// a sign-in the engine drives itself (antigravity's acp `authenticate`);
+    /// the task reports the browser url and its outcome through `state`.
+    Task {
+        harness: HarnessId,
+        started_at: Instant,
+        state: Arc<Mutex<TaskLoginState>>,
+        /// aborting drops the sign-in future, which kills its agent child.
+        handle: tokio::task::JoinHandle<()>,
+    },
+}
+
+#[derive(Default)]
+struct TaskLoginState {
+    url: Option<String>,
+    message: Option<String>,
+    outcome: Option<Result<(), String>>,
 }
 
 impl LoginFlow {
     fn started_at(&self) -> Instant {
         match self {
-            LoginFlow::Claude { started_at, .. } | LoginFlow::Spawned { started_at, .. } => {
-                *started_at
-            }
+            LoginFlow::Claude { started_at, .. }
+            | LoginFlow::Spawned { started_at, .. }
+            | LoginFlow::Task { started_at, .. } => *started_at,
         }
     }
 }
@@ -263,6 +279,16 @@ pub struct AgentAccounts {
 
 impl AgentAccounts {
     pub fn new(config: AgentAccountsConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self::with_http_client(config, http)
+    }
+
+    /// Assemble around an injected HTTP client (tests substitute one whose
+    /// DNS resolver fails on demand to exercise transient-outage behavior).
+    pub(crate) fn with_http_client(config: AgentAccountsConfig, http: reqwest::Client) -> Self {
         // Startup sweep: a previous process that crashed mid-login leaves
         // `.login-<uuid>` throwaway CODEX_HOME dirs — each may hold live OAuth
         // tokens — with no owner to clean them. Reclaim them at boot.
@@ -275,10 +301,6 @@ impl AgentAccounts {
                 }
             }
         }
-        let http = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(Inner {
                 config,
@@ -525,6 +547,7 @@ impl AgentAccounts {
             HarnessId::ClaudeCode => Ok(self.start_claude_login()),
             HarnessId::Codex => self.start_codex_login().await,
             HarnessId::Cursor => self.start_cursor_login().await,
+            HarnessId::Antigravity => Ok(self.start_antigravity_login()),
             other => Err(EngineError::Other(format!(
                 "agent logins are not supported for {other:?}"
             ))),
@@ -571,7 +594,13 @@ impl AgentAccounts {
     fn reap_spawned_flows(&self, harness: HarnessId) {
         let stale: Vec<String> = lock(&self.inner.flows)
             .iter()
-            .filter(|(_, f)| matches!(f, LoginFlow::Spawned { harness: h, .. } if *h == harness))
+            .filter(|(_, f)| {
+                matches!(
+                    f,
+                    LoginFlow::Spawned { harness: h, .. } | LoginFlow::Task { harness: h, .. }
+                        if *h == harness
+                )
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for id in stale {
@@ -670,10 +699,66 @@ impl AgentAccounts {
         })
     }
 
+    /// antigravity: the acp server's own google sign-in, run when the agent is
+    /// turned on rather than mid-chat. the start replies at once because a
+    /// first sign-in downloads a large server; polls carry the browser url
+    /// once the server prints it.
+    fn start_antigravity_login(&self) -> AgentLoginStart {
+        self.reap_spawned_flows(HarnessId::Antigravity);
+        let login_id = new_id();
+        let state = Arc::new(Mutex::new(TaskLoginState::default()));
+        #[cfg(unix)]
+        let browser = {
+            let root = self.inner.config.root_dir();
+            std::fs::create_dir_all(&root)
+                .ok()
+                .and_then(|()| ensure_noop_browser(&root))
+        };
+        #[cfg(not(unix))]
+        let browser = None;
+        // A set-up noop browser means the server's own open is suppressed and
+        // the client opens the poll-carried URL instead (codex parity).
+        let cli_opens_browser = browser.is_none();
+        let task_state = state.clone();
+        let handle = tokio::spawn(async move {
+            let progress_state = task_state.clone();
+            let outcome = roboco_harness::AcpHarness::antigravity()
+                .sign_in(browser, move |progress| {
+                    let mut state = lock(&progress_state);
+                    match progress {
+                        roboco_harness::acp::SignInProgress::Installing => {
+                            state.message = Some("Downloading Antigravity.".into());
+                        }
+                        roboco_harness::acp::SignInProgress::OpenBrowser(url) => {
+                            state.message = Some("Finish signing in in your browser.".into());
+                            state.url = Some(url);
+                        }
+                    }
+                })
+                .await;
+            lock(&task_state).outcome = Some(outcome.map_err(|e| e.to_string()));
+        });
+        lock(&self.inner.flows).insert(
+            login_id.clone(),
+            LoginFlow::Task {
+                harness: HarnessId::Antigravity,
+                started_at: Instant::now(),
+                state,
+                handle,
+            },
+        );
+        AgentLoginStart {
+            login_id,
+            url: String::new(),
+            mode: AgentLoginMode::Browser,
+            cli_opens_browser,
+        }
+    }
+
     /// Cursor: the SDK's own PKCE browser flow, driven through the roboco shim
     /// in login mode. The minted key lands in a throwaway store file (never
     /// the live `~/.cursor/sdk/auth.json`), then snapshots into a slot on
-    /// poll — mirroring codex's throwaway `CODEX_HOME`.
+    /// poll - mirroring codex's throwaway `CODEX_HOME`.
     async fn start_cursor_login(&self) -> Result<AgentLoginStart, EngineError> {
         self.reap_spawned_flows(HarnessId::Cursor);
         let login_id = new_id();
@@ -761,7 +846,12 @@ impl AgentAccounts {
             .timeout(Duration::from_secs(15))
             .send()
             .await
-            .map_err(|e| EngineError::Other(format!("token exchange failed: {e}")))?;
+            .map_err(|e| {
+                EngineError::Other(format!(
+                    "token exchange failed: {}",
+                    crate::http_error::describe_http_error(e)
+                ))
+            })?;
         if !token.status().is_success() {
             let status = token.status();
             let body = token.text().await.unwrap_or_default();
@@ -885,6 +975,9 @@ impl AgentAccounts {
 
     pub async fn poll_login(&self, login_id: &str) -> Result<AgentLoginPoll, EngineError> {
         self.sweep_flows();
+        if let Some(poll) = self.poll_task_login(login_id) {
+            return Ok(poll);
+        }
         let (harness, home, exit, output) = match lock(&self.inner.flows).get(login_id) {
             None => {
                 return Err(EngineError::Other(
@@ -895,8 +988,10 @@ impl AgentAccounts {
                 return Ok(AgentLoginPoll {
                     status: AgentLoginStatus::Pending,
                     message: None,
+                    url: None,
                 });
             }
+            Some(LoginFlow::Task { .. }) => unreachable!("task logins poll above"),
             Some(LoginFlow::Spawned {
                 harness,
                 home,
@@ -926,6 +1021,7 @@ impl AgentAccounts {
             return Ok(AgentLoginPoll {
                 status: AgentLoginStatus::Done,
                 message: None,
+                url: None,
             });
         }
         let exited = *lock(&exit);
@@ -949,12 +1045,46 @@ impl AgentAccounts {
             return Ok(AgentLoginPoll {
                 status: AgentLoginStatus::Error,
                 message: Some(message),
+                url: None,
             });
         }
         Ok(AgentLoginPoll {
             status: AgentLoginStatus::Pending,
             message: None,
+            url: None,
         })
+    }
+
+    /// poll an engine-driven sign-in; `None` when `login_id` isn't one.
+    fn poll_task_login(&self, login_id: &str) -> Option<AgentLoginPoll> {
+        let state = match lock(&self.inner.flows).get(login_id) {
+            Some(LoginFlow::Task { state, .. }) => state.clone(),
+            _ => return None,
+        };
+        let poll = {
+            let state = lock(&state);
+            match &state.outcome {
+                None => {
+                    return Some(AgentLoginPoll {
+                        status: AgentLoginStatus::Pending,
+                        message: state.message.clone(),
+                        url: state.url.clone(),
+                    });
+                }
+                Some(Ok(())) => AgentLoginPoll {
+                    status: AgentLoginStatus::Done,
+                    message: None,
+                    url: None,
+                },
+                Some(Err(message)) => AgentLoginPoll {
+                    status: AgentLoginStatus::Error,
+                    message: Some(message.clone()),
+                    url: None,
+                },
+            }
+        };
+        lock(&self.inner.flows).remove(login_id);
+        Some(poll)
     }
 
     /// Drop a flow: kill a pending login child (`codex login` holds the fixed
@@ -962,11 +1092,15 @@ impl AgentAccounts {
     /// reclaim its throwaway home dir. Idempotent.
     pub fn cancel_login(&self, login_id: &str) {
         let flow = lock(&self.inner.flows).remove(login_id);
-        if let Some(LoginFlow::Spawned { child, home, .. }) = flow {
-            if let Some(c) = lock(&child).as_mut() {
-                let _ = c.start_kill();
+        match flow {
+            Some(LoginFlow::Spawned { child, home, .. }) => {
+                if let Some(c) = lock(&child).as_mut() {
+                    let _ = c.start_kill();
+                }
+                let _ = std::fs::remove_dir_all(&home);
             }
-            let _ = std::fs::remove_dir_all(&home);
+            Some(LoginFlow::Task { handle, .. }) => handle.abort(),
+            _ => {}
         }
     }
 
@@ -1233,27 +1367,56 @@ impl AgentAccounts {
     /// One usage probe: GET the endpoint and parse windows. `Err` means the
     /// token was rejected (401/403) — the only case worth a refresh.
     async fn claude_usage_request(&self, access_token: &str) -> Result<Option<UsageSnapshot>, ()> {
-        let response = self
+        let body = self
+            .usage_probe_json(CLAUDE_USAGE_URL, access_token)
+            .await?;
+        Ok(body.as_ref().and_then(claude_usage_windows))
+    }
+
+    /// GET a bearer-authed usage endpoint. Only an explicit 401/403 rejection
+    /// returns `Err` (worth a refresh); transport failures (DNS, refused,
+    /// timeouts) and other statuses report no data instead — a transient
+    /// outage must not be misread as a dead token and rotate a slot's
+    /// (commonly single-use) refresh token.
+    async fn usage_probe_json(
+        &self,
+        url: &str,
+        access_token: &str,
+    ) -> Result<Option<serde_json::Value>, ()> {
+        let response = match self
             .inner
             .http
-            .get(CLAUDE_USAGE_URL)
+            .get(url)
             .bearer_auth(access_token)
             .header("anthropic-beta", "oauth-2025-04-20")
             .send()
             .await
-            .map_err(|_| ())?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::debug!(
+                    error = %crate::http_error::describe_http_error(error),
+                    "usage probe transport failure"
+                );
+                return Ok(None);
+            }
+        };
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             || response.status() == reqwest::StatusCode::FORBIDDEN
         {
             return Err(());
         }
-        let body: serde_json::Value = response
-            .error_for_status()
-            .map_err(|_| ())?
-            .json()
-            .await
-            .map_err(|_| ())?;
-        Ok(claude_usage_windows(&body))
+        let body = match response.json().await {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::debug!(
+                    error = %crate::http_error::describe_http_error(error),
+                    "usage probe returned an unusable body"
+                );
+                return Ok(None);
+            }
+        };
+        Ok(Some(body))
     }
 
     async fn codex_usage(&self, slot: &Slot) -> Option<UsageSnapshot> {
@@ -1521,6 +1684,7 @@ fn harness_slug(harness: HarnessId) -> &'static str {
         HarnessId::Hermes => "hermes",
         HarnessId::Pi => "pi",
         HarnessId::Opencode => "opencode",
+        HarnessId::Antigravity => "antigravity",
         HarnessId::Mock => "mock",
     }
 }
@@ -2288,5 +2452,112 @@ mod tests {
         let updated = with_claude_ai_oauth(&creds, serde_json::json!({ "accessToken": "new" }));
         assert_eq!(updated["claudeAiOauth"]["accessToken"], "new");
         assert_eq!(updated["mcpOAuth"]["github"]["accessToken"], "keep");
+    }
+
+    // ── transient-outage session survival (port of zeron 853872d3) ──────────
+
+    fn test_config(dir: &Path) -> AgentAccountsConfig {
+        AgentAccountsConfig {
+            data_dir: dir.to_path_buf(),
+            claude_config_dir: dir.join("claude"),
+            claude_config_file: dir.join("claude.json"),
+            codex_home: dir.join("codex"),
+            cursor_sdk_auth_file: dir.join("cursor-auth.json"),
+        }
+    }
+
+    fn claude_slot() -> Slot {
+        Slot {
+            id: "slot-1".into(),
+            harness: HarnessId::ClaudeCode,
+            account_key: "oauth:user@example.com".into(),
+            profile: SlotProfile {
+                email: "user@example.com".into(),
+                display_name: None,
+                organization: None,
+                plan: None,
+                auth_kind: AgentAuthKind::Oauth,
+            },
+            credentials: serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": "stale-token",
+                    "refreshToken": "single-use-refresh",
+                    "expiresAt": 0,
+                }
+            }),
+            claude_config: None,
+            saved_at: now_ms(),
+            created_at: None,
+        }
+    }
+
+    /// A transient DNS failure during the usage probe must be reported as
+    /// "no data", never as token rejection: the session survives the outage
+    /// and no refresh POST (which would spend a single-use refresh token)
+    /// is attempted.
+    #[tokio::test]
+    async fn transient_dns_failure_preserves_the_session_without_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dns = Arc::new(crate::http_error::test_support::FailingDns::default());
+        let accounts = AgentAccounts::with_http_client(test_config(dir.path()), dns.client());
+        let slot = claude_slot();
+
+        let usage = accounts.claude_usage(&slot, false).await;
+
+        assert!(usage.is_none(), "no data during a DNS outage");
+        assert_eq!(
+            dns.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the transport-failed probe must not be followed by a refresh POST"
+        );
+    }
+
+    /// Port of zeron's `transient_http_statuses_do_not_revoke_the_session`:
+    /// only an explicit 401/403 reports rejection; other statuses say nothing
+    /// about the token.
+    #[tokio::test]
+    async fn transient_http_statuses_do_not_revoke_the_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let http = reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .expect("client");
+        let accounts = AgentAccounts::with_http_client(test_config(dir.path()), http);
+
+        for status in ["500 Internal Server Error", "429 Too Many Requests"] {
+            let url = status_server(status).await;
+            assert_eq!(
+                accounts.usage_probe_json(&url, "token").await,
+                Ok(None),
+                "{status} is transient: no data, no rejection"
+            );
+        }
+        let url = status_server("401 Unauthorized").await;
+        assert_eq!(
+            accounts.usage_probe_json(&url, "token").await,
+            Err(()),
+            "only a 401/403 is worth a refresh"
+        );
+    }
+
+    /// Minimal HTTP responder answering every connection with `status`.
+    async fn status_server(status: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            for _ in 0..3 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut head = [0u8; 1024];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut head).await;
+                let response =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
+            }
+        });
+        url
     }
 }

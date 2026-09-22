@@ -19,9 +19,11 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 mod client;
+mod pump;
 mod server;
 
 pub use client::{RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated};
+pub use pump::{Connection, Progress, ProgressIo};
 pub use server::{serve_connection, serve_websocket, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
@@ -139,6 +141,12 @@ pub mod methods {
     pub const WATCH_WORKSPACE_FILES: &str = "WatchWorkspaceFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    // Project Actions are private state on the device that owns the project.
+    pub const LIST_PROJECT_ACTIONS: &str = "ListProjectActions";
+    pub const UPSERT_PROJECT_ACTION: &str = "UpsertProjectAction";
+    pub const DELETE_PROJECT_ACTION: &str = "DeleteProjectAction";
+    pub const RUN_PROJECT_ACTION: &str = "RunProjectAction";
+    pub const TAKE_PROJECT_ACTION_SETUP: &str = "TakeProjectActionSetup";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";
@@ -148,6 +156,7 @@ pub mod methods {
     /// Checkout-diff stream for the target device's chats (DataRpc,
     /// relay-forwardable — diffs are produced where the checkout lives).
     pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
+    pub const WATCH_WORKSPACE_GIT_STATUS: &str = "WatchWorkspaceGitStatus";
     /// Current pull request for one checkout, resolved on the checkout's host device.
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
@@ -444,6 +453,38 @@ mod tests {
         let client = connect_ws(&format!("ws://127.0.0.1:{port}")).await.unwrap();
         let echoed = client.call("Echo", serde_json::json!("ok")).await.unwrap();
         assert_eq!(echoed, serde_json::json!("ok"));
+    }
+
+    #[tokio::test]
+    async fn stalled_upgrade_has_an_overall_deadline() {
+        // A stranger on the port accepts TCP but never answers the WebSocket
+        // upgrade: the dial must give up within its connect timeout instead
+        // of hanging the caller forever.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            accepted_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let dial = tokio::spawn(async move { connect_ws(&url).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), accepted_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        // TCP is established. The peer never answers the HTTP upgrade.
+        tokio::time::pause();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(21), dial).await;
+        server.abort();
+        let error = match result
+            .expect("dial remained stuck after 21 seconds")
+            .unwrap()
+        {
+            Err(error) => error,
+            Ok(_) => panic!("the stalled upgrade must fail"),
+        };
+        assert!(matches!(error, RpcError::Transport(_)));
     }
 
     #[tokio::test]

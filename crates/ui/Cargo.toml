@@ -6,6 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+project-palette-fixture = []
+command-palette-fixture = []
+
 browser-fixture = []
 windows-render-fixture = []
 appshots-fixture = ["gpui_platform/test-support"]
@@ -30,6 +33,18 @@ required-features = ["windows-render-fixture"]
 [[example]]
 name = "appshots-fixture"
 required-features = ["appshots-fixture"]
+
+[[example]]
+name = "new-project-fixture"
+required-features = ["project-palette-fixture"]
+
+[[example]]
+name = "sidebar-fixture"
+required-features = ["project-palette-fixture"]
+
+[[example]]
+name = "command-palette-fixture"
+required-features = ["command-palette-fixture"]
 
 [dependencies]
 url = "2"

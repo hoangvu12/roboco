@@ -2,31 +2,42 @@ import { useEffect, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon, type IconName } from "@roboco/icons";
-import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
+import type { Device, FolderEntry } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { deviceOnline } from "../lib/view";
 import {
-  activeLocation,
   addSpaceCompletion,
   breadcrumbs,
   childPath,
-  crumbFold,
+  deviceRows,
   filteredFolders,
+  highlightRanges,
+  locationRows,
+  pathUnder,
+  type LocationRowEntry,
 } from "../lib/add-space";
-import { addSpaceStore, useAddSpaceSnapshot, type AddSpaceFlow } from "../state/add-space";
+import {
+  addSpaceStore,
+  useAddSpaceSnapshot,
+  type AddSpaceFlow,
+  type AddSpaceStep,
+} from "../state/add-space";
+import { isMacPlatform } from "../state/shortcuts";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { RbDialogGlass } from "./base/dialog";
-import { KeyHint, KeyHintPair, KeyHintText } from "./ui/KeyHint";
+import { KeyCap, KeyHintPair, KeyHintText } from "./ui/KeyHint";
 import { MenuRowNav } from "./ui/MenuRows";
 import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 
 /**
- * The add-space palette — the ⌘K-style "New project" surface, port of the
- * desktop's `render_add_space_overlay` (`spaces.rs:2526-3274`): a 680px
- * `palette_card` (its own 14px radius, deliberately NOT the generic 12px)
- * centered on the lighter 0.35 `modal_glass` scrim. Input row → body
- * (breadcrumbs + folder list beside the devices/locations rail) → footer.
+ * The add-space palette — the "New project" surface, port of the desktop's
+ * `render_add_space_overlay` (`spaces.rs`): a 600px command-palette card
+ * (its own 14px radius, deliberately NOT the generic 12px) centered on the
+ * lighter 0.35 `modal_glass` scrim. New project navigates a step ladder —
+ * Devices → Locations → Folders — with a back button and breadcrumb trail
+ * over the list, and the Add action living in the footer on the Folders
+ * step. One search input filters whichever step is showing.
  *
  * The mount lifecycle rides `RbDialogGlass`: the store's `open` flag drives
  * the dialog, scrim presses and the escape ladder close through
@@ -34,9 +45,7 @@ import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
  * exit window — `unmounted()` fires when Base UI's animation-aware unmount
  * drains, dropping the flow. Headless while closed — the state machine
  * lives in `state/add-space.ts` (`addSpaceStore`); ticket 10's spaces-menu
- * row and ticket 12's `Mod+K` binding call `open()`. A deviceless open
- * (no device rows streamed yet) waits bounded in the store and resolves
- * through the devices-frame effect below (ticket 43). Escape resolves on
+ * row and ticket 12's `Mod+K` binding call `open()`. Escape resolves on
  * the shell's capture ladder at the reserved `addSpace` priority, so one
  * keystroke can never reach two handlers.
  */
@@ -59,6 +68,18 @@ export function devicePlatformIcon(platform: string): IconName {
     default:
       return "monitor";
   }
+}
+
+/** The search input's placeholder tracks the step (spaces.rs). */
+const PLACEHOLDER: Record<AddSpaceStep, string> = {
+  devices: "Search devices…",
+  locations: "Search locations…",
+  folders: "Search folders…",
+};
+
+/** The folders listing, when the flow is on the Folders step and ready. */
+function readyListing(flow: AddSpaceFlow): { path: string; entries: FolderEntry[]; truncated: boolean } | null {
+  return typeof flow.listing === "object" && "entries" in flow.listing ? flow.listing : null;
 }
 
 export function AddSpacePalette() {
@@ -94,14 +115,6 @@ export function AddSpacePalette() {
   // is not an unmount, and an open flow stays open.
   useEffect(() => () => addSpaceStore.forceClose(), []);
 
-  // The deviceless-open resolve seam (ticket 43): a flow that opened
-  // before the routed engine's device rows streamed resolves the moment
-  // one lands — no reopen needed. Re-runs on every devices frame; the
-  // store no-ops unless a wait is armed.
-  useEffect(() => {
-    addSpaceStore.resolveDevice();
-  }, [snapshot?.devices.rows]);
-
   // The shell's Escape ladder owns Escape at the reserved addSpace
   // priority — one capture-phase handler, so the focused input's own
   // keydown never sees the key (no double close).
@@ -131,27 +144,8 @@ export function AddSpacePalette() {
     return null;
   }
 
-  const listing =
-    typeof flow.listing === "object" && "entries" in flow.listing ? flow.listing : null;
-  const loadError = typeof flow.listing === "object" && "error" in flow.listing ? flow.listing.error : null;
-  // The deviceless wait's skeleton is time-bounded, not eternal: once the
-  // deadline flips the wait to the timeout error, the body swaps the
-  // skeleton for the error row (the listing itself stays idle — no loads
-  // can run without a device).
-  const loading = !listing && loadError === null && flow.deviceWait !== "timeout";
-  const rows = listing !== null ? filteredFolders(listing.entries, flow.query) : [];
-  const completion = listing !== null ? addSpaceCompletion(rows, flow.active, flow.query) : null;
-
   const devices = snapshot?.devices.rows ?? [];
   const device = flow.deviceId !== null ? devices.find((row) => row.id === flow.deviceId) ?? null : null;
-  const deviceName = device?.name ?? "This device";
-
-  // The rail's active Locations row + the drive whose mount folds into a
-  // breadcrumb (the System "/" drive never folds — plain crumbs then).
-  const activeLoc = activeLocation(listing?.path ?? null, flow.home, flow.drives);
-  const activeDrive = activeLoc !== null && activeLoc.kind === "drive" ? flow.drives[activeLoc.index] : undefined;
-  const driveMount = activeDrive !== undefined ? activeDrive.path.replace(/\/+$/, "") : null;
-  const foldDrive = driveMount !== null && driveMount.length > 0 ? driveMount : null;
 
   // The scrim press is Base UI's dismissal now (modal Dialog, pointer
   // dismissal on — the `modal_glass` contract); `overlayOpen` holds the
@@ -180,54 +174,35 @@ export function AddSpacePalette() {
       cardClassName="add-space-frost"
     >
       <div className="add-space-card">
-        <InputRow
-          flow={flow}
-          completion={completion}
-          listingReady={listing !== null}
-          inputRef={inputRef}
-        />
-        <Body
-          flow={flow}
-          listing={listing}
-          loadError={loadError}
-          loading={loading}
-          rows={rows}
-          device={device}
-          devices={devices}
-          now={now}
-          foldDrive={foldDrive}
-          listRef={listRef}
-        />
-        <Footer error={flow.error} />
+        <Header flow={flow} inputRef={inputRef} />
+        <Crumbs flow={flow} device={device} />
+        <Results flow={flow} devices={devices} now={now} listRef={listRef} />
+        {flow.error !== null && <div className="add-space-error">{flow.error}</div>}
+        <Footer flow={flow} />
       </div>
     </RbDialogGlass>
   );
 }
 
-// ── Input row ────────────────────────────────────────────────────────────
-
-interface InputRowProps {
-  readonly flow: AddSpaceFlow;
-  readonly completion: { name: string; suffix: string } | null;
-  readonly listingReady: boolean;
-  readonly inputRef: React.RefObject<HTMLInputElement | null>;
-}
+// ── Header: search icon · input · esc ────────────────────────────────────
 
 /**
- * The ⌘K bar (spaces.rs:2641-2734): summon chip · search input (with the
- * ⇥ ghost suffix) · the ⌘Enter add chip · esc. The recessed band tone and
- * the 1px hairline frame the folder list, which stays on the brighter
- * card tint.
+ * The ⌘K bar (spaces.rs): the palette search glyph, the search input with
+ * the ⇥ ghost suffix, and the esc hint. The query filters whichever step
+ * is showing; completion previews only exist on the Folders step.
  */
-function InputRow(props: InputRowProps) {
-  const { flow, completion, listingReady, inputRef } = props;
-  const manualMissing = flow.manualPath !== null && !flow.manualPath.exists;
-  const dim = flow.submitBusy || (!listingReady && flow.manualPath === null);
+function Header(props: {
+  readonly flow: AddSpaceFlow;
+  readonly inputRef: RefObject<HTMLInputElement | null>;
+}) {
+  const { flow, inputRef } = props;
+  const listing = flow.step === "folders" ? readyListing(flow) : null;
+  const rows = listing !== null ? filteredFolders(listing.entries, flow.query) : [];
+  const completion = listing !== null ? addSpaceCompletion(rows, flow.active, flow.query) : null;
   return (
-    <div className="add-space-input-row">
-      <span className="add-space-chip" aria-hidden>
-        <Icon name="command" size={11} className="add-space-chip-icon" />
-        <span className="add-space-chip-text">K</span>
+    <div className="add-space-header">
+      <span className="add-space-search-icon" aria-hidden>
+        <Icon name="magnifer" size={16} />
       </span>
       <div className="add-space-search">
         {completion !== null && (
@@ -240,7 +215,7 @@ function InputRow(props: InputRowProps) {
           ref={inputRef}
           type="text"
           value={flow.query}
-          placeholder="Search folders…"
+          placeholder={PLACEHOLDER[flow.step]}
           spellCheck={false}
           autoComplete="off"
           autoCorrect="off"
@@ -256,227 +231,234 @@ function InputRow(props: InputRowProps) {
           }}
         />
       </div>
+      <KeyHintText cap="esc" label="" />
+    </div>
+  );
+}
+
+// ── Breadcrumbs: back button + the step trail ────────────────────────────
+
+/**
+ * Back (roboco has no command palette to return to yet — ticket 16 — so
+ * it closes the flow outright), then the trail: "New project" → the device
+ * → the location → the browsed folder segments. The current step's crumb
+ * is settled, not clickable; ancestors retreat through `back_to` /
+ * `goto_location` / `descend`.
+ */
+function Crumbs(props: { readonly flow: AddSpaceFlow; readonly device: Device | null }) {
+  const { flow, device } = props;
+  const listing = flow.step === "folders" ? readyListing(flow) : null;
+  const location = flow.location;
+  const root = location?.path ?? flow.home;
+  const atRoot = listing === null || (root !== null && listing.path === root);
+  const segments = listing !== null ? breadcrumbs(listing.path) : [];
+  return (
+    <div className="add-space-crumbs">
       <button
         type="button"
-        className="add-space-submit"
-        data-rb-dim={dim ? "" : undefined}
-        onClick={() => {
-          addSpaceStore.submit();
-        }}
-      >
-        {flow.submitBusy ? (
-          <span>Adding…</span>
-        ) : (
-          <>
-            <Icon name="command" size={11} className="add-space-submit-icon" />
-            <span>{manualMissing ? "Create and add" : "Enter"}</span>
-          </>
-        )}
-      </button>
-      <button
-        type="button"
-        className="add-space-chip add-space-chip-click"
+        className="add-space-back"
+        aria-label="Close"
         onClick={() => {
           addSpaceStore.close();
         }}
       >
-        <span className="add-space-chip-text">esc</span>
+        <Icon name="arrowLeft" size={16} />
       </button>
+      <span className="add-space-crumbs-divider" aria-hidden />
+      <nav className="add-space-trail" aria-label="New project">
+        <Crumb
+          label="New project"
+          current={flow.step === "devices"}
+          onClick={() => {
+            addSpaceStore.backTo("devices");
+          }}
+        />
+        {device !== null && (
+          <CrumbSegment
+            label={device.name}
+            icon={devicePlatformIcon(device.platform)}
+            current={flow.step === "locations"}
+            onClick={() => {
+              addSpaceStore.backTo("locations");
+            }}
+          />
+        )}
+        {location !== null && (
+          <CrumbSegment
+            label={location.name}
+            icon={location.path === null ? "home" : "hardDrive"}
+            current={atRoot}
+            onClick={() => {
+              addSpaceStore.gotoLocation(location.name, location.path);
+            }}
+          />
+        )}
+        {location !== null &&
+          segments.map(([label, full]) => {
+            // Segments the location crumb already stands for fold away.
+            if (root !== null && pathUnder(root, full)) {
+              return null;
+            }
+            return (
+              <CrumbSegment
+                key={full}
+                label={label}
+                icon="folder"
+                current={full === listing?.path}
+                onClick={() => {
+                  addSpaceStore.descend(full, false);
+                }}
+              />
+            );
+          })}
+      </nav>
     </div>
   );
 }
 
-// ── Body: crumbs + folder list beside the rail ───────────────────────────
+function Crumb(props: {
+  readonly label: string;
+  readonly icon?: IconName;
+  readonly current: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`add-space-crumb ${props.current ? "add-space-crumb-current" : ""}`}
+      onClick={props.onClick}
+    >
+      {props.icon !== undefined && <Icon name={props.icon} size={14} className="add-space-crumb-icon" />}
+      <span className="add-space-crumb-label">{props.label}</span>
+    </button>
+  );
+}
 
-interface BodyProps {
+/** A chevron-kept-with-destination trail segment. */
+function CrumbSegment(props: {
+  readonly label: string;
+  readonly icon: IconName;
+  readonly current: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <span className="add-space-crumb-pair">
+      <Icon name="altArrowRight" size={12} className="add-space-crumb-sep" aria-hidden />
+      <Crumb label={props.label} icon={props.icon} current={props.current} onClick={props.onClick} />
+    </span>
+  );
+}
+
+// ── Results: the current step's rows ─────────────────────────────────────
+
+/** Match-highlighted row label (popover.rs `search_highlight`). */
+function Highlighted(props: { readonly text: string; readonly query: string }) {
+  const ranges = highlightRanges(props.text, props.query);
+  if (ranges.length === 0) {
+    return <span className="add-space-row-label">{props.text}</span>;
+  }
+  const parts: ReactNode[] = [];
+  let at = 0;
+  ranges.forEach((range, ix) => {
+    if (range.start > at) {
+      parts.push(props.text.slice(at, range.start));
+    }
+    parts.push(
+      <span key={ix} className="add-space-hl">
+        {props.text.slice(range.start, range.end)}
+      </span>,
+    );
+    at = range.end;
+  });
+  if (at < props.text.length) {
+    parts.push(props.text.slice(at));
+  }
+  return <span className="add-space-row-label">{parts}</span>;
+}
+
+function Results(props: {
   readonly flow: AddSpaceFlow;
-  readonly listing: { path: string; entries: FolderEntry[]; truncated: boolean } | null;
-  readonly loadError: string | null;
-  readonly loading: boolean;
-  readonly rows: readonly FolderEntry[];
-  readonly device: Device | null;
   readonly devices: readonly Device[];
   readonly now: number;
-  readonly foldDrive: string | null;
   readonly listRef: RefObject<HTMLDivElement | null>;
-}
-
-/**
- * The fixed 330px body — sparse folders, skeletons, and device switches
- * never resize the card; the list fills and scrolls.
- */
-function Body(props: BodyProps) {
-  const { flow, listing, loadError, loading, rows, device, devices, now, foldDrive, listRef } = props;
-  return (
-    <div className="add-space-body">
-      <div className="add-space-main">
-        <Crumbs flow={flow} listing={listing} deviceName={device?.name ?? "This device"} foldDrive={foldDrive} />
-        <FolderList
-          flow={flow}
-          listing={listing}
-          loadError={loadError}
-          loading={loading}
-          rows={rows}
-          deviceName={device?.name ?? "This device"}
-          listRef={listRef}
-        />
-      </div>
-      <Rail flow={flow} listing={listing} deviceName={device?.name ?? "This device"} devices={devices} now={now} />
-    </div>
-  );
-}
-
-/**
- * Breadcrumbs ("MacBook Pro / Projects / roboco") — the quiet mono path
- * voice. The device crumb stands in for everything up to home; a drive's
- * mount folds the same way into a crumb named after the drive. The last
- * crumb is the current folder and never clickable.
- */
-function Crumbs(props: {
-  readonly flow: AddSpaceFlow;
-  readonly listing: BodyProps["listing"];
-  readonly deviceName: string;
-  readonly foldDrive: string | null;
 }) {
-  const { flow, listing, deviceName, foldDrive } = props;
-  if (listing === null) {
-    return <div className="add-space-crumbs-empty" />;
-  }
-  const segments = breadcrumbs(listing.path);
-  const last = segments.length - 1;
-  const atHome = flow.home === listing.path;
-  const atMount = foldDrive !== null && listing.path.replace(/\/+$/, "") === foldDrive;
-  const folded = crumbFold(listing.path, flow.home, foldDrive);
-  return (
-    <nav className="add-space-crumbs" aria-label="Folder path">
-      {atHome ? (
-        <span className="add-space-crumb add-space-crumb-current">{deviceName}</span>
-      ) : (
-        <button
-          type="button"
-          className="add-space-crumb add-space-crumb-click"
-          onClick={() => {
-            addSpaceStore.browse(null);
-          }}
-        >
-          {deviceName}
-        </button>
-      )}
-      {foldDrive !== null && (
-        <>
-          <CrumbSeparator />
-          {atMount ? (
-            <span className="add-space-crumb add-space-crumb-current">{driveName(flow, foldDrive)}</span>
-          ) : (
-            <button
-              type="button"
-              className="add-space-crumb add-space-crumb-click"
-              onClick={() => {
-                addSpaceStore.gotoLocation(foldDrive);
-              }}
-            >
-              {driveName(flow, foldDrive)}
-            </button>
-          )}
-        </>
-      )}
-      {segments.slice(folded).map(([label, full], ix) => {
-        const isLast = ix + folded === last;
-        return (
-          <span key={full} className="add-space-crumb-pair">
-            <CrumbSeparator />
-            {isLast ? (
-              <span className="add-space-crumb add-space-crumb-current">{label}</span>
-            ) : (
-              <button
-                type="button"
-                className="add-space-crumb add-space-crumb-click"
-                onClick={() => {
-                  addSpaceStore.browse(full);
-                }}
-              >
-                {label}
-              </button>
-            )}
-          </span>
-        );
-      })}
-    </nav>
-  );
-}
+  const { flow, devices, now, listRef } = props;
+  const listing = readyListing(flow);
+  const loadError = typeof flow.listing === "object" && "error" in flow.listing ? flow.listing.error : null;
+  const listingPath = flow.step === "folders" ? (listing?.path ?? null) : null;
 
-function driveName(flow: AddSpaceFlow, mount: string): string {
-  const drive = flow.drives.find((row) => row.path.replace(/\/+$/, "") === mount);
-  return drive?.name ?? mount;
-}
-
-function CrumbSeparator() {
-  return <span className="add-space-crumb-sep">/</span>;
-}
-
-/**
- * The folder list: skeletons while loading, the deviceless error row +
- * Retry once the device wait expires (ticket 43), the error row + Retry
- * on a failed load, the empty hints, or the nav-style folder rows (repo
- * rows carry the trailing git-branch glyph — the row you're usually
- * hunting for announces itself).
- */
-function FolderList(props: {
-  readonly flow: AddSpaceFlow;
-  readonly listing: BodyProps["listing"];
-  readonly loadError: string | null;
-  readonly loading: boolean;
-  readonly rows: BodyProps["rows"];
-  readonly deviceName: string;
-  readonly listRef: BodyProps["listRef"];
-}) {
-  const { flow, listing, loadError, loading, rows, deviceName, listRef } = props;
-
-  // Every browse starts the list at the top (the desktop resets
+  // Every step/browse starts the list at the top (the desktop resets
   // `list_scroll`), and keyboard navigation keeps the highlighted row in
   // view (`scroll_to_item` — the rows are the list's direct children).
   useEffect(() => {
     listRef.current?.scrollTo({ top: 0 });
-  }, [listing?.path, listRef]);
+  }, [flow.step, flow.deviceId, flow.location, listingPath, listRef]);
   useEffect(() => {
     const row = listRef.current?.children.item(flow.active);
     row?.scrollIntoView({ block: "nearest" });
   }, [flow.active, listRef]);
 
-  if (loading) {
+  if (flow.step === "devices") {
+    const rows = deviceRows(devices, flow.query);
+    return (
+      <div className="add-space-list-wrap">
+        <div className="add-space-list" ref={listRef}>
+          {rows.length === 0 && <div className="add-space-list-empty">No devices found</div>}
+          {rows.map((device, ix) => (
+            <MenuRowNav
+              key={device.id}
+              fadeKey={`add-space-device-${ix}`}
+              highlighted={ix === flow.active}
+              onClick={() => {
+                addSpaceStore.pickDevice(device.id);
+              }}
+            >
+              <Icon name={devicePlatformIcon(device.platform)} size={15} className="add-space-row-icon" />
+              <Highlighted text={device.name} query={flow.query} />
+              <span className="add-space-row-rest" />
+              <span
+                className={`add-space-presence ${deviceOnline(device, now) ? "add-space-presence-online" : ""}`}
+              />
+            </MenuRowNav>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (flow.step === "locations") {
+    const rows = locationRows(flow.drives, flow.query);
+    return (
+      <div className="add-space-list-wrap">
+        <div className="add-space-list" ref={listRef}>
+          {rows.length === 0 && <div className="add-space-list-empty">No locations found</div>}
+          {rows.map((location, ix) => (
+            <LocationRow
+              key={location.path ?? "home"}
+              location={location}
+              query={flow.query}
+              highlighted={ix === flow.active}
+            />
+          ))}
+          {flow.drivesLoading && <div className="add-space-locations-loading">Loading locations…</div>}
+        </div>
+      </div>
+    );
+  }
+
+  // Folders.
+  if (listing === null && loadError === null) {
     return (
       <div className="add-space-list-state">
         <SkeletonRows count={6} />
       </div>
     );
   }
-  if (flow.deviceWait === "timeout") {
-    // The deviceless terminal state (ticket 43): the routed engine's
-    // device rows never streamed within the wait. The SAME ErrorRow +
-    // Retry chip as a failed folder load, with the transport-shaped
-    // message — Retry re-runs open()'s full pick (fresh identity,
-    // re-armed wait), not the current-path reload.
-    return (
-      <div className="add-space-list-error">
-        <ErrorRow
-          message={`${deviceName} didn't respond — is it online?`}
-          onRetry={() => {
-            addSpaceStore.retryDeviceWait();
-          }}
-        />
-      </div>
-    );
-  }
   if (loadError !== null) {
-    // Folder-level failures show as themselves; transport-shaped failures
-    // read as the device being unreachable.
-    const message = loadError.includes("folder")
-      ? loadError
-      : `${deviceName} didn't respond — is it online?`;
     return (
       <div className="add-space-list-error">
         <ErrorRow
-          message={message}
+          message={loadError}
           onRetry={() => {
             addSpaceStore.retryLoad();
           }}
@@ -484,9 +466,12 @@ function FolderList(props: {
       </div>
     );
   }
+  const rows = filteredFolders(listing?.entries ?? [], flow.query);
   if (rows.length === 0) {
     return (
-      <div className="add-space-list-empty">{flow.query.length === 0 ? "No folders here" : "No folders match"}</div>
+      <div className="add-space-list-empty">
+        {flow.query.length === 0 ? "No folders here" : "No folders match"}
+      </div>
     );
   }
   const base = listing?.path ?? "";
@@ -502,8 +487,9 @@ function FolderList(props: {
               addSpaceStore.descend(childPath(base, entry.name), entry.isRepo);
             }}
           >
-            <Icon name="folder" size={15} className="add-space-folder-icon" />
-            <span className="add-space-folder-name">{entry.name}</span>
+            <Icon name="folder" size={15} className="add-space-row-icon" />
+            <Highlighted text={entry.name} query={flow.query} />
+            <span className="add-space-row-rest" />
             {entry.isRepo && <Icon name="gitBranch" size={13} className="add-space-repo-icon" />}
           </MenuRowNav>
         ))}
@@ -512,92 +498,64 @@ function FolderList(props: {
   );
 }
 
-// ── The devices + locations rail ─────────────────────────────────────────
-
-/**
- * The right rail: Devices (platform glyph + name + presence dot) over
- * Locations (home + the browsed device's mounted drives), an info line
- * naming the browsed device. Clicking a device or a location rebrowses
- * the same card in place.
- */
-function Rail(props: {
-  readonly flow: AddSpaceFlow;
-  readonly listing: BodyProps["listing"];
-  readonly deviceName: string;
-  readonly devices: readonly Device[];
-  readonly now: number;
+function LocationRow(props: {
+  readonly location: LocationRowEntry;
+  readonly query: string;
+  readonly highlighted: boolean;
 }) {
-  const { flow, listing, deviceName, devices, now } = props;
-  const activeLoc = activeLocation(listing?.path ?? null, flow.home, flow.drives);
-  const hasLocations = flow.deviceId !== null;
+  const { location, query, highlighted } = props;
   return (
-    <div className="add-space-rail">
-      <div className="add-space-rail-label add-space-rail-label-first">Devices</div>
-      {devices.map((device) => (
-        <button
-          key={device.id}
-          type="button"
-          className={`add-space-rail-row ${device.id === flow.deviceId ? "add-space-rail-row-active" : ""}`}
-          onClick={() => {
-            addSpaceStore.pickDevice(device.id);
-          }}
-        >
-          <Icon name={devicePlatformIcon(device.platform)} size={14} className="add-space-rail-icon" />
-          <span className="add-space-rail-name">{device.name}</span>
-          <span
-            className={`add-space-presence ${deviceOnline(device, now) ? "add-space-presence-online" : ""}`}
-          />
-        </button>
-      ))}
-      {hasLocations && (
-        <>
-          <div className="add-space-rail-divider" />
-          <div className="add-space-rail-label">Locations</div>
-          <button
-            type="button"
-            className={`add-space-rail-row ${activeLoc !== null && activeLoc.kind === "home" ? "add-space-rail-row-active" : ""}`}
-            onClick={() => {
-              addSpaceStore.gotoLocation(null);
-            }}
-          >
-            <Icon name="home" size={14} className="add-space-rail-icon" />
-            <span className="add-space-rail-name">Home</span>
-          </button>
-          {flow.drives.map((drive: DriveEntry, ix: number) => (
-            <button
-              key={drive.path}
-              type="button"
-              className={`add-space-rail-row ${activeLoc !== null && activeLoc.kind === "drive" && activeLoc.index === ix ? "add-space-rail-row-active" : ""}`}
-              onClick={() => {
-                addSpaceStore.gotoLocation(drive.path);
-              }}
-            >
-              <Icon name="hardDrive" size={14} className="add-space-rail-icon" />
-              <span className="add-space-rail-name">{drive.name}</span>
-            </button>
-          ))}
-        </>
-      )}
-      <div className="add-space-rail-divider" />
-      <div className="add-space-rail-info">
-        <Icon name="infoCircle" size={12} className="add-space-rail-info-icon" />
-        <span className="add-space-rail-info-text">Showing folders from {deviceName} only</span>
-      </div>
-    </div>
+    <MenuRowNav
+      fadeKey={`add-space-location-${location.name}`}
+      highlighted={highlighted}
+      onClick={() => {
+        addSpaceStore.gotoLocation(location.name, location.path);
+      }}
+    >
+      <Icon
+        name={location.path === null ? "home" : "hardDrive"}
+        size={15}
+        className="add-space-row-icon"
+      />
+      <Highlighted text={location.name} query={query} />
+    </MenuRowNav>
   );
 }
 
-// ── Footer ───────────────────────────────────────────────────────────────
+// ── Footer: the key-hint legend + the Add action (Folders step) ──────────
 
-/** The key-hint legend + the inline error line (spaces.rs:3212-3243). */
-function Footer(props: { error: string | null }) {
+function Footer(props: { readonly flow: AddSpaceFlow }) {
+  const { flow } = props;
+  const manualMissing = flow.manualPath !== null && !flow.manualPath.exists;
+  const listing = readyListing(flow);
+  const dim = flow.submitBusy || (listing === null && flow.manualPath === null);
   return (
     <div className="add-space-footer">
       <KeyHintPair first={<Icon name="arrowUp" />} second={<Icon name="arrowDown" />} label="Navigate" />
-      <KeyHint cap={<Icon name="arrowLeft" />} label="Up" />
-      <KeyHint cap={<Icon name="arrowRight" />} label="Open" />
-      <KeyHintText cap="tab" label="Complete" />
-      {props.error !== null && <span className="add-space-footer-error">{props.error}</span>}
+      <KeyHintText cap="↵" label="Open" />
+      <KeyHintText cap="esc" label="Close" />
+      <span className="add-space-footer-rest" />
+      {flow.step === "folders" && (
+        <button
+          type="button"
+          className="add-space-submit"
+          data-rb-dim={dim ? "" : undefined}
+          onClick={() => {
+            addSpaceStore.submit();
+          }}
+        >
+          {flow.submitBusy ? (
+            <span>Adding…</span>
+          ) : (
+            <>
+              <span>{manualMissing ? "Create and add" : "Add project"}</span>
+              <KeyCap>
+                <span className="key-cap-word">{isMacPlatform() ? "⌘↵" : "Ctrl↵"}</span>
+              </KeyCap>
+            </>
+          )}
+        </button>
+      )}
     </div>
   );
 }

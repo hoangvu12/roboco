@@ -113,8 +113,8 @@ describe("shortcut event bus", () => {
 // ---------------------------------------------------------------------------
 
 describe("SHORTCUT_IDS", () => {
-  it("has exactly 19 entries in settings.rs order", () => {
-    expect(SHORTCUT_IDS).toHaveLength(19);
+  it("has exactly 21 entries in settings.rs order", () => {
+    expect(SHORTCUT_IDS).toHaveLength(21);
     expect(SHORTCUT_IDS).toEqual([
       "captureAppshot",
       "saveFile",
@@ -123,6 +123,8 @@ describe("SHORTCUT_IDS", () => {
       "toggleChanges",
       "toggleTerminal",
       "newSession",
+      "newProject",
+      "openModelPicker",
       "nextSession",
       "prevSession",
       "archiveSession",
@@ -146,6 +148,8 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutLabel("toggleChanges")).toBe("Toggle right sidebar");
     expect(shortcutLabel("toggleTerminal")).toBe("Toggle terminal");
     expect(shortcutLabel("newSession")).toBe("New session");
+    expect(shortcutLabel("newProject")).toBe("New project");
+    expect(shortcutLabel("openModelPicker")).toBe("Open model picker");
     expect(shortcutLabel("nextSession")).toBe("Next session");
     expect(shortcutLabel("prevSession")).toBe("Previous session");
     expect(shortcutLabel("archiveSession")).toBe("Archive session");
@@ -160,6 +164,8 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutGroup("toggleChanges")).toBe("Panels");
     expect(shortcutGroup("toggleTerminal")).toBe("Panels");
     expect(shortcutGroup("newSession")).toBe("Sessions");
+    expect(shortcutGroup("newProject")).toBe("Projects");
+    expect(shortcutGroup("openModelPicker")).toBe("Sessions");
     expect(shortcutGroup("archiveSession")).toBe("Sessions");
     expect(shortcutGroup({ jumpSession: 3 })).toBe("Jump to session");
     expect(shortcutGroup("captureAppshot")).toBe("Appshots");
@@ -168,6 +174,7 @@ describe("SHORTCUT_IDS", () => {
       "Browser",
       "Panels",
       "Sessions",
+      "Projects",
       "Jump to session",
       "Appshots",
     ]);
@@ -198,6 +205,11 @@ describe("defaultComboOn", () => {
   it("spells CaptureAppshot per platform", () => {
     expect(defaultComboOn("captureAppshot", true)).toBe("ctrl-alt-space");
     expect(defaultComboOn("captureAppshot", false)).toBe("mod-alt-space");
+  });
+
+  it("New project defaults to mod-shift-n on both platforms", () => {
+    expect(defaultComboOn("newProject", true)).toBe("mod-shift-n");
+    expect(defaultComboOn("newProject", false)).toBe("mod-shift-n");
   });
 
   it("is platform-identical for every other id, and matches the defaults table", () => {
@@ -354,19 +366,24 @@ describe("BROWSER_RESERVED", () => {
 describe("applyKeymap", () => {
   it("registers every available default and both fixed chords", () => {
     const table = applyKeymap(defaultKeymap(false), false);
-    // 8 available scalar ids + 9 jump slots + mod-k + mod-,.
-    expect(table.size).toBe(19);
+    // 10 available scalar ids + 9 jump slots + mod-k + mod-,.
+    expect(table.size).toBe(21);
     expect(table.get("ctrl-s")?.event).toBe("save-file");
     expect(table.get("ctrl-b")?.event).toBe("toggle-sidebar");
     expect(table.get("ctrl-r")?.event).toBe("toggle-changes");
     expect(table.get("ctrl-j")?.event).toBe("toggle-terminal");
     expect(table.get("ctrl-n")?.event).toBe("new-chat");
+    // New project lands on the add-space palette (its own toggle).
+    expect(table.get("ctrl-shift-n")?.event).toBe("add-space-palette");
+    // OpenModelPicker (upstream faac7432): Mod+/ opens the model picker.
+    expect(table.get("ctrl-/")?.event).toBe("open-model-picker");
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
     expect(table.get("ctrl-shift-tab")?.event).toBe("prev-session");
     expect(table.get("ctrl-shift-a")?.event).toBe("archive-session");
     expect(table.get("ctrl-1")?.slot).toBe(0);
     expect(table.get("ctrl-9")?.slot).toBe(8);
-    expect(table.get("ctrl-k")?.event).toBe("add-space-palette");
+    // Ticket 16 moved the fixed mod-k chord to the command palette.
+    expect(table.get("ctrl-k")?.event).toBe("command-palette");
     expect(table.get("ctrl-,")?.event).toBe("open-settings");
     // Unavailable ids never register; the browser-never chords never appear.
     expect([...table.values()].some((binding) => binding.event === "save-file")).toBe(true);
@@ -376,9 +393,10 @@ describe("applyKeymap", () => {
     const table = applyKeymap(defaultKeymap(true), true);
     expect(table.get("cmd-b")?.event).toBe("toggle-sidebar");
     expect(table.get("cmd-1")?.slot).toBe(0);
+    expect(table.get("cmd-/")?.event).toBe("open-model-picker");
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
     expect(table.get("ctrl-shift-tab")?.event).toBe("prev-session");
-    expect(table.get("cmd-k")?.event).toBe("add-space-palette");
+    expect(table.get("cmd-k")?.event).toBe("command-palette");
     expect(table.get("cmd-,")?.event).toBe("open-settings");
     expect(table.has("ctrl-b")).toBe(false);
   });
@@ -388,6 +406,13 @@ describe("applyKeymap", () => {
     const table = applyKeymap(config, false);
     expect(table.get("ctrl-b")).toBeUndefined();
     expect(table.get("ctrl-shift-x")?.event).toBe("toggle-sidebar");
+  });
+
+  it("follows an OpenModelPicker rebind off mod-/", () => {
+    const config: KeymapConfig = { ...defaultKeymap(false), openModelPicker: "mod-shift-m" };
+    const table = applyKeymap(config, false);
+    expect(table.has("ctrl-/")).toBe(false);
+    expect(table.get("ctrl-shift-m")?.event).toBe("open-model-picker");
   });
 
   it("never registers a combo the browser owns outright", () => {
@@ -403,8 +428,12 @@ describe("applyKeymap", () => {
     const config: KeymapConfig = { ...defaultKeymap(false), toggleSidebar: "mod-k" };
     const table = applyKeymap(config, false);
     expect(table.get("ctrl-k")?.event).toBe("toggle-sidebar");
-    expect([...table.values()].some((binding) => binding.event === "add-space-palette")).toBe(
-      false,
+    // The command palette's fixed mod-k chord deferred to the claim; the
+    // add-space event still reaches the table through newProject's own
+    // keymap binding (mod-shift-n, ticket 16's #402 port).
+    expect(table.get("ctrl-shift-n")?.event).toBe("add-space-palette");
+    expect([...table.values()].filter((binding) => binding.event === "add-space-palette")).toHaveLength(
+      1,
     );
   });
 

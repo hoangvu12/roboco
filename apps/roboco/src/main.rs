@@ -260,6 +260,7 @@ fn harness_from_env() -> roboco_engine::HarnessId {
         Ok("grok") => roboco_engine::HarnessId::Grok,
         Ok("hermes") => roboco_engine::HarnessId::Hermes,
         Ok("pi") => roboco_engine::HarnessId::Pi,
+        Ok("antigravity") => roboco_engine::HarnessId::Antigravity,
         _ => roboco_engine::HarnessId::ClaudeCode,
     }
 }

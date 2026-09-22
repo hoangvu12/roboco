@@ -39,6 +39,7 @@ import {
   type FoldState,
   type ToolGroupReveal,
 } from "./tool-motion";
+import { DIFF_LINE_HEIGHT } from "./diff";
 
 // ---------------------------------------------------------------------------
 // The read-only state view
@@ -70,6 +71,13 @@ export interface ToolGroupEstimateContext {
   readonly state: ToolGroupGeometryState;
   readonly now: number;
   readonly reduced: boolean;
+  /**
+   * The code-size-scaled diff row / markdown code line the renderer is
+   * painting against (lib/typography.ts). Absent = the 12.5px-code
+   * setting's values, which keeps bare-data estimate callers honest.
+   */
+  readonly diffLineHeight?: number;
+  readonly codeLineHeight?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +185,12 @@ export interface ToolGroupGeometryInput {
   /** ONE timestamp for the whole pass (the renderer's and estimator's agree). */
   readonly now: number;
   readonly reduced: boolean;
+  /**
+   * The code-size-scaled diff row (`diff_line_height`, lib/typography.ts)
+   * — the renderer and the estimator must pass the SAME value; defaults to
+   * the 12.5px-code setting's 21px.
+   */
+  readonly diffLineHeight?: number;
 }
 
 export interface ToolGroupGeometry {
@@ -218,6 +232,7 @@ export interface ToolGroupGeometry {
  */
 export function toolGroupGeometry(input: ToolGroupGeometryInput): ToolGroupGeometry {
   const { rowId, tools, autoOpen, state, now, reduced } = input;
+  const diffLine = input.diffLineHeight ?? DIFF_LINE_HEIGHT;
   const collapses = toolGroupCollapses(tools);
   const fold = state.groupFold(rowId);
   const reveal = state.revealOf(rowId);
@@ -263,8 +278,8 @@ export function toolGroupGeometry(input: ToolGroupGeometryInput): ToolGroupGeome
   for (let ix = 0; ix < tools.length; ix += 1) {
     const target = detailOpens[ix]
       ? baseRowHeight +
-        (invocations[ix] !== null ? detailHeight(invocations[ix]!) : 0) +
-        (details[ix] !== null ? detailHeight(details[ix]!) : 0) +
+        (invocations[ix] !== null ? detailHeight(invocations[ix]!, diffLine) : 0) +
+        (details[ix] !== null ? detailHeight(details[ix]!, diffLine) : 0) +
         (affordances[ix] !== null ? BLOB_AFFORDANCE_HEIGHT : 0)
       : baseRowHeight;
     const dfold = detailFolds[ix] ?? null;
@@ -364,6 +379,7 @@ export function toolGroupMeasurementKey(
   tools: readonly ToolItem[],
   autoOpen: boolean,
   state: ToolGroupGeometryState,
+  diffLineHeight: number = DIFF_LINE_HEIGHT,
 ): string | null {
   if (!toolGroupCollapses(tools)) {
     return null;
@@ -382,8 +398,8 @@ export function toolGroupMeasurementKey(
     const affordance = effectiveToolAffordance(tool, state);
     parts.push(
       detailOpen ? 1 : 0,
-      invocation === null ? 0 : detailHeight(invocation),
-      detail === null ? 0 : detailHeight(detail),
+      invocation === null ? 0 : detailHeight(invocation, diffLineHeight),
+      detail === null ? 0 : detailHeight(detail, diffLineHeight),
       affordance === null ? "-" : `${affordance.ref}/${affordance.loading ? "l" : "r"}`,
     );
   }
@@ -394,13 +410,14 @@ export function toolGroupMeasurementKey(
 export function computeToolMeasurementKeys(
   rows: readonly TranscriptRow[],
   state: ToolGroupGeometryState,
+  diffLineHeight: number = DIFF_LINE_HEIGHT,
 ): Map<string, string> {
   const keys = new Map<string, string>();
   for (const row of rows) {
     if (row.rowKind.kind !== "toolGroup") {
       continue;
     }
-    const key = toolGroupMeasurementKey(row.id, row.rowKind.tools, row.rowKind.autoOpen, state);
+    const key = toolGroupMeasurementKey(row.id, row.rowKind.tools, row.rowKind.autoOpen, state, diffLineHeight);
     if (key !== null) {
       keys.set(row.id, key);
     }

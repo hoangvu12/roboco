@@ -3185,10 +3185,11 @@ impl GitHistory {
     }
 
     fn render_author_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &theme.for_popup();
         let show_name = configured_author_display(cx) == GitHistoryAuthorDisplay::Name;
         popover::popover_card(theme)
             .w(px(116.0))
-            .p(px(3.0))
+            .p(px(popover::CARD_INSET))
             .rounded(px(9.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_author_menu(cx)))
             .child(
@@ -3197,7 +3198,7 @@ impl GitHistory {
                     .gap(px(0.0))
                     .px(px(7.0))
                     .py(px(4.0))
-                    .rounded(px(6.0))
+                    .rounded(px(9.0 - popover::CARD_INSET))
                     .text_size(px(11.5))
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
@@ -3220,6 +3221,7 @@ impl GitHistory {
     }
 
     fn render_column_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &theme.for_popup();
         let columns = configured_columns(cx);
         let widths = configured_column_widths(cx);
         let order = configured_column_order(cx);
@@ -3238,7 +3240,7 @@ impl GitHistory {
                 .gap(px(0.0))
                 .px(px(7.0))
                 .py(px(4.0))
-                .rounded(px(6.0))
+                .rounded(px(9.0 - popover::CARD_INSET))
                 .text_size(px(11.5))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -3263,14 +3265,14 @@ impl GitHistory {
 
         popover::popover_card(theme)
             .w(px(132.0))
-            .p(px(3.0))
+            .p(px(popover::CARD_INSET))
             .rounded(px(9.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_column_menu(cx)))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(1.0))
+                    .gap(px(popover::MENU_GAP))
                     .child(option(
                         "Author",
                         columns.author,
@@ -3293,7 +3295,7 @@ impl GitHistory {
                                 .id("history-columns-reset")
                                 .px(px(7.0))
                                 .py(px(4.0))
-                                .rounded(px(6.0))
+                                .rounded(px(9.0 - popover::CARD_INSET))
                                 .text_size(px(11.5))
                                 .text_color(theme.text_muted)
                                 .on_click(cx.listener(|this, _, _, cx| {

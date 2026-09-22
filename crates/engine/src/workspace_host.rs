@@ -134,8 +134,9 @@ impl WorkspaceHost {
             // (the Devices page "Added …" fragment).
             created_at: existing.and_then(|d| d.created_at).or(Some(now)),
             // Every boot restamps the running binary's version (fleet staleness
-            // on the Devices page; workspace version — same for every crate).
+            // on the Devices page; workspace version - same for every crate).
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
             capabilities: roboco_proto::capabilities::current(),
         })?;
 
@@ -856,7 +857,11 @@ async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::R
             _ = tokio::time::sleep_until(sleep_until), if save_deadline.is_some() => {
                 save_deadline = None;
                 let Some(inner) = weak.upgrade() else { break };
-                inner.save_snapshot();
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || inner.save_snapshot()).await
+                {
+                    tracing::warn!(%error, "registry snapshot worker failed");
+                }
             }
             _ = presence.tick() => {
                 let Some(inner) = weak.upgrade() else { break };

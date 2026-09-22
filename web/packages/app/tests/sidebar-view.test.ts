@@ -7,21 +7,19 @@ import {
   resortOffsets,
   sidebarGroups,
   sidebarKeyOrderChanged,
+  sidebarRowHeight,
   sidebarVisibleOrder,
   type ChatRow,
   type SidebarBucket,
   type SidebarKeyed,
 } from "../src/lib/view";
+import type { SidebarSection } from "../src/state/ui-settings";
 import {
   SIDEBAR_ACTIVE_HARNESS_ICON_SIZE,
   SIDEBAR_ACTIVE_HARNESS_TITLE_GAP,
   SIDEBAR_RESORT_CURVE,
   SIDEBAR_RESORT_MS,
 } from "../src/components/chat-list";
-import {
-  SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE,
-  SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP,
-} from "../src/components/archived-section";
 import {
   SIDEBAR_DISCLOSURE_MS,
   disclosureAnimating,
@@ -65,7 +63,7 @@ describe("promoteLocalDeviceGroup", () => {
       bucket("older-remote"),
     ];
     expect(
-      promoteLocalDeviceGroup(groups, "local").map((entry) => entry.group!.deviceId),
+      promoteLocalDeviceGroup(groups, "local").map((entry) => entry.group!.key),
     ).toEqual(["local", "recent-remote", "older-remote"]);
   });
 
@@ -84,11 +82,23 @@ describe("chatRowHeight", () => {
   });
 });
 
+describe("sidebarRowHeight (upstream 78e9e6ae)", () => {
+  it("compact_rows_are_29px_regardless_of_metadata", () => {
+    expect(sidebarRowHeight(true, true, false, false)).toBe(29);
+    expect(sidebarRowHeight(true, false, true, true)).toBe(29);
+  });
+
+  it("detailed_rows_lose_16px_when_the_location_label_hides", () => {
+    expect(sidebarRowHeight(false, true, false, false)).toBe(45);
+    expect(sidebarRowHeight(false, false, false, false)).toBe(29);
+    expect(sidebarRowHeight(false, true, true, false)).toBe(61);
+    expect(sidebarRowHeight(false, false, true, false)).toBe(45);
+  });
+});
+
 describe("harness geometry", () => {
   it("sidebar_harness_geometry_reflects_row_hierarchy", () => {
     expect(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP).toBe(8);
-    expect(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP).toBeLessThan(SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP);
-    expect(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE).toBeLessThan(SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE);
   });
 });
 
@@ -188,7 +198,7 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
       chat("r1b", { deviceId: "remote-1" }),
     ]);
     const grouped = sidebarGroups(rows, "byDevice", "local");
-    expect(grouped.map((entry) => entry.group!.deviceId)).toEqual([
+    expect(grouped.map((entry) => entry.group!.key)).toEqual([
       "local",
       "remote-1",
       "remote-2",
@@ -215,6 +225,102 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
     expect(grouped[0]!.group).toBe(null);
     expect(grouped[0]!.rows.map((row) => row.chat.id)).toEqual(["b", "a"]);
     expect(sidebarVisibleOrder(rows, "inOneList", null)).toEqual(["b", "a"]);
+  });
+
+  it("byProject groups by space in first-seen order (upstream 78e9e6ae)", () => {
+    const rows = chatRows([
+      chat("p1b", { spaceId: "proj-1", deviceId: "local" }),
+      chat("p2a", { spaceId: "proj-2", deviceId: "remote-1" }),
+      chat("p1a", { spaceId: "proj-1", deviceId: "local" }),
+      chat("home1", { deviceId: "remote-2" }),
+    ]);
+    const grouped = sidebarGroups(rows, "byProject", "local");
+    expect(grouped.map((entry) => entry.group!.key)).toEqual(["proj-1", "proj-2", "home:remote-2"]);
+    expect(grouped.every((entry) => entry.group!.kind === "project")).toBe(true);
+    expect(grouped[0]!.rows.map((row) => row.chat.id)).toEqual(["p1b", "p1a"]);
+    // The project-less session reads as its home group; no local promotion
+    // under byProject (upstream 78e9e6ae promotes device groups only).
+    expect(sidebarVisibleOrder(rows, "byProject", "local")).toEqual([
+      "p1b",
+      "p1a",
+      "p2a",
+      "home1",
+    ]);
+  });
+
+  it("the displayed order leads with pins in saved order (sidebar_visible_order)", () => {
+    const rows = chatRows([
+      chat("r1", { deviceId: "remote-1" }),
+      chat("l1", { deviceId: "local" }),
+      chat("r2", { deviceId: "remote-2" }),
+    ]);
+    // Pins jump the device grouping; unpinned rows keep the grouped order.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", ["r2", "l1"])).toEqual(["r2", "l1", "r1"]);
+    // A pin on a chat that is gone never disturbs the rest.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["gone", "r1"])).toEqual(["r1", "l1", "r2"]);
+  });
+
+  it("a collapsed pinned section holds no slot (sidebar_visible_order)", () => {
+    const rows = chatRows([
+      chat("r1", { deviceId: "remote-1" }),
+      chat("l1", { deviceId: "local" }),
+      chat("r2", { deviceId: "remote-2" }),
+    ]);
+    // Collapsed, the hidden pins drop out and the regular rows take slots
+    // from 0 — `spaces.rs`'s `!pinned_open` retain.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", ["r2", "l1"], false)).toEqual(["r1"]);
+    // An empty pin list is indifferent to the disclosure.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], false)).toEqual(["l1", "r1", "r2"]);
+  });
+
+  // ── Custom sections (upstream 86249cf0's `sidebar_visible_order`) ──────
+
+  it("open sections slot their members between the pins and the unclaimed rows", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "local" }),
+      chat("r1", { deviceId: "local" }),
+      chat("r2", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1", "gone"], collapsed: false },
+      { id: "b", name: "B", sessionIds: [], collapsed: false },
+    ];
+    // The caller masks claimed pins first (`active_sidebar_pins`); the
+    // open sections' EXISTING members follow the pins, then the unclaimed
+    // rows keep their grouped order; a vanished member holds no slot.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["r2"], true, sections)).toEqual([
+      "r2",
+      "s1",
+      "r1",
+    ]);
+  });
+
+  it("a collapsed section's members hold no slot", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "local" }),
+      chat("r1", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1"], collapsed: true },
+    ];
+    // Collapsed, s1 is neither in the section order nor in the regular
+    // groups — it is simply not on the screen.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, [], true, sections)).toEqual(["r1"]);
+    // No sections at all: the legacy call shape (equal sort keys keep the
+    // projection's stable input order).
+    expect(sidebarVisibleOrder(rows, "inOneList", null, [], true)).toEqual(["s1", "r1"]);
+  });
+
+  it("section members never fall through to the regular order", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "remote-1" }),
+      chat("l1", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1"], collapsed: false },
+    ];
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], true, sections)).toEqual(["s1", "l1"]);
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], false, sections)).toEqual(["s1", "l1"]);
   });
 });
 
@@ -257,7 +363,7 @@ function chat(id: string, fields: Partial<Chat> = {}): Chat {
 }
 
 function bucket(deviceId: string): SidebarBucket<ChatRow> {
-  return { group: { deviceId, deviceName: deviceId }, rows: [] };
+  return { group: { key: deviceId, label: deviceId, kind: "device" }, rows: [] };
 }
 
 function keys(list: readonly (readonly [string, number])[]): SidebarKeyed[] {
@@ -271,6 +377,7 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     chat: entry,
     status: "idle" as const,
     project: "~",
+    projectPath: null,
     folder: "~",
     harness: null,
     branch: null,

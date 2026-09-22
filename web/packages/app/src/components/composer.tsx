@@ -22,6 +22,11 @@ import { useFleetSnapshot } from "../state/fleet";
 import { PickerCatalog } from "../state/picker-catalog";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { effectiveIndicator } from "../lib/view";
+import {
+  noticeLabelForTone,
+  noticeToneForMessage,
+} from "../lib/notice-chip";
+import { NoticeChip } from "./notice-chip";
 import { chatDrafts, composerDefaults, draftFromChat } from "../lib/composer-draft";
 import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
@@ -2289,7 +2294,11 @@ export function Composer({
     const content = composerHasContent(text, staged.length, commentCount);
     const mode = sendButtonMode(runLive, content);
     if (mode === "stop") {
-      void interrupt();
+      // Enter never stops a run (composer.rs on_submit, issue #406): Stop
+      // mode implies an empty composer, so a stray extra Enter right after
+      // sending landed an interrupt on the just-dispatched prompt and the
+      // agent ate it silently. Stop stays on the button — and on Esc when
+      // the escape setting is enabled.
       return;
     }
     if (!content) {
@@ -2873,15 +2882,15 @@ export function Composer({
       data-wizard={wizardActive ? "true" : undefined}
     >
       {failureVisible !== null && (
-        <div
-          className={`composer-failure ${failure?.message === "Engine not connected" ? "composer-failure-amber" : ""}`}
+        <NoticeChip
+          tone={noticeToneForMessage(failureVisible)}
+          variant="plain"
+          label={noticeLabelForTone(noticeToneForMessage(failureVisible))}
+          message={failureVisible}
           id="composer-failure"
           role="status"
           onClick={() => setFailure(null)}
-        >
-          <Icon name="dangerTriangle" size={14} className="composer-failure-icon" />
-          <div className="composer-failure-text">{failureVisible}</div>
-        </div>
+        />
       )}
       {queueNotice !== null && (
         <div

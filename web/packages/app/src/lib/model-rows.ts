@@ -1,5 +1,6 @@
 import type { HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import { matchRank } from "./picker-search";
+import { defaultReasoning, reasoningLabel } from "./traits-summary";
 
 /**
  * The model-list logic ported from `crates/ui/src/pickers.rs`:
@@ -41,12 +42,17 @@ export function visibleHarnesses(list: readonly HarnessDescriptor[]): HarnessDes
   return visibleHarnessesImpl(list, false);
 }
 
-/** `registry.rs::descriptor_enabled` — a null flag falls back to detection. */
+/**
+ * `registry.rs::descriptor_enabled` — a null flag falls back to detection,
+ * which keeps the opt-in harnesses OFF: enabling antigravity downloads a
+ * large server and runs a browser sign-in, so detection alone must never
+ * set it off (registry.rs `opt_in`).
+ */
 export function descriptorEnabled(descriptor: HarnessDescriptor): boolean {
   if (descriptor.enabled !== null && descriptor.enabled !== undefined) {
     return descriptor.enabled;
   }
-  return descriptor.installed && descriptor.id !== "mock";
+  return descriptor.installed && descriptor.id !== "mock" && descriptor.id !== "antigravity";
 }
 
 /**
@@ -347,3 +353,76 @@ export function workspaceFooterLayout(
 
 /** The reasoning ladder type re-exported for consumers of this module. */
 export type { ReasoningLevel };
+
+// ---------------------------------------------------------------------------
+// setting_groups — the nested model settings (9a4757be)
+// ---------------------------------------------------------------------------
+
+/** The reasoning ladder's group id; option groups use the option id. */
+export const REASONING_SETTING_ID = "reasoning";
+
+/** One choice inside a model setting's nested menu (`SettingChoice`). */
+export interface SettingChoice {
+  readonly label: string;
+  /** The choice's id — empty for reasoning levels. */
+  readonly value: string;
+  readonly reasoning: ReasoningLevel | null;
+  readonly selected: boolean;
+  readonly isDefault: boolean;
+}
+
+/** One model setting: the reasoning ladder or one offered option. */
+export interface SettingGroup {
+  readonly id: string;
+  readonly label: string;
+  readonly choices: readonly SettingChoice[];
+}
+
+/**
+ * `setting_groups` (pickers.rs, upstream 9a4757be) — the traits tray's
+ * trigger rows: the reasoning ladder first, then every option that offers
+ * choices. A group's selected choice is the saved pick (draft or chat
+ * config) or the option's default, the same resolution the chip's traits
+ * summary shows; the desktop never validates the saved string here either.
+ */
+export function settingGroups(
+  model: Model | undefined,
+  ladder: readonly ReasoningLevel[],
+  reasoning: ReasoningLevel | null,
+  selections: Readonly<Record<string, unknown>>,
+): SettingGroup[] {
+  const groups: SettingGroup[] = [];
+  if (ladder.length > 0) {
+    const fallback = defaultReasoning(ladder);
+    groups.push({
+      id: REASONING_SETTING_ID,
+      label: "Reasoning",
+      choices: ladder.map((level) => ({
+        label: reasoningLabel(level),
+        value: "",
+        reasoning: level,
+        selected: reasoning === level,
+        isDefault: fallback === level,
+      })),
+    });
+  }
+  for (const option of model?.options ?? []) {
+    if (option.choices.length === 0) {
+      continue;
+    }
+    const saved = selections[option.id];
+    const selected = typeof saved === "string" ? saved : option.defaultChoice;
+    groups.push({
+      id: option.id,
+      label: option.label,
+      choices: option.choices.map((choice) => ({
+        label: choice.label,
+        value: choice.id,
+        reasoning: null,
+        selected: selected === choice.id,
+        isDefault: option.defaultChoice === choice.id,
+      })),
+    });
+  }
+  return groups;
+}

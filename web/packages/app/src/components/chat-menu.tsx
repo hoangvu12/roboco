@@ -1,11 +1,14 @@
 import { useRef, useState, type ReactElement } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { parseScopedId } from "@roboco/engine-client";
+import { parseScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
 import { useEngineSessions } from "../state/session-provider";
 import type { EngineSession } from "../state/engine-session";
 import { sidebarNotice } from "../state/notice";
+import { sidebarStore, useSidebar } from "../state/sidebar";
+import { useFleetRegistry } from "../state/fleet";
+import { sidebarPinProfileKey } from "../lib/sidebar-pins";
 import { reviewCommentStore } from "../state/review-comments";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
@@ -145,6 +148,13 @@ function ChatMenuPages({
   // Mounts per open (the popup's content unmounts once the exit has
   // drained), so the page resets to "root" on every open, as before.
   const [page, setPage] = useState<"root" | "copy">("root");
+  // The Pin row reads the device-local pin bucket of the chat's OWNING
+  // engine (shell.rs's chat menu + `active_sidebar_pin_profile_key`); null
+  // is the desktop's "identity not ready" early return.
+  const registry = useFleetRegistry();
+  const pinProfileKey = chatPinProfileKey(registry, chat.id);
+  const pinnedByProfile = useSidebar().pinnedByProfile;
+  const isPinned = pinProfileKey !== null && (pinnedByProfile[pinProfileKey] ?? []).includes(chat.id);
 
   const codexLink = codexConversationLink(chat);
   const harnessSessionId =
@@ -184,6 +194,18 @@ function ChatMenuPages({
       <MenuRow fadeKey="rename" onClick={onRename}>
         <Icon name="pen" size={16} className="chat-menu-row-icon" />
         <span className="menu-row-label">Rename…</span>
+      </MenuRow>
+      <MenuRow
+        fadeKey="pin"
+        onClick={() => {
+          // `set_chat_pinned`: device-local, no engine roundtrip; the click
+          // closes the menu like the desktop's `close_chat_menu`.
+          onClose();
+          sidebarStore.setChatPinned(pinProfileKey, chat.id, !isPinned);
+        }}
+      >
+        <Icon name="pin" size={16} className="chat-menu-row-icon" />
+        <span className="menu-row-label">{isPinned ? "Unpin" : "Pin"}</span>
       </MenuRow>
       <MenuRow fadeKey="archive" onClick={onArchive}>
         <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
@@ -331,6 +353,27 @@ function chatMenuSession(
   try {
     const engine = parseScopedId(chatId).engine;
     return engine === null ? null : sessions.get(engine) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pin bucket of the engine owning this chat — the web's
+ * `active_sidebar_pin_profile_key`. Null while the owning engine's identity
+ * (`EngineInfo`) has not landed; pins neither show nor change against it.
+ */
+function chatPinProfileKey(registry: EngineRegistrySnapshot, chatId: string): string | null {
+  try {
+    const engineKey = parseScopedId(chatId).engine;
+    if (engineKey === null) {
+      return null;
+    }
+    const engine = registry.engines.find((entry) => entry.key === engineKey);
+    if (engine === undefined) {
+      return null;
+    }
+    return sidebarPinProfileKey(engine.info?.workspaceScope ?? null, engine.info?.deviceId ?? null);
   } catch {
     return null;
   }

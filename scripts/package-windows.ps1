@@ -25,12 +25,29 @@ try {
     }
     cargo build --release --locked -p roboco
     if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
-    # Normalize to one scalar string: a multi-record capture (console/GUI
-    # subsystem quirks) makes -notmatch filter instead of test, leaving
-    # $Matches null ("Cannot index into a null array").
-    $versionText = (& ./target/release/roboco.exe --version | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '^roboco (\d+\.\d+\.\d+)$') { throw "Cannot read executable version (captured '$versionText', exit $LASTEXITCODE)" }
-    $version = $Matches[1]
+    # Explicit pipes also work for the GUI-subsystem executable in CI. A
+    # PowerShell collection match does not populate the scalar $Matches map.
+    $probe = [Diagnostics.ProcessStartInfo]::new()
+    $probe.FileName = (Resolve-Path -LiteralPath './target/release/roboco.exe').Path
+    $probe.Arguments = '--version'
+    $probe.UseShellExecute = $false
+    $probe.CreateNoWindow = $true
+    $probe.RedirectStandardOutput = $true
+    $probe.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($probe)
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(10000)) {
+            $process.Kill()
+            throw 'Executable version probe timed out'
+        }
+        $versionMatch = [regex]::Match($stdout.Result.Trim(), '\Aroboco (\d+\.\d+\.\d+)\z')
+        if ($process.ExitCode -ne 0 -or -not $versionMatch.Success) {
+            throw "Cannot read executable version: $($stderr.Result)"
+        }
+        $version = $versionMatch.Groups[1].Value
+    } finally { $process.Dispose() }
     $out = Join-Path $root 'target/package'
     $stage = Join-Path $out "roboco-$version-windows-x86_64"
     New-Item -ItemType Directory -Force -Path $stage | Out-Null

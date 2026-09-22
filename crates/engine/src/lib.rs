@@ -17,13 +17,16 @@ use roboco_sync::DocsStore;
 
 pub mod agent_accounts;
 pub mod change_requests;
+mod chat_persistence;
 pub mod diff_sync;
 pub mod doc_host;
+mod http_error;
 pub mod instance_lock;
 pub mod listener;
 pub mod pairing;
 pub mod remote_access;
 pub mod profile;
+pub mod project_actions;
 pub mod registry;
 pub mod repos;
 pub mod rpc;
@@ -34,6 +37,7 @@ pub mod space_paths;
 pub mod spaces;
 pub mod terminals;
 pub mod titles;
+mod transcript_history;
 pub mod uploads;
 mod web;
 pub mod workspace_files;
@@ -49,6 +53,7 @@ pub use diff_sync::{
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig};
 pub use instance_lock::InstanceLock;
 pub use profile::EngineProfile;
+pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry, smoke_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
@@ -116,6 +121,7 @@ pub struct EngineCore {
     pub repos: Repos,
     pub workspace_files: WorkspaceFiles,
     pub terminals: Terminals,
+    pub project_actions: ProjectActionsStore,
     pub previews: roboco_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
     pub diff_sync: CheckoutDiffSync,
@@ -224,6 +230,8 @@ impl EngineCore {
         let workspace_files =
             WorkspaceFiles::new(repos.clone(), workspace.clone(), device_id.clone());
         let terminals = Terminals::new();
+        let project_actions = ProjectActionsStore::open(profile.store_root())?;
+        doc_host.set_project_action_runtime(project_actions.clone(), terminals.clone());
         let previews = roboco_preview::PreviewService::new(
             profile.store_root().join("previews.json"),
             device_id.clone(),
@@ -237,7 +245,12 @@ impl EngineCore {
         // Queued-attachment support: the doc host resolves `pending://` refs
         // against this store and pushes staged bytes to remote hosts.
         doc_host.set_uploads(uploads.clone());
-        let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
+        let agent_accounts_config = AgentAccountsConfig::detect(data_dir);
+        sessions.set_generated_images(
+            uploads.clone(),
+            agent_accounts_config.codex_home.join("generated_images"),
+        );
+        let agent_accounts = AgentAccounts::new(agent_accounts_config);
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -259,6 +272,7 @@ impl EngineCore {
             repos,
             workspace_files,
             terminals,
+            project_actions,
             previews,
             change_requests,
             diff_sync,
@@ -299,6 +313,7 @@ impl EngineCore {
             self.repos.clone(),
             self.workspace_files.clone(),
             self.terminals.clone(),
+            self.project_actions.clone(),
             self.change_requests.clone(),
             self.diff_sync.clone(),
             self.uploads.clone(),
@@ -421,6 +436,7 @@ impl Engine {
         Ok(EngineInfo {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
+            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
             capabilities: roboco_proto::capabilities::current(),
         })
     }

@@ -15,21 +15,20 @@ import { useEngineSession } from "../../state/session-provider";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
 import { CodeView, type CodeReviewWiring } from "./code-view";
 import { FileIcon } from "./file-icon";
-import { FileTreePanel } from "./file-tree-panel";
 import { EditorContextMenu } from "./editor-context-menu";
 import { ImageView, loadWorkspaceImage, type WorkspaceImageLoad } from "./image-view";
 import { MarkdownView } from "./markdown-view";
-import { TreeSplitPanel } from "./tree-split-panel";
 
 /**
  * The right pane's File surface body — the web peer of the desktop's
  * promoted editor presentation (crates/ui/src/files/preview.rs): the
- * breadcrumb toolbar, the write-outcome banners, the document body (code
- * view, markdown preview, or image), and the tree sidebar split
- * (`TreeSplitPanel`) around it. One FileDocument per tab, driven by its
- * own chat-scoped watch; Mod-S saves through the shortcut bus; a close of
- * a dirty tab goes through `prepareClose` (allow / pending / blocked) with
- * the Retry/Keep Open/Discard banner instead of discarding edits.
+ * breadcrumb toolbar, the write-outcome banners, and the document body
+ * (code view, markdown preview, or image). The tree sidebar split is gone
+ * (07aaa418): the explorer is a docked portion of the pane and reveals go
+ * through it. One FileDocument per tab, driven by its own chat-scoped
+ * watch; Mod-S saves through the shortcut bus; a close of a dirty tab goes
+ * through `prepareClose` (allow / pending / blocked) with the
+ * Retry/Keep Open/Discard banner instead of discarding edits.
  */
 
 export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
@@ -94,11 +93,6 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
     };
   }, [client, session, path, surfaceId]);
 
-  const focusDocument = useCallback((): void => {
-    const root = document.querySelector<HTMLElement>(".files-split-document");
-    root?.focus();
-  }, []);
-
   if (path === null) {
     return (
       <div className="files-viewer">
@@ -107,25 +101,16 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
     );
   }
 
-  const openPath = (target: string): void => {
-    rightPaneStore.addFileSurface(chatId, target);
-  };
-
-  // Images fetch through their own RPC path and never mint a document;
-  // their tree sidebar is a plain mount-scoped model (no buffer to keep).
+  // Images fetch through their own RPC path and never mint a document.
   const isImage = isImagePath(path);
-  const imageModel = useImageTreeModel(client, session, path, isImage);
-  const model = isImage ? imageModel : entry?.model ?? null;
 
   return (
     <div className="files-viewer-pane">
       {isImage ? (
         <ImageViewer
+          chatId={chatId}
           client={client}
           path={path}
-          model={model}
-          openPath={openPath}
-          focusDocument={focusDocument}
         />
       ) : (
         <TextViewer
@@ -134,45 +119,10 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
           chatId={chatId}
           surfaceId={surfaceId}
           client={client}
-          model={model}
-          openPath={openPath}
-          focusDocument={focusDocument}
         />
       )}
     </div>
   );
-}
-
-/** The image tabs' sidebar tree: mount-scoped (no document to reconcile). */
-function useImageTreeModel(
-  client: WorkspaceFilesClient | null,
-  session: ReturnType<typeof useEngineSession>,
-  path: string | null,
-  isImage: boolean,
-): FileTreeModel | null {
-  const [model, setModel] = useState<FileTreeModel | null>(null);
-  useEffect(() => {
-    if (!isImage || client === null || session === null) {
-      setModel(null);
-      return;
-    }
-    const created = new FileTreeModel({
-      client,
-      watch: (handlers) => client.watchFiles(session.client, handlers),
-      includeIgnored: uiSettings.getSnapshot().filesShowAll,
-    });
-    created.start();
-    setModel(created);
-    return () => {
-      created.dispose();
-      setModel((current) => (current === created ? null : current));
-    };
-    // The path gate is `isImage` + client + session; `path` is captured
-    // only for identity, not semantics.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isImage, client, session]);
-  void path;
-  return model;
 }
 
 // ── The breadcrumb toolbar (render_breadcrumb, preview.rs:2281-2520) ──────
@@ -332,18 +282,12 @@ function TextViewer({
   chatId,
   surfaceId,
   client,
-  model,
-  openPath,
-  focusDocument,
 }: {
   readonly doc: FileDocument | null;
   readonly path: string;
   readonly chatId: string;
   readonly surfaceId: string;
   readonly client: WorkspaceFilesClient | null;
-  readonly model: FileTreeModel | null;
-  readonly openPath: (path: string) => void;
-  readonly focusDocument: () => void;
 }) {
   const settings = useUiSettings();
   const subscribe = useCallback(
@@ -471,7 +415,9 @@ function TextViewer({
           : null
       }
       onReveal={() => {
-        void model?.revealInTree(path);
+        // `files-reveal-active` → RevealFile: dock the explorer and reveal
+        // there (the editor surface carries no tree of its own anymore).
+        rightPaneStore.revealInFilesPanel(chatId, path);
       }}
       onToggleWordWrap={() => {
         uiSettings.updateImmediate({ filesWordWrap: !settings.filesWordWrap });
@@ -504,7 +450,7 @@ function TextViewer({
           truncated={markdownClip.truncated}
           editable={snapshot.editable}
           onToggleTask={onToggleTask}
-          onOpenPath={openPath}
+          onOpenPath={(target) => rightPaneStore.addFileSurface(chatId, target)}
           loadImage={client !== null && checkoutId !== null ? loadImage : null}
         />
       </div>
@@ -518,7 +464,7 @@ function TextViewer({
             path={path}
             editable
             onChange={(text) => doc?.edit(text)}
-            fontSize={settings.filesEditorFontSize}
+            codeFontSize={settings.codeFontSize}
             wordWrap={settings.filesWordWrap}
             autoFocus={markdownFocus}
             inputRef={editorInputRef}
@@ -537,7 +483,7 @@ function TextViewer({
           path={path}
           editable={false}
           onChange={() => {}}
-          fontSize={settings.filesEditorFontSize}
+          codeFontSize={settings.codeFontSize}
           wordWrap={settings.filesWordWrap}
         />
       </div>
@@ -545,44 +491,42 @@ function TextViewer({
   }
 
   return (
-    <TreeSplitPanel
-      toolbar={toolbar}
-      body={
-        <div className="files-viewer">
-          <CloseLifecycleBanner
-            chatId={chatId}
-            surface={surface}
-            snapshot={snapshot}
-            doc={doc}
-          />
-          <PhaseBanner
-            snapshot={snapshot}
-            doc={doc}
-            confirmingReload={confirmingReload}
-            onRequestReload={() => {
-              // request_reload: dirty buffers ask before discarding.
-              if (snapshot.dirty) {
-                setConfirmingReload(true);
-              } else {
-                doc?.reloadFromDisk();
-              }
-            }}
-            onCancelReload={() => setConfirmingReload(false)}
-            onConfirmReload={() => {
-              setConfirmingReload(false);
+    <div className="files-viewer-column">
+      <div className="surface-toolbar files-viewer-toolbar" role="toolbar" aria-label="File viewer">
+        <div className="files-viewer-toolbar-leading">{toolbar}</div>
+      </div>
+      <div className="files-viewer">
+        <CloseLifecycleBanner
+          chatId={chatId}
+          surface={surface}
+          snapshot={snapshot}
+          doc={doc}
+        />
+        <PhaseBanner
+          snapshot={snapshot}
+          doc={doc}
+          confirmingReload={confirmingReload}
+          onRequestReload={() => {
+            // request_reload: dirty buffers ask before discarding.
+            if (snapshot.dirty) {
+              setConfirmingReload(true);
+            } else {
               doc?.reloadFromDisk();
-            }}
-            onKeepEditing={() => {
-              setConfirmingReload(false);
-              doc?.keepEditing();
-            }}
-          />
-          <div className="files-viewer-body">{body}</div>
-        </div>
-      }
-      sidebar={model !== null && client !== null ? <FileTreePanel model={model} client={client} onOpenFile={openPath} /> : <div className="files-tree-panel" />}
-      focusDocument={focusDocument}
-    />
+            }
+          }}
+          onCancelReload={() => setConfirmingReload(false)}
+          onConfirmReload={() => {
+            setConfirmingReload(false);
+            doc?.reloadFromDisk();
+          }}
+          onKeepEditing={() => {
+            setConfirmingReload(false);
+            doc?.keepEditing();
+          }}
+        />
+        <div className="files-viewer-body">{body}</div>
+      </div>
+    </div>
   );
 }
 
@@ -703,17 +647,13 @@ type ImageState =
   | { readonly kind: "error"; readonly message: string };
 
 function ImageViewer({
+  chatId,
   client,
   path,
-  model,
-  openPath,
-  focusDocument,
 }: {
+  readonly chatId: string;
   readonly client: WorkspaceFilesClient | null;
   readonly path: string;
-  readonly model: FileTreeModel | null;
-  readonly openPath: (path: string) => void;
-  readonly focusDocument: () => void;
 }) {
   const settings = useUiSettings();
   const [state, setState] = useState<ImageState>({ kind: "loading" });
@@ -756,7 +696,7 @@ function ImageViewer({
       snapshot={null}
       onToggleMarkdown={null}
       onReveal={() => {
-        void model?.revealInTree(path);
+        rightPaneStore.revealInFilesPanel(chatId, path);
       }}
       onToggleWordWrap={() => {
         uiSettings.updateImmediate({ filesWordWrap: !settings.filesWordWrap });
@@ -767,25 +707,23 @@ function ImageViewer({
   );
 
   return (
-    <TreeSplitPanel
-      toolbar={toolbar}
-      body={
-        <div className="files-viewer">
-          <div className="files-viewer-body files-image-body">
-            {state.kind === "loading" && <p className="files-note files-note-faint">Loading image…</p>}
-            {state.kind === "error" && <p className="files-note files-note-error">{state.message}</p>}
-            {state.kind === "loaded" && (
-              <ImageView
-                src={state.load.url}
-                natural={{ width: state.load.width, height: state.load.height }}
-                alt={fileName(path)}
-              />
-            )}
-          </div>
+    <div className="files-viewer-column">
+      <div className="surface-toolbar files-viewer-toolbar" role="toolbar" aria-label="File viewer">
+        <div className="files-viewer-toolbar-leading">{toolbar}</div>
+      </div>
+      <div className="files-viewer">
+        <div className="files-viewer-body files-image-body">
+          {state.kind === "loading" && <p className="files-note files-note-faint">Loading image…</p>}
+          {state.kind === "error" && <p className="files-note files-note-error">{state.message}</p>}
+          {state.kind === "loaded" && (
+            <ImageView
+              src={state.load.url}
+              natural={{ width: state.load.width, height: state.load.height }}
+              alt={fileName(path)}
+            />
+          )}
         </div>
-      }
-      sidebar={model !== null && client !== null ? <FileTreePanel model={model} client={client} onOpenFile={openPath} /> : <div className="files-tree-panel" />}
-      focusDocument={focusDocument}
-    />
+      </div>
+    </div>
   );
 }

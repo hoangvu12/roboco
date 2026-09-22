@@ -20,9 +20,12 @@ use roboco_doc::{
 use roboco_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInputQuestion};
 use roboco_sync::DocsStore;
 
+use crate::project_actions::{
+    ProjectActionSetupHandoff, ProjectActionsStore, launch_project_setup_action,
+};
 use crate::sessions::{SessionsEngine, SteerOutcome};
 use crate::workspace_host::WorkspaceHost;
-use crate::{EngineError, new_id, now_ms};
+use crate::{EngineError, Terminals, new_id, now_ms};
 
 /// Debounce window for local snapshot saves after a doc change.
 const SNAPSHOT_DEBOUNCE_MS: u64 = 1_000;
@@ -80,6 +83,10 @@ struct DocHostInner {
     workspace: OnceLock<WorkspaceHost>,
     /// Worktree materialization for Run commands (see `set_repos`).
     repos: OnceLock<crate::repos::Repos>,
+    /// Project Actions + terminals (engine assembly) — worktree setup launch
+    /// and handoff publication for Run commands carrying a
+    /// [`roboco_proto::WorktreeSpec`].
+    project_action_runtime: OnceLock<(ProjectActionsStore, Terminals)>,
     /// Cancels every worker spawned through `spawn_worker` — the loops'
     /// own exit conditions (weak handle death, closed channels) don't cover
     /// runtime replacement, where Edge-capable tasks must stop doing
@@ -112,6 +119,20 @@ struct DocHostInner {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Two strings name the same checkout root. Windows git writes
+/// forward-slash gitdir links while specs carry backslash paths (and either
+/// side may be a symlinked alias), so a raw string compare misses real reuse;
+/// canonical forms settle it, falling back to the raw compare.
+fn is_same_checkout(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Owns local chat documents and their command workers.
@@ -220,12 +241,24 @@ pub enum FinishQueueEditOutcome {
     Missing,
 }
 
+/// Content and its historical presentation cutoff travel atomically, even
+/// when the watch coalesces several backfill and live commits.
+#[derive(Clone, Default)]
+pub struct TranscriptSnapshot {
+    pub entries: Arc<Vec<SessionMessageEntry>>,
+    pub replay_baseline: Arc<roboco_doc::TranscriptBaseline>,
+}
+
 /// One open chat doc: the `SessionDoc`, its change plumbing, and the room client.
 pub struct ChatDocHandle {
     chat_id: String,
     device_id: String,
     doc: Arc<SessionDoc>,
-    messages_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
+    messages_tx: watch::Sender<TranscriptSnapshot>,
+    /// Serialize historical imports with publication so an async doc-change
+    /// task cannot publish recovered content before its presentation cutoff.
+    transcript_import: Mutex<()>,
+    transcript_history: Arc<Mutex<crate::transcript_history::TranscriptHistory>>,
     /// Pending-message queue watch (WatchQueue). Cheap to rebuild — a handful
     /// of short rows — so unlike the transcript mirror it publishes on every
     /// change without a dirty flag.
@@ -247,6 +280,9 @@ pub struct ChatDocHandle {
     /// True when the doc changed while nobody watched: the mirror rebuild is
     /// deferred to the next `watch_messages` attach instead of paid per commit.
     mirror_dirty: AtomicBool,
+    /// Coalesced snapshot persister: every open doc routes persistence through
+    /// the blocking pool, never an async worker.
+    persistence: Option<Arc<crate::chat_persistence::ChatPersistence>>,
     /// Epoch ms of the last open/watch touch — the LRU eviction key.
     last_access: AtomicI64,
     /// Last known snapshot blob size — the eviction budget estimate's input.
@@ -273,7 +309,7 @@ impl ChatDocHandle {
     /// Attach-time refresh: the mirror is only maintained while watched, so a
     /// doc that changed unwatched materializes here, once, instead of on every
     /// commit it sat through in the background.
-    pub fn watch_messages(&self) -> watch::Receiver<Arc<Vec<SessionMessageEntry>>> {
+    pub fn watch_messages(&self) -> watch::Receiver<TranscriptSnapshot> {
         self.touch();
         // Attach is a user signal: verify a quiet room is actually alive
         // (a doc-wedged DO keeps answering pings while delivering nothing,
@@ -282,9 +318,17 @@ impl ChatDocHandle {
         // Subscribe BEFORE the dirty check: a commit racing this attach then
         // sees a live receiver and publishes, instead of re-marking dirty
         // after our refresh and leaving the new watcher a cleared mirror.
-        let rx = self.messages_tx.subscribe();
+        let _import = lock(&self.transcript_import);
+        let rx = {
+            if self.messages_tx.receiver_count() == 0 {
+                // A new viewing session must not inherit the former viewer's
+                // live-part protection, even if no commit happened while away.
+                *lock(&self.transcript_history) = Default::default();
+            }
+            self.messages_tx.subscribe()
+        };
         if self.mirror_dirty.load(Ordering::Acquire) {
-            self.publish_messages();
+            self.publish_messages_locked();
         }
         rx
     }
@@ -377,13 +421,24 @@ impl ChatDocHandle {
     }
 
     fn publish_messages(&self) {
+        let _import = lock(&self.transcript_import);
+        self.publish_messages_locked();
+    }
+
+    // Caller holds transcript_import, shared with attach and mirror clearing.
+    fn publish_messages_locked(&self) {
         self.mirror_dirty.store(false, Ordering::Release);
         match self.doc.read_entries() {
             Ok(entries) => {
+                let replay_baseline =
+                    lock(&self.transcript_history).snapshot(self.doc.doc(), &entries);
                 let joined = join_continuation_entries(entries);
                 // send_replace: update the watch even with no subscribers yet, so a
                 // late subscriber's first borrow sees the current transcript.
-                self.messages_tx.send_replace(Arc::new(joined));
+                self.messages_tx.send_replace(TranscriptSnapshot {
+                    entries: Arc::new(joined),
+                    replay_baseline: replay_baseline.clone(),
+                });
             }
             Err(err) => {
                 tracing::warn!(chat = %self.chat_id, error = %err, "transcript read failed");
@@ -391,23 +446,35 @@ impl ChatDocHandle {
         }
     }
 
+    pub(crate) fn import_transcript<T>(&self, import: impl FnOnce() -> T) -> T {
+        let _guard = lock(&self.transcript_import);
+        import()
+    }
+
     /// Per-commit publish path: unwatched docs just mark the mirror dirty —
     /// rebuilding a full transcript nobody reads was a per-tick cost on every
     /// open doc (and kept a second transcript copy hot).
     fn publish_messages_if_watched(&self) {
+        // Serialize the receiver check AND clear with attach. Otherwise an
+        // unwatched worker can clear the mirror after a new watcher rebuilt it.
+        let _import = lock(&self.transcript_import);
         if self.messages_tx.receiver_count() == 0 {
             self.mirror_dirty.store(true, Ordering::Release);
             // Shrink the stale mirror: watch_messages rebuilds on attach.
-            self.messages_tx.send_replace(Arc::default());
+            self.messages_tx.send_replace(TranscriptSnapshot::default());
+            *lock(&self.transcript_history) = Default::default();
         } else {
-            self.publish_messages();
+            self.publish_messages_locked();
         }
     }
 
     /// Rough resident cost for the LRU budget.
     fn resident_estimate(&self) -> usize {
-        (self.snapshot_bytes.load(Ordering::Relaxed) * RESIDENT_BYTES_PER_SNAPSHOT_BYTE)
-            .max(DOC_RESIDENT_FLOOR_BYTES)
+        let bytes = self
+            .snapshot_bytes
+            .load(Ordering::Relaxed)
+            .max(self.persistence.as_ref().map_or(0, |p| p.snapshot_bytes()));
+        (bytes * RESIDENT_BYTES_PER_SNAPSHOT_BYTE).max(DOC_RESIDENT_FLOOR_BYTES)
     }
 }
 
@@ -420,6 +487,7 @@ impl DocHost {
                 sessions: Mutex::new(None),
                 workspace: OnceLock::new(),
                 repos: OnceLock::new(),
+                project_action_runtime: OnceLock::new(),
                 shutdown: CancellationToken::new(),
                 tasks: TaskTracker::new(),
                 handles: Mutex::new(HashMap::new()),
@@ -504,7 +572,10 @@ impl DocHost {
         self.inner.tasks.wait().await;
         // Snapshot open docs BEFORE releasing their handles: the handles map
         // holds the only strong doc refs, and an unflushed doc dies with it.
-        self.flush_all();
+        let host = self.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || host.flush_all()).await {
+            tracing::error!(%error, "shutdown snapshot flush failed");
+        }
         // Take the map under the lock, drop the handles outside it.
         let handles = std::mem::take(&mut *lock(&self.inner.handles));
         drop(handles);
@@ -534,6 +605,19 @@ impl DocHost {
     /// Run commands carrying a [`roboco_proto::WorktreeSpec`].
     pub fn set_repos(&self, repos: crate::repos::Repos) {
         let _ = self.inner.repos.set(repos);
+    }
+
+    /// Wire the project-actions store + terminals (engine assembly) — the
+    /// setup Action launched while draining a worktree-carrying Run command.
+    pub fn set_project_action_runtime(
+        &self,
+        project_actions: ProjectActionsStore,
+        terminals: Terminals,
+    ) {
+        let _ = self
+            .inner
+            .project_action_runtime
+            .set((project_actions, terminals));
     }
 
     /// Wire the uploads store (engine assembly) — `pending://` ref resolution
@@ -605,13 +689,40 @@ impl DocHost {
         let doc = Arc::new(doc);
 
         let (changed_tx, changed_rx) = watch::channel(0u64);
-        let sub = doc.doc().subscribe_root(Arc::new(move |_diff| {
+        let (messages_tx, _) = watch::channel(TranscriptSnapshot::default());
+        // Roboco has no chat2 room-adoption gate: every open doc owns a
+        // coalescing persister from the start.
+        let persistence = Some(crate::chat_persistence::ChatPersistence::new(
+            &doc,
+            self.inner.store.clone(),
+            chat_id.to_string(),
+            0,
+        ));
+        let changed_persistence = persistence.clone();
+        let transcript_history = Arc::new(Mutex::new(
+            crate::transcript_history::TranscriptHistory::default(),
+        ));
+        let history = transcript_history.clone();
+        let watched = messages_tx.clone();
+        let weak_doc = Arc::downgrade(&doc);
+        let sub = doc.doc().subscribe_root(Arc::new(move |diff| {
+            // This callback runs before the change worker can publish. The
+            // import origin belongs to the event, so concurrent local commits
+            // cannot inherit a remote replay's presentation classification.
+            if watched.receiver_count() > 0 {
+                if let Some(doc) = weak_doc.upgrade() {
+                    lock(&history).observe(doc.doc(), &diff);
+                }
+            } else {
+                *lock(&history) = Default::default();
+            }
+            if let Some(persistence) = &changed_persistence {
+                persistence.dirty(false);
+            }
             changed_tx.send_modify(|v| *v = v.wrapping_add(1));
         }));
-        // The mirror starts dirty and empty: many opens (command queueing,
-        // drains, nudges) never watch the transcript, and the first
-        // watch_messages attach materializes it on demand.
-        let (messages_tx, _) = watch::channel(Arc::default());
+        // The mirror starts dirty and empty; watch_messages materializes it
+        // once on attach instead of maintaining an unwatched transcript.
         let initial_queue = doc.read_queue().unwrap_or_default();
         // A queue already present when a handle is materialized came from a
         // persisted snapshot (or a synced checkpoint), not from a prompt the
@@ -626,10 +737,13 @@ impl DocHost {
             device_id: self.inner.config.device_id.clone(),
             doc: doc.clone(),
             messages_tx,
+            transcript_import: Mutex::default(),
+            transcript_history,
             queue_tx,
             drain_lock: tokio::sync::Mutex::new(()),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
+            persistence,
             last_access: AtomicI64::new(now_ms()),
             snapshot_bytes: AtomicUsize::new(snapshot_len),
             _sub: sub,
@@ -2123,9 +2237,10 @@ impl DocHost {
                 // `take()` resolves the request before dispatch, so the journal
                 // and steer→new-turn fallbacks reuse the created path instead of
                 // minting another checkout.
-                let fresh_worktree = match request.worktree.take() {
+                let worktree_spec = request.worktree.take();
+                let fresh_worktree = match worktree_spec.as_ref() {
                     Some(spec) => {
-                        let (cwd, fresh) = self.materialize_worktree(chat_id, &spec).await?;
+                        let (cwd, fresh) = self.materialize_worktree(chat_id, spec).await?;
                         request.cwd = cwd;
                         fresh
                     }
@@ -2147,6 +2262,16 @@ impl DocHost {
                             tracing::warn!(chat = %chat_id, error = %err, "worktree branch stamp failed");
                         }
                     }
+                }
+                if let Some(spec) = worktree_spec.as_ref()
+                    && spec.space_id.is_some()
+                {
+                    self.complete_worktree_setup_handoff(
+                        &entry.id,
+                        chat_id,
+                        spec,
+                        fresh_worktree.as_ref(),
+                    );
                 }
                 let harness = self.harness_for_request(chat_id, &request);
                 // A row with no config renders no harness glyph (and every
@@ -2443,8 +2568,8 @@ impl DocHost {
             && let Ok(Some(chat)) = ws.chat(chat_id)
             && let Some(cwd) = chat.cwd
             && cwd != spec.repo_path
-            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd)).as_deref()
-                == Some(spec.repo_path.as_str())
+            && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd))
+                .is_some_and(|root| is_same_checkout(&root, &spec.repo_path))
         {
             tracing::info!(chat = %chat_id, cwd = %cwd, "worktree spec: reusing the chat's existing worktree");
             return Ok((cwd, None));
@@ -2466,10 +2591,88 @@ impl DocHost {
         Ok((worktree.path.clone(), Some(worktree)))
     }
 
-    /// A steer-turned-run with no in-process `last_request` (engine restarted
-    /// since the last turn): rebuild the run config from the chat's workspace
-    /// row — cwd from the row, model/reasoning/options/sandbox from its config
-    /// (composer defaults otherwise). `None` without a workspace host or row.
+    fn complete_worktree_setup_handoff(
+        &self,
+        command_id: &str,
+        chat_id: &str,
+        spec: &roboco_proto::WorktreeSpec,
+        fresh_worktree: Option<&roboco_proto::Worktree>,
+    ) {
+        let Some((project_actions, terminals)) = self.inner.project_action_runtime.get() else {
+            return;
+        };
+        let outcome = match (spec.space_id.as_deref(), fresh_worktree) {
+            (Some(space_id), Some(worktree)) => self
+                .resolve_and_launch_worktree_setup(
+                    project_actions,
+                    terminals,
+                    space_id,
+                    spec,
+                    worktree,
+                )
+                .unwrap_or_else(|err| ProjectActionSetupHandoff {
+                    setup_action: None,
+                    setup_error: Some(err.to_string()),
+                }),
+            _ => ProjectActionSetupHandoff {
+                setup_action: None,
+                setup_error: None,
+            },
+        };
+        project_actions.complete_setup_handoff(command_id, chat_id, outcome);
+    }
+
+    fn resolve_and_launch_worktree_setup(
+        &self,
+        project_actions: &ProjectActionsStore,
+        terminals: &Terminals,
+        space_id: &str,
+        spec: &roboco_proto::WorktreeSpec,
+        worktree: &roboco_proto::Worktree,
+    ) -> Result<ProjectActionSetupHandoff, EngineError> {
+        let workspace = self
+            .workspace()
+            .ok_or_else(|| EngineError::Other("workspace host not wired".into()))?;
+        let space = workspace
+            .space(space_id)?
+            .ok_or_else(|| EngineError::Other("Project not found".into()))?;
+        if space.device_id != self.inner.config.device_id {
+            return Err(EngineError::Other(
+                "Project belongs to another device".into(),
+            ));
+        }
+        let project_root = std::fs::canonicalize(&space.path)?;
+        let requested_root = std::fs::canonicalize(&spec.repo_path)?;
+        if project_root != requested_root {
+            return Err(EngineError::Other(
+                "Project path does not match worktree repository".into(),
+            ));
+        }
+        // The store keys configuration by the original Space path, which may
+        // be a symlink. Keep canonical paths for validation and execution only.
+        let setup_action = project_actions
+            .setup_action(space_id, Path::new(&space.path))?
+            .map(|action| {
+                launch_project_setup_action(
+                    terminals,
+                    &action,
+                    &project_root,
+                    Path::new(&worktree.path),
+                    120,
+                    32,
+                )
+            })
+            .transpose()?;
+        Ok(ProjectActionSetupHandoff {
+            setup_action,
+            setup_error: None,
+        })
+    }
+
+/// A steer-turned-run with no in-process `last_request` (engine restarted
+/// since the last turn): rebuild the run config from the chat's workspace
+/// row — cwd from the row, model/reasoning/options/sandbox from its config
+/// (composer defaults otherwise). `None` without a workspace host or row.
     // (Also the RespondInput dead-run fallback's config source.)
     pub(crate) fn request_from_chat_row(
         &self,
@@ -2507,6 +2710,10 @@ impl DocHost {
     }
 
     fn save_snapshot(&self, handle: &ChatDocHandle) {
+        if let Some(persistence) = &handle.persistence {
+            persistence.flush_sync();
+            return;
+        }
         match handle.doc.export_snapshot() {
             Ok(bytes) => {
                 handle.snapshot_bytes.store(bytes.len(), Ordering::Relaxed);
@@ -2550,6 +2757,106 @@ pub fn respond_input_prompt(
         }
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod transcript_revisit_tests {
+    use super::{DocHost, DocHostConfig};
+    use std::sync::Arc;
+
+    fn host() -> (tempfile::TempDir, DocHost) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store,
+            DocHostConfig {
+                device_id: "device-a".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        (dir, host)
+    }
+
+    #[tokio::test]
+    async fn whale_snapshot_opens_and_reopens_without_network() {
+        let (_dir, host) = host();
+        let source = roboco_doc::SessionDoc::init("persisted-whale").unwrap();
+        for i in 0..2000 {
+            source
+                .push_message(&roboco_doc::SessionMessageEntry {
+                    id: format!("row-{i}"),
+                    role: roboco_doc::MessageRole::User,
+                    parts: vec![roboco_doc::MessagePart::Text {
+                        id: "text".into(),
+                        text: "x".repeat(2048),
+                    }],
+                    created_at: i,
+                    device_id: "remote".into(),
+                    status: None,
+                    continuation_of: None,
+                })
+                .unwrap();
+        }
+        host.inner
+            .store
+            .save_snapshot_with_cursor("persisted-whale", &source.export_snapshot().unwrap(), 0, 2)
+            .unwrap();
+        drop(source);
+        let start = std::time::Instant::now();
+        let handle = host.open("persisted-whale").unwrap();
+        let rx = handle.watch_messages();
+        assert_eq!(rx.borrow().entries.len(), 2000);
+        eprintln!("offline whale cold open: {:?}", start.elapsed());
+        drop(rx);
+        // An unwatched commit clears the mirror; attach still serves local data.
+        handle.publish_messages_if_watched();
+        let start = std::time::Instant::now();
+        assert_eq!(handle.watch_messages().borrow().entries.len(), 2000);
+        eprintln!("offline whale rebuilt mirror: {:?}", start.elapsed());
+    }
+
+    #[tokio::test]
+    async fn transcript_attach_and_unwatched_clear_share_a_critical_section() {
+        let (_dir, host) = host();
+        let handle = host.open("cached").unwrap();
+        handle
+            .write_user_message("row", "locally persisted transcript", 0)
+            .unwrap();
+        let rx = handle.watch_messages();
+        assert_eq!(rx.borrow().entries.len(), 1);
+        drop(rx);
+
+        // Freeze attach's critical section. An unwatched publisher must not
+        // pass its receiver check and clear the mirror while attach owns it.
+        let guard = super::lock(&handle.transcript_import);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_handle = handle.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            worker_handle.publish_messages_if_watched();
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let result = done_rx.recv_timeout(std::time::Duration::from_millis(100));
+        // Simulate the subscription attaching before the worker can inspect it.
+        let rx = handle.messages_tx.subscribe();
+        drop(guard);
+        worker.join().unwrap();
+        assert!(
+            matches!(result, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "unwatched clear escaped attach's critical section"
+        );
+        assert_eq!(rx.borrow().entries.len(), 1, "no empty reset after attach");
+        drop(rx);
+        handle.publish_messages_if_watched();
+        assert!(handle.messages_tx.borrow().entries.is_empty());
+        assert_eq!(
+            handle.watch_messages().borrow().entries.len(),
+            1,
+            "offline reopen rebuilds from local content"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2625,8 +2932,12 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                     break; // doc handle (and its change sender) is gone
                 }
                 let Some(handle) = weak.upgrade() else { break };
-                handle.publish_messages_if_watched();
-                handle.publish_queue();
+                let publishing = handle.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    publishing.publish_messages_if_watched();
+                    publishing.publish_queue();
+                })
+                .await;
                 host.drain_commands(&handle).await;
                 host.drain_queue(&handle).await;
                 if save_deadline.is_none() {
@@ -2639,9 +2950,12 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
             _ = tokio::time::sleep_until(sleep_until), if save_deadline.is_some() => {
                 save_deadline = None;
                 let Some(handle) = weak.upgrade() else { break };
-                host.save_snapshot(&handle);
-                // chat2 host duties ride the same quiesce tick (C3):
-                // threshold checkpoints + the tail sidecar publish.
+                // The coalescing persister owns snapshotting for every open
+                // doc; the legacy synchronous save only remains for docs
+                // without one. The quiesce tick still refreshes LRU sizes.
+                if handle.persistence.is_none() {
+                    host.save_snapshot(&handle);
+                }
                 // Post-quiesce eviction pass: sizes just refreshed.
                 host.evict_over_budget();
             }

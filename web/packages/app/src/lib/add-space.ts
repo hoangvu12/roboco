@@ -6,7 +6,7 @@
  * (`spaces.rs:2011-2166`). No engine dependency anywhere in this file.
  */
 
-import type { DriveEntry, FolderEntry } from "@roboco/proto";
+import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
 import { filterIndices } from "./picker-search";
 
 /** `parent_path` (pickers.rs:296-306): the parent of an absolute path; `null`
@@ -232,59 +232,90 @@ export function isStaleResponse(flow: StaleFlowFields, request: StaleGuard): boo
 }
 
 // ---------------------------------------------------------------------------
-// Rail Locations + breadcrumb folding (spaces.rs:2596-2622, 2741-2763)
+// Step rows (spaces.rs `add_space_devices` / `add_space_locations`)
 // ---------------------------------------------------------------------------
 
-/** One row of the rail's Locations section: home, or a drive by index. */
-export type LocationRow = { kind: "home" } | { kind: "drive"; index: number };
+/**
+ * `add_space_devices` (spaces.rs): the Devices step's rows — every device
+ * of the routed engine, filtered and ranked by the query.
+ */
+export function deviceRows(devices: readonly Device[], query: string): Device[] {
+  return filterIndices(query, devices.map((device) => device.name)).map(
+    (ix) => devices[ix] as Device,
+  );
+}
+
+/** One row of the Locations step: Home (`null` path), or a mounted drive. */
+export interface LocationRowEntry {
+  readonly name: string;
+  readonly path: string | null;
+}
 
 /**
- * The rail's active Locations row: the root that owns the browsed path.
- * Longest mount prefix wins; home carries a +1 weight so it outranks a
- * drive that covers it (the System `/` row covers everything).
+ * `add_space_locations` (spaces.rs): Home plus the selected device's
+ * mounted drives, filtered and ranked by the query. A failed drive load
+ * simply leaves the list at Home only — no error UI.
  */
-export function activeLocation(
-  path: string | null,
-  home: string | null,
-  drives: readonly DriveEntry[],
-): LocationRow | null {
-  if (path === null) {
-    return null;
+export function locationRows(drives: readonly DriveEntry[], query: string): LocationRowEntry[] {
+  const all: LocationRowEntry[] = [
+    { name: "Home", path: null },
+    ...drives.map((drive) => ({ name: drive.name, path: drive.path as string | null })),
+  ];
+  return filterIndices(
+    query,
+    all.map((row) => row.name),
+  ).map((ix) => all[ix] as LocationRowEntry);
+}
+
+// ---------------------------------------------------------------------------
+// Match highlighting (popover.rs `search_match_ranges`)
+// ---------------------------------------------------------------------------
+
+/**
+ * `search_match_ranges` (popover.rs): the ranges of `text` matching any
+ * query word, case-insensitively, merged and sorted. Ranges index into
+ * `text` in UTF-16 code units (the desktop works in UTF-8 bytes — same
+ * spans, different units). Lowercase expansion (`İ` → `i̇`) maps back to
+ * the source character's whole span.
+ */
+export function highlightRanges(text: string, query: string): Array<{ start: number; end: number }> {
+  const folded = text.toLowerCase();
+  // Per folded-string index, the owning source character's [start, end).
+  const owner: Array<{ start: number; end: number }> = [];
+  let from = 0;
+  for (const ch of text) {
+    const end = from + ch.length;
+    for (const lowered of ch.toLowerCase()) {
+      for (let i = 0; i < lowered.length; i += 1) {
+        owner.push({ start: from, end });
+      }
+    }
+    from = end;
   }
-  let best: { len: number; row: LocationRow } | null = null;
-  if (home !== null && pathUnder(path, home)) {
-    best = { len: home.replace(/\/+$/, "").length + 1, row: { kind: "home" } };
-  }
-  for (let ix = 0; ix < drives.length; ix += 1) {
-    const drive = drives[ix] as DriveEntry;
-    if (!pathUnder(path, drive.path)) {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const word of query.toLowerCase().split(/\s+/)) {
+    if (word.length === 0) {
       continue;
     }
-    const len = drive.path.replace(/\/+$/, "").length;
-    if (best === null || len > best.len) {
-      best = { len, row: { kind: "drive", index: ix } };
+    let at = folded.indexOf(word);
+    while (at >= 0) {
+      ranges.push({
+        start: (owner[at] as { start: number; end: number }).start,
+        end: (owner[at + word.length - 1] as { start: number; end: number }).end,
+      });
+      // Like str::match_indices: the search resumes past the match.
+      at = folded.indexOf(word, at + word.length);
     }
   }
-  return best === null ? null : best.row;
-}
-
-function segmentCount(path: string): number {
-  return path.split("/").filter((segment) => segment.length > 0).length;
-}
-
-/**
- * How many of `breadcrumbs`' entries the device/drive crumbs absorb
- * (spaces.rs:2755-2763): the root crumb always folds (the device name
- * stands in for it); a drive's mount folds its segments into the drive
- * crumb, else home's segments fold into the device crumb when the browsed
- * path sits at/under home. The caller skips this many entries.
- */
-export function crumbFold(listingPath: string, home: string | null, driveMount: string | null): number {
-  if (driveMount !== null) {
-    return 1 + segmentCount(driveMount);
+  ranges.sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && range.start <= last.end) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
   }
-  if (home !== null && (listingPath === home || listingPath.startsWith(`${home}/`))) {
-    return 1 + segmentCount(home);
-  }
-  return 1;
+  return merged;
 }

@@ -35,7 +35,7 @@
  *   left/right/bottom 0, radius `16px 16px 0 0`, `max-height:
  *   calc(100dvh - var(--rb-space-lg))`, z-index via `.modal-backdrop` =
  *   `--rb-z-modal` (70) — the ladder's modal tier, no new tiers. The card
- *   interiors (`.dialog-card` 360px, the popover rows, the add-space 680px
+ *   interiors (`.dialog-card` 360px, the popover rows, the add-space 600px
  *   cap) keep their values inside the sheet: the sheet replaces
  *   PLACEMENT, not the card's inner layout.
  * - **Motion:** the entrance reuses `rb-dialog-in` keyed to `[data-open]`

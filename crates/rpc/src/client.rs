@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::{ClientFrame, RpcError, ServerFrame};
 
@@ -337,7 +335,8 @@ fn wire_error(error: String) -> RpcError {
         .unwrap_or(RpcError::Failed(error))
 }
 
-/// How long a dial may take before we give up.
+/// How long each dial phase (TCP connect, WebSocket upgrade) may take before
+/// we give up.
 ///
 /// This is localhost: a real engine answers in milliseconds. Without a bound,
 /// *any* other process holding the port accepts the TCP connection and then
@@ -369,38 +368,42 @@ async fn connect_ws_with_session(
         header.set_sensitive(true);
         request.headers_mut().insert("authorization", header);
     }
-    let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
-        .await
-        .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-        .map_err(|e| RpcError::Transport(e.to_string()))?;
-    let (mut sink, mut stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    // The dial is manual so the session rides the bounded pump with byte
+    // progress tracking (roboco only ever dials plain `ws://` engines).
+    let uri = request.uri().clone();
+    if uri.scheme_str() != Some("ws") {
+        return Err(RpcError::Transport(format!(
+            "unsupported engine URL scheme (expected ws): {url}"
+        )));
+    }
+    let host = uri
+        .host()
+        .ok_or_else(|| RpcError::Transport("engine URL has no host".into()))?;
+    let port = uri.port_u16().unwrap_or(80);
+    let io = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((host, port)),
+    )
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
+    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    let (io, progress) = crate::pump::ProgressIo::new(io);
+    let (ws, _) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::client_async(request, io),
+    )
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
+    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                frame = out_rx.recv() => match frame {
-                    Some(text) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => {
-                        let _ = sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-                },
-                message = stream.next() => match message {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if in_tx.send(text).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {}
-                },
-            }
-        }
-    });
+    tokio::spawn(crate::pump::pump(
+        crate::pump::Connection {
+            socket: ws,
+            progress,
+        },
+        out_rx,
+        in_tx,
+    ));
     Ok(RpcClient::new(out_tx, in_rx))
 }

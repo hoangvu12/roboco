@@ -1063,7 +1063,7 @@ exit 0
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    unsafe { std::env::set_var("CURSOR_SDK_SHIM_EXECUTABLE", &shim) };
+    unsafe { std::env::set_var("ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE", &shim) };
 
     let start = accounts
         .start_login(HarnessId::Cursor)

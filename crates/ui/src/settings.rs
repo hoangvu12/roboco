@@ -31,9 +31,13 @@ pub const SIDEBAR_MIN: f32 = 224.0;
 pub const SIDEBAR_MAX: f32 = 400.0;
 pub const SIDEBAR_DEFAULT: f32 = 256.0;
 
-/// Right ("Changes") pane drag-resize floor and default (px). Its runtime
-/// maximum is the window space remaining after the left sidebar and the
-/// conversation's [`CHAT_PANEL_MIN`] reservation.
+/// Independent file explorer width preference and drag bounds (px).
+pub const FILES_PANEL_DEFAULT: f32 = 286.0;
+pub const FILES_PANEL_MIN: f32 = 220.0;
+pub const FILES_PANEL_MAX: f32 = 440.0;
+
+/// Surface pane floor and default (px). Runtime sizing also reserves space
+/// for the conversation and any docked file explorer.
 pub const RIGHT_PANE_MIN: f32 = 360.0;
 pub const RIGHT_PANE_DEFAULT: f32 = 520.0;
 /// Minimum width retained for the conversation when the right pane is open.
@@ -53,9 +57,6 @@ pub const SAVE_DEBOUNCE_MS: u64 = 400;
 pub const FILES_AUTOSAVE_DELAY_DEFAULT_MS: u64 = 900;
 pub const FILES_AUTOSAVE_DELAY_MIN_MS: u64 = 100;
 pub const FILES_AUTOSAVE_DELAY_MAX_MS: u64 = 10_000;
-pub const FILES_EDITOR_FONT_SIZE_DEFAULT: f32 = 13.0;
-pub const FILES_EDITOR_FONT_SIZE_MIN: f32 = 9.0;
-pub const FILES_EDITOR_FONT_SIZE_MAX: f32 = 24.0;
 
 const FILE_NAME: &str = "ui-settings.json";
 const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
@@ -250,6 +251,36 @@ impl Default for GitHistoryColumnWidths {
             date: 88.0,
             sha: 74.0,
         }
+    }
+}
+
+pub const TRANSCRIPT_WIDTH_MIN: f32 = 560.0;
+pub const TRANSCRIPT_WIDTH_MAX: f32 = 1200.0;
+pub const TRANSCRIPT_WIDTH_DEFAULT: f32 = 736.0;
+pub const TRANSCRIPT_WIDTH_STEP: f32 = 16.0;
+
+pub fn normalize_transcript_width(width: f32) -> f32 {
+    let width = clamp_or(
+        width,
+        TRANSCRIPT_WIDTH_MIN,
+        TRANSCRIPT_WIDTH_MAX,
+        TRANSCRIPT_WIDTH_DEFAULT,
+    );
+    TRANSCRIPT_WIDTH_MIN
+        + ((width - TRANSCRIPT_WIDTH_MIN) / TRANSCRIPT_WIDTH_STEP).round() * TRANSCRIPT_WIDTH_STEP
+}
+
+pub fn transcript_width(cx: &App) -> f32 {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.current.transcript_width)
+        .unwrap_or(TRANSCRIPT_WIDTH_DEFAULT)
+}
+
+pub fn set_transcript_width(width: f32, cx: &mut App) {
+    if update(SavePolicy::Debounced, cx, |settings| {
+        settings.transcript_width = normalize_transcript_width(width);
+    }) {
+        cx.refresh_windows();
     }
 }
 
@@ -531,8 +562,6 @@ fn flush_latest(cx: &mut App) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum SidebarOrganization {
-    /// Legacy persisted value. Project scope now belongs exclusively to the
-    /// project selector and is normalized to [`Self::InOneList`] on load.
     ByProject,
     ByDevice,
     #[default]
@@ -547,9 +576,88 @@ pub enum SidebarSort {
     Created,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowGeometry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_uuid: Option<uuid::Uuid>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl WindowGeometry {
+    pub fn is_valid(self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .all(f32::is_finite)
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+
+    pub fn from_bounds(bounds: gpui::Bounds<gpui::Pixels>) -> Self {
+        Self {
+            display_uuid: None,
+            x: bounds.origin.x.into(),
+            y: bounds.origin.y.into(),
+            width: bounds.size.width.into(),
+            height: bounds.size.height.into(),
+        }
+    }
+
+    pub fn restore(self, displays: &[Self], primary: usize) -> Option<(usize, Self)> {
+        if !self.is_valid() {
+            return None;
+        }
+        let matched = self.display_uuid.and_then(|uuid| {
+            displays
+                .iter()
+                .position(|display| display.is_valid() && display.display_uuid == Some(uuid))
+        });
+        let index = matched
+            .or_else(|| {
+                displays
+                    .get(primary)
+                    .filter(|display| display.is_valid())
+                    .map(|_| primary)
+            })
+            .or_else(|| displays.iter().position(|display| display.is_valid()))?;
+        let display = displays[index];
+        let mut geometry = self.fit(display);
+        if self.display_uuid.is_some() && matched.is_none() {
+            geometry.x = display.x + (display.width - geometry.width) / 2.0;
+            geometry.y = display.y + (display.height - geometry.height) / 2.0;
+        }
+        geometry.display_uuid = display.display_uuid;
+        Some((index, geometry))
+    }
+
+    pub fn fit(self, display: Self) -> Self {
+        let width = self.width.max(900.0).min(display.width);
+        let height = self.height.max(600.0).min(display.height);
+        Self {
+            display_uuid: self.display_uuid,
+            x: self.x.clamp(display.x, display.x + display.width - width),
+            y: self.y.clamp(display.y, display.y + display.height - height),
+            width,
+            height,
+        }
+    }
+
+    pub fn bounds(self) -> gpui::Bounds<gpui::Pixels> {
+        gpui::Bounds::new(
+            gpui::point(gpui::px(self.x), gpui::px(self.y)),
+            gpui::size(gpui::px(self.width), gpui::px(self.height)),
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_geometry: Option<WindowGeometry>,
     /// Submit using Enter or the platform modifier plus Enter.
     pub composer_send_behavior: ComposerSendBehavior,
     pub sidebar_width: f32,
@@ -563,6 +671,9 @@ pub struct UiSettings {
     pub sidebar_sort: SidebarSort,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
+    pub sidebar_show_project_label: bool,
+    pub sidebar_compact: bool,
+    pub sidebar_show_project_icon: bool,
     pub sidebar_show_harness: bool,
     pub sidebar_show_branch: bool,
     pub sidebar_show_pull_request: bool,
@@ -570,6 +681,9 @@ pub struct UiSettings {
     /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
+    /// Last successfully launched Action per space in this viewport.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub last_project_action_by_space_id: std::collections::HashMap<String, String>,
     /// Open session tabs in visual order (drag-reorder edits in place).
     /// Device-local: a tab is a local viewport onto the synced session list —
     /// closing one never archives the session. Ids of archived/deleted chats
@@ -580,6 +694,21 @@ pub struct UiSettings {
     /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
+    /// Custom sidebar sections, isolated between workspace profiles on this
+    /// device (engine-local per ADR 0004 — never synced).
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty"
+    )]
+    pub sidebar_sections_by_profile: std::collections::HashMap<String, Vec<SidebarSection>>,
+    /// Device-local pinned sessions in visual order, isolated by workspace
+    /// profile. Per-item pin intents (shell/sidebar_pins.rs) write this map
+    /// directly — the ordering never leaves this device.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty"
+    )]
+    pub sidebar_pinned_session_ids_by_profile: std::collections::HashMap<String, Vec<String>>,
     /// Legacy: per-space tab order, from when tabs were the selected space's
     /// non-archived sessions. Kept for file compatibility; no longer read.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -603,6 +732,7 @@ pub struct UiSettings {
     /// Suppress the banner while a Roboco window is focused (the chime covers
     /// the foreground case).
     pub notifications_background_only: bool,
+    pub files_panel_width: f32,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, roboco `sessionPanels` parity). Kept for file
@@ -636,9 +766,15 @@ pub struct UiSettings {
     pub git_history_author_display: GitHistoryAuthorDisplay,
     /// Interface and conversational-prose family. Device-local by design.
     pub ui_font_family: crate::typography::UiFontFamily,
-    /// Base size for interface and conversational prose. Code-related surfaces
-    /// retain their fixed metrics.
+    /// Base size for interface and conversational prose.
     pub ui_font_size: crate::typography::UiFontSize,
+    /// Terminal family and absolute pixel size. Only fixed-width families
+    /// qualify, including compatible Nerd Fonts.
+    pub terminal_font_family: crate::typography::UiFontFamily,
+    pub terminal_font_size: f32,
+    /// Family and absolute pixel size for code, diffs, and file editors.
+    pub code_font_family: crate::typography::UiFontFamily,
+    pub code_font_size: f32,
     /// Independently selected light and dark theme variants.
     pub theme_selection: roboco_theme::ThemeSelection,
     /// Changes pane: side-by-side diffs instead of the unified stack.
@@ -648,6 +784,8 @@ pub struct UiSettings {
     /// Agent-sent Markdown fences: wrap long lines to the chat width instead
     /// of exposing their horizontal scroll plane.
     pub code_fences_fit_content: bool,
+    /// Maximum conversation width in logical pixels; composer width is independent.
+    pub transcript_width: f32,
     /// Open a normal web-link activation in the session Browser. Explicit
     /// context-menu actions remain available regardless of this preference.
     pub open_web_links_in_roboco: bool,
@@ -657,8 +795,6 @@ pub struct UiSettings {
     pub files_autosave_delay_ms: u64,
     /// Wrap long lines in workspace file editors and previews.
     pub files_word_wrap: bool,
-    /// Font size used by editable workspace-file buffers.
-    pub files_editor_font_size: f32,
     /// Include hidden and ignored entries in workspace file trees.
     pub files_show_all: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
@@ -679,17 +815,24 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
+            window_geometry: None,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
             sidebar_grouped: false,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
+            sidebar_show_project_label: true,
+            sidebar_compact: true,
+            sidebar_show_project_icon: true,
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
             last_space_id: None,
+            last_project_action_by_space_id: std::collections::HashMap::new(),
             open_tabs: None,
             space_filter: None,
+            sidebar_sections_by_profile: std::collections::HashMap::new(),
+            sidebar_pinned_session_ids_by_profile: std::collections::HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sound_enabled: true,
@@ -698,6 +841,7 @@ impl Default for UiSettings {
             sound_attention_enabled: true,
             notifications_enabled: true,
             notifications_background_only: true,
+            files_panel_width: FILES_PANEL_DEFAULT,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -715,15 +859,19 @@ impl Default for UiSettings {
             git_history_author_display: GitHistoryAuthorDisplay::default(),
             ui_font_family: crate::typography::UiFontFamily::default(),
             ui_font_size: crate::typography::UiFontSize::default(),
+            terminal_font_family: crate::typography::UiFontFamily::GeistMono,
+            terminal_font_size: crate::typography::TERMINAL_FONT_SIZE_DEFAULT,
+            code_font_family: crate::typography::UiFontFamily::GeistMono,
+            code_font_size: crate::typography::CODE_FONT_SIZE_DEFAULT,
             theme_selection: roboco_theme::ThemeSelection::default(),
             diff_split: false,
             diff_wrap: false,
             code_fences_fit_content: false,
+            transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
             open_web_links_in_roboco: true,
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
             files_word_wrap: false,
-            files_editor_font_size: FILES_EDITOR_FONT_SIZE_DEFAULT,
             files_show_all: false,
             accent: roboco_theme::AccentSelection::default(),
             surface: roboco_theme::SurfacePreference::default(),
@@ -770,6 +918,8 @@ pub enum ShortcutId {
     ToggleChanges,
     ToggleTerminal,
     NewSession,
+    NewProject,
+    OpenModelPicker,
     NextSession,
     PrevSession,
     ArchiveSession,
@@ -777,7 +927,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 10 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 12 + JUMP_SLOTS] = [
         ShortcutId::CaptureAppshot,
         ShortcutId::SaveFile,
         ShortcutId::BrowserReload,
@@ -785,6 +935,8 @@ impl ShortcutId {
         ShortcutId::ToggleChanges,
         ShortcutId::ToggleTerminal,
         ShortcutId::NewSession,
+        ShortcutId::NewProject,
+        ShortcutId::OpenModelPicker,
         ShortcutId::NextSession,
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
@@ -813,6 +965,8 @@ impl ShortcutId {
             ShortcutId::ToggleChanges => "Toggle right sidebar",
             ShortcutId::ToggleTerminal => "Toggle terminal",
             ShortcutId::NewSession => "New session",
+            ShortcutId::NewProject => "New project",
+            ShortcutId::OpenModelPicker => "Open model picker",
             ShortcutId::NextSession => "Next session",
             ShortcutId::PrevSession => "Previous session",
             ShortcutId::ArchiveSession => "Archive session",
@@ -837,6 +991,8 @@ impl ShortcutId {
             ShortcutId::ToggleChanges => "mod-r",
             ShortcutId::ToggleTerminal => "mod-j",
             ShortcutId::NewSession => "mod-n",
+            ShortcutId::NewProject => "mod-shift-n",
+            ShortcutId::OpenModelPicker => "mod-/",
             // Ctrl+Tab on every platform — but spelled the way THAT platform's
             // recorder spells ctrl (see `combo_from_keystroke`). Off macOS
             // ctrl IS the primary and stores as "mod"; on macOS it is its own
@@ -881,6 +1037,8 @@ pub struct KeymapConfig {
     pub toggle_changes: String,
     pub toggle_terminal: String,
     pub new_session: String,
+    pub new_project: String,
+    pub open_model_picker: String,
     pub next_session: String,
     pub prev_session: String,
     pub archive_session: String,
@@ -901,10 +1059,33 @@ impl Default for KeymapConfig {
             toggle_changes: ShortcutId::ToggleChanges.default_combo().into(),
             toggle_terminal: ShortcutId::ToggleTerminal.default_combo().into(),
             new_session: ShortcutId::NewSession.default_combo().into(),
+            new_project: ShortcutId::NewProject.default_combo().into(),
+            open_model_picker: ShortcutId::OpenModelPicker.default_combo().into(),
             next_session: ShortcutId::NextSession.default_combo().into(),
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
+        }
+    }
+}
+
+/// Stable key for device-local preferences that belong to one workspace
+/// profile. `EngineInfo` arrives after the first engine frame, so callers
+/// must treat `None` as "identity not ready" and avoid destructive cleanup.
+///
+/// Roboco has no account sign-in (upstream keyed synced/development profiles
+/// by org + user from its auth token). The wire identity an engine exposes is
+/// its scope plus its device id, so non-local profiles key on that: a profile
+/// switch on one install re-keys the pins instead of leaking them across.
+pub fn sidebar_pin_profile_key(
+    scope: Option<roboco_proto::WorkspaceScope>,
+    device_id: Option<&str>,
+) -> Option<String> {
+    match scope? {
+        roboco_proto::WorkspaceScope::Local => Some("local".to_string()),
+        roboco_proto::WorkspaceScope::Synced => Some(format!("synced:{}", device_id?)),
+        roboco_proto::WorkspaceScope::Development => {
+            Some(format!("development:{}", device_id?))
         }
     }
 }
@@ -919,6 +1100,8 @@ impl KeymapConfig {
             ShortcutId::ToggleChanges => &self.toggle_changes,
             ShortcutId::ToggleTerminal => &self.toggle_terminal,
             ShortcutId::NewSession => &self.new_session,
+            ShortcutId::NewProject => &self.new_project,
+            ShortcutId::OpenModelPicker => &self.open_model_picker,
             ShortcutId::NextSession => &self.next_session,
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
@@ -939,6 +1122,8 @@ impl KeymapConfig {
             ShortcutId::ToggleChanges => self.toggle_changes = combo,
             ShortcutId::ToggleTerminal => self.toggle_terminal = combo,
             ShortcutId::NewSession => self.new_session = combo,
+            ShortcutId::NewProject => self.new_project = combo,
+            ShortcutId::OpenModelPicker => self.open_model_picker = combo,
             ShortcutId::NextSession => self.next_session = combo,
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,
@@ -1157,6 +1342,19 @@ pub fn badge_combo_on(mac: bool, combo: &str) -> String {
 }
 
 impl UiSettings {
+    pub fn sidebar_pins(&self, profile_key: &str) -> &[String] {
+        self.sidebar_pinned_session_ids_by_profile
+            .get(profile_key)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn sidebar_pins_mut(&mut self, profile_key: String) -> &mut Vec<String> {
+        self.sidebar_pinned_session_ids_by_profile
+            .entry(profile_key)
+            .or_default()
+    }
+
     /// Whether this session event may produce audio. Appshot capture has its
     /// own feature-local preference once the Appshots contribution lands.
     pub fn session_sound_enabled(&self, sound: crate::sound::Sound) -> bool {
@@ -1170,9 +1368,8 @@ impl UiSettings {
 
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
     pub fn clamped(mut self) -> Self {
-        if self.sidebar_organization == SidebarOrganization::ByProject {
-            self.sidebar_organization = SidebarOrganization::InOneList;
-        }
+        self.transcript_width = normalize_transcript_width(self.transcript_width);
+        self.window_geometry = self.window_geometry.filter(|geometry| geometry.is_valid());
         self.sidebar_width = clamp_or(
             self.sidebar_width,
             SIDEBAR_MIN,
@@ -1181,6 +1378,12 @@ impl UiSettings {
         );
         // The right pane has no persisted upper bound: its live drag clamps
         // against the current window, which is unavailable while loading.
+        self.files_panel_width = clamp_or(
+            self.files_panel_width,
+            FILES_PANEL_MIN,
+            FILES_PANEL_MAX,
+            FILES_PANEL_DEFAULT,
+        );
         self.right_pane_width = min_or(self.right_pane_width, RIGHT_PANE_MIN, RIGHT_PANE_DEFAULT);
         self.terminal_height = clamp_or(
             self.terminal_height,
@@ -1191,11 +1394,17 @@ impl UiSettings {
         self.files_autosave_delay_ms = self
             .files_autosave_delay_ms
             .clamp(FILES_AUTOSAVE_DELAY_MIN_MS, FILES_AUTOSAVE_DELAY_MAX_MS);
-        self.files_editor_font_size = clamp_or(
-            self.files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_MIN,
-            FILES_EDITOR_FONT_SIZE_MAX,
-            FILES_EDITOR_FONT_SIZE_DEFAULT,
+        self.terminal_font_size = clamp_or(
+            self.terminal_font_size,
+            crate::typography::FONT_SIZE_MIN,
+            crate::typography::FONT_SIZE_MAX,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT,
+        );
+        self.code_font_size = clamp_or(
+            self.code_font_size,
+            crate::typography::FONT_SIZE_MIN,
+            crate::typography::FONT_SIZE_MAX,
+            crate::typography::CODE_FONT_SIZE_DEFAULT,
         );
         self.git_history_column_widths = self.git_history_column_widths.clamped();
         self.git_history_column_order = self.git_history_column_order.normalized();
@@ -1218,6 +1427,11 @@ impl UiSettings {
                         settings
                             .entry("appshotSoundEnabled")
                             .or_insert(serde_json::Value::Bool(previous_sound));
+                        // The files-editor size was the first user-facing code
+                        // size; it now drives every code surface.
+                        if let Some(legacy) = settings.remove("filesEditorFontSize") {
+                            settings.entry("codeFontSize").or_insert(legacy);
+                        }
                     }
                     if let Some(keymap) = value
                         .get_mut("keymap")
@@ -1328,6 +1542,19 @@ fn min_or(value: f32, min: f32, default: f32) -> f32 {
     }
 }
 
+/// A user-named sidebar section. Archived sessions retain membership so
+/// restoring them restores their section; deleting the section never deletes
+/// sessions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SidebarSection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1358,6 +1585,204 @@ mod tests {
         ] {
             assert!(!loaded.session_sound_enabled(sound));
         }
+    }
+
+    #[test]
+    fn window_geometry_round_trips_and_legacy_settings_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let geometry = WindowGeometry {
+            display_uuid: None,
+            x: -1500.0,
+            y: 40.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        let settings = UiSettings {
+            window_geometry: Some(geometry),
+            ..Default::default()
+        };
+        settings.save(dir.path()).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).window_geometry, Some(geometry));
+        assert_eq!(WindowGeometry::from_bounds(geometry.bounds()), geometry);
+        let legacy: UiSettings = serde_json::from_str(r#"{"sidebarWidth":300}"#).unwrap();
+        assert_eq!(legacy.window_geometry, None);
+        assert_eq!(legacy.sidebar_width, 300.0);
+    }
+
+    #[test]
+    fn window_geometry_restores_display_identity_with_overlapping_local_coordinates() {
+        let primary = WindowGeometry {
+            display_uuid: Some(uuid::Uuid::from_u128(1)),
+            x: 0.0,
+            y: 25.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let secondary = WindowGeometry {
+            display_uuid: Some(uuid::Uuid::from_u128(2)),
+            ..primary
+        };
+        let saved = WindowGeometry {
+            x: 100.0,
+            y: 80.0,
+            width: 1200.0,
+            height: 800.0,
+            ..secondary
+        };
+        let encoded = serde_json::to_string(&saved).unwrap();
+        let saved: WindowGeometry = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(saved.restore(&[primary, secondary], 0), Some((1, saved)));
+        assert_eq!(saved.restore(&[secondary, primary], 1), Some((0, saved)));
+    }
+
+    #[test]
+    fn window_geometry_recenters_when_saved_display_is_disconnected() {
+        let primary = WindowGeometry {
+            display_uuid: Some(uuid::Uuid::from_u128(1)),
+            x: 0.0,
+            y: 25.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let saved = WindowGeometry {
+            display_uuid: Some(uuid::Uuid::from_u128(2)),
+            x: 500.0,
+            y: 300.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        assert_eq!(
+            saved.restore(&[primary], 0),
+            Some((
+                0,
+                WindowGeometry {
+                    display_uuid: primary.display_uuid,
+                    x: 120.0,
+                    y: 75.0,
+                    ..saved
+                }
+            ))
+        );
+        assert_eq!(saved.restore(&[], 0), None);
+        let oversized = WindowGeometry {
+            width: 2400.0,
+            height: 1600.0,
+            ..saved
+        };
+        assert_eq!(oversized.restore(&[primary], 0), Some((0, primary)));
+    }
+
+    #[test]
+    fn window_geometry_without_display_identity_uses_primary() {
+        let saved: WindowGeometry =
+            serde_json::from_str(r#"{"x":100,"y":80,"width":1200,"height":800}"#).unwrap();
+        assert_eq!(saved.display_uuid, None);
+        let display = WindowGeometry {
+            display_uuid: Some(uuid::Uuid::from_u128(1)),
+            x: 0.0,
+            y: 25.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        assert_eq!(
+            saved.restore(&[display, display], 1),
+            Some((
+                1,
+                WindowGeometry {
+                    display_uuid: display.display_uuid,
+                    ..saved
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn window_geometry_rejects_invalid_values_without_resetting_settings() {
+        let valid = WindowGeometry {
+            display_uuid: None,
+            x: 40.0,
+            y: 50.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        for geometry in [
+            WindowGeometry {
+                x: f32::NAN,
+                ..valid
+            },
+            WindowGeometry {
+                y: f32::INFINITY,
+                ..valid
+            },
+            WindowGeometry {
+                width: 0.0,
+                ..valid
+            },
+            WindowGeometry {
+                height: -1.0,
+                ..valid
+            },
+        ] {
+            let settings = UiSettings {
+                window_geometry: Some(geometry),
+                sidebar_width: 300.0,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(settings.window_geometry, None);
+            assert_eq!(settings.sidebar_width, 300.0);
+        }
+    }
+
+    #[test]
+    fn window_geometry_preserves_position_on_negative_coordinate_display() {
+        let display = WindowGeometry {
+            display_uuid: None,
+            x: -1920.0,
+            y: -200.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let geometry = WindowGeometry {
+            display_uuid: None,
+            x: -1800.0,
+            y: -100.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        assert_eq!(geometry.fit(display), geometry);
+    }
+
+    #[test]
+    fn window_geometry_fits_smaller_display_and_keeps_titlebar_visible() {
+        let display = WindowGeometry {
+            display_uuid: None,
+            x: 0.0,
+            y: 25.0,
+            width: 1280.0,
+            height: 720.0,
+        };
+        let geometry = WindowGeometry {
+            display_uuid: None,
+            x: 2000.0,
+            y: -1000.0,
+            width: 2000.0,
+            height: 1500.0,
+        };
+        assert_eq!(geometry.fit(display), display);
+        let small = WindowGeometry {
+            width: 800.0,
+            height: 500.0,
+            ..display
+        };
+        assert_eq!(geometry.fit(small), small);
+        let tiny = WindowGeometry {
+            width: 100.0,
+            height: 100.0,
+            ..display
+        };
+        assert_eq!(tiny.fit(display).width, 900.0);
+        assert_eq!(tiny.fit(display).height, 600.0);
     }
 
     #[gpui::test]
@@ -1414,6 +1839,34 @@ mod tests {
             assert_eq!(resolved.name, "Roboco");
             assert_eq!(PathBuf::from(&resolved.path), PathBuf::from(&default.path));
         });
+    }
+
+    #[test]
+    fn unknown_keys_from_a_newer_build_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"sidebarWidth":300.0,"someFutureKey":"whatever","anotherOne":{"nested":1}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert_eq!(
+            loaded.terminal_font_family,
+            crate::typography::UiFontFamily::GeistMono
+        );
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
+        );
+        assert_eq!(
+            loaded.code_font_family,
+            crate::typography::UiFontFamily::GeistMono
+        );
+        assert_eq!(
+            loaded.code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1688,17 +2141,36 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
+            window_geometry: None,
             sidebar_width: 300.0,
             sidebar_collapsed: true,
             sidebar_grouped: true,
             sidebar_organization: SidebarOrganization::ByDevice,
             sidebar_sort: SidebarSort::Created,
+            sidebar_compact: true,
+            sidebar_show_project_icon: false,
+            sidebar_show_project_label: false,
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,
             last_space_id: Some("space-1".into()),
+            last_project_action_by_space_id: std::collections::HashMap::from([(
+                "space-1".into(),
+                "dev".into(),
+            )]),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),
             space_filter: Some("space-1".into()),
+            sidebar_sections_by_profile: std::collections::HashMap::new(),
+            sidebar_pinned_session_ids_by_profile: std::collections::HashMap::from([
+                (
+                    "local".to_string(),
+                    vec!["local-2".to_string(), "local-1".to_string()],
+                ),
+                (
+                    "synced:device-1".to_string(),
+                    vec!["synced-1".to_string()],
+                ),
+            ]),
             tab_order: std::collections::HashMap::from([(
                 "space-1".to_string(),
                 vec!["b".to_string(), "a".to_string()],
@@ -1710,6 +2182,7 @@ mod tests {
             sound_attention_enabled: false,
             notifications_enabled: false,
             notifications_background_only: false,
+            files_panel_width: 310.0,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,
@@ -1756,11 +2229,15 @@ mod tests {
             diff_split: true,
             diff_wrap: true,
             code_fences_fit_content: true,
+            transcript_width: 960.0,
             open_web_links_in_roboco: false,
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
             files_word_wrap: true,
-            files_editor_font_size: 15.0,
+            terminal_font_family: crate::typography::UiFontFamily::Installed("Menlo".into()),
+            terminal_font_size: 15.0,
+            code_font_family: crate::typography::UiFontFamily::Geist,
+            code_font_size: 11.0,
             files_show_all: true,
             accent: roboco_theme::AccentSelection::Preset(roboco_theme::AccentPreset::Cyan),
             surface: roboco_theme::SurfacePreference::Frosted,
@@ -1782,6 +2259,10 @@ mod tests {
         // the field is absent from a default settings file.
         let default_json = serde_json::to_value(UiSettings::default()).unwrap();
         assert!(default_json.get("newThreadComposerBackground").is_none());
+        assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
+        assert!(json.contains(r#""terminalFontSize": 15.0"#));
+        assert!(json.contains(r#""codeFontFamily": "geist""#));
+        assert!(json.contains(r#""codeFontSize": 11.0"#));
     }
 
     #[test]
@@ -1817,6 +2298,32 @@ mod tests {
     }
 
     #[test]
+    fn transcript_width_loads_legacy_defaults_and_normalizes_persisted_values() {
+        let legacy: UiSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.transcript_width, 736.0);
+        for (value, expected) in [
+            (100.0, 560.0),
+            (2000.0, 1200.0),
+            (745.0, 752.0),
+            (f32::NAN, 736.0),
+        ] {
+            let settings = UiSettings {
+                transcript_width: value,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(settings.transcript_width, expected);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let settings = UiSettings {
+            transcript_width: 1024.0,
+            ..Default::default()
+        };
+        settings.save(dir.path()).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).transcript_width, 1024.0);
+    }
+
+    #[test]
     fn code_fence_generation_tracks_every_mode_transition_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = SettingsStore {
@@ -1841,7 +2348,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_project_organization_normalizes_to_one_list() {
+    fn sidebar_display_defaults_and_preferences_round_trip() {
+        let settings: UiSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.sidebar_compact);
+        assert!(settings.sidebar_show_project_icon);
+        assert!(settings.sidebar_show_project_label);
+        let customized = UiSettings {
+            sidebar_compact: false,
+            sidebar_show_project_icon: false,
+            sidebar_show_project_label: false,
+            sidebar_organization: SidebarOrganization::ByProject,
+            ..settings
+        };
+        let restored: UiSettings =
+            serde_json::from_str(&serde_json::to_string(&customized).unwrap()).unwrap();
+        assert_eq!(restored.clamped(), customized);
+    }
+
+    #[test]
+    fn project_organization_survives_loading() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             UiSettings::path(dir.path()),
@@ -1851,8 +2376,83 @@ mod tests {
 
         assert_eq!(
             UiSettings::load(dir.path()).sidebar_organization,
-            SidebarOrganization::InOneList
+            SidebarOrganization::ByProject
         );
+    }
+
+    #[test]
+    fn sidebar_pin_profile_keys_include_the_full_workspace_identity() {
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Local), None).as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(
+                Some(roboco_proto::WorkspaceScope::Synced),
+                Some("device-1"),
+            )
+            .as_deref(),
+            Some("synced:device-1")
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(
+                Some(roboco_proto::WorkspaceScope::Development),
+                Some("device-2"),
+            )
+            .as_deref(),
+            Some("development:device-2")
+        );
+    }
+
+    #[test]
+    fn sidebar_pin_profile_key_waits_for_engine_info() {
+        // No scope yet (the engine's first frame has not landed): no key, and
+        // therefore no destructive cleanup against an unknown identity.
+        assert_eq!(sidebar_pin_profile_key(None, Some("device-1")), None);
+        // A non-local scope without the engine's device id is equally unready.
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Synced), None),
+            None
+        );
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Development), None),
+            None
+        );
+        // A local profile needs no device id, exactly like upstream.
+        assert_eq!(
+            sidebar_pin_profile_key(Some(roboco_proto::WorkspaceScope::Local), None),
+            Some("local".to_string())
+        );
+    }
+
+    #[test]
+    fn local_synced_local_switch_restores_each_profiles_pins() {
+        let mut settings = UiSettings::default();
+        settings
+            .sidebar_pins_mut("local".to_string())
+            .extend(["local-1".to_string(), "local-2".to_string()]);
+        settings
+            .sidebar_pins_mut("synced:device-1".to_string())
+            .push("synced-1".to_string());
+
+        assert_eq!(settings.sidebar_pins("local"), ["local-1", "local-2"]);
+        assert_eq!(settings.sidebar_pins("synced:device-1"), ["synced-1"]);
+        assert_eq!(settings.sidebar_pins("local"), ["local-1", "local-2"]);
+    }
+
+    #[test]
+    fn account_switch_restores_each_accounts_pins() {
+        let mut settings = UiSettings::default();
+        settings
+            .sidebar_pins_mut("synced:device-a".to_string())
+            .push("a-1".to_string());
+        settings
+            .sidebar_pins_mut("synced:device-b".to_string())
+            .push("b-1".to_string());
+
+        assert_eq!(settings.sidebar_pins("synced:device-a"), ["a-1"]);
+        assert_eq!(settings.sidebar_pins("synced:device-b"), ["b-1"]);
+        assert_eq!(settings.sidebar_pins("synced:device-a"), ["a-1"]);
     }
 
     /// A settings file written before light mode existed has no `appearance`
@@ -1871,6 +2471,7 @@ mod tests {
         assert_eq!(loaded.accent, roboco_theme::AccentSelection::ThemeDefault);
         assert_eq!(loaded.surface, roboco_theme::SurfacePreference::ThemeDefault);
         assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(loaded.sidebar_pinned_session_ids_by_profile.is_empty());
         assert!(!loaded.sound_enabled, "other keys still parse");
         assert!(loaded.sound_completion_enabled);
         assert!(loaded.sound_input_enabled);
@@ -1882,8 +2483,12 @@ mod tests {
         assert!(!loaded.files_autosave_enabled);
         assert!(!loaded.files_word_wrap);
         assert_eq!(
-            loaded.files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_DEFAULT
+            loaded.code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
         );
         assert!(!loaded.files_show_all);
         assert!(
@@ -2018,6 +2623,32 @@ mod tests {
     }
 
     #[test]
+    fn files_panel_width_defaults_roundtrips_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(UiSettings::path(dir.path()), r#"{"sidebarWidth":256}"#).unwrap();
+        assert_eq!(
+            UiSettings::load(dir.path()).files_panel_width,
+            FILES_PANEL_DEFAULT
+        );
+        for (value, expected) in [
+            (310.0, 310.0),
+            (1.0, FILES_PANEL_MIN),
+            (900.0, FILES_PANEL_MAX),
+            (f32::NAN, FILES_PANEL_DEFAULT),
+        ] {
+            let settings = UiSettings {
+                files_panel_width: value,
+                ..Default::default()
+            }
+            .clamped();
+            assert_eq!(settings.files_panel_width, expected);
+            let encoded = serde_json::to_string(&settings).unwrap();
+            let decoded: UiSettings = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.files_panel_width, expected);
+        }
+    }
+
+    #[test]
     fn loaded_values_are_clamped() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -2049,12 +2680,46 @@ mod tests {
         );
         assert_eq!(
             UiSettings {
-                files_editor_font_size: 100.0,
+                code_font_size: 100.0,
                 ..Default::default()
             }
             .clamped()
-            .files_editor_font_size,
-            FILES_EDITOR_FONT_SIZE_MAX
+            .code_font_size,
+            crate::typography::FONT_SIZE_MAX
+        );
+        assert_eq!(
+            UiSettings {
+                terminal_font_size: 1.0,
+                ..Default::default()
+            }
+            .clamped()
+            .terminal_font_size,
+            crate::typography::FONT_SIZE_MIN
+        );
+        assert_eq!(
+            UiSettings {
+                code_font_size: f32::NAN,
+                ..Default::default()
+            }
+            .clamped()
+            .code_font_size,
+            crate::typography::CODE_FONT_SIZE_DEFAULT
+        );
+    }
+
+    #[test]
+    fn legacy_files_editor_font_size_becomes_the_code_font_size() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"filesEditorFontSize": 15.0}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.code_font_size, 15.0);
+        assert_eq!(
+            loaded.terminal_font_size,
+            crate::typography::TERMINAL_FONT_SIZE_DEFAULT
         );
     }
 
@@ -2175,6 +2840,19 @@ mod tests {
         assert_eq!(loaded.keymap.save_file, "");
         assert_eq!(loaded.keymap.new_session, "mod-s");
         assert!(conflicted_shortcuts(&loaded.keymap).is_empty());
+    }
+
+    #[test]
+    fn new_project_shortcut_migrates_and_persists() {
+        let mut keymap: KeymapConfig = serde_json::from_str(r#"{"newSession":"mod-alt-n"}"#).unwrap();
+        assert_eq!(keymap.get(ShortcutId::NewProject), "mod-shift-n");
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-alt-n");
+        keymap.set(ShortcutId::NewProject, "mod-alt-p".into());
+        let mut restored: KeymapConfig =
+            serde_json::from_str(&serde_json::to_string(&keymap).unwrap()).unwrap();
+        assert_eq!(restored.get(ShortcutId::NewProject), "mod-alt-p");
+        restored.reset(ShortcutId::NewProject);
+        assert_eq!(restored.get(ShortcutId::NewProject), "mod-shift-n");
     }
 
     #[test]

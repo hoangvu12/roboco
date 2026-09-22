@@ -117,6 +117,21 @@ export const CLOSE_TERMINAL = "CloseTerminal";
 
 /** Per-checkout working-tree diffs (DataRpc, relay-forwardable). */
 export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
+
+// Project Actions (crates/engine/src/project_actions.rs): private state on
+// the engine owning the space row. Clients call the owning engine's own
+// connection (targetDeviceId selects it client-side and is stripped at the
+// socket); every mutation replies with the fresh ProjectActionsSnapshot.
+export const LIST_PROJECT_ACTIONS = "ListProjectActions";
+export const UPSERT_PROJECT_ACTION = "UpsertProjectAction";
+export const DELETE_PROJECT_ACTION = "DeleteProjectAction";
+/** Launch an action in a managed terminal on the chat's checkout (`{spaceId, chatId, actionId, cols, rows}` → `ProjectActionRun`). */
+export const RUN_PROJECT_ACTION = "RunProjectAction";
+/** Poll a queued Run's worktree-setup outcome (`{commandId, chatId}` → `{ready, setupAction?, setupError?}`; single-take, 10-min TTL). */
+export const TAKE_PROJECT_ACTION_SETUP = "TakeProjectActionSetup";
+
+/** Shared remote-safe Git status stream (`{chatId}` → `WorkspaceGitStatusFrame`). */
+export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";
 /** One-shot scoped capture (`mode` = workingTree | branch | turn). */
 export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
 /** Full text of one side of a file in a diff (used for non-truncated text view). */

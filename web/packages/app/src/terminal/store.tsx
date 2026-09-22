@@ -2,8 +2,11 @@ import { useEffect, type ReactNode } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { EngineSession } from "../state/engine-session";
+import type { TerminalSession } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { uiSettings } from "../state/ui-settings";
+import { effectiveTerminalFontFamily, fontFamilyStack } from "../lib/appearance-store";
+import { terminalLineHeight } from "../lib/typography";
 import { TerminalSessionController } from "./session";
 import { currentTerminalTheme } from "./theme";
 import { pasteBytes } from "./tabs";
@@ -56,6 +59,12 @@ export interface TerminalTabRecord {
   readonly controller: TerminalSessionController;
   /** `OpenTerminal` was requested (guards double-open on re-attach). */
   openRequested: boolean;
+  /**
+   * A placeholder waiting for an engine-side run to answer (project Actions'
+   * `reserve_tab_for_chat`): the tab host must NOT fire `OpenTerminal` while
+   * the owning RPC is in flight — the attach or the failure lands instead.
+   */
+  reserved: boolean;
 }
 
 export interface ChatTerminals {
@@ -126,15 +135,46 @@ function attachClipboardPolicy(term: XTerm, controller: TerminalSessionControlle
   });
 }
 
+/** The live terminal font slot, resolved to an XTerm family stack + size. */
+function terminalFonts(): { family: string; size: number } {
+  const settings = uiSettings.getSnapshot();
+  return {
+    family: fontFamilyStack(effectiveTerminalFontFamily(settings.terminalFontFamily)),
+    size: settings.terminalFontSize,
+  };
+}
+
 export class TerminalStore {
   readonly #mode: "drawer" | "embedded";
   #session: EngineSession | null = null;
   readonly #chats = new Map<string, ChatTerminals>();
   readonly #listeners = new Set<TerminalStoreListener>();
   #version = 0;
+  #fonts: { family: string; size: number };
+  readonly #unsubscribeFonts: () => void;
 
   constructor(mode: "drawer" | "embedded") {
     this.#mode = mode;
+    // The terminal font slot (typography.rs `terminal_*`): read live at tab
+    // creation, then re-applied to every live tab on change — the desktop's
+    // row-height-from-live-value fix (cursor/selection drift) maps to a
+    // refit here, since XTerm's cell grid is measured off the options.
+    this.#fonts = terminalFonts();
+    this.#unsubscribeFonts = uiSettings.subscribe(() => {
+      const next = terminalFonts();
+      if (next.family === this.#fonts.family && next.size === this.#fonts.size) {
+        return;
+      }
+      this.#fonts = next;
+      for (const chat of this.#chats.values()) {
+        for (const tab of chat.tabs) {
+          tab.term.options.fontFamily = next.family;
+          tab.term.options.fontSize = next.size;
+          tab.term.options.lineHeight = terminalLineHeight(next.size);
+          tab.fitter.fit();
+        }
+      }
+    });
   }
 
   subscribe = (listener: TerminalStoreListener): (() => void) => {
@@ -163,6 +203,7 @@ export class TerminalStore {
   }
 
   dispose(): void {
+    this.#unsubscribeFonts();
     this.bindSession(null);
     this.#listeners.clear();
   }
@@ -207,6 +248,58 @@ export class TerminalStore {
   addTab(chatId: string): void {
     const chat = this.#chat(chatId);
     this.#addTab(chatId, chat);
+    this.#bump();
+  }
+
+  /**
+   * Create a named placeholder tab without opening a PTY and reveal the dock
+   * (`reserve_tab_for_chat` + the drawer reveal, panel.rs:508 + the run flow
+   * in actions_ui.rs): project Actions reserve before their host-side run
+   * RPC completes, so the tab exists while the terminal does not. Returns
+   * null when no engine session is bound (the caller drops the run).
+   */
+  reserveTabForChat(chatId: string, title: string): string | null {
+    if (this.#session === null) {
+      return null;
+    }
+    const chat = this.#chat(chatId);
+    this.#addTab(chatId, chat, undefined, title, true);
+    chat.open = true;
+    this.#bump();
+    return chat.tabs.at(-1)?.key ?? null;
+  }
+
+  /**
+   * Attach and stream a PTY that was already opened by the owning engine
+   * (`attach_reserved_session`, panel.rs:536): the run RPC's terminal takes
+   * the placeholder's place — the reserved title (the action's name) stays.
+   * False when the tab was closed mid-flight.
+   */
+  attachReservedSession(chatId: string, key: string, session: TerminalSession): boolean {
+    const tab = this.#chats.get(chatId)?.tabs.find((candidate) => candidate.key === key);
+    if (tab === undefined) {
+      return false;
+    }
+    tab.reserved = false;
+    tab.openRequested = true;
+    tab.controller.attach(session);
+    this.#bump();
+    return true;
+  }
+
+  /**
+   * Turn a placeholder into a visible failed tab without opening a PTY
+   * (`fail_reserved_tab`, panel.rs:516 — the run RPC's error path).
+   */
+  failReservedTab(chatId: string, key: string, message: string): void {
+    const chat = this.#chats.get(chatId);
+    const tab = chat?.tabs.find((candidate) => candidate.key === key);
+    if (chat === undefined || tab === undefined) {
+      return;
+    }
+    tab.reserved = false;
+    tab.term.write(`\x1b[31mfailed to run action: ${message}\x1b[0m\r\n`);
+    tab.exited = true;
     this.#bump();
   }
 
@@ -303,7 +396,9 @@ export class TerminalStore {
       host.appendChild(element);
     }
     this.fitActive(chatId);
-    if (!tab.openRequested && this.#session !== null) {
+    // A reserved placeholder waits for its engine-side run to answer —
+    // `OpenTerminal` here would race the action's own PTY open.
+    if (!tab.openRequested && !tab.reserved && this.#session !== null) {
       tab.openRequested = true;
       void tab.controller.open(tab.term.cols, tab.term.rows).then(() => {
         const shell = tab.controller.shell;
@@ -363,17 +458,18 @@ export class TerminalStore {
     return chat;
   }
 
-  #addTab(chatId: string, chat: ChatTerminals, key?: string): void {
+  #addTab(chatId: string, chat: ChatTerminals, key?: string, title?: string, reserved = false): void {
     if (this.#session === null) {
       return;
     }
     const client = this.#session.client;
     const tabKey = key ?? `${chat.nextKey++}`;
     const theme = currentTerminalTheme();
+    const fonts = this.#fonts;
     const term = new XTerm({
-      fontFamily: '"Geist Mono", ui-monospace, monospace',
-      fontSize: 13,
-      lineHeight: 18 / 13,
+      fontFamily: fonts.family,
+      fontSize: fonts.size,
+      lineHeight: terminalLineHeight(fonts.size),
       cursorStyle: "block",
       // Desktop view.rs: the unfocused cursor is an outline of the same
       // translucent `theme.cursor` color.
@@ -386,7 +482,7 @@ export class TerminalStore {
     term.loadAddon(fitter);
     const tab: TerminalTabRecord = {
       key: tabKey,
-      title: `Terminal ${chat.tabs.length + 1}`,
+      title: title ?? `Terminal ${chat.tabs.length + 1}`,
       oscTitle: null,
       exited: false,
       term,
@@ -403,6 +499,7 @@ export class TerminalStore {
         },
       }),
       openRequested: false,
+      reserved,
     };
     attachClipboardPolicy(term, tab.controller);
     term.onData((data) => tab.controller.input(data));

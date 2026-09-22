@@ -1,22 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
 import type { EngineSession } from "../src/state/engine-session";
+import { addSpaceStore, toggleAddSpace } from "../src/state/add-space";
 import {
-  ADD_SPACE_DEVICE_WAIT_MS,
-  addSpaceStore,
-  toggleAddSpace,
-} from "../src/state/add-space";
-import {
-  activeLocation,
   addSpaceCompletion,
   breadcrumbs,
   browserRows,
   childPath,
   completionPrefixLen,
-  crumbFold,
+  deviceRows,
   filteredFolders,
+  highlightRanges,
   isStaleResponse,
+  locationRows,
   manualPathQuery,
   parentPath,
   pathUnder,
@@ -27,14 +24,16 @@ import {
 /**
  * Ports of the desktop's picker tests (`crates/ui/src/pickers.rs` test
  * module) plus the add-space derivations from `spaces.rs` the palette
- * renders from: `folder_paths_and_breadcrumbs` (`:4883`),
- * `completion_prefix_lengths` (`:4899`), `segment_target_resolution`
- * (`:4914`), `typed_path_target_expands_absolute_and_home_paths`
- * (`:4928`), and the `is_stale` / rail-location / crumb-fold rules
- * (`spaces.rs:234-243`, `:2596-2622`, `:2755-2763`).
+ * renders from: `folder_paths_and_breadcrumbs`, `completion_prefix_lengths`,
+ * `segment_target_resolution`,
+ * `typed_path_target_expands_absolute_and_home_paths`, the `is_stale` rule
+ * (`spaces.rs:238-247`), the step-row filters (`add_space_devices` /
+ * `add_space_locations`), the match ranges (`search_match_ranges`,
+ * popover.rs), and the device-first flow test
+ * `devices_locations_folders_and_back_clear_stale_state`.
  */
 
-describe("folder_paths_and_breadcrumbs (pickers.rs:4883)", () => {
+describe("folder_paths_and_breadcrumbs (pickers.rs)", () => {
   it("parentPath climbs and stops at the root", () => {
     expect(parentPath("/home/w/dev")).toBe("/home/w");
     expect(parentPath("/home")).toBe("/");
@@ -56,7 +55,7 @@ describe("folder_paths_and_breadcrumbs (pickers.rs:4883)", () => {
   });
 });
 
-describe("completion_prefix_lengths (pickers.rs:4899)", () => {
+describe("completion_prefix_lengths (pickers.rs)", () => {
   it("is case-insensitive and indexes into the name", () => {
     expect(completionPrefixLen("Documents", "doc")).toBe(3);
     expect("Documents".slice(3)).toBe("uments");
@@ -74,7 +73,7 @@ describe("completion_prefix_lengths (pickers.rs:4899)", () => {
   });
 });
 
-describe("segment_target_resolution (pickers.rs:4914)", () => {
+describe("segment_target_resolution (pickers.rs)", () => {
   const names = ["github", "GitHub", "worktree"];
 
   it("exact casing beats the earlier case-insensitive sibling", () => {
@@ -93,7 +92,7 @@ describe("segment_target_resolution (pickers.rs:4914)", () => {
   });
 });
 
-describe("typed_path_target_expands_absolute_and_home_paths (pickers.rs:4928)", () => {
+describe("typed_path_target_expands_absolute_and_home_paths (pickers.rs)", () => {
   const home = "/home/wing";
 
   it("absolute paths trim their trailing slash and need no home", () => {
@@ -146,7 +145,7 @@ const entry = (name: string, isDir: boolean, isRepo = false): FolderEntry => ({
   isRepo,
 });
 
-describe("browserRows + filteredFolders + completion (spaces.rs:2011-2166)", () => {
+describe("browserRows + filteredFolders + completion (spaces.rs)", () => {
   const entries = [
     entry("dev", true, true),
     entry("notes.txt", false),
@@ -186,7 +185,7 @@ describe("browserRows + filteredFolders + completion (spaces.rs:2011-2166)", () 
   });
 });
 
-describe("is_stale (spaces.rs:234-243)", () => {
+describe("is_stale (spaces.rs:238-247)", () => {
   const flow = { identity: "id-1", revision: 3, deviceId: "device-a" };
 
   it("drops responses from another open, a superseded browse, or another device", () => {
@@ -202,54 +201,84 @@ describe("is_stale (spaces.rs:234-243)", () => {
 
 const drive = (name: string, path: string): DriveEntry => ({ name, path });
 
-describe("activeLocation (spaces.rs:2596-2614)", () => {
-  const drives = [drive("Macintosh HD", "/"), drive("T7 Shield", "/Volumes/t7")];
+describe("step rows: deviceRows + locationRows (spaces.rs)", () => {
+  const devices: Device[] = [
+    { id: "d-local", name: "Studio", platform: "macos", lastSeenAt: null, createdAt: null },
+    { id: "d-remote", name: "Server", platform: "linux", lastSeenAt: null, createdAt: null },
+  ];
 
-  it("home wins while the browsed path sits under it", () => {
-    expect(activeLocation("/home/w/dev", "/home/w", drives)).toEqual({ kind: "home" });
+  it("deviceRows filters and ranks by name, preserving the device row", () => {
+    expect(deviceRows(devices, "").map((row) => row.id)).toEqual(["d-local", "d-remote"]);
+    expect(deviceRows(devices, "server").map((row) => row.id)).toEqual(["d-remote"]);
+    expect(deviceRows(devices, "zzz")).toEqual([]);
   });
 
-  it("the longest covering drive wins once home stops covering", () => {
-    expect(activeLocation("/Volumes/t7/projects", "/home/w", drives)).toEqual({ kind: "drive", index: 1 });
-  });
-
-  it("the system root covers everything else", () => {
-    expect(activeLocation("/opt/toolchain", "/home/w", drives)).toEqual({ kind: "drive", index: 0 });
-    expect(activeLocation(null, "/home/w", drives)).toBe(null);
-  });
-});
-
-describe("crumbFold (spaces.rs:2755-2763)", () => {
-  it("the root crumb always folds; home folds only when the path is under it", () => {
-    expect(crumbFold("/home/w/dev", "/home/w", null)).toBe(3);
-    expect(crumbFold("/opt", "/home/w", null)).toBe(1);
-    expect(crumbFold("/opt", null, null)).toBe(1);
-  });
-
-  it("a drive mount folds into the drive crumb, overriding home", () => {
-    expect(crumbFold("/Volumes/t7/projects", "/home/w", "/Volumes/t7")).toBe(3);
+  it("locationRows always leads with Home, then the mounted drives", () => {
+    const drives = [drive("Projects", "/projects"), drive("System", "/")];
+    expect(locationRows(drives, "")).toEqual([
+      { name: "Home", path: null },
+      { name: "Projects", path: "/projects" },
+      { name: "System", path: "/" },
+    ]);
+    expect(locationRows(drives, "proj")).toEqual([{ name: "Projects", path: "/projects" }]);
+    // A failed drive load leaves the list at Home only — no error UI.
+    expect(locationRows([], "")).toEqual([{ name: "Home", path: null }]);
   });
 });
 
-describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
+describe("highlightRanges (popover.rs search_match_ranges)", () => {
+  it("inline matches keep adjacent word boundaries", () => {
+    const text = "fieldnotes/fix-authentication-redirects";
+    const ranges = highlightRanges(text, "authentication");
+    expect(ranges).toHaveLength(1);
+    expect(text.slice(0, ranges[0]!.start)).toBe("fieldnotes/fix-");
+    expect(text.slice(ranges[0]!.start, ranges[0]!.end)).toBe("authentication");
+    expect(text.slice(ranges[0]!.end)).toBe("-redirects");
+  });
+
+  it("highlights repeated case-insensitive and overlapping words", () => {
+    expect(highlightRanges("New chat, new project", "NEW")).toEqual([
+      { start: 0, end: 3 },
+      { start: 10, end: 13 },
+    ]);
+    expect(highlightRanges("authentication", "auth authentication")).toEqual([{ start: 0, end: 14 }]);
+    expect(highlightRanges("New chat", "  ")).toEqual([]);
+    expect(highlightRanges("New chat", "settings")).toEqual([]);
+  });
+
+  it("preserves original unicode boundaries after lowercase expansion", () => {
+    // UTF-16 code units here — the desktop's ranges are UTF-8 bytes, the
+    // spans are the same characters.
+    expect(highlightRanges("İstanbul café", "i CAFÉ")).toEqual([
+      { start: 0, end: 1 },
+      { start: 9, end: 13 },
+    ]);
+    expect(highlightRanges("🚀 CAFÉ", "café")).toEqual([{ start: 3, end: 7 }]);
+  });
+});
+
+describe("addSpaceStore + toggleAddSpace (shell.rs)", () => {
   /**
    * The fixed `mod-k` binding's toggle, against the headless store (no
-   * session attached: `open()` lands on no device and fires no loads).
-   * The exit window now ends when the mounted palette reports Base UI's
-   * `onOpenChangeComplete(false)` — `unmounted()` here stands in for that
-   * callback (the old layer's 100ms+grace timer is gone with it).
+   * session attached: `open()` lands on the Devices step and fires no
+   * loads). The exit window ends when the mounted palette reports Base
+   * UI's `onOpenChangeComplete(false)` — `unmounted()` here stands in for
+   * that callback.
    */
   const reaped = (): void => {
     addSpaceStore.unmounted();
   };
 
-  it("a closed palette opens; a mounted one closes", () => {
+  it("a closed palette opens on the Devices step; a mounted one closes", () => {
     expect(addSpaceStore.getSnapshot().status).toBe("closed");
     expect(addSpaceStore.getSnapshot().flow).toBe(null);
 
     toggleAddSpace();
     expect(addSpaceStore.getSnapshot().status).toBe("open");
-    expect(addSpaceStore.getSnapshot().flow).not.toBe(null);
+    const flow = addSpaceStore.getSnapshot().flow;
+    expect(flow).not.toBe(null);
+    expect(flow!.step).toBe("devices");
+    expect(flow!.deviceId).toBe(null);
 
     // Mounted → the same chord closes it (the flow lives through the exit
     // window so the card can paint its way out).
@@ -273,31 +302,31 @@ describe("addSpaceStore + toggleAddSpace (shell.rs:7832-7839)", () => {
   });
 });
 
-describe("addSpaceStore deviceless open (ticket 43)", () => {
+describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
   /**
-   * The fake routed session of the headless suite's deviceless tests: a
-   * LIVE devices RowSet the test mutates row-by-row (the streaming lag
-   * itself), a recording client whose calls resolve instantly, and an
+   * The fake routed session: a fixed device list, a recording client whose
+   * calls resolve instantly (ListFolders echoes the requested path), and an
    * optional local device id. The store only reads
    * `cache.getSnapshot().devices.rows`, `client.engineInfo`, and
    * `client.call`, so that is the whole surface.
    */
   function fakeSession(
     devices: Device[],
-    calls: string[],
+    calls: Array<{ method: string; params: Record<string, unknown> }>,
     localDeviceId: string | null = null,
   ): EngineSession {
     return {
       engine: { baseUrl: "https://engine.test", credential: "cred" },
       client: {
         engineInfo: { deviceId: localDeviceId },
-        call: (method: string): Promise<unknown> => {
-          calls.push(method);
+        call: (method: string, params: Record<string, unknown>): Promise<unknown> => {
+          calls.push({ method, params });
           if (method === methods.LIST_FOLDERS) {
-            return Promise.resolve({ path: "/home/wing", entries: [], truncated: false });
+            const path = typeof params.path === "string" ? params.path : "/home/studio";
+            return Promise.resolve({ path, entries: [], truncated: false });
           }
           if (method === methods.LIST_DRIVES) {
-            return Promise.resolve({ drives: [] });
+            return Promise.resolve({ drives: [{ name: "Projects", path: "/projects" }] });
           }
           return Promise.resolve({});
         },
@@ -310,10 +339,12 @@ describe("addSpaceStore deviceless open (ticket 43)", () => {
     } as unknown as EngineSession;
   }
 
-  const device = (id: string): Device => ({
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const device = (id: string, name: string): Device => ({
     id,
-    name: `Device ${id}`,
-    platform: "macos",
+    name,
+    platform: id === "d-remote" ? "linux" : "macos",
     lastSeenAt: null,
     createdAt: null,
   });
@@ -323,120 +354,112 @@ describe("addSpaceStore deviceless open (ticket 43)", () => {
     addSpaceStore.unmounted();
   };
 
-  it("openWithoutDeviceRowsWaitsThenResolvesWhenDevicesStream", () => {
-    vi.useFakeTimers();
+  it("devices → locations → folders and back clear stale state", async () => {
     try {
-      const devices: Device[] = [];
-      const calls: string[] = [];
+      const devices = [device("d-local", "Studio"), device("d-remote", "Server")];
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      addSpaceStore.attach({ session: fakeSession(devices, calls, "d-local"), goToCanvas: () => {} });
+
+      // The Devices step: no pick, no loads — the query filters the list.
+      addSpaceStore.open();
+      let flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("devices");
+      expect(flow.deviceId).toBe(null);
+      expect(calls).toEqual([]);
+
+      addSpaceStore.setQuery("server");
+      expect(deviceRows(devices, addSpaceStore.getSnapshot().flow!.query)).toHaveLength(1);
+      addSpaceStore.openActive();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("locations");
+      expect(flow.deviceId).toBe("d-remote");
+      expect(flow.query).toBe("");
+      await flush();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.drives).toEqual([{ name: "Projects", path: "/projects" }]);
+      expect(flow.drivesLoading).toBe(false);
+      expect(calls.map((call) => call.method)).toEqual([methods.LIST_DRIVES]);
+
+      addSpaceStore.setQuery("projects");
+      addSpaceStore.openActive();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("folders");
+      expect(flow.location).toEqual({ name: "Projects", path: "/projects" });
+      await flush();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.browserPath).toBe("/projects");
+      expect(flow.listing).toEqual({ path: "/projects", entries: [], truncated: false });
+      expect(calls.map((call) => call.method)).toEqual([methods.LIST_DRIVES, methods.LIST_FOLDERS]);
+
+      // ← on the location's root retreats to Locations; the listing and
+      // the location crumb state clear.
+      addSpaceStore.goUp();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("locations");
+      expect(flow.location).toBe(null);
+      expect(flow.listing).toBe("idle");
+      expect(flow.query).toBe("");
+
+      // ← again retreats to Devices: the device, its drives and the
+      // resolved home go with it.
+      addSpaceStore.goUp();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("devices");
+      expect(flow.deviceId).toBe(null);
+      expect(flow.drives).toEqual([]);
+      expect(flow.home).toBe(null);
+      expect(flow.query).toBe("");
+
+      // Slash navigation only applies to folders, never device search.
+      addSpaceStore.setQuery("/projects/");
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("devices");
+      expect(flow.query).toBe("/projects/");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a folders browse descends and the parent climb stops at the location root", async () => {
+    try {
+      const devices = [device("d-local", "Studio")];
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
       addSpaceStore.attach({ session: fakeSession(devices, calls, "d-local"), goToCanvas: () => {} });
 
       addSpaceStore.open();
-      const flow = addSpaceStore.getSnapshot().flow;
-      expect(flow).not.toBe(null);
-      // The deviceless open: no device row has streamed, so no loads kick
-      // and the wait is armed — the body's skeleton is time-bounded, not
-      // eternal.
-      expect(flow!.deviceId).toBe(null);
-      expect(flow!.deviceWait).toBe("waiting");
-      expect(flow!.listing).toBe("idle");
-      expect(calls).toEqual([]);
-
-      // A device row lands; the mounted palette's devices-frame effect
-      // calls resolveDevice() — open()'s pick rule finishes the job: the
-      // local device beats the first registered row.
-      devices.push(device("d-first"), device("d-local"));
-      addSpaceStore.resolveDevice();
-      const resolved = addSpaceStore.getSnapshot().flow!;
-      expect(resolved.deviceId).toBe("d-local");
-      expect(resolved.deviceWait).toBe(null);
-      expect(resolved.listing).toBe("loading");
-      expect(calls).toEqual([methods.LIST_FOLDERS, methods.LIST_DRIVES]);
-
-      // Past the deadline, still open and resolved: the wait was
-      // disarmed at resolve, so nothing flips.
-      vi.advanceTimersByTime(ADD_SPACE_DEVICE_WAIT_MS * 2);
-      const settled = addSpaceStore.getSnapshot().flow!;
-      expect(settled.deviceWait).toBe(null);
-      expect(settled.deviceId).toBe("d-local");
+      addSpaceStore.pickDevice("d-local");
+      addSpaceStore.gotoLocation("Projects", "/projects");
+      await flush();
+      // Descend one level in; ← climbs back to the location root…
+      addSpaceStore.descend("/projects/roboco", false);
+      await flush();
+      let flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.listing).toEqual({ path: "/projects/roboco", entries: [], truncated: false });
+      addSpaceStore.goUp();
+      await flush();
+      flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("folders");
+      expect(flow.listing).toEqual({ path: "/projects", entries: [], truncated: false });
+      // …and ← on the root retreats to Locations instead of climbing past it.
+      addSpaceStore.goUp();
+      expect(addSpaceStore.getSnapshot().flow!.step).toBe("locations");
     } finally {
-      vi.useRealTimers();
       cleanup();
     }
   });
 
-  it("openWithoutDeviceRowsTimesOutToErrorWithWorkingRetry", () => {
-    vi.useFakeTimers();
+  it("a deviceless folders load surfaces the error row instead of a forever-skeleton", async () => {
     try {
-      const devices: Device[] = [];
-      const calls: string[] = [];
-      addSpaceStore.attach({ session: fakeSession(devices, calls), goToCanvas: () => {} });
-
+      // No session attached: the routed engine is gone mid-flow.
+      addSpaceStore.attach({ session: null, goToCanvas: () => {} });
       addSpaceStore.open();
-      const identity = addSpaceStore.getSnapshot().flow!.identity;
-      expect(calls).toEqual([]);
-
-      // One millisecond short of the deadline: still the bounded wait.
-      vi.advanceTimersByTime(ADD_SPACE_DEVICE_WAIT_MS - 1);
-      expect(addSpaceStore.getSnapshot().flow!.deviceWait).toBe("waiting");
-
-      // The deadline: the terminal deviceless error. A device row that
-      // lands too late cannot resolve it — Retry is the only way out.
-      vi.advanceTimersByTime(1);
-      const timedOut = addSpaceStore.getSnapshot().flow!;
-      expect(timedOut.deviceWait).toBe("timeout");
-      expect(timedOut.deviceId).toBe(null);
-      devices.push(device("d-late"));
-      addSpaceStore.resolveDevice();
-      expect(addSpaceStore.getSnapshot().flow!.deviceWait).toBe("timeout");
-
-      // Retry re-runs open()'s full pick: a fresh identity, a re-armed
-      // wait — not retryLoad's current-path reload, which presumes a
-      // device and would silently early-return again. (With a row by now
-      // present, the same pick would resolve instantly; the rows are
-      // still absent here, so the wait re-arms.)
-      devices.length = 0;
-      addSpaceStore.retryDeviceWait();
-      const retried = addSpaceStore.getSnapshot().flow!;
-      expect(retried.deviceWait).toBe("waiting");
-      expect(retried.deviceId).toBe(null);
-      expect(retried.identity).not.toBe(identity);
-      expect(calls).toEqual([]);
-
-      // The re-armed wait resolves when the row lands this time.
-      devices.push(device("d-recovered"));
-      addSpaceStore.resolveDevice();
-      const recovered = addSpaceStore.getSnapshot().flow!;
-      expect(recovered.deviceId).toBe("d-recovered");
-      expect(recovered.deviceWait).toBe(null);
-      expect(calls).toEqual([methods.LIST_FOLDERS, methods.LIST_DRIVES]);
+      addSpaceStore.pickDevice("d-gone");
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      const flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.step).toBe("folders");
+      expect(flow.listing).toEqual({ error: "Device is not connected" });
     } finally {
-      vi.useRealTimers();
-      cleanup();
-    }
-  });
-
-  it("escape closes from the deviceless wait, and a stale resolve never mutates state", () => {
-    vi.useFakeTimers();
-    try {
-      const devices: Device[] = [];
-      const calls: string[] = [];
-      addSpaceStore.attach({ session: fakeSession(devices, calls), goToCanvas: () => {} });
-
-      addSpaceStore.open();
-      // The escape ladder's call, straight from the waiting state.
-      addSpaceStore.close();
-      expect(addSpaceStore.getSnapshot().status).toBe("closing");
-      addSpaceStore.unmounted();
-      expect(addSpaceStore.getSnapshot().status).toBe("closed");
-      expect(addSpaceStore.getSnapshot().flow).toBe(null);
-
-      // A devices frame landing after the close resolves nothing.
-      devices.push(device("d-stale"));
-      addSpaceStore.resolveDevice();
-      expect(addSpaceStore.getSnapshot().flow).toBe(null);
-      expect(calls).toEqual([]);
-    } finally {
-      vi.useRealTimers();
       cleanup();
     }
   });
