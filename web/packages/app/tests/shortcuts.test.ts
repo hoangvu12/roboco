@@ -113,8 +113,8 @@ describe("shortcut event bus", () => {
 // ---------------------------------------------------------------------------
 
 describe("SHORTCUT_IDS", () => {
-  it("has exactly 19 entries in settings.rs order", () => {
-    expect(SHORTCUT_IDS).toHaveLength(19);
+  it("has exactly 20 entries in settings.rs order", () => {
+    expect(SHORTCUT_IDS).toHaveLength(20);
     expect(SHORTCUT_IDS).toEqual([
       "captureAppshot",
       "saveFile",
@@ -123,6 +123,7 @@ describe("SHORTCUT_IDS", () => {
       "toggleChanges",
       "toggleTerminal",
       "newSession",
+      "openModelPicker",
       "nextSession",
       "prevSession",
       "archiveSession",
@@ -146,6 +147,7 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutLabel("toggleChanges")).toBe("Toggle right sidebar");
     expect(shortcutLabel("toggleTerminal")).toBe("Toggle terminal");
     expect(shortcutLabel("newSession")).toBe("New session");
+    expect(shortcutLabel("openModelPicker")).toBe("Open model picker");
     expect(shortcutLabel("nextSession")).toBe("Next session");
     expect(shortcutLabel("prevSession")).toBe("Previous session");
     expect(shortcutLabel("archiveSession")).toBe("Archive session");
@@ -160,6 +162,7 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutGroup("toggleChanges")).toBe("Panels");
     expect(shortcutGroup("toggleTerminal")).toBe("Panels");
     expect(shortcutGroup("newSession")).toBe("Sessions");
+    expect(shortcutGroup("openModelPicker")).toBe("Sessions");
     expect(shortcutGroup("archiveSession")).toBe("Sessions");
     expect(shortcutGroup({ jumpSession: 3 })).toBe("Jump to session");
     expect(shortcutGroup("captureAppshot")).toBe("Appshots");
@@ -354,13 +357,15 @@ describe("BROWSER_RESERVED", () => {
 describe("applyKeymap", () => {
   it("registers every available default and both fixed chords", () => {
     const table = applyKeymap(defaultKeymap(false), false);
-    // 8 available scalar ids + 9 jump slots + mod-k + mod-,.
-    expect(table.size).toBe(19);
+    // 9 available scalar ids + 9 jump slots + mod-k + mod-,.
+    expect(table.size).toBe(20);
     expect(table.get("ctrl-s")?.event).toBe("save-file");
     expect(table.get("ctrl-b")?.event).toBe("toggle-sidebar");
     expect(table.get("ctrl-r")?.event).toBe("toggle-changes");
     expect(table.get("ctrl-j")?.event).toBe("toggle-terminal");
     expect(table.get("ctrl-n")?.event).toBe("new-chat");
+    // OpenModelPicker (upstream faac7432): Mod+/ opens the model picker.
+    expect(table.get("ctrl-/")?.event).toBe("open-model-picker");
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
     expect(table.get("ctrl-shift-tab")?.event).toBe("prev-session");
     expect(table.get("ctrl-shift-a")?.event).toBe("archive-session");
@@ -376,6 +381,7 @@ describe("applyKeymap", () => {
     const table = applyKeymap(defaultKeymap(true), true);
     expect(table.get("cmd-b")?.event).toBe("toggle-sidebar");
     expect(table.get("cmd-1")?.slot).toBe(0);
+    expect(table.get("cmd-/")?.event).toBe("open-model-picker");
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
     expect(table.get("ctrl-shift-tab")?.event).toBe("prev-session");
     expect(table.get("cmd-k")?.event).toBe("add-space-palette");
@@ -388,6 +394,13 @@ describe("applyKeymap", () => {
     const table = applyKeymap(config, false);
     expect(table.get("ctrl-b")).toBeUndefined();
     expect(table.get("ctrl-shift-x")?.event).toBe("toggle-sidebar");
+  });
+
+  it("follows an OpenModelPicker rebind off mod-/", () => {
+    const config: KeymapConfig = { ...defaultKeymap(false), openModelPicker: "mod-shift-m" };
+    const table = applyKeymap(config, false);
+    expect(table.has("ctrl-/")).toBe(false);
+    expect(table.get("ctrl-shift-m")?.event).toBe("open-model-picker");
   });
 
   it("never registers a combo the browser owns outright", () => {

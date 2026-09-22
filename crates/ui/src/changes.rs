@@ -3935,6 +3935,7 @@ impl Changes {
     }
 
     fn render_scope_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &theme.for_popup();
         let current = self.scope;
         popover::popover_card(theme)
             .w(px(180.0))
@@ -4082,6 +4083,7 @@ impl Changes {
     }
 
     fn render_ref_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &theme.for_popup();
         let (search, active, focus, list_scroll) = {
             let Some(menu) = self.ref_menu.get() else {
                 return div().into_any_element();

@@ -210,6 +210,17 @@ describe("heal", () => {
     expect(keymap.toggleChanges).toBe("mod-shift-k");
   });
 
+  it("keymap — openModelPicker keeps a stored rebind and defaults to mod-/", () => {
+    // Upstream faac7432: the configurable model-picker shortcut heals like
+    // every scalar combo — stored rebinds survive, missing goes to mod-/.
+    const stored = storedWith({ keymap: { openModelPicker: "mod-shift-m" } }).keymap;
+    expect(stored.openModelPicker).toBe("mod-shift-m");
+    const fresh = storedWith({}).keymap;
+    expect(fresh.openModelPicker).toBe("mod-/");
+    const reserved = storedWith({ keymap: { openModelPicker: "mod-enter" } }).keymap;
+    expect(reserved.openModelPicker).toBe("mod-/");
+  });
+
   it("gitHistoryColumnOrder — dedups and appends the missing columns", () => {
     expect(storedWith({ gitHistoryColumnOrder: ["sha", "sha", "date"] }).gitHistoryColumnOrder).toEqual([
       "sha",

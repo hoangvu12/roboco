@@ -102,6 +102,7 @@ describe("page copy (shortcuts.rs:407-464)", () => {
       "toggleChanges",
       "toggleTerminal",
       "newSession",
+      "openModelPicker",
       "nextSession",
       "prevSession",
       "archiveSession",
@@ -110,6 +111,9 @@ describe("page copy (shortcuts.rs:407-464)", () => {
     for (const id of ids) {
       expect(shortcutDescription(id).length).toBeGreaterThan(0);
     }
+    expect(shortcutDescription("openModelPicker")).toBe(
+      "Open the model picker for the current session.",
+    );
     expect(shortcutDescription({ jumpSession: 3 })).toBe("Open the session at this place in the sidebar list.");
   });
 });

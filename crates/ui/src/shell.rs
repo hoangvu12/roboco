@@ -73,6 +73,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        OpenModelPicker,
         NewSession,
         OpenSettings,
         NextSession,
@@ -99,7 +100,7 @@ pub(crate) fn restore_focus_if_empty_on_next_frame<T: 'static>(
 
 /// Check the completed dispatch tree, not just the lifetime of the focused
 /// handle: a hidden editor can stay alive after its element has unmounted.
-fn restore_mounted_focus(
+pub(crate) fn restore_mounted_focus(
     root: &FocusHandle,
     preferred: &FocusHandle,
     unfocused: &FocusHandle,
@@ -370,6 +371,11 @@ pub fn apply_keymap(
         // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
         // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        KeyBinding::new(
+            &valid_or_default(&keymap.open_model_picker, "mod-/"),
+            OpenModelPicker,
+            None,
+        ),
     ]);
     crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -6013,6 +6019,7 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
         // Bottom-of-sidebar identity: avatar circle + scope/account label and
         // its secondary status line.
@@ -6122,7 +6129,7 @@ impl Shell {
                         .pt(px(6.0))
                         .pb(px(4.0))
                         .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.text_muted.opacity(0.7))
+                        .text_color(theme.text_muted)
                         .truncate()
                         .child(menu_identity),
                 )
@@ -6281,7 +6288,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_popup();
         let mut overlays: Vec<AnyElement> = Vec::new();
 
         if let Some(menu_state) = self.chat_menu.get().cloned() {
@@ -6348,7 +6355,7 @@ impl Shell {
                             .child(
                                 icon(icons::ALT_ARROW_RIGHT)
                                     .size(px(14.0))
-                                    .text_color(theme.text_muted.opacity(0.7)),
+                                    .text_color(theme.text_muted),
                             ),
                     )
                     .child(popover::menu_separator())
@@ -8731,6 +8738,12 @@ impl Render for Shell {
                     cx.notify();
                 } else {
                     this.open_add_space(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
+                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
                 }
             }));
 

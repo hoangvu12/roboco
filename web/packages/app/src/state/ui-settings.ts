@@ -148,6 +148,8 @@ export interface KeymapConfig {
   readonly toggleChanges: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
+  /** Mod+/ — opens the composer's model picker (upstream faac7432). */
+  readonly openModelPicker: string;
   readonly nextSession: string;
   readonly prevSession: string;
   readonly archiveSession: string;
@@ -297,6 +299,7 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     toggleChanges: "mod-r",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
+    openModelPicker: "mod-/",
     nextSession: mac ? "ctrl-tab" : "mod-tab",
     prevSession: mac ? "ctrl-shift-tab" : "mod-shift-tab",
     // Mod+A is the composer's Select all, so archiving takes the shifted combo.
@@ -546,6 +549,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     toggleChanges: combo("toggleChanges"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
+    openModelPicker: combo("openModelPicker"),
     nextSession: combo("nextSession"),
     prevSession: combo("prevSession"),
     archiveSession: combo("archiveSession"),

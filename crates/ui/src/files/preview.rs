@@ -2722,6 +2722,7 @@ impl FilesSurface {
     ) -> AnyElement {
         let group: SharedString = format!("file-comment-card-{}", comment.id).into();
         let id = comment.id.clone();
+        let theme = &theme.for_popup();
         let card = crate::popover::popover_card_flush(theme)
             .group(group.clone())
             .absolute()
@@ -2811,6 +2812,7 @@ impl FilesSurface {
         theme: &Theme,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let theme = &theme.for_popup();
         let card = crate::popover::popover_card_flush(theme)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {

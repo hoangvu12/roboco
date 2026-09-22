@@ -4712,8 +4712,9 @@ a:focus-visible,
 
 /*
  * Pinned below the list: a top hairline, 6px inline/bottom padding, capped
- * at 236px of scroll. Keyboard nav never enters it — the tray's rows are
- * mouse-only.
+ * at 236px of scroll. The tray's rows are the nested model settings'
+ * trigger rows (upstream 9a4757be): keyboard nav continues into them and
+ * each opens its own nested choices.
  */
 .model-traits {
   flex: none;
@@ -4739,15 +4740,52 @@ a:focus-visible,
   gap: 2px;
 }
 
-/* The tray's row overrides: 5px block padding, radius 6, 12.5px. */
-.model-trait-row {
-  padding-block: 5px;
-  border-radius: 6px;
+/* The tray's row overrides: 30px tall, radius follows the card's concentric
+   curve (`menu_row` h(30) + MENU_ITEM_RADIUS in pickers.rs). */
+.model-setting-row {
+  height: 30px;
+  padding-block: 0;
+  border-radius: 8px;
   font-size: 0.78125rem;
 }
 
 .model-trait-spring {
   flex: 1;
+}
+
+/* The trigger row's current value: muted, truncated, before the chevron. */
+.model-setting-value {
+  flex: none;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rb-text-muted);
+}
+
+.model-setting-chevron {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/* The nested choices expand inline beneath their trigger. */
+.model-setting-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-inline-start: 10px;
+}
+
+.model-setting-choice-row {
+  height: 30px;
+  padding-block: 0;
+  border-radius: 8px;
+  font-size: 0.78125rem;
+}
+
+.model-setting-check {
+  flex: none;
+  color: var(--rb-text);
 }
 
 /* `default_badge` (pickers.rs:3780): bare 10px semibold muted text. */
