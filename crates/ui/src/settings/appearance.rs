@@ -1842,7 +1842,7 @@ impl AppearancePage {
                 .px(px(8.0))
                 .py(px(6.0))
                 .text_size(px(12.0))
-                .text_color(theme.text_faint)
+                .text_color(theme.for_popup().text_faint)
                 .child(SharedString::from(if filtered {
                     "No matching fonts"
                 } else {
@@ -2305,7 +2305,7 @@ impl AppearancePage {
                         .mt(px(4.0))
                         .ml(px(23.0))
                         .text_size(crate::typography::ui_rems(10.5))
-                        .text_color(theme.text_muted.opacity(0.68))
+                        .text_color(theme.text_muted)
                         .child(description),
                 )
         };
@@ -2385,7 +2385,7 @@ impl AppearancePage {
                     .child(
                         div()
                             .text_size(crate::typography::ui_rems(10.5))
-                            .text_color(theme.text_muted.opacity(0.65))
+                            .text_color(theme.text_muted)
                             .child(SharedString::from(format!(
                                 "{} variant{}",
                                 compilation.family.variants.len(),
@@ -2488,7 +2488,7 @@ impl AppearancePage {
                                         .child(
                                             div()
                                                 .text_size(crate::typography::ui_rems(11.0))
-                                                .text_color(theme.text_muted.opacity(0.65))
+                                                .text_color(theme.text_muted)
                                                 .child(appearance),
                                         ),
                                 )
@@ -2557,7 +2557,7 @@ impl AppearancePage {
                     .gap(px(7.0))
                     .text_size(crate::typography::ui_rems(11.0))
                     .line_height(px(16.0))
-                    .text_color(theme.text_muted.opacity(0.72))
+                    .text_color(theme.text_muted)
                     .child(
                         icons::icon(icons::INFO_CIRCLE)
                             .size(px(13.0))

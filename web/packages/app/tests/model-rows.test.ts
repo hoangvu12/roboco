@@ -4,7 +4,9 @@ import {
   defaultModel,
   normalizeModelRows,
   offeredHarnessesImpl,
+  REASONING_SETTING_ID,
   scopedModelRows,
+  settingGroups,
   visibleHarnessesImpl,
   workspaceFooterLayout,
 } from "../src/lib/model-rows";
@@ -227,6 +229,54 @@ describe("harness visibility", () => {
       descriptor("grok", "Grok", { enabled: false, installed: true }),
     ];
     expect(offeredHarnessesImpl(all, false)).toEqual([]);
+  });
+});
+
+describe("setting_groups", () => {
+  const opus = bareModel("opus", "Opus", {
+    reasoningLevels: ["low", "high"],
+    options: [
+      {
+        id: "contextWindow",
+        label: "Context window",
+        defaultChoice: "standard",
+        choices: [
+          { id: "standard", label: "Standard" },
+          { id: "extended", label: "Extended" },
+        ],
+      },
+      {
+        id: "emptyOption",
+        label: "Never offered",
+        defaultChoice: "x",
+        choices: [],
+      },
+    ],
+  });
+
+  it("builds_the_reasoning_group_then_every_option_with_choices", () => {
+    const groups = settingGroups(opus, ["low", "high"], "high", {});
+    expect(groups.map((group) => group.id)).toEqual([REASONING_SETTING_ID, "contextWindow"]);
+    expect(groups[0]!.label).toBe("Reasoning");
+    expect(groups[0]!.choices.map((choice) => choice.reasoning)).toEqual(["low", "high"]);
+    expect(groups[0]!.choices.map((choice) => choice.selected)).toEqual([false, true]);
+    expect(groups[0]!.choices.map((choice) => choice.isDefault)).toEqual([false, true]);
+    expect(groups[1]!.label).toBe("Context window");
+  });
+
+  it("resolves_each_groups_selected_choice_from_the_saved_pick_or_default", () => {
+    const saved = { contextWindow: "extended" };
+    const groups = settingGroups(opus, ["low", "high"], null, saved);
+    expect(groups[1]!.choices.map((choice) => choice.selected)).toEqual([false, true]);
+    expect(groups[1]!.choices.map((choice) => choice.isDefault)).toEqual([true, false]);
+    // No reasoning pick: nothing in the ladder reads selected.
+    expect(groups[0]!.choices.every((choice) => !choice.selected)).toBe(true);
+  });
+
+  it("is_empty_without_a_ladder_or_offered_options", () => {
+    expect(settingGroups(undefined, [], null, {})).toEqual([]);
+    const haiku = bareModel("haiku", "Haiku");
+    expect(settingGroups(haiku, [], null, {})).toEqual([]);
   });
 });
 

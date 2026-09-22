@@ -15,14 +15,21 @@ import {
   rememberReasoning,
   toggleModelFavorite,
 } from "../lib/composer-draft";
-import { defaultReasoning, effectiveReasoningLadder, reasoningLabel, traitsCustomized, traitsSummary } from "../lib/traits-summary";
-import { offeredHarnesses, scopedModelRows, type ModelRail } from "../lib/model-rows";
+import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import {
+  offeredHarnesses,
+  REASONING_SETTING_ID,
+  scopedModelRows,
+  settingGroups,
+  type ModelRail,
+  type SettingGroup,
+} from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform } from "../state/shortcuts";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
-import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { MenuRowNav, MenuSeparator } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./ui/Skeleton";
@@ -481,6 +488,8 @@ function IdentityCard(props: IdentityCardProps) {
   );
   const [query, setQuery] = useState("");
   const [scrollTop, setScrollTop] = useState(0);
+  const [openSetting, setOpenSetting] = useState<string | null>(null);
+  const [settingCursor, setSettingCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -503,6 +512,14 @@ function IdentityCard(props: IdentityCardProps) {
     [query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
   );
 
+  // `setting_groups` — the traits tray's trigger rows: the reasoning ladder
+  // plus every option that offers choices. Keyboard nav continues from the
+  // model rows into these triggers (9a4757be's `on_key_down` counts).
+  const groups = useMemo(
+    () => settingGroups(selectedModel, ladder, draft.reasoning, draft.modelOptions),
+    [selectedModel, ladder, draft.reasoning, draft.modelOptions],
+  );
+
   // `selected_model_index`: the resolved model's index in the VISIBLE rows;
   // 0 when the favorites/search view doesn't contain it.
   const selectedModelIndex = useMemo(() => {
@@ -514,11 +531,53 @@ function IdentityCard(props: IdentityCardProps) {
   }, [rows, selectedModel, effectiveHarness, rail, isFavorite]);
 
   const activateRow = (index: number): void => {
+    if (index >= rows.length) {
+      // Enter on a settings trigger opens (or toggles) its nested menu
+      // (`activate_model_row`'s group branch).
+      const group = groups[index - rows.length];
+      if (group !== undefined) {
+        toggleSetting(group.id);
+      }
+      return;
+    }
     const row = rows[index];
     if (row === undefined) {
       return;
     }
+    // A model pick closes any open nested menu (`pick_model`).
+    setOpenSetting(null);
     onPickModel(row.harness, row.model);
+  };
+
+  // `open_setting` — land the submenu cursor on the group's selected choice
+  // so the check and the highlight never sit on two rows.
+  const openSettingGroup = useCallback((id: string): void => {
+    const group = groups.find((entry) => entry.id === id);
+    const landing = group?.choices.findIndex((choice) => choice.selected) ?? -1;
+    setSettingCursor(landing < 0 ? 0 : landing);
+    setOpenSetting(id);
+  }, [groups]);
+
+  const toggleSetting = (id: string): void => {
+    if (openSetting === id) {
+      setOpenSetting(null);
+    } else {
+      openSettingGroup(id);
+    }
+  };
+
+  // `activate_setting_choice` — apply the highlighted choice and close the
+  // nested menu; the card stays open for multi-adjust.
+  const activateSettingChoice = (group: SettingGroup, index: number): void => {
+    const choice = group.choices[index];
+    if (choice !== undefined) {
+      if (group.id === REASONING_SETTING_ID && choice.reasoning !== null) {
+        onPickReasoning(choice.reasoning);
+      } else if (selectedModel !== undefined) {
+        onPickOption(selectedModel, group.id, choice.value, choice.isDefault);
+      }
+    }
+    setOpenSetting(null);
   };
 
   // The cursor keyboard model (`useCursorList`) — the walk, Enter, and the
@@ -532,7 +591,9 @@ function IdentityCard(props: IdentityCardProps) {
   // finalFocus decision reads (the composer focus return).
   const { cursor, setCursor, onKeyDown: walkKeys } = useCursorList({
     enabled: open,
-    count: rows.length,
+    // Continue from the model rows into the pinned settings triggers
+    // (`on_key_down`'s HarnessModel count, 9a4757be).
+    count: rows.length + groups.length,
     onActivate: activateRow,
     listRef,
     rowAttribute: "model-index",
@@ -564,6 +625,8 @@ function IdentityCard(props: IdentityCardProps) {
       return;
     }
     setQuery("");
+    // A reopen starts with every nested menu closed (`dismiss`).
+    setOpenSetting(null);
     // Prime the rail BEFORE anchoring: Favorites when the chat is not
     // harness-locked and there are saved favorites, else Harness (§2.5.4).
     setRail(!locked && favorites.length > 0 ? "favorites" : "harness");
@@ -578,11 +641,13 @@ function IdentityCard(props: IdentityCardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened]);
 
-  // Typing resets the highlight AND the list's scroll offset (gap row 32).
+  // Typing resets the highlight AND the list's scroll offset (gap row 32);
+  // it also closes any open nested menu (the Edited reset in pickers.rs).
   const onQueryChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
     setQuery(event.target.value);
     setCursor(0);
     setScrollTop(0);
+    setOpenSetting(null);
     if (listRef.current !== null) {
       listRef.current.scrollTop = 0;
     }
@@ -597,6 +662,37 @@ function IdentityCard(props: IdentityCardProps) {
         // A closing card ignores keys (it keeps painting through the exit).
         return;
       }
+      // The nested settings menu owns the keys while open (`on_key_down`'s
+      // setting_menu branch): ↑/↓ walk its choices, Enter applies one,
+      // Escape/← closes just the nested menu — the card stays open, so the
+      // escape never reaches Base UI's dismissal pipeline.
+      if (openSetting !== null) {
+        const group = groups.find((entry) => entry.id === openSetting);
+        if (group === undefined) {
+          setOpenSetting(null);
+          return;
+        }
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          const length = group.choices.length;
+          setSettingCursor((current) =>
+            length === 0 ? 0 : (current + (event.key === "ArrowUp" ? -1 : 1) + length) % length,
+          );
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          activateSettingChoice(group, settingCursor);
+          return;
+        }
+        if (event.key === "Escape" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpenSetting(null);
+          return;
+        }
+        return;
+      }
       // The platform modifier — `modifiers.platform` (pickers.rs on_key_down):
       // Cmd on macOS, Ctrl elsewhere, the same modifier the shell's Mod+1..9
       // jump binding spells. The global dispatcher (ticket 12) suppresses the
@@ -606,6 +702,15 @@ function IdentityCard(props: IdentityCardProps) {
         // Cmd+1…9 activates the Nth visible row (gap row 16).
         event.preventDefault();
         activateRow(Number(event.key) - 1);
+        return;
+      }
+      // → opens the highlighted settings trigger (`on_key_down`'s right arm).
+      if (event.key === "ArrowRight" && cursor !== null && cursor >= rows.length) {
+        event.preventDefault();
+        const group = groups[cursor - rows.length];
+        if (group !== undefined) {
+          openSettingGroup(group.id);
+        }
         return;
       }
       walkKeys(event);
@@ -621,7 +726,7 @@ function IdentityCard(props: IdentityCardProps) {
     // stale. walkKeys itself is deliberately NOT a dep (it is a new
     // reference per render; listing it would re-arm on every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, rows.length, cursor, open]);
+  }, [opened, rows.length, cursor, open, groups, openSetting, settingCursor]);
 
   const rowHeight = rail === "favorites" ? ROW_HEIGHT_FAVORITE : ROW_HEIGHT_COMPACT;
   const viewport = LIST_HEIGHT - 12; // the band's 6px padding-block, both sides
@@ -681,6 +786,9 @@ function IdentityCard(props: IdentityCardProps) {
                 className={`model-tab ${rail === "favorites" ? "model-tab-viewed" : ""}`}
                 onClick={() => {
                   setRail("favorites");
+                  // A tab switch closes any open nested menu (pickers.rs's
+                  // tab click arms).
+                  setOpenSetting(null);
                   anchorCursor(selectedModelIndex);
                 }}
               >
@@ -700,6 +808,7 @@ function IdentityCard(props: IdentityCardProps) {
                     className={`model-tab ${isViewed ? "model-tab-viewed" : ""} ${isDisabled ? "model-tab-locked" : ""}`}
                     onClick={() => {
                       setRail("harness");
+                      setOpenSetting(null);
                       // The handler stays attached while locked: the rail
                       // switches back, `pickHarness` no-ops (pickers.rs:3282).
                       onPickHarness(descriptor.id);
@@ -788,11 +897,12 @@ function IdentityCard(props: IdentityCardProps) {
             </div>
             {showTraits && (
               <TraitsTray
-                model={selectedModel}
-                ladder={ladder}
-                draft={draft}
-                onPickReasoning={onPickReasoning}
-                onPickOption={onPickOption}
+                groups={groups}
+                openSetting={openSetting}
+                settingCursor={settingCursor}
+                highlightedSetting={cursor !== null ? Math.max(0, cursor - rows.length) : null}
+                onToggleSetting={toggleSetting}
+                onActivateChoice={activateSettingChoice}
               />
             )}
            </>
@@ -896,25 +1006,30 @@ function ModelRow({
 }
 
 /**
- * The pinned traits tray — `render_traits_sections` (pickers.rs:3666-3774).
- * Keyboard nav never enters it: ↑/↓ walk the MODEL list only; the tray's
- * rows are mouse-only. There are no check marks — selection is the row's
- * active wash.
+ * The pinned traits tray — the nested model settings (upstream 9a4757be's
+ * `render_traits_sections`). Each setting is a compact trigger row (label,
+ * current value, chevron); clicking (or → / Enter from the walk) opens its
+ * own nested choices — the desktop floats them beside the trigger, the web
+ * expands them inline under it. Selecting keeps the card open for
+ * multi-adjust; Escape/← closes just the nested menu.
  */
 function TraitsTray({
-  model,
-  ladder,
-  draft,
-  onPickReasoning,
-  onPickOption,
+  groups,
+  openSetting,
+  settingCursor,
+  highlightedSetting,
+  onToggleSetting,
+  onActivateChoice,
 }: {
-  model: Model | undefined;
-  ladder: readonly ReasoningLevel[];
-  draft: DraftConfig;
-  onPickReasoning: (level: ReasoningLevel | null) => void;
-  onPickOption: (model: Model, optionId: string, choiceId: string, isDefault: boolean) => void;
+  groups: readonly SettingGroup[];
+  openSetting: string | null;
+  settingCursor: number;
+  /** The keyboard-walked trigger index (relative to the groups), or null. */
+  highlightedSetting: number | null;
+  onToggleSetting: (id: string) => void;
+  onActivateChoice: (group: SettingGroup, index: number) => void;
 }) {
-  if (model === undefined) {
+  if (groups.length === 0) {
     return (
       <div className="model-traits" id="traits-skeleton" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
         <div className="model-traits-body">
@@ -923,57 +1038,50 @@ function TraitsTray({
       </div>
     );
   }
-  const options = model.options;
-  if (ladder.length === 0 && options.length === 0) {
-    return null;
-  }
-  const fallbackLevel = defaultReasoning(ladder);
   return (
     <div className="model-traits" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
       <div className="model-traits-body">
-        {ladder.length > 0 && (
-          <div className="model-traits-section">
-            <MenuHeading>Reasoning</MenuHeading>
-            {ladder.map((level) => (
-              <MenuRowNav
-                key={level}
-                fadeKey={level}
-                className="model-trait-row"
-                selected={draft.reasoning === level}
-                onClick={() => onPickReasoning(level)}
-              >
-                <span className="menu-row-label">{reasoningLabel(level)}</span>
-                <span className="model-trait-spring" />
-                {fallbackLevel === level && <DefaultBadge />}
-              </MenuRowNav>
-            ))}
-          </div>
-        )}
-        {options.map((option, index) => {
-          const saved = draft.modelOptions[option.id];
-          const selectedChoice =
-            typeof saved === "string" && option.choices.some((choice) => choice.id === saved)
-              ? saved
-              : option.defaultChoice;
+        {groups.map((group, ix) => {
+          const open = openSetting === group.id;
+          const value = group.choices.find((choice) => choice.selected)?.label ?? "";
           return (
-            <div className="model-traits-section" key={option.id}>
-              {index > 0 || ladder.length > 0 ? <MenuSeparator /> : null}
-              <MenuHeading>{option.label}</MenuHeading>
-              {option.choices.map((choice) => (
-                <MenuRowNav
-                  key={choice.id}
-                  fadeKey={`${option.id}/${choice.id}`}
-                  className="model-trait-row"
-                  selected={selectedChoice === choice.id}
-                  onClick={() =>
-                    onPickOption(model, option.id, choice.id, choice.id === option.defaultChoice)
-                  }
-                >
-                  <span className="menu-row-label">{choice.label}</span>
-                  <span className="model-trait-spring" />
-                  {choice.id === option.defaultChoice && <DefaultBadge />}
-                </MenuRowNav>
-              ))}
+            <div className="model-traits-section" key={group.id}>
+              {ix > 0 ? <MenuSeparator /> : null}
+              <MenuRowNav
+                fadeKey={`model-setting-${group.id}`}
+                className="model-setting-row"
+                selected={open}
+                highlighted={!open && highlightedSetting === ix}
+                onClick={() => onToggleSetting(group.id)}
+                aria-expanded={open}
+              >
+                <span className="menu-row-label">{group.label}</span>
+                <span className="model-trait-spring" />
+                <span className="model-setting-value">{value}</span>
+                <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
+              </MenuRowNav>
+              {open && (
+                <div className="model-setting-choices" role="group" aria-label={group.label}>
+                  {group.choices.map((choice, choiceIx) => {
+                    const choiceKey = choice.value.length > 0 ? choice.value : (choice.reasoning ?? choice.label);
+                    return (
+                      <MenuRowNav
+                        key={choiceKey}
+                        fadeKey={`setting-choice-${group.id}-${choiceKey}`}
+                        className="model-setting-choice-row"
+                        selected={choice.selected}
+                        highlighted={!choice.selected && choiceIx === settingCursor}
+                        onClick={() => onActivateChoice(group, choiceIx)}
+                      >
+                        <span className="menu-row-label">{choice.label}</span>
+                        <span className="model-trait-spring" />
+                        {choice.isDefault && <DefaultBadge />}
+                        {choice.selected && <Icon name="check" size={14} className="model-setting-check" />}
+                      </MenuRowNav>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

@@ -630,6 +630,7 @@ impl super::BrowserSurface {
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
         use gpui::{IntoElement, div, prelude::*, px};
+        let theme = &theme.for_popup();
         let native = self.native.as_ref()?;
         let menu = native.menu.as_ref()?;
         let items = menu["items"].as_array()?;

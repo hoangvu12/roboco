@@ -6013,6 +6013,7 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
         // Bottom-of-sidebar identity: avatar circle + scope/account label and
         // its secondary status line.
@@ -6122,7 +6123,7 @@ impl Shell {
                         .pt(px(6.0))
                         .pb(px(4.0))
                         .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.text_muted.opacity(0.7))
+                        .text_color(theme.text_muted)
                         .truncate()
                         .child(menu_identity),
                 )
@@ -6281,7 +6282,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_popup();
         let mut overlays: Vec<AnyElement> = Vec::new();
 
         if let Some(menu_state) = self.chat_menu.get().cloned() {
@@ -6348,7 +6349,7 @@ impl Shell {
                             .child(
                                 icon(icons::ALT_ARROW_RIGHT)
                                     .size(px(14.0))
-                                    .text_color(theme.text_muted.opacity(0.7)),
+                                    .text_color(theme.text_muted),
                             ),
                     )
                     .child(popover::menu_separator())
