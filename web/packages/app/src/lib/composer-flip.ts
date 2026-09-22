@@ -80,9 +80,11 @@ export const RESIZE_SETTLE_MS = 150;
 export const CARET_BLINK_MS = 500;
 /// `ROUTE_SNAP_MS` (composer.rs:455) — flips within this of a nav SNAP.
 export const ROUTE_SNAP_MS = 250;
-/// `CLUSTER_Y_DELTA` (composer.rs:394) — compact↔expanded cluster centering delta.
-export const CLUSTER_Y_DELTA = 2.5;
-/// `CLUSTER_X_DELTA` (composer.rs:402) — cluster right-inset delta (pr-2 ↔ px-3).
+/// `CLUSTER_Y_DELTA` (composer.rs:394) — Send/attach sits 29px above the
+/// expanded pill's bottom versus 24.5px in compact; the morph glides this
+/// optical adjustment instead of snapping.
+export const CLUSTER_Y_DELTA = 4.5;
+/// `CLUSTER_X_DELTA` (composer.rs:402) — Send's right-inset delta (pr-2 ↔ px-3).
 export const CLUSTER_X_DELTA = 4;
 /// `ACTION_UTILITY_GAP` (composer.rs:406) — pickers ↔ paperclip optical join.
 export const ACTION_UTILITY_GAP = 2;
@@ -91,6 +93,23 @@ export const ACTION_PRIMARY_GAP = 8;
 /// The auto-grow retarget epsilon (composer.rs:7556) — arming threshold for
 /// the height morph.
 export const HEIGHT_RETARGET_EPSILON = 0.5;
+
+/**
+ * `model_handoff` (composer.rs:412, e0c1e936): fade out at the old endpoint,
+ * relocate while invisible, then fade in at the new endpoint. Only a
+ * six-pixel nudge is visible; a long label never sweeps across the prompt.
+ * Compact amount is reversible with the shared clock. Returns
+ * `(side, opacity, drift)` — which horizontal slot (0 left, 1 right), the
+ * chip's opacity, and the visible nudge in px (positive toward the right
+ * group, negative back toward the left).
+ */
+export function modelHandoff(compact: number): [number, number, number] {
+  const amount = Math.min(Math.max(compact, 0), 1);
+  const side = amount < 0.5 ? 0 : 1;
+  const opacity = Math.max(Math.abs(amount - 0.5) - 0.06, 0) / 0.44;
+  const drift = (1 - opacity) * (side === 0 ? 6 : -6);
+  return [side, opacity, drift];
+}
 
 // Attachment strip metrics (composer.rs:288-296) moved to `lib/attachments.ts`
 // with the strip's own rendering (ticket 17); re-exported so the composer and
@@ -518,8 +537,9 @@ export function collapseTextGlide(from: number, progress: number): number {
 }
 
 /**
- * `morph_cluster_dy` (composer.rs:443): the decaying `CLUSTER_Y_DELTA` — the
- * whole control cluster rides the stationary bottom anchor at FULL alpha.
+ * `morph_cluster_dy` (composer.rs:443): the decaying `CLUSTER_Y_DELTA` —
+ * controls share this bottom anchor; the model's horizontal fade is applied
+ * independently so its endpoint matches Attachment and Send.
  */
 export function morphClusterDy(progress: number): number {
   return CLUSTER_Y_DELTA * (1 - progress);

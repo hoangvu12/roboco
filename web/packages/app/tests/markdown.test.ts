@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { readFileSync } from "node:fs";
+import { renderToString } from "react-dom/server";
+import { CodeBlock } from "../src/components/markdown";
 import {
   autolinkRuns,
   bareUrlLen,
@@ -545,5 +549,33 @@ describe("parseInline autolink integration", () => {
       throw new Error("codeBlock");
     }
     expect(block.language).toBe("Rust");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code-block text selection (d353ebbf — render.rs + selection.rs, ported)
+// ---------------------------------------------------------------------------
+
+describe("code-block text selection", () => {
+  it("the code body is selectable: one line span per source line, blank lines kept", () => {
+    const html = renderToString(createElement(CodeBlock, { code: "selectable\n\nsecond", language: null }));
+    // One md-codeline per source line — the blank line keeps its own element
+    // so a selection crossing it contributes its newline (join_spans parity).
+    const lines = html.match(/<span class="md-codeline">/g) ?? [];
+    expect(lines.length).toBe(3);
+    const pre = /<pre class="md-pre">([\s\S]*?)<\/pre>/.exec(html);
+    if (pre === null) {
+      throw new Error("md-pre");
+    }
+    // Strip tags: the browser's native selection joins exactly this text —
+    // "selectable\n\nsecond" (blank line preserved), plus the last line's
+    // trailing terminator.
+    expect(pre[1]!.replace(/<[^>]+>/g, "")).toBe("selectable\n\nsecond\n");
+  });
+
+  it("the CSS pins user-select: text on the code body", () => {
+    const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+    const rule = /\.md-pre\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(rule).toContain("user-select: text");
   });
 });

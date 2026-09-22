@@ -468,6 +468,24 @@ impl EngineHandle {
         self.deferred_state.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_client(client: RpcClient) -> Self {
+        Self {
+            inner: Arc::new(RemoteEngine {
+                client: Arc::new(client),
+                url: "memory://test".into(),
+                lifecycle_task: tokio::sync::Mutex::new(None),
+            }),
+            engine_info: EngineInfo {
+                device_id: "local".into(),
+                workspace_scope: WorkspaceScope::Local,
+                cursor_sdk_version: None,
+                capabilities: Vec::new(),
+            },
+            deferred_state: None,
+        }
+    }
+
     pub async fn shutdown(&self) {
         self.inner.shutdown().await;
     }
@@ -1642,6 +1660,20 @@ impl AppState {
 
     pub fn engine(&self) -> Option<&EngineHandle> {
         self.engine.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_engine(&mut self, handle: EngineHandle) {
+        // Roboco routes requests through the engine registry
+        // (request_routing::selected_target), so a live dispatch path needs a
+        // resolvable target, not only the handle. The registry here is the
+        // no-background-tasks variant: every frame the client writes stays
+        // visible on the client's own channel.
+        self.registry = Some(EngineRegistry::test_local(
+            handle.engine_info.clone(),
+            handle.inner.client().clone(),
+        ));
+        self.engine = Some(handle);
     }
 
     pub fn registry(&self) -> Option<&EngineRegistry> {
