@@ -510,6 +510,7 @@ pub struct Pickers {
     setting_menu: Option<ModelSetting>,
     setting_active: usize,
     setting_on_left: bool,
+    setting_hover: popover::HoverIntent<ModelSetting>,
     setting_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     setting_scroll: gpui::ScrollHandle,
     harnesses: Loadable<Vec<HarnessDescriptor>>,
@@ -698,6 +699,7 @@ impl Pickers {
             setting_menu: None,
             setting_active: 0,
             setting_on_left: false,
+            setting_hover: popover::HoverIntent::default(),
             setting_bounds: None,
             setting_scroll: gpui::ScrollHandle::new(),
             harnesses: Loadable::Idle,
@@ -930,6 +932,7 @@ impl Pickers {
     /// Outside clicks and navigation keep focus at the clicked destination.
     fn dismiss(&mut self, cx: &mut Context<Self>) {
         self.focus_on_mount = false;
+        self.cancel_setting_hover();
         self.setting_menu = None;
         self.setting_bounds = None;
         self.menu_bar = popover::MenuScrollbarState::default();
@@ -2231,6 +2234,7 @@ impl Pickers {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &Window, cx: &mut Context<Self>) {
+        self.cancel_setting_hover();
         // The frame stays mounted (and possibly focused) through the exit
         // animation — keys must not drive a dying popover.
         if !self.open.is_open() {
@@ -3811,7 +3815,61 @@ impl Pickers {
         groups
     }
 
+    fn cancel_setting_hover(&mut self) {
+        self.setting_hover.cancel();
+    }
+
+    fn hover_setting(
+        &mut self,
+        id: ModelSetting,
+        index: usize,
+        pointer: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let action = self.setting_hover.enter(
+            self.setting_menu.as_ref(),
+            &id,
+            pointer,
+            self.setting_bounds,
+            self.setting_on_left,
+        );
+        self.apply_setting_hover(action, id, index, pointer, cx);
+    }
+
+    fn apply_setting_hover(
+        &mut self,
+        action: popover::HoverAction,
+        id: ModelSetting,
+        index: usize,
+        pointer: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            popover::HoverAction::None => {}
+            popover::HoverAction::Open => {
+                self.active = index;
+                self.open_setting(id, cx);
+                self.setting_hover.record_origin(pointer);
+            }
+            popover::HoverAction::Defer => {
+                let source = self.setting_menu.clone();
+                self.setting_hover.defer(cx, move |this, cx| {
+                    if this.is_open()
+                        && this.setting_menu == source
+                        && this.setting_hover.pending() == Some(&id)
+                    {
+                        this.active = index;
+                        this.open_setting(id, cx);
+                        this.setting_hover.record_origin(pointer);
+                    }
+                });
+            }
+        }
+    }
+
     fn open_setting(&mut self, id: ModelSetting, cx: &mut Context<Self>) {
+        self.cancel_setting_hover();
+        self.setting_hover.reset();
         self.setting_active = self
             .setting_groups(cx)
             .iter()
@@ -3866,6 +3924,9 @@ impl Pickers {
                 .unwrap_or_default();
             let id = group.id.clone();
             let outside_id = id.clone();
+            let move_id = id.clone();
+            let exit_id = id.clone();
+            let exit_entity = cx.entity().downgrade();
             let entity = cx.entity().downgrade();
             let mut row = popover::menu_row(
                 &theme,
@@ -3878,19 +3939,16 @@ impl Pickers {
             .py(px(0.0))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.active = base_index + ix;
-                if this.setting_menu.as_ref() == Some(&id) {
-                    this.setting_menu = None;
-                    this.setting_bounds = None;
-                } else {
-                    this.open_setting(id.clone(), cx);
-                }
+                this.cancel_setting_hover();
+                this.setting_menu = None;
+                this.setting_bounds = None;
                 window.focus(&this.focus, cx);
                 cx.stop_propagation();
                 cx.notify();
             }))
             .on_mouse_down_out(
                 cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                    // The trigger handles its own toggle. Elsewhere in the parent,
+                    // The trigger dismisses its own child. Elsewhere in the parent,
                     // close this child during capture and let that control receive
                     // the same click. Clicks inside the floating child stay local.
                     if this.setting_menu.as_ref() == Some(&outside_id)
@@ -3898,6 +3956,7 @@ impl Pickers {
                             .setting_bounds
                             .is_some_and(|bounds| bounds.contains(&event.position))
                     {
+                        this.cancel_setting_hover();
                         this.setting_menu = None;
                         this.setting_bounds = None;
                         cx.notify();
@@ -3915,7 +3974,37 @@ impl Pickers {
                             }
                         });
                     },
-                    |_, _, _, _| {},
+                    move |trigger, _, window, _| {
+                        if !open {
+                            return;
+                        }
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                            if phase != gpui::DispatchPhase::Bubble {
+                                return;
+                            }
+                            let _ = exit_entity.update(cx, |this, cx| {
+                                if this.setting_menu.as_ref() != Some(&exit_id) {
+                                    return;
+                                }
+                                if this.setting_hover.contains_pointer(
+                                    trigger,
+                                    this.setting_bounds,
+                                    event.position,
+                                    this.setting_on_left,
+                                ) {
+                                    return;
+                                }
+                                this.cancel_setting_hover();
+                                this.setting_menu = None;
+                                this.setting_bounds = None;
+                                this.setting_hover.reset();
+                                // Do not leave a keyboard-style selection on the
+                                // trigger after pointer navigation dismisses it.
+                                this.active = 0;
+                                cx.notify();
+                            });
+                        });
+                    },
                 )
                 .absolute()
                 .inset_0(),
@@ -4003,7 +4092,44 @@ impl Pickers {
                     self.setting_on_left,
                 ));
             }
-            rows.push(row);
+            // Keep hover ownership on a stable wrapper: menu_row already
+            // owns its hover animation, and changing the open row's styling
+            // must not reopen a child just dismissed by clicking its trigger.
+            rows.push(
+                div()
+                    .id(("model-setting-hover", ix))
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                        if *hovered {
+                            this.hover_setting(
+                                id.clone(),
+                                base_index + ix,
+                                window.mouse_position(),
+                                cx,
+                            );
+                        } else {
+                            this.setting_hover.leave(&id);
+                        }
+                    }))
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                            let action = this.setting_hover.moved(
+                                this.setting_menu.as_ref(),
+                                &move_id,
+                                event.position,
+                                this.setting_bounds,
+                                this.setting_on_left,
+                            );
+                            this.apply_setting_hover(
+                                action,
+                                move_id.clone(),
+                                base_index + ix,
+                                event.position,
+                                cx,
+                            );
+                        }),
+                    )
+                    .child(row),
+            );
         }
         div()
             .flex()
@@ -5155,8 +5281,19 @@ mod tests {
                     cx,
                 );
             };
+            let hover = |window: &mut Window, cx: &mut App, position| {
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear();
+                window.draw(cx).clear();
+            };
             cx.update_window(handle.into(), |_, window, cx| {
-                click(window, cx, trigger);
+                hover(window, cx, trigger);
                 window.draw(cx).clear();
                 window.draw(cx).clear();
             })
@@ -5173,38 +5310,142 @@ mod tests {
             } else {
                 assert!(submenu.left() > parent.right());
             }
-            // A second click must toggle the trigger, without dismissing the picker.
+            // Clicking the hovered trigger dismisses its child and keeps it closed.
             cx.update_window(handle.into(), |_, window, cx| {
                 click(window, cx, trigger);
                 window.draw(cx).clear();
             })
             .unwrap();
             pickers.read_with(cx, |pickers, _| {
-                assert!(pickers.setting_menu.is_none(), "trigger toggles closed");
+                assert!(
+                    pickers.setting_menu.is_none(),
+                    "trigger click dismisses the hovered submenu"
+                );
                 assert!(pickers.is_open());
             });
             cx.update_window(handle.into(), |_, window, cx| {
-                click(window, cx, trigger);
-                window.draw(cx).clear();
+                // Moving inside the same hovered row must not reopen it.
+                hover(window, cx, trigger + gpui::point(px(2.0), px(0.0)));
+                assert!(pickers.read(cx).setting_menu.is_none());
+                hover(window, cx, gpui::point(px(8.0), px(8.0)));
+                hover(window, cx, trigger);
+            })
+            .unwrap();
+            // Cross the neighboring trigger diagonally toward the open child.
+            // It must not steal the menu while the pointer is inside the cone.
+            let diagonal = gpui::point(
+                if on_left {
+                    parent.left() + px(8.0)
+                } else {
+                    parent.right() - px(8.0)
+                },
+                trigger.y + px(32.0),
+            );
+            cx.update_window(handle.into(), |_, window, cx| {
+                hover(window, cx, diagonal);
+                assert_eq!(pickers.read(cx).setting_menu, Some(ModelSetting::Reasoning));
+                assert!(pickers.read(cx).setting_hover.pending().is_some());
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(200));
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| {
+                hover(
+                    window,
+                    cx,
+                    diagonal + gpui::point(px(if on_left { -3.0 } else { 3.0 }), px(0.0)),
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(200));
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert_eq!(
+                    pickers.read(cx).setting_menu,
+                    Some(ModelSetting::Reasoning),
+                    "forward progress renews grace"
+                );
+                hover(window, cx, submenu.center());
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(400));
+            cx.run_until_parked();
+            pickers.read_with(cx, |pickers, _| {
+                assert_eq!(pickers.setting_menu, Some(ModelSetting::Reasoning));
+                assert!(pickers.setting_hover.pending().is_none());
+            });
+            // Resting on the sibling expresses intent to switch after grace.
+            cx.update_window(handle.into(), |_, window, cx| {
+                hover(window, cx, trigger);
+                hover(window, cx, diagonal);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(350));
+            cx.run_until_parked();
+            pickers.read_with(cx, |pickers, _| {
+                assert_eq!(
+                    pickers.setting_menu,
+                    Some(ModelSetting::Option("contextWindow".into()))
+                );
+            });
+            // Moving away from the cone switches immediately. A click during
+            // the grace period dismisses instead, with no delayed reopening.
+            cx.update_window(handle.into(), |_, window, cx| {
+                hover(window, cx, trigger);
+                hover(window, cx, diagonal);
+                hover(window, cx, trigger + gpui::point(px(0.0), px(32.0)));
+                assert_eq!(
+                    pickers.read(cx).setting_menu,
+                    Some(ModelSetting::Option("contextWindow".into()))
+                );
+                hover(window, cx, trigger);
+                hover(window, cx, diagonal);
+                click(window, cx, diagonal);
                 window.draw(cx).clear();
             })
             .unwrap();
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(400));
+            cx.run_until_parked();
+            pickers.read_with(cx, |pickers, _| {
+                assert!(pickers.setting_menu.is_none());
+                assert!(pickers.setting_hover.pending().is_none());
+                assert!(pickers.is_open());
+            });
+            cx.update_window(handle.into(), |_, window, cx| hover(window, cx, trigger))
+                .unwrap();
             let gap_x = if on_left {
                 (submenu.right() + parent.left()) / 2.0
             } else {
                 (parent.right() + submenu.left()) / 2.0
             };
-            // Move out of the row diagonally, pause over the gap, overshoot
-            // below the submenu, and come back to its first choice.
+            // Leaving the safe corridor closes the child and clears its
+            // trigger selection, while preserving the parent picker.
+            for outside in [
+                gpui::point(gap_x, submenu.bottom() + px(20.0)),
+                gpui::point(parent.center().x, parent.top() + px(60.0)),
+                gpui::point(px(8.0), px(8.0)),
+            ] {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    hover(window, cx, outside);
+                    assert!(pickers.read(cx).setting_menu.is_none());
+                    assert_eq!(pickers.read(cx).active, 0);
+                    assert!(pickers.read(cx).is_open());
+                    hover(window, cx, trigger);
+                    assert_eq!(pickers.read(cx).setting_menu, Some(ModelSetting::Reasoning));
+                })
+                .unwrap();
+            }
+            // Moving through the gap into the child remains safe.
             let target = gpui::point(
                 submenu.left() + px(30.0),
                 submenu.bottom() - px(popover::CARD_INSET + 30.0 + popover::MENU_GAP + 15.0),
             );
-            for position in [
-                gpui::point(gap_x, trigger.y + px(16.0)),
-                gpui::point(gap_x, submenu.bottom() + px(20.0)),
-                target,
-            ] {
+            for position in [gpui::point(gap_x, trigger.y + px(16.0)), target] {
                 cx.update_window(handle.into(), |_, window, cx| {
                     window.dispatch_event(
                         gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
@@ -5230,13 +5471,11 @@ mod tests {
                 assert!(pickers.setting_menu.is_none());
                 assert!(pickers.is_open());
             });
-            // Switching directly between sibling triggers takes one click.
+            // Hover switches directly between sibling triggers without clicking.
             cx.update_window(handle.into(), |_, window, cx| {
                 window.draw(cx).clear();
-                click(window, cx, trigger);
-                window.draw(cx).clear();
-                window.draw(cx).clear();
-                click(window, cx, trigger + gpui::point(px(0.0), px(32.0)));
+                hover(window, cx, trigger);
+                hover(window, cx, trigger + gpui::point(px(0.0), px(32.0)));
                 window.draw(cx).clear();
                 window.draw(cx).clear();
             })
@@ -5262,7 +5501,7 @@ mod tests {
                     assert!(pickers.search.read(cx).focus_handle(cx).is_focused(window));
                 });
                 window.draw(cx).clear();
-                click(window, cx, trigger);
+                hover(window, cx, trigger);
                 window.draw(cx).clear();
                 window.draw(cx).clear();
             })

@@ -63,6 +63,7 @@ mod actions_ui;
 mod project_icon;
 mod command_palette;
 mod sidebar_pins;
+mod sidebar_sections;
 mod spaces;
 mod tabs;
 
@@ -815,10 +816,11 @@ struct SidebarSessionDrag {
     profile_key: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SidebarSessionDrop {
     Pinned(usize),
     Regular,
+    Section(String),
 }
 
 struct SidebarSessionTransfer {
@@ -899,6 +901,7 @@ struct PinnedSessionDragState {
 type SidebarKeyedRow = (String, f32, AnyElement);
 
 struct SidebarSessionRows {
+    custom_count: usize,
     regular_count: usize,
     rows: Vec<SidebarKeyedRow>,
     pinned_count: usize,
@@ -1299,6 +1302,12 @@ pub struct Shell {
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    section_dialog: Option<sidebar_sections::SectionDialog>,
+    /// Custom-section header context menu: (section id, window position).
+    section_menu: Option<(String, Point<Pixels>)>,
+    section_header_hover: Option<String>,
+    section_menu_focus: FocusHandle,
+    section_menu_active: Option<usize>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
     /// The add-space palette (device tabs + folder search), `Some` while open.
@@ -1681,6 +1690,11 @@ impl Shell {
             delete_confirm: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
+            section_dialog: None,
+            section_menu: None,
+            section_header_hover: None,
+            section_menu_focus: cx.focus_handle(),
+            section_menu_active: None,
             delete_space_confirm: None,
             add_space: None,
             command_palette: None,
@@ -3936,8 +3950,20 @@ impl Shell {
 
     /// The pins the sidebar should draw: the committed profile bucket with
     /// the current write burst's intents projected on top (upstream read the
-    /// synced registry state here; locally `UiSettings` is the authority).
+    /// synced registry state here; locally `UiSettings` is the authority),
+    /// minus any ids claimed by custom sections (membership is exclusive).
     pub(super) fn active_sidebar_pins(&self, cx: &App) -> Vec<String> {
+        let mut pins = self.raw_sidebar_pins(cx);
+        let sections = self.active_sidebar_sections(cx);
+        pins.retain(|id| {
+            !sections
+                .iter()
+                .any(|section| section.session_ids.contains(id))
+        });
+        pins
+    }
+
+    fn raw_sidebar_pins(&self, cx: &App) -> Vec<String> {
         if let Some(pins) = self.optimistic_sidebar_pins(cx) {
             return pins;
         }
@@ -3965,16 +3991,29 @@ impl Shell {
         if pins.contains(&chat_id) == pinned {
             return;
         }
+        if pinned && self.raw_sidebar_pins(cx).contains(&chat_id) {
+            self.assign_sidebar_section(&chat_id, None, cx);
+            cx.notify();
+            return;
+        }
         let change = if pinned {
             sidebar_pins::SidebarPinChange::Pin {
-                session_id: chat_id,
+                session_id: chat_id.clone(),
                 after: pins.last().cloned(),
                 before: None,
             }
         } else {
-            sidebar_pins::SidebarPinChange::Unpin { session_id: chat_id }
+            sidebar_pins::SidebarPinChange::Unpin {
+                session_id: chat_id.clone(),
+            }
         };
-        self.apply_sidebar_pin_change(profile_key, change, cx);
+        // Roboco is engine-local for every scope (ADR 0004): the pin write
+        // lands synchronously, so section membership clears at the same
+        // moment (upstream gated this on the Local scope and let the pin
+        // ack clear it for synced profiles).
+        if self.apply_sidebar_pin_change(profile_key, change, cx) && pinned {
+            self.assign_sidebar_section(&chat_id, None, cx);
+        }
         cx.notify();
     }
 
@@ -4003,7 +4042,7 @@ impl Shell {
         change: sidebar_pins::SidebarPinChange,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mut pinned_session_ids = self.active_sidebar_pins(cx);
+        let mut pinned_session_ids = self.raw_sidebar_pins(cx);
         change.project(&mut pinned_session_ids);
         if let Err(message) =
             self.validate_sidebar_pin_change(&profile_key, &pinned_session_ids, cx)
@@ -4012,7 +4051,7 @@ impl Shell {
             cx.notify();
             return false;
         }
-        if self.active_sidebar_pins(cx) == pinned_session_ids {
+        if self.raw_sidebar_pins(cx) == pinned_session_ids {
             return false;
         }
         if pinned_session_ids.is_empty() {
@@ -4049,6 +4088,8 @@ impl Shell {
     /// stranding it over a session the user never picked.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
         self.command_palette.is_some()
+            || self.section_dialog.is_some()
+            || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
     }
@@ -5725,18 +5766,20 @@ impl Shell {
             .moving_row
             .map(|(row, height)| self.render_moving_sidebar_session(row, height, theme));
         let pinned_count = session_rows.pinned_count;
+        let custom_count = session_rows.custom_count;
         let keyed = session_rows.rows;
         let regular_count = session_rows.regular_count;
+        let regular_start = pinned_count + custom_count;
         let ungrouped = self.settings.sidebar_organization == SidebarOrganization::InOneList;
         let regular_body_height = spaces::SIDEBAR_DISCLOSURE_BODY_INSET
             + keyed
                 .iter()
-                .skip(pinned_count)
+                .skip(regular_start)
                 .map(|(_, height, _)| height)
                 .sum::<f32>()
-            + SIDEBAR_LIST_GAP * keyed.len().saturating_sub(pinned_count + 1) as f32;
+            + SIDEBAR_LIST_GAP * keyed.len().saturating_sub(regular_start + 1) as f32;
         let regular_body_height =
-            if keyed.len() == pinned_count && self.sidebar_session_transfer.is_some() {
+            if keyed.len() == regular_start && self.sidebar_session_transfer.is_some() {
                 spaces::SIDEBAR_DISCLOSURE_BODY_INSET
                     + 48.0
                     + self.sidebar_transfer_extra_gap("regular")
@@ -5773,11 +5816,15 @@ impl Shell {
             ));
         }
         for (ix, (key, height, _)) in keyed.iter().enumerate() {
-            if ungrouped && ix == pinned_count {
+            if ungrouped && ix == regular_start {
                 order.push((
                     "sidebar-sessions-header".into(),
                     spaces::SIDEBAR_DISCLOSURE_HEADER_HEIGHT
-                        + if show_pinned_section { 12.0 } else { 0.0 }
+                        + if show_pinned_section || custom_count > 0 {
+                            12.0
+                        } else {
+                            0.0
+                        }
                         + if self.sessions_open {
                             spaces::SIDEBAR_DISCLOSURE_BODY_INSET - SIDEBAR_LIST_GAP
                         } else {
@@ -5785,7 +5832,7 @@ impl Shell {
                         },
                 ));
             }
-            if ungrouped && ix >= pinned_count && !self.sessions_open {
+            if ungrouped && ix >= regular_start && !self.sessions_open {
                 continue;
             }
             if ix < pinned_count && !self.pinned_open {
@@ -5905,7 +5952,6 @@ impl Shell {
 
         let user_menu = self.render_user_menu(
             "Roboco".into(),
-            None,
             "Stored on this device".into(),
             theme,
             cx,
@@ -5916,7 +5962,8 @@ impl Shell {
         let filter_row = self.render_spaces_filter(theme, cx);
         let active_list = if !list_items.is_empty() {
             let mut pinned_items = list_items;
-            let regular_items = pinned_items.split_off(pinned_count);
+            let mut custom_items = pinned_items.split_off(pinned_count);
+            let regular_items = custom_items.split_off(custom_count);
             let regular_empty = regular_items.is_empty();
             let pinned_group = show_pinned_section
                 .then(|| self.render_pinned_section(pinned_items, pinned_body_height, theme, cx));
@@ -5927,6 +5974,7 @@ impl Shell {
                 .gap(px(SIDEBAR_LIST_GAP))
                 .pb(px(Theme::SPACE_SM))
                 .when_some(pinned_group, |el, group| el.child(group))
+                .children(custom_items)
                 .when(
                     !regular_items.is_empty() || self.sidebar_session_transfer.is_some(),
                     |el| {
@@ -5997,7 +6045,7 @@ impl Shell {
                                     .into_any_element(),
                                 regular_body_height,
                                 regular_count,
-                                show_pinned_section,
+                                show_pinned_section || custom_count > 0,
                                 theme,
                                 cx,
                             ),
@@ -6267,16 +6315,15 @@ impl Shell {
     fn render_user_menu(
         &mut self,
         user_line: SharedString,
-        trigger_subline: Option<SharedString>,
         menu_identity: SharedString,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
-        // Bottom-of-sidebar identity: avatar circle + scope/account label and
-        // its secondary status line.
+        // Only the compact avatar button is interactive; footer whitespace is not.
         let initial: SharedString = user_line
+            .trim()
             .chars()
             .next()
             .map(|c| c.to_uppercase().to_string())
@@ -6284,14 +6331,18 @@ impl Shell {
             .into();
         let mut trigger = div()
             .id("user-menu")
+            .debug_selector(|| "user-menu".into())
+            .role(gpui::Role::Button)
+            .aria_label(format!("Account menu: {user_line}"))
+            .relative()
+            .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE + 8.0))
             .flex_none()
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(Theme::SPACE_SM))
+            .rounded_full()
+            .p(px(4.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.0))
+            .justify_center()
             .cursor_pointer()
             // user-menu.tsx trigger: hover `bg-white/[0.04]`, open state
             // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
@@ -6323,43 +6374,19 @@ impl Shell {
             .child(
                 // Avatar: white circle, initial in near-black (roboco user-menu.tsx).
                 div()
-                    .size(px(28.0))
+                    .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
                     .flex_none()
                     .rounded_full()
                     .bg(theme.text)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(crate::typography::ui_rems(12.0))
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(9.0))
+                    .line_height(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.bg)
-                    .child(initial),
-            )
-            .child(
-                // Name with an optional status line underneath — no chip on the right.
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .line_height(px(17.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .truncate()
-                            .child(user_line.clone()),
-                    )
-                    .when_some(trigger_subline, |identity, subline| {
-                        identity.child(
-                            div()
-                                .text_size(crate::typography::ui_rems(11.0))
-                                .line_height(px(15.0))
-                                .text_color(theme.text_muted)
-                                .child(subline),
-                        )
-                    }),
+                    .child(div().w_full().text_center().child(initial)),
             );
         if self.user_menu.get().is_some() {
             let closing = self.user_menu.closing_since();
@@ -6400,7 +6427,7 @@ impl Shell {
                         .child(SharedString::from("Settings")),
                 )
                 .into_any_element();
-            trigger = trigger.child(popover::anchored_menu_above(
+            trigger = trigger.child(popover::anchored_menu_right(
                 "user-menu-popover",
                 menu,
                 closing,
@@ -6777,6 +6804,7 @@ impl Shell {
         }
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
+        overlays.extend(self.render_section_overlays(viewport, window, cx));
         if let Some(overlay) = self.render_command_palette(viewport, window, cx) {
             overlays.push(overlay);
         }

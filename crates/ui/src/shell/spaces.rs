@@ -154,7 +154,9 @@ fn sidebar_session_drop_pins(
 ) -> Vec<String> {
     let mut next = saved.to_vec();
     match target {
-        SidebarSessionDrop::Regular => next.retain(|id| id != chat_id),
+        SidebarSessionDrop::Regular | SidebarSessionDrop::Section(_) => {
+            next.retain(|id| id != chat_id)
+        }
         SidebarSessionDrop::Pinned(index) => {
             if let Some(from) = visible.iter().position(|id| id == chat_id) {
                 return reorder_visible_pins(saved, visible, from, index.min(visible.len() - 1));
@@ -1237,6 +1239,11 @@ pub(super) struct SpacesMenu {
 }
 
 pub(super) struct SidebarViewMenu {
+    submenu: Option<usize>,
+    submenu_active: Option<usize>,
+    submenu_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    submenu_on_left: bool,
+    hover_intent: popover::HoverIntent<usize>,
     /// Keyboard cursor. Mouse-opened menus start without one so the persisted
     /// radio/check state is the only selection signal until an arrow key is
     /// pressed.
@@ -1279,9 +1286,9 @@ enum SidebarViewRow {
 }
 
 impl SidebarViewRow {
-    /// Radio-style presentation choices behave like the project selector and
-    /// dismiss after selection. Show toggles stay open for batch changes.
-    fn closes_menu(self) -> bool {
+    /// Radio choices dismiss their submenu after selection. Show toggles
+    /// stay open for batch changes.
+    fn closes_submenu(self) -> bool {
         matches!(
             self,
             Self::ByProject | Self::ByDevice | Self::InOneList | Self::LastUpdated | Self::Created
@@ -1289,7 +1296,10 @@ impl SidebarViewRow {
     }
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 11] = [
+const SIDEBAR_VIEW_GROUPS: [(&str, std::ops::Range<usize>); 3] =
+    [("Organize", 0..3), ("Sort", 3..5), ("Show", 5..10)];
+
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 10] = [
     SidebarViewRow::ByDevice,
     SidebarViewRow::ByProject,
     SidebarViewRow::InOneList,
@@ -1300,7 +1310,6 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 11] = [
     SidebarViewRow::ShowHarness,
     SidebarViewRow::ShowProjectIcon,
     SidebarViewRow::ShowProjectLabel,
-    SidebarViewRow::Compact,
 ];
 
 // list items stay tightly related at 2px, while section boundaries use 12px
@@ -1746,7 +1755,7 @@ impl popover::ScrollRailHost for Shell {
 }
 
 impl Shell {
-    fn begin_sidebar_disclosure_motion(
+    pub(super) fn begin_sidebar_disclosure_motion(
         &mut self,
         key: &str,
         resting_height: f32,
@@ -1764,7 +1773,7 @@ impl Shell {
         );
     }
 
-    fn render_sidebar_disclosure_body(
+    pub(super) fn render_sidebar_disclosure_body(
         &self,
         key: &str,
         open: bool,
@@ -1798,7 +1807,12 @@ impl Shell {
             .into_any_element()
     }
 
-    fn sidebar_disclosure_chevron(&self, key: &str, open: bool, theme: &Theme) -> AnyElement {
+    pub(super) fn sidebar_disclosure_chevron(
+        &self,
+        key: &str,
+        open: bool,
+        theme: &Theme,
+    ) -> AnyElement {
         let resting_reveal = if open { 1.0 } else { 0.0 };
         let chevron = icon(icons::ALT_ARROW_RIGHT)
             .size(px(12.0))
@@ -2034,7 +2048,10 @@ impl Shell {
         }
     }
 
-    fn close_sidebar_view_menu(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_sidebar_view_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.sidebar_view_menu.open_mut() {
+            menu.hover_intent.reset();
+        }
         if self.sidebar_view_menu.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.sidebar_view_menu);
             cx.notify();
@@ -2045,6 +2062,11 @@ impl Shell {
         self.close_spaces_menu(cx);
         let focus = cx.focus_handle();
         self.sidebar_view_menu.open(SidebarViewMenu {
+            submenu: None,
+            submenu_active: None,
+            submenu_bounds: None,
+            submenu_on_left: false,
+            hover_intent: popover::HoverIntent::default(),
             active: None,
             focus: focus.clone(),
         });
@@ -2053,6 +2075,9 @@ impl Shell {
     }
 
     fn activate_sidebar_view_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
+        if let Some(menu) = self.sidebar_view_menu.open_mut() {
+            menu.hover_intent.cancel();
+        }
         self.cancel_sidebar_session_transfer(cx);
         self.cancel_pinned_session_drag(cx);
         match row {
@@ -2091,41 +2116,144 @@ impl Shell {
             }
         }
         self.schedule_save(cx);
-        if row.closes_menu() {
-            self.close_sidebar_view_menu(cx);
+        if row.closes_submenu() {
+            if let Some(menu) = self.sidebar_view_menu.open_mut() {
+                menu.submenu = None;
+                menu.submenu_active = None;
+                menu.submenu_bounds = None;
+                menu.hover_intent.cancel();
+            }
         }
         cx.notify();
     }
 
-    fn sidebar_view_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        if !self.sidebar_view_menu.is_open() {
-            return;
+    fn open_sidebar_view_submenu(&mut self, group: usize, keyboard: bool, cx: &mut Context<Self>) {
+        if let Some(menu) = self.sidebar_view_menu.open_mut() {
+            menu.hover_intent.reset();
+            menu.active = Some(group);
+            menu.submenu = (group < SIDEBAR_VIEW_GROUPS.len()).then_some(group);
+            menu.submenu_active = keyboard.then_some(0);
+            menu.submenu_bounds = None;
+            cx.notify();
         }
-        match popover::classify_key(
+    }
+
+    fn hover_sidebar_view_group(
+        &mut self,
+        group: usize,
+        pointer: gpui::Point<gpui::Pixels>,
+        moved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.sidebar_view_menu.open_mut() else {
+            return;
+        };
+        let action = if moved {
+            menu.hover_intent.moved(
+                menu.submenu.as_ref(),
+                &group,
+                pointer,
+                menu.submenu_bounds,
+                menu.submenu_on_left,
+            )
+        } else {
+            menu.hover_intent.enter(
+                menu.submenu.as_ref(),
+                &group,
+                pointer,
+                menu.submenu_bounds,
+                menu.submenu_on_left,
+            )
+        };
+        match action {
+            popover::HoverAction::None => {}
+            popover::HoverAction::Open => {
+                self.open_sidebar_view_submenu(group, false, cx);
+                if let Some(menu) = self.sidebar_view_menu.open_mut() {
+                    menu.hover_intent.record_origin(pointer);
+                }
+            }
+            popover::HoverAction::Defer => {
+                let source = menu.submenu;
+                menu.hover_intent.defer(cx, move |this, cx| {
+                    if this.sidebar_view_menu.open_mut().is_some_and(|menu| {
+                        menu.submenu == source && menu.hover_intent.pending() == Some(&group)
+                    }) {
+                        this.open_sidebar_view_submenu(group, false, cx);
+                        if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                            menu.hover_intent.record_origin(pointer);
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    fn sidebar_view_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(menu) = self.sidebar_view_menu.open_mut() else {
+            return;
+        };
+        menu.hover_intent.cancel();
+        let key = match popover::classify_key(
             event.keystroke.key.as_str(),
             event.keystroke.modifiers.platform,
             event.keystroke.modifiers.control,
         ) {
-            popover::MenuKey::Escape => self.close_sidebar_view_menu(cx),
-            popover::MenuKey::Up | popover::MenuKey::Down => {
-                let up = event.keystroke.key.eq_ignore_ascii_case("arrowup");
-                if let Some(menu) = self.sidebar_view_menu.open_mut() {
-                    menu.active = popover::menu_step(
-                        menu.active,
-                        SIDEBAR_VIEW_ROWS.len(),
-                        if up { -1 } else { 1 },
-                    );
+            popover::MenuKey::Up => "up",
+            popover::MenuKey::Down => "down",
+            _ => event.keystroke.key.as_str(),
+        };
+        match key {
+            "escape" | "left" => {
+                if menu.submenu.take().is_some() {
+                    menu.submenu_active = None;
+                    menu.submenu_bounds = None;
                     cx.notify();
+                } else if key == "escape" {
+                    self.close_sidebar_view_menu(cx);
                 }
             }
-            popover::MenuKey::Enter | popover::MenuKey::ModEnter => {
-                let active = self.sidebar_view_menu.get().and_then(|m| m.active);
-                if let Some(row) = active.and_then(|ix| SIDEBAR_VIEW_ROWS.get(ix)).copied() {
-                    self.activate_sidebar_view_row(row, cx);
+            "up" | "down" => {
+                let delta = if key == "up" { -1 } else { 1 };
+                if let Some(group) = menu.submenu {
+                    menu.submenu_active = popover::menu_step(
+                        menu.submenu_active,
+                        SIDEBAR_VIEW_GROUPS[group].1.len(),
+                        delta,
+                    );
+                } else {
+                    menu.active =
+                        popover::menu_step(menu.active, SIDEBAR_VIEW_GROUPS.len() + 2, delta);
+                }
+                cx.notify();
+            }
+            "right" | "enter" | "space" => {
+                if let Some(group) = menu.submenu {
+                    if key == "enter" {
+                        if let Some(choice) = menu.submenu_active {
+                            let row =
+                                SIDEBAR_VIEW_ROWS[SIDEBAR_VIEW_GROUPS[group].1.start + choice];
+                            self.activate_sidebar_view_row(row, cx);
+                        }
+                    }
+                } else {
+                    let group = menu.active.unwrap_or(0);
+                    if group == SIDEBAR_VIEW_GROUPS.len() + 1 {
+                        if key != "right" && !event.is_held {
+                            self.open_section_dialog(None, cx);
+                        }
+                    } else if group == SIDEBAR_VIEW_GROUPS.len() {
+                        if key != "right" && !event.is_held {
+                            self.activate_sidebar_view_row(SidebarViewRow::Compact, cx);
+                        }
+                    } else if key != "space" {
+                        self.open_sidebar_view_submenu(group, true, cx);
+                    }
                 }
             }
-            popover::MenuKey::Backspace | popover::MenuKey::Other => {}
+            _ => return,
         }
+        cx.stop_propagation();
     }
 
     fn render_sidebar_view_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -2134,6 +2262,9 @@ impl Shell {
             return div().into_any_element();
         };
         let active = menu_state.active;
+        let submenu = menu_state.submenu;
+        let submenu_active = menu_state.submenu_active;
+        let on_left = menu_state.submenu_on_left;
         let focus = menu_state.focus.clone();
         let organization = self.settings.sidebar_organization;
         let sort = self.settings.sidebar_sort;
@@ -2144,7 +2275,7 @@ impl Shell {
         let labels = [
             "By device",
             "By project",
-            "In one list",
+            "None",
             "Last updated",
             "Created",
             "Branch",
@@ -2152,7 +2283,6 @@ impl Shell {
             "Harness",
             "Project icon",
             "Location",
-            "Compact mode",
         ];
         let icons = [
             icons::LAPTOP,
@@ -2165,7 +2295,6 @@ impl Shell {
             icons::BOT,
             icons::PROJECT_DEFAULT,
             icons::FOLDER,
-            icons::LIST,
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
@@ -2178,76 +2307,296 @@ impl Shell {
             show_harness,
             self.settings.sidebar_show_project_icon,
             self.settings.sidebar_show_project_label,
-            self.settings.sidebar_compact,
         ];
-        let mut rows: Vec<AnyElement> = SIDEBAR_VIEW_ROWS
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(ix, row)| {
-                popover::menu_row_nav(
-                    theme,
-                    selected[ix],
-                    active == Some(ix),
-                    format!("sidebar-view-row-{ix}"),
+        let values = [
+            labels[selected[..3].iter().position(|v| *v).unwrap_or(0)].to_string(),
+            labels[3 + selected[3..5].iter().position(|v| *v).unwrap_or(0)].to_string(),
+        ];
+        let mut groups: Vec<AnyElement> = Vec::new();
+        for (group, (label, range)) in SIDEBAR_VIEW_GROUPS.iter().enumerate() {
+            if group == 2 {
+                groups.push(popover::menu_separator().into_any_element());
+            }
+            let open = submenu == Some(group);
+            let entity = cx.entity().downgrade();
+            let exit_entity = cx.entity().downgrade();
+            let mut trigger = popover::menu_row_nav(
+                theme,
+                open,
+                active == Some(group),
+                format!("sidebar-view-group-{group}"),
+            )
+            .id(("sidebar-view-group", group))
+            .relative()
+            .h(px(30.0))
+            .py(px(0.0))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // Match model settings: hover opens; clicking dismisses, including
+                // a sibling crossed during hover grace, without delayed reopening.
+                if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                    menu.active = Some(group);
+                    menu.submenu = None;
+                    menu.submenu_active = None;
+                    menu.submenu_bounds = None;
+                    menu.hover_intent.reset();
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }))
+            .child(div().flex_1().child(*label))
+            .when(group < values.len(), |el| {
+                el.child(
+                    div()
+                        .text_color(theme.text_muted)
+                        .child(values[group].clone()),
                 )
-                .id(("sidebar-view-row", ix))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(menu) = this.sidebar_view_menu.open_mut() {
-                        menu.active = None;
+            })
+            .child(
+                icon(icons::ALT_ARROW_RIGHT)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                gpui::canvas(
+                    move |bounds, window, cx| {
+                        let left = bounds.right() + px(244.0) > window.viewport_size().width;
+                        let _ = entity.update(cx, |this, cx| {
+                            if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                                if menu.submenu_on_left != left {
+                                    menu.submenu_on_left = left;
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    },
+                    move |trigger, _, window, _| {
+                        if !open {
+                            return;
+                        }
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                            if phase != gpui::DispatchPhase::Bubble {
+                                return;
+                            }
+                            let _ = exit_entity.update(cx, |this, cx| {
+                                let Some(menu) = this.sidebar_view_menu.open_mut() else {
+                                    return;
+                                };
+                                if menu.submenu != Some(group)
+                                    || menu.hover_intent.contains_pointer(
+                                        trigger,
+                                        menu.submenu_bounds,
+                                        event.position,
+                                        menu.submenu_on_left,
+                                    )
+                                {
+                                    return;
+                                }
+                                menu.hover_intent.reset();
+                                menu.submenu = None;
+                                menu.submenu_bounds = None;
+                                menu.submenu_active = None;
+                                menu.active = None;
+                                cx.notify();
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
+            if open {
+                let mut choices = Vec::new();
+                for (choice, ix) in range.clone().enumerate() {
+                    let row = SIDEBAR_VIEW_ROWS[ix];
+                    choices.push(
+                        popover::menu_row_nav(
+                            theme,
+                            selected[ix],
+                            submenu_active == Some(choice),
+                            format!("sidebar-view-row-{ix}"),
+                        )
+                        .id(("sidebar-view-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.activate_sidebar_view_row(row, cx);
+                            cx.stop_propagation();
+                        }))
+                        .child(
+                            icon(icons[ix])
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(theme.text_muted),
+                        )
+                        .child(div().flex_1().child(labels[ix]))
+                        .child(div().w(px(14.0)).flex_none().when(selected[ix], |el| {
+                            el.child(
+                                icon(icons::CHECK)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                        })),
+                    );
+                }
+                let entity = cx.entity().downgrade();
+                let child = popover::popover_card(theme)
+                    .w(px(232.0))
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(popover::menu_heading(theme, label))
+                    .children(choices)
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, cx| {
+                                let _ = entity.update(cx, |this, _| {
+                                    if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                                        menu.submenu_bounds = Some(bounds);
+                                    }
+                                });
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    );
+                trigger = trigger.child(popover::nested_menu(
+                    format!("sidebar-view-child-{group}"),
+                    child.into_any_element(),
+                    on_left,
+                ));
+            }
+            groups.push(
+                div()
+                    .id(("sidebar-view-hover", group))
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                        if *hovered {
+                            this.hover_sidebar_view_group(
+                                group,
+                                window.mouse_position(),
+                                false,
+                                cx,
+                            );
+                        } else if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                            menu.hover_intent.leave(&group);
+                        }
+                    }))
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                            this.hover_sidebar_view_group(group, event.position, true, cx);
+                        }),
+                    )
+                    .child(trigger)
+                    .into_any_element(),
+            );
+        }
+        groups.push(popover::menu_separator().into_any_element());
+        groups.push(
+            div()
+                .id("sidebar-view-compact-hover")
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                    if *hovered {
+                        this.hover_sidebar_view_group(
+                            SIDEBAR_VIEW_GROUPS.len(),
+                            window.mouse_position(),
+                            false,
+                            cx,
+                        );
+                    } else if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                        menu.hover_intent.leave(&SIDEBAR_VIEW_GROUPS.len());
                     }
-                    this.activate_sidebar_view_row(row, cx)
+                }))
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    this.hover_sidebar_view_group(
+                        SIDEBAR_VIEW_GROUPS.len(),
+                        event.position,
+                        true,
+                        cx,
+                    );
                 }))
                 .child(
-                    icon(icons[ix])
-                        .size(px(15.0))
-                        .flex_none()
-                        .text_color(theme.text_muted),
+                    popover::menu_row_nav(
+                        theme,
+                        false,
+                        active == Some(SIDEBAR_VIEW_GROUPS.len()),
+                        "sidebar-view-compact",
+                    )
+                    .id("sidebar-view-compact")
+                    .h(px(30.0))
+                    .py(px(0.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_sidebar_view_submenu(SIDEBAR_VIEW_GROUPS.len(), false, cx);
+                        this.activate_sidebar_view_row(SidebarViewRow::Compact, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(div().flex_1().child("Compact"))
+                    .child(crate::settings::widgets::toggle_switch(
+                        theme,
+                        self.settings.sidebar_compact,
+                    )),
                 )
-                .child(div().flex_1().child(SharedString::from(labels[ix])))
-                .child(div().w(px(14.0)).flex_none().when(selected[ix], |el| {
-                    el.child(
-                        icon(icons::CHECK)
+                .into_any_element(),
+        );
+        groups.push(popover::menu_separator().into_any_element());
+        groups.push(
+            div()
+                .id("sidebar-create-section-hover")
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                    let target = SIDEBAR_VIEW_GROUPS.len() + 1;
+                    if *hovered {
+                        this.hover_sidebar_view_group(target, window.mouse_position(), false, cx);
+                    } else if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                        menu.hover_intent.leave(&target);
+                    }
+                }))
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    this.hover_sidebar_view_group(
+                        SIDEBAR_VIEW_GROUPS.len() + 1,
+                        event.position,
+                        true,
+                        cx,
+                    );
+                }))
+                .child(
+                    popover::menu_row_nav(
+                        theme,
+                        false,
+                        active == Some(SIDEBAR_VIEW_GROUPS.len() + 1),
+                        "sidebar-create-section",
+                    )
+                    .id("sidebar-create-section")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_section_dialog(None, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(
+                        icon(icons::PLUS)
                             .size(px(14.0))
                             .text_color(theme.text_muted),
                     )
-                }))
-                .into_any_element()
-            })
-            .collect();
-        // Compact mode is a layout choice, not a row-content toggle, so it
-        // gets its own section under Show.
-        let layout_rows = rows.split_off(10);
-        let show_rows = rows.split_off(5);
-        let sort_rows = rows.split_off(3);
-        let organization_rows = rows;
-
+                    .child("Create Section"),
+                )
+                .into_any_element(),
+        );
         popover::popover_card(theme)
             .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
             .track_focus(&focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 this.sidebar_view_menu_key(event, cx)
             }))
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_sidebar_view_menu(cx)))
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if !this
+                    .sidebar_view_menu
+                    .get()
+                    .and_then(|m| m.submenu_bounds)
+                    .is_some_and(|bounds| bounds.contains(&event.position))
+                {
+                    this.close_sidebar_view_menu(cx);
+                }
+            }))
             .flex()
             .flex_col()
-            .child(popover::menu_heading(theme, "Organize"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(organization_rows),
-            )
-            .child(popover::menu_separator())
-            .child(popover::menu_heading(theme, "Sort"))
-            .child(div().flex().flex_col().gap(px(2.0)).children(sort_rows))
-            .child(popover::menu_separator())
-            .child(popover::menu_heading(theme, "Show"))
-            .child(div().flex().flex_col().gap(px(2.0)).children(show_rows))
-            .child(popover::menu_separator())
-            .child(popover::menu_heading(theme, "Layout"))
-            .child(div().flex().flex_col().gap(px(2.0)).children(layout_rows))
+            .gap(px(2.0))
+            .children(groups)
             .into_any_element()
     }
 
@@ -2434,7 +2783,7 @@ impl Shell {
             .tooltip(|_, cx| cx.new(|_| SidebarViewOptionsTooltip).into())
             .tooltip_show_delay(std::time::Duration::from_millis(350))
             .child(
-                icon(icons::SORT)
+                icon(icons::MORE_HORIZONTAL)
                     .size(px(16.0))
                     .text_color(theme.text_muted.opacity(0.6)),
             );
@@ -2675,6 +3024,26 @@ impl Shell {
         let (pinned_chats, chats): (Vec<_>, Vec<_>) = chats
             .into_iter()
             .partition(|chat| pinned_order.contains(&chat.id));
+        let custom_sections = self.active_sidebar_sections(cx);
+        let mut custom_order = Vec::new();
+        for section in &custom_sections {
+            if !section.collapsed {
+                custom_order.extend(
+                    chats
+                        .iter()
+                        .filter(|chat| section.session_ids.contains(&chat.id))
+                        .map(|chat| chat.id.clone()),
+                );
+            }
+        }
+        let chats: Vec<_> = chats
+            .into_iter()
+            .filter(|chat| {
+                !custom_sections
+                    .iter()
+                    .any(|section| section.session_ids.contains(&chat.id))
+            })
+            .collect();
         let ordered = if self.settings.sidebar_organization != SidebarOrganization::InOneList {
             let mut groups: Vec<(Option<(String, String)>, Vec<roboco_proto::Chat>)> = Vec::new();
             for chat in chats {
@@ -2708,12 +3077,13 @@ impl Shell {
         let ordered = pinned_chats
             .into_iter()
             .map(|chat| chat.id)
+            .chain(custom_order.iter().cloned())
             .chain(ordered)
             .collect::<Vec<_>>();
         let mut visible = project_pinned_first(&ordered, pinned_order);
         if !self.sessions_open && self.settings.sidebar_organization == SidebarOrganization::InOneList
         {
-            visible.retain(|id| pinned_order.contains(id));
+            visible.retain(|id| pinned_order.contains(id) || custom_order.contains(id));
         }
         if !self.pinned_open {
             let pins: HashSet<&str> = pinned_order.iter().map(String::as_str).collect();
@@ -3295,23 +3665,39 @@ impl Shell {
             self.cancel_sidebar_session_transfer(cx);
             return;
         }
-        let saved = self.settings.sidebar_pins(&payload.profile_key).to_vec();
-        let next =
-            sidebar_session_drop_pins(&saved, &payload.visible_ids, &payload.chat_id, target);
-        if saved == next {
+        if let SidebarSessionDrop::Section(id) = &target {
+            if !self
+                .active_sidebar_sections(cx)
+                .iter()
+                .any(|section| &section.id == id)
+            {
+                self.cancel_sidebar_session_transfer(cx);
+                return;
+            }
+        }
+        let saved = self.raw_sidebar_pins(cx);
+        let next = sidebar_session_drop_pins(
+            &saved,
+            &payload.visible_ids,
+            &payload.chat_id,
+            target.clone(),
+        );
+        let sections = self.active_sidebar_sections(cx);
+        let source_section = sections
+            .iter()
+            .find(|section| section.session_ids.contains(&payload.chat_id))
+            .map(|section| section.id.as_str());
+        let target_section = match &target {
+            SidebarSessionDrop::Section(id) => Some(id.as_str()),
+            _ => None,
+        };
+        if saved == next && source_section == target_section {
+            // A no-op drop still animates home; ordinary groups retain recency order.
             self.cancel_sidebar_session_transfer(cx);
             return;
         }
-        self.sidebar_session_transfer = None;
-        self.cancel_pinned_session_drag(cx);
-        if matches!(target, SidebarSessionDrop::Pinned(_)) {
-            self.pinned_open = true;
-        } else {
-            self.sessions_open = true;
-        }
-        // Only pin preferences change. Regular rows keep their live activity sort.
-        // One per-item intent, anchored to the drop's neighbors (68306a17):
-        // a Move for an existing pin, a Pin for a new one, an Unpin otherwise.
+        // Validate and accept before ending the preview. Rejected drops use
+        // the same animated return path as dropping outside a destination.
         let change = if let Some(index) = next.iter().position(|id| id == &payload.chat_id) {
             let after = index.checked_sub(1).and_then(|i| next.get(i)).cloned();
             let before = next.get(index + 1).cloned();
@@ -3333,12 +3719,27 @@ impl Shell {
                 session_id: payload.chat_id.clone(),
             }
         };
-        if !self.apply_sidebar_pin_change(payload.profile_key.clone(), change, cx) {
+        if saved != next
+            && !self.apply_sidebar_pin_change(payload.profile_key.clone(), change, cx)
+        {
             self.cancel_sidebar_session_transfer(cx);
             return;
         }
-        // The drop left every row visually in place: the FLIP diff adopts the
-        // new order without gliding it (`commit_pinned_session_drag`'s reset).
+        // Roboco is engine-local for every scope (ADR 0004): section
+        // membership is device-local and always follows the drop (upstream
+        // skipped this ui-local assign only for synced profiles, whose pins
+        // the registry owned).
+        self.assign_sidebar_section(&payload.chat_id, target_section, cx);
+        self.sidebar_session_transfer = None;
+        self.cancel_pinned_session_drag(cx);
+        if matches!(target, SidebarSessionDrop::Pinned(_)) {
+            self.pinned_open = true;
+        } else {
+            self.sessions_open = true;
+        }
+        // Membership changes preserve each group's live activity sort.
+        // Drag previews already animated this move. Establish a fresh layout
+        // baseline so the automatic resort glide does not replay it on release.
         self.sidebar_prev_order.clear();
         self.sidebar_resort.clear();
         self.sidebar_new_keys.clear();
@@ -3476,8 +3877,26 @@ impl Shell {
                 .collect::<Vec<_>>(),
         );
 
+        let custom_sections = self.active_sidebar_sections(cx);
+        let custom_count = custom_sections.len();
+        let mut custom_groups: Vec<_> = custom_sections
+            .iter()
+            .map(|section| {
+                (
+                    Some((format!("section:{}", section.id), section.name.clone())),
+                    Vec::new(),
+                )
+            })
+            .collect();
         let mut regular_groups: Vec<(Option<(String, String)>, Vec<ActiveChatRow>)> = Vec::new();
         for row in regular_rows {
+            if let Some(index) = custom_sections
+                .iter()
+                .position(|section| section.session_ids.contains(&row.chat.id))
+            {
+                custom_groups[index].1.push(row);
+                continue;
+            }
             if let Some((_, existing)) = regular_groups
                 .iter_mut()
                 .find(|(group, _)| group == &row.group)
@@ -3491,10 +3910,17 @@ impl Shell {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut regular_groups, local_device_id.as_deref());
         }
-        let mut sections = Vec::with_capacity(regular_groups.len() + usize::from(pinned_count > 0));
+        let mut sections = Vec::with_capacity(
+            regular_groups.len() + custom_count + usize::from(pinned_count > 0),
+        );
         if !pinned_rows.is_empty() {
             sections.push((None, pinned_rows));
         }
+        let custom_sessions = custom_groups
+            .iter()
+            .map(|(_, rows)| rows.len())
+            .sum::<usize>();
+        sections.extend(custom_groups);
         sections.extend(regular_groups);
 
         let returning = self.sidebar_session_transfer.is_none();
@@ -3598,6 +4024,12 @@ impl Shell {
         // Flat top-to-bottom slot across groups: the same order
         // `sidebar_visible_order` hands the jump shortcuts and cycling, so a
         // chip always names the key that opens its row.
+        let visible_slots: std::collections::HashMap<_, _> = self
+            .sidebar_visible_order(cx)
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect();
         let mut slot = 0usize;
         let mut rendered = Vec::new();
         let mut moving_row = None;
@@ -3635,9 +4067,8 @@ impl Shell {
                     change_request.is_some(),
                 );
                 // Only rows a jump slot can reach wear a chip; row 10 onward
-                // keeps its time-ago. While Pinned is collapsed the hidden
-                // pins hold no slot, so the visible rows start at 0.
-                let jump_slot = slot.checked_sub(if self.pinned_open { 0 } else { pinned_count });
+                // keeps its time-ago. Collapsed sections hold no slot.
+                let jump_slot = visible_slots.get(&chat.id).copied();
                 let jump_label: Option<SharedString> = if jump_hints && let Some(slot) = jump_slot {
                     let combo = keymap.get(ShortcutId::JumpSession(slot));
                     (slot < JUMP_SLOTS && !combo.is_empty()).then(|| badge_combo(combo).into())
@@ -3782,6 +4213,18 @@ impl Shell {
                 }
                 continue;
             };
+            if let Some(id) = key.strip_prefix("section:") {
+                if let Some(section) = custom_sections.iter().find(|section| section.id == id) {
+                    rendered.push(self.render_custom_sidebar_section(
+                        section.clone(),
+                        rendered_rows,
+                        drag_group,
+                        theme,
+                        cx,
+                    ));
+                    continue;
+                }
+            }
             let organization = match self.settings.sidebar_organization {
                 SidebarOrganization::ByDevice => "device",
                 SidebarOrganization::ByProject => "project",
@@ -3857,7 +4300,10 @@ impl Shell {
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
         SidebarSessionRows {
-            regular_count: base_ids.len().saturating_sub(pinned_count),
+            custom_count,
+            regular_count: base_ids
+                .len()
+                .saturating_sub(pinned_count + custom_sessions),
             rows: rendered,
             pinned_count,
             moving_row,
@@ -4058,6 +4504,13 @@ impl Shell {
         let shown = self.archived_shown.max(INITIAL);
         let visible_count = total.min(shown);
         let has_more = total > shown;
+        // "Show more" matches the row slot: compact rows are 29px, so the
+        // button shrinks with them instead of towering over the list.
+        let more_height = if self.settings.sidebar_compact {
+            super::sidebar_row_height(true, true, false, false)
+        } else {
+            36.0
+        };
         let body_height = SIDEBAR_DISCLOSURE_BODY_INSET
             + rows
                 .iter()
@@ -4073,7 +4526,7 @@ impl Shell {
                 .sum::<f32>()
             + visible_count.saturating_sub(1) as f32 * SIDEBAR_LIST_GAP
             + if has_more {
-                36.0 + SIDEBAR_LIST_GAP
+                more_height + SIDEBAR_LIST_GAP
             } else {
                 0.0
             };
@@ -4148,7 +4601,7 @@ impl Shell {
                         // Sits outside the rows' gapped column — match the
                         // list's 2px row gap or it fuses with the last row.
                         .mt(px(2.0))
-                        .h(px(36.0))
+                        .h(px(more_height))
                         .flex()
                         .flex_row()
                         .items_center()

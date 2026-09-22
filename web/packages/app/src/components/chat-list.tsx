@@ -40,6 +40,8 @@ import {
   SIDEBAR_PINNED_HEADER_KEY,
 } from "../lib/sidebar-pins";
 import { sidebarStore } from "../state/sidebar";
+import { activeSidebarSections, sectionMembership, sectionRows } from "../lib/sidebar-sections";
+import { CreateSectionDialog, CustomSection, customSectionKeyedHeight } from "./sidebar-sections";
 import { GlyphSpinner } from "./glyph-spinner";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { ProjectIconMark } from "./project-monogram";
@@ -225,6 +227,26 @@ export function ChatList() {
   }
   const pinnedIds = pinProfileKeys.flatMap((key) => sidebar.pinnedByProfile[key] ?? []);
 
+  // Custom sections read the ACTIVE workspace profile — the desktop's
+  // `active_sidebar_pin_profile_key` (sections and pins share the profile
+  // bucket model; membership is exclusive between them). Web pins land
+  // synchronously in the same settings write, so no optimistic mask is
+  // needed (the desktop's mask covers its queued pin burst seam).
+  const activeRegistryEngine =
+    registry.engines.find((engine) => engine.key === fleet.active) ?? null;
+  const activeProfileKey =
+    activeRegistryEngine === null
+      ? null
+      : sidebarPinProfileKey(
+          activeRegistryEngine.info?.workspaceScope ?? null,
+          activeRegistryEngine.info?.deviceId ?? null,
+        );
+  const sections = activeSidebarSections(sidebar.sectionsByProfile, activeProfileKey);
+  // `active_sidebar_pins`: a section's member hides its pin (the bucket
+  // keeps the id; leaving the section restores the pin to view).
+  const sectionClaimed = new Set(sections.flatMap((section) => section.sessionIds));
+  const displayedPins = pinnedIds.filter((id) => !sectionClaimed.has(id));
+
   // `retain_known_pins` on the desktop's synced-chats tick, per ACTIVE
   // profile: another profile's absent chats are not deletions, and an engine
   // that has not loaded yet never judges its own pins.
@@ -239,9 +261,14 @@ export function ChatList() {
     sidebarStore.pruneUnknownPins(keys, new Set(chats.rows.map((chat) => chat.id)));
   }, [chats.loaded, chats.error, chats.rows, registry]);
 
-  // The pinned section leads; regular rows keep the existing grouping.
-  const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, pinnedIds);
-  const hasPinnedDivider = pinnedRows.length > 0 && regularRows.length > 0;
+  // The pinned section leads; custom sections follow (claimed rows render
+  // inside their section, never in the regular groups — `render_active_rows`
+  // splits claimed/unclaimed first, upstream 86249cf0); regular rows keep
+  // the existing grouping over the unclaimed remainder.
+  const { groups: sectionGroups, remaining } = sectionRows(sections, rows);
+  const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(remaining, displayedPins);
+  const hasPinnedDivider =
+    pinnedRows.length > 0 && (regularRows.length > 0 || sectionGroups.length > 0);
   const pinnedOpen = sidebar.pinnedOpen;
   const compact = sidebar.compact;
   const showLabel = sidebar.showProjectLabel;
@@ -272,6 +299,13 @@ export function ChatList() {
   };
   const visiblePinsRef = useRef<string[]>([]);
   visiblePinsRef.current = pinnedRows.map((row) => row.chat.id);
+  // The live section list + profile key for the drop commit (the drag's
+  // window outlives the render that armed it, like the buckets ref).
+  const sectionsRef = useRef<{ sections: typeof sections; profileKey: string | null }>({
+    sections: [],
+    profileKey: null,
+  });
+  sectionsRef.current = { sections, profileKey: activeProfileKey };
   // The pinned section's root bounds + the rows group's bounds (the drop
   // index math reads them off the live DOM, like the desktop's prepaint
   // row_centers).
@@ -305,23 +339,102 @@ export function ChatList() {
     return 0;
   };
   const finishTransferIn = (chatId: string, pointer: { clientX: number; clientY: number }): void => {
-    const index = pinnedDropIndex(pointer);
-    if (index === null) {
-      // Not over the pinned section: a regular row never reorders — the
-      // drop is a no-op and the row stays at its activity position.
+    // `finish_sidebar_session_transfer`'s target lattice, hit-tested at the
+    // release point: a custom section element claims it first (header, body,
+    // or the "Drop sessions here" strip — `SidebarSessionDrop::Section`);
+    // then the pinned section (`Pinned(index)`); then a regular row
+    // (`Regular` — membership clears, a pinned chat unpins). Anything else
+    // (empty space, Archived) is a cancel: regular rows never acquire a
+    // manual order.
+    const sectionHit = dropSectionAt(pointer);
+    if (sectionHit !== null) {
+      const { sections: live, profileKey } = sectionsRef.current;
+      // The section write validates the target still exists (a vanished id
+      // refuses the drop, like the desktop's early return).
+      if (
+        profileKey !== null &&
+        live.some((section) => section.id === sectionHit) &&
+        (sectionMembership(live, chatId) !== sectionHit || pinnedInBuckets(chatId))
+      ) {
+        unpinEverywhere(chatId);
+        sidebarStore.assignSidebarSection(profileKey, chatId, sectionHit);
+      }
       return;
     }
-    const { keys, byProfile, open } = bucketsRef.current;
+    const index = pinnedDropIndex(pointer);
+    if (index !== null) {
+      const { keys, byProfile, open } = bucketsRef.current;
+      const buckets: Record<string, readonly string[]> = {};
+      for (const key of keys) {
+        buckets[key] = byProfile[key] ?? [];
+      }
+      sidebarStore.replacePinsByProfile(
+        commitSessionDrop(buckets, visiblePinsRef.current, chatId, { kind: "pinned", index }),
+      );
+      // The Pinned arm's target section is None: pinning clears membership
+      // at the same commit.
+      sidebarStore.assignSidebarSection(sectionsRef.current.profileKey, chatId, null);
+      if (!open) {
+        sidebarStore.setPinnedOpen(true);
+      }
+      return;
+    }
+    const regularHit = dropRegularRowAt(pointer);
+    if (regularHit) {
+      const { sections: live, profileKey } = sectionsRef.current;
+      // The Regular arm only writes when something changes: a member leaves
+      // its section, a pinned chat unpins — an unclaimed row's drop is a
+      // no-op that leaves recency order alone.
+      if (sectionMembership(live, chatId) !== null || pinnedInBuckets(chatId)) {
+        unpinEverywhere(chatId);
+        sidebarStore.assignSidebarSection(profileKey, chatId, null);
+      }
+    }
+  };
+  /** The chat's id in ANY profile bucket — the raw ledger, mask-free. */
+  const pinnedInBuckets = (chatId: string): boolean => {
+    const { byProfile } = bucketsRef.current;
+    return Object.values(byProfile).some((list) => list.includes(chatId));
+  };
+  /** `sidebar_session_drop_pins`' Regular/Section arm: the chat leaves every bucket. */
+  const unpinEverywhere = (chatId: string): void => {
+    if (!pinnedInBuckets(chatId)) {
+      return;
+    }
+    const { keys, byProfile } = bucketsRef.current;
     const buckets: Record<string, readonly string[]> = {};
     for (const key of keys) {
       buckets[key] = byProfile[key] ?? [];
     }
     sidebarStore.replacePinsByProfile(
-      commitSessionDrop(buckets, visiblePinsRef.current, chatId, { kind: "pinned", index }),
+      commitSessionDrop(buckets, visiblePinsRef.current, chatId, { kind: "regular" }),
     );
-    if (!open) {
-      sidebarStore.setPinnedOpen(true);
+  };
+  /**
+   * The custom section under a release point, if any — the live DOM at
+   * pointerup, like the desktop's `on_drop` on the section element (a
+   * dropped chat resolves its section by hit-testing, not bookkeeping).
+   */
+  const dropSectionAt = (pointer: { clientX: number; clientY: number }): string | null => {
+    const hit = document.elementFromPoint?.(pointer.clientX, pointer.clientY);
+    const section = hit instanceof Element ? hit.closest("[data-sidebar-section-id]") : null;
+    if (section instanceof HTMLElement) {
+      return section.dataset.sidebarSectionId ?? null;
     }
+    return null;
+  };
+  /**
+   * A release over a regular row OUTSIDE the custom sections (their rows
+   * resolve to their section first) — the desktop's per-row `on_drop`
+   * carrying `SidebarSessionDrop::Regular`.
+   */
+  const dropRegularRowAt = (pointer: { clientX: number; clientY: number }): boolean => {
+    const hit = document.elementFromPoint?.(pointer.clientX, pointer.clientY);
+    if (!(hit instanceof Element)) {
+      return false;
+    }
+    const row = hit.closest(".regular-row");
+    return row !== null && row.closest("[data-sidebar-section-id]") === null;
   };
   /** A pointer must travel this far before the press reads as a drag. */
   const DRAG_ARM_PX = 4;
@@ -397,13 +510,16 @@ export function ChatList() {
   // ── The keyboard's sidebar half (ticket 12) ─────────────────────────────
   // The DISPLAYED order — `sidebar_visible_order`: what cycle, jump, and the
   // jump-hint chips all read, so keyboard order never drifts from the screen.
-  // A collapsed pinned section hides its rows, so they hold no slot here.
+  // A collapsed pinned section hides its rows, so they hold no slot here;
+  // open custom sections' members slot between the pins and the unclaimed
+  // rows, a collapsed section's members hold no slot either.
   const order = sidebarVisibleOrder(
     rows,
     sidebar.organization,
     localDeviceId,
-    pinnedIds,
+    displayedPins,
     pinnedOpen,
+    sections,
   );
 
   // The chips: while the hints are visible, the first nine rows carry the
@@ -508,6 +624,41 @@ export function ChatList() {
   }
   if (hasPinnedDivider && pinnedOpen) {
     keyed.push({ key: SIDEBAR_PINNED_DIVIDER_KEY, height: SIDEBAR_PINNED_DIVIDER_HEIGHT });
+  }
+  // Custom sections sit between the pinned divider and the regular groups
+  // (`render_active_rows`'s `section:` split, upstream 86249cf0): one keyed
+  // entry per section (the 12px band + header + open body height), its
+  // element the whole disclosure.
+  for (const group of sectionGroups) {
+    const key = `custom:${group.section.id}`;
+    keyed.push({
+      key,
+      height: customSectionKeyedHeight(group.section, group.rows, compact, showLabel),
+    });
+    entries.push({
+      key,
+      element: (
+        <CustomSection
+          key={group.section.id}
+          entry={{ profileKey: activeProfileKey ?? "", section: group.section }}
+          rows={group.rows}
+          renderRow={(row) => (
+            <ChatListRow
+              row={row}
+              jumpLabel={jumpLabelFor(row.chat.id)}
+              compact={compact}
+              showLabel={showLabel}
+              showProjectIcon={showProjectIcon}
+              localDeviceId={localDeviceId}
+            />
+          )}
+          onRowPointerDown={armTransferIn}
+          draggingChatId={transferIn}
+          shouldSuppressClick={suppressTransferClick}
+          sessions={sessions}
+        />
+      ),
+    });
   }
   for (const bucket of groups) {
     if (bucket.group === null) {
@@ -625,9 +776,10 @@ export function ChatList() {
     return <Fragment key={key}>{element}</Fragment>;
   });
   // The decorated list splits back into the pinned section (its own drag
-  // container and disclosure) and the regular sections.
+  // container and disclosure), the custom sections, and the regular groups.
   const pinnedItems = decorated.slice(0, pinnedRows.length);
-  const regularItems = decorated.slice(pinnedRows.length);
+  const sectionItems = decorated.slice(pinnedRows.length, pinnedRows.length + sectionGroups.length);
+  const regularItems = decorated.slice(pinnedRows.length + sectionGroups.length);
   const pinBuckets = (): Record<string, readonly string[]> => {
     const buckets: Record<string, readonly string[]> = {};
     for (const key of pinProfileKeys) {
@@ -662,20 +814,40 @@ export function ChatList() {
             );
             setPinResetEpoch((epoch) => epoch + 1);
           }}
-          onTransferOut={(chatId) => {
-            // `finish_sidebar_session_transfer` with `SidebarSessionDrop::Regular`:
-            // only the pin membership changes — the FLIP resort glide carries
-            // the row to its live activity position (the transfer animation).
+          onTransferOut={(chatId, pointer) => {
+            // `finish_sidebar_session_transfer` from the pinned section's
+            // gesture: a custom section under the release claims the drop
+            // (unpin + assign in the same commit); anywhere else is the
+            // Regular arm — only the pin membership changes, and section
+            // membership clears with it, so the FLIP resort glide carries
+            // the row to its live activity position.
+            const sectionHit = dropSectionAt(pointer);
+            const { sections: live, profileKey } = sectionsRef.current;
+            if (
+              sectionHit !== null &&
+              profileKey !== null &&
+              live.some((section) => section.id === sectionHit)
+            ) {
+              sidebarStore.replacePinsByProfile(
+                commitSessionDrop(pinBuckets(), visiblePinIds, chatId, { kind: "regular" }),
+              );
+              sidebarStore.assignSidebarSection(profileKey, chatId, sectionHit);
+              return;
+            }
             sidebarStore.replacePinsByProfile(
               commitSessionDrop(pinBuckets(), visiblePinIds, chatId, { kind: "regular" }),
             );
+            sidebarStore.assignSidebarSection(sectionsRef.current.profileKey, chatId, null);
           }}
         />
       )}
+      {sectionItems}
       {regularItems}
-      {pinnedRows.length > 0 && regularRows.length === 0 && transferIn !== null && (
-        <div className="sidebar-drop-unpin">Drop here to unpin</div>
-      )}
+      {pinnedRows.length > 0 &&
+        regularRows.length === 0 &&
+        sectionGroups.length === 0 &&
+        transferIn !== null && <div className="sidebar-drop-unpin">Drop here to unpin</div>}
+      <CreateSectionDialog profileKey={activeProfileKey} />
     </div>
   );
 }

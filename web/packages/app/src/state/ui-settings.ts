@@ -186,6 +186,19 @@ export interface NewThreadComposerBackground {
   readonly name: string;
 }
 
+/**
+ * A user-named sidebar section (`settings.rs::SidebarSection`, upstream
+ * 86249cf0). Archived sessions keep their membership so unarchiving restores
+ * the section; deleting a section never deletes sessions. Device-local and
+ * profile-isolated like the pin buckets — never synchronized.
+ */
+export interface SidebarSection {
+  readonly id: string;
+  readonly name: string;
+  readonly sessionIds: readonly string[];
+  readonly collapsed: boolean;
+}
+
 export interface UiSettings {
   readonly composerSendBehavior: ComposerSendBehavior;
   readonly sidebarWidth: number;
@@ -220,6 +233,12 @@ export interface UiSettings {
    * Presentation-only; never synchronized.
    */
   readonly sidebarPinnedSessionIdsByProfile: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Custom sidebar sections per workspace profile
+   * (`UiSettings::sidebar_sections_by_profile`, upstream 86249cf0).
+   * Device-local presentation state; never synchronized.
+   */
+  readonly sidebarSectionsByProfile: Readonly<Record<string, readonly SidebarSection[]>>;
   readonly soundEnabled: boolean;
   readonly soundCompletionEnabled: boolean;
   readonly soundInputEnabled: boolean;
@@ -337,6 +356,7 @@ export function defaultUiSettings(): UiSettings {
     lastProjectActionBySpaceId: {},
     spaceFilter: null,
     sidebarPinnedSessionIdsByProfile: {},
+    sidebarSectionsByProfile: {},
     soundEnabled: true,
     soundCompletionEnabled: true,
     soundInputEnabled: true,
@@ -482,6 +502,48 @@ function healPinnedByProfile(value: unknown): Record<string, readonly string[]> 
   return out;
 }
 
+/**
+ * Per-profile custom sections (`sidebar_sections_by_profile`, upstream
+ * 86249cf0): each section needs a non-empty id and name; junk sections heal
+ * out one by one, an empty name/id taking only itself. Empty sections are
+ * RETAINED (the desktop keeps them — "Drop sessions here").
+ */
+export function healSidebarSectionsByProfile(
+  value: unknown,
+): Record<string, readonly SidebarSection[]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, SidebarSection[]> = {};
+  for (const [key, list] of Object.entries(value)) {
+    if (key.length === 0 || !Array.isArray(list)) {
+      continue;
+    }
+    const sections: SidebarSection[] = [];
+    const seenIds = new Set<string>();
+    for (const entry of list) {
+      const raw = record(entry);
+      const id = typeof raw.id === "string" ? raw.id : "";
+      const name = typeof raw.name === "string" ? raw.name : "";
+      if (id.length === 0 || name.length === 0 || name.length > 120 || seenIds.has(id)) {
+        continue;
+      }
+      seenIds.add(id);
+      sections.push({
+        id,
+        name,
+        sessionIds: healStringList(raw.sessionIds),
+        collapsed: bool(raw.collapsed, false),
+      });
+    }
+    // Empty buckets drop out of the map, like the pin buckets.
+    if (sections.length > 0) {
+      out[key] = sections;
+    }
+  }
+  return out;
+}
+
 function text(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -607,6 +669,7 @@ export function healUiSettings(value: unknown): UiSettings {
     lastProjectActionBySpaceId: healStringMap(raw.lastProjectActionBySpaceId),
     spaceFilter: nullableString(raw.spaceFilter),
     sidebarPinnedSessionIdsByProfile: healPinnedByProfile(raw.sidebarPinnedSessionIdsByProfile),
+    sidebarSectionsByProfile: healSidebarSectionsByProfile(raw.sidebarSectionsByProfile),
     soundEnabled: bool(raw.soundEnabled, true),
     soundCompletionEnabled: bool(raw.soundCompletionEnabled, true),
     soundInputEnabled: bool(raw.soundInputEnabled, true),

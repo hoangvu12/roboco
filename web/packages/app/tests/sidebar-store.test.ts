@@ -23,6 +23,10 @@ describe("SidebarStore", () => {
       // would be pointless), session-transient like the archived shelf.
       pinnedOpen: true,
       pinnedByProfile: {},
+      // Custom sections (upstream 86249cf0): device-local, profile-isolated,
+      // never synchronized; the create-section dialog is in-memory.
+      sectionsByProfile: {},
+      sectionDialogOpen: false,
       // The view options ride along at their desktop defaults
       // (settings.rs) — ticket 10's menu writes them. Compact mode defaults
       // ON (upstream ffaa3102).

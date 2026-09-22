@@ -6,20 +6,19 @@ import { useFleet } from "../state/fleet";
 import { useWatchSnapshot } from "../state/hooks";
 
 /**
- * The sidebar's bottom identity row — the desktop's `render_user_menu`.
+ * The sidebar's bottom identity control — the desktop's `render_user_menu`.
  *
- * Trigger geometry is the desktop's: a 28px white avatar circle carrying the
- * name's initial in near-black, then the engine's name over an optional
- * status line, on an 8px radius with 8px padding and a 10px gap. The wash is
- * quiet until hovered and settles one step stronger while the menu is open.
+ * Upstream f9563394 compacts it: the row's label and subline collapse into
+ * a 21px circular avatar button carrying the name's initial (13px white
+ * circle, 9px mono semibold) with the name in the aria label — the menu
+ * opens to the RIGHT of the trigger (the desktop's anchored_menu_right),
+ * bottom-aligned with it.
  *
- * The menu opens UPWARD with a 6px gap, exactly as wide as the trigger row,
- * and carries exactly two things — desktop parity (`shell.rs:5290-5302`):
- * the muted "Stored on this device" identity line, then the single
- * "Settings" row, which lands on the Devices section
- * (`SettingsSection::Devices`), the desktop's landing row. Engine
- * management lives in Settings → Devices (ticket 45 folded the old
- * web-only Engines drawer there).
+ * The menu carries exactly two things — desktop parity (`shell.rs`): the
+ * muted "Stored on this device" identity line, then the single "Settings"
+ * row, which lands on the Devices section (`SettingsSection::Devices`),
+ * the desktop's landing row. Engine management lives in Settings →
+ * Devices (ticket 45 folded the old web-only Engines drawer there).
  */
 export function AccountRow() {
   // The ACTIVE engine's session carries this row's identity — the desktop's
@@ -35,13 +34,13 @@ export function AccountRow() {
 
   // The connected engine's own device is the identity this row carries — the
   // desktop's user line is the local device, not the transport. Falls back to
-  // the grant label while the devices stream is still filling.
+  // the engine label while the devices stream is still filling; the subline
+  // is gone (f9563394) — the name rides the trigger's aria label alone.
   const engine = fleet.engines.find((candidate) => candidate.baseUrl === fleet.active) ?? null;
   const deviceId = session?.client.engineInfo?.deviceId ?? null;
   const device =
     deviceId === null ? undefined : snapshot?.devices.rows.find((row) => row.id === deviceId);
   const name = device?.name ?? engine?.label ?? "Roboco";
-  const subline = device?.version ?? null;
   const initial = (name.trim()[0] ?? "?").toUpperCase();
 
   useEffect(() => {
@@ -88,13 +87,10 @@ export function AccountRow() {
         onClick={() => setOpen((current) => !current)}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={`Account menu: ${name}`}
       >
         <span className="avatar" aria-hidden="true">
           {initial}
-        </span>
-        <span className="user-menu-text">
-          <span className="user-menu-name">{name}</span>
-          {subline !== null && <span className="user-menu-sub">{subline}</span>}
         </span>
       </button>
     </div>

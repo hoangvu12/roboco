@@ -13,6 +13,7 @@ import {
   type SidebarBucket,
   type SidebarKeyed,
 } from "../src/lib/view";
+import type { SidebarSection } from "../src/state/ui-settings";
 import {
   SIDEBAR_ACTIVE_HARNESS_ICON_SIZE,
   SIDEBAR_ACTIVE_HARNESS_TITLE_GAP,
@@ -270,6 +271,56 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
     expect(sidebarVisibleOrder(rows, "byDevice", "local", ["r2", "l1"], false)).toEqual(["r1"]);
     // An empty pin list is indifferent to the disclosure.
     expect(sidebarVisibleOrder(rows, "byDevice", "local", [], false)).toEqual(["l1", "r1", "r2"]);
+  });
+
+  // ── Custom sections (upstream 86249cf0's `sidebar_visible_order`) ──────
+
+  it("open sections slot their members between the pins and the unclaimed rows", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "local" }),
+      chat("r1", { deviceId: "local" }),
+      chat("r2", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1", "gone"], collapsed: false },
+      { id: "b", name: "B", sessionIds: [], collapsed: false },
+    ];
+    // The caller masks claimed pins first (`active_sidebar_pins`); the
+    // open sections' EXISTING members follow the pins, then the unclaimed
+    // rows keep their grouped order; a vanished member holds no slot.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["r2"], true, sections)).toEqual([
+      "r2",
+      "s1",
+      "r1",
+    ]);
+  });
+
+  it("a collapsed section's members hold no slot", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "local" }),
+      chat("r1", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1"], collapsed: true },
+    ];
+    // Collapsed, s1 is neither in the section order nor in the regular
+    // groups — it is simply not on the screen.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, [], true, sections)).toEqual(["r1"]);
+    // No sections at all: the legacy call shape (equal sort keys keep the
+    // projection's stable input order).
+    expect(sidebarVisibleOrder(rows, "inOneList", null, [], true)).toEqual(["s1", "r1"]);
+  });
+
+  it("section members never fall through to the regular order", () => {
+    const rows = chatRows([
+      chat("s1", { deviceId: "remote-1" }),
+      chat("l1", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1"], collapsed: false },
+    ];
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], true, sections)).toEqual(["s1", "l1"]);
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", [], false, sections)).toEqual(["s1", "l1"]);
   });
 });
 
