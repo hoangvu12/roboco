@@ -694,6 +694,13 @@ pub struct UiSettings {
     /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
+    /// Custom sidebar sections, isolated between workspace profiles on this
+    /// device (engine-local per ADR 0004 — never synced).
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty"
+    )]
+    pub sidebar_sections_by_profile: std::collections::HashMap<String, Vec<SidebarSection>>,
     /// Device-local pinned sessions in visual order, isolated by workspace
     /// profile. Per-item pin intents (shell/sidebar_pins.rs) write this map
     /// directly — the ordering never leaves this device.
@@ -824,6 +831,7 @@ impl Default for UiSettings {
             last_project_action_by_space_id: std::collections::HashMap::new(),
             open_tabs: None,
             space_filter: None,
+            sidebar_sections_by_profile: std::collections::HashMap::new(),
             sidebar_pinned_session_ids_by_profile: std::collections::HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
@@ -1534,6 +1542,19 @@ fn min_or(value: f32, min: f32, default: f32) -> f32 {
     }
 }
 
+/// A user-named sidebar section. Archived sessions retain membership so
+/// restoring them restores their section; deleting the section never deletes
+/// sessions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SidebarSection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2139,6 +2160,7 @@ mod tests {
             )]),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),
             space_filter: Some("space-1".into()),
+            sidebar_sections_by_profile: std::collections::HashMap::new(),
             sidebar_pinned_session_ids_by_profile: std::collections::HashMap::from([
                 (
                     "local".to_string(),

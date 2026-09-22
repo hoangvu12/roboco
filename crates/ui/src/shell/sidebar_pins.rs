@@ -196,6 +196,15 @@ impl Shell {
         {
             return None;
         }
+        let committed_pin = if result.is_ok() {
+            self.sidebar_pin_write.as_ref().and_then(|pending| {
+                let SidebarPinChange::Pin { session_id, .. } = pending.queue.front()? else { return None };
+                // A later move back into a section must survive this older ack.
+                (!pending.queue.iter().skip(1).any(|change| matches!(change, SidebarPinChange::Unpin { session_id: id } if id == session_id))).then(|| session_id.clone())
+            })
+        } else {
+            None
+        };
         match result {
             Ok(()) => self.clear_pin_write_notice(),
             Err(error) => {
@@ -209,6 +218,9 @@ impl Shell {
             self.sidebar_pin_write = None;
         }
         cx.notify();
+        if let Some(chat_id) = committed_pin {
+            self.assign_sidebar_section(&chat_id, None, cx);
+        }
         next
     }
 
