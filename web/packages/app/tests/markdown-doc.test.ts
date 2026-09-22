@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   buildHeadingAnchors,
   clipMarkdownBytes,
@@ -209,5 +210,22 @@ describe("markdown link policy", () => {
     const blocks = parseMarkdown("# Same Title\n\n## Same Title\n\n## Other");
     const anchors = buildHeadingAnchors(blocks);
     expect([...anchors.values()]).toEqual(["same-title", "same-title-1", "other"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Markdown preview scroll padding (3ebe2d8a, markdown_preview.rs, ported)
+// ---------------------------------------------------------------------------
+
+describe("markdown preview scroll padding", () => {
+  it("the 16px breathing room rides the scrollport, not an outer container", () => {
+    // The desktop moved py(16) from the preview container onto the gpui list
+    // so the padding scrolls with the document and content clips at the
+    // viewport edge. The web's scrollport owns the padding directly (CSS
+    // scrollport padding scrolls with the content); pin that contract.
+    const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+    const rule = /\.files-markdown-scroll\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(rule).toContain("overflow-y: auto");
+    expect(rule).toContain("padding: 16px 0");
   });
 });
