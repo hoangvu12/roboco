@@ -532,8 +532,10 @@ describe("ComposerPickers nested model settings", () => {
   });
 
   it("the open-model-picker shortcut opens the card and never closes it", async () => {
-    // Upstream faac7432: OpenModelPicker routes to the composer's picker
-    // (open_model_menu) — open only, so a second press does not toggle.
+    // Upstream faac7432 + 9abe0167: OpenModelPicker routes to the composer's
+    // picker (open_model_menu) — open only, so a second press does not
+    // toggle — and the mount transfers focus into the search input even
+    // though the press landed on the host's editor focus.
     const client = new FakeClient();
     client.harnesses = [BARE];
     client.modelsByHarness.set("codex", [GPT]);
@@ -550,6 +552,11 @@ describe("ComposerPickers nested model settings", () => {
     });
     await flush();
     expect(settingTrigger("reasoning")).not.toBeNull();
+    // Keyboard focus follows the mount: the search input owns it, so down/
+    // enter route to the picker (the 9abe0167 regression).
+    const input = document.querySelector<HTMLInputElement>(".model-search-row input");
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
 
     await act(async () => {
       emitShortcut("open-model-picker");
