@@ -5278,10 +5278,11 @@ impl Shell {
             text.opacity(0.8)
         };
         div()
-            .id(SharedString::from(format!("chat-{id}")))
+            .id(SharedString::from(row_id.clone()))
+            .group("sidebar-session-row")
             .debug_selector({
-                let row_id = id.clone();
-                move || format!("chat-{row_id}")
+                let row_id = row_id.clone();
+                move || row_id.clone()
             })
             .h(px(sidebar_row_height(
                 compact,
