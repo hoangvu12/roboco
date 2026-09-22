@@ -73,6 +73,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        OpenModelPicker,
         NewSession,
         OpenSettings,
         NextSession,
@@ -370,6 +371,11 @@ pub fn apply_keymap(
         // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
         // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        KeyBinding::new(
+            &valid_or_default(&keymap.open_model_picker, "mod-/"),
+            OpenModelPicker,
+            None,
+        ),
     ]);
     crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -8737,6 +8743,12 @@ impl Render for Shell {
                     cx.notify();
                 } else {
                     this.open_add_space(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
+                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
                 }
             }));
 

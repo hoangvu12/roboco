@@ -57,12 +57,13 @@ export type ShortcutId =
   | "toggleChanges"
   | "toggleTerminal"
   | "newSession"
+  | "openModelPicker"
   | "nextSession"
   | "prevSession"
   | "archiveSession"
   | { jumpSession: number };
 
-/** `ShortcutId::ALL` — 19 entries, in `settings.rs:756-776`'s order. */
+/** `ShortcutId::ALL` — 20 entries, in `settings.rs`'s order. */
 export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "captureAppshot",
   "saveFile",
@@ -71,6 +72,7 @@ export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "toggleChanges",
   "toggleTerminal",
   "newSession",
+  "openModelPicker",
   "nextSession",
   "prevSession",
   "archiveSession",
@@ -106,6 +108,8 @@ export function shortcutLabel(id: ShortcutId): string {
       return "Toggle terminal";
     case "newSession":
       return "New session";
+    case "openModelPicker":
+      return "Open model picker";
     case "nextSession":
       return "Next session";
     case "prevSession":
@@ -132,6 +136,7 @@ export function shortcutGroup(id: ShortcutId): string {
     case "toggleTerminal":
       return "Panels";
     case "newSession":
+    case "openModelPicker":
     case "nextSession":
     case "prevSession":
     case "archiveSession":
@@ -519,6 +524,7 @@ export type ShortcutEvent =
   | "toggle-sidebar"
   | "toggle-changes"
   | "toggle-terminal"
+  | "open-model-picker"
   | "next-session"
   | "prev-session"
   | "archive-session"
@@ -565,6 +571,8 @@ function bindingFor(id: ShortcutId): Keybinding {
       return { event: "toggle-terminal", bare: false };
     case "newSession":
       return { event: "new-chat", bare: false };
+    case "openModelPicker":
+      return { event: "open-model-picker", bare: false };
     case "nextSession":
       return { event: "next-session", bare: false };
     case "prevSession":
@@ -724,6 +732,7 @@ export function healReservedComposerShortcuts(
     toggleChanges: heal(config.toggleChanges, defaults.toggleChanges),
     toggleTerminal: heal(config.toggleTerminal, defaults.toggleTerminal),
     newSession: heal(config.newSession, defaults.newSession),
+    openModelPicker: heal(config.openModelPicker, defaults.openModelPicker),
     nextSession: heal(config.nextSession, defaults.nextSession),
     prevSession: heal(config.prevSession, defaults.prevSession),
     archiveSession: heal(config.archiveSession, defaults.archiveSession),

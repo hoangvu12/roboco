@@ -135,6 +135,8 @@ export function shortcutDescription(id: ShortcutId): string {
       return "Show or hide the terminal for the current session.";
     case "newSession":
       return "Open a blank session canvas to start a new session.";
+    case "openModelPicker":
+      return "Open the model picker for the current session.";
     case "nextSession":
       return "Select the next session in the sidebar, wrapping at the end.";
     case "prevSession":

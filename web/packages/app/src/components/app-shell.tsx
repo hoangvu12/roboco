@@ -330,6 +330,13 @@ export function AppShell() {
             emitShortcut(binding.event);
           }
           return;
+        case "open-model-picker":
+          // `OpenModelPicker` (upstream faac7432): only on the chat route,
+          // and quiet under an overlay that owns the keyboard.
+          if (route === "chat" && !overlayOwnsKeyboard()) {
+            emitShortcut(binding.event);
+          }
+          return;
         case "jump-session":
           // Ticket 10 gives the composer's model picker first refusal on
           // the slot; until then the jump routes straight to the row, from

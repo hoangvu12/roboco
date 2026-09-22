@@ -25,7 +25,7 @@ import {
   type SettingGroup,
 } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
-import { isMacPlatform } from "../state/shortcuts";
+import { isMacPlatform, onShortcut } from "../state/shortcuts";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
@@ -102,6 +102,15 @@ export function ComposerPickers(props: ComposerPickersProps) {
     useCallback(() => catalog.getHarnesses(), [catalog]),
     useCallback(() => catalog.getHarnesses(), [catalog]),
   );
+
+  // `OpenModelPicker` (upstream faac7432, the shell's on_action handler):
+  // the shortcut opens the card — never closes it (`open_model_menu` only
+  // opens). The route and overlay guards live in the shell's dispatch.
+  useEffect(() => {
+    return onShortcut("open-model-picker", () => {
+      setOpenAndNotify(true);
+    });
+  }, [setOpenAndNotify]);
   const defaults = useSyncExternalStore(
     useCallback((listener: () => void) => composerDefaults.subscribe(listener), []),
     useCallback(() => composerDefaults.getSnapshot(), []),

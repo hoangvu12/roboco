@@ -21,6 +21,7 @@ import type { DraftConfig } from "../src/lib/composer-actions";
 import { ComposerPickers } from "../src/components/composer-pickers";
 import { useDraftModelReconciliation } from "../src/lib/composer-reconciliation";
 import { PickerCatalog } from "../src/state/picker-catalog";
+import { emitShortcut } from "../src/state/shortcuts";
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
 // matchMedia (useIsPhone in PickerCard), ResizeObserver (MenuScrollbar),
@@ -528,6 +529,34 @@ describe("ComposerPickers nested model settings", () => {
     });
     expect(settingChoice("reasoning", "low")).toBeNull();
     expect(settingTrigger("reasoning")).not.toBeNull();
+  });
+
+  it("the open-model-picker shortcut opens the card and never closes it", async () => {
+    // Upstream faac7432: OpenModelPicker routes to the composer's picker
+    // (open_model_menu) — open only, so a second press does not toggle.
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    // Card closed: the trigger click never happened.
+    expect(settingTrigger("reasoning")).toBeNull();
+
+    await act(async () => {
+      emitShortcut("open-model-picker");
+    });
+    await flush();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+
+    await act(async () => {
+      emitShortcut("open-model-picker");
+    });
+    await flush();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    expect(handle.observed.current.model).toBe("gpt-5.4");
   });
 });
 
