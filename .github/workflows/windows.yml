@@ -93,11 +93,22 @@ jobs:
         run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
         run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles --test project_actions_rpc -P ci
-      - name: UI tests
+      - name: UI native font geometry test
+        # Upstream 3f19c19e: the real-font assertion measures diff geometry
+        # against DirectWrite (non-headless platform). nextest runs it in its
+        # own process, isolated from the headless suite; the split keeps the
+        # real-font assertion and the complete headless suite separately
+        # attributed and both mandatory.
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'test(native_diff_font_geometry)' -P ci
+      - name: UI headless tests
         # Serial on purpose: the gpui test scheduler is not safe under
         # intra-process parallelism (same constraint as the old
         # --test-threads=1). Retries come from the ci nextest profile.
-        run: cargo nextest run --release --locked -p roboco-ui --lib -j 1 -P ci
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'not(test(native_diff_font_geometry))' -j 1 -P ci
       - name: CLI startup without HOME
         run: |
           # Exercise real path resolution without touching the runner's account.
