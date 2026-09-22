@@ -5111,18 +5111,26 @@ impl Shell {
                 // 4px: what's left of the row's 8px padding then equals the
                 // 4px of air above the pill (18px tall on the 14px line,
                 // 6px row padding minus the 2px overflow).
-                .px(px(4.0))
-                .mr(px(-4.0))
-                .rounded(px(5.0))
-                .bg(crate::theme::wash(0.10))
-                .hover(|s| s.bg(crate::theme::wash(0.18)))
+                // Compact Archive/Unarchive drop the pill background and
+                // match the remote icon's 13px size instead.
+                .when(!compact, |el| {
+                    el.px(px(4.0))
+                        .mr(px(-4.0))
+                        .rounded(px(5.0))
+                        .bg(crate::theme::wash(0.10))
+                        .hover(|s| s.bg(crate::theme::wash(0.18)))
+                })
                 .child(
                     icon(if archived {
                         icons::ARCHIVE_UP_MINIMALISTIC
                     } else {
                         icons::ARCHIVE_MINIMALISTIC
                     })
-                    .size(px(11.0))
+                    .size(px(if compact {
+                        SIDEBAR_ACTIVE_HARNESS_ICON_SIZE
+                    } else {
+                        11.0
+                    }))
                     .flex_none()
                     .text_color(theme.text_muted),
                 )
@@ -5405,14 +5413,21 @@ impl Shell {
                                 .text_color(subline),
                         )
                     })
-                    .when(compact || !show_label, |el| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_color(subline)
-                                .children(corner.take()),
-                        )
-                    })
+                    .when(
+                        if compact {
+                            remote || corner_hovered
+                        } else {
+                            !show_label
+                        },
+                        |el| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(subline)
+                                    .children(corner.take()),
+                            )
+                        },
+                    )
                     .when(compact, |el| {
                         el.children(change_request.clone().map(|summary| {
                             if preview {

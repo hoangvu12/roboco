@@ -17,8 +17,9 @@ Archived sessions share active-session metadata and layout preferences, with mut
 project/harness artwork and an Unarchive action in the same hover slot.
 
 Repository artwork follows [Conductor's documented filename priority](https://www.conductor.build/docs/faq#where-does-conductor-get-the-repo-icon).
-The first existing file wins; missing or invalid artwork uses the supplied code
-icon. Local reads and bounded image decoding run off the UI thread. Remote
+The first existing file wins; missing or invalid artwork uses the project initial on a neutral, translucent
+frosted background using the composer's backdrop-blur helper. A stable hash of the project path chooses the shade; theme ink keeps
+it readable on glass in light and dark themes. Local reads and bounded image decoding run off the UI thread. Remote
 projects use the owning device's workspace file RPC, including ICO support.
 Artwork is shared across a project's rows, refreshed after five minutes, and
 released from the image atlas when its cache entry expires. Raster thumbnails
@@ -30,7 +31,10 @@ accordions, hover controls, and dragging pinned sessions. Compact rows place
 status on the left, followed by harness and project icons, the name,
 remote/archive control, PR badge, and elapsed time on the right. Hover replaces the remote
 icon with Archive (or reveals it for local sessions), keeping status, PR, and
-time visible. Pin/unpin, pin reordering, cancellation, actual row-height hit
+time visible. Local rows reserve no empty action slot at rest,
+so the title uses that space until Archive appears on hover. Compact Archive and
+Unarchive are background-free, with the same 13px size as the remote icon.
+Pin/unpin, pin reordering, cancellation, actual row-height hit
 testing, small pointer movements, project grouping and keyboard order, icon
 lookup priority, SVG/ICO decoding, and settings persistence are all covered
 headlessly.
