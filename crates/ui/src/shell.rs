@@ -4989,7 +4989,7 @@ impl Shell {
         let project_icon = self
             .settings
             .sidebar_show_project_icon
-            .then(|| self.render_project_icon(&id, SIDEBAR_ACTIVE_HARNESS_ICON_SIZE, cx));
+            .then(|| self.render_project_icon(&id, SIDEBAR_ACTIVE_HARNESS_ICON_SIZE, selected, cx));
         let corner_hovered = !preview && self.chat_status_hover.as_deref() == Some(id.as_str());
         let archived_muted = archived && !selected && !corner_hovered;
         let project_icon = project_icon.map(|icon| {

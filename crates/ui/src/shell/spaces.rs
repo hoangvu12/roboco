@@ -1299,8 +1299,8 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 11] = [
     SidebarViewRow::ShowPullRequest,
     SidebarViewRow::ShowHarness,
     SidebarViewRow::ShowProjectIcon,
-    SidebarViewRow::Compact,
     SidebarViewRow::ShowProjectLabel,
+    SidebarViewRow::Compact,
 ];
 
 // list items stay tightly related at 2px, while section boundaries use 12px
@@ -2137,8 +2137,8 @@ impl Shell {
             "Pull request",
             "Harness",
             "Project icon",
-            "Compact mode",
             "Location",
+            "Compact mode",
         ];
         let icons = [
             icons::LAPTOP,
@@ -2150,8 +2150,8 @@ impl Shell {
             icons::PULL_REQUEST,
             icons::BOT,
             icons::PROJECT_DEFAULT,
-            icons::LIST,
             icons::FOLDER,
+            icons::LIST,
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
@@ -2163,8 +2163,8 @@ impl Shell {
             show_pr,
             show_harness,
             self.settings.sidebar_show_project_icon,
-            self.settings.sidebar_compact,
             self.settings.sidebar_show_project_label,
+            self.settings.sidebar_compact,
         ];
         let mut rows: Vec<AnyElement> = SIDEBAR_VIEW_ROWS
             .iter()
@@ -2201,6 +2201,9 @@ impl Shell {
                 .into_any_element()
             })
             .collect();
+        // Compact mode is a layout choice, not a row-content toggle, so it
+        // gets its own section under Show.
+        let layout_rows = rows.split_off(10);
         let show_rows = rows.split_off(5);
         let sort_rows = rows.split_off(3);
         let organization_rows = rows;
@@ -2228,6 +2231,9 @@ impl Shell {
             .child(popover::menu_separator())
             .child(popover::menu_heading(theme, "Show"))
             .child(div().flex().flex_col().gap(px(2.0)).children(show_rows))
+            .child(popover::menu_separator())
+            .child(popover::menu_heading(theme, "Layout"))
+            .child(div().flex().flex_col().gap(px(2.0)).children(layout_rows))
             .into_any_element()
     }
 
