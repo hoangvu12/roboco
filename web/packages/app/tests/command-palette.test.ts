@@ -34,18 +34,29 @@ function chat(partial: Partial<Chat> & { readonly id: string }): Chat {
 }
 
 describe("action_search_hides_empty_section_and_preserves_order (command_palette.rs)", () => {
-  it("an empty query lists every action in order", () => {
-    expect(actionsFor("").map((action) => action.id)).toEqual([
+  it("an empty query lists every action in order, dark resolving the theme action to light", () => {
+    expect(actionsFor("", true).map((action) => action.id)).toEqual([
       "new-chat",
       "new-project",
       "settings",
+      "theme",
     ]);
+    expect(actionsFor("", true).at(-1)?.theme).toBe("light");
   });
 
   it("matching actions filter in place; a miss hides the section", () => {
-    expect(actionsFor("new").map((action) => action.id)).toEqual(["new-chat", "new-project"]);
-    expect(actionsFor("settings").map((action) => action.id)).toEqual(["settings"]);
-    expect(actionsFor("deployment")).toEqual([]);
+    expect(actionsFor("new", true).map((action) => action.id)).toEqual(["new-chat", "new-project"]);
+    expect(actionsFor("settings", true).map((action) => action.id)).toEqual(["settings"]);
+    expect(actionsFor("deployment", true)).toEqual([]);
+  });
+});
+
+describe("theme_action_targets_the_opposite_resolved_appearance (b4dd24d7)", () => {
+  it("dark resolves to the light theme; light resolves to dark", () => {
+    expect(actionsFor("theme", true).map((action) => action.theme)).toEqual(["light"]);
+    expect(actionsFor("theme", false).map((action) => action.theme)).toEqual(["dark"]);
+    expect(actionsFor("light", true).map((action) => action.theme)).toEqual(["light"]);
+    expect(actionsFor("dark", false).map((action) => action.theme)).toEqual(["dark"]);
   });
 });
 
@@ -245,5 +256,14 @@ describe("CommandPaletteStore (toggle/close/activate)", () => {
     commandPaletteStore.activateEntry({ kind: "settings" });
     expect(goToCanvas).toHaveBeenCalledTimes(1);
     expect(openSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("the theme action keeps the palette open and switches the mode (b4dd24d7)", () => {
+    const setTheme = vi.fn();
+    commandPaletteStore.open();
+    commandPaletteStore.activateEntry({ kind: "theme", setTheme });
+    expect(setTheme).toHaveBeenCalledTimes(1);
+    // The palette stays open so the action updates to its next state.
+    expect(commandPaletteStore.getSnapshot().status).toBe("open");
   });
 });

@@ -1,6 +1,8 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import type { IconName } from "@roboco/icons";
+import type { AppearanceMode } from "./appearance-store";
+import { appearanceModeIcon } from "./appearance-store";
 import type { ChatIndicator, SidebarSort } from "./view";
 import { compareSidebarChats, displayStatus, singleLine, spaceDisplayName, timeAgo } from "./view";
 
@@ -19,21 +21,39 @@ import { compareSidebarChats, displayStatus, singleLine, spaceDisplayName, timeA
 /** `HISTORY_RESULT_LIMIT` (command_palette.rs): the matching-chat cap. */
 export const HISTORY_RESULT_LIMIT = 30;
 
-export type CommandActionId = "new-chat" | "new-project" | "settings";
+export type CommandActionId = "new-chat" | "new-project" | "settings" | "theme";
 
 /** One palette action row: id, label (the search target), and icon. */
 export interface CommandAction {
   readonly id: CommandActionId;
   readonly label: string;
   readonly icon: IconName;
+  /** The theme the "theme" action switches to (it targets the OPPOSITE of
+   *  the resolved appearance and keeps the palette open). */
+  readonly theme?: AppearanceMode;
 }
 
-/** The actions list, in the desktop's fixed order. */
-const ACTIONS: readonly CommandAction[] = [
-  { id: "new-chat", label: "New chat", icon: "penNewSquare" },
-  { id: "new-project", label: "New project", icon: "folder" },
-  { id: "settings", label: "Open settings", icon: "settingsMinimalistic" },
-];
+/**
+ * `actions_for(query, is_dark)`: the actions whose labels match the query,
+ * order kept. The theme action targets the opposite of the resolved
+ * appearance ("Switch to light theme" while dark, and vice versa) —
+ * upstream b4dd24d7's quick theme action.
+ */
+export function actionsFor(query: string, isDark: boolean): CommandAction[] {
+  const theme: AppearanceMode = isDark ? "light" : "dark";
+  const actions: readonly CommandAction[] = [
+    { id: "new-chat", label: "New chat", icon: "penNewSquare" },
+    { id: "new-project", label: "New project", icon: "folder" },
+    { id: "settings", label: "Open settings", icon: "settingsMinimalistic" },
+    {
+      id: "theme",
+      label: isDark ? "Switch to light theme" : "Switch to dark theme",
+      icon: appearanceModeIcon(theme),
+      theme,
+    },
+  ];
+  return actions.filter((action) => matchesQuery(query, action.label));
+}
 
 /**
  * `matches_query` (command_palette.rs): every whitespace-separated word
@@ -47,11 +67,6 @@ export function matchesQuery(query: string, text: string): boolean {
     .split(/\s+/)
     .filter((word) => word.length > 0)
     .every((word) => haystack.includes(word));
-}
-
-/** `actions_for`: the actions whose labels match the query, order kept. */
-export function actionsFor(query: string): CommandAction[] {
-  return ACTIONS.filter((action) => matchesQuery(query, action.label));
 }
 
 /** The search haystack the desktop builds per chat (command_entries). */

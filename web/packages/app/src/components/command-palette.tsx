@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useSidebar } from "../state/sidebar";
+import { useResolvedAppearance } from "../state/appearance";
+import { appearanceStore } from "../state/appearance";
 import { useChatChangeRequests } from "../state/change-requests-store";
 import { ESCAPE_PRIORITY, registerEscapeSurface } from "../state/escape";
 import { commandPaletteStore, useCommandPaletteSnapshot } from "../state/command-palette";
@@ -17,9 +19,9 @@ import {
 import { highlightRanges } from "../lib/add-space";
 import { statusWord } from "../lib/view";
 import { classifyKey } from "../lib/picker-search";
-import { isMacPlatform } from "../state/shortcuts";
+import { badgeCombo, isMacPlatform } from "../state/shortcuts";
 import { RbDialogGlass } from "./base/dialog";
-import { KeyHintPair, KeyHintText } from "./ui/KeyHint";
+import { KbdHint } from "./ui/KeyHint";
 import { MenuRowNav } from "./ui/MenuRows";
 import { ChangeRequestBadge } from "./change-request-badge";
 
@@ -53,9 +55,11 @@ export function CommandPalette() {
   const now = useNow(10_000);
   const sidebar = useSidebar();
   const state = useCommandPaletteSnapshot();
+  const resolvedAppearance = useResolvedAppearance();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const fadeRef = useRef<HTMLDivElement | null>(null);
 
   // The navigation hops ride refs so the session binding only re-runs when
   // the session does (the add-space palette's pattern).
@@ -128,7 +132,7 @@ export function CommandPalette() {
     if (!live) {
       return [];
     }
-    const actions = actionsFor(state.query).map(
+    const actions = actionsFor(state.query, resolvedAppearance === "dark").map(
       (action) => ({ kind: "action", action }) as const,
     );
     const history = paletteChats({
@@ -142,7 +146,7 @@ export function CommandPalette() {
       sort: sidebar.sort,
     }).map((row) => ({ kind: "chat", row }) as const);
     return [...actions, ...history];
-  }, [live, state.query, chats, snapshot, changeRequests, now, sidebar.sort]);
+  }, [live, state.query, chats, snapshot, changeRequests, now, sidebar.sort, resolvedAppearance]);
 
   // Every search edit scrolls back to the top (the desktop resets the
   // scroll offset on `Edited`).
@@ -154,6 +158,40 @@ export function CommandPalette() {
     const row = listRef.current?.children.item(state.active);
     row?.scrollIntoView({ block: "nearest" });
   }, [state.active]);
+  // The results viewport's edge fade (edge_faded, RESULTS_FADE_BAND 18):
+  // gated per edge from the live scroll offset, 1px dead-zone — the same
+  // contract as the sidebar's scroll fade.
+  useEffect(() => {
+    const wrap = fadeRef.current;
+    const scroller = listRef.current;
+    if (wrap === null || scroller === null) {
+      return;
+    }
+    let raf = 0;
+    const apply = (): void => {
+      raf = 0;
+      const top = scroller.scrollTop > 1.0;
+      const bottom = scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 1.0;
+      wrap.style.setProperty("--rb-command-fade-top", top ? "1" : "0");
+      wrap.style.setProperty("--rb-command-fade-bottom", bottom ? "1" : "0");
+    };
+    const schedule = (): void => {
+      if (raf === 0) {
+        raf = requestAnimationFrame(apply);
+      }
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(scroller);
+    scroller.addEventListener("scroll", schedule, { passive: true });
+    apply();
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener("scroll", schedule);
+      if (raf !== 0) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, [state.status]);
 
   if (state.status === "closed") {
     return null;
@@ -165,6 +203,21 @@ export function CommandPalette() {
       return;
     }
     if (entry.kind === "action") {
+      if (entry.action.id === "theme") {
+        // The quick theme action targets the opposite of the resolved
+        // appearance and keeps the palette open so it updates to its next
+        // state (upstream b4dd24d7).
+        const mode = entry.action.theme;
+        if (mode !== undefined) {
+          commandPaletteStore.activateEntry({
+            kind: "theme",
+            setTheme: () => {
+              appearanceStore.setMode(mode);
+            },
+          });
+        }
+        return;
+      }
       commandPaletteStore.activateEntry({ kind: entry.action.id });
     } else {
       commandPaletteStore.activateEntry({ kind: "chat", chatId: entry.row.chat.id });
@@ -188,6 +241,12 @@ export function CommandPalette() {
         commandPaletteStore.move(1, entries.length);
         return true;
       case "enter":
+        // The desktop latches Enter against X11's unflagged repeats
+        // (EnterPress); the DOM reports repeats directly (`event.repeat`),
+        // so a held Enter activates once until release.
+        if (event.nativeEvent.repeat) {
+          return true;
+        }
         activate(state.active);
         return true;
       default:
@@ -199,19 +258,22 @@ export function CommandPalette() {
     (count, entry) => (entry.kind === "action" ? count + 1 : count),
     0,
   );
+  // End spacing belongs to the content, so it scrolls out of the fade
+  // instead of leaving a permanent gutter beside the chrome (b4dd24d7).
   const rows: ReactNode[] = [];
   entries.forEach((entry, ix) => {
-    if (ix === 0 && actionCount > 0) {
-      rows.push(<div key="command-heading" className="command-palette-heading">Actions</div>);
-    }
     if (ix === actionCount && actionCount > 0) {
-      rows.push(<div key="command-separator" className="command-palette-divider" role="separator" />);
+      rows.push(
+        <div key="command-separator" className="command-palette-divider" role="separator" />,
+      );
     }
     rows.push(
       <PaletteRow
         key={`command-row-${ix}`}
         entry={entry}
         ix={ix}
+        first={ix === 0}
+        last={ix + 1 === entries.length}
         active={ix === state.active}
         query={state.query}
         sidebar={sidebar}
@@ -242,15 +304,15 @@ export function CommandPalette() {
     >
       <div className="command-palette-card">
         <div className="add-space-header command-palette-header">
-          <span className="add-space-search-icon" aria-hidden>
-            <Icon name="magnifer" size={16} />
+          <span className="command-palette-search-icon" aria-hidden>
+            <Icon name="paletteSearch" size={16} />
           </span>
           <div className="add-space-search">
             <input
               ref={inputRef}
               type="text"
               value={state.query}
-              placeholder="Type a command or search chats…"
+              placeholder="Search commands and chats…"
               spellCheck={false}
               autoComplete="off"
               autoCorrect="off"
@@ -266,27 +328,38 @@ export function CommandPalette() {
               }}
             />
           </div>
-          <KeyHintText cap={isMacPlatform() ? "⌘K" : "Ctrl K"} label="" />
+          <KbdHint>{badgeCombo("mod-k", isMacPlatform())}</KbdHint>
         </div>
-        <div className="add-space-list-wrap command-palette-results">
+        <div className="command-palette-results" ref={fadeRef}>
           <div className="add-space-list command-palette-list" ref={listRef}>
             {entries.length === 0 && (
-              <div className="add-space-list-empty">No actions or chats found</div>
+              <div className="command-palette-empty">
+                <span>No results</span>
+                <span className="command-palette-empty-hint">
+                  Try a command, chat title, project, or device.
+                </span>
+              </div>
             )}
             {rows}
           </div>
         </div>
         <div className="command-palette-footer">
-          <KeyHintPair
-            first={<Icon name="arrowUp" />}
-            second={<Icon name="arrowDown" />}
-            label="Navigate"
-          />
-          <KeyHintText cap="↵" label="Open" />
-          <KeyHintText cap="esc" label="Close" />
+          <CommandKeyHint keys="↑ ↓" label="Navigate" />
+          <CommandKeyHint keys="↵" label="Select" />
+          <CommandKeyHint keys="Esc" label="Close" />
         </div>
       </div>
     </RbDialogGlass>
+  );
+}
+
+/** `command_key_hint`: a kbd chip plus its tiny verb (b4dd24d7). */
+function CommandKeyHint(props: { readonly keys: string; readonly label: string }) {
+  return (
+    <span className="command-key-hint">
+      <KbdHint>{props.keys}</KbdHint>
+      <span className="command-key-hint-label">{props.label}</span>
+    </span>
   );
 }
 
@@ -294,19 +367,22 @@ export function CommandPalette() {
 function PaletteRow(props: {
   readonly entry: PaletteEntry;
   readonly ix: number;
+  readonly first: boolean;
+  readonly last: boolean;
   readonly active: boolean;
   readonly query: string;
   readonly sidebar: ReturnType<typeof useSidebar>;
   readonly onClick: () => void;
 }) {
-  const { entry, ix, active, query, sidebar, onClick } = props;
+  const { entry, ix, first, last, active, query, sidebar, onClick } = props;
+  const spacing = `${first ? "command-row-first" : ""} ${last ? "command-row-last" : ""}`;
   if (entry.kind === "action") {
     return (
       <MenuRowNav
         fadeKey={`command-action-${ix}`}
         highlighted={active}
         onClick={onClick}
-        className="command-palette-action"
+        className={`command-palette-action ${spacing}`}
       >
         <Icon name={entry.action.icon} size={16} className="command-palette-action-icon" />
         <Highlighted text={entry.action.label} query={query} />
@@ -319,6 +395,7 @@ function PaletteRow(props: {
       ix={ix}
       active={active}
       query={query}
+      spacing={spacing}
       showBranch={sidebar.showBranch}
       showPullRequest={sidebar.showPullRequest}
       showHarness={sidebar.showHarness}
@@ -339,12 +416,13 @@ function ChatRow(props: {
   readonly ix: number;
   readonly active: boolean;
   readonly query: string;
+  readonly spacing: string;
   readonly showBranch: boolean;
   readonly showPullRequest: boolean;
   readonly showHarness: boolean;
   readonly onClick: () => void;
 }) {
-  const { row, ix, active, query, showBranch, showPullRequest, showHarness, onClick } = props;
+  const { row, ix, active, query, spacing, showBranch, showPullRequest, showHarness, onClick } = props;
   const brand = showHarness && row.harness !== null ? harnessBrandIcon(row.harness) : null;
   const branch = showBranch ? row.branch : null;
   const changeRequest = showPullRequest ? row.changeRequest : null;
@@ -353,7 +431,7 @@ function ChatRow(props: {
     <button
       type="button"
       data-rb-row-key={`command-chat-${ix}`}
-      className={`command-chat-row ${active ? "command-chat-row-active" : ""}`}
+      className={`command-chat-row ${spacing} ${active ? "command-chat-row-active" : ""}`}
       onClick={onClick}
     >
       <span className="command-chat-line command-chat-line-1">
