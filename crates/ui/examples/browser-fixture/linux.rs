@@ -518,9 +518,13 @@ pub async fn exercise(
     let bounds = page.read_with(cx, |b, _| b.fixture_linux_bounds());
     let viewport =
         AnyWindowHandle::from(window).update(cx, |_, w, _| f32::from(w.viewport_size().width))?;
+    // The right-pane "+" surface menu: 168 wide, anchored below the trigger at
+    // the same x as before the docked-Files redesign; two rows now (Browser,
+    // Terminal — Files left for its own panel, Diffs/History only under git,
+    // which this fixture's space is not), so the card ends at y≈120.
     super::validate_blur(
         output,
-        (f32::from(bounds.origin.x) as f64 + 124., 42., 168., 112.),
+        (f32::from(bounds.origin.x) as f64 + 124., 42., 168., 78.),
         viewport,
     )?;
     window.update(cx, |s, _, cx| s.fixture_browser_menu(false, cx))?;
