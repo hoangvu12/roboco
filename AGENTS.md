@@ -20,6 +20,7 @@ Rename mapping for retained code:
 - `zeron-*` crates / `zeron_*` libs -> `roboco-*` / `roboco_*`
 - `apps/zeron/` -> `apps/roboco/`
 - `ZERON_*` env vars -> `ROBOCO_*`
+- `CURSOR_SDK_SHIM_EXECUTABLE` -> `ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE` (upstream ships it unprefixed; docs/research stays verbatim)
 - `sh.zeron.*` bundle ids -> `sh.roboco.*`, `zeron://` links -> `roboco://`
 
 Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS.

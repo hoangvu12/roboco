@@ -111,7 +111,7 @@ impl Default for CursorHarness {
 impl CursorHarness {
     /// The SDK selected by this engine, not the viewer or installed native CLI.
     pub fn sdk_version() -> &'static str {
-        if std::env::var_os("CURSOR_SDK_SHIM_EXECUTABLE").is_some() {
+        if std::env::var_os("ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE").is_some() {
             "custom override (unverified)"
         } else {
             CURSOR_SDK_PIN.strip_prefix("@cursor/sdk@").unwrap()
@@ -191,7 +191,7 @@ impl CursorHarness {
         if let Some(p) = &self.executable {
             return Ok((p.clone(), Vec::new()));
         }
-        if let Some(p) = std::env::var_os("CURSOR_SDK_SHIM_EXECUTABLE")
+        if let Some(p) = std::env::var_os("ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE")
             && !p.is_empty()
         {
             return Ok((PathBuf::from(p), Vec::new()));
