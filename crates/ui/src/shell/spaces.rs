@@ -2138,7 +2138,7 @@ impl Shell {
             "Harness",
             "Project icon",
             "Compact mode",
-            "Project @ device",
+            "Location",
         ];
         let icons = [
             icons::LAPTOP,
