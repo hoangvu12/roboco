@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { StorageLike } from "../src/lib/engine-store";
 import { SidebarStore } from "../src/lib/sidebar-store";
+import { UiSettingsStore } from "../src/state/ui-settings";
 
 function memoryStorage(): StorageLike {
   const map = new Map<string, string>();
@@ -22,14 +23,39 @@ describe("SidebarStore", () => {
       // would be pointless), session-transient like the archived shelf.
       pinnedOpen: true,
       pinnedByProfile: {},
-      // The five view options ride along at their desktop defaults
-      // (settings.rs:658-665) — ticket 10's menu writes them.
+      // The view options ride along at their desktop defaults
+      // (settings.rs) — ticket 10's menu writes them. Compact mode defaults
+      // ON (upstream ffaa3102).
       organization: "inOneList",
       sort: "lastUpdated",
+      compact: true,
+      showProjectIcon: true,
+      showProjectLabel: true,
       showHarness: true,
       showBranch: true,
       showPullRequest: true,
     });
+  });
+
+  it("projects the sidebar display toggles and re-projects on writes (upstream 78e9e6ae)", () => {
+    const storage = memoryStorage();
+    // The view menu writes through uiSettings directly; the sidebar store
+    // re-projects its slice off the same settings instance.
+    const settings = new UiSettingsStore({ storage });
+    const store = new SidebarStore({ settings });
+    settings.updateImmediate({
+      sidebarCompact: false,
+      sidebarShowProjectLabel: false,
+      sidebarOrganization: "byProject",
+    });
+    expect(store.getSnapshot().compact).toBe(false);
+    expect(store.getSnapshot().showProjectLabel).toBe(false);
+    expect(store.getSnapshot().organization).toBe("byProject");
+    // And the projection survives a reload over the same storage.
+    const second = new SidebarStore({ storage });
+    expect(second.getSnapshot().compact).toBe(false);
+    expect(second.getSnapshot().showProjectLabel).toBe(false);
+    expect(second.getSnapshot().organization).toBe("byProject");
   });
 
   it("persists the filter and the last selected space across reloads", () => {

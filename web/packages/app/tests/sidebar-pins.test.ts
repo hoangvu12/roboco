@@ -383,6 +383,7 @@ function chatRows(ids: readonly string[]): ChatRow[] {
     },
     status: "idle" as const,
     project: "~",
+    projectPath: null,
     folder: "~",
     harness: null,
     branch: null,

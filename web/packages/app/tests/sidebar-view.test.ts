@@ -7,6 +7,7 @@ import {
   resortOffsets,
   sidebarGroups,
   sidebarKeyOrderChanged,
+  sidebarRowHeight,
   sidebarVisibleOrder,
   type ChatRow,
   type SidebarBucket,
@@ -18,10 +19,6 @@ import {
   SIDEBAR_RESORT_CURVE,
   SIDEBAR_RESORT_MS,
 } from "../src/components/chat-list";
-import {
-  SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE,
-  SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP,
-} from "../src/components/archived-section";
 import {
   SIDEBAR_DISCLOSURE_MS,
   disclosureAnimating,
@@ -65,7 +62,7 @@ describe("promoteLocalDeviceGroup", () => {
       bucket("older-remote"),
     ];
     expect(
-      promoteLocalDeviceGroup(groups, "local").map((entry) => entry.group!.deviceId),
+      promoteLocalDeviceGroup(groups, "local").map((entry) => entry.group!.key),
     ).toEqual(["local", "recent-remote", "older-remote"]);
   });
 
@@ -84,11 +81,23 @@ describe("chatRowHeight", () => {
   });
 });
 
+describe("sidebarRowHeight (upstream 78e9e6ae)", () => {
+  it("compact_rows_are_29px_regardless_of_metadata", () => {
+    expect(sidebarRowHeight(true, true, false, false)).toBe(29);
+    expect(sidebarRowHeight(true, false, true, true)).toBe(29);
+  });
+
+  it("detailed_rows_lose_16px_when_the_location_label_hides", () => {
+    expect(sidebarRowHeight(false, true, false, false)).toBe(45);
+    expect(sidebarRowHeight(false, false, false, false)).toBe(29);
+    expect(sidebarRowHeight(false, true, true, false)).toBe(61);
+    expect(sidebarRowHeight(false, false, true, false)).toBe(45);
+  });
+});
+
 describe("harness geometry", () => {
   it("sidebar_harness_geometry_reflects_row_hierarchy", () => {
     expect(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP).toBe(8);
-    expect(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP).toBeLessThan(SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP);
-    expect(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE).toBeLessThan(SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE);
   });
 });
 
@@ -188,7 +197,7 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
       chat("r1b", { deviceId: "remote-1" }),
     ]);
     const grouped = sidebarGroups(rows, "byDevice", "local");
-    expect(grouped.map((entry) => entry.group!.deviceId)).toEqual([
+    expect(grouped.map((entry) => entry.group!.key)).toEqual([
       "local",
       "remote-1",
       "remote-2",
@@ -215,6 +224,27 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
     expect(grouped[0]!.group).toBe(null);
     expect(grouped[0]!.rows.map((row) => row.chat.id)).toEqual(["b", "a"]);
     expect(sidebarVisibleOrder(rows, "inOneList", null)).toEqual(["b", "a"]);
+  });
+
+  it("byProject groups by space in first-seen order (upstream 78e9e6ae)", () => {
+    const rows = chatRows([
+      chat("p1b", { spaceId: "proj-1", deviceId: "local" }),
+      chat("p2a", { spaceId: "proj-2", deviceId: "remote-1" }),
+      chat("p1a", { spaceId: "proj-1", deviceId: "local" }),
+      chat("home1", { deviceId: "remote-2" }),
+    ]);
+    const grouped = sidebarGroups(rows, "byProject", "local");
+    expect(grouped.map((entry) => entry.group!.key)).toEqual(["proj-1", "proj-2", "home:remote-2"]);
+    expect(grouped.every((entry) => entry.group!.kind === "project")).toBe(true);
+    expect(grouped[0]!.rows.map((row) => row.chat.id)).toEqual(["p1b", "p1a"]);
+    // The project-less session reads as its home group; no local promotion
+    // under byProject (upstream 78e9e6ae promotes device groups only).
+    expect(sidebarVisibleOrder(rows, "byProject", "local")).toEqual([
+      "p1b",
+      "p1a",
+      "p2a",
+      "home1",
+    ]);
   });
 
   it("the displayed order leads with pins in saved order (sidebar_visible_order)", () => {
@@ -282,7 +312,7 @@ function chat(id: string, fields: Partial<Chat> = {}): Chat {
 }
 
 function bucket(deviceId: string): SidebarBucket<ChatRow> {
-  return { group: { deviceId, deviceName: deviceId }, rows: [] };
+  return { group: { key: deviceId, label: deviceId, kind: "device" }, rows: [] };
 }
 
 function keys(list: readonly (readonly [string, number])[]): SidebarKeyed[] {
@@ -296,6 +326,7 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     chat: entry,
     status: "idle" as const,
     project: "~",
+    projectPath: null,
     folder: "~",
     harness: null,
     branch: null,

@@ -370,22 +370,35 @@ function spacesCardContains(target: Node): boolean {
 
 type ViewRow =
   | { readonly kind: "ByDevice" }
+  | { readonly kind: "ByProject" }
   | { readonly kind: "InOneList" }
   | { readonly kind: "LastUpdated" }
   | { readonly kind: "Created" }
   | { readonly kind: "ShowBranch" }
   | { readonly kind: "ShowPullRequest" }
-  | { readonly kind: "ShowHarness" };
+  | { readonly kind: "ShowHarness" }
+  | { readonly kind: "ShowProjectIcon" }
+  | { readonly kind: "ShowProjectLabel" }
+  | { readonly kind: "Compact" };
 
-/** `SIDEBAR_VIEW_ROWS` — the exact row order and labels (spaces.rs:871-973). */
+/**
+ * `SIDEBAR_VIEW_ROWS` — the exact row order and labels (spaces.rs, after
+ * upstream 78e9e6ae → 378a1945: By project joins Organize, the three Show
+ * toggles grow Project icon and Location, and Compact mode moves into its
+ * own Layout section last).
+ */
 const SIDEBAR_VIEW_ROWS: readonly { row: ViewRow; label: string; icon: IconName }[] = [
   { row: { kind: "ByDevice" }, label: "By device", icon: "laptop" },
+  { row: { kind: "ByProject" }, label: "By project", icon: "folder" },
   { row: { kind: "InOneList" }, label: "In one list", icon: "list" },
   { row: { kind: "LastUpdated" }, label: "Last updated", icon: "clockCircle" },
   { row: { kind: "Created" }, label: "Created", icon: "calendar" },
   { row: { kind: "ShowBranch" }, label: "Branch", icon: "gitBranch" },
   { row: { kind: "ShowPullRequest" }, label: "Pull request", icon: "pullRequest" },
   { row: { kind: "ShowHarness" }, label: "Harness", icon: "bot" },
+  { row: { kind: "ShowProjectIcon" }, label: "Project icon", icon: "folderWithFiles" },
+  { row: { kind: "ShowProjectLabel" }, label: "Location", icon: "folder" },
+  { row: { kind: "Compact" }, label: "Compact mode", icon: "list" },
 ];
 
 /**
@@ -455,6 +468,8 @@ export function SidebarViewMenu() {
     switch (row.kind) {
       case "ByDevice":
         return sidebar.organization === "byDevice";
+      case "ByProject":
+        return sidebar.organization === "byProject";
       case "InOneList":
         return sidebar.organization === "inOneList";
       case "LastUpdated":
@@ -467,12 +482,24 @@ export function SidebarViewMenu() {
         return sidebar.showPullRequest;
       case "ShowHarness":
         return sidebar.showHarness;
+      case "ShowProjectIcon":
+        return sidebar.showProjectIcon;
+      case "ShowProjectLabel":
+        return sidebar.showProjectLabel;
+      case "Compact":
+        return sidebar.compact;
     }
   }
 
-  /** Radio rows (0-3) dismiss on pick; Show toggles (4-6) stay open. */
+  /** Radio rows (organization + sort) dismiss on pick; toggles stay open. */
   function closes(row: ViewRow): boolean {
-    return row.kind === "ByDevice" || row.kind === "InOneList" || row.kind === "LastUpdated" || row.kind === "Created";
+    return (
+      row.kind === "ByDevice" ||
+      row.kind === "ByProject" ||
+      row.kind === "InOneList" ||
+      row.kind === "LastUpdated" ||
+      row.kind === "Created"
+    );
   }
 
   function activate(row: ViewRow): void {
@@ -482,6 +509,9 @@ export function SidebarViewMenu() {
     switch (row.kind) {
       case "ByDevice":
         uiSettings.updateImmediate({ sidebarOrganization: "byDevice" });
+        break;
+      case "ByProject":
+        uiSettings.updateImmediate({ sidebarOrganization: "byProject" });
         break;
       case "InOneList":
         uiSettings.updateImmediate({ sidebarOrganization: "inOneList" });
@@ -501,6 +531,15 @@ export function SidebarViewMenu() {
         break;
       case "ShowHarness":
         uiSettings.updateImmediate({ sidebarShowHarness: !sidebar.showHarness });
+        break;
+      case "ShowProjectIcon":
+        uiSettings.updateImmediate({ sidebarShowProjectIcon: !sidebar.showProjectIcon });
+        break;
+      case "ShowProjectLabel":
+        uiSettings.updateImmediate({ sidebarShowProjectLabel: !sidebar.showProjectLabel });
+        break;
+      case "Compact":
+        uiSettings.updateImmediate({ sidebarCompact: !sidebar.compact });
         break;
     }
     if (closes(row)) {
@@ -576,13 +615,16 @@ export function SidebarViewMenu() {
         }
       >
         <MenuHeading>Organize</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 2)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(0, 3)} offset={0} cursor={cursor} isSelected={isSelected} onActivate={activate} />
         <MenuSeparator />
         <MenuHeading>Sort</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(2, 4)} offset={2} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(3, 5)} offset={3} cursor={cursor} isSelected={isSelected} onActivate={activate} />
         <MenuSeparator />
         <MenuHeading>Show</MenuHeading>
-        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(4, 7)} offset={4} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(5, 10)} offset={5} cursor={cursor} isSelected={isSelected} onActivate={activate} />
+        <MenuSeparator />
+        <MenuHeading>Layout</MenuHeading>
+        <ViewMenuRows entries={SIDEBAR_VIEW_ROWS.slice(10)} offset={10} cursor={cursor} isSelected={isSelected} onActivate={activate} />
       </PickerCard>
     </>
   );

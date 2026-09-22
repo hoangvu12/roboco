@@ -42,6 +42,10 @@ export interface SidebarState {
   readonly organization: SidebarOrganization;
   /** The comparator the active list, jump order, and archived shelf share. */
   readonly sort: SidebarSort;
+  /** Upstream 78e9e6ae's display toggles — the view menu writes them. */
+  readonly compact: boolean;
+  readonly showProjectIcon: boolean;
+  readonly showProjectLabel: boolean;
   readonly showHarness: boolean;
   readonly showBranch: boolean;
   readonly showPullRequest: boolean;
@@ -206,6 +210,9 @@ export class SidebarStore {
       pinnedByProfile: settings.sidebarPinnedSessionIdsByProfile,
       organization: settings.sidebarOrganization,
       sort: settings.sidebarSort,
+      compact: settings.sidebarCompact,
+      showProjectIcon: settings.sidebarShowProjectIcon,
+      showProjectLabel: settings.sidebarShowProjectLabel,
       showHarness: settings.sidebarShowHarness,
       showBranch: settings.sidebarShowBranch,
       showPullRequest: settings.sidebarShowPullRequest,
@@ -222,6 +229,9 @@ export class SidebarStore {
       pinMapsEqual(state.pinnedByProfile, this.#state.pinnedByProfile) &&
       state.organization === this.#state.organization &&
       state.sort === this.#state.sort &&
+      state.compact === this.#state.compact &&
+      state.showProjectIcon === this.#state.showProjectIcon &&
+      state.showProjectLabel === this.#state.showProjectLabel &&
       state.showHarness === this.#state.showHarness &&
       state.showBranch === this.#state.showBranch &&
       state.showPullRequest === this.#state.showPullRequest
