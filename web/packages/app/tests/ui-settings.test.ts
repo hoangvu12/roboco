@@ -9,6 +9,7 @@ import {
   UI_SETTINGS_STORAGE_KEY,
   UiSettingsStore,
   defaultUiSettings,
+  healUiSettings,
   type UiSettings,
 } from "../src/state/ui-settings";
 
@@ -58,6 +59,11 @@ describe("defaults", () => {
     expect(settings.notificationsBackgroundOnly).toBe(true);
     expect(settings.sidebarOrganization).toBe("inOneList");
     expect(settings.sidebarSort).toBe("lastUpdated");
+    // Upstream 78e9e6ae/ffaa3102's display toggles: compact defaults ON,
+    // project icon and Location label default on.
+    expect(settings.sidebarCompact).toBe(true);
+    expect(settings.sidebarShowProjectIcon).toBe(true);
+    expect(settings.sidebarShowProjectLabel).toBe(true);
     expect(settings.filesAutosaveDelayMs).toBe(900);
     expect(settings.terminalFontFamily).toBe("geistMono");
     expect(settings.terminalFontSize).toBe(13);
@@ -181,10 +187,34 @@ describe("clamp", () => {
 });
 
 describe("heal", () => {
-  it("sidebarOrganization — a stored \"byProject\" heals to \"inOneList\"", () => {
-    expect(storedWith({ sidebarOrganization: "byProject" }).sidebarOrganization).toBe("inOneList");
+  it("sidebarOrganization — a stored \"byProject\" round-trips (upstream 78e9e6ae removed the downgrade)", () => {
+    expect(storedWith({ sidebarOrganization: "byProject" }).sidebarOrganization).toBe("byProject");
     expect(storedWith({ sidebarOrganization: "byDevice" }).sidebarOrganization).toBe("byDevice");
     expect(storedWith({ sidebarOrganization: "sideways" }).sidebarOrganization).toBe("inOneList");
+  });
+
+  it("sidebar display preferences — compact/icon/label heal independently", () => {
+    expect(storedWith({ sidebarCompact: false }).sidebarCompact).toBe(false);
+    expect(storedWith({ sidebarCompact: "junk" }).sidebarCompact).toBe(true);
+    expect(storedWith({ sidebarShowProjectIcon: false }).sidebarShowProjectIcon).toBe(false);
+    expect(storedWith({ sidebarShowProjectLabel: false }).sidebarShowProjectLabel).toBe(false);
+  });
+
+  it("sidebar_display_defaults_and_preferences_round_trip", () => {
+    // The desktop's round-trip test (settings.rs): a fully customized
+    // display slice survives a serialize→heal cycle, including ByProject.
+    const store = new UiSettingsStore({ storage: memoryStorage() });
+    store.updateImmediate({
+      sidebarCompact: false,
+      sidebarShowProjectIcon: false,
+      sidebarShowProjectLabel: false,
+      sidebarOrganization: "byProject",
+    });
+    const restored = healUiSettings(JSON.parse(JSON.stringify(store.getSnapshot())));
+    expect(restored.sidebarCompact).toBe(false);
+    expect(restored.sidebarShowProjectIcon).toBe(false);
+    expect(restored.sidebarShowProjectLabel).toBe(false);
+    expect(restored.sidebarOrganization).toBe("byProject");
   });
 
   it("jumpSession — pads a short list and truncates a long one to 9 slots", () => {

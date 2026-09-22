@@ -18,6 +18,7 @@ import {
   resortOffsets,
   sidebarGroups,
   sidebarKeyOrderChanged,
+  sidebarRowHeight,
   sidebarVisibleOrder,
   statusWord,
   type ChatRow,
@@ -41,6 +42,9 @@ import {
 import { sidebarStore } from "../state/sidebar";
 import { GlyphSpinner } from "./glyph-spinner";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
+import { ProjectIconMark } from "./project-monogram";
+import { Tooltip } from "./ui/Tooltip";
+import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 import {
   SidebarDisclosureBody,
   SidebarDisclosureHeader,
@@ -239,6 +243,9 @@ export function ChatList() {
   const { pinned: pinnedRows, regular: regularRows } = pinOrderedRows(rows, pinnedIds);
   const hasPinnedDivider = pinnedRows.length > 0 && regularRows.length > 0;
   const pinnedOpen = sidebar.pinnedOpen;
+  const compact = sidebar.compact;
+  const showLabel = sidebar.showProjectLabel;
+  const showProjectIcon = sidebar.showProjectIcon;
   const groups = sidebarGroups(regularRows, sidebar.organization, localDeviceId);
 
   // ── Drag transfers between Pinned and regular sessions (6851fc34) ───────
@@ -482,11 +489,21 @@ export function ChatList() {
     const key = `c:${row.chat.id}`;
     keyed.push({
       key,
-      height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
+      height: sidebarRowHeight(compact, showLabel, row.branch !== null, row.changeRequest !== null),
     });
     entries.push({
       key,
-      element: <ChatListRow key={row.chat.id} row={row} jumpLabel={jumpLabelFor(row.chat.id)} />,
+      element: (
+        <ChatListRow
+          key={row.chat.id}
+          row={row}
+          jumpLabel={jumpLabelFor(row.chat.id)}
+          compact={compact}
+          showLabel={showLabel}
+          showProjectIcon={showProjectIcon}
+          localDeviceId={localDeviceId}
+        />
+      ),
     });
   }
   if (hasPinnedDivider && pinnedOpen) {
@@ -498,7 +515,7 @@ export function ChatList() {
         const key = `c:${row.chat.id}`;
         keyed.push({
           key,
-          height: chatRowHeight(row.branch !== null, row.changeRequest !== null),
+          height: sidebarRowHeight(compact, showLabel, row.branch !== null, row.changeRequest !== null),
         });
         entries.push({
           key,
@@ -510,19 +527,26 @@ export function ChatList() {
               dragged={transferIn === row.chat.id}
               shouldSuppressClick={suppressTransferClick}
             >
-              <ChatListRow row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
+              <ChatListRow
+                row={row}
+                jumpLabel={jumpLabelFor(row.chat.id)}
+                compact={compact}
+                showLabel={showLabel}
+                showProjectIcon={showProjectIcon}
+                localDeviceId={localDeviceId}
+              />
             </RegularRowDragArm>
           ),
         });
       }
       continue;
     }
-    const collapseKey = `device:${bucket.group.deviceId}`;
+    const collapseKey = `${bucket.group.kind}:${bucket.group.key}`;
     const collapsed = collapsedGroups.has(collapseKey);
     keyed.push({
       key: `g:${collapseKey}`,
       height:
-        SIDEBAR_DISCLOSURE_SECTION_HEIGHT + (collapsed ? 0 : sidebarGroupBodyHeight(bucket.rows)),
+        SIDEBAR_DISCLOSURE_SECTION_HEIGHT + (collapsed ? 0 : sidebarGroupBodyHeight(bucket.rows, compact, showLabel)),
     });
     entries.push({
       key: `g:${collapseKey}`,
@@ -530,9 +554,13 @@ export function ChatList() {
         <DeviceGroupSection
           key={collapseKey}
           collapseKey={collapseKey}
-          label={bucket.group.deviceName}
+          label={bucket.group.label}
           rows={bucket.rows}
           collapsed={collapsed}
+          compact={compact}
+          showLabel={showLabel}
+          showProjectIcon={showProjectIcon}
+          localDeviceId={localDeviceId}
           jumpLabelFor={jumpLabelFor}
           onRowPointerDown={armTransferIn}
           draggingChatId={transferIn}
@@ -708,26 +736,34 @@ function ResortGlideBox({
 }
 
 /** `spaces.rs::render_active_rows`' body height: inset + rows + gaps. */
-function sidebarGroupBodyHeight(rows: readonly ChatRow[]): number {
+function sidebarGroupBodyHeight(
+  rows: readonly ChatRow[],
+  compact: boolean,
+  showLabel: boolean,
+): number {
   let total = SIDEBAR_DISCLOSURE_BODY_INSET;
   for (const row of rows) {
-    total += chatRowHeight(row.branch !== null, row.changeRequest !== null);
+    total += sidebarRowHeight(compact, showLabel, row.branch !== null, row.changeRequest !== null);
   }
   total += SIDEBAR_LIST_GAP * Math.max(rows.length - 1, 0);
   return total;
 }
 
 /**
- * One ByDevice disclosure section (`spaces.rs` group arm): the shared header
- * (label + hairline + chevron), the tweened body, and the 12px section band
- * above it. Its keyed height for the FLIP diff is the collapsed/open pair
- * the parent computed.
+ * One ByDevice/ByProject disclosure section (`spaces.rs` group arm): the
+ * shared header (label + hairline + chevron), the tweened body, and the 12px
+ * section band above it. Its keyed height for the FLIP diff is the
+ * collapsed/open pair the parent computed.
  */
 function DeviceGroupSection({
   collapseKey,
   label,
   rows,
   collapsed,
+  compact,
+  showLabel,
+  showProjectIcon,
+  localDeviceId,
   jumpLabelFor,
   onRowPointerDown,
   draggingChatId,
@@ -738,6 +774,10 @@ function DeviceGroupSection({
   label: string;
   rows: readonly ChatRow[];
   collapsed: boolean;
+  compact: boolean;
+  showLabel: boolean;
+  showProjectIcon: boolean;
+  localDeviceId: string | null;
   jumpLabelFor: (chatId: string) => string | null;
   /** The parent's transfer-in gesture arm (one per regular row). */
   onRowPointerDown: (event: React.PointerEvent, chatId: string) => void;
@@ -745,7 +785,7 @@ function DeviceGroupSection({
   shouldSuppressClick: () => boolean;
   onToggle: () => void;
 }) {
-  const bodyHeight = sidebarGroupBodyHeight(rows);
+  const bodyHeight = sidebarGroupBodyHeight(rows, compact, showLabel);
   const { bodyRef, chevronRef, toggle } = useSidebarDisclosure(
     `group:${collapseKey}`,
     !collapsed,
@@ -774,7 +814,14 @@ function DeviceGroupSection({
               dragged={draggingChatId === row.chat.id}
               shouldSuppressClick={shouldSuppressClick}
             >
-              <ChatListRow row={row} jumpLabel={jumpLabelFor(row.chat.id)} />
+              <ChatListRow
+                row={row}
+                jumpLabel={jumpLabelFor(row.chat.id)}
+                compact={compact}
+                showLabel={showLabel}
+                showProjectIcon={showProjectIcon}
+                localDeviceId={localDeviceId}
+              />
             </RegularRowDragArm>
           ))}
         </div>
@@ -785,7 +832,7 @@ function DeviceGroupSection({
 
 /**
  * One sidebar chat card — the desktop's `shell.rs::render_chat_row`, line for
- * line:
+ * line, plus upstream 78e9e6ae→378a1945's compact mode:
  *
  * 1. `project @ device` at 11px/14px in the muted subline tone, with the
  *    status corner right-aligned. The corner is activity, not position: a
@@ -793,10 +840,19 @@ function DeviceGroupSection({
  *    Done wears a check, the rest use a 6px dot — and Idle rows show the
  *    relative time instead. A jump hint (the slot's `badgeCombo`, ticket 12)
  *    takes the corner outright above both.
- * 2. The harness brand mark (13px) beside the title at 13px/17px.
+ * 2. The harness brand mark (13px) beside the title at 13px/17px, with the
+ *    project monogram leading (78e9e6ae's project icons; the web has no
+ *    repository artwork surface, so the curated-palette monogram IS the
+ *    project icon — see `project-monogram.tsx`).
  * 3. Structural, not reserved: branch and change-request badge, omitted
  *    entirely when the chat has neither — the invisible spring keeps the
  *    badge pinned right without moving anything when absent.
+ *
+ * Compact rows (78e9e6ae + deaf2c4e) drop lines 1 and 3: the status glyph
+ * leads the single line, the monogram and harness mark follow, the PR badge
+ * rides beside the title, elapsed time sits in a fixed 30px right slot, and
+ * the corner keeps the remote glyph (Earth, with the owning device's
+ * tooltip — 4f9a5fd5/378a1945) that the Archive pill replaces on hover.
  *
  * Hovering the ROW (not the corner — corner-only tested as undiscoverable)
  * swaps the corner for the Archive pill, whose padding bleeds into the row's
@@ -804,7 +860,21 @@ function DeviceGroupSection({
  * pixels around the label, not the label itself. Right mouse-down opens the
  * chat context menu at the pointer, exactly as the desktop does.
  */
-function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: string | null }) {
+function ChatListRow({
+  row,
+  jumpLabel = null,
+  compact = false,
+  showLabel = true,
+  showProjectIcon = true,
+  localDeviceId = null,
+}: {
+  row: ChatRow;
+  jumpLabel?: string | null;
+  compact?: boolean;
+  showLabel?: boolean;
+  showProjectIcon?: boolean;
+  localDeviceId?: string | null;
+}) {
   // A row can live on ANY paired engine — resolve its owning session off
   // the scoped chat id so archive/menu mutations route to the right one.
   const sessions = useEngineSessions();
@@ -814,6 +884,10 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   const { menu, element } = useChatMenu(row.chat);
+  const remote = localDeviceId !== null && row.deviceId !== localDeviceId;
+  const device = row.deviceName ?? "Unknown device";
+  const projectName = row.projectPath === null ? "Home" : row.project;
+  const projectSeed = row.projectPath ?? "home";
 
   function toggleArchive(event: React.MouseEvent): void {
     // The row's own click is the selector; only the corner archives.
@@ -828,47 +902,82 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
     });
   }
 
+  const monogram =
+    showProjectIcon ? (
+      <ProjectIconMark name={projectName} seed={projectSeed} device={device} />
+    ) : null;
+
+  // The corner's compact body: the remote glyph at rest (the Archive pill
+  // takes the slot on hover — deaf2c4e's compact corner); nothing for a
+  // local row until hover.
+  const compactCornerBody = hovered ? (
+    <button
+      type="button"
+      className="chat-row-archive"
+      aria-label={archived ? "Unarchive chat" : "Archive chat"}
+      onClick={toggleArchive}
+    >
+      <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
+      {archived ? "Unarchive" : "Archive"}
+    </button>
+  ) : remote ? (
+    <Tooltip label={device} delay={TOOLTIP_VIEW_OPTIONS_MS} trigger={<Icon name="global" size={13} className="chat-row-remote" />} />
+  ) : null;
+
   // `menu` wraps the row so a right-click opens the chat context menu at
   // the pointer (`useChatMenu`'s ContextMenu.Trigger adopts this div). The
   // dialogs live outside it — they portal anyway, and their state must
   // outlive the menu's unmount.
   const rowElement = menu(
-    <div className="chat-row-item" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+    <div
+      className={compact ? "chat-row-item chat-row-compact" : "chat-row-item"}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <Link
         to="/chat/$chatId"
         params={{ chatId: row.chat.id }}
         className="chat-row"
         data-status={row.status}
+        data-compact={compact ? "1" : undefined}
         activeProps={{ className: "chat-row chat-row-active" }}
       >
-        <div className="chat-row-line">
-          <SidebarFadedLabel className="chat-row-folder" fill>
-            {row.folder}
-          </SidebarFadedLabel>
-          <span className="chat-row-corner">
-            {jumpLabel !== null ? (
-              <span className="chat-row-jump mono">{jumpLabel}</span>
-            ) : hovered ? (
-              <button
-                type="button"
-                className="chat-row-archive"
-                aria-label={archived ? "Unarchive chat" : "Archive chat"}
-                onClick={toggleArchive}
-              >
-                <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
-                {archived ? "Unarchive" : "Archive"}
-              </button>
-            ) : word === null ? (
-              <span className="chat-row-time">{row.timeAgo}</span>
-            ) : (
-              <span className={`chat-row-status status-${row.status}`}>
-                <StatusGlyph status={row.status} />
-                {word}
-              </span>
-            )}
-          </span>
-        </div>
+        {!compact && (
+          <div className="chat-row-line">
+            <SidebarFadedLabel className="chat-row-folder" fill>
+              {row.folder}
+            </SidebarFadedLabel>
+            <span className="chat-row-corner">
+              {jumpLabel !== null ? (
+                <span className="chat-row-jump mono">{jumpLabel}</span>
+              ) : hovered ? (
+                <button
+                  type="button"
+                  className="chat-row-archive"
+                  aria-label={archived ? "Unarchive chat" : "Archive chat"}
+                  onClick={toggleArchive}
+                >
+                  <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
+                  {archived ? "Unarchive" : "Archive"}
+                </button>
+              ) : word === null ? (
+                <span className="chat-row-time">{row.timeAgo}</span>
+              ) : (
+                <span className={`chat-row-status status-${row.status}`}>
+                  <StatusGlyph status={row.status} />
+                  {word}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
         <div className="chat-row-title-line">
+          {compact && (
+            <span className={`chat-row-status-compact status-${row.status}`} aria-label={word ?? "Idle"}>
+              <StatusGlyph status={row.status} />
+            </span>
+          )}
+          {monogram}
           {brand !== null && (
             <Icon
               name={brand.name}
@@ -880,8 +989,31 @@ function ChatListRow({ row, jumpLabel = null }: { row: ChatRow; jumpLabel?: stri
           <SidebarFadedLabel className="chat-row-title" fill>
             {row.chat.title ?? "New session"}
           </SidebarFadedLabel>
+          {/* Detailed rows carry the remote Earth glyph only while the
+              project label is hidden (78e9e6ae's slot rule). */}
+          {!compact && !showLabel && remote && (
+            <Tooltip label={device} delay={TOOLTIP_VIEW_OPTIONS_MS} trigger={<Icon name="global" size={13} className="chat-row-remote" />} />
+          )}
+          {compact && compactCornerBody}
+          {compact && row.changeRequest !== null && (
+            <span
+              className="chat-row-pr"
+              onClick={(event) => {
+                // The badge's own anchor owns the click; the row's Link
+                // must not also navigate.
+                event.stopPropagation();
+              }}
+            >
+              <ChangeRequestBadge summary={row.changeRequest} size="sidebar" />
+            </span>
+          )}
+          {compact && (
+            <span className="chat-row-time chat-row-time-compact">
+              {jumpLabel !== null ? jumpLabel : row.timeAgo}
+            </span>
+          )}
         </div>
-        {(row.branch !== null || row.changeRequest !== null) && (
+        {!compact && (row.branch !== null || row.changeRequest !== null) && (
           <div className="chat-row-meta">
             {row.branch !== null && (
               <>

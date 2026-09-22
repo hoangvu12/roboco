@@ -193,6 +193,15 @@ export interface UiSettings {
   readonly sidebarGrouped: boolean;
   readonly sidebarOrganization: SidebarOrganization;
   readonly sidebarSort: SidebarSort;
+  /**
+   * Upstream 78e9e6ae's three display toggles: the "project @ device" line
+   * (Location), compact one-line rows, and per-project artwork/monograms.
+   * `sidebarCompact` defaults ON (upstream ffaa3102); explicit detailed-mode
+   * preferences persist unchanged.
+   */
+  readonly sidebarShowProjectLabel: boolean;
+  readonly sidebarCompact: boolean;
+  readonly sidebarShowProjectIcon: boolean;
   readonly sidebarShowHarness: boolean;
   readonly sidebarShowBranch: boolean;
   readonly sidebarShowPullRequest: boolean;
@@ -316,6 +325,9 @@ export function defaultUiSettings(): UiSettings {
     sidebarGrouped: false,
     sidebarOrganization: "inOneList",
     sidebarSort: "lastUpdated",
+    sidebarShowProjectLabel: true,
+    sidebarCompact: true,
+    sidebarShowProjectIcon: true,
     sidebarShowHarness: true,
     sidebarShowBranch: true,
     sidebarShowPullRequest: true,
@@ -578,9 +590,13 @@ export function healUiSettings(value: unknown): UiSettings {
     sidebarWidth: clampOr(raw.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT),
     sidebarCollapsed: bool(raw.sidebarCollapsed, false),
     sidebarGrouped: bool(raw.sidebarGrouped, false),
-    // "By project" is no longer selectable; a stored one heals to the flat list.
-    sidebarOrganization: organization === "byProject" ? "inOneList" : organization,
+    // "By project" is selectable again (upstream 78e9e6ae removed the
+    // ByProject -> InOneList downgrade in clamped()); it round-trips.
+    sidebarOrganization: organization,
     sidebarSort: oneOf(raw.sidebarSort, ["lastUpdated", "created"], "lastUpdated"),
+    sidebarShowProjectLabel: bool(raw.sidebarShowProjectLabel, true),
+    sidebarCompact: bool(raw.sidebarCompact, true),
+    sidebarShowProjectIcon: bool(raw.sidebarShowProjectIcon, true),
     sidebarShowHarness: bool(raw.sidebarShowHarness, true),
     sidebarShowBranch: bool(raw.sidebarShowBranch, true),
     sidebarShowPullRequest: bool(raw.sidebarShowPullRequest, true),

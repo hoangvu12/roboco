@@ -519,6 +519,32 @@ pub fn anchored_menu_below_end(
         .into_any_element()
 }
 
+/// Open a top-level menu beside the trigger, clamped to the window.
+pub fn anchored_menu_right(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+) -> AnyElement {
+    let exit = closing.map(exit_progress);
+    let content = frosted_menu(exit, content);
+    div()
+        .absolute()
+        .top_0()
+        .right(px(-6.0))
+        .size_0()
+        .child(
+            gpui::deferred(
+                gpui::anchored()
+                    .anchor(Anchor::TopLeft)
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(menu_motion(id.into(), exit, div().occlude().child(content))),
+            )
+            .priority(1)
+            .into_any_element(),
+        )
+        .into_any_element()
+}
+
 /// [`anchored_menu_below`] with a caller-chosen trigger→card gap — the
 /// changes-header dropdowns hang off a tight titlebar band and need more
 /// breathing room than the default 6px (user report; t3code sits near 10).

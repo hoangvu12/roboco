@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Chat, Device } from "@roboco/proto";
+import type { Chat, Device, Space } from "@roboco/proto";
 import { archivedChats, chatLocation } from "../src/lib/archived";
-import { archivedRows } from "../src/lib/view";
+import { archivedChatRows, archivedRows } from "../src/lib/view";
 import { archivedRightSlot } from "../src/components/archived-section";
 
 const NOW = 1_800_000_000_000;
@@ -99,5 +99,90 @@ describe("archivedRightSlot (spaces.rs:1669-1712)", () => {
     for (const hovered of [false, true]) {
       expect(["time", "pill"]).toContain(archivedRightSlot(hovered));
     }
+  });
+});
+
+/*
+ * The archived shelf's SHARED row data (upstream dfd2fc0c's
+ * `sidebar_chat_data`): `archivedChatRows` derives the same `ChatRow`
+ * the active list draws — project @ device folder, branch/PR metadata —
+ * so the shelf shares layout and metadata in every sidebar mode.
+ */
+describe("archivedChatRows (sidebar_chat_data)", () => {
+  function space(id: string, path: string, name: string | null = null): Space {
+    return {
+      id,
+      deviceId: "dev-1",
+      path,
+      name,
+      gitDetected: false,
+      gitCheckedAt: null,
+      checkoutId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  it("derives the active rows' shared metadata for archived chats", () => {
+    const rows = archivedChatRows(
+      [chat({ id: "b", spaceId: "space-1", title: "Fix the parser" })],
+      [space("space-1", "/repos/fieldnotes")],
+      null,
+      [],
+      NOW,
+      [device("dev-1", "Studio desktop")],
+    );
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.project).toBe("fieldnotes");
+    expect(row.projectPath).toBe("/repos/fieldnotes");
+    expect(row.folder).toBe("fieldnotes @ Studio desktop");
+    expect(row.deviceId).toBe("dev-1");
+    expect(row.deviceName).toBe("Studio desktop");
+  });
+
+  it("respects the space filter and the show toggles", () => {
+    const chats = [
+      chat({ id: "in-space", spaceId: "space-1" }),
+      chat({ id: "other-space", spaceId: "space-2" }),
+      chat({ id: "home", spaceId: null }),
+      chat({ id: "active", archived: false }),
+    ];
+    const rows = archivedChatRows(
+      chats,
+      [space("space-1", "/repos/one"), space("space-2", "/repos/two")],
+      "space-1",
+      [],
+      NOW,
+      [],
+    );
+    expect(rows.map((row) => row.chat.id)).toEqual(["in-space"]);
+    // Show toggles clear the shared metadata the way they do for the
+    // active list.
+    const toggled = archivedChatRows(
+      [chat({ id: "in-space", spaceId: "space-1" })],
+      [space("space-1", "/repos/one")],
+      null,
+      [],
+      NOW,
+      [],
+      { showBranch: false, showPullRequest: false, showHarness: false },
+    );
+    expect(toggled[0]!.branch).toBe(null);
+    expect(toggled[0]!.changeRequest).toBe(null);
+    expect(toggled[0]!.harness).toBe(null);
+  });
+
+  it("never hides a dangling-space row — it reads as the ? project", () => {
+    const rows = archivedChatRows(
+      [chat({ id: "dangling", spaceId: "gone" })],
+      [],
+      null,
+      [],
+      NOW,
+      [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.project).toBe("?");
+    expect(rows[0]!.projectPath).toBe(null);
   });
 });
