@@ -2571,8 +2571,9 @@ a:focus-visible,
 }
 
 /* The header row: the shared disclosure button fills the width (its label
-   truncates; its spring keeps the chevron right), the section menu mark
-   rides after it, and the context menu anchors here. */
+   owns the remaining width and fades when long; its spring keeps the
+   chevron right), the section menu mark rides after it, and the context
+   menu anchors here. */
 .sidebar-custom-section-header {
   position: relative;
   display: flex;
@@ -2585,12 +2586,12 @@ a:focus-visible,
   min-width: 0;
 }
 
+/* The label fills the header row like `.chat-row-title`; the fade wrapper's
+   mask replaces any ellipsis (01b705fe), so the slot only owns geometry. */
 .sidebar-custom-section-header .sidebar-disclosure-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sidebar-section-menu-button {
