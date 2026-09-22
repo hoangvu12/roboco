@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
-import type { HarnessDescriptor, Model, TitleSettings } from "@roboco/proto";
+import type { AgentLoginPoll, HarnessDescriptor, Model, TitleSettings } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
 import {
   blurb,
@@ -9,10 +9,14 @@ import {
   getTitleSettings,
   listHarnesses,
   listModels,
+  nextSignInPhase,
   notInstalledHint,
   offeredHarnesses,
   setHarnessEnabled,
   setTitleSettings,
+  signInFailureLabel,
+  signInPendingLabel,
+  signsInOnEnable,
   supportsTitles,
   titleHarnessLabel,
   visibleHarnesses,
@@ -44,6 +48,19 @@ describe("descriptorEnabled (registry.rs:66-70)", () => {
     // opts in through the environment, not detection.
     expect(descriptorEnabled(descriptor({ id: "mock", installed: true }))).toBe(false);
   });
+
+  it("antigravityStaysOffUntilTheUserOptsIn", () => {
+    // The opt-in fallback (registry.rs opt_in): a null enabled flag reads
+    // as OFF — enabling antigravity downloads a large server and runs a
+    // browser sign-in, which detection alone must never set off.
+    expect(
+      descriptorEnabled(descriptor({ id: "antigravity", name: "Antigravity", enabled: null })),
+    ).toBe(false);
+    // The engine-side opt-in lands as an explicit flag.
+    expect(
+      descriptorEnabled(descriptor({ id: "antigravity", name: "Antigravity", enabled: true })),
+    ).toBe(true);
+  });
 });
 
 describe("visible/offered harnesses (pickers.rs:4031-4069)", () => {
@@ -64,11 +81,23 @@ describe("visible/offered harnesses (pickers.rs:4031-4069)", () => {
 
 describe("page copy tables (harnesses.rs:41-68)", () => {
   it("blurbs and CLI names cover every harness", () => {
-    for (const id of ["claude-code", "codex", "cursor", "devin", "grok", "hermes", "pi", "opencode", "mock"] as const) {
+    for (const id of [
+      "claude-code",
+      "codex",
+      "cursor",
+      "devin",
+      "grok",
+      "hermes",
+      "pi",
+      "opencode",
+      "antigravity",
+      "mock",
+    ] as const) {
       expect(blurb(id).length).toBeGreaterThan(0);
       expect(cliName(id).length).toBeGreaterThan(0);
     }
     expect(cliName("cursor")).toBe("cursor-agent");
+    expect(cliName("antigravity")).toBe("agy");
     expect(blurb("mock")).toBe("Scripted test harness.");
   });
 
@@ -83,12 +112,52 @@ describe("page copy tables (harnesses.rs:41-68)", () => {
     expect(supportsTitles("mock")).toBe(true);
     expect(supportsTitles("cursor")).toBe(false);
     expect(supportsTitles("opencode")).toBe(false);
+    expect(supportsTitles("antigravity")).toBe(false);
   });
 
   it("titleHarnessLabel names the two supported real agents", () => {
     expect(titleHarnessLabel("claude-code", "whatever")).toBe("Claude Code");
     expect(titleHarnessLabel("codex", "whatever")).toBe("Codex");
     expect(titleHarnessLabel("grok", "Grok")).toBe("Grok");
+  });
+});
+
+describe("antigravity sign-in (harnesses.rs SignInPhase)", () => {
+  it("onlyAntigravitySignsInOnEnable", () => {
+    expect(signsInOnEnable("antigravity")).toBe(true);
+    for (const id of ["claude-code", "codex", "cursor", "devin", "grok", "hermes", "pi", "opencode"] as const) {
+      expect(signsInOnEnable(id)).toBe(false);
+    }
+  });
+
+  it("setupCopyMatchesEachPhase", () => {
+    expect(signInPendingLabel("starting")).toBe("Preparing Antigravity…");
+    expect(signInFailureLabel("starting")).toBe("Setup failed");
+    expect(signInPendingLabel("installing")).toBe("Installing Antigravity…");
+    expect(signInFailureLabel("installing")).toBe("Installation failed");
+    expect(signInPendingLabel("authenticating")).toBe("Finish signing in in your browser.");
+    expect(signInFailureLabel("authenticating")).toBe("Sign-in failed");
+    expect(signInPendingLabel("enabling")).toBe("Enabling Antigravity…");
+    expect(signInFailureLabel("enabling")).toBe("Enable failed");
+  });
+
+  it("nextSignInPhaseTracksThePoll", () => {
+    const poll = (fields: Partial<AgentLoginPoll>): AgentLoginPoll => ({
+      status: "pending",
+      message: null,
+      url: null,
+      ...fields,
+    });
+    // A pending poll without a url keeps the current phase (null).
+    expect(nextSignInPhase(poll({ message: "Downloading Antigravity." }))).toBeNull();
+    // The first poll that names the sign-in page moves to authenticating.
+    expect(nextSignInPhase(poll({ url: "https://accounts.google.com/o/oauth2" }))).toBe(
+      "authenticating",
+    );
+    // Done hands over to the enabling step; error never moves the phase —
+    // the failure label names where it stopped.
+    expect(nextSignInPhase(poll({ status: "done" }))).toBe("enabling");
+    expect(nextSignInPhase(poll({ status: "error" }))).toBeNull();
   });
 });
 

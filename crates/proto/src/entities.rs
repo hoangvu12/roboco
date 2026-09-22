@@ -24,6 +24,9 @@ pub struct Device {
     /// glance (Devices page). Optional so pre-existing docs stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Cursor SDK selected by the owning engine; absent on older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_sdk_version: Option<String>,
     /// Protocol/document features supported by the engine currently owning
     /// this device row. Missing on older builds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -867,6 +870,10 @@ pub struct AgentLoginPoll {
     pub status: AgentLoginStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// a sign-in page that only became known after the start reply (the
+    /// agent had to install first); the app opens it once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

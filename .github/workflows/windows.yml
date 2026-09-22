@@ -83,8 +83,12 @@ jobs:
         run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
       - name: Application and updater tests
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
-      - name: Engine and RPC unit tests
-        run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc --lib -P ci
+      - name: Engine, RPC, and harness unit tests
+        run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
+      - name: OpenCode wire integration tests
+        run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
+      - name: Native harness integration tests
+        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native -P ci
       - name: Harness catalog tests
         run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
