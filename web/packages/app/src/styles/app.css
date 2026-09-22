@@ -8828,6 +8828,12 @@ button.files-save-pill:hover {
   /* Markdown code blocks scale 1:1 off the code font size (render.rs). */
   font-size: var(--rb-code-size-px, 12.5px);
   line-height: var(--rb-code-line-height, 18px);
+  /* Code lines participate in text selection (d353ebbf, render.rs): one
+     selectable line element per source line, blank lines included. Stated
+     explicitly so a future transcript-wide user-select rule cannot regress
+     the code body silently. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .md-codeline {
