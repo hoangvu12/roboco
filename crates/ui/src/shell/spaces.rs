@@ -2423,7 +2423,7 @@ impl Shell {
             let menu = self.render_sidebar_view_menu(theme, cx);
             view_trigger
                 .relative()
-                .child(popover::anchored_menu_below_end(
+                .child(popover::anchored_menu_right(
                     "sidebar-view-options-menu",
                     menu,
                     closing,

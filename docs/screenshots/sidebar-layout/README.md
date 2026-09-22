@@ -17,9 +17,10 @@ Archived sessions share active-session metadata and layout preferences, with mut
 project/harness artwork and an Unarchive action in the same hover slot.
 
 Repository artwork follows [Conductor's documented filename priority](https://www.conductor.build/docs/faq#where-does-conductor-get-the-repo-icon).
-The first existing file wins; missing or invalid artwork uses the project initial on a neutral, translucent
-frosted background using the composer's backdrop-blur helper. A stable hash of the project path chooses the shade; theme ink keeps
-it readable on glass in light and dark themes. Local reads and bounded image decoding run off the UI thread. Remote
+The first existing file wins; missing or invalid artwork uses the project initial on a muted, colored
+frosted background using the composer's backdrop-blur helper. A stable hash of the project path chooses the hue,
+with appearance-aware lightness. Like PR badges, the background
+uses 8% of the tone and the monospaced letter uses 85%. Local reads and bounded image decoding run off the UI thread. Remote
 projects use the owning device's workspace file RPC, including ICO support.
 Artwork is shared across a project's rows, refreshed after five minutes, and
 released from the image atlas when its cache entry expires. Raster thumbnails
