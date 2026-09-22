@@ -35,6 +35,7 @@ import {
   layoutReshaped,
   measuredSinceFlip,
   MIN_COMPACT_INPUT_WIDTH,
+  modelHandoff,
   morphClusterDy,
   morphClusterInset,
   morphTextPad,
@@ -466,6 +467,25 @@ describe("cluster_inset_glides_between_the_source_endpoints", () => {
       expect(v).toBeGreaterThanOrEqual(prev);
       expect(v).toBeLessThanOrEqual(8.0 + CLUSTER_X_DELTA);
       prev = v;
+    }
+  });
+});
+
+// e0c1e936 (composer.rs, ported): the model picker fades between its two
+// horizontal anchors instead of sweeping across the prompt.
+describe("model_handoff_hides_relocation_and_keeps_visible_motion_local", () => {
+  it("rests fully opaque at both endpoints; relocation is invisible mid-flip", () => {
+    expect(modelHandoff(0.0)).toEqual([0.0, 1.0, 0.0]);
+    expect(modelHandoff(1.0)).toEqual([1.0, 1.0, -0.0]);
+    for (const amount of [0.44, 0.49, 0.5, 0.51, 0.56]) {
+      expect(modelHandoff(amount)[1]).toBeLessThan(0.0001);
+    }
+    for (let step = 0; step <= 100; step += 1) {
+      const [side, opacity, drift] = modelHandoff(step / 100.0);
+      expect(opacity).toBeGreaterThanOrEqual(0.0);
+      expect(opacity).toBeLessThanOrEqual(1.0);
+      expect(Math.abs(drift)).toBeLessThanOrEqual(6.0);
+      expect(side === 0.0 || side === 1.0).toBe(true);
     }
   });
 });

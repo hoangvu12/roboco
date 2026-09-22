@@ -532,6 +532,10 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
+    /// Room measured between the model chip and the window's bottom — the
+    /// new-chat model menu sizes its list to what actually fits below the
+    /// composer.
+    model_space_below: Option<f32>,
     _search_events: Subscription,
     _state_observe: Subscription,
     _catalog_observe: Subscription,
@@ -677,6 +681,7 @@ impl Pickers {
             switch_task: None,
             switch_error: None,
             mutate_task: None,
+            model_space_below: None,
             _search_events: search_events,
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
@@ -3111,8 +3116,27 @@ impl Pickers {
     fn render_harness_model_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // Compact tabbed layout (user request, modeled on the referenced
         // picker): the model LIST gets a fixed band of roughly seven compact
-        // rows; the pinned traits tray below sizes to its sections.
-        const LIST_HEIGHT: f32 = 216.0;
+        // rows; the pinned traits tray below sizes to its sections. On the
+        // new-chat canvas the band shrinks to the room actually available
+        // below the composer.
+        let list_height = if self.state.read(cx).selected_chat.is_none() {
+            // Keep the traits tray visible while the model list scrolls
+            // within the room below the new-chat composer. The tray is
+            // scrollable with a 236px cap (see below), so budget its cap —
+            // upstream's setting-group row count does not apply to this tray.
+            let tray_height = if self.trait_ladder(cx).is_empty()
+                && !self
+                    .selected_model(cx)
+                    .is_some_and(|m| !m.options.is_empty())
+            {
+                0.0
+            } else {
+                236.0
+            };
+            (self.model_space_below.unwrap_or(640.0) - 82.0 - tray_height).clamp(30.0, 216.0)
+        } else {
+            216.0
+        };
 
         let theme = Theme::of(cx).clone();
 
@@ -3121,7 +3145,7 @@ impl Pickers {
         match &self.harnesses {
             Loadable::Loading | Loadable::Idle => {
                 return div()
-                    .h(px(LIST_HEIGHT))
+                    .h(px(list_height))
                     .p(px(8.0))
                     .child(popover::skeleton_menu_rows(
                         "harness-skeleton",
@@ -3135,7 +3159,7 @@ impl Pickers {
             Loadable::Error(message) => {
                 let message = message.clone();
                 return div()
-                    .h(px(LIST_HEIGHT))
+                    .h(px(list_height))
                     .p(px(8.0))
                     .child(self.retry_row(
                         "harness-retry",
@@ -3374,7 +3398,7 @@ impl Pickers {
             .id("model-list-scroll-host")
             .relative()
             .flex_none()
-            .h(px(LIST_HEIGHT))
+            .h(px(list_height))
             .py(px(6.0))
             // A whisper of wash keeps the scrolling band readable between
             // the pinned chrome above and the traits tray below.
@@ -4244,17 +4268,7 @@ impl Render for Pickers {
             None => None,
         };
 
-        // Left cluster: empty — the device/project pickers live in the
-        // composer FOOTER row alongside checkout + ref.
-        // Right cluster: agent+model and traits — the composer appends
-        // attach + send after this element (roboco composer-actions.tsx
-        // arrangement).
-        let left = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .min_w_0()
-            .gap(px(4.0));
+        // The composer places this model chip beside the attachment button.
         // ONE chip for the whole run identity (user request): brand icon +
         // model name, then the joined traits summary ("Medium", "High · 1M ·
         // Fast", "Agent · Balance") as the chip's muted second tone — the
@@ -4278,7 +4292,53 @@ impl Render for Pickers {
             &theme,
             cx,
         );
-        let right = div()
+        let new_chat = self.state.read(cx).selected_chat.is_none();
+        let entity = cx.entity().downgrade();
+        let model_chip = model_chip.relative().child(
+            gpui::canvas(
+                move |bounds, window, cx| {
+                    let available = (f32::from(window.viewport_size().height - bounds.bottom())
+                        - 14.0)
+                        .max(0.0);
+                    let _ = entity.update(cx, |this, cx| {
+                        if this.model_space_below != Some(available) {
+                            this.model_space_below = Some(available);
+                            if new_chat && this.open_kind() == Some(PickerKind::HarnessModel) {
+                                cx.notify();
+                                window.request_animation_frame();
+                            }
+                        }
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        );
+        let model_chip = if new_chat {
+            if overlay
+                .as_ref()
+                .is_some_and(|(kind, _)| *kind == PickerKind::HarnessModel)
+                && let Some((_, content)) = overlay.take()
+            {
+                model_chip.child(popover::anchored_menu_below_end(
+                    "model-popover",
+                    content,
+                    closing,
+                ))
+            } else {
+                model_chip
+            }
+        } else {
+            attach_overlay_end(
+                model_chip,
+                &mut overlay,
+                PickerKind::HarnessModel,
+                "model-popover",
+                closing,
+            )
+        };
+        div()
             .flex()
             .flex_row()
             .items_center()
@@ -4289,25 +4349,7 @@ impl Render for Pickers {
             // instead of truncating (user report).
             .min_w_0()
             .gap(px(4.0))
-            // End-anchored: the menu's right edge sits flush with the chip's
-            // right edge (user request), same as the footer's ref popover.
-            .child(attach_overlay_end(
-                model_chip,
-                &mut overlay,
-                PickerKind::HarnessModel,
-                "model-popover",
-                closing,
-            ));
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap(px(Theme::SPACE_SM))
-            .child(left)
-            .child(right)
+            .child(model_chip)
     }
 }
 
