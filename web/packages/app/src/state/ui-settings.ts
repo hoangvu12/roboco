@@ -148,6 +148,7 @@ export interface KeymapConfig {
   readonly toggleChanges: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
+  readonly newProject: string;
   /** Mod+/ — opens the composer's model picker (upstream faac7432). */
   readonly openModelPicker: string;
   readonly nextSession: string;
@@ -308,6 +309,7 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     toggleChanges: "mod-r",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
+    newProject: "mod-shift-n",
     openModelPicker: "mod-/",
     nextSession: mac ? "ctrl-tab" : "mod-tab",
     prevSession: mac ? "ctrl-shift-tab" : "mod-shift-tab",
@@ -561,6 +563,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     toggleChanges: combo("toggleChanges"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
+    newProject: combo("newProject"),
     openModelPicker: combo("openModelPicker"),
     nextSession: combo("nextSession"),
     prevSession: combo("prevSession"),

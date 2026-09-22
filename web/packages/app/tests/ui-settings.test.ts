@@ -240,6 +240,17 @@ describe("heal", () => {
     expect(keymap.toggleChanges).toBe("mod-shift-k");
   });
 
+  it("keymap — newProject migrates to its default and keeps a custom combo", () => {
+    // The web port of new_project_shortcut_migrates_and_persists
+    // (settings.rs, upstream 74558a2c): an older file has no newProject,
+    // and heal fills the default without touching its siblings.
+    const keymap = storedWith({ keymap: { newSession: "mod-alt-n" } }).keymap;
+    expect(keymap.newProject).toBe("mod-shift-n");
+    expect(keymap.newSession).toBe("mod-alt-n");
+    const custom = storedWith({ keymap: { newProject: "mod-alt-p" } }).keymap;
+    expect(custom.newProject).toBe("mod-alt-p");
+  });
+
   it("keymap — openModelPicker keeps a stored rebind and defaults to mod-/", () => {
     // Upstream faac7432: the configurable model-picker shortcut heals like
     // every scalar combo — stored rebinds survive, missing goes to mod-/.

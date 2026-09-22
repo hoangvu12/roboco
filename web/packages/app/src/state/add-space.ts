@@ -27,6 +27,7 @@ import {
 } from "../lib/add-space";
 import type { EngineSession } from "./engine-session";
 import { mintId } from "../lib/id";
+import { commandPaletteStore } from "./command-palette";
 import { sidebarStore } from "./sidebar";
 import { uiSettings } from "./ui-settings";
 
@@ -158,6 +159,9 @@ export class AddSpaceStore {
    * there is no pick to wait for anymore).
    */
   open(): void {
+    // The desktop's `open_add_space` clears the command palette first —
+    // Mod+Shift+N (the New project binding) must not stack two cards.
+    commandPaletteStore.close();
     this.#manualInFlight = false;
     this.#submitInFlight = false;
     this.#pending = [];

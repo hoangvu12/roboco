@@ -5,6 +5,7 @@ import {
   type SurfaceTreatment,
   type ThemeVariant,
 } from "@roboco/theme";
+import type { IconName } from "@roboco/icons";
 import type { StorageLike } from "./engine-store";
 import { UiSettingsStore, uiSettings, type UiSettings } from "../state/ui-settings";
 import { findVariantAnywhere, variantsForAppearanceAll } from "./theme-library";
@@ -114,6 +115,21 @@ export function appearanceModeLabel(mode: AppearanceMode): string {
       return "Light";
     case "dark":
       return "Dark";
+  }
+}
+
+/**
+ * Shared glyph for appearance controls throughout the app
+ * (AppearanceMode::icon, upstream b4dd24d7).
+ */
+export function appearanceModeIcon(mode: AppearanceMode): IconName {
+  switch (mode) {
+    case "system":
+      return "monitor";
+    case "light":
+      return "sun";
+    case "dark":
+      return "moon";
   }
 }
 

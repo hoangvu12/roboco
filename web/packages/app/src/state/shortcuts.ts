@@ -57,6 +57,7 @@ export type ShortcutId =
   | "toggleChanges"
   | "toggleTerminal"
   | "newSession"
+  | "newProject"
   | "openModelPicker"
   | "nextSession"
   | "prevSession"
@@ -72,6 +73,7 @@ export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "toggleChanges",
   "toggleTerminal",
   "newSession",
+  "newProject",
   "openModelPicker",
   "nextSession",
   "prevSession",
@@ -108,6 +110,8 @@ export function shortcutLabel(id: ShortcutId): string {
       return "Toggle terminal";
     case "newSession":
       return "New session";
+    case "newProject":
+      return "New project";
     case "openModelPicker":
       return "Open model picker";
     case "nextSession":
@@ -135,6 +139,8 @@ export function shortcutGroup(id: ShortcutId): string {
     case "toggleChanges":
     case "toggleTerminal":
       return "Panels";
+    case "newProject":
+      return "Projects";
     case "newSession":
     case "openModelPicker":
     case "nextSession":
@@ -154,6 +160,7 @@ export const SHORTCUT_GROUPS: readonly string[] = [
   "Browser",
   "Panels",
   "Sessions",
+  "Projects",
   "Jump to session",
   "Appshots",
 ];
@@ -530,6 +537,7 @@ export type ShortcutEvent =
   | "archive-session"
   | "jump-session"
   | "add-space-palette"
+  | "command-palette"
   | "open-settings";
 
 export interface ShortcutDetail {
@@ -550,8 +558,8 @@ export type KeybindingTable = ReadonlyMap<string, Keybinding>;
 
 /** The fixed app-level chords applied alongside the keymap (§2.1). */
 const FIXED_BINDINGS: readonly { readonly combo: string; readonly event: ShortcutEvent }[] = [
-  // ⌘K summons/dismisses the add-space palette (shell.rs:362-364, ticket 11).
-  { combo: "mod-k", event: "add-space-palette" },
+  // ⌘K summons/dismisses the command palette (shell.rs, ticket 16).
+  { combo: "mod-k", event: "command-palette" },
   // The platform convention for Settings (app_menus.rs:142-146, ticket 28).
   { combo: "mod-,", event: "open-settings" },
 ];
@@ -571,6 +579,10 @@ function bindingFor(id: ShortcutId): Keybinding {
       return { event: "toggle-terminal", bare: false };
     case "newSession":
       return { event: "new-chat", bare: false };
+    case "newProject":
+      // The desktop binds `ShortcutId::NewProject` to the `AddSpacePalette`
+      // action (the New project flow's own toggle).
+      return { event: "add-space-palette", bare: false };
     case "openModelPicker":
       return { event: "open-model-picker", bare: false };
     case "nextSession":
@@ -732,6 +744,7 @@ export function healReservedComposerShortcuts(
     toggleChanges: heal(config.toggleChanges, defaults.toggleChanges),
     toggleTerminal: heal(config.toggleTerminal, defaults.toggleTerminal),
     newSession: heal(config.newSession, defaults.newSession),
+    newProject: heal(config.newProject, defaults.newProject),
     openModelPicker: heal(config.openModelPicker, defaults.openModelPicker),
     nextSession: heal(config.nextSession, defaults.nextSession),
     prevSession: heal(config.prevSession, defaults.prevSession),

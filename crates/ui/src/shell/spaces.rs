@@ -1,6 +1,6 @@
 //! Spaces sidebar: the space-filter dropdown (searchable, with "All projects"),
-//! the filtered Sessions list, and the add-space palette (⌘K-style: device
-//! tabs + filtered folder browser).
+//! the filtered Sessions list, and the add-space palette (device tabs +
+//! filtered folder browser).
 //!
 //! A space = a synced (device, folder) pair. Spaces stopped being a
 //! navigation spine when tabs went device-local: the dropdown only FILTERS
@@ -23,7 +23,7 @@ struct ActiveChatRow {
     group: Option<(String, String)>,
 }
 
-fn compare_sidebar_chats(
+pub(super) fn compare_sidebar_chats(
     sort: SidebarSort,
     left: &roboco_proto::Chat,
     right: &roboco_proto::Chat,
@@ -819,9 +819,9 @@ mod pinned_session_tests {
         let active = cx.debug_bounds("chat-older").unwrap();
         let archived = cx.debug_bounds("chat-archived").unwrap();
         assert_eq!(active.size, archived.size);
-        assert_eq!(cx.debug_bounds("chat-branch-archived").is_some(), !compact);
+        assert_eq!(cx.debug_bounds("chat-archived-branch").is_some(), !compact);
         assert_eq!(
-            cx.debug_bounds("chat-device-archived").is_some(),
+            cx.debug_bounds("chat-archived-device").is_some(),
             !compact && show_label
         );
         if compact {
@@ -855,9 +855,9 @@ mod pinned_session_tests {
             let time = cx.debug_bounds("chat-time-older").unwrap();
             assert!(status.right() < time.left());
             let row = cx.debug_bounds("chat-older").unwrap();
-            let title = cx.debug_bounds("chat-title-older").unwrap();
+            let title = cx.debug_bounds("chat-older-title").unwrap();
             cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
-            assert!(cx.debug_bounds("chat-title-older").unwrap().size.width < title.size.width);
+            assert!(cx.debug_bounds("chat-older-title").unwrap().size.width < title.size.width);
             assert_eq!(cx.debug_bounds("chat-status-older").unwrap(), status);
             assert_eq!(cx.debug_bounds("chat-time-older").unwrap(), time);
         }
@@ -1337,7 +1337,17 @@ fn promote_local_device_group<T>(
     }
 }
 
-fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyElement) -> gpui::Div {
+/// Shared quiet rule for sidebar groups and palette sections.
+pub(super) fn sidebar_separator(theme: &Theme) -> gpui::Div {
+    div().h(px(1.0)).bg(theme.border.opacity(0.6))
+}
+
+fn sidebar_disclosure_header(
+    theme: &Theme,
+    label: SharedString,
+    chevron: AnyElement,
+    with_rule: bool,
+) -> gpui::Div {
     div()
         .flex()
         .flex_row()
@@ -1355,7 +1365,10 @@ fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyEle
                 .text_color(theme.text_muted.opacity(0.5))
                 .child(label),
         ))
-        .child(div().flex_1())
+        .when(with_rule, |el| {
+            el.child(sidebar_separator(theme).flex_1())
+        })
+        .when(!with_rule, |el| el.child(div().flex_1()))
         .child(chevron)
 }
 
@@ -3682,6 +3695,7 @@ impl Shell {
                     is_moving,
                     if is_moving { None } else { drag },
                     jump_label,
+                    None,
                     theme,
                     cx,
                 );
@@ -3808,7 +3822,7 @@ impl Shell {
             let chevron = self.sidebar_disclosure_chevron(&motion_key, !collapsed, theme);
             let toggle_key = collapse_key.clone();
             let toggle_motion_key = motion_key.clone();
-            let header = sidebar_disclosure_header(theme, visible_label, chevron)
+            let header = sidebar_disclosure_header(theme, visible_label, chevron, true)
                 .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
@@ -3864,7 +3878,7 @@ impl Shell {
             format!("Pinned ({})", items.len()).into()
         };
         let chevron = self.sidebar_disclosure_chevron("pinned", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron)
+        let header = sidebar_disclosure_header(theme, label, chevron, false)
             .id("pinned-toggle")
             .debug_selector(|| "pinned-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -3944,7 +3958,7 @@ impl Shell {
             format!("Sessions ({count})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("sessions", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron)
+        let header = sidebar_disclosure_header(theme, label, chevron, false)
             .id("sessions-toggle")
             .debug_selector(|| "sessions-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -4071,7 +4085,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron)
+        let header = sidebar_disclosure_header(theme, label, chevron, false)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;
@@ -4119,6 +4133,7 @@ impl Shell {
                         false,
                         None,
                         None,
+                        None,
                         theme,
                         cx,
                     ),
@@ -4164,9 +4179,10 @@ impl Shell {
         Some(section.into_any_element())
     }
 
-    // ---- add-space flow (the ⌘K palette) ----
+    // ---- add-space flow ----
 
     pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
+        self.command_palette = None;
         // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
         // bubble to the palette frame (`add_space_key`) instead of moving the
         // text caret — Enter and ⌘Enter are both handled there.
