@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   beginInterrupt,
   composerHasContent,
@@ -315,5 +317,36 @@ describe("interrupt_payload_keeps_the_captured_chat", () => {
     const params = interruptParams("chat-a");
     expect(params["chatId"]).toBe("chat-a");
     expect((params["command"] as Record<string, unknown>)["kind"]).toBe("interrupt");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enter_on_empty_composer_during_a_live_run_never_interrupts (composer.rs
+// on_submit, ported — issue #406)
+// ---------------------------------------------------------------------------
+
+describe("enter_on_empty_composer_during_a_live_run_never_interrupts", () => {
+  it("the double-Enter window reads as the Stop square", () => {
+    // A live run with a truly empty composer — the moment right after the
+    // habitual extra Enter — resolves to Stop, never Send/Queue.
+    expect(sendButtonMode(true, composerHasContent("", 0, 0))).toBe("stop");
+  });
+
+  it("the wiring pin: submit's Stop arm is a no-op, not an interrupt", () => {
+    // Stop stays on the button and on Esc's setting; Enter must never
+    // dispatch an interrupt (the composer-reasoning suite's source-pin
+    // idiom: a reverted submit arm cannot pass unnoticed).
+    const source = readFileSync(join(process.cwd(), "src/components/composer.tsx"), "utf8");
+    const submit = /const submit = useCallback\(async \(\) => \{([\s\S]*?)await send\(/.exec(source);
+    if (submit === null) {
+      throw new Error("submit callback not found");
+    }
+    const stopArm = /if \(mode === "stop"\) \{([\s\S]*?)return;/.exec(submit[1]!);
+    if (stopArm === null) {
+      throw new Error("submit stop arm not found");
+    }
+    expect(stopArm[1]!).not.toMatch(/\binterrupt\(/);
+    // The button keeps its own Stop path — the only click that interrupts.
+    expect(source).toContain(`onClick={() => (mode === "stop" ? void interrupt() : void submit())}`);
   });
 });

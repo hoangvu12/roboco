@@ -2294,7 +2294,11 @@ export function Composer({
     const content = composerHasContent(text, staged.length, commentCount);
     const mode = sendButtonMode(runLive, content);
     if (mode === "stop") {
-      void interrupt();
+      // Enter never stops a run (composer.rs on_submit, issue #406): Stop
+      // mode implies an empty composer, so a stray extra Enter right after
+      // sending landed an interrupt on the just-dispatched prompt and the
+      // agent ate it silently. Stop stays on the button — and on Esc when
+      // the escape setting is enabled.
       return;
     }
     if (!content) {

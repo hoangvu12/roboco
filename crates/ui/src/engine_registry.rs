@@ -453,6 +453,38 @@ impl EngineRegistry {
     pub fn watch(&self) -> watch::Receiver<RegistrySnapshot> {
         self.inner.updates.subscribe()
     }
+
+    /// A single connected local entry over a raw client — no watches, no
+    /// reconnects, no cache writes. For state tests that exercise request
+    /// dispatch through the registry (the composer's interrupt path): every
+    /// frame the client writes lands on the client's own channel.
+    #[cfg(test)]
+    pub(crate) fn test_local(info: EngineInfo, client: Arc<RpcClient>) -> Self {
+        let (updates, _) = watch::channel(RegistrySnapshot::default());
+        let mut entries = BTreeMap::new();
+        let mut local = entry(EngineKey::local(), info, None);
+        local.snapshot.state = EngineConnectionState::Connected;
+        local.client = Some(client);
+        entries.insert(EngineKey::local(), local);
+        // The receiver is dropped on purpose: sends fail fast, and the
+        // guard in `flush_cache_writes` already tolerates a closed channel.
+        let (cache_tx, _) = tokio::sync::mpsc::unbounded_channel::<CacheCommand>();
+        Self {
+            inner: Arc::new(Inner {
+                path: std::env::temp_dir().join("roboco-test-registry-unused.json"),
+                configuration_error: None,
+                runtime: tokio::runtime::Handle::current(),
+                state: Mutex::new(RegistryState {
+                    entries,
+                    tasks: BTreeMap::new(),
+                }),
+                updates,
+                changes: tokio::sync::Mutex::new(()),
+                cache: crate::engine_cache::EngineCache::new(&std::env::temp_dir()),
+                cache_tx,
+            }),
+        }
+    }
     pub fn snapshot(&self) -> RegistrySnapshot {
         self.inner.updates.borrow().clone()
     }
