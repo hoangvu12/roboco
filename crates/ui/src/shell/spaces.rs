@@ -1,6 +1,6 @@
 //! Spaces sidebar: the space-filter dropdown (searchable, with "All projects"),
-//! the filtered Sessions list, and the add-space palette (⌘K-style: device
-//! tabs + filtered folder browser).
+//! the filtered Sessions list, and the add-space palette (device tabs +
+//! filtered folder browser).
 //!
 //! A space = a synced (device, folder) pair. Spaces stopped being a
 //! navigation spine when tabs went device-local: the dropdown only FILTERS
@@ -23,7 +23,7 @@ struct ActiveChatRow {
     group: Option<(String, String)>,
 }
 
-fn compare_sidebar_chats(
+pub(super) fn compare_sidebar_chats(
     sort: SidebarSort,
     left: &roboco_proto::Chat,
     right: &roboco_proto::Chat,
@@ -3410,6 +3410,7 @@ impl Shell {
                     is_moving,
                     if is_moving { None } else { drag },
                     jump_label,
+                    None,
                     theme,
                     cx,
                 );
@@ -3945,9 +3946,10 @@ impl Shell {
         Some(section.into_any_element())
     }
 
-    // ---- add-space flow (the ⌘K palette) ----
+    // ---- add-space flow ----
 
     pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
+        self.command_palette = None;
         // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
         // bubble to the palette frame (`add_space_key`) instead of moving the
         // text caret — Enter and ⌘Enter are both handled there.

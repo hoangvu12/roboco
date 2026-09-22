@@ -85,6 +85,11 @@ export function resolveShellEscape(input: ShellEscapeInput): EscapeOutcome {
  * ticket 45.)
  */
 export const ESCAPE_PRIORITY = {
+  /**
+   * The command palette: close, FIRST on the ladder (the desktop checks it
+   * before `capture_escape_surface`'s own ladder). (Ticket 16.)
+   */
+  commandPalette: 5,
   /** Delete confirms + chat/space/user menus: BLOCK, nothing closes. */
   blockingOverlay: 10,
   /** The phone sidebar drawer (web-only chrome). */

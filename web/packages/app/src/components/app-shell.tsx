@@ -15,6 +15,7 @@ import {
 } from "../state/shortcuts";
 import { overlayOwnsKeyboard, useKeymap, keystrokesIntercepted } from "../state/keymap";
 import { toggleAddSpace } from "../state/add-space";
+import { toggleCommandPalette } from "../state/command-palette";
 import { installJumpHintModifierListeners } from "../state/jump-hints";
 import { useChrome } from "../state/chrome";
 import {
@@ -339,6 +340,7 @@ export function AppShell() {
           }
           return;
         case "add-space-palette":
+        case "command-palette":
         case "open-settings":
           emitShortcut(binding.event);
           return;
@@ -378,10 +380,14 @@ export function AppShell() {
       }),
     [navigate],
   );
-  // Mod+K toggles the add-space palette (the fixed `AddSpacePalette`
-  // binding, shell.rs:7832-7839 — ticket 11's store owns the surface; the
-  // binding was a quiet no-op until it landed).
+  // Mod+K toggles the add-space palette (the New project binding,
+  // `ShortcutId::NewProject` — mod-shift-n — resolves through the keymap
+  // table to the same event; the fixed binding was mod-k until ticket 16
+  // moved that chord to the command palette).
   useEffect(() => onShortcut("add-space-palette", toggleAddSpace), []);
+  // Mod+K toggles the command palette (the fixed `ToggleCommandPalette`
+  // binding, shell.rs — the desktop's mod-k rebind, ticket 16).
+  useEffect(() => onShortcut("command-palette", toggleCommandPalette), []);
 
   // The modifier-hold lifecycle for the sidebar's jump chips (§2.4) — one
   // install, capture-phase observers that never preventDefault.

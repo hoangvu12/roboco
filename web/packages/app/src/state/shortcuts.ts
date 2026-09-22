@@ -524,6 +524,7 @@ export type ShortcutEvent =
   | "archive-session"
   | "jump-session"
   | "add-space-palette"
+  | "command-palette"
   | "open-settings";
 
 export interface ShortcutDetail {
@@ -544,8 +545,8 @@ export type KeybindingTable = ReadonlyMap<string, Keybinding>;
 
 /** The fixed app-level chords applied alongside the keymap (§2.1). */
 const FIXED_BINDINGS: readonly { readonly combo: string; readonly event: ShortcutEvent }[] = [
-  // ⌘K summons/dismisses the add-space palette (shell.rs:362-364, ticket 11).
-  { combo: "mod-k", event: "add-space-palette" },
+  // ⌘K summons/dismisses the command palette (shell.rs, ticket 16).
+  { combo: "mod-k", event: "command-palette" },
   // The platform convention for Settings (app_menus.rs:142-146, ticket 28).
   { combo: "mod-,", event: "open-settings" },
 ];

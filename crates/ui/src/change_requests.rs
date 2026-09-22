@@ -116,7 +116,18 @@ pub(crate) fn pull_request_badge(
     surface: ChangeRequestBadgeSurface,
     theme: &Theme,
 ) -> AnyElement {
-    render_pull_request_badge(id, summary, surface, true, theme)
+    pull_request_badge_with_query(id, summary, surface, None, theme)
+}
+
+/// The badge with match highlighting for the command palette's search query.
+pub(crate) fn pull_request_badge_with_query(
+    id: SharedString,
+    summary: ChangeRequestSummary,
+    surface: ChangeRequestBadgeSurface,
+    query: Option<&str>,
+    theme: &Theme,
+) -> AnyElement {
+    render_pull_request_badge(id, summary, surface, true, query, theme)
 }
 
 /// The same badge geometry without hover, tooltip, or click behavior in
@@ -127,7 +138,7 @@ pub(crate) fn pull_request_badge_preview(
     surface: ChangeRequestBadgeSurface,
     theme: &Theme,
 ) -> AnyElement {
-    render_pull_request_badge(id, summary, surface, false, theme)
+    render_pull_request_badge(id, summary, surface, false, None, theme)
 }
 
 fn render_pull_request_badge(
@@ -135,6 +146,7 @@ fn render_pull_request_badge(
     summary: ChangeRequestSummary,
     surface: ChangeRequestBadgeSurface,
     interactive: bool,
+    query: Option<&str>,
     theme: &Theme,
 ) -> AnyElement {
     let model = ChangeRequestBadgeModel::from_summary(&summary);
@@ -182,7 +194,7 @@ fn render_pull_request_badge(
         .child(
             div()
                 .font_family(theme.font_mono.clone())
-                .child(model.number),
+                .child(crate::popover::search_highlight(model.number, query, theme)),
         )
         .into_any_element()
 }

@@ -60,6 +60,7 @@ use crate::workspace_links::resolve_workspace_file_link;
 
 mod files_panel;
 mod actions_ui;
+mod command_palette;
 mod sidebar_pins;
 mod spaces;
 mod tabs;
@@ -73,6 +74,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        ToggleCommandPalette,
         NewSession,
         OpenSettings,
         NextSession,
@@ -367,9 +369,9 @@ pub fn apply_keymap(
             ArchiveSession,
             None,
         ),
-        // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
-        // bar); pressing it again dismisses.
-        KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        // Fixed: ⌘K summons the command palette.
+        // Pressing it again dismisses.
+        KeyBinding::new(&platform_combo("mod-k"), ToggleCommandPalette, None),
     ]);
     crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -1289,9 +1291,9 @@ pub struct Shell {
     rename_space_dialog: Option<RenameSpaceDialog>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
-    /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
-    /// while open.
+    /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
+    command_palette: Option<command_palette::CommandPalette>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
     /// Hover/drag + scroll-linger state of the dropdown's floating rail.
@@ -1669,6 +1671,7 @@ impl Shell {
             rename_space_dialog: None,
             delete_space_confirm: None,
             add_space: None,
+            command_palette: None,
             spaces_menu: popover::Popup::default(),
             spaces_menu_bar: popover::MenuScrollbarState::default(),
             sidebar_view_menu: popover::Popup::default(),
@@ -3505,6 +3508,7 @@ impl Shell {
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        self.command_palette = None;
         // Recreate per visit: the page's ListHarnesses load re-probes which
         // CLIs are installed, so installing one shows up on the next open.
         // RemoteAccessPage has no observe/watch on the pairing store, so
@@ -4030,7 +4034,9 @@ impl Shell {
     /// so an unguarded jump would switch sessions UNDER the open popover,
     /// stranding it over a session the user never picked.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
-        self.add_space.is_some() || self.composer.read(cx).pickers().read(cx).is_open()
+        self.command_palette.is_some()
+            || self.add_space.is_some()
+            || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
     /// Track held modifiers for sidebar jump hints and the queue's submit hint.
@@ -4962,6 +4968,10 @@ impl Shell {
         // nine chips appear together instead of leaving a hole on whichever
         // row is busy or under the pointer.
         jump_label: Option<SharedString>,
+        // The command palette's search query: matching runs highlight inside
+        // the row's labels, and its presence namespaces every row id so the
+        // palette's copy never animates the sidebar copy (see below).
+        search_query: Option<&str>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -4971,7 +4981,14 @@ impl Shell {
         // relative time instead. Hovering the ROW swaps the corner for the
         // ARCHIVE button (UNARCHIVE on rows in the sidebar's archived
         // accordion), t3code's settle-on-hover.
-        let corner_hovered = !preview && self.chat_status_hover.as_deref() == Some(id.as_str());
+        // A chat can appear on both surfaces at once. Namespace every hover
+        // key and child id so the palette never animates the sidebar copy.
+        let row_id = if search_query.is_some() {
+            format!("palette-chat-{id}")
+        } else {
+            format!("chat-{id}")
+        };
+        let corner_hovered = !preview && self.chat_status_hover.as_deref() == Some(row_id.as_str());
         // Send-truth overrides: a send unadopted past the grace window is
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the
@@ -5085,7 +5102,7 @@ impl Shell {
                             .into_any_element()
                     } else if working {
                         loaders::mini_glyph_spinner(
-                            format!("chat-working-{id}"),
+                            format!("{row_id}-working"),
                             2.0,
                             theme.glyph,
                             self.sidebar_pane.entity_id(),
@@ -5130,7 +5147,7 @@ impl Shell {
         let corner: AnyElement = {
             let archive_id = id.clone();
             div()
-                .id(SharedString::from(format!("chat-corner-{id}")))
+                .id(SharedString::from(format!("{row_id}-corner")))
                 .flex_none()
                 // Pin the corner to line 1's text height so the archive pill
                 // (taller, padded) overflows vertically instead of growing the
@@ -5161,7 +5178,7 @@ impl Shell {
         let menu_id = id.clone();
         // Hover fades over transition-colors (roboco session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
-        let fade_key = format!("chat-row-{id}");
+        let fade_key = format!("{row_id}-hover");
         let rest_bg = if selected {
             selected_wash
         } else {
@@ -5174,10 +5191,10 @@ impl Shell {
         let hover_bg = if selected { selected_wash } else { hover };
         let rest_text = if selected { text } else { text.opacity(0.8) };
         div()
-            .id(SharedString::from(format!("chat-{id}")))
+            .id(SharedString::from(row_id.clone()))
             .debug_selector({
-                let row_id = id.clone();
-                move || format!("chat-{row_id}")
+                let row_id = row_id.clone();
+                move || row_id.clone()
             })
             .flex()
             .flex_col()
@@ -5196,7 +5213,7 @@ impl Shell {
             .when(!preview, |el| {
                 el.on_hover({
                     let fade_hover = motion::hover_listener(fade_key.clone());
-                    let hover_id = id.clone();
+                    let hover_id = row_id.clone();
                     cx.listener(move |this, hovered: &bool, window, cx| {
                         fade_hover(hovered, window, cx);
                         if *hovered {
@@ -5245,13 +5262,17 @@ impl Shell {
                     .items_center()
                     .gap(px(Theme::SPACE_SM))
                     .child(sidebar_faded_label(
-                        format!("chat-device-{id}").into(),
+                        format!("{row_id}-device").into(),
                         true,
                         div()
                             .text_size(crate::typography::ui_rems(11.0))
                             .line_height(px(14.0))
                             .text_color(subline)
-                            .child(space_name),
+                            .child(popover::search_highlight(
+                                space_name,
+                                search_query,
+                                &theme,
+                            )),
                     ))
                     .child(div().text_color(subline).child(corner)),
             )
@@ -5276,12 +5297,12 @@ impl Shell {
                         },
                     )
                     .child(sidebar_faded_label(
-                        format!("chat-title-{id}").into(),
+                        format!("{row_id}-title").into(),
                         true,
                         div()
                             .text_size(crate::typography::ui_rems(13.0))
                             .line_height(px(17.0))
-                            .child(title),
+                            .child(popover::search_highlight(title, search_query, &theme)),
                     )),
             )
             // Line 3 is structural, not reserved whitespace: compact states
@@ -5302,13 +5323,17 @@ impl Shell {
                                     .text_color(subline),
                             )
                             .child(sidebar_faded_label(
-                                format!("chat-branch-{id}").into(),
+                                format!("{row_id}-branch").into(),
                                 false,
                                 div()
                                     .text_size(crate::typography::ui_rems(11.0))
                                     .line_height(px(14.0))
                                     .text_color(subline)
-                                    .child(branch),
+                                    .child(popover::search_highlight(
+                                        branch,
+                                        search_query,
+                                        &theme,
+                                    )),
                             ))
                         })
                         // Stable invisible spring keeps the optional PR badge
@@ -5317,16 +5342,17 @@ impl Shell {
                         .when_some(change_request, |el, summary| {
                             el.child(if preview {
                                 crate::change_requests::pull_request_badge_preview(
-                                    format!("chat-pr-{id}").into(),
+                                    format!("{row_id}-pr").into(),
                                     summary,
                                     crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
                                     theme,
                                 )
                             } else {
-                                crate::change_requests::pull_request_badge(
-                                    format!("chat-pr-{id}").into(),
+                                crate::change_requests::pull_request_badge_with_query(
+                                    format!("{row_id}-pr").into(),
                                     summary,
                                     crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                    search_query,
                                     theme,
                                 )
                             })
@@ -6213,6 +6239,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "escape" && self.command_palette.is_some() {
+            self.close_command_palette(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if event.keystroke.key == "escape" && self.sidebar_session_transfer.is_some() {
             cx.stop_active_drag(window);
             self.cancel_sidebar_session_transfer(cx);
@@ -6512,6 +6543,9 @@ impl Shell {
         }
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
+        if let Some(overlay) = self.render_command_palette(viewport, window, cx) {
+            overlays.push(overlay);
+        }
         if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
@@ -8730,6 +8764,9 @@ impl Render for Shell {
             .on_modifiers_changed(
                 cx.listener(|this, event, _, cx| this.on_modifiers_changed(event, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                this.toggle_command_palette(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &AddSpacePalette, _, cx| {
                 if this.add_space.is_some() {
                     this.add_space = None;

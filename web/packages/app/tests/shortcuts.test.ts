@@ -366,7 +366,8 @@ describe("applyKeymap", () => {
     expect(table.get("ctrl-shift-a")?.event).toBe("archive-session");
     expect(table.get("ctrl-1")?.slot).toBe(0);
     expect(table.get("ctrl-9")?.slot).toBe(8);
-    expect(table.get("ctrl-k")?.event).toBe("add-space-palette");
+    // Ticket 16 moved the fixed mod-k chord to the command palette.
+    expect(table.get("ctrl-k")?.event).toBe("command-palette");
     expect(table.get("ctrl-,")?.event).toBe("open-settings");
     // Unavailable ids never register; the browser-never chords never appear.
     expect([...table.values()].some((binding) => binding.event === "save-file")).toBe(true);
@@ -378,7 +379,7 @@ describe("applyKeymap", () => {
     expect(table.get("cmd-1")?.slot).toBe(0);
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
     expect(table.get("ctrl-shift-tab")?.event).toBe("prev-session");
-    expect(table.get("cmd-k")?.event).toBe("add-space-palette");
+    expect(table.get("cmd-k")?.event).toBe("command-palette");
     expect(table.get("cmd-,")?.event).toBe("open-settings");
     expect(table.has("ctrl-b")).toBe(false);
   });

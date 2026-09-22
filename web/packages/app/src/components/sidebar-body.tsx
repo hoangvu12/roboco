@@ -8,6 +8,7 @@ import { AccountRow } from "./account-row";
 import { ConnectionPill } from "./connection-pill";
 import { UpdateStrip } from "./update-strip";
 import { AddSpacePalette } from "./add-space-palette";
+import { CommandPalette } from "./command-palette";
 
 /**
  * The sidebar's column — the desktop's `render_chat_sidebar`: the space
@@ -28,7 +29,9 @@ import { AddSpacePalette } from "./add-space-palette";
  *
  * The add-space palette mounts here as a sibling (like `SidebarNotice`) —
  * headless while closed; the spaces menu's "New project…" row (ticket 10)
- * and the `Mod+K` binding (ticket 12) open it through `addSpaceStore`.
+ * and the `Mod+Shift+N` binding open it through `addSpaceStore`. The
+ * command palette (ticket 16) mounts beside it — `Mod+K` toggles it
+ * through `commandPaletteStore`.
  */
 export function SidebarBody() {
   return (
@@ -49,6 +52,7 @@ export function SidebarBody() {
       <UpdateStrip />
       <AccountRow />
       <AddSpacePalette />
+      <CommandPalette />
     </>
   );
 }
