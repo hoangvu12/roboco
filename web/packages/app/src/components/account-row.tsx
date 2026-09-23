@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
 import { useEngineSessions } from "../state/session-provider";
 import { useFleet } from "../state/fleet";
 import { useWatchSnapshot } from "../state/hooks";
+import { PickerCard } from "./ui/PickerCard";
 
 /**
  * The sidebar's bottom identity control — the desktop's `render_user_menu`.
@@ -11,8 +12,19 @@ import { useWatchSnapshot } from "../state/hooks";
  * Upstream f9563394 compacts it: the row's label and subline collapse into
  * a 21px circular avatar button carrying the name's initial (13px white
  * circle, 9px mono semibold) with the name in the aria label — the menu
- * opens to the RIGHT of the trigger (the desktop's anchored_menu_right),
- * bottom-aligned with it.
+ * opens to the RIGHT of the trigger (the desktop's
+ * `popover::anchored_menu_right`, shell.rs:6430 — the card's top-left pins
+ * at the trigger's top-right + 6, clamped into the window).
+ *
+ * Ticket 02: the card rides `PickerCard`'s `anchorRight` variant — the
+ * Base UI body portal. The old inline `.user-menu-card` (absolute, `left:
+ * calc(100% + 6px)`) painted inside `<aside class="sidebar">` whose
+ * `overflow: hidden` clipped it entirely, so the press looked dead while
+ * the state and navigation worked. The portal puts the card on the menu
+ * tier at the body, unclipped by any column; outside presses and Escape
+ * dismiss through Base UI's pipeline (the old hand-rolled window
+ * listeners are gone), and the trigger's press toggles with the
+ * `trigger-press` reason exactly like every other anchored menu.
  *
  * The menu carries exactly two things — desktop parity (`shell.rs`): the
  * muted "Stored on this device" identity line, then the single "Settings"
@@ -29,8 +41,9 @@ export function AccountRow() {
   const session = fleet.active === null ? null : sessions.get(fleet.active) ?? null;
   const snapshot = useWatchSnapshot(session);
   const navigate = useNavigate();
+  // Controlled by the trigger's press — every dismissal (outside press,
+  // Escape, the Settings row's navigation) lands here as `false`.
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
 
   // The connected engine's own device is the identity this row carries — the
   // desktop's user line is the local device, not the transport. Falls back to
@@ -43,56 +56,44 @@ export function AccountRow() {
   const name = device?.name ?? engine?.label ?? "Roboco";
   const initial = (name.trim()[0] ?? "?").toUpperCase();
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const onDown = (event: MouseEvent): void => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   function goSettings(): void {
     setOpen(false);
     void navigate({ to: "/settings/devices" });
   }
 
   return (
-    <div className="user-menu" ref={rootRef}>
-      {open && (
-        <div className="user-menu-card" role="menu">
-          <div className="user-menu-identity">Stored on this device</div>
-          <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
-            <Icon name="settingsMinimalistic" size={16} />
-            Settings
+    <div className="user-menu">
+      {/* The frame is the shared `.popover-card` glass; `.user-menu-body`
+          carries only the card-content specifics (the 180px floor and the
+          1px row rhythm the old card had). `anchorRight` is the desktop's
+          `anchored_menu_right` placement, portaled by `PickerCard`. */}
+      <PickerCard
+        open={open}
+        onOpenChange={setOpen}
+        placement="anchorRight"
+        cardClassName="popover-card user-menu-body"
+        role="menu"
+        ariaLabel="Account menu"
+        initialFocus={false}
+        trigger={
+          <button
+            type="button"
+            className={`user-menu-trigger ${open ? "user-menu-trigger-open" : ""}`}
+            aria-label={`Account menu: ${name}`}
+            aria-haspopup="menu"
+          >
+            <span className="avatar" aria-hidden="true">
+              {initial}
+            </span>
           </button>
-        </div>
-      )}
-      <button
-        type="button"
-        className={`user-menu-trigger ${open ? "user-menu-trigger-open" : ""}`}
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Account menu: ${name}`}
+        }
       >
-        <span className="avatar" aria-hidden="true">
-          {initial}
-        </span>
-      </button>
+        <div className="user-menu-identity">Stored on this device</div>
+        <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
+          <Icon name="settingsMinimalistic" size={16} />
+          Settings
+        </button>
+      </PickerCard>
     </div>
   );
 }

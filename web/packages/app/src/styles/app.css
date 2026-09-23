@@ -1011,8 +1011,9 @@ a:focus-visible,
 
 /*
  * The legacy menu cards' shared drop shadow (`.right-plus-menu`,
- * `.user-menu-card`) — a local convenience spelled once, not a theme
- * catalog token (the catalog carries no shadow entries).
+ * `.section-context-menu`, `.history-column-ghost`) — a local convenience
+ * spelled once, not a theme catalog token (the catalog carries no shadow
+ * entries).
  */
 :root {
   --rb-shadow-menu: 0 12px 32px rgb(0 0 0 / 0.36);
@@ -1891,7 +1892,6 @@ a:focus-visible,
 }
 
 .user-menu {
-  position: relative;
   flex: none;
   display: flex;
   padding: var(--rb-space-sm);
@@ -1944,25 +1944,24 @@ a:focus-visible,
 }
 
 /*
- * The menu opens to the RIGHT of the trigger (the desktop's
- * anchored_menu_right), bottom-aligned with it, at the popover card's
- * width.
+ * The frame the row's menu card mounts in (ticket 02): the portaled
+ * `.popover-card` glass at the shared menu tier — `.user-menu-body`
+ * carries only the card-content specifics (the 180px floor, the 1px row
+ * rhythm). The placement is the desktop's `anchored_menu_right`
+ * (shell.rs:6430 — `anchorRight` in `base/positioning.ts`): the card's
+ * top-left pins at the trigger's top-right + 6, portaled to the body by
+ * `PickerCard`/`RbPopover`. The old inline `.user-menu-card` (absolute,
+ * `left: calc(100% + 6px)` inside `.user-menu`) painted inside
+ * `<aside class="sidebar">` whose `overflow: hidden` (the collapse clip)
+ * cut it off entirely, so the press looked dead while the state and
+ * navigation worked — the card rides the portal now, unclipped by any
+ * column. The frame's padding (4px) equals the old `--rb-space-xs` inset;
+ * the tier, radius, border, plate, shadow, and the `rb-menu-in` entrance
+ * are the popover family's.
  */
-.user-menu-card {
-  position: absolute;
-  bottom: 0;
-  left: calc(100% + 6px);
+.user-menu-body {
   min-width: 180px;
-  z-index: var(--rb-z-menu);
-  padding: var(--rb-space-xs);
-  display: flex;
-  flex-direction: column;
   gap: 1px;
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 /*
