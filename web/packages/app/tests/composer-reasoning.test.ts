@@ -9,6 +9,13 @@
  * reconciliation runs through its extracted hook (the owner composer.tsx
  * wires). No JSX (createElement), per-file jsdom pragma only — the same
  * mounted-suite idiom as session-provider.test.ts (ticket 67).
+ *
+ * Ticket 15 adds the phone arm: the same mounted picker under a controllable
+ * `(max-width: 768px)` matchMedia — the card opens as the bottom sheet
+ * (PickerCard's phone arm) and the traits tray's setting rows ride
+ * NestedMenu's phone arm: the choices DRILL DOWN in place under a back
+ * header inside the sheet, never the inline `.model-setting-choices`
+ * expansion, never a side flyout.
  */
 
 import { act, createElement, useState } from "react";
@@ -24,13 +31,18 @@ import { PickerCatalog } from "../src/state/picker-catalog";
 import { emitShortcut } from "../src/state/shortcuts";
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
-// matchMedia (useIsPhone in PickerCard), ResizeObserver (MenuScrollbar),
-// scrollIntoView (the cursor list's scroll effect / anchorCursor).
+// matchMedia (useIsPhone in PickerCard / TraitsTray), ResizeObserver
+// (MenuScrollbar), scrollIntoView (the cursor list's scroll effect /
+// anchorCursor). The matchMedia cell is controllable so the phone arm can
+// be armed per test (ticket 15).
+
+/** The layer `matchMedia` reports — `phone` arms `(max-width: 768px)`. */
+const media = { phone: false };
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   window.matchMedia = ((query: string) => ({
-    matches: false,
+    matches: query === "(max-width: 768px)" ? media.phone : false,
     media: query,
     onchange: null,
     addEventListener: () => {},
@@ -162,6 +174,8 @@ afterEach(() => {
     mounted.pop()!.unmount();
   }
   document.body.replaceChildren();
+  // The suite's default layer is the desktop arm; phone tests re-arm it.
+  media.phone = false;
 });
 
 function mountPicker(options: {
@@ -564,6 +578,99 @@ describe("ComposerPickers nested model settings", () => {
     await flush();
     expect(settingTrigger("reasoning")).not.toBeNull();
     expect(handle.observed.current.model).toBe("gpt-5.4");
+  });
+});
+
+// ── Ticket 15: the phone arm — the traits tray drills down inside the sheet ─
+
+describe("ComposerPickers phone arm (ticket 15)", () => {
+  async function mountGptPickerAtPhone(): Promise<MountedPicker> {
+    media.phone = true;
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    await openCard(handle);
+    return handle;
+  }
+
+  it("the card opens as the bottom sheet — the traits tray renders inside it", async () => {
+    await mountGptPickerAtPhone();
+    const sheet = document.querySelector<HTMLElement>(".rb-drawer-card");
+    expect(sheet).not.toBeNull();
+    expect(sheet!.hasAttribute("data-open")).toBe(true);
+    expect(sheet!.contains(settingTrigger("reasoning")!)).toBe(true);
+    // The floating card never mounts at phone.
+    expect(document.querySelector(".rb-popover-popup")).toBeNull();
+    expect(traitTriggers()).toEqual(["Reasoning", "Context window", "Service tier"]);
+  });
+
+  it("a setting row drills its choices down in place under a back header — never the inline expansion", async () => {
+    await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    const drill = document.querySelector<HTMLElement>(".rb-submenu-drill");
+    expect(drill).not.toBeNull();
+    // In place, inside the sheet — not the desktop arm's inline
+    // `.model-setting-choices` block, not any portaled flyout.
+    expect(document.querySelector(".rb-drawer-card")!.contains(drill!)).toBe(true);
+    expect(document.querySelector(".model-setting-choices")).toBeNull();
+    expect(document.querySelector(".rb-popover-popup")).toBeNull();
+    // The back affordance: the header reads the group's name, the choices
+    // ride the drill body.
+    expect(drill!.querySelector(".rb-submenu-drill-header")!.textContent).toContain("Reasoning");
+    expect(reasoningRow("low")).not.toBeNull();
+    expect(settingTrigger("reasoning")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("the back header closes the drill; the sheet stays up", async () => {
+    await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>(".rb-submenu-drill .rb-submenu-drill-header")!
+        .click();
+    });
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(reasoningRow("low")).toBeNull();
+    expect(settingTrigger("reasoning")!.getAttribute("aria-expanded")).toBe("false");
+    // The sheet itself is still up — the drill is a local dismissal.
+    expect(document.querySelector(".rb-drawer-card")!.hasAttribute("data-open")).toBe(true);
+  });
+
+  it("a choice pick applies through the draft and closes the drill (multi-adjust keeps the sheet)", async () => {
+    const handle = await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    await act(async () => {
+      reasoningRow("high")!.click();
+    });
+    expect(handle.observed.current.reasoning).toBe("high");
+    // The nested menu closes on the pick (activate_setting_choice); the
+    // sheet stays open for the next adjustment.
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(document.querySelector(".rb-drawer-card")!.hasAttribute("data-open")).toBe(true);
+  });
+
+  it("desktop regression: the same picker at ≥769px expands the choices inline — no drill, no sheet", async () => {
+    // The pre-15 desktop tree, byte-identical: the inline expansion under
+    // the trigger (until ticket 08 ports the flyout).
+    media.phone = false;
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    await openCard(handle);
+    expect(document.querySelector(".rb-drawer-card")).toBeNull();
+    await openSetting("reasoning");
+    expect(document.querySelector(".model-setting-choices")).not.toBeNull();
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
   });
 });
 

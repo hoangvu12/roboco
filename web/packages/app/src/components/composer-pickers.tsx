@@ -33,10 +33,12 @@ import {
 } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform, onShortcut } from "../state/shortcuts";
+import { useIsPhone } from "../state/media";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
 import { MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { NestedMenu } from "./ui/NestedMenu";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./ui/Skeleton";
@@ -981,6 +983,7 @@ function IdentityCard(props: IdentityCardProps) {
                 settingCursor={settingCursor}
                 highlightedSetting={cursor !== null ? Math.max(0, cursor - rows.length) : null}
                 onToggleSetting={toggleSetting}
+                onSetOpenSetting={(id) => (id === null ? setOpenSetting(null) : openSettingGroup(id))}
                 onActivateChoice={activateSettingChoice}
               />
             )}
@@ -1091,6 +1094,12 @@ function ModelRow({
  * own nested choices — the desktop floats them beside the trigger, the web
  * expands them inline under it. Selecting keeps the card open for
  * multi-adjust; Escape/← closes just the nested menu.
+ *
+ * At ≤768px (ticket 15) the setting rows ride `NestedMenu`'s phone arm: the
+ * choices expand in place under a back-affordance header inside the drawer
+ * sheet the picker card has already become — never a side flyout. The
+ * desktop arm (the inline expansion until ticket 08 ports the flyout) is
+ * byte-identical to the pre-15 tree.
  */
 function TraitsTray({
   groups,
@@ -1098,6 +1107,7 @@ function TraitsTray({
   settingCursor,
   highlightedSetting,
   onToggleSetting,
+  onSetOpenSetting,
   onActivateChoice,
 }: {
   groups: readonly SettingGroup[];
@@ -1106,8 +1116,11 @@ function TraitsTray({
   /** The keyboard-walked trigger index (relative to the groups), or null. */
   highlightedSetting: number | null;
   onToggleSetting: (id: string) => void;
+  /** Sets (never toggles) which group's choices are open — `null` closes. */
+  onSetOpenSetting: (id: string | null) => void;
   onActivateChoice: (group: SettingGroup, index: number) => void;
 }) {
+  const isPhone = useIsPhone();
   if (groups.length === 0) {
     return (
       <div className="model-traits" id="traits-skeleton" style={{ maxHeight: MODEL_TRAY_CAP }}>
@@ -1123,43 +1136,63 @@ function TraitsTray({
         {groups.map((group, ix) => {
           const open = openSetting === group.id;
           const value = group.choices.find((choice) => choice.selected)?.label ?? "";
+          // The trigger row: at phone its own toggle stays OFF — NestedMenu
+          // composes the press that toggles the drill-down (the row keeps
+          // its classes, selection washes, and content verbatim).
+          const triggerRow = (
+            <MenuRowNav
+              fadeKey={`model-setting-${group.id}`}
+              className="model-setting-row"
+              selected={open}
+              highlighted={!open && highlightedSetting === ix}
+              onClick={isPhone ? undefined : () => onToggleSetting(group.id)}
+              aria-expanded={open}
+            >
+              <span className="menu-row-label">{group.label}</span>
+              <span className="model-trait-spring" />
+              <span className="model-setting-value">{value}</span>
+              <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
+            </MenuRowNav>
+          );
+          const choiceRows = group.choices.map((choice, choiceIx) => {
+            const choiceKey = choice.value.length > 0 ? choice.value : (choice.reasoning ?? choice.label);
+            return (
+              <MenuRowNav
+                key={choiceKey}
+                fadeKey={`setting-choice-${group.id}-${choiceKey}`}
+                className="model-setting-choice-row"
+                selected={choice.selected}
+                highlighted={!choice.selected && choiceIx === settingCursor}
+                onClick={() => onActivateChoice(group, choiceIx)}
+              >
+                <span className="menu-row-label">{choice.label}</span>
+                <span className="model-trait-spring" />
+                {choice.isDefault && <DefaultBadge />}
+                {choice.selected && <Icon name="check" size={14} className="model-setting-check" />}
+              </MenuRowNav>
+            );
+          });
           return (
             <div className="model-traits-section" key={group.id}>
               {ix > 0 ? <MenuSeparator /> : null}
-              <MenuRowNav
-                fadeKey={`model-setting-${group.id}`}
-                className="model-setting-row"
-                selected={open}
-                highlighted={!open && highlightedSetting === ix}
-                onClick={() => onToggleSetting(group.id)}
-                aria-expanded={open}
-              >
-                <span className="menu-row-label">{group.label}</span>
-                <span className="model-trait-spring" />
-                <span className="model-setting-value">{value}</span>
-                <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
-              </MenuRowNav>
-              {open && (
-                <div className="model-setting-choices" role="group" aria-label={group.label}>
-                  {group.choices.map((choice, choiceIx) => {
-                    const choiceKey = choice.value.length > 0 ? choice.value : (choice.reasoning ?? choice.label);
-                    return (
-                      <MenuRowNav
-                        key={choiceKey}
-                        fadeKey={`setting-choice-${group.id}-${choiceKey}`}
-                        className="model-setting-choice-row"
-                        selected={choice.selected}
-                        highlighted={!choice.selected && choiceIx === settingCursor}
-                        onClick={() => onActivateChoice(group, choiceIx)}
-                      >
-                        <span className="menu-row-label">{choice.label}</span>
-                        <span className="model-trait-spring" />
-                        {choice.isDefault && <DefaultBadge />}
-                        {choice.selected && <Icon name="check" size={14} className="model-setting-check" />}
-                      </MenuRowNav>
-                    );
-                  })}
-                </div>
+              {isPhone ? (
+                <NestedMenu
+                  open={open}
+                  onOpenChange={(next) => onSetOpenSetting(next ? group.id : null)}
+                  trigger={triggerRow}
+                  label={group.label}
+                >
+                  {choiceRows}
+                </NestedMenu>
+              ) : (
+                <>
+                  {triggerRow}
+                  {open && (
+                    <div className="model-setting-choices" role="group" aria-label={group.label}>
+                      {choiceRows}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           );

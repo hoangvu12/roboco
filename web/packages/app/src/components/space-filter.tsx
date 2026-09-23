@@ -8,6 +8,7 @@ import { engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fle
 import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
+import { useIsPhone } from "../state/media";
 import { HoverIntent, HOVER_INTENT_GRACE_MS, type Bounds, type Point } from "../lib/hover-intent";
 import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
@@ -26,6 +27,7 @@ import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
 import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
+import { NestedMenu } from "./ui/NestedMenu";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
@@ -466,6 +468,7 @@ export function createViewOptionsTooltip(
 
 export function SidebarViewMenu() {
   const sidebar = useSidebar();
+  const isPhone = useIsPhone();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const [tooltip, setTooltip] = useState(false);
@@ -796,68 +799,117 @@ export function SidebarViewMenu() {
           </button>
         }
       >
-        <div className="view-menu-rows" onMouseMove={onCardMouseMove}>
-          {SIDEBAR_VIEW_GROUPS.map((group, ix) => (
-            <div
-              key={group.label}
-              className={`menu-row view-menu-group-row ${active === ix ? "menu-row-highlighted" : ""} ${
-                submenu === ix ? "menu-row-open" : ""
-              }`}
-              role="menuitem"
-              aria-haspopup="menu"
-              aria-expanded={submenu === ix}
-              ref={(el) => {
-                groupRowRefs.current[ix] = el;
-              }}
-              onMouseEnter={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, false)}
-              onMouseMove={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, true)}
-              onMouseLeave={() => hoverIntent.leave(ix)}
-              onClick={() => {
-                // Match model settings: hover opens; clicking dismisses,
-                // including a sibling crossed during hover grace, without
-                // delayed reopening.
-                cancelDeferred();
-                hoverIntent.reset();
-                setActive(ix);
-                closeSubmenu();
-              }}
-            >
-              <span className="menu-row-label">{group.label}</span>
-              {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
-              <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
-              {submenu === ix && (
-                <div
-                  className={`view-menu-submenu popover-card ${submenuOnLeft ? "view-menu-submenu-left" : ""}`}
-                  ref={submenuRef}
-                  role="menu"
-                  aria-label={group.label}
+        <div className="view-menu-rows" onMouseMove={isPhone ? undefined : onCardMouseMove}>
+          {SIDEBAR_VIEW_GROUPS.map((group, ix) => {
+            // The group's choice rows — shared verbatim by both arms: the
+            // desktop flyout card and the phone drill-down body.
+            const choices = group.rows.map((rowIx, choice) => {
+              const entry = SIDEBAR_VIEW_ROWS[rowIx]!;
+              return (
+                <MenuRowNav
+                  key={entry.row.kind}
+                  fadeKey={entry.row.kind}
+                  highlighted={submenuActive === choice && !isSelected(entry.row)}
+                  selected={isSelected(entry.row)}
+                  onClick={() => activate(entry.row)}
                 >
-                  <MenuHeading>{group.label}</MenuHeading>
-                  <div className="view-menu-rows">
-                    {group.rows.map((rowIx, choice) => {
-                      const entry = SIDEBAR_VIEW_ROWS[rowIx]!;
-                      return (
-                        <MenuRowNav
-                          key={entry.row.kind}
-                          fadeKey={entry.row.kind}
-                          highlighted={submenuActive === choice && !isSelected(entry.row)}
-                          selected={isSelected(entry.row)}
-                          onClick={() => activate(entry.row)}
-                        >
-                          <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
-                          <span className="menu-row-label">{entry.label}</span>
-                          {/* The 14px check slot is always reserved so labels never shift. */}
-                          <span className="view-menu-check">
-                            {isSelected(entry.row) && <Icon name="check" size={14} />}
-                          </span>
-                        </MenuRowNav>
-                      );
-                    })}
+                  <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
+                  <span className="menu-row-label">{entry.label}</span>
+                  {/* The 14px check slot is always reserved so labels never shift. */}
+                  <span className="view-menu-check">
+                    {isSelected(entry.row) && <Icon name="check" size={14} />}
+                  </span>
+                </MenuRowNav>
+              );
+            });
+            const rowClass = `menu-row view-menu-group-row ${active === ix ? "menu-row-highlighted" : ""} ${
+              submenu === ix ? "menu-row-open" : ""
+            }`;
+            if (isPhone) {
+              // The phone arm (ticket 15): no hover layer, no side flyout —
+              // the group row rides `NestedMenu`'s phone arm, so its
+              // choices expand IN PLACE inside the drawer sheet under the
+              // back-affordance header. The row keeps its own classes,
+              // content, and ref (NestedMenu composes the toggle press and
+              // the expanded state); the desktop arm's hover-intent
+              // machinery stays unwired — there is no hover on touch, and
+              // the corridor dismissal would read the sheet's own swipe
+              // drags as pointer exits. Ticket 07 folds this branch away
+              // when the whole menu moves onto the one component.
+              return (
+                <NestedMenu
+                  key={group.label}
+                  open={submenu === ix}
+                  onOpenChange={(next) => {
+                    if (next) {
+                      openSubmenu(ix, false);
+                    } else {
+                      closeSubmenu();
+                    }
+                  }}
+                  label={group.label}
+                  nativeButton={false}
+                  ariaLabel={group.label}
+                  trigger={
+                    <div
+                      className={rowClass}
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      ref={(el) => {
+                        groupRowRefs.current[ix] = el;
+                      }}
+                      onClick={() => setActive(ix)}
+                    >
+                      <span className="menu-row-label">{group.label}</span>
+                      {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
+                      <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
+                    </div>
+                  }
+                >
+                  {choices}
+                </NestedMenu>
+              );
+            }
+            return (
+              <div
+                key={group.label}
+                className={rowClass}
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={submenu === ix}
+                ref={(el) => {
+                  groupRowRefs.current[ix] = el;
+                }}
+                onMouseEnter={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, false)}
+                onMouseMove={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, true)}
+                onMouseLeave={() => hoverIntent.leave(ix)}
+                onClick={() => {
+                  // Match model settings: hover opens; clicking dismisses,
+                  // including a sibling crossed during hover grace, without
+                  // delayed reopening.
+                  cancelDeferred();
+                  hoverIntent.reset();
+                  setActive(ix);
+                  closeSubmenu();
+                }}
+              >
+                <span className="menu-row-label">{group.label}</span>
+                {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
+                <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
+                {submenu === ix && (
+                  <div
+                    className={`view-menu-submenu popover-card ${submenuOnLeft ? "view-menu-submenu-left" : ""}`}
+                    ref={submenuRef}
+                    role="menu"
+                    aria-label={group.label}
+                  >
+                    <MenuHeading>{group.label}</MenuHeading>
+                    <div className="view-menu-rows">{choices}</div>
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
           <MenuSeparator />
           <div
             className={`menu-row view-menu-switch-row ${
