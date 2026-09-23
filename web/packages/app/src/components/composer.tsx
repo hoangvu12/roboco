@@ -126,6 +126,7 @@ import {
   wizardPlaceholder,
 } from "../lib/wizard";
 import { ComposerPickers } from "./composer-pickers";
+import { Tooltip, virtualAnchorAt } from "./ui/Tooltip";
 import { NewThreadGitSelectors, NewThreadTargetSelectors } from "./composer/new-thread-selectors";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { CommentsChip } from "./review-comments/comments-chip";
@@ -1766,7 +1767,12 @@ export function Composer({
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [mentionsActive, invalidateTooltip]);
 
-  // The tooltip's anchor + live chip bounds, recomputed per phase change.
+  // The tooltip's virtual anchor, recomputed per phase change (the mirror
+  // chip's rect — the composer-side half of `ui/Tooltip`'s virtual-anchor
+  // mode, ticket 18). GPUI positions the popup 1px off the chip: above when
+  // there is room (chip.top − 24 − 1), else flush below so the pointer can
+  // enter it — the side picks which; the shared positioner owns the exact
+  // geometry.
   const tooltipAnchor = useMemo(() => {
     if (tooltipPhase.kind !== "visible") {
       return null;
@@ -1790,11 +1796,18 @@ export function Composer({
       if (rect === undefined) {
         continue;
       }
-      // GPUI positions the popup at anchor + 1px: above when there is room
-      // (chip.top − 24 − 1), else flush below so the pointer can enter it.
+      // GPUI positions the popup 1px off the chip: above when there is
+      // room (chip.top − 24 − 1), else flush below so the pointer can enter
+      // it. The flush-below arm parks the anchor 1px INSIDE the chip's
+      // bottom edge with a zero gap — the same 1px overlap the hand-rolled
+      // div painted, without relying on a negative side offset.
       const above = rect.top - MENTION_TOOLTIP_HEIGHT - 1;
-      const top = above >= 0 ? above : rect.bottom - 1;
-      return { top, left: rect.left, path: tooltipPhase.target.path };
+      const hasRoomAbove = above >= 0;
+      return {
+        anchor: virtualAnchorAt(rect.left, hasRoomAbove ? rect.top : rect.bottom - 1),
+        side: hasRoomAbove ? ("top" as const) : ("bottom" as const),
+        path: tooltipPhase.target.path,
+      };
     }
     return null;
     // The anchor derives from live DOM geometry; the mirror + phase drive it.
@@ -3190,17 +3203,25 @@ export function Composer({
             )}
           </>
         )}
-        {/* The hovered chip's path tooltip (§2.3): 24px tall, 480px max, mono
-            11px, above the chip (flush below when there is no room). */}
+        {/* The hovered chip's path tooltip (§2.3, ticket 18): the shared
+            `ui/Tooltip` in virtual-anchor mode — 24px tall, 480px max, mono
+            11px, 1px off the chip (above when there is room, flush below
+            otherwise). The phase machine (the manual mirror hit-test the
+            pointer-transparent textarea forces) drives the mount; the
+            family owns the portal, the popup, and the positioning. */}
         {tooltipAnchor !== null && (
-          <div
-            className="mention-tooltip"
-            ref={tooltipElRef}
-            style={{ top: `${tooltipAnchor.top}px`, left: `${tooltipAnchor.left}px` }}
-            role="tooltip"
-          >
-            {tooltipAnchor.path}
-          </div>
+          <Tooltip
+            label={tooltipAnchor.path}
+            open
+            anchor={tooltipAnchor.anchor}
+            placement={{
+              side: tooltipAnchor.side,
+              align: "start",
+              sideOffset: tooltipAnchor.side === "top" ? 1 : 0,
+            }}
+            popupClassName="mention-tooltip"
+            popupRef={tooltipElRef}
+          />
         )}
       </div>
       {/*

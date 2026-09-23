@@ -19,11 +19,20 @@
  *   snaps (CSS in app.css).
  * - **Close on click** is Base UI's default (a click dismisses the label),
  *   matching the desktop's click-away behavior.
+ * - **Virtual-anchor mode** (the composer's mention tooltip): surfaces whose
+ *   hover target is not a DOM element — a point in a textarea's mirror —
+ *   pass `anchor` (a DOM element or `virtualAnchorAt(x, y)`) with a
+ *   controlled `open` and NO trigger part. The consumer owns the hover
+ *   intent (its hit-testing is manual by construction); this wrapper owns
+ *   the positioning, the portal, and the popup chrome, exactly as in the
+ *   trigger mode.
  */
 
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { Tooltip, type TooltipProviderProps, type TooltipTriggerProps } from "@base-ui/react/tooltip";
-import { noFlipPositionerProps, type AnchorPlacement } from "./positioning";
+import { noFlipPositionerProps, type AnchorPlacement, type VirtualAnchor } from "./positioning";
+
+export type { VirtualAnchor };
 
 /** The tooltip family's default show delay (HOVER_DELAY). */
 export const RB_TOOLTIP_HOVER_DELAY = 280;
@@ -56,23 +65,32 @@ export function RbTooltipTrigger(props: RbTooltipTriggerProps) {
 export interface RbTooltipProps {
   /** The label's visual content (a plain string in every current design). */
   readonly label: ReactNode;
-  /** The trigger part — an `RbTooltipTrigger` (or raw `Tooltip.Trigger`). */
-  readonly children: ReactNode;
+  /** The trigger part — an `RbTooltipTrigger` (or raw `Tooltip.Trigger`).
+   *  Omitted in the virtual-anchor mode (a controlled `open` + `anchor`). */
+  readonly children?: ReactNode;
   /** Default: top/center, 6px offset. */
   readonly placement?: AnchorPlacement;
   /** Extra classes on the popup beyond `.rb-tooltip-popup`. */
   readonly popupClassName?: string;
+  /** The positioning anchor — a DOM element or a `virtualAnchorAt(x, y)`
+   *  point (the composer's mention tooltip). Defaults to the trigger. */
+  readonly anchor?: HTMLElement | VirtualAnchor;
+  /** Controlled open — the virtual-anchor consumer drives every transition. */
+  readonly open?: boolean;
+  /** The popup's ref — the virtual-anchor consumer reads its rect (the
+   *  pointer-inside-the-popup check the hover intent needs). */
+  readonly popupRef?: Ref<HTMLDivElement>;
 }
 
 /** `RbTooltip` — Root + trigger + Positioner + Popup pre-wired. */
 export function RbTooltip(props: RbTooltipProps) {
   const placement: AnchorPlacement = props.placement ?? { side: "top", align: "center" };
   return (
-    <Tooltip.Root>
+    <Tooltip.Root open={props.open}>
       {props.children}
       <Tooltip.Portal>
-        <Tooltip.Positioner {...noFlipPositionerProps(placement)}>
-          <Tooltip.Popup className={`rb-tooltip-popup ${props.popupClassName ?? ""}`}>
+        <Tooltip.Positioner className="rb-tooltip-positioner" {...noFlipPositionerProps(placement)} anchor={props.anchor}>
+          <Tooltip.Popup ref={props.popupRef} className={`rb-tooltip-popup ${props.popupClassName ?? ""}`}>
             {props.label}
           </Tooltip.Popup>
         </Tooltip.Positioner>

@@ -931,13 +931,14 @@ a:focus-visible,
 }
 
 /*
- * `SurfaceTabTooltip` (`shell.rs:773-792`): max-width 380, padding 6/9,
- * radius 6, a hairline border on the overlay surface, 10.5px raw, muted
- * text. Portaled to the body at the chip's viewport coords.
+ * `SurfaceTabTooltip` (`shell.rs:773-792`, ticket 18): the popup recipe the
+ * shared `ui/Tooltip` renders (`popupClassName`): max-width 380, padding
+ * 6/9, radius 6, a hairline border on the overlay surface, 10.5px raw,
+ * muted text — `pointer-events: none` (a label, never a hover target). The
+ * portal, the 350ms delay, and the fixed positioning ride the wrapper; the
+ * positioner carries the menu tier's z-index (`.rb-tooltip-positioner`).
  */
 .right-tab-tooltip {
-  position: fixed;
-  z-index: 90;
   max-width: 380px;
   padding: 6px 9px;
   border-radius: var(--rb-radius-control);
@@ -1010,41 +1011,28 @@ a:focus-visible,
 }
 
 /*
- * The legacy menu cards' shared drop shadow (`.right-plus-menu`,
- * `.section-context-menu`, `.history-column-ghost`) — a local convenience
- * spelled once, not a theme catalog token (the catalog carries no shadow
- * entries).
+ * The legacy menu cards' shared drop shadow (`.history-column-ghost`) — a
+ * local convenience spelled once, not a theme catalog token (the catalog
+ * carries no shadow entries). Ticket 18's portaled swaps (the `+` menu,
+ * the section menu) dropped the other two consumers; the shared
+ * `.popover-card` shadow took their place.
  */
 :root {
   --rb-shadow-menu: 0 12px 32px rgb(0 0 0 / 0.36);
 }
 
 /*
- * The `+` menu (`shell.rs:7054-7144`): `popover_card` at a 168px width, 10px
- * below the button, rows at a 2px rhythm. Radius 12 is `popover::CARD_RADIUS`
- * (`popover.rs:306`) — no `--rb-*` token carries it. Portaled to the body at
- * the button's viewport coords (the band clips); ticket 09 owns the popover
- * lifecycle — this uses the shared anchored-menu pattern (see
- * `.space-filter-menu`) as the placeholder host.
+ * The `+` menu (`shell.rs:7054-7144`, ticket 18): the card-content
+ * specifics on the shared `.popover-card` frame — the 168px width
+ * (`popover_card(theme).w(168)`, `shell.rs:7061`) and the 2px row rhythm.
+ * The frame, portal, placement (`anchored_menu_below_gap`: below, end-
+ * aligned, 10px), entrance, and dismissal ride `RbPopover` (anchored to
+ * the live `+` button), replacing the manual rect/listener portal that
+ * used to carry all of it.
  */
 .right-plus-menu {
-  position: fixed;
-  /* The shared menu tier — the ladder collapse moved this legacy card onto
-     the one generation (see the ladder comment above). */
-  z-index: var(--rb-z-menu);
   width: 168px;
-  padding: var(--rb-space-xs);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  /* `popover::CARD_RADIUS` — 12, a popover-only constant. */
-  border-radius: 12px;
-  border: 1px solid rgb(var(--rb-hairline) / calc(0.10 * var(--rb-hairline-scale)));
-  background: var(--rb-overlay);
-  color: var(--rb-text);
-  font-size: 13px;
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 /* `popover::menu_row`: gap 10, padding 8/6, radius 8. */
@@ -2635,23 +2623,14 @@ a:focus-visible,
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
-/* `render_section_overlays`' context menu: a 180px popover card under the
-   header's menu mark. */
-.section-context-menu {
-  position: absolute;
-  top: 28px;
-  right: var(--rb-space-sm);
-  z-index: var(--rb-z-menu);
+/* `render_section_overlays`' context menu (ticket 18): the card-content
+   specifics on the shared `.popover-card` frame — the 180px floor and the
+   1px row rhythm; the frame, portal, and placement ride `PickerCard`
+   (`anchorBelowEnd`, under the header's menu mark), replacing the inline
+   `.section-context-menu` the sidebar's `overflow: hidden` clipped. */
+.section-menu-body {
   width: 180px;
-  display: flex;
-  flex-direction: column;
   gap: 1px;
-  padding: var(--rb-space-xs);
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 .sidebar-pinned-divider-frame {
@@ -4365,14 +4344,15 @@ a:focus-visible,
 }
 
 /*
- * The hovered chip's path tooltip (MentionPathTooltip, composer.rs:3369):
- * fixed at the chip's left edge, 24px tall, 480px max, mono 11px over the
- * raised surface with the strong border, fading in over fade_quick (150ms).
- * The inline top/left carry the above-chip (or flush-below) anchor.
+ * The hovered chip's path tooltip (MentionPathTooltip, composer.rs:3369,
+ * ticket 18): the popup recipe the shared `ui/Tooltip` renders in its
+ * virtual-anchor mode (`popupClassName`) — 24px tall, 480px max, mono 11px
+ * over the raised surface with the strong border, fading in over fade_quick
+ * (150ms). The portal, the above-chip/flush-below placement, and the menu
+ * tier ride the wrapper (`rb-tooltip-positioner`); the inline position is
+ * gone.
  */
 .mention-tooltip {
-  position: fixed;
-  z-index: var(--rb-z-menu);
   height: 24px;
   max-width: 480px;
   display: flex;
@@ -5160,6 +5140,16 @@ a:focus-visible,
   z-index: var(--rb-z-menu);
 }
 
+/* The tooltip family rides the same menu tier through its positioner
+   (`base/tooltip.tsx`): a label anchored inside the titlebar band (the
+   right pane's tab chips) must clear the titlebar overlay (40), and a
+   tooltip never legitimately paints above a modal (70) — 55 is the same
+   slot every portaled label lands in, replacing the ad-hoc `z-index: 90`
+   the hand-rolled tooltips carried. */
+.rb-tooltip-positioner {
+  z-index: var(--rb-z-menu);
+}
+
 .rb-popover-popup[data-open] {
   animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
@@ -5788,9 +5778,13 @@ a:focus-visible,
 
   /*
    * The right pane's `+` menu in the strip's in-drawer phone form (ticket
-   * 52, 49's explicit deferral): the anchored 168px card's rows ride the
-   * shared sheet — the sheet replaces placement, the rows keep their own
-   * rhythm (`gap 2`, the menu's `--rb-overlay` tone and 13px type).
+   * 52, 49's explicit deferral — ticket 18 keeps this direction): the
+   * anchored 168px card's rows ride the shared sheet, which carries its
+   * own card recipe (NOT the popover-card frame — the sheet replaces
+   * placement AND frame here, ticket 15's final shape) — the sheet spans
+   * the viewport, the rows keep their own rhythm (gap 2, the menu's
+   * `--rb-overlay` tone and 13px type), and the safe-area term composes
+   * with the arm's own inset.
    */
   .rb-drawer-card.right-plus-menu-sheet {
     gap: 2px;
@@ -12272,43 +12266,11 @@ button.files-save-pill:hover {
   }
 }
 
-/* The login dialog (modal) — its OWN classes, never `.modal-backdrop`/
-   `.modal-card`: a later block redefining those for this top-dumped card used
-   to win the cascade for every dialog in the app (same specificity, later
-   order), silently top-dumping the rename/delete dialogs at 15vh instead of
-   the two-axis centering `modal_with` mandates (popover.rs:679-705). */
-.login-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-modal);
-  /* scrim(): literal black in both appearances — a scrim darkens what is
-     behind it; tinting toward the panel color washes light mode white. */
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 15vh var(--rb-space-md) var(--rb-space-md);
-}
-
-.login-dialog-card {
-  width: min(26rem, 100%);
-  padding: var(--rb-space-md) var(--rb-space-lg) var(--rb-space-lg);
-  display: flex;
-  flex-direction: column;
-  background: var(--rb-dialog);
-}
-
-.login-dialog-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.login-dialog-body {
-  margin-top: 8px;
-  line-height: 18px;
-}
-
+/* The login dialog's CONTENT classes — the card/scrim chrome rides the
+   shared `ui/Dialog` family now (ticket 18); what stays here is the
+   content specifics the family has no answer for: the reopen link, the
+   browser-poll line, the inline errors, and the lone action row of the
+   non-form browser arm. */
 .login-dialog-link {
   margin-top: 6px;
   font-size: 12px;
@@ -12325,13 +12287,8 @@ button.files-save-pill:hover {
   color: var(--rb-text);
 }
 
-.login-dialog-form {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
+/* The lone action row of the non-form (browser-poll) arm; the paste-code
+   arm rides the shared `.dialog-actions-row` inside `.dialog-form-rows`. */
 .login-dialog-actions {
   margin-top: 8px;
   display: flex;
@@ -12614,43 +12571,10 @@ button.files-save-pill:hover {
   opacity: 1;
 }
 
-/* The rename dialog (devices.rs:244-282 over popover::modal): the scrim
-   swallows clicks without dismissing; only Cancel / Rename / Enter close. */
-.rename-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-modal);
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rename-dialog-card {
-  width: min(24rem, 100%);
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  background: var(--rb-dialog);
-  border-radius: 16px;
-}
-
-.rename-dialog-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.rename-dialog-field {
-  margin-top: 12px;
-}
-
-.rename-dialog-actions {
-  margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
+/* The rename dialog's chrome rides the shared `ui/Dialog` family (ticket
+   18 — devices.rs:244-282 over popover::modal): the scrim swallows clicks
+   without dismissing (`RbDialog`'s `disablePointerDismissal`), only
+   Cancel / Rename / Enter — and now Escape — close it. */
 
 /* ── The device switcher (accounts.rs:306-365 / harnesses.rs:464-522) ── */
 
@@ -12828,15 +12752,15 @@ button.files-save-pill:hover {
   cursor: default;
 }
 
-/* The inline choice list (harnesses.rs:358-382): scrollable at 240px. */
-.title-picker-options {
-  margin-top: 4px;
-  width: 100%;
+/* The choices (harnesses.rs:286-382, ticket 18): the card-content
+   specifics on the shared `.popover-card` frame — the 2px row rhythm and
+   the old 240px scroll bound; the frame, portal, and the phone sheet ride
+   `PickerCard` (the settings-appearance pattern), replacing the inline
+   `.title-picker-options` expander. */
+.title-picker-menu {
+  gap: 2px;
   max-height: 240px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 /* ── Files (settings/files.rs) ─────────────────────────────────────── */
@@ -14272,10 +14196,6 @@ button.segmented-option:hover {
   .right-surface-add,
   .surface-picker-row {
     transition: none;
-  }
-
-  .right-plus-menu {
-    animation: none;
   }
 }
 
