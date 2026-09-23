@@ -368,5 +368,13 @@ describe("ProjectActionsControl — Add action opens one surface", () => {
     expect(openMenu()).toBeNull();
     expect(projectActionsStore.menuOpen).toBe(false);
     expect(projectActionsStore.editor).not.toBeNull();
+    // Ticket 15: the editor sheet's entrance applies even as it opens over
+    // the actions sheet's exit — the popup carries `[data-open]`, the key
+    // `rb-dialog-in` rides (`.rb-drawer-card[data-open]`), and it animates
+    // over (not under) the dying sheet: its portal mounts after the menu's.
+    const editorSheet = document.querySelector<HTMLElement>('.rb-drawer-card[aria-label="Add action"]');
+    expect(editorSheet).not.toBeNull();
+    expect(editorSheet!.hasAttribute("data-open")).toBe(true);
+    expect(editorSheet!.querySelector(".dialog-card")).not.toBeNull();
   });
 });

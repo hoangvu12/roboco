@@ -5724,10 +5724,14 @@ a:focus-visible,
  * card can overflow a 375px viewport. It rides the SAME modal tier as the
  * centered card (70, via the sibling `.modal-backdrop` — the ladder is
  * closed, no new tiers) and it replaces PLACEMENT only: the card
- * interiors keep their own geometry inside it (`.dialog-card`'s 360px, the
- * popover rows, the add-space card's 680px phone cap). Base UI's swipe
- * gesture drives the popup through an inline transform while a drag is
- * live, which composes with (never fights) the resting `transform: none`.
+ * interiors keep their own rhythm inside it — and, since ticket 15
+ * (research W4), every drawer CARD reads as the sheet itself: the dialog
+ * arm's inner `.dialog-card` stretches to the full width (the old 360px
+ * card painted ~90% of a 390px viewport flush-left and read as a "weird
+ * dialog", not a sheet), and every arm's content clears the home
+ * indicator via `env(safe-area-inset-bottom)`. Base UI's swipe gesture
+ * drives the popup through an inline transform while a drag is live,
+ * which composes with (never fights) the resting `transform: none`.
  */
 @media (max-width: 768px) {
   .rb-drawer-card {
@@ -5750,6 +5754,39 @@ a:focus-visible,
   }
 
   /*
+   * Full-width drawer cards (ticket 15, research W4): the dialog arm's
+   * inner `.dialog-card` stretches to the sheet's width. Inside the sheet's
+   * flex column the card's own explicit 360px defeated stretch, painting a
+   * ~90% band flush-left; the backstop below
+   * (`.dialog-card:not(.rb-drawer-card *)`) already excludes in-sheet cards,
+   * so this is the one rule that owns them. The card's chrome folds to the
+   * sheet frame's geometry — the frame owns the placement: no bloom (the
+   * sheet's own clip eats it anyway), square bottom corners matching the
+   * frame's `16px 16px 0 0` — while the hairline frame, background, and
+   * 20px interior padding stay the dialog family's own. The bottom padding
+   * composes with the home-indicator inset so the sheet's actions clear the
+   * notch's gesture bar on notched devices.
+   */
+  .rb-drawer-card .dialog-card {
+    width: 100%;
+    border-radius: 16px 16px 0 0;
+    box-shadow: none;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  }
+
+  /*
+   * The picker arm rides the sheet AS the card (`cardClassName`'s
+   * `.popover-card` lands on the popup itself), so its 4px inset composes
+   * with the home-indicator inset the same way. The select arm's
+   * child-card form gets the same term in its own block next to
+   * `.settings-select-menu`; the `+` menu's sheet composes it into its own
+   * padding rule below.
+   */
+  .rb-drawer-card.popover-card {
+    padding-bottom: calc(4px + env(safe-area-inset-bottom));
+  }
+
+  /*
    * The right pane's `+` menu in the strip's in-drawer phone form (ticket
    * 52, 49's explicit deferral): the anchored 168px card's rows ride the
    * shared sheet — the sheet replaces placement, the rows keep their own
@@ -5757,7 +5794,9 @@ a:focus-visible,
    */
   .rb-drawer-card.right-plus-menu-sheet {
     gap: 2px;
-    padding: var(--rb-space-xs);
+    /* The safe-area term composes with the arm's own inset (ticket 15). */
+    padding: var(--rb-space-xs) var(--rb-space-xs)
+      calc(var(--rb-space-xs) + env(safe-area-inset-bottom));
     background: var(--rb-overlay);
     color: var(--rb-text);
     font-size: 13px;
@@ -11793,12 +11832,16 @@ button.files-save-pill:hover {
    the floating form's parity numbers (the sheet frame owns the height
    clamp and the scrolling), and the floating form's entrance/exit yield
    to the sheet's `rb-dialog-in` (the sheet is the motion source at
-   phone). */
+   phone). Ticket 15 adds the home-indicator term: the menu is the sheet's
+   scroll content, so its own 4px inset (the `.popover-card` the popup
+   carries) composes with `env(safe-area-inset-bottom)` like every other
+   sheet arm. */
 @media (max-width: 768px) {
   .rb-drawer-card .settings-select-menu {
     width: 100%;
     max-height: none;
     overflow: visible;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom));
   }
 
   .rb-drawer-card .settings-select-menu[data-open],

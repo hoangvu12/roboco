@@ -34,10 +34,16 @@
  * - **Sheet geometry (`.rb-drawer-card`, `app.css`):** fixed at
  *   left/right/bottom 0, radius `16px 16px 0 0`, `max-height:
  *   calc(100dvh - var(--rb-space-lg))`, z-index via `.modal-backdrop` =
- *   `--rb-z-modal` (70) — the ladder's modal tier, no new tiers. The card
- *   interiors (`.dialog-card` 360px, the popover rows, the add-space 600px
- *   cap) keep their values inside the sheet: the sheet replaces
- *   PLACEMENT, not the card's inner layout.
+ *   `--rb-z-modal` (70) — the ladder's modal tier, no new tiers. The sheet
+ *   replaces PLACEMENT, not the card's inner layout — and (ticket 15,
+ *   research W4) every drawer CARD reads as the sheet itself: the dialog
+ *   arm's inner `.dialog-card` stretches to the full width (one phone
+ *   rule, `.rb-drawer-card .dialog-card { width: 100% }` — the old 360px
+ *   child painted ~90% of a 390px viewport flush-left and read as a
+ *   "weird dialog"), and each arm's own bottom padding composes with
+ *   `env(safe-area-inset-bottom)` so the content clears the home
+ *   indicator. The popover rows and the add-space 600px cap keep their
+ *   values inside the sheet.
  * - **Motion:** the entrance reuses `rb-dialog-in` keyed to `[data-open]`
  *   (the `.rb-dialog-card` pattern, `app.css:4846-4848`); reduced motion
  *   snaps it off. The swipe-dismiss is gesture-driven, not an animation.

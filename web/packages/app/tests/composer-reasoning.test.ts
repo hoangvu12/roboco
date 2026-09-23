@@ -16,6 +16,12 @@
  * drill-down on phone (ticket 15's pattern). The trigger row's press and
  * the keyboard walk behave exactly as before; only where the choices
  * paint changed.
+ *
+ * Ticket 15 folds the phone arm in: the same mounted picker under a
+ * controllable `(max-width: 768px)` matchMedia — the card opens as the
+ * bottom sheet (PickerCard's phone arm) and the traits tray's setting
+ * rows ride `NestedMenu`'s phone arm: the choices DRILL DOWN in place
+ * under a back header inside the sheet, never a side flyout.
  */
 
 import { act, createElement, useState } from "react";
@@ -33,7 +39,8 @@ import { emitShortcut } from "../src/state/shortcuts";
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
 // matchMedia (useIsPhone in PickerCard/NestedMenu), ResizeObserver
 // (MenuScrollbar), scrollIntoView (the cursor list's scroll effect /
-// anchorCursor).
+// anchorCursor). The matchMedia answer is controllable so the phone arm
+// can be armed per test (ticket 15).
 
 /** The useIsPhone answer for every mount in this file (PHONE_QUERY match). */
 let phoneMode = false;
@@ -176,6 +183,8 @@ afterEach(() => {
     mounted.pop()!.unmount();
   }
   document.body.replaceChildren();
+  // The suite's default layer is the desktop arm; phone tests re-arm it.
+  phoneMode = false;
 });
 
 function mountPicker(options: {
@@ -727,6 +736,104 @@ describe("ComposerPickers traits tray on phone (ticket 15's drill-down)", () => 
     });
     expect(document.querySelector(".rb-submenu-drill")).toBeNull();
     expect(handle.observed.current.reasoning).toBe("high");
+  });
+});
+
+// ── Ticket 15: the phone arm — the traits tray drills down inside the sheet ─
+
+describe("ComposerPickers phone arm (ticket 15)", () => {
+  async function mountGptPickerAtPhone(): Promise<MountedPicker> {
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+      phone: true,
+    });
+    await flush();
+    await openCard(handle);
+    return handle;
+  }
+
+  it("the card opens as the bottom sheet — the traits tray renders inside it", async () => {
+    await mountGptPickerAtPhone();
+    const sheet = document.querySelector<HTMLElement>(".rb-drawer-card");
+    expect(sheet).not.toBeNull();
+    expect(sheet!.hasAttribute("data-open")).toBe(true);
+    expect(sheet!.contains(settingTrigger("reasoning")!)).toBe(true);
+    // The floating card never mounts at phone.
+    expect(document.querySelector(".rb-popover-popup")).toBeNull();
+    expect(traitTriggers()).toEqual(["Reasoning", "Context window", "Service tier"]);
+  });
+
+  it("a setting row drills its choices down in place under a back header — never the inline expansion", async () => {
+    await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    const drill = document.querySelector<HTMLElement>(".rb-submenu-drill");
+    expect(drill).not.toBeNull();
+    // In place, inside the sheet — not the old inline position directly
+    // under the tray's own section (ticket 08 repurposed
+    // `.model-setting-choices` into the choices region the drill
+    // carries), not any portaled flyout.
+    expect(document.querySelector(".rb-drawer-card")!.contains(drill!)).toBe(true);
+    expect(document.querySelector(".model-traits-section > .model-setting-choices")).toBeNull();
+    expect(drill!.querySelector(".model-setting-choices")).not.toBeNull();
+    expect(document.querySelector(".rb-popover-popup")).toBeNull();
+    // The back affordance: the header reads the group's name, the choices
+    // ride the drill body.
+    expect(drill!.querySelector(".rb-submenu-drill-header")!.textContent).toContain("Reasoning");
+    expect(reasoningRow("low")).not.toBeNull();
+    expect(settingTrigger("reasoning")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("the back header closes the drill; the sheet stays up", async () => {
+    await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>(".rb-submenu-drill .rb-submenu-drill-header")!
+        .click();
+    });
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(reasoningRow("low")).toBeNull();
+    expect(settingTrigger("reasoning")!.getAttribute("aria-expanded")).toBe("false");
+    // The sheet itself is still up — the drill is a local dismissal.
+    expect(document.querySelector(".rb-drawer-card")!.hasAttribute("data-open")).toBe(true);
+  });
+
+  it("a choice pick applies through the draft and closes the drill (multi-adjust keeps the sheet)", async () => {
+    const handle = await mountGptPickerAtPhone();
+    await openSetting("reasoning");
+    await act(async () => {
+      reasoningRow("high")!.click();
+    });
+    expect(handle.observed.current.reasoning).toBe("high");
+    // The nested menu closes on the pick (activate_setting_choice); the
+    // sheet stays open for the next adjustment.
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(document.querySelector(".rb-drawer-card")!.hasAttribute("data-open")).toBe(true);
+  });
+
+  it("desktop regression: the same picker at ≥769px portals the choices — no drill, no sheet", async () => {
+    // The desktop arm stays ticket 08's: the choices fly out through the
+    // portaled nested menu beside the row — never the phone drill, never
+    // the sheet.
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.modelsByHarness.set("codex", [GPT]);
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5.4", reasoning: null }),
+    });
+    await flush();
+    await openCard(handle);
+    expect(document.querySelector(".rb-drawer-card")).toBeNull();
+    await openSetting("reasoning");
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    const flyout = nestedFlyout();
+    expect(flyout).not.toBeNull();
+    expect(flyout!.querySelector(".model-setting-choices")).not.toBeNull();
   });
 });
 
