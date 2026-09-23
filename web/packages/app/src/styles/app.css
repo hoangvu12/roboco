@@ -248,6 +248,9 @@ a:focus-visible,
   --rb-titlebar-group-gap: 8px;
   --rb-titlebar-control-gap: 2px;
   --rb-titlebar-edge-inset: 6px;
+  /* `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the Files toggle + the pane toggle,
+     two 28px `header_icon_button`s that keep their slots while shut. */
+  --rb-titlebar-toggle-slots: 56px;
   /*
    * The stacking ladder — the web's mapping of gpui's `deferred` priorities
    * (menus 1, modals 2; popover.rs:629-637, 688-704). Nothing may invent a
@@ -556,6 +559,17 @@ a:focus-visible,
 }
 
 /*
+ * The Files toggle's active wash (`tabs.rs:381-383`): `bg(wash(0.09))` while
+ * the docked explorer portion is open — the desktop's `.when(
+ * files_panel_open, …)` rides AFTER the hover blend, so the active wash holds
+ * on hover too; this rule sits after the hover one for the same effect. Only
+ * the background changes — the glyph stays muted like the desktop's.
+ */
+.header-icon-button[data-active="1"] {
+  background: rgb(var(--rb-wash) / 0.09);
+}
+
+/*
  * The new-session `+` — rendered only while shown (ticket 60): the desktop's
  * `show_plus.then(...)` (shell.rs:4093-4104) leaves NO phantom slot at alpha
  * 0, so the cluster's shrink-to-fit width ends at the last visible control
@@ -664,9 +678,10 @@ a:focus-visible,
 /* The identity row carries no badge — mark + title + `folder @ device` only. */
 
 /*
- * The trailing section. The pane toggle is the fixed right-edge anchor, like
- * the sidebar control on the left; only the band to its left reveals, so the
- * two icons never compress into one clipped box at open.
+ * The trailing section. The Files toggle and the pane toggle are the two
+ * fixed right-edge anchors (`PANEL_TOGGLE_SLOTS`, tabs.rs:48), like the
+ * sidebar control on the left; only the band to their left reveals, so the
+ * icons never compress into one clipped box at open.
  */
 .titlebar-trailing {
   flex: none;
@@ -681,15 +696,16 @@ a:focus-visible,
 
 /*
  * The pane's header strip — `tabs.rs::render_session_title_bar`'s trailing
- * section. The desktop sizes it `(right_now - pr) - 28`: the pane's own
- * animated width, less the titlebar's 6px right inset and the 24px toggle
- * slot plus its gap. Reading `--rb-pane-now` here means the strip and the pane
- * column are driven by ONE number, exactly as the desktop reads one
- * `right_now` for both — they cannot drift apart mid-glide.
+ * section. The desktop sizes it `(right_now - pr) - 56`: the pane's own
+ * animated width, less the titlebar's 6px right inset and the two fixed
+ * 28px toggle anchors (PANEL_TOGGLE_SLOTS, tabs.rs:48). Reading
+ * `--rb-pane-now` here means the strip and the pane column are driven
+ * by ONE number, exactly as the desktop reads one `right_now` for both —
+ * they cannot drift apart mid-glide.
  *
  * It carries no padding of its own: with `box-sizing: border-box` a padded box
  * cannot shrink below its padding, so a shut pane would leave a sliver here
- * and shove the toggle inward. The padding lives on the inner child.
+ * and shove the toggles inward. The padding lives on the inner child.
  */
 .titlebar-pane-band {
   position: relative;
@@ -702,8 +718,11 @@ a:focus-visible,
 
 /*
  * Right-anchored at the width the strip has when OPEN, so it reveals from the
- * toggle leftward and its controls keep their geometry for the glide instead
+ * toggles leftward and its controls keep their geometry for the glide instead
  * of reflowing through every intermediate width (`right_panel_content_width`).
+ * The 56px pair — the Files toggle and the pane toggle — is the same budget
+ * `titlebarPaneBandWidth` subtracts, so the inner fills the band exactly when
+ * open.
  */
 .titlebar-pane-band-inner {
   position: absolute;
@@ -716,10 +735,10 @@ a:focus-visible,
   gap: var(--rb-space-xs);
   width: max(
     0px,
-    calc(var(--rb-pane-open) - var(--rb-titlebar-edge-inset) - 28px)
+    calc(var(--rb-pane-open) - var(--rb-titlebar-edge-inset) - var(--rb-titlebar-toggle-slots))
   );
   /* 8 + the chip's own pad = the pane's 16px text gutter; the 4px right pad
-     is the stable gap before the fixed toggle. */
+     is the stable gap before the fixed toggles. */
   padding-left: var(--rb-space-sm);
   padding-right: var(--rb-space-xs);
 }

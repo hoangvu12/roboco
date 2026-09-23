@@ -21,12 +21,16 @@ import { usePrefersReducedMotion } from "../state/media";
  *
  * Its shape, from `tabs.rs`:
  *
- *     [sidebar toggle] [back forward] [+] … [harness icon + title + target] … [toggle-changes]
+ *     [sidebar toggle] [back forward] [+] … [harness icon + title + target] … [toggle-files][toggle-changes]
  *
- * The trailing section is ONE fixed control — the right pane's open/close
- * toggle — a 28px `header_icon_button`. With the pane open, its surface tabs
- * and the expand button reveal to its left inside a band as wide as the pane.
- * Panel surfaces are tabs in that pane, never buttons up here.
+ * The trailing section is the desktop's two fixed right-edge anchors
+ * (`PANEL_TOGGLE_SLOTS`, tabs.rs:48): the Files (explorer) toggle and the
+ * right pane's open/close toggle — two 28px `header_icon_button`s. With the
+ * pane open, its surface tabs and the expand button reveal to their left
+ * inside a band as wide as the pane. Panel surfaces are tabs in that pane,
+ * never buttons up here; the Files toggle is the one exception the desktop
+ * ships — it drives the docked explorer portion, which is not a surface tab
+ * (tickets 22/23).
  *
  * Geometry is the desktop's to the pixel: a 38px bar
  * (`layout::TITLEBAR_HEIGHT`) whose content rides 4px lower than centre
@@ -88,6 +92,14 @@ export interface TitlebarProps {
   /** The right pane's toggle. Absent when no chat owns a pane. */
   readonly onTogglePane?: (() => void) | null;
   readonly paneOpen?: boolean;
+  /**
+   * The docked Files (explorer) toggle — the desktop's `toggle-files-panel`
+   * (tabs.rs:366-384), LEFT of the pane toggle. Absent when no chat owns a
+   * pane (the desktop hides the whole trailing group on the canvas).
+   */
+  readonly onToggleFiles?: (() => void) | null;
+  /** The docked explorer portion's flag — drives the button's active wash. */
+  readonly filesOpen?: boolean;
   /** The pane's surface tabs — revealed to the toggle's left while open. */
   readonly paneTabs?: ReactNode;
   readonly paneExpanded?: boolean;
@@ -371,6 +383,8 @@ export function Titlebar({
   actions,
   onTogglePane,
   paneOpen = false,
+  onToggleFiles,
+  filesOpen = false,
   paneTabs,
   paneExpanded = false,
   onToggleExpand,
@@ -488,6 +502,22 @@ export function Titlebar({
               </div>
             )}
           </div>
+          {/*
+            The Files toggle (`toggle-files-panel`, tabs.rs:366-384): the
+            desktop's custom FILE_TREE icon, aria-label "Hide/Show files
+            panel", and `bg(wash(0.09))` while the docked explorer portion is
+            open — the first of the two fixed right-edge anchors, LEFT of the
+            pane toggle. It is not the pane band's business: its width budget
+            already reserves both anchor slots (PANEL_TOGGLE_SLOTS).
+          */}
+          {onToggleFiles != null && (
+            <HeaderIconButton
+              icon="fileTree"
+              label={filesOpen ? "Hide files panel" : "Show files panel"}
+              onClick={onToggleFiles}
+              active={filesOpen}
+            />
+          )}
           <HeaderIconButton icon="sidebarMinimalistic" label="Toggle panel" onClick={onTogglePane} />
         </div>
       )}
@@ -562,19 +592,24 @@ function NavHistoryButton({
 }
 
 /**
- * The desktop's `header_icon_button` (`shell.rs:7552`) — the two trailing
+ * The desktop's `header_icon_button` (`shell.rs:7552`) — the trailing
  * controls: a 28px square with a 6px radius and a 16px glyph, transparent at
- * rest and `wash(0.11)` on hover. It has no active state; the pane toggle is
- * a plain button whatever the pane is doing.
+ * rest and `wash(0.11)` on hover. One active variant exists, the Files
+ * toggle's (`tabs.rs:381-383`): `bg(wash(0.09))` while the docked explorer
+ * portion is open, rendered through the `data-active` attribute; the pane
+ * toggle stays a plain button whatever the pane is doing.
  */
 function HeaderIconButton({
   icon,
   label,
   onClick,
+  active = false,
 }: {
   icon: IconName;
   label: string;
   onClick: () => void;
+  /** The active wash — `bg(wash(0.09))` while the driven panel is open. */
+  active?: boolean;
 }) {
   return (
     <button
@@ -583,6 +618,7 @@ function HeaderIconButton({
       onClick={onClick}
       aria-label={label}
       title={label}
+      data-active={active ? "1" : undefined}
     >
       <Icon name={icon} size={16} />
     </button>
