@@ -3,6 +3,7 @@ import { motion } from "@roboco/theme";
 import {
   CHAT_PANEL_MIN,
   PANE_RESIZE_HITBOX_HALF_WIDTH,
+  PANEL_TOGGLE_SLOTS,
   RESIZE_EDGE_NUDGE,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
@@ -195,11 +196,11 @@ describe("phone geometry inputs", () => {
 
   it("titlebarPaneBandWidth phone inputs no longer collapse to zero", () => {
     // rowLeft 136 (the phone identity inset) and a real pane width: the band
-    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 24) - 28 = 39 —
+    // resolves above zero — min(75 - 6, 375 - 136 - 6 - 24) - 56 = 13 —
     // where the live-width inputs collapsed it to 0.
     expect(
       titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
-    ).toBe(41);
+    ).toBe(13);
   });
 });
 
@@ -221,14 +222,14 @@ describe("phone pane drawer inputs (ticket 52)", () => {
   });
 
   it("titlebarPaneBandWidth phone inputs no longer collapse the band", () => {
-    // The phone-corrected inputs (sidebar 0 → rowLeft 136, pane 75): 41 —
+    // The phone-corrected inputs (sidebar 0 → rowLeft 136, pane 75): 13 —
     // the band the strip's in-drawer header supersedes, but which the
     // titlebar still consumes so nothing downstream reads 0-by-accident.
     // (The b1484015 three-gap budget does not bite here: the pane side of
-    // the min — 75 - 6 - 28 — is the narrower one.)
+    // the min — 75 - 6 - 56 — is the narrower one.)
     expect(
       titlebarPaneBandWidth({ viewport: 375, paneWidth: 75, rowLeft: 136, takeover: false }),
-    ).toBe(41);
+    ).toBe(13);
     // Today's shape, documented: the live dragged sidebar (304 → rowLeft
     // 320, pane 0) starves the band to 0 — the "i dont see the tabs" bug.
     expect(
@@ -286,30 +287,41 @@ describe("titlebarPaneBandWidth", () => {
     expect(band(0)).toBe(0);
   });
 
-  it("tracks the pane, less the edge inset and the toggle slot", () => {
-    // 520 - 6 - 28. The strip's right edge then lands on the pane's.
-    expect(band(520)).toBe(486);
-    expect(band(360)).toBe(326);
+  it("tracks the pane, less the edge inset and the toggle slots", () => {
+    // 520 - 6 - 56. The strip's right edge then lands on the pane's, beside
+    // the two fixed toggle anchors.
+    expect(band(520)).toBe(458);
+    expect(band(360)).toBe(298);
+  });
+
+  it("budgets the second fixed slot — PANEL_TOGGLE_SLOTS (tabs.rs:48/59)", () => {
+    // The desktop's two fixed right-edge anchors — the Files toggle and
+    // the pane toggle — each keep a 28px slot even while the pane is shut,
+    // so the band ends 56 short of the pane's own width, not 28.
+    expect(PANEL_TOGGLE_SLOTS).toBe(56);
+    expect(band(520)).toBe(520 - 6 - PANEL_TOGGLE_SLOTS);
+    // A pane exactly as wide as the two slots leaves the band empty.
+    expect(band(62)).toBe(0);
   });
 
   it("rides intermediate widths, so it glides with the column", () => {
-    expect(band(260)).toBe(226);
+    expect(band(260)).toBe(198);
   });
 
   it("stays capped to the room the row has left", () => {
     // A pane wider than the row can hold must not overflow and clip right.
     const wide = band(1400);
     // avail = 1440 - 272 - 6 - 24 (three gaps: title, Actions, spacer —
-    // b1484015's budget) = 1138; minus the 28px toggle slot.
-    expect(wide).toBe(1110);
+    // b1484015's budget) = 1138; minus the 56px toggle pair.
+    expect(wide).toBe(1082);
   });
 
   it("still animates in takeover rather than snapping to full width", () => {
     const full = band(1184, { takeover: true });
-    // avail = 1440 - 248 - 6 - 8 = 1178; pane-6 = 1178. Same, minus 28.
-    expect(full).toBe(1150);
+    // avail = 1440 - 248 - 6 - 8 = 1178; pane-6 = 1178. Same, minus 56.
+    expect(full).toBe(1122);
     // Half way through the glide it is genuinely half way.
-    expect(band(700, { takeover: true })).toBe(666);
+    expect(band(700, { takeover: true })).toBe(638);
   });
 });
 
