@@ -39,6 +39,7 @@ import {
   SIDEBAR_PINNED_DIVIDER_KEY,
   SIDEBAR_PINNED_HEADER_KEY,
 } from "../lib/sidebar-pins";
+import { preventNativeSidebarRowDrag } from "../lib/sidebar-drag-events";
 import { sidebarStore } from "../state/sidebar";
 import { activeSidebarSections, sectionMembership, sectionRows } from "../lib/sidebar-sections";
 import { CreateSectionDialog, CustomSection, customSectionKeyedHeight } from "./sidebar-sections";
@@ -891,6 +892,9 @@ function RegularRowDragArm({
       className="regular-row"
       data-sidebar-dragging={dragged ? "1" : undefined}
       onPointerDown={(event) => onArm(event, chatId)}
+      // The row's anchor is natively draggable; a press that moves must
+      // stay OUR transfer gesture (see sidebar-drag-events.ts).
+      onDragStart={preventNativeSidebarRowDrag}
       onClickCapture={(event) => {
         if (shouldSuppressClick()) {
           event.preventDefault();
