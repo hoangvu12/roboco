@@ -4,6 +4,10 @@ import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
 import { useFleet, useFleetRegistry } from "../state/fleet";
+// Ticket 11's engine-side sidebar state bridge: importing the module wires
+// the registry-driven sync (pins + custom sections mirror engine-side;
+// `localStorage` stays the offline cache).
+import "../state/sidebar-state-sync";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import {

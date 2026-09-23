@@ -89,6 +89,8 @@ export * from "./SessionGrant";
 export * from "./SessionMessageEntry";
 export * from "./SessionStatus";
 export * from "./SessionTail";
+export * from "./SidebarSection";
+export * from "./SidebarStateSnapshot";
 export * from "./SlashCommand";
 export * from "./Space";
 export * from "./SteeringMode";

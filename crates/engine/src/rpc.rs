@@ -28,6 +28,12 @@
 //!   actionId, cols, rows}` → `ProjectActionRun` (a managed terminal on the
 //!   chat's checkout). Private to the engine owning the space
 //!   row — stored in its profile store root, never the workspace registry.
+//! - Sidebar organization state: `SetSidebarPins {profileKey, sessionIds}` /
+//!   `SetSidebarSections {profileKey, sections}` — ordered-list replaces that
+//!   reply with the fresh `SidebarStateSnapshot` (last write wins), and
+//!   `WatchSidebarState` → stream of that snapshot (current value first, then
+//!   every change) so every client paired to this engine mirrors pins and
+//!   custom sections live. Engine-local per ADR 0004 — never synced.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
 //!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
 //! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
@@ -59,7 +65,8 @@ use tokio::sync::watch;
 
 use roboco_doc::{MessagePart, SessionCommandPayload};
 use roboco_proto::{
-    ChatConfig, EngineInfo, HarnessId, ProjectActionDraft, Space, ToolCall, WorkspaceScope,
+    ChatConfig, EngineInfo, HarnessId, ProjectActionDraft, SidebarSection, Space, ToolCall,
+    WorkspaceScope,
 };
 use roboco_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
@@ -71,6 +78,7 @@ use crate::project_actions::ProjectActionsStore;
 use crate::registry::HarnessRegistry;
 use crate::repos::{Repos, home_dir};
 use crate::sessions::SessionsEngine;
+use crate::sidebar_state::SidebarStateStore;
 use crate::terminals::Terminals;
 use crate::uploads::Uploads;
 use crate::workspace_host::WorkspaceHost;
@@ -254,6 +262,20 @@ struct DeleteWorktreeParams {
     repo_path: String,
     #[serde(alias = "path")]
     worktree_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSidebarPinsParams {
+    profile_key: String,
+    session_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSidebarSectionsParams {
+    profile_key: String,
+    sections: Vec<SidebarSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,6 +575,7 @@ pub struct EngineRpc {
     workspace_files: crate::WorkspaceFiles,
     terminals: Terminals,
     project_actions: ProjectActionsStore,
+    sidebar_state: SidebarStateStore,
     previews: Option<roboco_preview::PreviewService>,
     change_requests: CheckoutChangeRequests,
     diff_sync: CheckoutDiffSync,
@@ -573,6 +596,7 @@ impl EngineRpc {
         workspace_files: crate::WorkspaceFiles,
         terminals: Terminals,
         project_actions: ProjectActionsStore,
+        sidebar_state: SidebarStateStore,
         change_requests: CheckoutChangeRequests,
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
@@ -595,6 +619,7 @@ impl EngineRpc {
             workspace_files,
             terminals,
             project_actions,
+            sidebar_state,
             previews: None,
             change_requests,
             diff_sync,
@@ -2088,6 +2113,32 @@ impl RpcService for EngineRpc {
                 .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&snapshot)
             }
+            methods::SET_SIDEBAR_PINS => {
+                let p: SetSidebarPinsParams = parse_params(params)?;
+                let store = self.sidebar_state.clone();
+                // Mutations persist to disk; keep them off the async worker.
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    store.set_pins(&p.profile_key, p.session_ids)
+                })
+                .await
+                .map_err(|err| RpcError::Failed(err.to_string()))?
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::SET_SIDEBAR_SECTIONS => {
+                let p: SetSidebarSectionsParams = parse_params(params)?;
+                let store = self.sidebar_state.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    store.set_sections(&p.profile_key, p.sections)
+                })
+                .await
+                .map_err(|err| RpcError::Failed(err.to_string()))?
+                .map_err(|err| RpcError::Failed(err.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::WATCH_SIDEBAR_STATE => Ok(RpcReply::Stream(watch_stream(
+                self.sidebar_state.subscribe(),
+            ))),
             methods::RUN_PROJECT_ACTION => {
                 let p: RunProjectActionParams = parse_params(params)?;
                 let space = self.local_project_action_space(&p.space_id)?;
