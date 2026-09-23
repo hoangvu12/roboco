@@ -67,14 +67,14 @@ loro-protocol = "0.3"
 # Linux — the Metal path's snapshot/blur/composite, ported).
 # Paint-time rounded image masks (zeronsh/zui#9), bounded Windows backdrop blur
 # and translucent compositing, plus blur-aware scene batching (zeronsh/zui#10).
-gpui = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_platform = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add", features = [
+gpui = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_platform = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f", features = [
     "wayland",
     "x11",
     "font-kit",
     "runtime_shaders",
 ] }
-gpui_tokio = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
+gpui_tokio = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
 gpui-base = { git = "https://github.com/hoangvu12/gpui-component", rev = "94c1bbaf6311b9f36f5e7438aaf5aeadd38740da" }
 
 # diffs
@@ -139,22 +139,22 @@ nucleo-matcher = "0.3"
 # zeronsh/zui. Redirect every crate resolving through that URL to our
 # hoangvu12/zui fork (same revision) so the graph builds exactly one GPUI copy.
 [patch."https://github.com/zeronsh/zui"]
-collections = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-derive_refineable = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_macros = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_platform = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_tokio = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_web = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_shared_string = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-gpui_util = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-http_client = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-media = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-perf = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-refineable = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-scheduler = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-sum_tree = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
-util_macros = { git = "https://github.com/hoangvu12/zui", rev = "c2d273dc3dadcb260b0fa7c35fc2fe02a14f5add" }
+collections = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+derive_refineable = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_macros = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_platform = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_tokio = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_web = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_shared_string = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+gpui_util = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+http_client = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+media = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+perf = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+refineable = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+scheduler = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+sum_tree = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
+util_macros = { git = "https://github.com/hoangvu12/zui", rev = "ec16c62b83caa58b61cd8039db4b5721bacf948f" }
 
 [profile.release]
 # Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat
