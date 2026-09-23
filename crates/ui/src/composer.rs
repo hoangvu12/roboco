@@ -237,8 +237,10 @@ fn input_scroll_offset_for_cursor(
 /// What a mouse press in a text field asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PressIntent {
-    /// Take the whole field.
-    SelectAll,
+    /// Take the logical line containing the press (web triple-click).
+    SelectLine,
+    /// Take the word containing the press (web double-click).
+    SelectWord,
     /// Grow the current selection to the pressed position.
     ExtendSelection,
     /// Put the caret at the pressed position.
@@ -246,19 +248,28 @@ enum PressIntent {
 }
 
 impl PressIntent {
-    /// Whether the press starts a drag selection. A select-all must not, or
+    /// Whether the press starts a drag selection. A line press must not, or
     /// the next mouse move shrinks it back to a drag from the press position.
     fn arms_drag(self) -> bool {
-        !matches!(self, Self::SelectAll)
+        !matches!(self, Self::SelectLine)
     }
 }
 
-/// Read the intent from the press. Two clicks or more take the whole field,
-/// and every further click keeps it, so holding the button through a third
-/// click does not change what is selected.
+/// Read the intent from the press, mirroring the web textarea: a double
+/// click takes the word, a triple click the line, and every further click
+/// keeps the line, so holding the button through a fourth click does not
+/// change what is selected. A multi-click wins over the shift modifier,
+/// which has nothing left to extend at that granularity.
+///
+/// Deliberate divergence from upstream: zeron maps every second click and
+/// beyond to select-all. Roboco keeps the web behavior because the composer
+/// is the surface where users try to word-select — the transcript already
+/// word-selects on double-click.
 fn press_intent(click_count: usize, shift: bool) -> PressIntent {
-    if click_count >= 2 {
-        PressIntent::SelectAll
+    if click_count >= 3 {
+        PressIntent::SelectLine
+    } else if click_count == 2 {
+        PressIntent::SelectWord
     } else if shift {
         PressIntent::ExtendSelection
     } else {
@@ -1648,6 +1659,9 @@ pub struct ComposerInput {
     drag_position: Option<Point<Pixels>>,
     drag_generation: u64,
     drag_autoscroll_active: bool,
+    /// Word a double-click took and armed: while the press is held, drag
+    /// selection extends by whole words from it (web double-click drag).
+    word_drag_anchor: Option<Range<usize>>,
     /// Vertical scroll inside the input once content exceeds the max height.
     scroll_top: f32,
     /// Visible content budget supplied by the animated composer.
@@ -1746,6 +1760,7 @@ impl ComposerInput {
             drag_position: None,
             drag_generation: 0,
             drag_autoscroll_active: false,
+            word_drag_anchor: None,
             scroll_top: 0.0,
             viewport_height: None,
             settled_viewport_height: None,
@@ -2347,6 +2362,62 @@ impl ComposerInput {
         start..end
     }
 
+    /// Word range around `ix` for a double-click press: the alphanumeric
+    /// run, a lone symbol, or a whole mention chip — empty on whitespace.
+    /// Same semantics as the transcript's `markdown::selection::word_range`,
+    /// so both text surfaces agree on what a word is.
+    fn word_range_at(&self, ix: usize) -> Range<usize> {
+        // A chip reads as one word: a press on it maps to its raw endpoints
+        // (`display_to_raw`), and either endpoint takes the whole link.
+        if let Some((link, _)) = self
+            .projection
+            .mentions
+            .iter()
+            .find(|(link, _)| link.range.start <= ix && ix <= link.range.end)
+        {
+            return link.range.clone();
+        }
+        crate::markdown::selection::word_range(&self.content, ix)
+    }
+
+    /// The span an armed word drag holds at raw `index`, and whether its
+    /// head (the caret) sits at the span start: whole words between the
+    /// anchor word and the index. A whitespace crossing absorbs into the
+    /// neighboring word, like the web textarea's word drag.
+    fn word_drag_span(&self, anchor: Range<usize>, index: usize) -> (Range<usize>, bool) {
+        if index < anchor.start {
+            (self.previous_word_boundary(index)..anchor.end, true)
+        } else if index > anchor.end {
+            (anchor.start..self.next_word_boundary(index), false)
+        } else {
+            (anchor, false)
+        }
+    }
+
+    /// Select exactly `span`, placing the caret at the head given by
+    /// `reversed`. The multi-click paths set both edges at once instead of
+    /// growing from an anchor like `select_to`.
+    fn select_span(&mut self, span: Range<usize>, reversed: bool, cx: &mut Context<Self>) {
+        let span = self.projection.normalize_range(span);
+        self.selected_range = span;
+        self.selection_reversed = reversed;
+        self.follow_cursor = true;
+        self.reset_blink();
+        cx.emit(ComposerInputEvent::CursorMoved);
+        cx.notify();
+    }
+
+    /// Apply one step of an armed drag at raw `index`: characters from the
+    /// press position, or whole words when a double-click armed the drag.
+    fn drag_select_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(anchor) = self.word_drag_anchor.clone() {
+            let (span, reversed) = self.word_drag_span(anchor, index);
+            self.select_span(span, reversed, cx);
+        } else {
+            self.select_to(index, cx);
+        }
+    }
+
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             let prev = self.previous_boundary(self.cursor_offset());
@@ -2790,10 +2861,25 @@ impl ComposerInput {
         self.drag_position = intent.arms_drag().then_some(event.position);
         self.drag_generation = self.drag_generation.wrapping_add(1);
         self.drag_autoscroll_active = false;
+        self.word_drag_anchor = None;
         match intent {
-            PressIntent::SelectAll => {
-                self.move_to(0, cx);
-                self.select_to(self.content.len(), cx);
+            PressIntent::SelectLine => {
+                let index = self.index_for_mouse_position(event.position);
+                self.select_span(self.line_range_at(index), false, cx);
+            }
+            PressIntent::SelectWord => {
+                let index = self.index_for_mouse_position(event.position);
+                let word = self.word_range_at(index);
+                if word.is_empty() {
+                    // Pressing whitespace grabs nothing (the web textarea
+                    // agrees), so behave like a caret press whose drag is
+                    // character-granular.
+                    self.move_to(index, cx);
+                } else {
+                    // Arm the word drag: motion while held extends by words.
+                    self.word_drag_anchor = Some(word.clone());
+                    self.select_span(word, false, cx);
+                }
             }
             PressIntent::ExtendSelection => {
                 let index = self.index_for_mouse_position(event.position);
@@ -2809,6 +2895,7 @@ impl ComposerInput {
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.is_selecting = false;
         self.drag_position = None;
+        self.word_drag_anchor = None;
         self.drag_generation = self.drag_generation.wrapping_add(1);
         self.drag_autoscroll_active = false;
     }
@@ -2818,7 +2905,7 @@ impl ComposerInput {
         if self.is_selecting {
             self.drag_position = Some(event.position);
             let position = self.drag_selection_position(event.position);
-            self.select_to(self.index_for_mouse_position(position), cx);
+            self.drag_select_to(self.index_for_mouse_position(position), cx);
             if self.drag_scroll_delta(event.position) != 0.0 && !self.drag_autoscroll_active {
                 self.start_drag_autoscroll(cx);
             }
@@ -2893,7 +2980,7 @@ impl ComposerInput {
         }
         self.scroll_top = next;
         let edge_position = self.drag_selection_position(position);
-        self.select_to(self.index_for_mouse_position(edge_position), cx);
+        self.drag_select_to(self.index_for_mouse_position(edge_position), cx);
         // Selection motion normally resumes caret following. During an edge
         // drag the autoscroll loop owns the viewport instead.
         self.follow_cursor = false;
@@ -8428,21 +8515,221 @@ mod tests {
     /// multi-click leaves the drag disarmed is invisible until a selection
     /// collapses under the pointer.
     #[test]
-    fn a_press_of_two_or_more_clicks_takes_the_whole_field_and_leaves_the_drag_disarmed() {
+    fn a_double_click_takes_the_word_and_a_triple_click_the_line() {
         assert_eq!(press_intent(1, false), PressIntent::PlaceCaret);
         assert_eq!(press_intent(1, true), PressIntent::ExtendSelection);
-        assert_eq!(press_intent(2, false), PressIntent::SelectAll);
-        // A triple click keeps the whole field, so holding the button down
-        // through a third click does not change what is selected.
-        assert_eq!(press_intent(3, false), PressIntent::SelectAll);
-        // The whole field wins over the shift modifier: shift has nothing
-        // left to extend once everything is selected.
-        assert_eq!(press_intent(2, true), PressIntent::SelectAll);
-        // Only a caret press arms the drag. A select-all that armed it would
-        // collapse to a drag selection on the next mouse move.
+        assert_eq!(press_intent(2, false), PressIntent::SelectWord);
+        // Clicks past the third keep taking the line, so holding the button
+        // down through further clicks does not change what is selected.
+        assert_eq!(press_intent(3, false), PressIntent::SelectLine);
+        assert_eq!(press_intent(4, false), PressIntent::SelectLine);
+        // The multi-click wins over the shift modifier: shift has nothing
+        // left to extend at word or line granularity.
+        assert_eq!(press_intent(2, true), PressIntent::SelectWord);
+        // A caret press and a word press arm the drag — the word press
+        // drags by whole words. A line press must not, or the next mouse
+        // move would collapse the line selection back to a drag.
         assert!(press_intent(1, false).arms_drag());
         assert!(press_intent(1, true).arms_drag());
-        assert!(!press_intent(2, false).arms_drag());
+        assert!(press_intent(2, false).arms_drag());
+        assert!(!press_intent(3, false).arms_drag());
+    }
+
+    /// Where a raw index sits on screen, for aiming synthesized presses.
+    /// Mirrors `index_for_point`'s line walk in reverse.
+    fn position_for_index(input: &ComposerInput, ix: usize) -> Point<Pixels> {
+        let bounds = input.last_bounds.expect("layout ran");
+        let mut y = px(0.0);
+        for (line_ix, line) in input.last_lines.iter().enumerate() {
+            let line_start = input.line_starts.get(line_ix).copied().unwrap_or(0);
+            let line_end = line_start + line.len();
+            if (line_start..=line_end).contains(&ix) {
+                if let Some(p) = line.position_for_index(ix - line_start, input.line_height) {
+                    return bounds.origin + point(p.x, y + p.y);
+                }
+            }
+            y += line.size(input.line_height).height;
+        }
+        panic!("index {ix} is not on a laid-out line");
+    }
+
+    /// A host window with one full-size multi-line input — the fixture
+    /// behind the multi-click selection tests.
+    struct FieldHost(Entity<ComposerInput>);
+
+    impl Render for FieldHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    /// A drawn window hosting one multi-line input holding `text`, plus the
+    /// screen position of each index in `indices` for aiming presses.
+    fn field_with_text(
+        cx: &mut gpui::TestAppContext,
+        text: &str,
+        indices: &[usize],
+    ) -> (gpui::WindowHandle<FieldHost>, Vec<Point<Pixels>>) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let input = cx.new(|cx| {
+            let mut input = ComposerInput::new("Composer", cx);
+            input.set_text(text, cx);
+            input
+        });
+        let host = cx.add_window(|_, _| FieldHost(input.clone()));
+        for _ in 0..2 {
+            cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear())
+                .unwrap();
+        }
+        let positions = input
+            .read_with(cx, |input, _| {
+                indices
+                    .iter()
+                    .map(|ix| position_for_index(input, *ix))
+                    .collect::<Vec<_>>()
+            });
+        (host, positions)
+    }
+
+    #[gpui::test]
+    fn a_double_click_takes_the_word_and_the_drag_extends_by_words(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // "alpha beta" / "gamma delta": "alpha" 0..5, "beta" 6..10,
+        // "gamma" 11..16, the second line starting at 11.
+        let (host, positions) = field_with_text(cx, "alpha beta\ngamma delta", &[8, 2, 13]);
+        let [beta, alpha, gamma] = [positions[0], positions[1], positions[2]];
+        let input = host.read_with(cx, |host, _| host.0.clone()).unwrap();
+        cx.update_window(host.into(), |_, window, cx| {
+            // A draw registers this frame's frame-scoped drag listeners.
+            let _ = window.draw(cx);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: beta,
+                    click_count: 2,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 6..10, "double-click word");
+            assert_eq!(input.read(cx).word_drag_anchor, Some(6..10));
+            // Dragging backward adds whole words, caret at the head.
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: alpha,
+                    pressed_button: Some(MouseButton::Left),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 0..10, "drag back a word");
+            assert!(input.read(cx).selection_reversed);
+            // Dragging forward from the same anchor word crosses the newline
+            // and re-anchors at the word, not at the old head.
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gamma,
+                    pressed_button: Some(MouseButton::Left),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 6..16, "drag forward a word");
+            assert!(!input.read(cx).selection_reversed);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: gamma,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert!(!input.read(cx).is_selecting);
+            assert_eq!(input.read(cx).word_drag_anchor, None);
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_triple_click_takes_the_line_and_leaves_the_drag_disarmed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // "alpha beta" / "gamma delta": first line 0..10, second 11..22.
+        let (host, positions) = field_with_text(cx, "alpha beta\ngamma delta", &[8, 13]);
+        let [beta, gamma] = [positions[0], positions[1]];
+        let input = host.read_with(cx, |host, _| host.0.clone()).unwrap();
+        cx.update_window(host.into(), |_, window, cx| {
+            let _ = window.draw(cx);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: beta,
+                    click_count: 3,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 0..10, "triple-click line");
+            // Disarmed: motion under the held press must not collapse the
+            // line back to a drag selection.
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gamma,
+                    pressed_button: Some(MouseButton::Left),
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 0..10);
+            assert!(!input.read(cx).is_selecting);
+            // A fourth click stays at line granularity.
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: gamma,
+                    click_count: 4,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            assert_eq!(input.read(cx).selected_range, 11..22);
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn word_range_at_matches_the_transcript_word_semantics(cx: &mut gpui::TestAppContext) {
+        let input = cx.new(|cx| {
+            let mut input = ComposerInput::new("Composer", cx);
+            input.set_text("foo-bar  baz", cx);
+            input
+        });
+        input.read_with(cx, |input, _| {
+            // Alphanumeric runs, from inside or either boundary.
+            assert_eq!(input.word_range_at(1), 0..3);
+            assert_eq!(input.word_range_at(4), 4..7);
+            assert_eq!(input.word_range_at(9), 9..12);
+            // A boundary just past a word takes that word, like the
+            // transcript's markdown selection.
+            assert_eq!(input.word_range_at(3), 0..3);
+            // A space with no word neighbor takes nothing.
+            assert_eq!(input.word_range_at(8), 8..8);
+        });
+
+        // A mention chip is one word: any press on it takes the whole link.
+        let input = cx.new(|cx| {
+            let mut input = ComposerInput::new("Composer", cx);
+            input.enable_mentions();
+            input.set_text("[notes](roboco-file:notes) tail", cx);
+            input
+        });
+        input.read_with(cx, |input, _| {
+            assert_eq!(input.word_range_at(13), 0..26, "chip press");
+            assert_eq!(input.word_range_at(0), 0..26, "chip start");
+            assert_eq!(input.word_range_at(26), 0..26, "chip end");
+            assert_eq!(input.word_range_at(29), 27..31, "word after the chip");
+        });
     }
 
     #[test]
