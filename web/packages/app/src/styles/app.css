@@ -3950,9 +3950,11 @@ a:focus-visible,
 
 /*
  * The textarea box — expanded: `px-4 pt-[morph 12→16] pb-1`, height inline
- * (the auto-grow BOX, 76–260); compact: `flex-1 min-w-0 pl-4 pr-2 relative`,
- * the single 22.75px line centered to the same 12px inset as `py-3` (no
- * explicit vertical padding), glided by the collapse morph's decaying offset.
+ * (the auto-grow BOX, 76–260); compact: `flex-1 min-w-0 px-2 relative` —
+ * with the paperclip now to the LEFT (e0c1e936), its right padding hands
+ * the gap to the model chip — the single 22.75px line centered to the same
+ * 12px inset as `py-3` (no explicit vertical padding), glided by the
+ * collapse morph's decaying offset.
  */
 .composer-input-box {
   min-width: 0;
@@ -3969,7 +3971,7 @@ a:focus-visible,
   flex: 1;
   min-width: 0;
   position: relative;
-  padding: 0 8px 0 16px;
+  padding: 0 8px;
 }
 
 /*
@@ -4051,12 +4053,17 @@ a:focus-visible,
 }
 
 /*
- * The actions row: expanded, ABSOLUTE at the pill's stationary bottom —
- * `pt-1 pb-2.5` around 32px chips (ACTIONS_ROW_HEIGHT = 46), `pl-3`, the
- * right inset gliding 8↔12 with the morph; compact, a `flex-none` cluster
- * (`pl-1 pr-2` gliding 12↔8) on the 47px row. Pickers and the paperclip
- * form one utility group (ACTION_UTILITY_GAP = 2, justify-end), with the
- * larger structural ACTION_PRIMARY_GAP (8) before Send.
+ * The actions row (e0c1e936): expanded, ABSOLUTE at the pill's stationary
+ * bottom — 2px top + 32px chips + 12px bottom (ACTIONS_ROW_HEIGHT = 46),
+ * a 42px left padding (the desktop's `pl-3` slot plus the detached
+ * paperclip's 28 + ACTION_UTILITY_GAP) — with the right inset gliding 8↔12
+ * with the morph; compact, a `flex-none` cluster on the 47px row — the
+ * model chip then Send, the input's own `px-2` providing the gap before
+ * them.
+ * The structural ACTION_PRIMARY_GAP (8) separates the model chip from Send
+ * in both modes; Send alone sits at the row's right end
+ * (composer.rs:7791-7839, 7856-7904 — the utility group LEFT-aligns, Send
+ * right).
  */
 .composer-actions {
   display: flex;
@@ -4070,32 +4077,53 @@ a:focus-visible,
   left: 0;
   right: 0;
   height: 46px;
-  padding: 4px 8px 10px 12px;
+  padding: 2px 8px 12px 42px;
 }
 
 .composer-pill[data-mode="compact"] .composer-actions {
   flex: none;
   position: relative;
-  padding: 0 8px 0 4px;
+  padding: 0; /* the morphing right inset rides the inline style */
 }
 
-.composer-utility {
+/*
+ * The model chip's handoff slot (e0c1e936, composer.rs:410-416/7769-7776):
+ * the chip fades between its two horizontal anchors on the flip — expanded
+ * beside the (absolute) paperclip at the row's left, compact at the right
+ * before Send. The left/opacity ride the layout pass's inline values (or
+ * the dock glide's CSS vars); the slot shrink-wraps the chip so its
+ * measured width feeds `model_travel` exactly (the desktop's `model_bounds`
+ * canvas), shrinking under row pressure like the desktop's `min_w_0`
+ * wrapper capped at 45% of the surface.
+ */
+.composer-model-slot {
+  position: relative;
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 2px;
-}
-
-.composer-pill[data-mode="expanded"] .composer-utility {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
-  justify-content: flex-end;
+  align-items: center;
 }
 
-.composer-pill[data-mode="compact"] .composer-utility {
+.composer-pill[data-mode="expanded"] .composer-model-slot {
+  max-width: 45%;
+}
+
+.composer-pill[data-mode="compact"] .composer-model-slot {
   flex: none;
 }
 
+/* Expanded: Send alone at the row's right end — the structural gap (8)
+   stays the minimum separation (composer.rs:7839-7842). */
+.composer-pill[data-mode="expanded"] .composer-send {
+  margin-left: auto;
+}
+
+/*
+ * The paperclip: compact, the row's first item (`pl-3` + the shared
+ * cluster-dy glide, both inline); expanded, absolutely pinned to the same
+ * stationary bottom anchor the actions row glides on — left 12, its bottom
+ * the row's pb-3 plus the 2px centering slack (e0c1e936, composer.rs:7864).
+ */
 .composer-attach {
   width: 28px;
   height: 28px;
@@ -4110,6 +4138,14 @@ a:focus-visible,
   color: var(--rb-text-muted);
   cursor: pointer;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.composer-pill[data-mode="compact"] .composer-attach {
+  position: relative;
+}
+
+.composer-pill[data-mode="expanded"] .composer-attach {
+  position: absolute;
 }
 
 .composer-attach:hover {
@@ -4783,7 +4819,11 @@ a:focus-visible,
 }
 
 /* The list host (§2.3.3, pickers.rs:3405-3430): the fixed 216px band over
-   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows. */
+   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows.
+   The 216 is the resting class value — on the new-chat canvas the component
+   overrides it inline with the measured room-below clamp
+   (ticket 04, pickers.rs:3245-3252; host, scroll viewport and the loading
+   takeovers below all size to the same number). */
 .model-list-scroll-host {
   position: relative;
   flex: none;

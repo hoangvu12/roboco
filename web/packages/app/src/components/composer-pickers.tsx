@@ -17,6 +17,13 @@ import {
 } from "../lib/composer-draft";
 import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import {
+  MODEL_LIST_HEIGHT,
+  MODEL_TRAY_CAP,
+  modelListBandHeight,
+  modelPickerPlacement,
+  modelSpaceBelow,
+} from "../lib/model-picker-geometry";
+import {
   offeredHarnesses,
   REASONING_SETTING_ID,
   scopedModelRows,
@@ -52,15 +59,11 @@ import { GlyphSpinner } from "./glyph-spinner";
  * a choice, so neither does this.
  */
 
-/** `LIST_HEIGHT` (pickers.rs:3143) — the model list band. */
-const LIST_HEIGHT = 216;
 /** The virtualizer's fixed row heights (compact harness tab / two-line favorites tab). */
 const ROW_HEIGHT_COMPACT = 29;
 const ROW_HEIGHT_FAVORITE = 48;
 /** Rows rendered beyond the viewport on either side. */
 const OVERSCAN = 6;
-/** The traits tray's cap (`pickers.rs:3432`). */
-const TRAYS_MAX_HEIGHT = 236;
 /** `MAX_REF_ROWS`-style cap is not needed here; lists are windowed. */
 
 export interface ComposerPickersProps {
@@ -84,10 +87,17 @@ export interface ComposerPickersProps {
    * composer.rs:7701-7709).
    */
   readonly onOpenChange?: (open: boolean) => void;
+  /**
+   * True on the new-chat canvas (`chat.id === ""` — the desktop's
+   * `selected_chat.is_none()`): the card opens BELOW the chip sized to the
+   * measured room below the composer (`anchored_menu_below_end`,
+   * pickers.rs:4704-4714; the band clamp is pickers.rs:3245-3252).
+   */
+  readonly newChat?: boolean;
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange } = props;
+  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false } = props;
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
     (next: boolean) => {
@@ -96,6 +106,42 @@ export function ComposerPickers(props: ComposerPickersProps) {
     },
     [onOpenChange],
   );
+
+  // The chip trigger's element — the room-below measurement's anchor
+  // (the desktop's canvas over the chip, pickers.rs:4683-4703).
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // `model_space_below` (pickers.rs:4683-4703): the room under the chip while
+  // the card is open on the new-chat canvas. Measured at open, then
+  // re-measured on viewport resize, any scroll (capture — the page scrolls
+  // inner containers, not the window), and the anchor's own relayout; null
+  // before the first measurement, which the band clamp reads as the 640
+  // fallback (the resting 216).
+  const [spaceBelow, setSpaceBelow] = useState<number | null>(null);
+  useEffect(() => {
+    if (!newChat || !open) {
+      return;
+    }
+    const measure = (): void => {
+      const anchor = triggerRef.current;
+      if (anchor === null) {
+        return;
+      }
+      const next = modelSpaceBelow(window.innerHeight, anchor.getBoundingClientRect().bottom);
+      setSpaceBelow((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, { capture: true, passive: true });
+    const observer = new ResizeObserver(measure);
+    if (triggerRef.current !== null) {
+      observer.observe(triggerRef.current);
+    }
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, { capture: true });
+      observer.disconnect();
+    };
+  }, [newChat, open]);
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -310,23 +356,32 @@ export function ComposerPickers(props: ComposerPickersProps) {
     };
   }, [catalog]);
 
+  // `render_harness_model_popover`'s band (pickers.rs:3245-3252): the fixed
+  // 216 in-chat; on the new-chat canvas the band sizes to the MEASURED room
+  // below the composer — `(space_below − 82 − tray).clamp(30, 216)`, the tray
+  // budget being the traits tray's full cap whenever the chip has a ladder
+  // or options (the card's own `showTraits` condition).
+  const trayPresent = ladder.length > 0 || (selectedModel?.options ?? []).length > 0;
+  const listHeight = newChat ? modelListBandHeight(spaceBelow, trayPresent) : MODEL_LIST_HEIGHT;
+
   return (
     <div className="composer-pickers">
       <PickerCard
         open={open}
         onOpenChange={setOpenAndNotify}
-        placement="anchorAboveEnd"
+        placement={modelPickerPlacement(newChat)}
         cardClassName="popover-card popover-card-flush identity-card"
         role="dialog"
         ariaLabel="Run identity"
         width={304}
-        style={{ maxHeight: 640 }}
+        style={newChat ? undefined : { maxHeight: 640 }}
         overlaySource="composer-pickers"
         escapeFocusTarget={escapeFocusTarget}
         trigger={
           <button
             type="button"
             id="picker-model"
+            ref={triggerRef}
             className={openChipClass("identity-chip", open)}
           >
             {noAgents ? (
@@ -354,10 +409,14 @@ export function ComposerPickers(props: ComposerPickersProps) {
           </button>
         }
       >
-        {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
-            chip's, opening upward with a 6px gap, clamped 8px inside. */}
+        {/* `anchored_menu_above_end` / `anchored_menu_below_end`
+            (pickers.rs:4704-4714) — the card's RIGHT edge flush with the
+            chip's with a 6px gap, clamped 8px inside: upward on a chat,
+            BELOW the chip on the new-chat canvas, where the band sizes to
+            the measured room (ticket 04). */}
         <IdentityCard
           open={open}
+          listHeight={listHeight}
           harnesses={harnesses}
           harnessError={harnessError}
           noAgents={noAgents}
@@ -449,6 +508,13 @@ function useCatalogModels(
 
 interface IdentityCardProps {
   readonly open: boolean;
+  /**
+   * The model list band's height (pickers.rs:3245-3252): the fixed 216
+   * in-chat, the measured room-below clamp on the new-chat canvas — the
+   * scroll host, the scroll viewport, and the loading takeovers all size to
+   * it, and the virtualizer's window derives from it.
+   */
+  readonly listHeight: number;
   readonly harnesses: LoadableList<HarnessDescriptor>;
   readonly harnessError: string | null;
   readonly noAgents: boolean;
@@ -472,6 +538,7 @@ interface IdentityCardProps {
 function IdentityCard(props: IdentityCardProps) {
   const {
     open,
+    listHeight,
     harnesses,
     harnessError,
     noAgents,
@@ -738,7 +805,7 @@ function IdentityCard(props: IdentityCardProps) {
   }, [opened, rows.length, cursor, open, groups, openSetting, settingCursor]);
 
   const rowHeight = rail === "favorites" ? ROW_HEIGHT_FAVORITE : ROW_HEIGHT_COMPACT;
-  const viewport = LIST_HEIGHT - 12; // the band's 6px padding-block, both sides
+  const viewport = listHeight - 12; // the band's 6px padding-block, both sides
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const last = Math.min(rows.length, Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN);
   const slice = rows.slice(first, last);
@@ -758,17 +825,19 @@ function IdentityCard(props: IdentityCardProps) {
   return (
     <>
       {(() => {
-        // Card-level takeover states render instead of the whole stack.
+        // Card-level takeover states render instead of the whole stack —
+        // sized to the SAME band (the desktop's `div().h(px(list_height))`
+        // arms, pickers.rs:3260/3271).
         if (!harnesses.loaded && harnessError === null) {
           return (
-            <div className="model-list-loading" id="model-skeleton">
+            <div className="model-list-loading" id="model-skeleton" style={{ height: listHeight }}>
               <SkeletonMenuRows count={5} />
             </div>
           );
         }
         if (harnessError !== null && !harnesses.loaded) {
           return (
-            <div className="model-list-loading">
+            <div className="model-list-loading" style={{ height: listHeight }}>
               <ErrorRow message={harnessError} onRetry={onRetryHarnesses} />
             </div>
           );
@@ -847,10 +916,11 @@ function IdentityCard(props: IdentityCardProps) {
                 aria-label="Search models"
               />
             </div>
-            <div className="model-list-scroll-host" id="model-list-scroll-host">
+            <div className="model-list-scroll-host" id="model-list-scroll-host" style={{ height: listHeight }}>
               <div
                 ref={listRef}
                 className="model-list-scroll"
+                style={{ height: listHeight }}
                 onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
               >
                 {rows.length === 0 ? (
@@ -1040,7 +1110,7 @@ function TraitsTray({
 }) {
   if (groups.length === 0) {
     return (
-      <div className="model-traits" id="traits-skeleton" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
+      <div className="model-traits" id="traits-skeleton" style={{ maxHeight: MODEL_TRAY_CAP }}>
         <div className="model-traits-body">
           <SkeletonMenuRows count={3} />
         </div>
@@ -1048,7 +1118,7 @@ function TraitsTray({
     );
   }
   return (
-    <div className="model-traits" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
+    <div className="model-traits" style={{ maxHeight: MODEL_TRAY_CAP }}>
       <div className="model-traits-body">
         {groups.map((group, ix) => {
           const open = openSetting === group.id;
