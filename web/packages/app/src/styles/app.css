@@ -5234,6 +5234,51 @@ a:focus-visible,
   padding: 0;
 }
 
+/* ── Nested menu (ui/NestedMenu.tsx — popover.rs nested_menu, ticket 01) ── */
+
+/*
+ * The phone drill-down (ticket 15's mobile surface rule): at ≤768px the
+ * nested choices expand IN PLACE inside the enclosing drawer sheet — never
+ * a side flyout. The header row is the back affordance (altArrowLeft + the
+ * group label) on the shared `.menu-row` recipe at the 30px group-row
+ * height; the body indents the choices 10px under their group — the same
+ * inset the inline expansion this replaces carried
+ * (`.model-setting-choices`). Rendered only by the phone arm, so no media
+ * query guards it.
+ */
+.rb-submenu-drill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rb-submenu-drill-header {
+  height: 30px;
+  padding: 0 var(--rb-space-sm);
+  gap: 8px;
+}
+
+.rb-submenu-drill-back {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.rb-submenu-drill-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.rb-submenu-drill-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-inline-start: 10px;
+}
+
 /* `palette_card` (popover.rs:820-836) — the command-palette sibling:
    explicit width (inline), caller's radius (inline), no padding. */
 .palette-card {

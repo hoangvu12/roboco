@@ -25,6 +25,8 @@
 export const ANCHOR_GAP = 6;
 /** `snap_to_window_with_margin` — the window edge margin (popover.rs:621). */
 export const SNAP_MARGIN = 8;
+/** `popover.rs:306`'s card inset — the 4px padding `.popover-card` carries. */
+export const CARD_INSET = 4;
 /** `motion::MENU_OUT.total()` — the exit animation's base span (100ms). */
 export const MENU_OUT_BASE_MS = 100;
 /** Base UI's dismissal reason for the Escape key path (`pickers.rs:866`). */
@@ -98,6 +100,7 @@ export type AnchorHelperId =
   | "anchorAbove"
   | "anchorAboveAt"
   | "anchorAboveEnd"
+  | "anchorRight"
   | "fullWidthMenuAbove"
   | "menuAt";
 
@@ -117,6 +120,11 @@ export function anchorHelperPlacement(helper: AnchorHelperId, gap = ANCHOR_GAP):
       return { side: "top", align: "start" };
     case "anchorAboveEnd":
       return { side: "top", align: "end" };
+    case "anchorRight":
+      // `anchored_menu_right` (popover.rs:526-549): the card's top-left pins
+      // at the trigger's top-right + 6 — the sidebar user-menu shape
+      // (shell.rs:6430), opening rightward out of a clipped column.
+      return { side: "right", align: "start" };
     case "fullWidthMenuAbove":
       // Width spans the anchor via CSS `width: var(--anchor-width)`.
       return { side: "top", align: "start" };
@@ -124,6 +132,23 @@ export function anchorHelperPlacement(helper: AnchorHelperId, gap = ANCHOR_GAP):
       // Context menus: at the point, clamp-only, NO gap.
       return { side: "bottom", align: "start", sideOffset: 0 };
   }
+}
+
+/** The side a nested flyout opens on — `nested_menu(left: bool)` (popover.rs:584-612). */
+export type NestedMenuSide = "left" | "right";
+
+/**
+ * `nested_menu` (popover.rs:584-612): the nested card opens beside its
+ * trigger ROW, top-aligned, on the caller's chosen side (never flipped —
+ * the caller picks the side that has room). The anchor point sits
+ * `CARD_INSET + ANCHOR_GAP` (10px) beyond the row's edge so the
+ * card-to-card visual gap reads 6px — the row is itself inset 4px inside
+ * the parent card, exactly the desktop's `-(CARD_INSET + 6.0)` anchor.
+ * Vertical placement stays within the window's eight-pixel gutter through
+ * the no-flip preset's align shift.
+ */
+export function nestedMenuPlacement(side: NestedMenuSide): AnchorPlacement {
+  return { side, align: "start", sideOffset: CARD_INSET + ANCHOR_GAP };
 }
 
 /** The rect shape Floating UI's `VirtualElement` reads. */
