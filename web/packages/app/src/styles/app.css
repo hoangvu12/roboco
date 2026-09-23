@@ -4785,7 +4785,11 @@ a:focus-visible,
 }
 
 /* The list host (§2.3.3, pickers.rs:3405-3430): the fixed 216px band over
-   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows. */
+   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows.
+   The 216 is the resting class value — on the new-chat canvas the component
+   overrides it inline with the measured room-below clamp
+   (ticket 04, pickers.rs:3245-3252; host, scroll viewport and the loading
+   takeovers below all size to the same number). */
 .model-list-scroll-host {
   position: relative;
   flex: none;

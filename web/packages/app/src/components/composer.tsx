@@ -3111,6 +3111,7 @@ export function Composer({
                       catalog={catalog}
                       draft={draft}
                       chatConfig={chat.config}
+                      newChat={newChat}
                       onDraft={applyDraft}
                       onPersist={persistDraft}
                       escapeFocusTarget={() => textareaRef.current}
