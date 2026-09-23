@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { parseScopedId } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import type { SidebarSection } from "../state/ui-settings";
@@ -21,6 +21,8 @@ import {
   BtnGhost,
   BtnPrimary,
 } from "./ui/Dialog";
+import { PickerCard } from "./ui/PickerCard";
+import { MenuRow } from "./ui/MenuRows";
 
 /** `shell.rs::SIDEBAR_LIST_GAP` — the flex gap between sidebar rows. */
 const SIDEBAR_LIST_GAP = 2;
@@ -187,36 +189,22 @@ export function CustomSection({
           }}
         />
         {(headerHover || menuOpen) && (
-          <button
-            type="button"
-            className="sidebar-section-menu-button"
-            aria-label={`Section menu: ${entry.section.name}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              setMenuOpen(true);
+          <SectionMenu
+            sectionName={entry.section.name}
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            onEdit={() => {
+              setEditOpen(true);
             }}
-          >
-            <Icon name="moreHorizontal" size={14} />
-          </button>
+            onArchiveAll={() => {
+              archiveAll();
+            }}
+            onDelete={() => {
+              sidebarStore.deleteSection(entry.profileKey, entry.section.id);
+            }}
+          />
         )}
       </div>
-      {menuOpen && (
-        <SectionMenu
-          onDismiss={() => setMenuOpen(false)}
-          onEdit={() => {
-            setMenuOpen(false);
-            setEditOpen(true);
-          }}
-          onArchiveAll={() => {
-            setMenuOpen(false);
-            archiveAll();
-          }}
-          onDelete={() => {
-            setMenuOpen(false);
-            sidebarStore.deleteSection(entry.profileKey, entry.section.id);
-          }}
-        />
-      )}
       {editOpen && (
         <SectionDialog
           sectionId={entry.section.id}
@@ -256,49 +244,72 @@ export function CustomSection({
   );
 }
 
-/** `render_section_overlays`' context menu: Edit / Archive all / Delete. */
-function SectionMenu({
-  onDismiss,
+/**
+ * `render_section_overlays`' context menu: Edit / Archive all / Delete —
+ * the trigger is the header's kebab (its hover reveal keeps `menuOpen` in
+ * the header condition so the trigger stays mounted while the card is
+ * open). Ticket 18: the card rides `PickerCard`'s body portal
+ * (`anchorBelowEnd`, the card under the header's menu mark) — the old
+ * inline absolute `.section-context-menu` painted inside
+ * `<aside class="sidebar">` whose `overflow: hidden` clipped it, the same
+ * bug class as the user menu (ticket 02); outside presses and Escape now
+ * dismiss through Base UI's pipeline instead of the window listeners, and
+ * the rows are the shared `MenuRow` recipe. At ≤768px the choices open as
+ * the shared bottom sheet (`PickerCard`'s phone arm). Exported for the
+ * mounted portal test (tests/section-menu.test.ts).
+ */
+export function SectionMenu({
+  sectionName,
+  open,
+  onOpenChange,
   onEdit,
   onArchiveAll,
   onDelete,
 }: {
-  readonly onDismiss: () => void;
+  readonly sectionName: string;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
   readonly onEdit: () => void;
   readonly onArchiveAll: () => void;
   readonly onDelete: () => void;
 }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const onDown = (event: MouseEvent): void => {
-      if (ref.current !== null && !ref.current.contains(event.target as Node)) {
-        onDismiss();
-      }
-    };
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        onDismiss();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onDismiss]);
+  const pick = (action: () => void): void => {
+    onOpenChange(false);
+    action();
+  };
   return (
-    <div className="section-context-menu" ref={ref} role="menu">
-      <button type="button" role="menuitem" onClick={onEdit}>
+    <PickerCard
+      open={open}
+      onOpenChange={onOpenChange}
+      placement="anchorBelowEnd"
+      cardClassName="popover-card section-menu-body"
+      role="menu"
+      ariaLabel={`Section menu: ${sectionName}`}
+      initialFocus={false}
+      trigger={
+        <button
+          type="button"
+          className="sidebar-section-menu-button"
+          aria-label={`Section menu: ${sectionName}`}
+          aria-haspopup="menu"
+          // The press must not reach the header's drag/click surfaces; the
+          // toggle itself is Base UI's `trigger-press` on the adopted element.
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Icon name="moreHorizontal" size={14} />
+        </button>
+      }
+    >
+      <MenuRow fadeKey="section-edit" onClick={() => pick(onEdit)}>
         Edit section
-      </button>
-      <button type="button" role="menuitem" onClick={onArchiveAll}>
+      </MenuRow>
+      <MenuRow fadeKey="section-archive-all" onClick={() => pick(onArchiveAll)}>
         Archive all
-      </button>
-      <button type="button" role="menuitem" onClick={onDelete}>
+      </MenuRow>
+      <MenuRow fadeKey="section-delete" onClick={() => pick(onDelete)}>
         Delete
-      </button>
-    </div>
+      </MenuRow>
+    </PickerCard>
   );
 }
 

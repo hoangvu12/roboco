@@ -17,11 +17,21 @@
  * popover is open, spaces.rs:966-973) — not a portal popup, so it keeps
  * its hand-rolled span and imports the delay constant. Surfaces with
  * that exact suppression shape follow it; everything else lands here.
+ *
+ * The virtual-anchor mode (the composer's mention tooltip, ticket 18):
+ * pass `anchor` + a controlled `open` and NO trigger — the consumer owns
+ * the hover intent (its hit-testing is manual by construction: the chips
+ * live in a mirror under the textarea), the family owns the positioning,
+ * the portal, and the popup chrome. `virtualAnchorAt` is re-exported so
+ * those consumers never reach past this layer.
  */
 
-import type { ReactElement, ReactNode } from "react";
+import type { ReactElement, ReactNode, Ref } from "react";
 import type { AnchorPlacement } from "../base/positioning";
-import { RbTooltip, RbTooltipTrigger } from "../base/tooltip";
+import { RbTooltip, RbTooltipTrigger, type VirtualAnchor } from "../base/tooltip";
+
+export type { VirtualAnchor };
+export { virtualAnchorAt } from "../base/positioning";
 
 /** The view-options label's 350ms show delay (`spaces.rs:960`). */
 export const TOOLTIP_VIEW_OPTIONS_MS = 350;
@@ -37,15 +47,31 @@ export interface TooltipProps {
   readonly placement?: AnchorPlacement;
   /** Extra classes on the popup beyond `.rb-tooltip-popup`. */
   readonly popupClassName?: string;
-  /** The trigger element, adopted via `RbTooltipTrigger`'s `render`. */
-  readonly trigger: ReactElement;
+  /** The trigger element, adopted via `RbTooltipTrigger`'s `render`.
+   *  Omitted in the virtual-anchor mode (`anchor` + controlled `open`). */
+  readonly trigger?: ReactElement;
+  /** The positioning anchor — a DOM element or a `virtualAnchorAt(x, y)`
+   *  point; replaces the trigger as the positioner's anchor. */
+  readonly anchor?: HTMLElement | VirtualAnchor;
+  /** Controlled open — the virtual-anchor consumer drives every transition. */
+  readonly open?: boolean;
+  /** The popup's ref — the virtual-anchor consumer reads its rect (the
+   *  pointer-inside-the-popup check its hover intent needs). */
+  readonly popupRef?: Ref<HTMLDivElement>;
 }
 
 /** `Tooltip` — label + trigger, pre-wired with the family's delay. */
 export function Tooltip(props: TooltipProps) {
   return (
-    <RbTooltip label={props.label} placement={props.placement} popupClassName={props.popupClassName}>
-      <RbTooltipTrigger delay={props.delay} render={props.trigger} />
+    <RbTooltip
+      label={props.label}
+      placement={props.placement}
+      popupClassName={props.popupClassName}
+      anchor={props.anchor}
+      open={props.open}
+      popupRef={props.popupRef}
+    >
+      {props.trigger !== undefined && <RbTooltipTrigger delay={props.delay} render={props.trigger} />}
     </RbTooltip>
   );
 }

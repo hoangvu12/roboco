@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
 import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
+import {
+  BtnGhost,
+  BtnPrimary,
+  Dialog,
+  DialogBody,
+  DialogCard,
+  DialogField,
+  DialogTitle,
+} from "../components/ui/Dialog";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import {
   accountInitial,
@@ -468,7 +477,11 @@ function SkeletonRow({ dim = false }: { readonly dim?: boolean }) {
   );
 }
 
-function LoginDialog({
+/**
+ * The login flow's modal (accounts.rs:1114's dialog over `popover::modal`).
+ * Exported for the mounted family test (tests/settings-dialogs.test.ts).
+ */
+export function LoginDialog({
   flow,
   onCancel,
   onSubmitCode,
@@ -478,63 +491,66 @@ function LoginDialog({
   readonly onSubmitCode: (code: string) => void;
 }) {
   const [code, setCode] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  // The shared `ui/Dialog` family (ticket 18): the scrim/trap/Escape ride
+  // `RbResponsiveDialog` — the phone arm comes with it (the bottom sheet,
+  // where the old fixed-centered card used to squash at ≤768px). The
+  // family's scrim swallows presses (the desktop's `.occlude()`d modal —
+  // the old web hand-roll cancelled on backdrop clicks; Cancel/Escape
+  // close now) and Escape cancels, matching `popover::modal`'s contract.
   return (
-    <div className="login-dialog-backdrop" onClick={onCancel}>
-      <section
-        className="login-dialog-card panel"
-        role="dialog"
-        aria-label={loginTitle(flow.harness)}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2 className="login-dialog-title">{loginTitle(flow.harness)}</h2>
-        {flow.kind === "starting" && (
-          <p className="settings-row-meta login-dialog-body">Starting the login flow…</p>
-        )}
+    <Dialog ariaLabel={loginTitle(flow.harness)} onClose={onCancel} initialFocus={inputRef}>
+      <DialogCard>
+        <DialogTitle>{loginTitle(flow.harness)}</DialogTitle>
+        {flow.kind === "starting" && <DialogBody>Starting the login flow…</DialogBody>}
         {flow.kind === "paste-code" && (
           <>
-            <p className="settings-row-meta login-dialog-body">
+            <DialogBody>
               A browser window opened. Sign in to the account you want to add, approve access, then paste the code
               Anthropic shows you below. Your current login is untouched until you switch.
-            </p>
+            </DialogBody>
             <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the authorization page
             </a>
             <form
-              className="login-dialog-form"
+              className="dialog-form-rows"
               onSubmit={(event) => {
                 event.preventDefault();
                 onSubmitCode(code);
               }}
             >
-              <input
-                className="input mono"
-                type="text"
-                placeholder="Paste the authorization code"
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-                autoFocus
-              />
+              <DialogField>
+                <input
+                  ref={inputRef}
+                  className="mono"
+                  type="text"
+                  placeholder="Paste the authorization code"
+                  value={code}
+                  onChange={(event) => setCode(event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="Authorization code"
+                />
+              </DialogField>
               {flow.error !== null && <p className="login-dialog-error">{flow.error}</p>}
-              <div className="login-dialog-actions">
-                <button type="button" className="btn btn-ghost" onClick={onCancel}>
+              <div className="dialog-actions-row">
+                <BtnGhost type="button" onClick={onCancel}>
                   Cancel
-                </button>
-                <button type="submit" className="btn btn-solid" disabled={flow.submitting || code.trim().length === 0}>
+                </BtnGhost>
+                <BtnPrimary type="submit" disabled={flow.submitting || code.trim().length === 0}>
                   {flow.submitting ? "Verifying…" : "Add account"}
-                </button>
+                </BtnPrimary>
               </div>
             </form>
           </>
         )}
         {flow.kind === "browser" && (
           <>
-            <p className="settings-row-meta login-dialog-body">
+            <DialogBody>
               {flow.harness === "cursor"
                 ? "Finish signing in to Cursor in your browser. This mints a roboco-named API key you can revoke any time from Cursor's dashboard — it is separate from `cursor-agent login`."
                 : "Finish signing in to OpenAI in your browser. The new login is captured in an isolated profile — your current session is untouched until you switch."}
-            </p>
+            </DialogBody>
             <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the sign-in page
             </a>
@@ -546,13 +562,13 @@ function LoginDialog({
               <p className="login-dialog-error">{flow.error}</p>
             )}
             <div className="login-dialog-actions">
-              <button type="button" className="btn btn-ghost" onClick={onCancel}>
+              <BtnGhost type="button" onClick={onCancel}>
                 {flow.error !== null ? "Close" : "Cancel"}
-              </button>
+              </BtnGhost>
             </div>
           </>
         )}
-      </section>
-    </div>
+      </DialogCard>
+    </Dialog>
   );
 }

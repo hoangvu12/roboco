@@ -12,13 +12,12 @@
 
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { EDITOR_COMMENT_DRAFT_HEIGHT } from "../../lib/review-comments";
+import { PopoverCard } from "../ui/PopoverCard";
 
 export interface EditorCommentDraftProps {
   readonly left: number;
   readonly top: number;
   readonly width: number;
-  readonly path: string;
-  readonly line: number;
   readonly body: string;
   readonly editing: boolean;
   /** The placeholder pair — the host picks by file type (preview.rs:911). */
@@ -32,8 +31,6 @@ export function EditorCommentDraft({
   left,
   top,
   width,
-  path,
-  line,
   body,
   editing,
   placeholder,
@@ -46,11 +43,12 @@ export function EditorCommentDraft({
     inputRef.current?.focus();
   }, []);
   return (
-    <div
-      className="popover-card editor-comment-draft"
+    // The shared `PopoverCard` frame (ticket 18) — the raw div carried the
+    // `.popover-card` class by hand; the positioning stays selection-anchored
+    // (absolute, the caller's coordinates — the sanctioned exception).
+    <PopoverCard
+      className="editor-comment-draft"
       style={{ position: "absolute", left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${EDITOR_COMMENT_DRAFT_HEIGHT}px` }}
-      data-path={path}
-      data-line={line}
     >
       <textarea
         ref={inputRef}
@@ -85,6 +83,6 @@ export function EditorCommentDraft({
           {editing ? "Save" : "Comment"}
         </button>
       </div>
-    </div>
+    </PopoverCard>
   );
 }

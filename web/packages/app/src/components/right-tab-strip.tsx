@@ -9,10 +9,12 @@ import {
   type RightSurface,
   type SurfaceFacts,
 } from "../state/right-pane";
-import { useIsPhone } from "../state/media";
 import { surfaceEntry, type SurfaceContext } from "./surface-registry";
 import { surfaceChoices, useGitDetected } from "./surface-picker";
+import { useIsPhone } from "../state/media";
+import { RbPopover } from "./base/popover";
 import { drawerOnOpenChange, RbDrawerSheet } from "./base/responsive-surface";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * The right pane's surface tabs — the desktop's `render_right_tab_strip`
@@ -39,8 +41,6 @@ const TOOLTIP_DELAY_MS = 350;
 const FADE_DEAD_ZONE = 1;
 /** A pointer must travel this far before the press reads as a drag. */
 const DRAG_ARM_PX = 4;
-/** The `+` menu's card width (`popover_card(theme).w(168)`, `shell.rs:7061`). */
-const PLUS_MENU_W = 168;
 
 /** `terminal::panel::drop_index` over content coords. */
 export function dropIndex(relX: number, count: number): number {
@@ -276,36 +276,16 @@ function TabChip({
   const iconSize = surface.kind === "file" ? 14 : 12;
   // `aria_label` = the detail path (or title), suffixed when dirty.
   const label = `${facts.detail ?? facts.title}${facts.isDirty ? ", unsaved changes" : ""}`;
-  const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
-  const tipTimer = useRef<number | null>(null);
-  const chipRef = useRef<HTMLDivElement | null>(null);
 
-  const clearTip = () => {
-    if (tipTimer.current !== null) {
-      window.clearTimeout(tipTimer.current);
-      tipTimer.current = null;
-    }
-    setTip(null);
-  };
-
-  useEffect(() => clearTip, []);
-
-  const armTip = () => {
-    if (facts.detail === null) {
-      return;
-    }
-    const rect = chipRef.current?.getBoundingClientRect();
-    if (rect === undefined) {
-      return;
-    }
-    tipTimer.current = window.setTimeout(() => {
-      setTip({ x: rect.left, y: rect.bottom + 6 });
-    }, TOOLTIP_DELAY_MS);
-  };
-
-  return (
+  // `SurfaceTabTooltip` (shell.rs:773-792, ticket 18): the shared
+  // `ui/Tooltip` with the strip's 350ms delay — the chip div is the
+  // trigger (adopted via `render`, so its classes/handlers stay its own),
+  // the popup below-left of the chip at the same 6px gap the hand-rolled
+  // portal placed it, styled by the old `.right-tab-tooltip` recipe
+  // (pointer-events none — a label, never a hover target). Only chips
+  // with a detail line carry one, as before.
+  const chip = (
     <div
-      ref={chipRef}
       className={[
         "right-tab",
         resolvedActive ? "right-tab-active" : "",
@@ -327,8 +307,6 @@ function TabChip({
         }
       }}
       onPointerDown={onDragStart}
-      onPointerEnter={armTip}
-      onPointerLeave={clearTip}
       // Middle-click closes, like every tab strip (`shell.rs:6866-6871`).
       onAuxClick={(event) => {
         if (event.button === 1) {
@@ -361,47 +339,46 @@ function TabChip({
       </span>
       <span className="right-tab-title">{facts.title}</span>
       {facts.isDirty && <span className="right-tab-dirty" />}
-      {tip !== null &&
-        facts.detail !== null &&
-        createPortal(
-          <div
-            className="right-tab-tooltip"
-            role="tooltip"
-            style={{ left: tip.x, top: tip.y }}
-          >
-            {facts.detail}
-          </div>,
-          document.body,
-        )}
     </div>
+  );
+  if (facts.detail === null) {
+    return chip;
+  }
+  return (
+    <Tooltip
+      label={facts.detail}
+      delay={TOOLTIP_DELAY_MS}
+      placement={{ side: "bottom", align: "start", sideOffset: 6 }}
+      popupClassName="right-tab-tooltip"
+      trigger={chip}
+    />
   );
 }
 
 /**
  * The `+` (gap R12): 24×24, a 13px glyph, hover `wash(0.11)` — and a
- * press-was-open toggle (`shell.rs:7013-7053`): the mouse-down notes whether
- * the menu was open, and the click closes it if it was, else opens it.
+ * press-was-open toggle (`shell.rs:7013-7053`), kept consumer-side on the
+ * button itself: the mouse-down notes whether the menu was open, and the
+ * click closes it if it was, else opens it (the audit's sanctioned
+ * "press-was-open consumer-side" shape — one button serves both arms, so
+ * neither Base UI arm owns the toggle alone).
  *
- * Ticket 09 owns the popover lifecycle; until it lands this uses the
- * stylesheet's existing anchored-menu pattern (see `.right-plus-menu`) as the
- * placeholder host rather than inventing a second lifecycle. The menu is
- * portaled to the body — the strip scrolls and the titlebar band clips, and
- * the desktop's `popover::anchored_menu_below_gap` likewise paints above the
- * band rather than inside it.
- *
- * At phone widths (ticket 52, 49's explicit deferral to "the right-pane
- * phone-drawer work") the card body renders in 49's landed bottom-sheet form
- * (`RbDrawerSheet`, the same `PickerCard` phone arm) instead of the anchored
- * portal — the trigger is unchanged: same button, same press-was-open
- * toggle, same controlled `open` flag. The rows are the same component both
- * arms render (below); the sheet replaces placement, not the menu itself.
+ * Ticket 18: the DESKTOP card is the shared `RbPopover` — the stale
+ * "ticket 09 owns the lifecycle" excuse is gone; the lifecycle (portal,
+ * no-flip `anchored_menu_below_gap` geometry: below the button,
+ * right-aligned to its edge, 10px down; outside-press; Escape) is Base
+ * UI's now, anchored to the live button rect (`anchor={buttonRef}`) so
+ * the manual measure-then-place math and the window listeners are gone.
+ * The phone arm stays ticket 15's direction untouched: the same rows in
+ * the shared bottom sheet (`RbDrawerSheet`, its own
+ * `.right-plus-menu-sheet` card recipe) — the sheet replaces placement,
+ * not the menu itself. The rows are the same component both arms render
+ * (below).
  */
 function AddSurfaceButton({ chatId, paneOpen }: { chatId: string; paneOpen: boolean }) {
   const [open, setOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
   const gitDetected = useGitDetected(chatId);
   const isPhone = useIsPhone();
 
@@ -417,45 +394,8 @@ function AddSurfaceButton({ chatId, paneOpen }: { chatId: string; paneOpen: bool
     }
   }, [paneOpen]);
 
-  useEffect(() => {
-    // The sheet arm needs none of this: Base UI's modal Drawer owns the
-    // outside press (the backdrop) and the Escape path, and the rows live in
-    // its portal — the anchored card's window listeners would read the sheet
-    // itself as "outside" and close it mid-press.
-    if (!open || isPhone) {
-      return;
-    }
-    // Park the card below the button, right-aligned to its edge, 10px down
-    // (`anchored_menu_below_gap`).
-    const rect = buttonRef.current?.getBoundingClientRect();
-    if (rect !== undefined) {
-      setAnchor({ left: Math.max(rect.right - PLUS_MENU_W, 8), top: rect.bottom + 10 });
-    }
-    const onDown = (event: MouseEvent): void => {
-      const target = event.target as Node;
-      // The portal means the menu is no longer a DOM child of the host, so
-      // the outside test covers both.
-      if (rootRef.current !== null && !rootRef.current.contains(target)
-        && !document.querySelector(".right-plus-menu")?.contains(target)) {
-        setOpen(false);
-      }
-    };
-    // The menu's own Escape (the ladder integration is ticket 06's step 7).
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, isPhone]);
-
   return (
-    <div className="right-surface-add-host" ref={rootRef}>
+    <div className="right-surface-add-host">
       <button
         type="button"
         id="right-surface-add"
@@ -488,18 +428,22 @@ function AddSurfaceButton({ chatId, paneOpen }: { chatId: string; paneOpen: bool
           <AddSurfaceRows chatId={chatId} gitDetected={gitDetected} onPick={() => setOpen(false)} />
         </RbDrawerSheet>
       ) : (
-        open &&
-        anchor !== null &&
-        createPortal(
-          <AddSurfaceMenu
-            chatId={chatId}
-            gitDetected={gitDetected}
-            left={anchor.left}
-            top={anchor.top}
-            onPick={() => setOpen(false)}
-          />,
-          document.body,
-        )
+        <RbPopover
+          open={open}
+          onOpenChange={(next) => {
+            if (!next) {
+              setOpen(false);
+            }
+          }}
+          anchor={buttonRef}
+          placement={{ side: "bottom", align: "end", sideOffset: 10 }}
+          cardClassName="popover-card right-plus-menu"
+          role="menu"
+          ariaLabel="Add panel surface"
+          initialFocus={false}
+        >
+          <AddSurfaceRows chatId={chatId} gitDetected={gitDetected} onPick={() => setOpen(false)} />
+        </RbPopover>
       )}
     </div>
   );
@@ -535,29 +479,4 @@ function AddSurfaceRows({
       <span className="right-plus-menu-label">{choice.label}</span>
     </button>
   ));
-}
-
-/**
- * The `+` menu's desktop form (`shell.rs:7054-7144`): the 168px card portaled
- * to the body at the button's viewport coords, 10px below it. The phone form
- * is `AddSurfaceButton`'s sheet arm above; the rows are `AddSurfaceRows`.
- */
-function AddSurfaceMenu({
-  chatId,
-  gitDetected,
-  left,
-  top,
-  onPick,
-}: {
-  chatId: string;
-  gitDetected: boolean;
-  left: number;
-  top: number;
-  onPick: () => void;
-}) {
-  return (
-    <div className="right-plus-menu" role="menu" aria-label="Add panel surface" style={{ left, top }}>
-      <AddSurfaceRows chatId={chatId} gitDetected={gitDetected} onPick={onPick} />
-    </div>
-  );
 }
