@@ -141,7 +141,19 @@ export function ProjectActionsControl({
       </button>
     ) : (
       <button type="button" className="project-action-control" aria-label="Add action">
-        <span className="project-action-main" onClick={() => openEditor({ action: null, import: null })}>
+        <span
+          className="project-action-main"
+          onClick={(event) => {
+            // Consume the click — the preferred-run segment's rule: the
+            // whole button is the Base UI trigger (the popover's on
+            // desktop, the sheet's on phone), so an unstopped click bubbles
+            // into it and re-opens the menu `openEditor` just closed — both
+            // surfaces at once. The desktop's add segment opens only the
+            // editor (actions_ui.rs:614).
+            event.stopPropagation();
+            openEditor({ action: null, import: null });
+          }}
+        >
           <Icon name="plus" size={13} />
           <span className="project-action-name">Add action</span>
         </span>
