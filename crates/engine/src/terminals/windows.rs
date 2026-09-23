@@ -258,6 +258,20 @@ fn resolve_shell(shell: &str, path: Option<&OsStr>) -> io::Result<std::path::Pat
     std::path::absolute(candidate)
 }
 
+/// CreateProcessW current directories do not accept `\\?\`-prefixed verbatim
+/// paths: cmd.exe treats them as UNC and silently falls back to the Windows
+/// directory. Canonicalized paths (checkout resolution in the RPC layer) must
+/// be de-verbatimed so terminal sessions actually start in the checkout.
+fn plain_current_dir(cwd: &str) -> String {
+    if let Some(rest) = cwd.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        cwd.strip_prefix(r"\\?\")
+            .map(str::to_string)
+            .unwrap_or_else(|| cwd.to_string())
+    }
+}
+
 #[cfg(test)]
 mod resolution_tests {
     use super::*;
@@ -283,6 +297,20 @@ mod resolution_tests {
         );
         assert_eq!(resolve_shell(exe.to_str().unwrap(), None).unwrap(), exe);
     }
+
+    #[test]
+    fn plain_current_dir_strips_verbatim_prefixes() {
+        assert_eq!(plain_current_dir(r"\\?\C:\work\repo"), r"C:\work\repo");
+        assert_eq!(
+            plain_current_dir(r"\\?\UNC\server\share\repo"),
+            r"\\server\share\repo"
+        );
+        assert_eq!(plain_current_dir(r"C:\work\repo"), r"C:\work\repo");
+        assert_eq!(
+            plain_current_dir(r"\\server\share\repo"),
+            r"\\server\share\repo"
+        );
+    }
 }
 
 pub(super) fn open(
@@ -302,7 +330,7 @@ pub(super) fn open(
     let mut command = vec![b'"' as u16];
     command.extend_from_slice(&executable[..executable.len() - 1]);
     command.extend([b'"' as u16, 0]);
-    let cwd = wide(OsStr::new(cwd))?;
+    let cwd = wide(OsStr::new(&plain_current_dir(cwd)))?;
     let mut environment = std::collections::BTreeMap::new();
     let env_key = |key: &OsStr| -> OsString {
         key.to_str()
