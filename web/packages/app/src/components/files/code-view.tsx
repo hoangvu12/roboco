@@ -295,8 +295,6 @@ export function CodeView({ text, path, editable, onChange, codeFontSize, wordWra
           left={overlay.left}
           top={overlay.top}
           width={overlay.width}
-          path={overlayDraft.path}
-          line={overlayDraft.line}
           body={overlayDraft.body}
           editing={overlayDraft.editingId !== null}
           placeholder={isMarkdownPath(path) ? "Request a change…" : "Add a comment…"}

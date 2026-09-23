@@ -54,17 +54,19 @@ import {
   anchorHelperPlacement,
   escapeFinalFocusTarget,
   exitMotionMs,
+  nestedMenuPlacement,
   noFlipPositionerProps,
   shouldVetoDismissal,
   virtualAnchorAt,
   type AnchorHelperId,
   type AnchorPlacement,
+  type NestedMenuSide,
   type VirtualAnchor,
 } from "./positioning";
 import { useOverlayKeyboardSource } from "./overlay";
 
-export { anchorHelperPlacement, noFlipPositionerProps, shouldVetoDismissal, virtualAnchorAt };
-export type { AnchorHelperId, AnchorPlacement, VirtualAnchor };
+export { anchorHelperPlacement, nestedMenuPlacement, noFlipPositionerProps, shouldVetoDismissal, virtualAnchorAt };
+export type { AnchorHelperId, AnchorPlacement, NestedMenuSide, VirtualAnchor };
 
 /**
  * `RbPopoverTrigger` — Base UI's `Popover.Trigger` re-exported under the

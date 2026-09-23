@@ -16,6 +16,14 @@ import {
   toggleModelFavorite,
 } from "../lib/composer-draft";
 import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import { flyoutOpensLeft } from "../lib/flyout-side";
+import {
+  MODEL_LIST_HEIGHT,
+  MODEL_TRAY_CAP,
+  modelListBandHeight,
+  modelPickerPlacement,
+  modelSpaceBelow,
+} from "../lib/model-picker-geometry";
 import {
   offeredHarnesses,
   REASONING_SETTING_ID,
@@ -29,11 +37,13 @@ import { isMacPlatform, onShortcut } from "../state/shortcuts";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
-import { MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { NestedMenu } from "./ui/NestedMenu";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./ui/Skeleton";
 import { GlyphSpinner } from "./glyph-spinner";
+import type { NestedMenuSide } from "./base/popover";
 
 /**
  * The composer's run identity — the desktop's `Pickers::render` cluster.
@@ -52,15 +62,11 @@ import { GlyphSpinner } from "./glyph-spinner";
  * a choice, so neither does this.
  */
 
-/** `LIST_HEIGHT` (pickers.rs:3143) — the model list band. */
-const LIST_HEIGHT = 216;
 /** The virtualizer's fixed row heights (compact harness tab / two-line favorites tab). */
 const ROW_HEIGHT_COMPACT = 29;
 const ROW_HEIGHT_FAVORITE = 48;
 /** Rows rendered beyond the viewport on either side. */
 const OVERSCAN = 6;
-/** The traits tray's cap (`pickers.rs:3432`). */
-const TRAYS_MAX_HEIGHT = 236;
 /** `MAX_REF_ROWS`-style cap is not needed here; lists are windowed. */
 
 export interface ComposerPickersProps {
@@ -84,10 +90,17 @@ export interface ComposerPickersProps {
    * composer.rs:7701-7709).
    */
   readonly onOpenChange?: (open: boolean) => void;
+  /**
+   * True on the new-chat canvas (`chat.id === ""` — the desktop's
+   * `selected_chat.is_none()`): the card opens BELOW the chip sized to the
+   * measured room below the composer (`anchored_menu_below_end`,
+   * pickers.rs:4704-4714; the band clamp is pickers.rs:3245-3252).
+   */
+  readonly newChat?: boolean;
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange } = props;
+  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false } = props;
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
     (next: boolean) => {
@@ -96,6 +109,42 @@ export function ComposerPickers(props: ComposerPickersProps) {
     },
     [onOpenChange],
   );
+
+  // The chip trigger's element — the room-below measurement's anchor
+  // (the desktop's canvas over the chip, pickers.rs:4683-4703).
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // `model_space_below` (pickers.rs:4683-4703): the room under the chip while
+  // the card is open on the new-chat canvas. Measured at open, then
+  // re-measured on viewport resize, any scroll (capture — the page scrolls
+  // inner containers, not the window), and the anchor's own relayout; null
+  // before the first measurement, which the band clamp reads as the 640
+  // fallback (the resting 216).
+  const [spaceBelow, setSpaceBelow] = useState<number | null>(null);
+  useEffect(() => {
+    if (!newChat || !open) {
+      return;
+    }
+    const measure = (): void => {
+      const anchor = triggerRef.current;
+      if (anchor === null) {
+        return;
+      }
+      const next = modelSpaceBelow(window.innerHeight, anchor.getBoundingClientRect().bottom);
+      setSpaceBelow((previous) => (previous === next ? previous : next));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, { capture: true, passive: true });
+    const observer = new ResizeObserver(measure);
+    if (triggerRef.current !== null) {
+      observer.observe(triggerRef.current);
+    }
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, { capture: true });
+      observer.disconnect();
+    };
+  }, [newChat, open]);
 
   const harnesses = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribe(listener), [catalog]),
@@ -310,23 +359,32 @@ export function ComposerPickers(props: ComposerPickersProps) {
     };
   }, [catalog]);
 
+  // `render_harness_model_popover`'s band (pickers.rs:3245-3252): the fixed
+  // 216 in-chat; on the new-chat canvas the band sizes to the MEASURED room
+  // below the composer — `(space_below − 82 − tray).clamp(30, 216)`, the tray
+  // budget being the traits tray's full cap whenever the chip has a ladder
+  // or options (the card's own `showTraits` condition).
+  const trayPresent = ladder.length > 0 || (selectedModel?.options ?? []).length > 0;
+  const listHeight = newChat ? modelListBandHeight(spaceBelow, trayPresent) : MODEL_LIST_HEIGHT;
+
   return (
     <div className="composer-pickers">
       <PickerCard
         open={open}
         onOpenChange={setOpenAndNotify}
-        placement="anchorAboveEnd"
+        placement={modelPickerPlacement(newChat)}
         cardClassName="popover-card popover-card-flush identity-card"
         role="dialog"
         ariaLabel="Run identity"
         width={304}
-        style={{ maxHeight: 640 }}
+        style={newChat ? undefined : { maxHeight: 640 }}
         overlaySource="composer-pickers"
         escapeFocusTarget={escapeFocusTarget}
         trigger={
           <button
             type="button"
             id="picker-model"
+            ref={triggerRef}
             className={openChipClass("identity-chip", open)}
           >
             {noAgents ? (
@@ -354,10 +412,14 @@ export function ComposerPickers(props: ComposerPickersProps) {
           </button>
         }
       >
-        {/* `anchored_menu_above_end` — the card's RIGHT edge flush with the
-            chip's, opening upward with a 6px gap, clamped 8px inside. */}
+        {/* `anchored_menu_above_end` / `anchored_menu_below_end`
+            (pickers.rs:4704-4714) — the card's RIGHT edge flush with the
+            chip's with a 6px gap, clamped 8px inside: upward on a chat,
+            BELOW the chip on the new-chat canvas, where the band sizes to
+            the measured room (ticket 04). */}
         <IdentityCard
           open={open}
+          listHeight={listHeight}
           harnesses={harnesses}
           harnessError={harnessError}
           noAgents={noAgents}
@@ -449,6 +511,13 @@ function useCatalogModels(
 
 interface IdentityCardProps {
   readonly open: boolean;
+  /**
+   * The model list band's height (pickers.rs:3245-3252): the fixed 216
+   * in-chat, the measured room-below clamp on the new-chat canvas — the
+   * scroll host, the scroll viewport, and the loading takeovers all size to
+   * it, and the virtualizer's window derives from it.
+   */
+  readonly listHeight: number;
   readonly harnesses: LoadableList<HarnessDescriptor>;
   readonly harnessError: string | null;
   readonly noAgents: boolean;
@@ -472,6 +541,7 @@ interface IdentityCardProps {
 function IdentityCard(props: IdentityCardProps) {
   const {
     open,
+    listHeight,
     harnesses,
     harnessError,
     noAgents,
@@ -499,6 +569,13 @@ function IdentityCard(props: IdentityCardProps) {
   const [scrollTop, setScrollTop] = useState(0);
   const [openSetting, setOpenSetting] = useState<string | null>(null);
   const [settingCursor, setSettingCursor] = useState(0);
+  // `setting_on_left` (pickers.rs:3969, spaces.rs:2412): the nested flyout
+  // opens on whichever side has room — re-read at every open, the row near
+  // the window's right edge flipping it left.
+  const [settingOnLeft, setSettingOnLeft] = useState(false);
+  // The settings' section wrappers — the side probe's anchors (one per
+  // group; each fills its row's width).
+  const settingSectionsRef = useRef(new Map<string, HTMLDivElement>());
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -560,12 +637,43 @@ function IdentityCard(props: IdentityCardProps) {
 
   // `open_setting` — land the submenu cursor on the group's selected choice
   // so the check and the highlight never sit on two rows.
-  const openSettingGroup = useCallback((id: string): void => {
-    const group = groups.find((entry) => entry.id === id);
-    const landing = group?.choices.findIndex((choice) => choice.selected) ?? -1;
-    setSettingCursor(landing < 0 ? 0 : landing);
-    setOpenSetting(id);
-  }, [groups]);
+  const openSettingGroup = useCallback(
+    (id: string): void => {
+      const group = groups.find((entry) => entry.id === id);
+      const landing = group?.choices.findIndex((choice) => choice.selected) ?? -1;
+      setSettingCursor(landing < 0 ? 0 : landing);
+      // `setting_on_left`'s probe (pickers.rs:3969): the flyout opens LEFT
+      // when its reach past the row's right edge would cross the window —
+      // measured on the section wrapper synchronously, so the flyout's
+      // first render already carries the side. The shared probe shape is
+      // `flyoutOpensLeft` (lib/flyout-side.ts); the reach stays this
+      // arm's own constant below.
+      const section = settingSectionsRef.current.get(id);
+      setSettingOnLeft(
+        section !== undefined &&
+          flyoutOpensLeft(section.getBoundingClientRect(), SETTING_MENU_FLYOUT_REACH),
+      );
+      setOpenSetting(id);
+    },
+    [groups],
+  );
+
+  // The Base UI seam's close arm, guarded on identity: a late close from
+  // one group's flyout (the hover corridor's grace firing after a sibling
+  // already opened) must never clobber the newer group's open.
+  const closeSetting = useCallback((id: string): void => {
+    setOpenSetting((current) => (current === id ? null : current));
+  }, []);
+
+  // The side probe's anchor registry — a stable callback the tray's
+  // section wrappers ref into.
+  const registerSettingSection = useCallback((id: string, element: HTMLDivElement | null): void => {
+    if (element === null) {
+      settingSectionsRef.current.delete(id);
+    } else {
+      settingSectionsRef.current.set(id, element);
+    }
+  }, []);
 
   const toggleSetting = (id: string): void => {
     if (openSetting === id) {
@@ -738,7 +846,7 @@ function IdentityCard(props: IdentityCardProps) {
   }, [opened, rows.length, cursor, open, groups, openSetting, settingCursor]);
 
   const rowHeight = rail === "favorites" ? ROW_HEIGHT_FAVORITE : ROW_HEIGHT_COMPACT;
-  const viewport = LIST_HEIGHT - 12; // the band's 6px padding-block, both sides
+  const viewport = listHeight - 12; // the band's 6px padding-block, both sides
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const last = Math.min(rows.length, Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN);
   const slice = rows.slice(first, last);
@@ -758,17 +866,19 @@ function IdentityCard(props: IdentityCardProps) {
   return (
     <>
       {(() => {
-        // Card-level takeover states render instead of the whole stack.
+        // Card-level takeover states render instead of the whole stack —
+        // sized to the SAME band (the desktop's `div().h(px(list_height))`
+        // arms, pickers.rs:3260/3271).
         if (!harnesses.loaded && harnessError === null) {
           return (
-            <div className="model-list-loading" id="model-skeleton">
+            <div className="model-list-loading" id="model-skeleton" style={{ height: listHeight }}>
               <SkeletonMenuRows count={5} />
             </div>
           );
         }
         if (harnessError !== null && !harnesses.loaded) {
           return (
-            <div className="model-list-loading">
+            <div className="model-list-loading" style={{ height: listHeight }}>
               <ErrorRow message={harnessError} onRetry={onRetryHarnesses} />
             </div>
           );
@@ -847,10 +957,11 @@ function IdentityCard(props: IdentityCardProps) {
                 aria-label="Search models"
               />
             </div>
-            <div className="model-list-scroll-host" id="model-list-scroll-host">
+            <div className="model-list-scroll-host" id="model-list-scroll-host" style={{ height: listHeight }}>
               <div
                 ref={listRef}
                 className="model-list-scroll"
+                style={{ height: listHeight }}
                 onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
               >
                 {rows.length === 0 ? (
@@ -910,8 +1021,12 @@ function IdentityCard(props: IdentityCardProps) {
                 openSetting={openSetting}
                 settingCursor={settingCursor}
                 highlightedSetting={cursor !== null ? Math.max(0, cursor - rows.length) : null}
+                side={settingOnLeft ? "left" : "right"}
                 onToggleSetting={toggleSetting}
+                onOpenSetting={openSettingGroup}
+                onCloseSetting={closeSetting}
                 onActivateChoice={activateSettingChoice}
+                registerSection={registerSettingSection}
               />
             )}
            </>
@@ -1015,11 +1130,27 @@ function ModelRow({
 }
 
 /**
+ * The nested choices flyout's width — `w(px(232.0))` on the menu passed to
+ * `nested_menu` (pickers.rs:4033-4036).
+ */
+const SETTING_MENU_WIDTH = 232;
+/**
+ * `setting_on_left`'s reach probe (pickers.rs:3969, spaces.rs:2412): the
+ * flyout opens LEFT when its reach beyond the row's right edge (the 232
+ * card + its offset) would cross the window's right edge. The desktop
+ * spells the constant 244; mirrored.
+ */
+const SETTING_MENU_FLYOUT_REACH = 244;
+
+/**
  * The pinned traits tray — the nested model settings (upstream 9a4757be's
  * `render_traits_sections`). Each setting is a compact trigger row (label,
- * current value, chevron); clicking (or → / Enter from the walk) opens its
- * own nested choices — the desktop floats them beside the trigger, the web
- * expands them inline under it. Selecting keeps the card open for
+ * current value, chevron); the row's press, hover, or → / Enter from the
+ * walk opens its own nested choices through `NestedMenu` (ticket 01): a
+ * PORTALED flyout beside the row on desktop (popover.rs's `nested_menu`,
+ * pickers.rs:4089-4093 — never the old inline expansion, which the card's
+ * `overflow: hidden` clip box would swallow), the drill-down under the
+ * row inside the sheet on phone. Selecting keeps the card open for
  * multi-adjust; Escape/← closes just the nested menu.
  */
 function TraitsTray({
@@ -1027,20 +1158,31 @@ function TraitsTray({
   openSetting,
   settingCursor,
   highlightedSetting,
+  side,
   onToggleSetting,
+  onOpenSetting,
+  onCloseSetting,
   onActivateChoice,
+  registerSection,
 }: {
   groups: readonly SettingGroup[];
   openSetting: string | null;
   settingCursor: number;
   /** The keyboard-walked trigger index (relative to the groups), or null. */
   highlightedSetting: number | null;
+  /** The flyout's side — `setting_on_left`, whichever side has room. */
+  side: NestedMenuSide;
   onToggleSetting: (id: string) => void;
+  /** The nested seam's open arm — opens and lands the choice cursor. */
+  onOpenSetting: (id: string) => void;
+  /** The nested seam's guarded close arm. */
+  onCloseSetting: (id: string) => void;
   onActivateChoice: (group: SettingGroup, index: number) => void;
+  registerSection: (id: string, element: HTMLDivElement | null) => void;
 }) {
   if (groups.length === 0) {
     return (
-      <div className="model-traits" id="traits-skeleton" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
+      <div className="model-traits" id="traits-skeleton" style={{ maxHeight: MODEL_TRAY_CAP }}>
         <div className="model-traits-body">
           <SkeletonMenuRows count={3} />
         </div>
@@ -1048,29 +1190,47 @@ function TraitsTray({
     );
   }
   return (
-    <div className="model-traits" style={{ maxHeight: TRAYS_MAX_HEIGHT }}>
+    <div className="model-traits" style={{ maxHeight: MODEL_TRAY_CAP }}>
       <div className="model-traits-body">
         {groups.map((group, ix) => {
           const open = openSetting === group.id;
           const value = group.choices.find((choice) => choice.selected)?.label ?? "";
           return (
-            <div className="model-traits-section" key={group.id}>
+            <div
+              className="model-traits-section"
+              key={group.id}
+              ref={(element) => registerSection(group.id, element)}
+            >
               {ix > 0 ? <MenuSeparator /> : null}
-              <MenuRowNav
-                fadeKey={`model-setting-${group.id}`}
-                className="model-setting-row"
-                selected={open}
-                highlighted={!open && highlightedSetting === ix}
-                onClick={() => onToggleSetting(group.id)}
-                aria-expanded={open}
+              {/* The trigger row keeps its own summary (label, current value,
+                  chevron — the desktop's `render_traits_sections` row); its
+                  press toggles and Base UI/hover opens through the seam. The
+                  choices portal beside it (desktop) or drill under it
+                  (phone) — `NestedMenu` resolves the arm internally. */}
+              <NestedMenu
+                open={open}
+                onOpenChange={(next) => (next ? onOpenSetting(group.id) : onCloseSetting(group.id))}
+                label={group.label}
+                heading={<MenuHeading>{group.label}</MenuHeading>}
+                side={side}
+                width={SETTING_MENU_WIDTH}
+                ariaLabel={`${group.label} choices`}
+                trigger={
+                  <MenuRowNav
+                    fadeKey={`model-setting-${group.id}`}
+                    className="model-setting-row"
+                    selected={open}
+                    highlighted={!open && highlightedSetting === ix}
+                    onClick={() => onToggleSetting(group.id)}
+                  >
+                    <span className="menu-row-label">{group.label}</span>
+                    <span className="model-trait-spring" />
+                    <span className="model-setting-value">{value}</span>
+                    <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
+                  </MenuRowNav>
+                }
               >
-                <span className="menu-row-label">{group.label}</span>
-                <span className="model-trait-spring" />
-                <span className="model-setting-value">{value}</span>
-                <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
-              </MenuRowNav>
-              {open && (
-                <div className="model-setting-choices" role="group" aria-label={group.label}>
+                <div className="model-setting-choices">
                   {group.choices.map((choice, choiceIx) => {
                     const choiceKey = choice.value.length > 0 ? choice.value : (choice.reasoning ?? choice.label);
                     return (
@@ -1090,7 +1250,7 @@ function TraitsTray({
                     );
                   })}
                 </div>
-              )}
+              </NestedMenu>
             </div>
           );
         })}

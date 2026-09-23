@@ -394,21 +394,33 @@ export function titlebarRowLeft(options: {
 
 /** The titlebar's right inset — `TITLEBAR_ACTION_EDGE_INSET`. */
 export const TITLEBAR_EDGE_INSET = 6;
-/** The fixed pane toggle's slot: a 24px control and the gap before it. */
+/** One fixed trailing control's slot: a 28px `header_icon_button` (shell.rs:7552). */
 const TITLEBAR_TOGGLE_SLOT = 28;
+/**
+ * `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the two fixed right-edge anchors — the
+ * Files toggle and the pane toggle, two 28px `header_icon_button`s. They keep
+ * their slots even while the pane is shut (`(files_visible -
+ * right_pad).max(PANEL_TOGGLE_SLOTS)`, tabs.rs:59), so every band budgeting
+ * the trailing group reserves the PAIR.
+ */
+export const PANEL_TOGGLE_SLOTS = TITLEBAR_TOGGLE_SLOT * 2;
 
 /**
  * The pane header strip's width — `render_session_title_bar`'s
  * `animated_width`:
  *
- *     ((right_now - pr).min(avail) - 28).max(0)
+ *     ((right_now - pr).min(avail) - 56).max(0)
  *
  * It rides the pane's own animated width, so the strip and the column move as
  * one. The `avail` cap matters: the row's left padding is part of its content
  * box, and a strip wider than what is left after it would overflow and clip at
  * the right edge instead of shrinking. The row's child gaps sit OUTSIDE the
  * strip, so they are budgeted too — one in takeover (the strip alone), three
- * when title, Actions and spacer are present (b1484015's budget).
+ * when title, Actions and spacer are present (b1484015's budget). The
+ * `PANEL_TOGGLE_SLOTS` pair — the Files toggle and the pane toggle — is
+ * budgeted at the strip's right: both anchors keep their 28px slots even
+ * while the pane is shut (tabs.rs:59), so the strip's width ends 56 short of
+ * the pane's own left edge, exactly where the first anchor's slot starts.
  */
 export function titlebarPaneBandWidth(options: {
   readonly viewport: number;
@@ -420,7 +432,7 @@ export function titlebarPaneBandWidth(options: {
   const gapBudget = options.takeover ? TITLEBAR_GROUP_GAP : TITLEBAR_GROUP_GAP * 3;
   const avail = options.viewport - options.rowLeft - TITLEBAR_EDGE_INSET - gapBudget;
   const width = Math.min(options.paneWidth - TITLEBAR_EDGE_INSET, avail);
-  return Math.max(0, width - TITLEBAR_TOGGLE_SLOT);
+  return Math.max(0, width - PANEL_TOGGLE_SLOTS);
 }
 
 /**

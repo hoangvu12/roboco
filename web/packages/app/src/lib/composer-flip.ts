@@ -111,6 +111,98 @@ export function modelHandoff(compact: number): [number, number, number] {
   return [side, opacity, drift];
 }
 
+/**
+ * `motion::EASE_IN_OUT` (proto motion.rs:226) — the handoff's OWN curve:
+ * it rides the flip morph's RAW timeline, not the collapse spec's eased
+ * progress, so reversals continue from the current phase (composer.rs:7741).
+ */
+const EASE_IN_OUT: readonly [number, number, number, number] =
+  motion.curves.easeInOut ?? [0.42, 0, 0.58, 1];
+
+/** The inputs one render frame resolves the model handoff position from. */
+export interface ModelHandoffInputs {
+  /** The position captured when the flip morph last (re)started. */
+  readonly from: number;
+  /** The RENDERED mode's compact target: 0 expanded, 1 compact. */
+  readonly compactTarget: number;
+  /** The running flip morph, if any — its RAW timeline drives the lerp. */
+  readonly morph: FlipMorph | null;
+  /** A dock frame is installed AND active. */
+  readonly dockActive: boolean;
+  /** The session's own expanded state (the dock drives compact routes only). */
+  readonly sessionExpanded: boolean;
+  /** The shared dock clock's amount, 0..1. */
+  readonly dockAmount: number;
+  /** Commit time in ms on the caller's monotonic clock. */
+  readonly nowMs: number;
+}
+
+/**
+ * `model_handoff_position` (composer.rs:7726-7749, e0c1e936): the handoff
+ * rides the SAME height/route clock as every other inner channel — the dock
+ * amount directly while a compact route glides, else a lerp from the
+ * captured phase toward the rendered mode's target through EASE_IN_OUT over
+ * the flip morph's RAW timeline.
+ */
+export function modelHandoffPosition(inputs: ModelHandoffInputs): number {
+  if (inputs.dockActive && !inputs.sessionExpanded) {
+    return inputs.dockAmount;
+  }
+  if (inputs.morph === null) {
+    return inputs.compactTarget;
+  }
+  return lerp(
+    inputs.from,
+    inputs.compactTarget,
+    cubicBezierY(EASE_IN_OUT, flipMorphRaw(inputs.morph, inputs.nowMs)),
+  );
+}
+
+/**
+ * `model_travel` (composer.rs:412, e0c1e936): the horizontal distance
+ * between the chip's two anchor slots — expanded, beside the attachment at
+ * the row's left; compact, before Send at the row's right. `surfaceWidth` is
+ * the pill's border-box width, `modelWidth` the chip's rendered width (the
+ * desktop's `model_bounds` canvas), `clusterInset` the morphing right inset.
+ */
+export function modelTravel(surfaceWidth: number, modelWidth: number, clusterInset: number): number {
+  return Math.max(
+    surfaceWidth -
+      PILL_BORDER_V -
+      12 -
+      28 -
+      ACTION_UTILITY_GAP -
+      modelWidth -
+      ACTION_PRIMARY_GAP -
+      28 -
+      clusterInset,
+    0,
+  );
+}
+
+/** The model slot's per-frame transform: the offset plus the fade opacity. */
+export interface ModelSlotGeometry {
+  /** `model_offset` — `left` px from the chip's natural slot in this mode. */
+  readonly left: number;
+  /** `model_opacity` — 1 at rest, 0 through the invisible mid-flip relocate. */
+  readonly opacity: number;
+}
+
+/**
+ * `model_offset` (composer.rs:4765-4766, e0c1e936): the per-frame transform
+ * applied to the chip's natural slot — the invisible mid-flip relocation
+ * (the side jump lands while the opacity is ~0) plus the visible 6px drift,
+ * with the matching opacity from `model_handoff`.
+ */
+export function modelSlotOffset(
+  handoffPosition: number,
+  compactTarget: number,
+  travel: number,
+): ModelSlotGeometry {
+  const [side, opacity, drift] = modelHandoff(handoffPosition);
+  return { left: (side - compactTarget) * travel + drift, opacity };
+}
+
 // Attachment strip metrics (composer.rs:288-296) moved to `lib/attachments.ts`
 // with the strip's own rendering (ticket 17); re-exported so the composer and
 // this module's historical importers keep one address.

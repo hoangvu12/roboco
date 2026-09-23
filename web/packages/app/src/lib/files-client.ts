@@ -42,6 +42,14 @@ export interface FilesTarget {
   readonly chatId?: string | null;
   readonly spaceId?: string | null;
   readonly checkoutPath?: string | null;
+  /**
+   * Routing hint for the space-owning device (the desktop context's
+   * `target_device_id`, merged into every request by `request_params`):
+   * the socket's `wireParams` decodes and strips it, and the engine fails
+   * closed when it names anything but its own device. Absent for chat
+   * targets (`FilesRequestContext::for_chat` keeps it `None`).
+   */
+  readonly targetDeviceId?: string | null;
 }
 
 export interface WorkspaceImage {

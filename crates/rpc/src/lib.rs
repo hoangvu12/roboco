@@ -147,6 +147,14 @@ pub mod methods {
     pub const DELETE_PROJECT_ACTION: &str = "DeleteProjectAction";
     pub const RUN_PROJECT_ACTION: &str = "RunProjectAction";
     pub const TAKE_PROJECT_ACTION_SETUP: &str = "TakeProjectActionSetup";
+    // Sidebar organization state (pins + custom sections): engine-local
+    // (ADR 0004), bucketed per workspace profile key. Ordered-list replace,
+    // last write wins, every mutation replies with the fresh snapshot, and
+    // the watch fans changes out to every connected client — the surface
+    // that mirrors a paired browser with the desktop sidebar.
+    pub const SET_SIDEBAR_PINS: &str = "SetSidebarPins";
+    pub const SET_SIDEBAR_SECTIONS: &str = "SetSidebarSections";
+    pub const WATCH_SIDEBAR_STATE: &str = "WatchSidebarState";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";

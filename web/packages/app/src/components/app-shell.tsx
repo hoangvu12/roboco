@@ -4,6 +4,10 @@ import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
 import { useFleet, useFleetRegistry } from "../state/fleet";
+// Ticket 11's engine-side sidebar state bridge: importing the module wires
+// the registry-driven sync (pins + custom sections mirror engine-side;
+// `localStorage` stays the offline cache).
+import "../state/sidebar-state-sync";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import {
@@ -36,6 +40,7 @@ import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   TITLEBAR_CONTENT_START,
+  PANEL_TOGGLE_SLOTS,
   conversationWidth,
   rightPaneMaxWidth,
   sidebarLayout,
@@ -535,14 +540,14 @@ export function AppShell() {
   // The desktop's `!takeover && !on_canvas` gate: the chat route with a
   // selected chat. `available_titlebar_width` (b1484015) measures the room
   // the control may claim after the trailing strip — the trailing group is
-  // the pane's band plus its fixed 28px toggle slot, or just the toggle
-  // while the pane is shut.
+  // the pane's band plus the two fixed 28px toggle anchors
+  // (PANEL_TOGGLE_SLOTS), or just the pair while the pane is shut.
   const paneBandWidth = titlebarPaneBandWidth({ viewport, paneWidth, rowLeft, takeover });
   const showActionsControl = isChatRoute && paneChatId !== null && !takeover;
   const actionsTitlebarWidth = titlebarAvailableTitlebarWidth({
     viewport,
     rowLeft,
-    trailingWidth: paneWidth > 0 ? paneBandWidth + 28 : 28,
+    trailingWidth: paneWidth > 0 ? paneBandWidth + PANEL_TOGGLE_SLOTS : PANEL_TOGGLE_SLOTS,
   });
   const shellClass = [
     "shell",
@@ -647,6 +652,12 @@ export function AppShell() {
         // the toggle, the strip and the column all move on the same frame.
         onTogglePane={hasPane ? () => rightPaneStore.toggle(paneChatId) : null}
         paneOpen={hasPane && pane.open}
+        // The docked explorer portion's toggle (`toggle_files_panel`,
+        // files_panel.rs:234-245): opens the pane with just the explorer
+        // portion when closed, closes that portion when docked — never the
+        // surface host.
+        onToggleFiles={hasPane ? () => rightPaneStore.toggleFilesPanel(paneChatId) : null}
+        filesOpen={hasPane && pane.filesOpen}
         paneExpanded={hasPane && pane.expanded}
         // Mounted whether or not the pane is open: the band clips it to zero
         // when shut, so it can glide away with the column instead of blinking

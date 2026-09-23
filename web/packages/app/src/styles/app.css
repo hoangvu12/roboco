@@ -248,6 +248,9 @@ a:focus-visible,
   --rb-titlebar-group-gap: 8px;
   --rb-titlebar-control-gap: 2px;
   --rb-titlebar-edge-inset: 6px;
+  /* `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the Files toggle + the pane toggle,
+     two 28px `header_icon_button`s that keep their slots while shut. */
+  --rb-titlebar-toggle-slots: 56px;
   /*
    * The stacking ladder — the web's mapping of gpui's `deferred` priorities
    * (menus 1, modals 2; popover.rs:629-637, 688-704). Nothing may invent a
@@ -556,6 +559,17 @@ a:focus-visible,
 }
 
 /*
+ * The Files toggle's active wash (`tabs.rs:381-383`): `bg(wash(0.09))` while
+ * the docked explorer portion is open — the desktop's `.when(
+ * files_panel_open, …)` rides AFTER the hover blend, so the active wash holds
+ * on hover too; this rule sits after the hover one for the same effect. Only
+ * the background changes — the glyph stays muted like the desktop's.
+ */
+.header-icon-button[data-active="1"] {
+  background: rgb(var(--rb-wash) / 0.09);
+}
+
+/*
  * The new-session `+` — rendered only while shown (ticket 60): the desktop's
  * `show_plus.then(...)` (shell.rs:4093-4104) leaves NO phantom slot at alpha
  * 0, so the cluster's shrink-to-fit width ends at the last visible control
@@ -664,9 +678,10 @@ a:focus-visible,
 /* The identity row carries no badge — mark + title + `folder @ device` only. */
 
 /*
- * The trailing section. The pane toggle is the fixed right-edge anchor, like
- * the sidebar control on the left; only the band to its left reveals, so the
- * two icons never compress into one clipped box at open.
+ * The trailing section. The Files toggle and the pane toggle are the two
+ * fixed right-edge anchors (`PANEL_TOGGLE_SLOTS`, tabs.rs:48), like the
+ * sidebar control on the left; only the band to their left reveals, so the
+ * icons never compress into one clipped box at open.
  */
 .titlebar-trailing {
   flex: none;
@@ -681,15 +696,16 @@ a:focus-visible,
 
 /*
  * The pane's header strip — `tabs.rs::render_session_title_bar`'s trailing
- * section. The desktop sizes it `(right_now - pr) - 28`: the pane's own
- * animated width, less the titlebar's 6px right inset and the 24px toggle
- * slot plus its gap. Reading `--rb-pane-now` here means the strip and the pane
- * column are driven by ONE number, exactly as the desktop reads one
- * `right_now` for both — they cannot drift apart mid-glide.
+ * section. The desktop sizes it `(right_now - pr) - 56`: the pane's own
+ * animated width, less the titlebar's 6px right inset and the two fixed
+ * 28px toggle anchors (PANEL_TOGGLE_SLOTS, tabs.rs:48). Reading
+ * `--rb-pane-now` here means the strip and the pane column are driven
+ * by ONE number, exactly as the desktop reads one `right_now` for both —
+ * they cannot drift apart mid-glide.
  *
  * It carries no padding of its own: with `box-sizing: border-box` a padded box
  * cannot shrink below its padding, so a shut pane would leave a sliver here
- * and shove the toggle inward. The padding lives on the inner child.
+ * and shove the toggles inward. The padding lives on the inner child.
  */
 .titlebar-pane-band {
   position: relative;
@@ -702,8 +718,11 @@ a:focus-visible,
 
 /*
  * Right-anchored at the width the strip has when OPEN, so it reveals from the
- * toggle leftward and its controls keep their geometry for the glide instead
+ * toggles leftward and its controls keep their geometry for the glide instead
  * of reflowing through every intermediate width (`right_panel_content_width`).
+ * The 56px pair — the Files toggle and the pane toggle — is the same budget
+ * `titlebarPaneBandWidth` subtracts, so the inner fills the band exactly when
+ * open.
  */
 .titlebar-pane-band-inner {
   position: absolute;
@@ -716,10 +735,10 @@ a:focus-visible,
   gap: var(--rb-space-xs);
   width: max(
     0px,
-    calc(var(--rb-pane-open) - var(--rb-titlebar-edge-inset) - 28px)
+    calc(var(--rb-pane-open) - var(--rb-titlebar-edge-inset) - var(--rb-titlebar-toggle-slots))
   );
   /* 8 + the chip's own pad = the pane's 16px text gutter; the 4px right pad
-     is the stable gap before the fixed toggle. */
+     is the stable gap before the fixed toggles. */
   padding-left: var(--rb-space-sm);
   padding-right: var(--rb-space-xs);
 }
@@ -912,13 +931,14 @@ a:focus-visible,
 }
 
 /*
- * `SurfaceTabTooltip` (`shell.rs:773-792`): max-width 380, padding 6/9,
- * radius 6, a hairline border on the overlay surface, 10.5px raw, muted
- * text. Portaled to the body at the chip's viewport coords.
+ * `SurfaceTabTooltip` (`shell.rs:773-792`, ticket 18): the popup recipe the
+ * shared `ui/Tooltip` renders (`popupClassName`): max-width 380, padding
+ * 6/9, radius 6, a hairline border on the overlay surface, 10.5px raw,
+ * muted text — `pointer-events: none` (a label, never a hover target). The
+ * portal, the 350ms delay, and the fixed positioning ride the wrapper; the
+ * positioner carries the menu tier's z-index (`.rb-tooltip-positioner`).
  */
 .right-tab-tooltip {
-  position: fixed;
-  z-index: 90;
   max-width: 380px;
   padding: 6px 9px;
   border-radius: var(--rb-radius-control);
@@ -991,40 +1011,28 @@ a:focus-visible,
 }
 
 /*
- * The legacy menu cards' shared drop shadow (`.right-plus-menu`,
- * `.user-menu-card`) — a local convenience spelled once, not a theme
- * catalog token (the catalog carries no shadow entries).
+ * The legacy menu cards' shared drop shadow (`.history-column-ghost`) — a
+ * local convenience spelled once, not a theme catalog token (the catalog
+ * carries no shadow entries). Ticket 18's portaled swaps (the `+` menu,
+ * the section menu) dropped the other two consumers; the shared
+ * `.popover-card` shadow took their place.
  */
 :root {
   --rb-shadow-menu: 0 12px 32px rgb(0 0 0 / 0.36);
 }
 
 /*
- * The `+` menu (`shell.rs:7054-7144`): `popover_card` at a 168px width, 10px
- * below the button, rows at a 2px rhythm. Radius 12 is `popover::CARD_RADIUS`
- * (`popover.rs:306`) — no `--rb-*` token carries it. Portaled to the body at
- * the button's viewport coords (the band clips); ticket 09 owns the popover
- * lifecycle — this uses the shared anchored-menu pattern (see
- * `.space-filter-menu`) as the placeholder host.
+ * The `+` menu (`shell.rs:7054-7144`, ticket 18): the card-content
+ * specifics on the shared `.popover-card` frame — the 168px width
+ * (`popover_card(theme).w(168)`, `shell.rs:7061`) and the 2px row rhythm.
+ * The frame, portal, placement (`anchored_menu_below_gap`: below, end-
+ * aligned, 10px), entrance, and dismissal ride `RbPopover` (anchored to
+ * the live `+` button), replacing the manual rect/listener portal that
+ * used to carry all of it.
  */
 .right-plus-menu {
-  position: fixed;
-  /* The shared menu tier — the ladder collapse moved this legacy card onto
-     the one generation (see the ladder comment above). */
-  z-index: var(--rb-z-menu);
   width: 168px;
-  padding: var(--rb-space-xs);
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-  /* `popover::CARD_RADIUS` — 12, a popover-only constant. */
-  border-radius: 12px;
-  border: 1px solid rgb(var(--rb-hairline) / calc(0.10 * var(--rb-hairline-scale)));
-  background: var(--rb-overlay);
-  color: var(--rb-text);
-  font-size: 13px;
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 /* `popover::menu_row`: gap 10, padding 8/6, radius 8. */
@@ -1741,25 +1749,13 @@ a:focus-visible,
   color: var(--rb-text-muted);
 }
 
-/* The fly-out submenu: a 232px popover card anchored to the trigger row's
-   far side (right by default; flips left inside a narrow window). */
-.view-menu-submenu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 4px);
-  width: 232px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--rb-space-xs);
-  z-index: var(--rb-z-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
-}
-
-.view-menu-submenu-left {
-  left: auto;
-  right: calc(100% + 4px);
-}
+/* The group flyout itself is ticket 01's `NestedMenu` portal: the shared
+   `.popover-card` glass riding `.rb-popover-positioner`'s menu tier, so it
+   carries no rules of its own (the component's `view-menu-flyout` card
+   class is the semantic marker for this menu's flyout; the rows inside
+   ride `.view-menu-rows` above). The old inline-absolute `.view-menu-
+   submenu` layer lived inside `.popover-card`'s `overflow: hidden` clip
+   box and never painted — bug 5b. */
 
 .view-menu-create-icon {
   flex: none;
@@ -1872,7 +1868,6 @@ a:focus-visible,
 }
 
 .user-menu {
-  position: relative;
   flex: none;
   display: flex;
   padding: var(--rb-space-sm);
@@ -1925,25 +1920,24 @@ a:focus-visible,
 }
 
 /*
- * The menu opens to the RIGHT of the trigger (the desktop's
- * anchored_menu_right), bottom-aligned with it, at the popover card's
- * width.
+ * The frame the row's menu card mounts in (ticket 02): the portaled
+ * `.popover-card` glass at the shared menu tier — `.user-menu-body`
+ * carries only the card-content specifics (the 180px floor, the 1px row
+ * rhythm). The placement is the desktop's `anchored_menu_right`
+ * (shell.rs:6430 — `anchorRight` in `base/positioning.ts`): the card's
+ * top-left pins at the trigger's top-right + 6, portaled to the body by
+ * `PickerCard`/`RbPopover`. The old inline `.user-menu-card` (absolute,
+ * `left: calc(100% + 6px)` inside `.user-menu`) painted inside
+ * `<aside class="sidebar">` whose `overflow: hidden` (the collapse clip)
+ * cut it off entirely, so the press looked dead while the state and
+ * navigation worked — the card rides the portal now, unclipped by any
+ * column. The frame's padding (4px) equals the old `--rb-space-xs` inset;
+ * the tier, radius, border, plate, shadow, and the `rb-menu-in` entrance
+ * are the popover family's.
  */
-.user-menu-card {
-  position: absolute;
-  bottom: 0;
-  left: calc(100% + 6px);
+.user-menu-body {
   min-width: 180px;
-  z-index: var(--rb-z-menu);
-  padding: var(--rb-space-xs);
-  display: flex;
-  flex-direction: column;
   gap: 1px;
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 /*
@@ -2629,23 +2623,14 @@ a:focus-visible,
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
-/* `render_section_overlays`' context menu: a 180px popover card under the
-   header's menu mark. */
-.section-context-menu {
-  position: absolute;
-  top: 28px;
-  right: var(--rb-space-sm);
-  z-index: var(--rb-z-menu);
+/* `render_section_overlays`' context menu (ticket 18): the card-content
+   specifics on the shared `.popover-card` frame — the 180px floor and the
+   1px row rhythm; the frame, portal, and placement ride `PickerCard`
+   (`anchorBelowEnd`, under the header's menu mark), replacing the inline
+   `.section-context-menu` the sidebar's `overflow: hidden` clipped. */
+.section-menu-body {
   width: 180px;
-  display: flex;
-  flex-direction: column;
   gap: 1px;
-  padding: var(--rb-space-xs);
-  border-radius: var(--rb-radius-panel);
-  border: 1px solid var(--rb-border);
-  background: var(--rb-dialog);
-  box-shadow: var(--rb-shadow-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
 }
 
 .sidebar-pinned-divider-frame {
@@ -2777,6 +2762,21 @@ a:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/*
+ * The resolved artwork tile (project_icon.rs's `gpui::img`): full-size,
+ * contain-fit. A file that fails to decode swaps back to the monogram in
+ * the component (`ProjectIconArt`'s onError) — the desktop's
+ * `decode_project_icon(...).ok()` fallback.
+ */
+.project-icon-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .project-monogram {
@@ -3916,9 +3916,11 @@ a:focus-visible,
 
 /*
  * The textarea box — expanded: `px-4 pt-[morph 12→16] pb-1`, height inline
- * (the auto-grow BOX, 76–260); compact: `flex-1 min-w-0 pl-4 pr-2 relative`,
- * the single 22.75px line centered to the same 12px inset as `py-3` (no
- * explicit vertical padding), glided by the collapse morph's decaying offset.
+ * (the auto-grow BOX, 76–260); compact: `flex-1 min-w-0 px-2 relative` —
+ * with the paperclip now to the LEFT (e0c1e936), its right padding hands
+ * the gap to the model chip — the single 22.75px line centered to the same
+ * 12px inset as `py-3` (no explicit vertical padding), glided by the
+ * collapse morph's decaying offset.
  */
 .composer-input-box {
   min-width: 0;
@@ -3935,7 +3937,7 @@ a:focus-visible,
   flex: 1;
   min-width: 0;
   position: relative;
-  padding: 0 8px 0 16px;
+  padding: 0 8px;
 }
 
 /*
@@ -4017,12 +4019,17 @@ a:focus-visible,
 }
 
 /*
- * The actions row: expanded, ABSOLUTE at the pill's stationary bottom —
- * `pt-1 pb-2.5` around 32px chips (ACTIONS_ROW_HEIGHT = 46), `pl-3`, the
- * right inset gliding 8↔12 with the morph; compact, a `flex-none` cluster
- * (`pl-1 pr-2` gliding 12↔8) on the 47px row. Pickers and the paperclip
- * form one utility group (ACTION_UTILITY_GAP = 2, justify-end), with the
- * larger structural ACTION_PRIMARY_GAP (8) before Send.
+ * The actions row (e0c1e936): expanded, ABSOLUTE at the pill's stationary
+ * bottom — 2px top + 32px chips + 12px bottom (ACTIONS_ROW_HEIGHT = 46),
+ * a 42px left padding (the desktop's `pl-3` slot plus the detached
+ * paperclip's 28 + ACTION_UTILITY_GAP) — with the right inset gliding 8↔12
+ * with the morph; compact, a `flex-none` cluster on the 47px row — the
+ * model chip then Send, the input's own `px-2` providing the gap before
+ * them.
+ * The structural ACTION_PRIMARY_GAP (8) separates the model chip from Send
+ * in both modes; Send alone sits at the row's right end
+ * (composer.rs:7791-7839, 7856-7904 — the utility group LEFT-aligns, Send
+ * right).
  */
 .composer-actions {
   display: flex;
@@ -4036,32 +4043,53 @@ a:focus-visible,
   left: 0;
   right: 0;
   height: 46px;
-  padding: 4px 8px 10px 12px;
+  padding: 2px 8px 12px 42px;
 }
 
 .composer-pill[data-mode="compact"] .composer-actions {
   flex: none;
   position: relative;
-  padding: 0 8px 0 4px;
+  padding: 0; /* the morphing right inset rides the inline style */
 }
 
-.composer-utility {
+/*
+ * The model chip's handoff slot (e0c1e936, composer.rs:410-416/7769-7776):
+ * the chip fades between its two horizontal anchors on the flip — expanded
+ * beside the (absolute) paperclip at the row's left, compact at the right
+ * before Send. The left/opacity ride the layout pass's inline values (or
+ * the dock glide's CSS vars); the slot shrink-wraps the chip so its
+ * measured width feeds `model_travel` exactly (the desktop's `model_bounds`
+ * canvas), shrinking under row pressure like the desktop's `min_w_0`
+ * wrapper capped at 45% of the surface.
+ */
+.composer-model-slot {
+  position: relative;
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 2px;
-}
-
-.composer-pill[data-mode="expanded"] .composer-utility {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
-  justify-content: flex-end;
+  align-items: center;
 }
 
-.composer-pill[data-mode="compact"] .composer-utility {
+.composer-pill[data-mode="expanded"] .composer-model-slot {
+  max-width: 45%;
+}
+
+.composer-pill[data-mode="compact"] .composer-model-slot {
   flex: none;
 }
 
+/* Expanded: Send alone at the row's right end — the structural gap (8)
+   stays the minimum separation (composer.rs:7839-7842). */
+.composer-pill[data-mode="expanded"] .composer-send {
+  margin-left: auto;
+}
+
+/*
+ * The paperclip: compact, the row's first item (`pl-3` + the shared
+ * cluster-dy glide, both inline); expanded, absolutely pinned to the same
+ * stationary bottom anchor the actions row glides on — left 12, its bottom
+ * the row's pb-3 plus the 2px centering slack (e0c1e936, composer.rs:7864).
+ */
 .composer-attach {
   width: 28px;
   height: 28px;
@@ -4076,6 +4104,14 @@ a:focus-visible,
   color: var(--rb-text-muted);
   cursor: pointer;
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.composer-pill[data-mode="compact"] .composer-attach {
+  position: relative;
+}
+
+.composer-pill[data-mode="expanded"] .composer-attach {
+  position: absolute;
 }
 
 .composer-attach:hover {
@@ -4308,14 +4344,15 @@ a:focus-visible,
 }
 
 /*
- * The hovered chip's path tooltip (MentionPathTooltip, composer.rs:3369):
- * fixed at the chip's left edge, 24px tall, 480px max, mono 11px over the
- * raised surface with the strong border, fading in over fade_quick (150ms).
- * The inline top/left carry the above-chip (or flush-below) anchor.
+ * The hovered chip's path tooltip (MentionPathTooltip, composer.rs:3369,
+ * ticket 18): the popup recipe the shared `ui/Tooltip` renders in its
+ * virtual-anchor mode (`popupClassName`) — 24px tall, 480px max, mono 11px
+ * over the raised surface with the strong border, fading in over fade_quick
+ * (150ms). The portal, the above-chip/flush-below placement, and the menu
+ * tier ride the wrapper (`rb-tooltip-positioner`); the inline position is
+ * gone.
  */
 .mention-tooltip {
-  position: fixed;
-  z-index: var(--rb-z-menu);
   height: 24px;
   max-width: 480px;
   display: flex;
@@ -4749,7 +4786,11 @@ a:focus-visible,
 }
 
 /* The list host (§2.3.3, pickers.rs:3405-3430): the fixed 216px band over
-   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows. */
+   an ink(0.02) wash, 6px block padding, 6px inline padding on the rows.
+   The 216 is the resting class value — on the new-chat canvas the component
+   overrides it inline with the measured room-below clamp
+   (ticket 04, pickers.rs:3245-3252; host, scroll viewport and the loading
+   takeovers below all size to the same number). */
 .model-list-scroll-host {
   position: relative;
   flex: none;
@@ -5029,12 +5070,17 @@ a:focus-visible,
   color: var(--rb-text-muted);
 }
 
-/* The nested choices expand inline beneath their trigger. */
+/* The nested choices region: desktop — inside the PORTALED flyout card
+   (a scroll band capped at 240, `max_h(px(240.0))` in pickers.rs's nested
+   menu); phone — inside the drill body (the tray's own scroll carries it,
+   the body supplies the indent). No inline indent here anymore: the flyout
+   card's 4px inset (desktop) and the drill body's 10px (phone) own it. */
 .model-setting-choices {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-inline-start: 10px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .model-setting-choice-row {
@@ -5091,6 +5137,16 @@ a:focus-visible,
   /* One menu generation: the popover family IS the menu tier (55) — same
      z-index the old `.popover-layer` carried. Base UI sets no z-index; the
      positioner (position: fixed) participates in the root stacking context. */
+  z-index: var(--rb-z-menu);
+}
+
+/* The tooltip family rides the same menu tier through its positioner
+   (`base/tooltip.tsx`): a label anchored inside the titlebar band (the
+   right pane's tab chips) must clear the titlebar overlay (40), and a
+   tooltip never legitimately paints above a modal (70) — 55 is the same
+   slot every portaled label lands in, replacing the ad-hoc `z-index: 90`
+   the hand-rolled tooltips carried. */
+.rb-tooltip-positioner {
   z-index: var(--rb-z-menu);
 }
 
@@ -5158,6 +5214,52 @@ a:focus-visible,
    their internal panes. */
 .popover-card-flush {
   padding: 0;
+}
+
+/* ── Nested menu (ui/NestedMenu.tsx — popover.rs nested_menu, ticket 01) ── */
+
+/*
+ * The phone drill-down (ticket 15's mobile surface rule): at ≤768px the
+ * nested choices expand IN PLACE inside the enclosing drawer sheet — never
+ * a side flyout. The header row is the back affordance (altArrowLeft + the
+ * group label) on the shared `.menu-row` recipe at the 30px group-row
+ * height; the body indents the choices 10px under their group — the same
+ * 10px inset the old inline `.model-setting-choices` expansion carried (the
+ * class now owns only the flex/gap/scroll recipe; each arm supplies its
+ * own inset). Rendered only by the phone arm, so no media
+ * query guards it.
+ */
+.rb-submenu-drill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rb-submenu-drill-header {
+  height: 30px;
+  padding: 0 var(--rb-space-sm);
+  gap: 8px;
+}
+
+.rb-submenu-drill-back {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.rb-submenu-drill-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.rb-submenu-drill-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-inline-start: 10px;
 }
 
 /* `palette_card` (popover.rs:820-836) — the command-palette sibling:
@@ -5612,8 +5714,13 @@ a:focus-visible,
  * card can overflow a 375px viewport. It rides the SAME modal tier as the
  * centered card (70, via the sibling `.modal-backdrop` — the ladder is
  * closed, no new tiers) and it replaces PLACEMENT only: the card
- * interiors keep their own geometry inside it (`.dialog-card`'s 360px, the
- * popover rows, the add-space card's 680px phone cap). Base UI's swipe
+ * interiors keep their own rhythm inside it — and, since ticket 15
+ * (research W4), every drawer CARD reads as the sheet itself: the dialog
+ * arm's inner `.dialog-card` stretches to the full width (the old 360px
+ * card painted ~90% of a 390px viewport flush-left and read as a "weird
+ * dialog", not a sheet), and every arm's content clears the home
+ * indicator through the frame's ONE shared safe-area term
+ * (`--rb-safe-sheet-pad`, defined on the frame below). Base UI's swipe
  * gesture drives the popup through an inline transform while a drag is
  * live, which composes with (never fights) the resting `transform: none`.
  */
@@ -5631,6 +5738,14 @@ a:focus-visible,
     overflow: auto;
     scrollbar-width: none;
     animation: none;
+    /*
+     * The sheet family's ONE safe-area term (ticket 15, research W4; the
+     * code review's unification): the frame defines it, every arm composes
+     * its own bottom inset with it — `calc(<inset> +
+     * var(--rb-safe-sheet-pad))` — so the home-indicator term has exactly
+     * one address instead of one spelling per arm.
+     */
+    --rb-safe-sheet-pad: env(safe-area-inset-bottom);
   }
 
   .rb-drawer-card::-webkit-scrollbar {
@@ -5638,14 +5753,56 @@ a:focus-visible,
   }
 
   /*
+   * Full-width drawer cards (ticket 15, research W4): the dialog arm's
+   * inner `.dialog-card` stretches to the sheet's width. Inside the sheet's
+   * flex column the card's own explicit 360px defeated stretch, painting a
+   * ~90% band flush-left; the backstop below
+   * (`.dialog-card:not(.rb-drawer-card *)`) already excludes in-sheet cards,
+   * so this is the one rule that owns them. The card's chrome folds to the
+   * sheet frame's geometry — the frame owns the placement: no bloom (the
+   * sheet's own clip eats it anyway), square bottom corners matching the
+   * frame's cap through the `--rb-radius-bubble` token (16px, the frame's
+   * own top corners) — while the hairline frame, background, and
+   * 20px interior padding stay the dialog family's own. The bottom padding
+   * composes with the shared safe-area term so the sheet's actions clear
+   * the notch's gesture bar on notched devices.
+   */
+  .rb-drawer-card .dialog-card {
+    width: 100%;
+    border-radius: var(--rb-radius-bubble) var(--rb-radius-bubble) 0 0;
+    box-shadow: none;
+    padding-bottom: calc(20px + var(--rb-safe-sheet-pad));
+  }
+
+  /*
+   * The picker arm rides the sheet AS the card (`cardClassName`'s
+   * `.popover-card` lands on the popup itself), so its `--rb-space-xs`
+   * inset composes with the shared safe-area term the same way — the
+   * token is the sheet family's one spelling of the 4px (the floating
+   * form's own literal padding stays the popover.rs citation it is).
+   * The select arm's child-card form gets the same term in its own block
+   * next to `.settings-select-menu`; the `+` menu's sheet composes it
+   * into its own padding rule below.
+   */
+  .rb-drawer-card.popover-card {
+    padding-bottom: calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
+  }
+
+  /*
    * The right pane's `+` menu in the strip's in-drawer phone form (ticket
-   * 52, 49's explicit deferral): the anchored 168px card's rows ride the
-   * shared sheet — the sheet replaces placement, the rows keep their own
-   * rhythm (`gap 2`, the menu's `--rb-overlay` tone and 13px type).
+   * 52, 49's explicit deferral — ticket 18 keeps this direction): the
+   * anchored 168px card's rows ride the shared sheet, which carries its
+   * own card recipe (NOT the popover-card frame — the sheet replaces
+   * placement AND frame here, ticket 15's final shape) — the sheet spans
+   * the viewport, the rows keep their own rhythm (gap 2, the menu's
+   * `--rb-overlay` tone and 13px type), and the safe-area term composes
+   * with the arm's own inset.
    */
   .rb-drawer-card.right-plus-menu-sheet {
     gap: 2px;
-    padding: var(--rb-space-xs);
+    /* The shared safe-area term composes with the arm's own inset (ticket 15). */
+    padding: var(--rb-space-xs) var(--rb-space-xs)
+      calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
     background: var(--rb-overlay);
     color: var(--rb-text);
     font-size: 13px;
@@ -7643,6 +7800,16 @@ button.files-save-pill:hover {
 
   .sidebar-inner {
     width: 100%;
+    /*
+     * Notched devices (ticket 50 grew the bar): the phone titlebar is
+     * `calc(38px + env(safe-area-inset-top))` tall while this drawer is
+     * pinned at `top: 0` under it, so the base 38px pad left the
+     * space-filter row up inside the grown band — visible through the
+     * transparent bar, but every click landed on the bar (web-bugs 14).
+     * The pad tracks the bar's full height; without a notch the inset
+     * resolves to 0 and this is exactly the base rule's 38px.
+     */
+    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
   }
 
   .pane-seam-sidebar,
@@ -7675,6 +7842,21 @@ button.files-save-pill:hover {
     background: var(--rb-bg);
     display: flex;
     flex-direction: column;
+    /*
+     * The drawer pads its whole content below the titlebar band (web-bugs
+     * 14): the bar is a transparent but fully hit-testable full-width
+     * overlay above this drawer, so anything painted inside y in
+     * [0, 38 + inset] rendered through the bar while every click landed on
+     * it — the strip header (below) sat exactly in that band, its chips
+     * visible yet dead. Padding the CONTAINER moves strip header and body
+     * below the bar together, on the same calc the bar's own height uses,
+     * while z stays 30: the bar's cluster keeps the documented
+     * clickability above the drawer, and the drawer's own background
+     * paints the band — the same contract the phone sidebar drawer's pad
+     * gives it. The body's desktop titlebar pad stays zeroed below; this
+     * is the one pad point at phone.
+     */
+    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
   }
 
   .right-pane:not([aria-hidden="true"]) {
@@ -7701,7 +7883,11 @@ button.files-save-pill:hover {
    * The in-drawer tab strip header (§2.2): the 38px row that carries the
    * surface tabs at phone — the titlebar band's phone replacement, since
    * the band renders no pane tabs there and 41px could not fit a strip
-   * anyway. The strip inside is the desktop's, chips and all.
+   * anyway. The drawer's container pad (above) puts its top edge at the
+   * bar's bottom edge, so the chips are clickable rather than occluded
+   * by the bar; the row itself stays a plain 38px — the notch inset is
+   * the drawer pad's term, never the strip's. The strip inside is the
+   * desktop's, chips and all.
    */
   .right-pane-strip-header {
     flex: none;
@@ -11652,12 +11838,16 @@ button.files-save-pill:hover {
    the floating form's parity numbers (the sheet frame owns the height
    clamp and the scrolling), and the floating form's entrance/exit yield
    to the sheet's `rb-dialog-in` (the sheet is the motion source at
-   phone). */
+   phone). Ticket 15 adds the home-indicator term: the menu is the sheet's
+   scroll content, so its own `--rb-space-xs` inset (the `.popover-card`
+   the popup carries) composes with the frame's shared safe-area term
+   like every other sheet arm. */
 @media (max-width: 768px) {
   .rb-drawer-card .settings-select-menu {
     width: 100%;
     max-height: none;
     overflow: visible;
+    padding-bottom: calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
   }
 
   .rb-drawer-card .settings-select-menu[data-open],
@@ -12088,43 +12278,11 @@ button.files-save-pill:hover {
   }
 }
 
-/* The login dialog (modal) — its OWN classes, never `.modal-backdrop`/
-   `.modal-card`: a later block redefining those for this top-dumped card used
-   to win the cascade for every dialog in the app (same specificity, later
-   order), silently top-dumping the rename/delete dialogs at 15vh instead of
-   the two-axis centering `modal_with` mandates (popover.rs:679-705). */
-.login-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-modal);
-  /* scrim(): literal black in both appearances — a scrim darkens what is
-     behind it; tinting toward the panel color washes light mode white. */
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 15vh var(--rb-space-md) var(--rb-space-md);
-}
-
-.login-dialog-card {
-  width: min(26rem, 100%);
-  padding: var(--rb-space-md) var(--rb-space-lg) var(--rb-space-lg);
-  display: flex;
-  flex-direction: column;
-  background: var(--rb-dialog);
-}
-
-.login-dialog-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.login-dialog-body {
-  margin-top: 8px;
-  line-height: 18px;
-}
-
+/* The login dialog's CONTENT classes — the card/scrim chrome rides the
+   shared `ui/Dialog` family now (ticket 18); what stays here is the
+   content specifics the family has no answer for: the reopen link, the
+   browser-poll line, the inline errors, and the lone action row of the
+   non-form browser arm. */
 .login-dialog-link {
   margin-top: 6px;
   font-size: 12px;
@@ -12141,13 +12299,8 @@ button.files-save-pill:hover {
   color: var(--rb-text);
 }
 
-.login-dialog-form {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
+/* The lone action row of the non-form (browser-poll) arm; the paste-code
+   arm rides the shared `.dialog-actions-row` inside `.dialog-form-rows`. */
 .login-dialog-actions {
   margin-top: 8px;
   display: flex;
@@ -12430,43 +12583,10 @@ button.files-save-pill:hover {
   opacity: 1;
 }
 
-/* The rename dialog (devices.rs:244-282 over popover::modal): the scrim
-   swallows clicks without dismissing; only Cancel / Rename / Enter close. */
-.rename-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--rb-z-modal);
-  background: rgb(0 0 0 / var(--rb-scrim-alpha));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rename-dialog-card {
-  width: min(24rem, 100%);
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  background: var(--rb-dialog);
-  border-radius: 16px;
-}
-
-.rename-dialog-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.rename-dialog-field {
-  margin-top: 12px;
-}
-
-.rename-dialog-actions {
-  margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
+/* The rename dialog's chrome rides the shared `ui/Dialog` family (ticket
+   18 — devices.rs:244-282 over popover::modal): the scrim swallows clicks
+   without dismissing (`RbDialog`'s `disablePointerDismissal`), only
+   Cancel / Rename / Enter — and now Escape — close it. */
 
 /* ── The device switcher (accounts.rs:306-365 / harnesses.rs:464-522) ── */
 
@@ -12644,15 +12764,15 @@ button.files-save-pill:hover {
   cursor: default;
 }
 
-/* The inline choice list (harnesses.rs:358-382): scrollable at 240px. */
-.title-picker-options {
-  margin-top: 4px;
-  width: 100%;
+/* The choices (harnesses.rs:286-382, ticket 18): the card-content
+   specifics on the shared `.popover-card` frame — the 2px row rhythm and
+   the old 240px scroll bound; the frame, portal, and the phone sheet ride
+   `PickerCard` (the settings-appearance pattern), replacing the inline
+   `.title-picker-options` expander. */
+.title-picker-menu {
+  gap: 2px;
   max-height: 240px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 /* ── Files (settings/files.rs) ─────────────────────────────────────── */
@@ -14088,10 +14208,6 @@ button.segmented-option:hover {
   .right-surface-add,
   .surface-picker-row {
     transition: none;
-  }
-
-  .right-plus-menu {
-    animation: none;
   }
 }
 

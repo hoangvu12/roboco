@@ -64,6 +64,7 @@ mod project_icon;
 mod command_palette;
 mod sidebar_pins;
 mod sidebar_sections;
+mod sidebar_state_sync;
 mod spaces;
 mod tabs;
 
@@ -1339,6 +1340,12 @@ pub struct Shell {
     sidebar_pin_write: Option<sidebar_pins::PendingSidebarPins>,
     sidebar_pin_write_generation: u64,
     sidebar_pin_write_notice: Option<SharedString>,
+    /// Engine-side sidebar state bridge (ticket 11): engine = authority,
+    /// `UiSettings` = offline cache. The sync bookkeeping, the single-flight
+    /// write-through task, and the `WatchSidebarState` subscription.
+    sidebar_state_sync: sidebar_state_sync::SidebarStateSync,
+    sidebar_state_write: Option<Task<()>>,
+    sidebar_state_watch: Option<Task<()>>,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
     /// Last seen session status per chat — the chime trigger compares against
@@ -1713,6 +1720,9 @@ impl Shell {
             sidebar_pin_write: None,
             sidebar_pin_write_generation: 0,
             sidebar_pin_write_notice: None,
+            sidebar_state_sync: Default::default(),
+            sidebar_state_write: None,
+            sidebar_state_watch: None,
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             connectivity_notifications: Default::default(),
@@ -2084,6 +2094,9 @@ impl Shell {
                         .remove(&profile_key);
                 }
                 self.schedule_save(cx);
+                // The prune is a write like any other: mirror it to the
+                // engine's store (ticket 11).
+                self.push_sidebar_pins(cx);
             }
         }
         if !self.pinned_session_drag_is_valid(cx) {
@@ -2142,10 +2155,20 @@ impl Shell {
                         .ok();
                     }));
                 }
+                // Engine attached: pins and sections now live engine-side
+                // (ticket 11) — mirror them and push any cached writes.
+                self.spawn_sidebar_state_watch(cx);
             }
             // Reveal the gate card immediately; the splash never returns mid-session.
-            ConnectionStatus::Failed(_) => self.splash = SplashPhase::Gone,
-            ConnectionStatus::Connecting => {}
+            ConnectionStatus::Failed(_) => {
+                self.splash = SplashPhase::Gone;
+                // The engine is gone: stop mirroring (UiSettings keeps
+                // serving reads offline); a later Ready respawns the watch.
+                self.sidebar_state_watch = None;
+            }
+            ConnectionStatus::Connecting => {
+                self.sidebar_state_watch = None;
+            }
         }
     }
 
@@ -4065,6 +4088,9 @@ impl Shell {
         }
         self.schedule_save(cx);
         self.queue_sidebar_pin_write(profile_key, change, cx);
+        // The engine owns the durable copy now (ticket 11); `UiSettings` is
+        // the offline cache — push the projected list through the RPC.
+        self.push_sidebar_pins(cx);
         true
     }
 

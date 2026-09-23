@@ -130,6 +130,19 @@ export const RUN_PROJECT_ACTION = "RunProjectAction";
 /** Poll a queued Run's worktree-setup outcome (`{commandId, chatId}` → `{ready, setupAction?, setupError?}`; single-take, 10-min TTL). */
 export const TAKE_PROJECT_ACTION_SETUP = "TakeProjectActionSetup";
 
+/**
+ * Sidebar organization state (pins + custom sections): engine-local per
+ * ADR 0004 (crates/engine/src/sidebar_state.rs), bucketed per workspace
+ * profile key — the same buckets the clients compute off the engine's
+ * scope + device id. Ordered-list replace, last write wins, every mutation
+ * replies with the fresh `SidebarStateSnapshot`, and the watch streams it
+ * (current value first) so every client paired to the engine mirrors live.
+ * Routing is the local-engine surface: no `targetDeviceId`, no relay.
+ */
+export const SET_SIDEBAR_PINS = "SetSidebarPins";
+export const SET_SIDEBAR_SECTIONS = "SetSidebarSections";
+export const WATCH_SIDEBAR_STATE = "WatchSidebarState";
+
 /** Shared remote-safe Git status stream (`{chatId}` → `WorkspaceGitStatusFrame`). */
 export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";
 /** One-shot scoped capture (`mode` = workingTree | branch | turn). */

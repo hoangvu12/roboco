@@ -6,6 +6,14 @@ import type { Device } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { forgetEngine, useFleet, useFleetRegistry, fleetStore } from "../state/fleet";
 import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
+import {
+  BtnGhost,
+  BtnPrimary,
+  Dialog,
+  DialogCard,
+  DialogField,
+  DialogTitle,
+} from "../components/ui/Dialog";
 import { webDeviceLabel, engineHost, type StoredEngine } from "../lib/engine-store";
 import { describeRedeemError } from "../lib/pairing-errors";
 import { engineConnection } from "../lib/settings-engine";
@@ -393,49 +401,52 @@ function DeviceRow(props: {
 }
 
 /**
- * The rename dialog (devices.rs render_rename_dialog): scrim + centered
- * card, pre-filled field, Cancel / Rename. Parity quirks preserved on
- * purpose: the scrim swallows clicks without dismissing (popover::modal's
- * contract — "the caller wires its own dismiss/confirm") and there is NO
- * Escape-to-cancel path — only Cancel, Rename, or Enter close it.
+ * The rename dialog (devices.rs render_rename_dialog): the shared
+ * `ui/Dialog` family — `RbDialog`'s scrim swallows presses without
+ * dismissing (its `disablePointerDismissal` carries the old hand-roll's
+ * parity quirk for free) and the phone arm is the family's bottom sheet
+ * (the old fixed-centered card squashed at ≤768px). Cancel, Rename, and
+ * Enter close it, as before; Escape now cancels too — the one gained
+ * path, matching the shared dialogs (documented deviation). Exported
+ * for the mounted family test (tests/settings-dialogs.test.ts).
  */
-function RenameDeviceDialog(props: {
+export function RenameDeviceDialog(props: {
   readonly dialog: RenameDialog;
   readonly onCancel: () => void;
   readonly onSubmit: (name: string) => void;
 }) {
   const [name, setName] = useState(props.dialog.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   return (
-    <div className="rename-dialog-backdrop" role="presentation">
-      <section className="rename-dialog-card panel" role="dialog" aria-label="Rename device">
+    <Dialog ariaLabel="Rename device" onClose={props.onCancel} initialFocus={inputRef}>
+      <DialogCard>
+        <DialogTitle>Rename device</DialogTitle>
         <form
+          className="dialog-form-rows"
           onSubmit={(event) => {
             event.preventDefault();
             props.onSubmit(name);
           }}
         >
-          <h2 className="rename-dialog-title">Rename device</h2>
-          <div className="rename-dialog-field">
+          <DialogField>
             <input
-              className="input"
+              ref={inputRef}
               type="text"
               placeholder="Device name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              autoFocus
               autoComplete="off"
+              aria-label="Device name"
             />
-          </div>
-          <div className="rename-dialog-actions">
-            <button type="button" className="btn btn-ghost" onClick={props.onCancel}>
+          </DialogField>
+          <div className="dialog-actions-row">
+            <BtnGhost type="button" onClick={props.onCancel}>
               Cancel
-            </button>
-            <button type="submit" className="btn btn-solid">
-              Rename
-            </button>
+            </BtnGhost>
+            <BtnPrimary type="submit">Rename</BtnPrimary>
           </div>
         </form>
-      </section>
-    </div>
+      </DialogCard>
+    </Dialog>
   );
 }

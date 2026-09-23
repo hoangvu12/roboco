@@ -6,6 +6,7 @@ import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
+import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
 import { useWatchSnapshot } from "../state/hooks";
@@ -378,7 +379,7 @@ export function AgentsSettingsPage() {
         harnesses={harnesses.kind === "ready" ? harnesses.value : []}
         titleMenu={titleMenu}
         titleSaving={titleSaving}
-        onToggleMenu={(isModel) => setTitleMenu((current) => (current === isModel ? null : isModel))}
+        onSetMenu={(open, isModel) => setTitleMenu(open ? isModel : null)}
         onChoose={(choice) => void loadTitles(choice)}
       />
     </div>
@@ -512,7 +513,7 @@ function TitleSettingsCard(props: {
   readonly harnesses: readonly HarnessDescriptor[];
   readonly titleMenu: boolean | null;
   readonly titleSaving: boolean;
-  readonly onToggleMenu: (isModel: boolean) => void;
+  readonly onSetMenu: (open: boolean, isModel: boolean) => void;
   readonly onChoose: (choice: TitleSettings) => void;
 }) {
   const settings = props.titleSettings;
@@ -589,7 +590,7 @@ function TitleSettingsCard(props: {
         display={harnessLabel}
         interactive={!props.titleSaving}
         open={props.titleMenu === false}
-        onToggle={() => props.onToggleMenu(false)}
+        onOpenChange={(next) => props.onSetMenu(next, false)}
       >
         {harnessChoices.map(choiceRow)}
       </TitlePickerRow>
@@ -598,7 +599,7 @@ function TitleSettingsCard(props: {
         display={modelLabel}
         interactive={!props.titleSaving && value.harness !== null}
         open={props.titleMenu === true}
-        onToggle={() => props.onToggleMenu(true)}
+        onOpenChange={(next) => props.onSetMenu(next, true)}
       >
         {modelChoices.map(choiceRow)}
       </TitlePickerRow>
@@ -611,26 +612,45 @@ function TitleSettingsCard(props: {
   );
 }
 
-function TitlePickerRow(props: {
+/** One picker row (harnesses.rs:286-316) — exported for the mounted test. */
+export function TitlePickerRow(props: {
   readonly label: string;
   readonly display: string;
   readonly interactive: boolean;
   readonly open: boolean;
-  readonly onToggle: () => void;
+  readonly onOpenChange: (open: boolean) => void;
   readonly children: ReactNode;
 }) {
+  // Ticket 18: the choices ride `PickerCard` — the settings-appearance
+  // pattern (the theme variant picker) instead of the old inline
+  // `.title-picker-options` expander. Desktop: the portaled card below the
+  // trigger; phone: the shared bottom sheet (where the old inline expander
+  // stacked full-width rows). `initialFocus: false` keeps focus put, the
+  // shared contract for pickers driven from a settings row.
   return (
     <div className={`settings-row title-picker-row ${props.interactive ? "" : "title-picker-inert"}`}>
       <span className="settings-row-title title-picker-label">{props.label}</span>
-      <button
-        type="button"
-        className="btn btn-ghost title-picker-trigger"
-        disabled={!props.interactive}
-        onClick={props.onToggle}
+      <PickerCard
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        placement="anchorBelow"
+        cardClassName="popover-card title-picker-menu"
+        role="menu"
+        ariaLabel={props.label}
+        width={260}
+        initialFocus={false}
+        trigger={
+          <button
+            type="button"
+            className="btn btn-ghost title-picker-trigger"
+            disabled={!props.interactive}
+          >
+            {props.display}
+          </button>
+        }
       >
-        {props.display}
-      </button>
-      {props.open && <div className="title-picker-options">{props.children}</div>}
+        {props.children}
+      </PickerCard>
     </div>
   );
 }

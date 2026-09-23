@@ -36,6 +36,9 @@ import {
   measuredSinceFlip,
   MIN_COMPACT_INPUT_WIDTH,
   modelHandoff,
+  modelHandoffPosition,
+  modelSlotOffset,
+  modelTravel,
   morphClusterDy,
   morphClusterInset,
   morphTextPad,
@@ -486,6 +489,149 @@ describe("model_handoff_hides_relocation_and_keeps_visible_motion_local", () => 
       expect(opacity).toBeLessThanOrEqual(1.0);
       expect(Math.abs(drift)).toBeLessThanOrEqual(6.0);
       expect(side === 0.0 || side === 1.0).toBe(true);
+    }
+  });
+});
+
+/**
+ * e0c1e936's wired half (ticket 03): the handoff POSITION rides the shared
+ * height/route clock — the dock amount on a compact route, else an
+ * EASE_IN_OUT lerp over the flip morph's RAW timeline — and the per-frame
+ * offset lands the invisible relocation against `model_travel` (the
+ * measured distance between the chip's two anchor slots). The endpoints
+ * must match the slot geometry the CSS lays out: expanded = 0 left of the
+ * natural left slot, compact = 0 left of the natural right slot.
+ */
+describe("model_handoff_rides_the_shared_clock_and_lands_on_the_measured_slots", () => {
+  const EXPANDED = 0;
+  const COMPACT = 1;
+
+  it("rests at the rendered mode's target with no offset and full opacity", () => {
+    expect(modelHandoffPosition({ from: 1, compactTarget: EXPANDED, morph: null, dockActive: false, sessionExpanded: false, dockAmount: 0, nowMs: 0 })).toBe(EXPANDED);
+    expect(modelHandoffPosition({ from: 0, compactTarget: COMPACT, morph: null, dockActive: false, sessionExpanded: true, dockAmount: 0, nowMs: 0 })).toBe(COMPACT);
+    const restingExpanded = modelSlotOffset(EXPANDED, EXPANDED, 420);
+    expect(restingExpanded.left).toBe(0);
+    expect(restingExpanded.opacity).toBe(1);
+    const restingCompact = modelSlotOffset(COMPACT, COMPACT, 420);
+    expect(restingCompact.left).toBe(0);
+    expect(restingCompact.opacity).toBe(1);
+  });
+
+  it("the dock amount drives the position on a compact route, ignoring the morph", () => {
+    for (const amount of [0, 0.25, 0.5, 0.75, 1]) {
+      const position = modelHandoffPosition({
+        from: 0,
+        compactTarget: COMPACT,
+        morph: { from: 124, startMs: 0, spec: "collapse" },
+        dockActive: true,
+        sessionExpanded: false,
+        dockAmount: amount,
+        nowMs: 90,
+      });
+      expect(position).toBe(amount);
+    }
+    // An expanded session never hands the clock to the dock.
+    expect(
+      modelHandoffPosition({
+        from: 0,
+        compactTarget: EXPANDED,
+        morph: null,
+        dockActive: true,
+        sessionExpanded: true,
+        dockAmount: 1,
+        nowMs: 0,
+      }),
+    ).toBe(EXPANDED);
+  });
+
+  it("lerps from the captured phase through the morph's RAW timeline, reaching the target at its end", () => {
+    const morph: FlipMorph = { from: 124, startMs: 0, spec: "collapse" };
+    let previous = 1;
+    for (const nowMs of [0, 45, 90, 135, 180, 400]) {
+      const position = modelHandoffPosition({
+        from: 1,
+        compactTarget: EXPANDED,
+        morph,
+        dockActive: false,
+        sessionExpanded: false,
+        dockAmount: 0,
+        nowMs,
+      });
+      // Monotone toward the target over time (EASE_IN_OUT never reverses).
+      expect(position).toBeLessThanOrEqual(previous);
+      previous = position;
+    }
+    expect(
+      modelHandoffPosition({
+        from: 1,
+        compactTarget: EXPANDED,
+        morph,
+        dockActive: false,
+        sessionExpanded: false,
+        dockAmount: 0,
+        nowMs: 180,
+      }),
+    ).toBe(EXPANDED);
+    // Monotone in the other direction too (a collapse).
+    let rising = 0;
+    for (const nowMs of [0, 45, 90, 135, 180]) {
+      const position = modelHandoffPosition({
+        from: 0,
+        compactTarget: COMPACT,
+        morph,
+        dockActive: false,
+        sessionExpanded: true,
+        dockAmount: 0,
+        nowMs,
+      });
+      expect(position).toBeGreaterThanOrEqual(rising);
+      rising = position;
+    }
+  });
+
+  it("model_travel is the measured distance between the two anchor slots, never negative", () => {
+    // A 768px pill, a 160px chip, the 8px compact inset: 768 − 2 − 12 − 28
+    // − 2 − 160 − 8 − 28 − 8 = 520.
+    expect(modelTravel(768, 160, 8)).toBe(520);
+    expect(modelTravel(768, 160, 12)).toBe(516);
+    // A chip wider than the pill clamps at zero — no negative lefts.
+    expect(modelTravel(120, 400, 8)).toBe(0);
+  });
+
+  it("the offset fades out at the OLD endpoint, relocates invisibly, fades in at the NEW one", () => {
+    const travel = 320;
+    // Expanding (rendered expanded, target 0): at the start the chip still
+    // sits at its compact slot — offset = travel — fully opaque.
+    const start = modelSlotOffset(1, EXPANDED, travel);
+    expect(start.left).toBeCloseTo(travel);
+    expect(start.opacity).toBe(1);
+    // The invisible window [0.44, 0.56] spans the side flip — the
+    // relocation itself is never on screen.
+    for (const amount of [0.44, 0.5, 0.56]) {
+      expect(modelSlotOffset(amount, EXPANDED, travel).opacity).toBeLessThan(0.0001);
+      expect(modelSlotOffset(amount, COMPACT, travel).opacity).toBeLessThan(0.0001);
+    }
+    // Just past the crossing: relocated to the LEFT slot, fading back in,
+    // within the 6px drift.
+    const past = modelSlotOffset(0.4, EXPANDED, travel);
+    expect(past.opacity).toBeGreaterThan(0);
+    expect(past.left).toBeLessThanOrEqual(6.0);
+    // Collapsing (rendered compact, target 1): the mirrored geometry —
+    // the chip starts at the expanded slot, `−travel` from its own.
+    const collapseStart = modelSlotOffset(0, COMPACT, travel);
+    expect(collapseStart.left).toBeCloseTo(-travel);
+    expect(collapseStart.opacity).toBe(1);
+    const collapsePast = modelSlotOffset(0.6, COMPACT, travel);
+    expect(collapsePast.opacity).toBeGreaterThan(0);
+    expect(collapsePast.left).toBeGreaterThanOrEqual(-6.0);
+    // Every offset stays within the travel band plus the drift.
+    for (let step = 0; step <= 100; step += 1) {
+      const expanding = modelSlotOffset(step / 100, EXPANDED, travel);
+      expect(expanding.left).toBeGreaterThanOrEqual(-6.0);
+      expect(expanding.left).toBeLessThanOrEqual(travel + 6.0);
+      const collapsing = modelSlotOffset(step / 100, COMPACT, travel);
+      expect(collapsing.left).toBeGreaterThanOrEqual(-travel - 6.0);
+      expect(collapsing.left).toBeLessThanOrEqual(6.0);
     }
   });
 });

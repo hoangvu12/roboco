@@ -891,8 +891,12 @@ mod pinned_session_tests {
         cx.simulate_mouse_move(target, Some(MouseButton::Left), gpui::Modifiers::default());
         shell.read_with(cx, |shell, cx| {
             let drag = shell.sidebar_session_transfer.as_ref().unwrap();
-            assert_eq!(drag.preview.as_ref().unwrap().group, "regular");
-            assert!(drag.siblings["newer"].to > 0.0);
+            // No caret on a rejected target: the regular list keeps recency
+            // order, so an already-unpinned source previews nothing — no gap,
+            // no sibling slide — while the drop below still animates home.
+            assert!(drag.preview.is_none());
+            assert_eq!(drag.siblings["newer"].to, 0.0);
+            assert_eq!(shell.sidebar_transfer_extra_gap("regular"), 0.0);
             assert!(shell.settings.sidebar_pins("local").is_empty());
         });
         cx.simulate_mouse_up(target, MouseButton::Left, gpui::Modifiers::default());
@@ -1194,6 +1198,52 @@ mod pinned_session_tests {
         shell.read_with(cx, |shell, cx| {
             assert!(shell.sessions_open);
             assert!(shell.active_sidebar_pins(cx).is_empty());
+        });
+
+        // A section member previews nothing over regular rows either: the
+        // drop is a membership change, not a reorder, so no caret may
+        // promise an index the recency sort will discard.
+        shell.update(cx, |shell, cx| {
+            shell.settings.sidebar_sections_by_profile.insert(
+                "local".into(),
+                vec![crate::settings::SidebarSection {
+                    id: "a".into(),
+                    name: "Focus".into(),
+                    session_ids: vec!["older".into()],
+                    collapsed: false,
+                }],
+            );
+            cx.notify();
+        });
+        let from = cx.debug_bounds("chat-older").unwrap().center();
+        cx.simulate_mouse_down(from, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            from + gpui::point(px(8.0), px(0.0)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        let slot = cx.debug_bounds("session-slot-newer").unwrap();
+        let target = gpui::point(slot.center().x, slot.top() + px(3.0));
+        cx.simulate_mouse_move(target, Some(MouseButton::Left), gpui::Modifiers::default());
+        shell.read_with(cx, |shell, _| {
+            assert!(
+                shell
+                    .sidebar_session_transfer
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .is_none()
+            );
+        });
+        cx.simulate_mouse_up(target, MouseButton::Left, gpui::Modifiers::default());
+        shell.update(cx, |shell, cx| {
+            // The unclaimed drop still leaves the section; recency order holds.
+            assert!(shell
+                .active_sidebar_sections(cx)
+                .iter()
+                .all(|section| !section.session_ids.contains(&"older".to_string())));
+            assert_eq!(shell.sidebar_visible_order(cx), ids(&["older", "newer"]));
+            cx.notify();
         });
     }
 }
@@ -4042,6 +4092,11 @@ impl Shell {
                     .as_ref()
                     .map_or_else(|| "regular".to_owned(), |(key, _)| format!("regular:{key}"))
             };
+            // Section rows keep their membership preview; every other
+            // non-pinned group is a recency-ordered list.
+            let section_group = group
+                .as_ref()
+                .is_some_and(|(key, _)| key.starts_with("section:"));
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for (group_index, row) in rows.into_iter().enumerate() {
                 let ActiveChatRow {
@@ -4170,6 +4225,22 @@ impl Shell {
                             let Some(drag) = this.sidebar_session_transfer.as_mut() else {
                                 return;
                             };
+                            // Ordinary lists keep recency order: a drop here can
+                            // only unpin, so an already-unpinned source is a no-op
+                            // that must not advertise an insertion slot (the web
+                            // client draws no caret in regular lists; upstream
+                            // v0.2.80 still does). Pin transfers keep the preview —
+                            // the drop really moves the row out of Pinned — and
+                            // pinned/section targets keep their own carets below.
+                            if !pinned_group
+                                && !section_group
+                                && !drag.payload.visible_ids.contains(&drag.payload.chat_id)
+                            {
+                                if drag.preview.take().is_some() {
+                                    cx.notify();
+                                }
+                                return;
+                            }
                             let after = event.event.position.y >= event.bounds.center().y;
                             let index = group_index + usize::from(after);
                             let mut top = f32::from(
@@ -4408,21 +4479,32 @@ impl Shell {
             .id("sessions-toggle")
             .debug_selector(|| "sessions-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
-                |this, event: &gpui::DragMoveEvent<SidebarSessionDrag>, _, _| {
-                    if event.bounds.contains(&event.event.position) {
-                        let top = f32::from(
-                            event.bounds.bottom()
-                                - this.sidebar_scroll.bounds().top()
-                                - this.sidebar_scroll.offset().y,
-                        ) + SIDEBAR_DISCLOSURE_BODY_INSET;
-                        if let Some(drag) = this.sidebar_session_transfer.as_mut() {
-                            drag.preview = Some(SidebarSessionGap {
-                                group: "regular".into(),
-                                index: 0,
-                                pinned: false,
-                                top,
-                            });
+                |this, event: &gpui::DragMoveEvent<SidebarSessionDrag>, _, cx| {
+                    if !event.bounds.contains(&event.event.position) {
+                        return;
+                    }
+                    let top = f32::from(
+                        event.bounds.bottom()
+                            - this.sidebar_scroll.bounds().top()
+                            - this.sidebar_scroll.offset().y,
+                    ) + SIDEBAR_DISCLOSURE_BODY_INSET;
+                    if let Some(drag) = this.sidebar_session_transfer.as_mut() {
+                        // The rows' honesty rule: the Sessions list is
+                        // recency-ordered, so only a pin transfer previews here;
+                        // an already-unpinned source is a no-op that must not
+                        // advertise an insertion slot.
+                        if !drag.payload.visible_ids.contains(&drag.payload.chat_id) {
+                            if drag.preview.take().is_some() {
+                                cx.notify();
+                            }
+                            return;
                         }
+                        drag.preview = Some(SidebarSessionGap {
+                            group: "regular".into(),
+                            index: 0,
+                            pinned: false,
+                            top,
+                        });
                     }
                 },
             ))
