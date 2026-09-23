@@ -9,6 +9,13 @@
  * reconciliation runs through its extracted hook (the owner composer.tsx
  * wires). No JSX (createElement), per-file jsdom pragma only — the same
  * mounted-suite idiom as session-provider.test.ts (ticket 67).
+ *
+ * Ticket 08 — the traits tray's choices ride `NestedMenu` (ticket 01's
+ * primitive): a flyout PORTALED to the body on desktop (bug 9's fix — the
+ * inline expansion lived inside the card's clip box), the in-sheet
+ * drill-down on phone (ticket 15's pattern). The trigger row's press and
+ * the keyboard walk behave exactly as before; only where the choices
+ * paint changed.
  */
 
 import { act, createElement, useState } from "react";
@@ -24,13 +31,20 @@ import { PickerCatalog } from "../src/state/picker-catalog";
 import { emitShortcut } from "../src/state/shortcuts";
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
-// matchMedia (useIsPhone in PickerCard), ResizeObserver (MenuScrollbar),
-// scrollIntoView (the cursor list's scroll effect / anchorCursor).
+// matchMedia (useIsPhone in PickerCard/NestedMenu), ResizeObserver
+// (MenuScrollbar), scrollIntoView (the cursor list's scroll effect /
+// anchorCursor).
+
+/** The useIsPhone answer for every mount in this file (PHONE_QUERY match). */
+let phoneMode = false;
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   window.matchMedia = ((query: string) => ({
-    matches: false,
+    // `(max-width: 768px)` matches in phone mode; `(min-width: 769px)` in
+    // desktop mode — the exact pair `state/media.ts` derives from the one
+    // breakpoint, so the two queries can never disagree.
+    matches: query.startsWith("(max-width") === phoneMode,
     media: query,
     onchange: null,
     addEventListener: () => {},
@@ -168,7 +182,10 @@ function mountPicker(options: {
   client: FakeClient;
   initial: DraftConfig;
   chatConfig?: ChatConfig | null;
+  /** Mount under the phone arm (≤768px) — the drawer sheet + drill-downs. */
+  phone?: boolean;
 }): MountedPicker {
+  phoneMode = options.phone ?? false;
   const catalog = new PickerCatalog(options.client);
   const observed: { current: DraftConfig } = { current: options.initial };
   const drafts: DraftConfig[] = [];
@@ -234,11 +251,13 @@ async function openCard(handle: MountedPicker): Promise<void> {
 }
 
 function reasoningRow(level: string): HTMLElement | null {
-  // The card renders through a portal — query the document, not the container.
-  // The nested tray (upstream 9a4757be): reasoning choices live under the
-  // Reasoning trigger's expanded menu, keyed `setting-choice-reasoning-<level>`.
+  // The choices ride the NESTED menu (ticket 08): portaled to the body on
+  // desktop (bug 9's fix — the old inline `.model-setting-choices` lived
+  // inside the card's overflow: hidden clip box), drilled in the sheet on
+  // phone. Either way the document, not the card's portal tree, owns them;
+  // the row keys stay `setting-choice-<group>-<level>`.
   return document.querySelector<HTMLElement>(
-    `.model-traits [data-rb-row-key="setting-choice-reasoning-${level}"]`,
+    `[data-rb-row-key="setting-choice-reasoning-${level}"]`,
   );
 }
 
@@ -249,18 +268,31 @@ function traitTriggers(): string[] {
 }
 
 function settingTrigger(id: string): HTMLElement | null {
+  // The trigger rows stay inside the card's own portal (the traits tray).
   return document.querySelector<HTMLElement>(
     `.model-traits [data-rb-row-key="model-setting-${id}"]`,
   );
 }
 
 function settingChoice(id: string, value: string): HTMLElement | null {
+  // The choices ride the nested flyout's body portal (desktop) or the
+  // drill body (phone) — document-wide, like `reasoningRow`.
   return document.querySelector<HTMLElement>(
-    `.model-traits [data-rb-row-key="setting-choice-${id}-${value}"]`,
+    `[data-rb-row-key="setting-choice-${id}-${value}"]`,
   );
 }
 
-/** Click a settings trigger open (the nested menu expands inline). */
+/** The nested flyout's portaled card (desktop arm only; phone = the drill). */
+function nestedFlyout(): HTMLElement | null {
+  // The parent identity card is `.rb-popover-popup … identity-card`; the
+  // nested flyout is a separate `.rb-popover-popup` without that class.
+  return Array.from(document.querySelectorAll<HTMLElement>(".rb-popover-popup")).find(
+    (el) => !el.classList.contains("identity-card"),
+  ) ?? null;
+}
+
+/** Click a settings trigger open (the nested menu opens: flyout on desktop,
+ *  drill-down on phone). */
 async function openSetting(id: string): Promise<void> {
   await act(async () => {
     settingTrigger(id)!.click();
@@ -564,6 +596,137 @@ describe("ComposerPickers nested model settings", () => {
     await flush();
     expect(settingTrigger("reasoning")).not.toBeNull();
     expect(handle.observed.current.model).toBe("gpt-5.4");
+  });
+});
+
+// ── Ticket 08: the traits tray's nested flyout (bug 9) ──────────────────────
+
+/** A real press pair on `target`: pointerdown (marks the press) then click. */
+function press(target: HTMLElement): void {
+  act(() => {
+    target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+  });
+}
+
+describe("ComposerPickers traits tray nested menu (ticket 08)", () => {
+  it("portals the choices beside the trigger — outside the card's clip box, with the group heading", async () => {
+    // Bug 9's fix: the old inline `.model-setting-choices` lived inside the
+    // card's `overflow: hidden` popup — the same clip that swallowed bug
+    // 5b's view submenu. The choices now ride the portaled nested flyout
+    // (`NestedMenu`, the desktop's `popover::nested_menu`, pickers.rs:4089).
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    const handle = mountPicker({ client, initial: draft() });
+    await flush();
+    await openCard(handle);
+    await openSetting("reasoning");
+
+    const flyout = nestedFlyout();
+    expect(flyout).not.toBeNull();
+    // Portaled to the body — NOT inside the identity card's own portal tree.
+    expect(flyout!.closest(".rb-popover-popup.identity-card")).toBeNull();
+    expect(document.body.contains(flyout!)).toBe(true);
+    // The choices live in the flyout, never in the tray's inline DOM.
+    expect(
+      flyout!.querySelector('[data-rb-row-key="setting-choice-reasoning-low"]'),
+    ).not.toBeNull();
+    expect(document.querySelector(".model-traits .model-setting-choice-row")).toBeNull();
+    // The flyout's heading — the desktop's `menu_heading` (pickers.rs:4036).
+    expect(flyout!.querySelector(".menu-heading")?.textContent).toBe("Reasoning");
+    // The trigger row keeps its summary (the ticket's invariant): label,
+    // current value, chevron — and the expanded state Base UI merges on.
+    const trigger = settingTrigger("reasoning")!;
+    expect(trigger.querySelector(".menu-row-label")?.textContent).toBe("Reasoning");
+    expect(trigger.querySelector(".model-setting-value")?.textContent).toBe("Low");
+    expect(trigger.querySelector(".model-setting-chevron")).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("selecting from the flyout applies and dismisses it — the card stays open for multi-adjust", async () => {
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    const handle = mountPicker({ client, initial: draft() });
+    await flush();
+    await openCard(handle);
+    await openSetting("reasoning");
+    await act(async () => {
+      reasoningRow("high")!.click();
+    });
+    expect(handle.observed.current.reasoning).toBe("high");
+    expect(nestedFlyout()).toBeNull();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    // The trigger's summary now carries the picked value.
+    expect(
+      settingTrigger("reasoning")!.querySelector(".model-setting-value")?.textContent,
+    ).toBe("High");
+  });
+
+  it("a press inside the parent card but outside the flyout closes just the nested menu", async () => {
+    // The desktop's `on_mouse_down_out` arm (pickers.rs:3949-3962): the
+    // trigger dismisses its own child; elsewhere in the parent, close the
+    // child and let that control receive the same click.
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    const handle = mountPicker({ client, initial: draft() });
+    await flush();
+    await openCard(handle);
+    await openSetting("reasoning");
+    expect(nestedFlyout()).not.toBeNull();
+    // The parent card's search row: inside the card, outside the flyout.
+    press(document.querySelector<HTMLInputElement>(".model-search-row input")!);
+    expect(nestedFlyout()).toBeNull();
+    expect(settingTrigger("reasoning")).not.toBeNull();
+    expect(handle.observed.current.reasoning).toBe("low");
+  });
+});
+
+// ── Ticket 08, phone arm: the traits tray drills in the sheet (ticket 15) ────
+
+describe("ComposerPickers traits tray on phone (ticket 15's drill-down)", () => {
+  it("drills the choices in the sheet — never a flyout — and the back header closes", async () => {
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    const handle = mountPicker({ client, initial: draft(), phone: true });
+    await flush();
+    await openCard(handle);
+    await openSetting("reasoning");
+
+    // The drill-down, not a flyout: the phone arm renders plain DOM in the
+    // sheet under the row — no Base UI popover mounts for the choices.
+    expect(nestedFlyout()).toBeNull();
+    const drill = document.querySelector<HTMLElement>(".rb-submenu-drill");
+    expect(drill).not.toBeNull();
+    const header = drill!.querySelector<HTMLElement>(".rb-submenu-drill-header");
+    expect(header).not.toBeNull();
+    // The back affordance carries the group's name (ticket 15's pattern).
+    expect(header!.textContent).toContain("Reasoning");
+    expect(
+      drill!.querySelector('[data-rb-row-key="setting-choice-reasoning-high"]'),
+    ).not.toBeNull();
+    expect(settingTrigger("reasoning")!.getAttribute("aria-expanded")).toBe("true");
+
+    // A pick applies through the drill and collapses it; the sheet stays.
+    await act(async () => {
+      reasoningRow("high")!.click();
+    });
+    expect(handle.observed.current.reasoning).toBe("high");
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(
+      settingTrigger("reasoning")!.querySelector(".model-setting-value")?.textContent,
+    ).toBe("High");
+
+    // Reopen: the back header closes the drill without picking.
+    await openSetting("reasoning");
+    await act(async () => {
+      document.querySelector<HTMLElement>(".rb-submenu-drill-header")!.click();
+    });
+    expect(document.querySelector(".rb-submenu-drill")).toBeNull();
+    expect(handle.observed.current.reasoning).toBe("high");
   });
 });
 

@@ -96,6 +96,14 @@ export interface NestedMenuProps {
    */
   readonly label?: ReactNode;
   /**
+   * The flyout's `menu_heading` (popover.rs:771-795) — both of the
+   * desktop's `nested_menu` consumers head their flyouts with the group's
+   * name (pickers.rs:4036's traits tray, spaces.rs:2496's view menu).
+   * Desktop arm only: the phone drill's header already carries the label,
+   * so the arm would otherwise say it twice.
+   */
+  readonly heading?: ReactNode;
+  /**
    * The side the desktop flyout opens on — `nested_menu`'s `left: bool`
    * (popover.rs:591-595): callers choose the side that has room; default
    * right.
@@ -212,6 +220,7 @@ function NestedMenuDesktop(props: NestedMenuProps) {
         motionSpeed={props.motionSpeed}
         onKeyDown={props.onKeyDown}
       >
+        {props.heading}
         {props.children}
       </RbPopover>
     </>

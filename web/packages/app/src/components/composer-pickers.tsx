@@ -36,11 +36,13 @@ import { isMacPlatform, onShortcut } from "../state/shortcuts";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
-import { MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { NestedMenu } from "./ui/NestedMenu";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { ErrorRow, SkeletonBar, SkeletonMenuRows } from "./ui/Skeleton";
 import { GlyphSpinner } from "./glyph-spinner";
+import type { NestedMenuSide } from "./base/popover";
 
 /**
  * The composer's run identity — the desktop's `Pickers::render` cluster.
@@ -566,6 +568,13 @@ function IdentityCard(props: IdentityCardProps) {
   const [scrollTop, setScrollTop] = useState(0);
   const [openSetting, setOpenSetting] = useState<string | null>(null);
   const [settingCursor, setSettingCursor] = useState(0);
+  // `setting_on_left` (pickers.rs:3969, spaces.rs:2412): the nested flyout
+  // opens on whichever side has room — re-read at every open, the row near
+  // the window's right edge flipping it left.
+  const [settingOnLeft, setSettingOnLeft] = useState(false);
+  // The settings' section wrappers — the side probe's anchors (one per
+  // group; each fills its row's width).
+  const settingSectionsRef = useRef(new Map<string, HTMLDivElement>());
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -627,12 +636,41 @@ function IdentityCard(props: IdentityCardProps) {
 
   // `open_setting` — land the submenu cursor on the group's selected choice
   // so the check and the highlight never sit on two rows.
-  const openSettingGroup = useCallback((id: string): void => {
-    const group = groups.find((entry) => entry.id === id);
-    const landing = group?.choices.findIndex((choice) => choice.selected) ?? -1;
-    setSettingCursor(landing < 0 ? 0 : landing);
-    setOpenSetting(id);
-  }, [groups]);
+  const openSettingGroup = useCallback(
+    (id: string): void => {
+      const group = groups.find((entry) => entry.id === id);
+      const landing = group?.choices.findIndex((choice) => choice.selected) ?? -1;
+      setSettingCursor(landing < 0 ? 0 : landing);
+      // `setting_on_left`'s probe (pickers.rs:3969): the flyout opens LEFT
+      // when its reach past the row's right edge would cross the window —
+      // measured on the section wrapper synchronously, so the flyout's
+      // first render already carries the side.
+      const section = settingSectionsRef.current.get(id);
+      setSettingOnLeft(
+        section !== undefined &&
+          section.getBoundingClientRect().right + SETTING_MENU_FLYOUT_REACH > window.innerWidth,
+      );
+      setOpenSetting(id);
+    },
+    [groups],
+  );
+
+  // The Base UI seam's close arm, guarded on identity: a late close from
+  // one group's flyout (the hover corridor's grace firing after a sibling
+  // already opened) must never clobber the newer group's open.
+  const closeSetting = useCallback((id: string): void => {
+    setOpenSetting((current) => (current === id ? null : current));
+  }, []);
+
+  // The side probe's anchor registry — a stable callback the tray's
+  // section wrappers ref into.
+  const registerSettingSection = useCallback((id: string, element: HTMLDivElement | null): void => {
+    if (element === null) {
+      settingSectionsRef.current.delete(id);
+    } else {
+      settingSectionsRef.current.set(id, element);
+    }
+  }, []);
 
   const toggleSetting = (id: string): void => {
     if (openSetting === id) {
@@ -980,8 +1018,12 @@ function IdentityCard(props: IdentityCardProps) {
                 openSetting={openSetting}
                 settingCursor={settingCursor}
                 highlightedSetting={cursor !== null ? Math.max(0, cursor - rows.length) : null}
+                side={settingOnLeft ? "left" : "right"}
                 onToggleSetting={toggleSetting}
+                onOpenSetting={openSettingGroup}
+                onCloseSetting={closeSetting}
                 onActivateChoice={activateSettingChoice}
+                registerSection={registerSettingSection}
               />
             )}
            </>
@@ -1085,11 +1127,27 @@ function ModelRow({
 }
 
 /**
+ * The nested choices flyout's width — `w(px(232.0))` on the menu passed to
+ * `nested_menu` (pickers.rs:4033-4036).
+ */
+const SETTING_MENU_WIDTH = 232;
+/**
+ * `setting_on_left`'s reach probe (pickers.rs:3969, spaces.rs:2412): the
+ * flyout opens LEFT when its reach beyond the row's right edge (the 232
+ * card + its offset) would cross the window's right edge. The desktop
+ * spells the constant 244; mirrored.
+ */
+const SETTING_MENU_FLYOUT_REACH = 244;
+
+/**
  * The pinned traits tray — the nested model settings (upstream 9a4757be's
  * `render_traits_sections`). Each setting is a compact trigger row (label,
- * current value, chevron); clicking (or → / Enter from the walk) opens its
- * own nested choices — the desktop floats them beside the trigger, the web
- * expands them inline under it. Selecting keeps the card open for
+ * current value, chevron); the row's press, hover, or → / Enter from the
+ * walk opens its own nested choices through `NestedMenu` (ticket 01): a
+ * PORTALED flyout beside the row on desktop (popover.rs's `nested_menu`,
+ * pickers.rs:4089-4093 — never the old inline expansion, which the card's
+ * `overflow: hidden` clip box would swallow), the drill-down under the
+ * row inside the sheet on phone. Selecting keeps the card open for
  * multi-adjust; Escape/← closes just the nested menu.
  */
 function TraitsTray({
@@ -1097,16 +1155,27 @@ function TraitsTray({
   openSetting,
   settingCursor,
   highlightedSetting,
+  side,
   onToggleSetting,
+  onOpenSetting,
+  onCloseSetting,
   onActivateChoice,
+  registerSection,
 }: {
   groups: readonly SettingGroup[];
   openSetting: string | null;
   settingCursor: number;
   /** The keyboard-walked trigger index (relative to the groups), or null. */
   highlightedSetting: number | null;
+  /** The flyout's side — `setting_on_left`, whichever side has room. */
+  side: NestedMenuSide;
   onToggleSetting: (id: string) => void;
+  /** The nested seam's open arm — opens and lands the choice cursor. */
+  onOpenSetting: (id: string) => void;
+  /** The nested seam's guarded close arm. */
+  onCloseSetting: (id: string) => void;
   onActivateChoice: (group: SettingGroup, index: number) => void;
+  registerSection: (id: string, element: HTMLDivElement | null) => void;
 }) {
   if (groups.length === 0) {
     return (
@@ -1124,23 +1193,41 @@ function TraitsTray({
           const open = openSetting === group.id;
           const value = group.choices.find((choice) => choice.selected)?.label ?? "";
           return (
-            <div className="model-traits-section" key={group.id}>
+            <div
+              className="model-traits-section"
+              key={group.id}
+              ref={(element) => registerSection(group.id, element)}
+            >
               {ix > 0 ? <MenuSeparator /> : null}
-              <MenuRowNav
-                fadeKey={`model-setting-${group.id}`}
-                className="model-setting-row"
-                selected={open}
-                highlighted={!open && highlightedSetting === ix}
-                onClick={() => onToggleSetting(group.id)}
-                aria-expanded={open}
+              {/* The trigger row keeps its own summary (label, current value,
+                  chevron — the desktop's `render_traits_sections` row); its
+                  press toggles and Base UI/hover opens through the seam. The
+                  choices portal beside it (desktop) or drill under it
+                  (phone) — `NestedMenu` resolves the arm internally. */}
+              <NestedMenu
+                open={open}
+                onOpenChange={(next) => (next ? onOpenSetting(group.id) : onCloseSetting(group.id))}
+                label={group.label}
+                heading={<MenuHeading>{group.label}</MenuHeading>}
+                side={side}
+                width={SETTING_MENU_WIDTH}
+                ariaLabel={`${group.label} choices`}
+                trigger={
+                  <MenuRowNav
+                    fadeKey={`model-setting-${group.id}`}
+                    className="model-setting-row"
+                    selected={open}
+                    highlighted={!open && highlightedSetting === ix}
+                    onClick={() => onToggleSetting(group.id)}
+                  >
+                    <span className="menu-row-label">{group.label}</span>
+                    <span className="model-trait-spring" />
+                    <span className="model-setting-value">{value}</span>
+                    <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
+                  </MenuRowNav>
+                }
               >
-                <span className="menu-row-label">{group.label}</span>
-                <span className="model-trait-spring" />
-                <span className="model-setting-value">{value}</span>
-                <Icon name="altArrowRight" size={12} className="model-setting-chevron" />
-              </MenuRowNav>
-              {open && (
-                <div className="model-setting-choices" role="group" aria-label={group.label}>
+                <div className="model-setting-choices">
                   {group.choices.map((choice, choiceIx) => {
                     const choiceKey = choice.value.length > 0 ? choice.value : (choice.reasoning ?? choice.label);
                     return (
@@ -1160,7 +1247,7 @@ function TraitsTray({
                     );
                   })}
                 </div>
-              )}
+              </NestedMenu>
             </div>
           );
         })}

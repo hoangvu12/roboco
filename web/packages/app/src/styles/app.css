@@ -5103,12 +5103,17 @@ a:focus-visible,
   color: var(--rb-text-muted);
 }
 
-/* The nested choices expand inline beneath their trigger. */
+/* The nested choices region: desktop — inside the PORTALED flyout card
+   (a scroll band capped at 240, `max_h(px(240.0))` in pickers.rs's nested
+   menu); phone — inside the drill body (the tray's own scroll carries it,
+   the body supplies the indent). No inline indent here anymore: the flyout
+   card's 4px inset (desktop) and the drill body's 10px (phone) own it. */
 .model-setting-choices {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-inline-start: 10px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .model-setting-choice-row {
@@ -5242,8 +5247,9 @@ a:focus-visible,
  * a side flyout. The header row is the back affordance (altArrowLeft + the
  * group label) on the shared `.menu-row` recipe at the 30px group-row
  * height; the body indents the choices 10px under their group — the same
- * inset the inline expansion this replaces carried
- * (`.model-setting-choices`). Rendered only by the phone arm, so no media
+ * 10px inset the old inline `.model-setting-choices` expansion carried (the
+ * class now owns only the flex/gap/scroll recipe; each arm supplies its
+ * own inset). Rendered only by the phone arm, so no media
  * query guards it.
  */
 .rb-submenu-drill {
