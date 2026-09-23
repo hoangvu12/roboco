@@ -1761,25 +1761,13 @@ a:focus-visible,
   color: var(--rb-text-muted);
 }
 
-/* The fly-out submenu: a 232px popover card anchored to the trigger row's
-   far side (right by default; flips left inside a narrow window). */
-.view-menu-submenu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 4px);
-  width: 232px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--rb-space-xs);
-  z-index: var(--rb-z-menu);
-  animation: rb-menu-in var(--rb-motion-menu-in) var(--rb-ease-ease);
-}
-
-.view-menu-submenu-left {
-  left: auto;
-  right: calc(100% + 4px);
-}
+/* The group flyout itself is ticket 01's `NestedMenu` portal: the shared
+   `.popover-card` glass riding `.rb-popover-positioner`'s menu tier, so it
+   carries no rules of its own (the component's `view-menu-flyout` card
+   class is the semantic marker for this menu's flyout; the rows inside
+   ride `.view-menu-rows` above). The old inline-absolute `.view-menu-
+   submenu` layer lived inside `.popover-card`'s `overflow: hidden` clip
+   box and never painted — bug 5b. */
 
 .view-menu-create-icon {
   flex: none;

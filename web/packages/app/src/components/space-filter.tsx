@@ -8,7 +8,6 @@ import { engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fle
 import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
-import { HoverIntent, HOVER_INTENT_GRACE_MS, type Bounds, type Point } from "../lib/hover-intent";
 import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
@@ -25,6 +24,7 @@ import { openChipClass } from "./ui/Chip";
 import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { Dialog, DialogCard, DialogTitle, DialogBody, DialogField, BtnGhost, BtnPrimary, BtnDanger } from "./ui/Dialog";
 import { MenuHeading, MenuRowNav, MenuSeparator } from "./ui/MenuRows";
+import { NestedMenu } from "./ui/NestedMenu";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuScrollbar } from "./ui/Scrollbar";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
@@ -416,6 +416,16 @@ const SIDEBAR_VIEW_GROUPS: readonly { label: string; rows: readonly number[] }[]
 const VIEW_SUBMENU_WIDTH = 232;
 
 /**
+ * The side probe's margin: the nested placement pins the flyout CARD_INSET +
+ * ANCHOR_GAP (10, popover.rs's `nested_menu` geometry — see
+ * `nestedMenuPlacement`) beyond the row's far edge, so the probe asks
+ * whether the row's right edge plus the whole 232px span clears the
+ * window before opening to the right (spaces.rs's canvas probe reads
+ * 232 + 12 the same way).
+ */
+const VIEW_SUBMENU_SIDE_OFFSET = 10;
+
+/**
  * The "Sidebar view options" label's show/hide controller — the web port
  * of gpui's `.tooltip(…)` + `.tooltip_show_delay(350ms)` contract
  * (`spaces.rs:1150-1151`: show after the delay while hovered, dismiss
@@ -473,20 +483,19 @@ export function SidebarViewMenu() {
   // The nested menu's state (upstream f9563394's `SidebarViewMenu` fields):
   // which group's submenu is open, the keyboard cursors for the top rows
   // and the open child, and the child's side (it flips left when the row's
-  // right edge + 236px would pass the window's right edge — the desktop's
-  // canvas probe).
+  // right edge plus the flyout's whole span would pass the window's right
+  // edge — the desktop's canvas probe, read at open). Every hover,
+  // corridor, press, Escape, and outside transition now routes through
+  // ticket 01's `NestedMenu` (`onSubmenuOpenChange` below): its Base UI
+  // hover owns open-on-rest and the safe-polygon corridor, and its dismiss
+  // pipeline owns Escape and outside presses — the hand-rolled
+  // `HoverIntent` corridor this port carried for the clipped inline
+  // submenu goes with it.
   const [submenu, setSubmenu] = useState<number | null>(null);
   const [submenuActive, setSubmenuActive] = useState<number | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const [submenuOnLeft, setSubmenuOnLeft] = useState(false);
-  const hoverIntent = useMemo(() => new HoverIntent<number>(), []);
-  const deferredRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const submenuRef = useRef<HTMLDivElement | null>(null);
   const groupRowRefs = useRef<(HTMLDivElement | null)[]>([]);
-  // The window-level timer outlives renders; the open submenu rides a ref
-  // mirror so the deferred callback can re-check its guard.
-  const submenuStateRef = useRef<number | null>(null);
-  submenuStateRef.current = submenu;
 
   // The label's contract rides the controller above; hovering shorter
   // than the 350ms delay shows nothing. Unmounting the sidebar clears
@@ -495,16 +504,8 @@ export function SidebarViewMenu() {
   useEffect(() => {
     return () => {
       tooltipControl.dispose();
-      cancelDeferred();
     };
   }, [tooltipControl]);
-
-  function cancelDeferred(): void {
-    if (deferredRef.current !== null) {
-      clearTimeout(deferredRef.current);
-      deferredRef.current = null;
-    }
-  }
 
   function closeSubmenu(): void {
     setSubmenu(null);
@@ -553,7 +554,6 @@ export function SidebarViewMenu() {
     // A mouse-driven pick clears the cursor so it doesn't linger
     // (spaces.rs:900-908).
     setActive(null);
-    hoverIntent.cancel();
     switch (row.kind) {
       case "ByDevice":
         uiSettings.updateImmediate({ sidebarOrganization: "byDevice" });
@@ -598,75 +598,64 @@ export function SidebarViewMenu() {
   /** `open_section_dialog(None, ..)`: the menu closes, the chat list's dialog opens. */
   function createSection(): void {
     setOpen(false);
-    cancelDeferred();
-    hoverIntent.reset();
     closeSubmenu();
     setActive(null);
     sidebarStore.openSectionDialog();
   }
 
-  /** `open_sidebar_view_submenu` — resets the intent and opens the child. */
+  /**
+   * `open_sidebar_view_submenu` — opens the child; the keyboard path
+   * (ArrowRight/Enter) lands its cursor on row 0, hover and press land it
+   * nowhere, and the side probe reads the row's live bounds for the flip.
+   */
   function openSubmenu(group: number, keyboard: boolean): void {
-    cancelDeferred();
-    hoverIntent.reset();
     setActive(group);
     setSubmenu(group);
     setSubmenuActive(keyboard ? 0 : null);
     const row = groupRowRefs.current[group];
     if (row != null) {
       const bounds = row.getBoundingClientRect();
-      setSubmenuOnLeft(bounds.right + VIEW_SUBMENU_WIDTH + 4 > window.innerWidth);
-    }
-  }
-
-  /** `hover_sidebar_view_group` — enter/move over one group trigger. */
-  function hoverGroup(group: number, pointer: Point, moved: boolean): void {
-    const child =
-      submenuRef.current === null ? null : boundsOf(submenuRef.current.getBoundingClientRect());
-    const action = moved
-      ? hoverIntent.moved(submenu, group, pointer, child, submenuOnLeft)
-      : hoverIntent.enter(submenu, group, pointer, child, submenuOnLeft);
-    if (action === "open") {
-      openSubmenu(group, false);
-      hoverIntent.recordOrigin(pointer);
-      return;
-    }
-    if (action === "defer") {
-      // The caller's 300ms timer (the class stays pure): the deferred arm
-      // re-checks that the source submenu is still open and this target is
-      // still pending before it opens.
-      const source = submenu;
-      cancelDeferred();
-      deferredRef.current = setTimeout(() => {
-        deferredRef.current = null;
-        if (submenuStateRef.current === source && hoverIntent.pending() === group) {
-          openSubmenu(group, false);
-          hoverIntent.recordOrigin(pointer);
-        }
-      }, HOVER_INTENT_GRACE_MS);
+      setSubmenuOnLeft(
+        bounds.right + VIEW_SUBMENU_WIDTH + VIEW_SUBMENU_SIDE_OFFSET > window.innerWidth,
+      );
     }
   }
 
   /**
-   * The card's corridor dismissal (the desktop's exit canvas on the group
-   * row): a pointer outside the trigger row, the child, and the safe
-   * corridor between them closes the child and resets the intent.
+   * The group flyout's change seam (ticket 01's `NestedMenu`): every
+   * request the primitive raises — hover intent (`trigger-hover`), the
+   * row's press (`trigger-press`), the corridor's exit, outside presses,
+   * Escape — lands here and maps onto the shared `submenu` state the way
+   * the desktop's own handlers did: hover opens with no cursor
+   * (`open_sidebar_view_submenu(group, false)`), the row press dismisses
+   * and highlights its row (the group on_click's "Match model settings:
+   * hover opens; clicking dismisses"), and the corridor/outside
+   * dismissals clear the row highlight with the child (the exit canvas)
+   * while an Escape keeps it (`sidebar_view_menu_key`'s escape closes the
+   * child alone). The `submenu !== ix` guards keep a stale transition from
+   * clobbering a sibling that has already replaced this group.
    */
-  function onCardMouseMove(event: React.MouseEvent): void {
-    if (submenu === null) {
+  function onSubmenuOpenChange(ix: number, next: boolean, details: { reason: string }): void {
+    if (next) {
+      if (submenu !== ix) {
+        openSubmenu(ix, false);
+      }
       return;
     }
-    const row = groupRowRefs.current[submenu];
-    if (row == null) {
+    if (submenu !== ix) {
       return;
     }
-    const child = submenuRef.current === null ? null : boundsOf(submenuRef.current.getBoundingClientRect());
-    const pointer = { x: event.clientX, y: event.clientY };
-    if (!hoverIntent.containsPointer(boundsOf(row.getBoundingClientRect()), child, pointer, submenuOnLeft)) {
-      hoverIntent.reset();
+    if (details.reason === "trigger-press") {
+      setActive(ix);
       closeSubmenu();
-      setActive(null);
+      return;
     }
+    if (details.reason === "escape-key") {
+      closeSubmenu();
+      return;
+    }
+    closeSubmenu();
+    setActive(null);
   }
 
   /**
@@ -698,8 +687,6 @@ export function SidebarViewMenu() {
       if (event.key === "Escape" || event.key === "ArrowLeft") {
         event.preventDefault();
         event.stopPropagation();
-        cancelDeferred();
-        hoverIntent.reset();
         closeSubmenu();
         return;
       }
@@ -747,8 +734,6 @@ export function SidebarViewMenu() {
         onOpenChange={(next) => {
           setOpen(next);
           if (!next) {
-            cancelDeferred();
-            hoverIntent.reset();
             closeSubmenu();
             setActive(null);
           }
@@ -796,67 +781,65 @@ export function SidebarViewMenu() {
           </button>
         }
       >
-        <div className="view-menu-rows" onMouseMove={onCardMouseMove}>
+        <div className="view-menu-rows">
           {SIDEBAR_VIEW_GROUPS.map((group, ix) => (
-            <div
+            // Ticket 01's nested-menu unit: the row renders in place as the
+            // flyout's trigger (Base UI adopts it — its className/children/
+            // ref stay its own, `aria-expanded`/`aria-controls` merge on,
+            // and the press/hover toggle through `onSubmenuOpenChange`),
+            // while the choices portal to the body beside it on desktop
+            // (the escape from `.popover-card`'s clip — bug 5b's fix) and
+            // expand in place under the row on phone (ticket 15's drill).
+            <NestedMenu
               key={group.label}
-              className={`menu-row view-menu-group-row ${active === ix ? "menu-row-highlighted" : ""} ${
-                submenu === ix ? "menu-row-open" : ""
-              }`}
-              role="menuitem"
-              aria-haspopup="menu"
-              aria-expanded={submenu === ix}
-              ref={(el) => {
-                groupRowRefs.current[ix] = el;
-              }}
-              onMouseEnter={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, false)}
-              onMouseMove={(event) => hoverGroup(ix, { x: event.clientX, y: event.clientY }, true)}
-              onMouseLeave={() => hoverIntent.leave(ix)}
-              onClick={() => {
-                // Match model settings: hover opens; clicking dismisses,
-                // including a sibling crossed during hover grace, without
-                // delayed reopening.
-                cancelDeferred();
-                hoverIntent.reset();
-                setActive(ix);
-                closeSubmenu();
-              }}
-            >
-              <span className="menu-row-label">{group.label}</span>
-              {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
-              <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
-              {submenu === ix && (
+              open={submenu === ix}
+              onOpenChange={(next, details) => onSubmenuOpenChange(ix, next, details)}
+              side={submenuOnLeft ? "left" : "right"}
+              label={group.label}
+              ariaLabel={group.label}
+              nativeButton={false}
+              width={VIEW_SUBMENU_WIDTH}
+              cardClassName="popover-card view-menu-flyout"
+              trigger={
                 <div
-                  className={`view-menu-submenu popover-card ${submenuOnLeft ? "view-menu-submenu-left" : ""}`}
-                  ref={submenuRef}
-                  role="menu"
-                  aria-label={group.label}
+                  className={`menu-row view-menu-group-row ${active === ix ? "menu-row-highlighted" : ""} ${
+                    submenu === ix ? "menu-row-open" : ""
+                  }`}
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  ref={(el) => {
+                    groupRowRefs.current[ix] = el;
+                  }}
                 >
-                  <MenuHeading>{group.label}</MenuHeading>
-                  <div className="view-menu-rows">
-                    {group.rows.map((rowIx, choice) => {
-                      const entry = SIDEBAR_VIEW_ROWS[rowIx]!;
-                      return (
-                        <MenuRowNav
-                          key={entry.row.kind}
-                          fadeKey={entry.row.kind}
-                          highlighted={submenuActive === choice && !isSelected(entry.row)}
-                          selected={isSelected(entry.row)}
-                          onClick={() => activate(entry.row)}
-                        >
-                          <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
-                          <span className="menu-row-label">{entry.label}</span>
-                          {/* The 14px check slot is always reserved so labels never shift. */}
-                          <span className="view-menu-check">
-                            {isSelected(entry.row) && <Icon name="check" size={14} />}
-                          </span>
-                        </MenuRowNav>
-                      );
-                    })}
-                  </div>
+                  <span className="menu-row-label">{group.label}</span>
+                  {ix < values.length && <span className="view-menu-summary">{values[ix]}</span>}
+                  <Icon name="altArrowRight" size={12} className="view-menu-group-chevron" />
                 </div>
-              )}
-            </div>
+              }
+            >
+              <MenuHeading>{group.label}</MenuHeading>
+              <div className="view-menu-rows">
+                {group.rows.map((rowIx, choice) => {
+                  const entry = SIDEBAR_VIEW_ROWS[rowIx]!;
+                  return (
+                    <MenuRowNav
+                      key={entry.row.kind}
+                      fadeKey={entry.row.kind}
+                      highlighted={submenuActive === choice && !isSelected(entry.row)}
+                      selected={isSelected(entry.row)}
+                      onClick={() => activate(entry.row)}
+                    >
+                      <Icon name={entry.icon} size={15} className="spaces-menu-row-icon" />
+                      <span className="menu-row-label">{entry.label}</span>
+                      {/* The 14px check slot is always reserved so labels never shift. */}
+                      <span className="view-menu-check">
+                        {isSelected(entry.row) && <Icon name="check" size={14} />}
+                      </span>
+                    </MenuRowNav>
+                  );
+                })}
+              </div>
+            </NestedMenu>
           ))}
           <MenuSeparator />
           <div
@@ -892,10 +875,6 @@ function menuStep(current: number | null, count: number, delta: number): number 
     return delta > 0 ? 0 : count - 1;
   }
   return (current + delta + count) % count;
-}
-
-function boundsOf(rect: DOMRect): Bounds {
-  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
 // ---------------------------------------------------------------------------
