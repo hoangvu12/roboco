@@ -65,6 +65,9 @@ import {
   inputDragScrollDelta,
   inputOverflowEdges,
   INPUT_LINE_HEIGHT,
+  modelHandoffPosition,
+  modelSlotOffset,
+  modelTravel,
   PILL_BORDER_V,
   RESIZE_SETTLE_MS,
   ROUTE_SNAP_MS,
@@ -187,6 +190,10 @@ interface PillLayout {
   readonly clusterInset: number;
   readonly clusterDy: number;
   readonly textGlide: number;
+  /** The model chip's handoff offset (`model_offset`, e0c1e936). */
+  readonly modelLeft: number;
+  /** The model chip's handoff opacity (`model_opacity`). */
+  readonly modelOpacity: number;
   readonly morphing: boolean;
 }
 
@@ -197,6 +204,8 @@ const REST_LAYOUT: PillLayout = {
   clusterInset: 8,
   clusterDy: 0,
   textGlide: 0,
+  modelLeft: 0,
+  modelOpacity: 1,
   morphing: false,
 };
 
@@ -214,6 +223,8 @@ function pillLayoutEquals(a: PillLayout, b: PillLayout): boolean {
     a.clusterInset === b.clusterInset &&
     a.clusterDy === b.clusterDy &&
     a.textGlide === b.textGlide &&
+    a.modelLeft === b.modelLeft &&
+    a.modelOpacity === b.modelOpacity &&
     a.morphing === b.morphing
   );
 }
@@ -701,6 +712,13 @@ export function Composer({
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heightMorphRef = useRef<FlipMorph | null>(null);
   const flipMorphRef = useRef<FlipMorph | null>(null);
+  // `model_handoff_*` (composer.rs:4136-4138, 7728-7732): the chip's handoff
+  // phase — the position, the value captured when the flip morph last
+  // (re)started, and the morph identity it was captured against (a fresh
+  // arm is a new object, a cleared one is null — identity IS the comparison).
+  const modelHandoffPositionRef = useRef(1);
+  const modelHandoffFromRef = useRef(1);
+  const modelHandoffMorphRef = useRef<FlipMorph | null>(null);
   const lastTargetRef = useRef(0);
   const lastRenderedRef = useRef(0);
   const rafRef = useRef<number | null>(null);
@@ -733,6 +751,9 @@ export function Composer({
   const pillRef = useRef<HTMLDivElement | null>(null);
   const inputBoxRef = useRef<HTMLDivElement | null>(null);
   const actionsRef = useRef<HTMLDivElement | null>(null);
+  // The model chip's handoff slot — measured per pass (the desktop's
+  // `model_bounds` canvas) and carrying its glide vars while the dock drives.
+  const modelSlotRef = useRef<HTMLDivElement | null>(null);
   // The morph loop's liveness, render-tracked: a glide that starts mid-morph
   // must still publish the loop's death (the evaluate otherwise skips the
   // state publish while the dock owns the height, which would leave the
@@ -925,6 +946,36 @@ export function Composer({
       undockedHeight: dockHeight(0, contentHeight, sessionExpandedRef.current),
     });
     const { boxHeight, textPad, inputHeight } = geometry;
+    // e0c1e936's model handoff (composer.rs:7726-7769): the chip fades
+    // between its two horizontal anchors on the SAME clock as the height
+    // morph — the position rides the dock amount on a compact route, else
+    // lerps from the phase captured when the flip morph last (re)started
+    // through EASE_IN_OUT over the morph's RAW timeline, so reversals
+    // continue from the current phase instead of restarting. The offset
+    // then lands the invisible mid-flip relocation against the measured
+    // slot distance (`model_travel`).
+    if (modelHandoffMorphRef.current !== flipMorphRef.current) {
+      modelHandoffFromRef.current = modelHandoffPositionRef.current;
+      modelHandoffMorphRef.current = flipMorphRef.current;
+    }
+    const modelCompactTarget = mode ? 0 : 1;
+    const handoffPosition = modelHandoffPosition({
+      from: modelHandoffFromRef.current,
+      compactTarget: modelCompactTarget,
+      morph: flipMorphRef.current,
+      dockActive: dockDriven,
+      sessionExpanded: sessionExpandedRef.current,
+      dockAmount,
+      nowMs,
+    });
+    modelHandoffPositionRef.current = handoffPosition;
+    const surfaceWidth = pillRef.current?.offsetWidth ?? (stripWidthHint + PILL_BORDER_V);
+    const modelWidth = modelSlotRef.current?.offsetWidth ?? 0;
+    const modelSlot = modelSlotOffset(
+      handoffPosition,
+      modelCompactTarget,
+      modelTravel(surfaceWidth, modelWidth, geometry.clusterInset),
+    );
     el.style.height = `${inputHeight}px`;
     // The scrollability gate, not an inline overflowY: the CSS owns the
     // overflow (`[data-scrollable="true"]` → `overflow-y: auto`, bar
@@ -958,8 +1009,14 @@ export function Composer({
       inputBoxRef.current?.style.setProperty("--rb-dock-box-height", `${boxHeight}px`);
       inputBoxRef.current?.style.setProperty("--rb-dock-text-pad", `${geometry.textPad}px`);
       inputBoxRef.current?.style.setProperty("--rb-dock-text-glide", `${-geometry.textGlide}px`);
-      actionsRef.current?.style.setProperty("--rb-dock-cluster-dy", `${-geometry.clusterDy}px`);
+      // The cluster dy lives on the PILL: the actions row AND the detached
+      // paperclip (a body sibling of the row) both consume it, so it must
+      // ride an ancestor they share (composer.rs:7805/7864 — every control
+      // wrapper carries the same `top: -cluster_dy`).
+      pillRef.current?.style.setProperty("--rb-dock-cluster-dy", `${-geometry.clusterDy}px`);
       actionsRef.current?.style.setProperty("--rb-dock-cluster-inset", `${geometry.clusterInset}px`);
+      modelSlotRef.current?.style.setProperty("--rb-dock-model-left", `${modelSlot.left}px`);
+      modelSlotRef.current?.style.setProperty("--rb-dock-model-opacity", `${modelSlot.opacity}`);
       if (!morphing && !morphLoopLiveRef.current) {
         // A pure glide frame: the imperative writes above (plus the
         // textarea height and the datasets already applied) carry
@@ -983,6 +1040,8 @@ export function Composer({
       // Collapse/route text glide: the decaying offset walks the compact
       // text down from its expanded resting place (composer.rs:7793-7800).
       textGlide: geometry.textGlide,
+      modelLeft: modelSlot.left,
+      modelOpacity: modelSlot.opacity,
       morphing,
     };
     setLayout((previous) => (pillLayoutEquals(previous, nextLayout) ? previous : nextLayout));
@@ -1009,11 +1068,13 @@ export function Composer({
     if ((frame ?? dockFrameRef.current)?.active !== true) {
       pillRef.current?.style.removeProperty("--rb-dock-pill-height");
       pillRef.current?.style.removeProperty("--rb-dock-pill-radius");
+      pillRef.current?.style.removeProperty("--rb-dock-cluster-dy");
       inputBoxRef.current?.style.removeProperty("--rb-dock-box-height");
       inputBoxRef.current?.style.removeProperty("--rb-dock-text-pad");
       inputBoxRef.current?.style.removeProperty("--rb-dock-text-glide");
-      actionsRef.current?.style.removeProperty("--rb-dock-cluster-dy");
       actionsRef.current?.style.removeProperty("--rb-dock-cluster-inset");
+      modelSlotRef.current?.style.removeProperty("--rb-dock-model-left");
+      modelSlotRef.current?.style.removeProperty("--rb-dock-model-opacity");
     }
     // `dockFrameRef` is render-assigned; the live ref is pump-owned. This
     // effect only needs to run when a publish landed.
@@ -2966,6 +3027,34 @@ export function Composer({
                 pickerRef={attachRef}
               />
               <div className="composer-body">
+                {/*
+                  The paperclip (e0c1e936): compact, FIRST in the row at
+                  `pl-12` — attach LEFT / input / model + Send right
+                  (composer.rs:7856-7904); expanded, absolute at the pill's
+                  stationary bottom-left beside the model chip, riding the
+                  same cluster-dy channel the actions row glides on
+                  (composer.rs:7824-7839) — the row's pb-3 plus the 2px
+                  centering slack of a 28px button in its 32px content box.
+                */}
+                <button
+                  type="button"
+                  className="composer-attach"
+                  aria-label="Attach"
+                  onClick={onAttachClick}
+                  style={
+                    expandedRender
+                      ? {
+                          left: 12,
+                          bottom: `calc(14px + var(--rb-dock-cluster-dy, ${-layout.clusterDy}px))`,
+                        }
+                      : {
+                          top: `var(--rb-dock-cluster-dy, ${-layout.clusterDy}px)`,
+                          marginLeft: 12,
+                        }
+                  }
+                >
+                  <Icon name="paperclip" size={16} />
+                </button>
                 <div
                   className="composer-input-box"
                   ref={inputBoxRef}
@@ -3000,7 +3089,24 @@ export function Composer({
                         }
                   }
                 >
-                  <div className="composer-utility">
+                  <div
+                    className="composer-model-slot"
+                    ref={modelSlotRef}
+                    style={{
+                      left: `var(--rb-dock-model-left, ${layout.modelLeft}px)`,
+                      opacity: `var(--rb-dock-model-opacity, ${layout.modelOpacity})`,
+                    }}
+                  >
+                    {/*
+                      The model chip's handoff slot (e0c1e936,
+                      composer.rs:410-416): the chip fades between its two
+                      horizontal anchors on the flip instead of sweeping
+                      across the prompt — `left`/`opacity` ride the layout
+                      pass's published values (or the glide's CSS vars), and
+                      the slot shrink-wraps the chip so its measured width
+                      feeds `model_travel` (the desktop's `model_bounds`
+                      canvas). The card's new-chat placement is ticket 04's.
+                    */}
                     <ComposerPickers
                       catalog={catalog}
                       draft={draft}
@@ -3010,9 +3116,6 @@ export function Composer({
                       escapeFocusTarget={() => textareaRef.current}
                       onOpenChange={setPickersOpen}
                     />
-                    <button type="button" className="composer-attach" aria-label="Attach" onClick={onAttachClick}>
-                      <Icon name="paperclip" size={16} />
-                    </button>
                   </div>
                   {/*
                     A 28px filled circle — up-arrow to send or queue, a dark
