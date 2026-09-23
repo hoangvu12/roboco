@@ -111,9 +111,11 @@ export function modelHandoff(compact: number): [number, number, number] {
   return [side, opacity, drift];
 }
 
-/// `motion::EASE_IN_OUT` (proto motion.rs:226) — the handoff's OWN curve:
-/// it rides the flip morph's RAW timeline, not the collapse spec's eased
-/// progress, so reversals continue from the current phase (composer.rs:7741).
+/**
+ * `motion::EASE_IN_OUT` (proto motion.rs:226) — the handoff's OWN curve:
+ * it rides the flip morph's RAW timeline, not the collapse spec's eased
+ * progress, so reversals continue from the current phase (composer.rs:7741).
+ */
 const EASE_IN_OUT: readonly [number, number, number, number] =
   motion.curves.easeInOut ?? [0.42, 0, 0.58, 1];
 

@@ -5719,9 +5719,10 @@ a:focus-visible,
  * arm's inner `.dialog-card` stretches to the full width (the old 360px
  * card painted ~90% of a 390px viewport flush-left and read as a "weird
  * dialog", not a sheet), and every arm's content clears the home
- * indicator via `env(safe-area-inset-bottom)`. Base UI's swipe gesture
- * drives the popup through an inline transform while a drag is live,
- * which composes with (never fights) the resting `transform: none`.
+ * indicator through the frame's ONE shared safe-area term
+ * (`--rb-safe-sheet-pad`, defined on the frame below). Base UI's swipe
+ * gesture drives the popup through an inline transform while a drag is
+ * live, which composes with (never fights) the resting `transform: none`.
  */
 @media (max-width: 768px) {
   .rb-drawer-card {
@@ -5737,6 +5738,14 @@ a:focus-visible,
     overflow: auto;
     scrollbar-width: none;
     animation: none;
+    /*
+     * The sheet family's ONE safe-area term (ticket 15, research W4; the
+     * code review's unification): the frame defines it, every arm composes
+     * its own bottom inset with it — `calc(<inset> +
+     * var(--rb-safe-sheet-pad))` — so the home-indicator term has exactly
+     * one address instead of one spelling per arm.
+     */
+    --rb-safe-sheet-pad: env(safe-area-inset-bottom);
   }
 
   .rb-drawer-card::-webkit-scrollbar {
@@ -5752,28 +5761,31 @@ a:focus-visible,
    * so this is the one rule that owns them. The card's chrome folds to the
    * sheet frame's geometry — the frame owns the placement: no bloom (the
    * sheet's own clip eats it anyway), square bottom corners matching the
-   * frame's `16px 16px 0 0` — while the hairline frame, background, and
+   * frame's cap through the `--rb-radius-bubble` token (16px, the frame's
+   * own top corners) — while the hairline frame, background, and
    * 20px interior padding stay the dialog family's own. The bottom padding
-   * composes with the home-indicator inset so the sheet's actions clear the
-   * notch's gesture bar on notched devices.
+   * composes with the shared safe-area term so the sheet's actions clear
+   * the notch's gesture bar on notched devices.
    */
   .rb-drawer-card .dialog-card {
     width: 100%;
-    border-radius: 16px 16px 0 0;
+    border-radius: var(--rb-radius-bubble) var(--rb-radius-bubble) 0 0;
     box-shadow: none;
-    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    padding-bottom: calc(20px + var(--rb-safe-sheet-pad));
   }
 
   /*
    * The picker arm rides the sheet AS the card (`cardClassName`'s
-   * `.popover-card` lands on the popup itself), so its 4px inset composes
-   * with the home-indicator inset the same way. The select arm's
-   * child-card form gets the same term in its own block next to
-   * `.settings-select-menu`; the `+` menu's sheet composes it into its own
-   * padding rule below.
+   * `.popover-card` lands on the popup itself), so its `--rb-space-xs`
+   * inset composes with the shared safe-area term the same way — the
+   * token is the sheet family's one spelling of the 4px (the floating
+   * form's own literal padding stays the popover.rs citation it is).
+   * The select arm's child-card form gets the same term in its own block
+   * next to `.settings-select-menu`; the `+` menu's sheet composes it
+   * into its own padding rule below.
    */
   .rb-drawer-card.popover-card {
-    padding-bottom: calc(4px + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
   }
 
   /*
@@ -5788,9 +5800,9 @@ a:focus-visible,
    */
   .rb-drawer-card.right-plus-menu-sheet {
     gap: 2px;
-    /* The safe-area term composes with the arm's own inset (ticket 15). */
+    /* The shared safe-area term composes with the arm's own inset (ticket 15). */
     padding: var(--rb-space-xs) var(--rb-space-xs)
-      calc(var(--rb-space-xs) + env(safe-area-inset-bottom));
+      calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
     background: var(--rb-overlay);
     color: var(--rb-text);
     font-size: 13px;
@@ -11827,15 +11839,15 @@ button.files-save-pill:hover {
    clamp and the scrolling), and the floating form's entrance/exit yield
    to the sheet's `rb-dialog-in` (the sheet is the motion source at
    phone). Ticket 15 adds the home-indicator term: the menu is the sheet's
-   scroll content, so its own 4px inset (the `.popover-card` the popup
-   carries) composes with `env(safe-area-inset-bottom)` like every other
-   sheet arm. */
+   scroll content, so its own `--rb-space-xs` inset (the `.popover-card`
+   the popup carries) composes with the frame's shared safe-area term
+   like every other sheet arm. */
 @media (max-width: 768px) {
   .rb-drawer-card .settings-select-menu {
     width: 100%;
     max-height: none;
     overflow: visible;
-    padding-bottom: calc(4px + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--rb-space-xs) + var(--rb-safe-sheet-pad));
   }
 
   .rb-drawer-card .settings-select-menu[data-open],

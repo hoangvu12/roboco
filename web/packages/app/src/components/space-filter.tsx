@@ -10,6 +10,7 @@ import { sidebarStore, useSidebar } from "../state/sidebar";
 import { uiSettings } from "../state/ui-settings";
 import { healedSpaceFilter, mergePendingSpaces, spaceDeviceTag, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
+import { flyoutOpensLeft } from "../lib/flyout-side";
 import { addSpaceStore, usePendingSpaces } from "../state/add-space";
 import { sidebarNotice } from "../state/notice";
 import { RbSwitch } from "./base/switch";
@@ -614,9 +615,11 @@ export function SidebarViewMenu() {
     setSubmenuActive(keyboard ? 0 : null);
     const row = groupRowRefs.current[group];
     if (row != null) {
-      const bounds = row.getBoundingClientRect();
+      // The shared side probe (lib/flyout-side.ts) — the reach is the
+      // flyout's whole span (the 232px card + its offset, spaces.rs's
+      // canvas probe reading 232 + 12 the same way).
       setSubmenuOnLeft(
-        bounds.right + VIEW_SUBMENU_WIDTH + VIEW_SUBMENU_SIDE_OFFSET > window.innerWidth,
+        flyoutOpensLeft(row.getBoundingClientRect(), VIEW_SUBMENU_WIDTH + VIEW_SUBMENU_SIDE_OFFSET),
       );
     }
   }

@@ -16,6 +16,7 @@ import {
   toggleModelFavorite,
 } from "../lib/composer-draft";
 import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import { flyoutOpensLeft } from "../lib/flyout-side";
 import {
   MODEL_LIST_HEIGHT,
   MODEL_TRAY_CAP,
@@ -644,11 +645,13 @@ function IdentityCard(props: IdentityCardProps) {
       // `setting_on_left`'s probe (pickers.rs:3969): the flyout opens LEFT
       // when its reach past the row's right edge would cross the window —
       // measured on the section wrapper synchronously, so the flyout's
-      // first render already carries the side.
+      // first render already carries the side. The shared probe shape is
+      // `flyoutOpensLeft` (lib/flyout-side.ts); the reach stays this
+      // arm's own constant below.
       const section = settingSectionsRef.current.get(id);
       setSettingOnLeft(
         section !== undefined &&
-          section.getBoundingClientRect().right + SETTING_MENU_FLYOUT_REACH > window.innerWidth,
+          flyoutOpensLeft(section.getBoundingClientRect(), SETTING_MENU_FLYOUT_REACH),
       );
       setOpenSetting(id);
     },

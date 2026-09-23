@@ -15,9 +15,9 @@
  *    entrance applies over another sheet rather than skipping.
  *
  * 2. CSS contracts (the phone-drawer-titlebar-clearance idiom): the phone
- *    block's full-width `.dialog-card` rule (width 100% + the
- *    home-indicator `env(safe-area-inset-bottom)` term), every other
- *    sheet arm's safe-area composition, the `[data-open]` entrance rule,
+ *    block's full-width `.dialog-card` rule (width 100% + the shared
+ *    `--rb-safe-sheet-pad` home-indicator term), every other sheet arm's
+ *    composition with that ONE term, the `[data-open]` entrance rule,
  *    and the two guards that must NOT move — the backstop
  *    (`.dialog-card:not(.rb-drawer-card *)` keeps excluding in-sheet
  *    cards) and the desktop card's own 360px.
@@ -277,26 +277,52 @@ describe("full-width drawer cards (ticket 15, research W4)", () => {
   it("the in-sheet card folds to the frame's geometry and clears the home indicator", () => {
     const rules = phoneRules("\\.rb-drawer-card \\.dialog-card");
     expect(rules).toHaveLength(1);
-    // Square bottom corners matching the frame's `16px 16px 0 0` …
-    expect(rules[0]).toMatch(/border-radius:\s*16px 16px 0 0;/);
+    // Square bottom corners matching the frame's cap — spelled through the
+    // `--rb-radius-bubble` token (16px, the frame's own top corners) …
+    expect(rules[0]).toMatch(
+      /border-radius:\s*var\(--rb-radius-bubble\) var\(--rb-radius-bubble\) 0 0;/,
+    );
     // … no bloom inside the frame's clip …
     expect(rules[0]).toMatch(/box-shadow:\s*none;/);
-    // … and the card's own 20px bottom padding composes with the inset.
-    expect(rules[0]).toMatch(/padding-bottom:\s*calc\(20px \+ env\(safe-area-inset-bottom\)\);/);
+    // … and the card's own 20px bottom padding composes with the shared
+    // safe-area term.
+    expect(rules[0]).toMatch(/padding-bottom:\s*calc\(20px \+ var\(--rb-safe-sheet-pad\)\);/);
   });
 
   it("every sheet arm's content clears the home indicator — the picker sheet and the `+` menu", () => {
     const picker = phoneRules("\\.rb-drawer-card\\.popover-card");
     expect(picker).toHaveLength(1);
-    expect(picker[0]).toMatch(/padding-bottom:\s*calc\(4px \+ env\(safe-area-inset-bottom\)\);/);
+    // The 4px rides the token — the wave's one spelling (the review's
+    // unification: `var(--rb-space-xs)` everywhere the sheet family
+    // composes its inset).
+    expect(picker[0]).toMatch(
+      /padding-bottom:\s*calc\(var\(--rb-space-xs\) \+ var\(--rb-safe-sheet-pad\)\);/,
+    );
     const plus = phoneRules("\\.rb-drawer-card\\.right-plus-menu-sheet");
     expect(plus).toHaveLength(1);
     expect(plus[0]).toMatch(
-      /padding:\s*var\(--rb-space-xs\) var\(--rb-space-xs\)\s*calc\(var\(--rb-space-xs\) \+ env\(safe-area-inset-bottom\)\);/,
+      /padding:\s*var\(--rb-space-xs\) var\(--rb-space-xs\)\s*calc\(var\(--rb-space-xs\) \+ var\(--rb-safe-sheet-pad\)\);/,
     );
     const select = phoneRules("\\.rb-drawer-card \\.settings-select-menu");
     expect(select).toHaveLength(1);
-    expect(select[0]).toMatch(/padding-bottom:\s*calc\(4px \+ env\(safe-area-inset-bottom\)\);/);
+    expect(select[0]).toMatch(
+      /padding-bottom:\s*calc\(var\(--rb-space-xs\) \+ var\(--rb-safe-sheet-pad\)\);/,
+    );
+  });
+
+  it("the safe-area term is spelled ONCE — the frame defines it, the arms compose with it", () => {
+    // The review's dedup: `env(safe-area-inset-bottom)` appears exactly
+    // once across the sheet family's phone rules (the frame's definition);
+    // every arm composes `var(--rb-safe-sheet-pad)` instead of re-spelling
+    // the env() term.
+    const family = [
+      ...phoneRules("\\.rb-drawer-card"),
+      ...phoneRules("\\.rb-drawer-card \\.dialog-card"),
+      ...phoneRules("\\.rb-drawer-card\\.popover-card"),
+      ...phoneRules("\\.rb-drawer-card\\.right-plus-menu-sheet"),
+      ...phoneRules("\\.rb-drawer-card \\.settings-select-menu"),
+    ].join("\n");
+    expect(family.match(/env\(safe-area-inset-bottom\)/g)).toHaveLength(1);
   });
 
   it("the sheet frame itself stays full-bleed: left/right/bottom 0, top-only radius", () => {
@@ -309,6 +335,9 @@ describe("full-width drawer cards (ticket 15, research W4)", () => {
     expect(frame).toMatch(/right:\s*0;/);
     expect(frame).toMatch(/bottom:\s*0;/);
     expect(frame).toMatch(/border-radius:\s*16px 16px 0 0;/);
+    // The frame owns the family's ONE shared safe-area term — every arm
+    // composes with `var(--rb-safe-sheet-pad)` (the dedup contract).
+    expect(frame).toMatch(/--rb-safe-sheet-pad:\s*env\(safe-area-inset-bottom\);/);
   });
 
   it("the entrance is present and keyed to [data-open] — the rb-dialog-in reuse", () => {
