@@ -7643,6 +7643,16 @@ button.files-save-pill:hover {
 
   .sidebar-inner {
     width: 100%;
+    /*
+     * Notched devices (ticket 50 grew the bar): the phone titlebar is
+     * `calc(38px + env(safe-area-inset-top))` tall while this drawer is
+     * pinned at `top: 0` under it, so the base 38px pad left the
+     * space-filter row up inside the grown band — visible through the
+     * transparent bar, but every click landed on the bar (web-bugs 14).
+     * The pad tracks the bar's full height; without a notch the inset
+     * resolves to 0 and this is exactly the base rule's 38px.
+     */
+    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
   }
 
   .pane-seam-sidebar,
@@ -7675,6 +7685,21 @@ button.files-save-pill:hover {
     background: var(--rb-bg);
     display: flex;
     flex-direction: column;
+    /*
+     * The drawer pads its whole content below the titlebar band (web-bugs
+     * 14): the bar is a transparent but fully hit-testable full-width
+     * overlay above this drawer, so anything painted inside y in
+     * [0, 38 + inset] rendered through the bar while every click landed on
+     * it — the strip header (below) sat exactly in that band, its chips
+     * visible yet dead. Padding the CONTAINER moves strip header and body
+     * below the bar together, on the same calc the bar's own height uses,
+     * while z stays 30: the bar's cluster keeps the documented
+     * clickability above the drawer, and the drawer's own background
+     * paints the band — the same contract the phone sidebar drawer's pad
+     * gives it. The body's desktop titlebar pad stays zeroed below; this
+     * is the one pad point at phone.
+     */
+    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
   }
 
   .right-pane:not([aria-hidden="true"]) {
@@ -7701,7 +7726,11 @@ button.files-save-pill:hover {
    * The in-drawer tab strip header (§2.2): the 38px row that carries the
    * surface tabs at phone — the titlebar band's phone replacement, since
    * the band renders no pane tabs there and 41px could not fit a strip
-   * anyway. The strip inside is the desktop's, chips and all.
+   * anyway. The drawer's container pad (above) puts its top edge at the
+   * bar's bottom edge, so the chips are clickable rather than occluded
+   * by the bar; the row itself stays a plain 38px — the notch inset is
+   * the drawer pad's term, never the strip's. The strip inside is the
+   * desktop's, chips and all.
    */
   .right-pane-strip-header {
     flex: none;

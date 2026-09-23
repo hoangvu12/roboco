@@ -45,7 +45,11 @@ import { RightTabStrip } from "./right-tab-strip";
  * !important` beats the inline writes), the surfaces still stay mounted
  * through the close, and the tabs that lived in the titlebar band render
  * in a 38px strip header INSIDE the drawer instead (the band renders no
- * pane tabs at phone).
+ * pane tabs at phone). The drawer's CSS pads that whole content below the
+ * titlebar band (web-bugs 14): the bar is a transparent, hit-testable
+ * overlay ABOVE the drawer, so the strip header starts at the bar's
+ * bottom edge — visible AND clickable — while the bar's own cluster keeps
+ * its documented clickability to close what it opened.
  */
 
 /** `motion::RESIZE` — the same 200ms the stylesheet transitions on. */
@@ -162,8 +166,11 @@ export function RightPane({
       {/*
         The phone strip header (§2.2): the tabs that the titlebar band
         carries at desktop widths render inside the drawer at phone, above
-        the pane body. Mounted through the close glide like everything
-        else — `aria-hidden` hides the tree while the drawer is shut.
+        the pane body. The drawer's CSS pad owns the titlebar clearance —
+        this row starts at the bar's bottom edge, never inside its
+        hit-testable band (web-bugs 14). Mounted through the close glide
+        like everything else — `aria-hidden` hides the tree while the
+        drawer is shut.
       */}
       {phone && (
         <div className="right-pane-strip-header">
