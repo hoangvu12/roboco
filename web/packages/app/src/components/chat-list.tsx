@@ -45,6 +45,7 @@ import { CreateSectionDialog, CustomSection, customSectionKeyedHeight } from "./
 import { GlyphSpinner } from "./glyph-spinner";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
 import { ProjectIconMark } from "./project-monogram";
+import { projectIconsStore } from "../lib/project-icons";
 import { Tooltip } from "./ui/Tooltip";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 import {
@@ -260,6 +261,20 @@ export function ChatList() {
       .filter((key): key is string => key !== null);
     sidebarStore.pruneUnknownPins(keys, new Set(chats.rows.map((chat) => chat.id)));
   }, [chats.loaded, chats.error, chats.rows, registry]);
+
+  // Project icons (ticket 05): reconcile the per-space artwork cache with
+  // the fleet's space list — new spaces probe `ICON_PATHS` through their
+  // owning engine's files RPC (the desktop's `render_project_icon` cache
+  // fill), vanished spaces drop their entry, and the view toggle hides the
+  // surface outright. Rows read the settled entries through
+  // `useProjectIcon`; while a probe is in flight the monogram stays.
+  useEffect(() => {
+    if (!sidebar.showProjectIcon) {
+      projectIconsStore.dropAll();
+      return;
+    }
+    projectIconsStore.ensure(snapshot.spaces.rows, sessions, localDeviceId);
+  }, [sidebar.showProjectIcon, snapshot.spaces.rows, sessions, localDeviceId]);
 
   // The pinned section leads; custom sections follow (claimed rows render
   // inside their section, never in the regular groups — `render_active_rows`
@@ -1013,9 +1028,9 @@ function DeviceGroupSection({
  *    relative time instead. A jump hint (the slot's `badgeCombo`, ticket 12)
  *    takes the corner outright above both.
  * 2. The harness brand mark (13px) beside the title at 13px/17px, with the
- *    project monogram leading (78e9e6ae's project icons; the web has no
- *    repository artwork surface, so the curated-palette monogram IS the
- *    project icon — see `project-monogram.tsx`).
+ *    project mark leading (78e9e6ae's project icons): the space's probed
+ *    repository artwork when it resolves, else the curated-palette
+ *    monogram — see `project-monogram.tsx` and `lib/project-icons.ts`.
  * 3. Structural, not reserved: branch and change-request badge, omitted
  *    entirely when the chat has neither — the invisible spring keeps the
  *    badge pinned right without moving anything when absent.
@@ -1076,7 +1091,12 @@ function ChatListRow({
 
   const monogram =
     showProjectIcon ? (
-      <ProjectIconMark name={projectName} seed={projectSeed} device={device} />
+      <ProjectIconMark
+        name={projectName}
+        seed={projectSeed}
+        device={device}
+        spaceId={row.chat.spaceId ?? null}
+      />
     ) : null;
 
   // The corner's compact body: the remote glyph at rest (the Archive pill

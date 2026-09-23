@@ -212,7 +212,12 @@ function ArchivedRow({
         >
           {showProjectIcon && (
             <span className="arch-row-project">
-              <ProjectIconMark name={projectName} seed={projectSeed} device={device} />
+              <ProjectIconMark
+                name={projectName}
+                seed={projectSeed}
+                device={device}
+                spaceId={row.chat.spaceId ?? null}
+              />
             </span>
           )}
           {brand !== null && (

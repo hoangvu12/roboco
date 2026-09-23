@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Tooltip } from "./ui/Tooltip";
 import { TOOLTIP_VIEW_OPTIONS_MS } from "./ui/Tooltip";
 import { monogramCss, monogramLetter, monogramTone } from "../lib/monogram";
+import { useProjectIcon } from "../state/project-icons";
 import { useResolvedAppearance } from "../state/appearance";
 
 /**
@@ -9,9 +11,9 @@ import { useResolvedAppearance } from "../state/appearance";
  * tile, tone from the curated palette (`lib/monogram.ts`), with the
  * pull-request-badge-style tooltip card below replaced by the app's label
  * tooltip naming the project and (from b58af627/378a1945) its owning
- * device. The web has no repository artwork surface, so the monogram IS
- * the project icon; it follows the row's selected/hover state — the
- * desktop's `selected`/`group_hover` tint strengthening.
+ * device. Repository artwork — the web port of the desktop's client-side
+ * `ICON_PATHS` probe (`lib/project-icons.ts`) — replaces the monogram when
+ * it resolves; the monogram stays the loading and fallback state.
  */
 
 /**
@@ -48,28 +50,71 @@ export function ProjectMonogram({
 }
 
 /**
+ * One artwork tile: the fetched bytes as an image, contain-fit like the
+ * desktop's `ObjectFit::Contain`. A file that fails to decode in the
+ * browser (corrupt or truncated artwork) falls back to the monogram — the
+ * web peer of `decode_project_icon(...).ok()`, which prefers the default
+ * over showing unrelated lower-priority art.
+ */
+function ProjectIconArt({
+  src,
+  name,
+  seed,
+  active = false,
+}: {
+  readonly src: string;
+  readonly name: string;
+  readonly seed: string;
+  readonly active?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <ProjectMonogram name={name} seed={seed} active={active} />;
+  }
+  return (
+    <img
+      className="project-icon-art"
+      src={src}
+      alt=""
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+/**
  * The project icon frame (project_icon.rs's `project_icon_frame`): the
  * monogram with a 350ms tooltip naming the project and its device — the
- * b58af627/378a1945 device tooltip, web-shaped as the label tooltip.
+ * b58af627/378a1945 device tooltip, web-shaped as the label tooltip. The
+ * space's probed artwork replaces the monogram when it has landed
+ * (`useProjectIcon`; loading, miss, and no-space rows keep the monogram).
  */
 export function ProjectIconMark({
   name,
   seed,
   device,
   active = false,
+  spaceId = null,
 }: {
   readonly name: string;
   readonly seed: string;
   readonly device: string;
   readonly active?: boolean;
+  /** The row's scoped space id; null (project-less) never probes. */
+  readonly spaceId?: string | null;
 }) {
+  const icon = useProjectIcon(spaceId);
   return (
     <Tooltip
       label={`${name} — ${device}`}
       delay={TOOLTIP_VIEW_OPTIONS_MS}
       trigger={
         <span className="project-icon-mark">
-          <ProjectMonogram name={name} seed={seed} active={active} />
+          {icon !== null ? (
+            <ProjectIconArt key={icon} src={icon} name={name} seed={seed} active={active} />
+          ) : (
+            <ProjectMonogram name={name} seed={seed} active={active} />
+          )}
         </span>
       }
     />
