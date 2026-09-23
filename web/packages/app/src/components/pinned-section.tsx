@@ -12,6 +12,7 @@ import {
   SIDEBAR_PINNED_DIVIDER_KEY,
   SIDEBAR_SESSION_SLOT,
 } from "../lib/sidebar-pins";
+import { preventNativeSidebarRowDrag } from "../lib/sidebar-drag-events";
 import {
   SidebarDisclosureBody,
   SidebarDisclosureHeader,
@@ -337,6 +338,9 @@ export function PinnedSection({
                   data-transfer={drag?.overRegular ? "1" : undefined}
                   style={offset === 0 ? undefined : { transform: `translateY(${offset}px)` }}
                   onPointerDown={(event) => armDrag(event, row.chat.id, index)}
+                  // The row's anchor is natively draggable; a press that
+                  // moves must stay OUR drag (see sidebar-drag-events.ts).
+                  onDragStart={preventNativeSidebarRowDrag}
                   onClickCapture={(event) => {
                     if (suppressClickRef.current) {
                       event.preventDefault();

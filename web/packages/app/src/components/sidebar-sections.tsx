@@ -5,6 +5,7 @@ import type { SidebarSection } from "../state/ui-settings";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { setChatArchived } from "../lib/chat-actions";
+import { preventNativeSidebarRowDrag } from "../lib/sidebar-drag-events";
 import { SIDEBAR_DISCLOSURE_BODY_INSET } from "../lib/sidebar-pins";
 import { sidebarRowHeight, type ChatRow } from "../lib/view";
 import type { EngineSession } from "../state/engine-session";
@@ -239,6 +240,9 @@ export function CustomSection({
                 className="regular-row"
                 data-sidebar-dragging={draggingChatId === row.chat.id ? "1" : undefined}
                 onPointerDown={(event) => onRowPointerDown(event, row.chat.id)}
+                // The row's anchor is natively draggable; a press that moves
+                // must stay OUR transfer gesture (sidebar-drag-events.ts).
+                onDragStart={preventNativeSidebarRowDrag}
                 onClickCapture={(event) => {
                   if (shouldSuppressClick()) {
                     event.preventDefault();
