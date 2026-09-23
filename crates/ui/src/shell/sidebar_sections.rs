@@ -66,6 +66,9 @@ impl Shell {
             }
         }
         self.schedule_save(cx);
+        // Sections are engine-side state now (ticket 11): write through the
+        // RPC; `UiSettings` stays the offline cache.
+        self.push_sidebar_state(cx);
     }
 
     pub(super) fn open_section_dialog(&mut self, id: Option<String>, cx: &mut Context<Self>) {
@@ -131,6 +134,7 @@ impl Shell {
             });
         }
         self.schedule_save(cx);
+        self.push_sidebar_state(cx);
         cx.notify();
     }
 
@@ -143,6 +147,7 @@ impl Shell {
             }
         }
         self.schedule_save(cx);
+        self.push_sidebar_state(cx);
         cx.notify();
     }
 
@@ -264,6 +269,9 @@ impl Shell {
                     }
                 }
                 this.schedule_save(cx);
+                // The disclosure state is part of the section list on the
+                // wire — mirror the toggle (ticket 11).
+                this.push_sidebar_state(cx);
                 cx.notify();
             }))
             .child(

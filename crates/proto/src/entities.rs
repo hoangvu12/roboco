@@ -3,6 +3,8 @@
 //! In roboco these were synced Postgres rows; in roboco they live in the per-org
 //! workspace Loro doc (see ARCHITECTURE.md §2.2) with the same field surface.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -937,6 +939,36 @@ pub struct ProjectActionsSnapshot {
     pub actions: Vec<ProjectAction>,
     pub importable_actions: Vec<ProjectActionDraft>,
     pub project_file_issue: Option<String>,
+}
+
+/// A user-named custom sidebar section on the engine-local sidebar state
+/// surface (`SetSidebarSections` / `WatchSidebarState`). Ids are opaque
+/// client-minted strings; membership is a plain ordered chat-id list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarSection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+/// Engine-local sidebar organization state: pinned session ids and custom
+/// sections, bucketed per workspace profile key (the same bucket keys the
+/// clients compute from the engine's scope + device id). `SetSidebarPins` /
+/// `SetSidebarSections` reply with the fresh snapshot; `WatchSidebarState`
+/// streams it — current value first, then every change, so every client
+/// paired to the engine mirrors live. Last write wins; nothing here ever
+/// leaves the engine's own data dir.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarStateSnapshot {
+    #[serde(default)]
+    pub pins_by_profile: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub sections_by_profile: BTreeMap<String, Vec<SidebarSection>>,
 }
 
 /// `RunProjectAction` reply: the Action echoed with the managed terminal

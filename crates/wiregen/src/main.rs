@@ -192,6 +192,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ProjectActionDraft,
         roboco_proto::ProjectActionsSnapshot,
         roboco_proto::ProjectActionRun,
+        roboco_proto::SidebarSection,
+        roboco_proto::SidebarStateSnapshot,
         roboco_proto::CreateWorktreeOutcome,
         roboco_proto::TerminalSession,
         roboco_proto::TerminalEvent,

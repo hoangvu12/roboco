@@ -32,6 +32,7 @@ pub mod repos;
 pub mod rpc;
 pub mod run_journal;
 pub mod sessions;
+pub mod sidebar_state;
 pub mod source_control;
 pub mod space_paths;
 pub mod spaces;
@@ -57,6 +58,7 @@ pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry, smoke_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
+pub use sidebar_state::SidebarStateStore;
 pub use run_journal::{JournalError, RunJournal};
 pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
 pub use source_control::{
@@ -122,6 +124,9 @@ pub struct EngineCore {
     pub workspace_files: WorkspaceFiles,
     pub terminals: Terminals,
     pub project_actions: ProjectActionsStore,
+    /// Engine-local sidebar pins + custom sections (ADR 0004: engine-side,
+    /// persisted in this profile's store root — never synced).
+    pub sidebar_state: SidebarStateStore,
     pub previews: roboco_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
     pub diff_sync: CheckoutDiffSync,
@@ -232,6 +237,7 @@ impl EngineCore {
         let terminals = Terminals::new();
         let project_actions = ProjectActionsStore::open(profile.store_root())?;
         doc_host.set_project_action_runtime(project_actions.clone(), terminals.clone());
+        let sidebar_state = SidebarStateStore::open(profile.store_root())?;
         let previews = roboco_preview::PreviewService::new(
             profile.store_root().join("previews.json"),
             device_id.clone(),
@@ -273,6 +279,7 @@ impl EngineCore {
             workspace_files,
             terminals,
             project_actions,
+            sidebar_state,
             previews,
             change_requests,
             diff_sync,
@@ -314,6 +321,7 @@ impl EngineCore {
             self.workspace_files.clone(),
             self.terminals.clone(),
             self.project_actions.clone(),
+            self.sidebar_state.clone(),
             self.change_requests.clone(),
             self.diff_sync.clone(),
             self.uploads.clone(),
