@@ -15,7 +15,8 @@
 //!   natively.
 //! - **MacApp** (running out of an app bundle): download the app tarball, swap the
 //!   bundle directory, relaunch. Driven by the UI.
-//! - **Unmanaged** (source builds, hand-copied binaries): report only.
+//! - **Unmanaged** (source builds, hand-copied binaries): report only — the
+//!   UI's advisory strip links to [`RELEASES_PAGE`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -220,6 +221,11 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
     );
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
+
+/// The project's GitHub releases page — the advisory update strip opens this
+/// for unmanaged installs (source builds, hand-copied binaries), where no
+/// updater flow exists to drive.
+pub const RELEASES_PAGE: &str = "https://github.com/zeronsh/zeron/releases";
 
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Ok(url) = std::env::var("ZERON_RELEASES_URL")

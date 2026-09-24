@@ -7049,10 +7049,12 @@ impl Shell {
     }
 
     /// Update strip: shown above the user menu whenever the engine's
-    /// UpdateStatus stream reports a newer release. On a macOS bundle install
-    /// it drives the whole flow — click to download, then click to restart into
-    /// the staged bundle. Elsewhere (managed/source installs) it is advisory
-    /// (`zeron update`); click dismisses it for that version.
+    /// UpdateStatus stream reports a newer release. On desktop-update installs
+    /// (macOS bundles, Windows portable packages) it drives the whole flow —
+    /// click to download, then click to restart into the staged replacement.
+    /// Managed installs are advisory (`zeron update`); unmanaged installs link
+    /// to the GitHub releases page. Clicking an advisory dismisses it for that
+    /// version.
     fn render_update_strip(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.state.read(cx).update.clone()?;
         if !status.update_available {
@@ -7062,21 +7064,8 @@ impl Shell {
         if self.update_dismissed.as_deref() == Some(latest.as_str()) {
             return None;
         }
-        let desktop_update = self.install.supports_desktop_update();
-
-        let (label, clickable): (SharedString, bool) = if desktop_update {
-            match &self.update_flow {
-                UpdateFlow::Idle => (format!("Update available — v{latest}").into(), true),
-                UpdateFlow::Downloading => (format!("Downloading v{latest}…").into(), false),
-                UpdateFlow::Ready(_) => ("Update ready — restart to apply".into(), true),
-                UpdateFlow::Failed(message) => (format!("Update failed: {message}").into(), true),
-            }
-        } else {
-            (
-                format!("Update available — v{latest} · run `zeron update`").into(),
-                true,
-            )
-        };
+        let (label, clickable) =
+            Self::update_strip_label(&self.install, &self.update_flow, &latest);
         let failed = matches!(self.update_flow, UpdateFlow::Failed(_));
         let tone = if failed { theme.danger } else { theme.accent };
         // Follow the selected spectrum with a low-emphasis glass tint rather
@@ -7112,10 +7101,44 @@ impl Shell {
         Some(strip.into_any_element())
     }
 
+    /// The update strip's label and click affordance per install kind. Desktop
+    /// update installs (macOS bundles, Windows portable packages) drive their
+    /// flow from the strip; managed installs get the `zeron update` hint;
+    /// unmanaged installs (source builds, hand-copied binaries) are pointed at
+    /// the GitHub releases page.
+    fn update_strip_label(
+        install: &zeron_update::InstallKind,
+        flow: &UpdateFlow,
+        latest: &str,
+    ) -> (SharedString, bool) {
+        if install.supports_desktop_update() {
+            match flow {
+                UpdateFlow::Idle => (format!("Update available — v{latest}").into(), true),
+                UpdateFlow::Downloading => (format!("Downloading v{latest}…").into(), false),
+                UpdateFlow::Ready(_) => ("Update ready — restart to apply".into(), true),
+                UpdateFlow::Failed(message) => (format!("Update failed: {message}").into(), true),
+            }
+        } else if matches!(install, zeron_update::InstallKind::Managed { .. }) {
+            (
+                format!("Update available — v{latest} · run `zeron update`").into(),
+                true,
+            )
+        } else {
+            (
+                format!("Update available — v{latest} · download from GitHub").into(),
+                true,
+            )
+        }
+    }
+
     /// Idle → download; Ready → swap + relaunch; Failed → retry; advisory
-    /// installs → dismiss for this version.
+    /// installs (managed: `zeron update`, unmanaged: the GitHub releases page)
+    /// → open the destination if there is one, then dismiss for this version.
     fn on_update_strip_click(&mut self, cx: &mut Context<Self>) {
         if !self.install.supports_desktop_update() {
+            if matches!(self.install, zeron_update::InstallKind::Unmanaged) {
+                cx.open_url(zeron_update::RELEASES_PAGE);
+            }
             self.update_dismissed = self
                 .state
                 .read(cx)
@@ -11124,6 +11147,57 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_strip_labels_cover_every_install_kind() {
+        // Managed (curl|sh daemon layout): the CLI hint.
+        let managed = zeron_update::InstallKind::Managed {
+            app_root: PathBuf::from("/home/u/.zeron/app"),
+        };
+        assert_eq!(
+            Shell::update_strip_label(&managed, &UpdateFlow::Idle, "0.2.86").0,
+            SharedString::from("Update available — v0.2.86 · run `zeron update`")
+        );
+        // Unmanaged (source builds, hand-copied binaries — bare Windows
+        // release exes): the GitHub releases page, clickable to open it.
+        let unmanaged = Shell::update_strip_label(
+            &zeron_update::InstallKind::Unmanaged,
+            &UpdateFlow::Idle,
+            "0.2.86",
+        );
+        assert_eq!(
+            unmanaged.0,
+            SharedString::from("Update available — v0.2.86 · download from GitHub")
+        );
+        assert!(unmanaged.1);
+        // Downloading is not clickable (desktop flow) and the flow labels stay
+        // untouched for the installs that own them.
+        let mac_app = zeron_update::InstallKind::MacApp {
+            bundle: PathBuf::from("/Applications/Zeron.app"),
+        };
+        assert_eq!(
+            Shell::update_strip_label(&mac_app, &UpdateFlow::Downloading, "0.2.86").0,
+            SharedString::from("Downloading v0.2.86…")
+        );
+        assert!(!Shell::update_strip_label(&mac_app, &UpdateFlow::Downloading, "0.2.86").1);
+        assert_eq!(
+            Shell::update_strip_label(&mac_app, &UpdateFlow::Idle, "0.2.86").0,
+            SharedString::from("Update available — v0.2.86")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_portable_strip_drives_the_desktop_flow() {
+        let portable = zeron_update::InstallKind::WindowsPortable {
+            directory: PathBuf::from(r"C:\Users\u\AppData\Local\Programs\Zeron"),
+        };
+        assert_eq!(
+            Shell::update_strip_label(&portable, &UpdateFlow::Idle, "0.2.86").0,
+            SharedString::from("Update available — v0.2.86")
+        );
+        assert!(Shell::update_strip_label(&portable, &UpdateFlow::Idle, "0.2.86").1);
+    }
 
     #[test]
     fn sidebar_drag_nudges_each_edge_once_until_rearmed() {
