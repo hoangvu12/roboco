@@ -5,7 +5,9 @@ import {
   bodyHeightWith,
   bodyRowCount,
   cleanMessage,
+  classifyDiffEmpty,
   defaultBaseRef,
+  diffEmptyMessage,
   diffPhase,
   DIFF_SCOPE_CHIPS,
   fileCounts,
@@ -15,6 +17,7 @@ import {
   GUTTER_WIDTH,
   horizontalGeometry,
   MARKER_WIDTH,
+  normalizeCheckoutPath,
   parseKey,
   parsePatch,
   resolveDiff,
@@ -208,6 +211,41 @@ describe("resolveDiff", () => {
     expect(resolveDiff(diffs, { checkoutId: null, deviceId: "dev-a", cwd: null })).toBeNull();
     expect(resolveDiff(diffs, { checkoutId: null, deviceId: "dev-a", cwd: "/elsewhere" })).toBeNull();
   });
+
+  it("fallbackMatchesWindowsVerbatimPrefixAndSeparators", () => {
+    // Regression (ticket 01, web-pierre-adoption): engine frames carry the
+    // canonicalized cwd — on Windows `std::fs::canonicalize`'s verbatim
+    // `\\?\C:\...` form — while chat rows carry plain paths, often
+    // forward-slashed. The fallback compared raw strings, so a chat row
+    // without a checkout id never matched its frame and the pane spun on
+    // "Preparing diff…" forever. Normalization strips the verbatim prefix
+    // (UNC form included) and unifies separators before comparing.
+    const frames: readonly Diff[] = [
+      { checkoutId: "co-1", deviceId: "dev-a", cwd: "\\\\?\\C:\\Users\\x\\repo" },
+      { checkoutId: "co-2", deviceId: "dev-a", cwd: "\\\\?\\UNC\\server\\share\\repo" },
+    ];
+    // Verbatim frame vs plain forward-slashed chat cwd — the live-observed
+    // pair (research §2.2).
+    expect(
+      resolveDiff(frames, { checkoutId: null, deviceId: "dev-a", cwd: "C:/Users/x/repo" })?.checkoutId,
+    ).toBe("co-1");
+    // The chat cwd may equally arrive backslashed (an engine-set tempdir).
+    expect(
+      resolveDiff(frames, { checkoutId: null, deviceId: "dev-a", cwd: "C:\\Users\\x\\repo" })?.checkoutId,
+    ).toBe("co-1");
+    // UNC verbatim (`\\?\UNC\server\share`) vs its plain `\\server\share`.
+    expect(
+      resolveDiff(frames, { checkoutId: null, deviceId: "dev-a", cwd: "\\\\server\\share\\repo" })?.checkoutId,
+    ).toBe("co-2");
+    // The device-scoped arm takes the same normalization.
+    expect(
+      resolveDiff(frames, { checkoutId: null, deviceId: "dev-b", cwd: "C:/Users/x/repo" })?.checkoutId,
+    ).toBe("co-1");
+    // Prefix similarity alone must not fuse two different folders.
+    expect(
+      resolveDiff(frames, { checkoutId: null, deviceId: "dev-a", cwd: "C:/Users/x/repository" }),
+    ).toBeNull();
+  });
 });
 
 describe("phases", () => {
@@ -217,6 +255,87 @@ describe("phases", () => {
     expect(diffPhase({ patch: "diff --git a/x b/x\n", files: [] })).toBe("list");
     // Engine may report files without patch text (truncation edge).
     expect(diffPhase({ patch: "", files: [{ path: "x" }] })).toBe("list");
+  });
+});
+
+describe("normalizeCheckoutPath", () => {
+  it("stripsVerbatimPrefixesAndUnifiesSeparators", () => {
+    // The three live-observed spellings of one folder all share a key.
+    expect(normalizeCheckoutPath("\\\\?\\C:\\Users\\x\\repo")).toBe("C:/Users/x/repo");
+    expect(normalizeCheckoutPath("C:\\Users\\x\\repo")).toBe("C:/Users/x/repo");
+    expect(normalizeCheckoutPath("C:/Users/x/repo")).toBe("C:/Users/x/repo");
+    // UNC verbatim folds back to the plain UNC form; plain UNC is itself
+    // separator-normalized so both sides still compare equal.
+    expect(normalizeCheckoutPath("\\\\?\\UNC\\server\\share\\repo")).toBe("//server/share/repo");
+    expect(normalizeCheckoutPath("\\\\server\\share\\repo")).toBe("//server/share/repo");
+    // POSIX paths pass through untouched (the common non-Windows case).
+    expect(normalizeCheckoutPath("/repo/one")).toBe("/repo/one");
+  });
+});
+
+describe("classifyDiffEmpty", () => {
+  // The shared frame: a same-device chat with a cwd whose watch has
+  // delivered — everything varies from here.
+  const base = {
+    chatCwd: "C:/repo/x",
+    chatDeviceId: "dev-a",
+    ownDeviceId: "dev-a",
+    checkoutId: null,
+    watchLoaded: true,
+  } satisfies Parameters<typeof classifyDiffEmpty>[0];
+
+  it("remoteDeviceWinsOverEverything", () => {
+    // The engine only tracks its own device's chats — a remote-hosted chat
+    // never resolves here, so the device mismatch is the answer even while
+    // the watch is still loading and no cwd exists.
+    expect(classifyDiffEmpty({ ...base, chatDeviceId: "dev-b" })).toBe("remoteDevice");
+    expect(
+      classifyDiffEmpty({ ...base, chatDeviceId: "dev-b", watchLoaded: false, chatCwd: null }),
+    ).toBe("remoteDevice");
+    // An unknown own-device id cannot decide the comparison — fall through.
+    expect(classifyDiffEmpty({ ...base, ownDeviceId: null })).toBe("notAGitRepository");
+  });
+
+  it("noCheckoutFolderBeatsTheWatch", () => {
+    // A cwd-less chat has nothing to track no matter what the watch said.
+    expect(classifyDiffEmpty({ ...base, chatCwd: null })).toBe("noCheckoutFolder");
+    expect(classifyDiffEmpty({ ...base, chatCwd: null, watchLoaded: false })).toBe("noCheckoutFolder");
+    // Blank cwd is the same condition.
+    expect(classifyDiffEmpty({ ...base, chatCwd: "   " })).toBe("noCheckoutFolder");
+  });
+
+  it("undeliveredWatchStaysLoading", () => {
+    // The watch's first frame enumerates the engine's tracked checkouts;
+    // until it arrives, nothing is knowable — the spinner stays.
+    expect(classifyDiffEmpty({ ...base, watchLoaded: false })).toBe("loading");
+  });
+
+  it("stampedCheckoutIdStaysLoading", () => {
+    // The engine stamped the row's checkout id: the folder IS a git repo
+    // and the engine tracks it — an outstanding capture is still loading,
+    // never "not a git repository".
+    expect(classifyDiffEmpty({ ...base, checkoutId: "co-1" })).toBe("loading");
+    expect(
+      classifyDiffEmpty({ ...base, checkoutId: "engine:v1:co-1", watchLoaded: true }),
+    ).toBe("loading");
+  });
+
+  it("deliveredWatchWithNoStampMeansNotAGitRepository", () => {
+    // Same device, has a cwd, the watch enumerated its checkouts, and the
+    // engine never resolved a git identity for the folder — the smoke
+    // harness's plain-tempdir chat.
+    expect(classifyDiffEmpty(base)).toBe("notAGitRepository");
+  });
+
+  it("messagesNameTheConditionsPlainly", () => {
+    expect(diffEmptyMessage("noCheckoutFolder")).toBe("This chat has no checkout folder.");
+    expect(diffEmptyMessage("remoteDevice")).toBe(
+      "This chat is hosted on another device — its diffs live on its own device.",
+    );
+    expect(diffEmptyMessage("notAGitRepository")).toBe("This chat's checkout isn't a git repository.");
+    // The loading arm's copy is the spinner's — kept here so the suite pins
+    // the full vocabulary.
+    expect(diffEmptyMessage("loading")).toBe("Preparing diff…");
   });
 });
 

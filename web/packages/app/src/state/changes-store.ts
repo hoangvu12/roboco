@@ -26,7 +26,7 @@ import { diffPhase, resolveDiff, scopeMode, upsertDiffFrame, type DiffPhase, typ
  */
 
 /** The flat watch retry delay (`spawn_watch`, changes.rs:1822). */
-const WATCH_RETRY_MS = 2000;
+export const WATCH_RETRY_MS = 2000;
 
 export interface ScopedDiff {
   readonly diff: CheckoutDiff;
