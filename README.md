@@ -8,6 +8,22 @@ Every device runs an engine that stores its own sessions. The desktop app starts
 
 Roboco is a native Windows and Linux product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron). Selected upstream changes are ported through a pristine mirror; see [the port workflow](docs/reference/upstream-ports.md).
 
+## Install
+
+### Windows
+
+```powershell
+irm https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\Roboco` with a Start Menu shortcut. The installed app checks for updates and applies them in-app from then on. Roboco's data lives in `%LOCALAPPDATA%\Roboco` and is never touched by installs or updates.
+
+Manual option: download the portable release ZIP from the [releases page](https://github.com/hoangvu12/roboco/releases), extract it anywhere writable, and run `roboco.exe` — keep `roboco-update.json` beside it for in-app updates.
+
+### Linux
+
+Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (installs into `~/.local` without root).
+
 ## Build from source
 
 ```bash
@@ -32,7 +48,7 @@ roboco daemon start|stop|restart|status
 
 Remote access uses direct engine pairing. Each engine owns its data; the desktop client connects to each paired engine separately. There is no account service, cloud relay, or cross-engine synchronization. The [remote access specification](.scratch/remote-access/spec.md) and its tickets track the implementation.
 
-On Windows: extract the portable release ZIP and run `roboco.exe`. Keep `roboco-update.json` beside it for in-app updates. See the [development notes](docs/reference/windows-development.md) for source builds.
+See the [development notes](docs/reference/windows-development.md) for Windows source builds.
 
 ---
 

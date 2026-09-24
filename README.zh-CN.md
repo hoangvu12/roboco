@@ -6,6 +6,22 @@
 
 桌面应用直接连接本地引擎，无需 Roboco 账号。Roboco 支持 Windows 和 Linux，基于 [Zeron](https://github.com/zeronsh/zeron) 开发；上游改动按需移植。
 
+## 安装
+
+### Windows
+
+```powershell
+irm https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1 | iex
+```
+
+安装到 `%LOCALAPPDATA%\Programs\Roboco` 并创建开始菜单快捷方式，之后应用会自行检查并完成应用内更新。用户数据保存在 `%LOCALAPPDATA%\Roboco`，安装与更新均不会触碰。
+
+手动方式：从[发布页](https://github.com/hoangvu12/roboco/releases)下载便携版 ZIP，解压到任意可写目录后运行 `roboco.exe`（保留旁边的 `roboco-update.json` 以支持应用内更新）。
+
+### Linux
+
+从[发布页](https://github.com/hoangvu12/roboco/releases)下载压缩包并运行其中的 `install.sh`（免 root 安装到 `~/.local`）。
+
 ## 从源码运行
 
 ```bash
@@ -14,7 +30,7 @@ cd roboco
 cargo run -p roboco
 ```
 
-Windows 可使用便携版 ZIP。请将 `roboco-update.json` 保留在 `roboco.exe` 旁边，以支持应用内更新。源码构建请参阅 [Windows 开发说明](docs/reference/windows-development.md)。
+Windows 源码构建请参阅 [Windows 开发说明](docs/reference/windows-development.md)。
 
 ```bash
 roboco headless    # 仅运行引擎

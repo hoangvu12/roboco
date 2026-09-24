@@ -499,19 +499,15 @@ impl Engine {
                 .collect()
         });
         core.previews.start(projects).await;
-        // Portable Windows packages explicitly configure an update feed; users
-        // should not need to enable workspace sync to receive application updates.
-        let check_updates = std::env::var_os("ROBOCO_RELEASES_URL").is_some();
-        #[cfg(windows)]
-        let check_updates = check_updates
-            || matches!(
-                roboco_update::detect_install(),
-                roboco_update::InstallKind::WindowsPortable { .. }
-            );
-        if check_updates {
-            // Release checker: polls the release feed on a 6h cadence; headless
-            // installs with ROBOCO_AUTO_UPDATE=1 apply + restart themselves — gated
-            // on quiescence so a restart never lands under a live run or open PTY.
+        // Release checker: polls the release feed on a 6h cadence; headless
+        // installs with ROBOCO_AUTO_UPDATE=1 apply + restart themselves — gated
+        // on quiescence so a restart never lands under a live run or open PTY.
+        // Every install checks: application updates must not depend on
+        // workspace sync (or any cloud) being enabled — the feed is this
+        // repository's GitHub Releases. (Upstream gates this on edge_enabled;
+        // Roboco has no edge, so the check is unconditional and the feed URL
+        // resolves per install kind — see roboco_update::release_base.)
+        {
             let quiescent: roboco_update::QuiescentCheck = {
                 let sessions = core.sessions.clone();
                 let terminals = core.terminals.clone();

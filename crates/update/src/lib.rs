@@ -15,7 +15,8 @@
 //!   natively.
 //! - **MacApp** (running out of an app bundle): download the app tarball, swap the
 //!   bundle directory, relaunch. Driven by the UI.
-//! - **Unmanaged** (source builds, hand-copied binaries): report only.
+//! - **Unmanaged** (source builds, hand-copied binaries): report only — the
+//!   UI's advisory strip links to [`RELEASES_PAGE`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -221,6 +222,15 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
+/// The repository's GitHub Releases page — the advisory update strip opens
+/// this for unmanaged installs (source builds, hand-copied binaries), where
+/// no updater flow exists to drive.
+pub const RELEASES_PAGE: &str = "https://github.com/hoangvu12/roboco/releases/latest";
+
+/// GitHub's latest-release download base: `manifest.json` and artifacts live
+/// here. The fallback feed when no edge and no explicit override is set.
+const RELEASES_DOWNLOAD: &str = "https://github.com/hoangvu12/roboco/releases/latest/download";
+
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Ok(url) = std::env::var("ROBOCO_RELEASES_URL")
         && !url.trim().is_empty()
@@ -232,7 +242,7 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
         return Ok(url.trim_end_matches('/').to_owned());
     }
     if edge_url.is_empty() {
-        return Ok("https://github.com/hoangvu12/roboco/releases/latest/download".into());
+        return Ok(RELEASES_DOWNLOAD.into());
     }
     Ok(format!("{}/releases", edge_url.trim_end_matches('/')))
 }

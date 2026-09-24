@@ -4,6 +4,8 @@ name: release
 # publish them to a GitHub Release:
 #   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
 #   - Windows portable zip (x86_64) via scripts/package-windows.ps1
+#   - scripts/install-windows.ps1, published as `install.ps1` (the Windows
+#     one-liner: irm .../releases/latest/download/install.ps1 | iex)
 # The in-app updater reads back from this repo's GitHub Releases.
 #
 # Trigger: push a tag `v<version>` matching the workspace version in
@@ -106,6 +108,13 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-latest
     steps:
+      # Checked out beside (not into) the artifact dir: the install script is
+      # uploaded as a release asset but, like manifest.json, must stay outside
+      # dist/ so it gets no updater-manifest sha256 entry.
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+          sparse-checkout: scripts
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -129,9 +138,15 @@ jobs:
               '.files[$name] = {sha256: $sha}' <<<"$manifest")
           done
           printf '%s' "$manifest" > manifest.json
+      - name: stage install script
+        run: |
+          # The Windows one-liner installs from this asset:
+          # irm https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1 | iex
+          cp repo/scripts/install-windows.ps1 install.ps1
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
             manifest.json
+            install.ps1
           generate_release_notes: true

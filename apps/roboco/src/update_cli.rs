@@ -70,7 +70,7 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
                 "this binary is not update-managed (source build or hand-copied).\n\
                  Linux: download a Roboco release from https://github.com/hoangvu12/roboco/releases or rebuild from source.\n\
                  macOS: download the new Roboco.app dmg, or rebuild from source.\n\
-                 Windows: use an update-enabled portable package, or rebuild from source."
+                 Windows: install the portable package from https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1, or rebuild from source."
             )
         }
     }
