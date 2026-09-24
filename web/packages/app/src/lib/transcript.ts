@@ -18,8 +18,10 @@ import type {
   TranscriptFrame,
 } from "@roboco/proto";
 import type { IconName } from "@roboco/icons";
+import type { FileDiffMetadata } from "@pierre/diffs";
 import { layout } from "@roboco/theme";
-import { bodyHeight, DIFF_LINE_HEIGHT, truncateFileLines, type FileDiff } from "./diff";
+import { DIFF_LINE_BASELINE } from "./typography";
+import { toolDiffDetailHeight, toolDiffFileDiff } from "./tool-diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
 import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
@@ -354,7 +356,13 @@ export const THOUGHT_WRAP_COLS = 96;
 export type ToolDetail =
   | { readonly kind: "output"; readonly lines: readonly string[]; readonly truncatedBy: number }
   | { readonly kind: "thought"; readonly lines: readonly (readonly InlineRun[])[]; readonly truncatedBy: number }
-  | { readonly kind: "diff"; readonly file: FileDiff }
+  | {
+      readonly kind: "diff";
+      /** The library-parsed diff (always expanded, unified, no review wiring). */
+      readonly file: FileDiffMetadata;
+      /** Header-slot notices (new file, truncation) — `lib/tool-diff.ts`. */
+      readonly notices: readonly string[];
+    }
   | { readonly kind: "stats"; readonly stats: readonly ToolDiffStat[] };
 
 /** One tool invocation (or a reasoning part riding the group) inside a row. */
@@ -703,11 +711,14 @@ export function toolDetail(
   diffStats: readonly ToolDiffStat[] | null | undefined,
 ): ToolDetail | null {
   if (diff !== null && diff !== undefined) {
-    const file = diffToFile(diff);
-    if (file.hunks.length === 0) {
+    // The library's parser diffs the full old/new contents with 3 context
+    // lines (the `diff_to_file` port, `lib/tool-diff.ts`); no hunks (the
+    // sides are identical) means no detail at all.
+    const parsed = toolDiffFileDiff(diff, DIFF_DETAIL_MAX_LINES);
+    if (parsed === null) {
       return null;
     }
-    return { kind: "diff", file: truncateFileLines(file, DIFF_DETAIL_MAX_LINES) };
+    return { kind: "diff", file: parsed.file, notices: parsed.notices };
   }
   if (diffStats !== null && diffStats !== undefined && diffStats.length > 0) {
     return { kind: "stats", stats: diffStats };
@@ -724,231 +735,6 @@ export function toolDetail(
   }
   const truncatedBy = Math.max(0, lines.length - OUTPUT_DETAIL_MAX_LINES);
   return { kind: "output", lines: lines.slice(0, OUTPUT_DETAIL_MAX_LINES), truncatedBy };
-}
-
-// ---------------------------------------------------------------------------
-// diff_to_file (transcript.rs:890) — reduce an inline ToolDiff to the changes
-// pane's FileDiff: hunks grouped with 3 context lines, dual 1-based line
-// numbers, unified-diff hunk headers, and add/del counts.
-// ---------------------------------------------------------------------------
-
-/** One line-level edit from the Myers walk, in document order. */
-interface LineOp {
-  readonly tag: "equal" | "del" | "ins";
-  readonly oldNo: number;
-  readonly newNo: number;
-}
-
-/** Lines of `text` the way Rust's `str::lines()` splits (no trailing `""`). */
-function splitLines(text: string): string[] {
-  if (text.length === 0) {
-    return [];
-  }
-  const lines = text.split("\n");
-  if (text.endsWith("\n")) {
-    lines.pop();
-  }
-  return lines;
-}
-
-/**
- * The minimal edit script between two line lists — Myers' O(ND) greedy
- * algorithm with a per-d V trace, backtracked to line-level ops. This is the
- * web stand-in for `similar::TextDiff::from_lines`; the huge-input guard
- * (a >4M-cell pairing) degrades to one whole-file hunk, matching similar's
- * bounded behavior on pathological inputs.
- */
-function myersLineOps(a: readonly string[], b: readonly string[]): LineOp[] {
-  const n = a.length;
-  const m = b.length;
-  const ops: LineOp[] = [];
-  if (n + m > 20_000) {
-    // Pathological input: all deletes then all inserts, one pairing.
-    for (let ix = 0; ix < n; ix += 1) {
-      ops.push({ tag: "del", oldNo: ix, newNo: -1 });
-    }
-    for (let ix = 0; ix < m; ix += 1) {
-      ops.push({ tag: "ins", oldNo: -1, newNo: ix });
-    }
-    return ops;
-  }
-  if (n === 0 && m === 0) {
-    return ops;
-  }
-  const max = n + m;
-  const offset = max;
-  // V indexed by k + offset; one snapshot per d for the backtrack. Reads
-  // clamp to 0 — the guards below keep the read indexes in-range, and a
-  // never-written cell reads as its initial 0.
-  const at = (arr: readonly number[], k: number): number => arr[k + offset] ?? 0;
-  const trace: number[][] = [];
-  let v = new Array<number>(2 * max + 1).fill(0);
-  let found = -1;
-  outer: for (let d = 0; d <= max; d += 1) {
-    trace.push([...v]);
-    for (let k = -d; k <= d; k += 2) {
-      let x: number;
-      if (k === -d || (k !== d && at(v, k - 1) < at(v, k + 1))) {
-        x = at(v, k + 1);
-      } else {
-        x = at(v, k - 1) + 1;
-      }
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
-        x += 1;
-        y += 1;
-      }
-      v[k + offset] = x;
-      if (x >= n && y >= m) {
-        found = d;
-        break outer;
-      }
-    }
-  }
-  if (found < 0) {
-    return ops;
-  }
-  // Backtrack: emit line ops in REVERSE, then flip.
-  let x = n;
-  let y = m;
-  const reversed: LineOp[] = [];
-  for (let d = found; d > 0; d -= 1) {
-    const vPrev = trace[d]!;
-    const k = x - y;
-    let prevK: number;
-    if (k === -d || (k !== d && at(vPrev, k - 1) < at(vPrev, k + 1))) {
-      prevK = k + 1;
-    } else {
-      prevK = k - 1;
-    }
-    const prevX = at(vPrev, prevK);
-    const prevY = prevX - prevK;
-    while (x > prevX && y > prevY) {
-      x -= 1;
-      y -= 1;
-      reversed.push({ tag: "equal", oldNo: x, newNo: y });
-    }
-    if (x === prevX) {
-      y -= 1;
-      reversed.push({ tag: "ins", oldNo: -1, newNo: y });
-    } else {
-      x -= 1;
-      reversed.push({ tag: "del", oldNo: x, newNo: -1 });
-    }
-  }
-  while (x > 0 && y > 0) {
-    x -= 1;
-    y -= 1;
-    reversed.push({ tag: "equal", oldNo: x, newNo: y });
-  }
-  ops.push(...reversed.reverse());
-  return ops;
-}
-
-/** Group line ops into hunks with `context` equal lines around the changes. */
-function groupHunks(ops: readonly LineOp[], context: number): { startIx: number; ops: LineOp[] }[] {
-  const groups: { startIx: number; ops: LineOp[] }[] = [];
-  const changeIx: number[] = [];
-  for (let ix = 0; ix < ops.length; ix += 1) {
-    if (ops[ix]!.tag !== "equal") {
-      changeIx.push(ix);
-    }
-  }
-  if (changeIx.length === 0) {
-    return groups;
-  }
-  const gapLimit = 2 * context;
-  let groupStart = Math.max(0, changeIx[0]! - context);
-  let groupEnd = Math.min(ops.length - 1, changeIx[0]! + context);
-  for (let ix = 1; ix < changeIx.length; ix += 1) {
-    const at = changeIx[ix]!;
-    if (at - groupEnd > gapLimit + 1) {
-      groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
-      groupStart = Math.max(0, at - context);
-    }
-    groupEnd = Math.min(ops.length - 1, at + context);
-  }
-  groups.push({ startIx: groupStart, ops: ops.slice(groupStart, groupEnd + 1) });
-  return groups;
-}
-
-/**
- * `diff_to_file` (transcript.rs:890) — one inline `ToolDiff` to the Changes
- * pane's `FileDiff`, grouped with 3 context lines like
- * `similar::TextDiff::grouped_ops(3)`. `oldText: null` means a new file
- * (status `added`).
- */
-export function diffToFile(diff: ToolDiff): FileDiff {
-  const oldText = diff.oldText ?? "";
-  const oldLines = splitLines(oldText);
-  const newLines = splitLines(diff.newText);
-  const ops = myersLineOps(oldLines, newLines);
-  // Each op's document-order start positions (an insert's old-side start is
-  // where it lands, a delete's new-side start where it lands) — the source
-  // of the hunk header's 0-based starts, exactly like similar's
-  // `old_range()/new_range()` starts.
-  const startOld: number[] = [];
-  const startNew: number[] = [];
-  let o = 0;
-  let nw = 0;
-  for (const op of ops) {
-    startOld.push(o);
-    startNew.push(nw);
-    if (op.tag !== "ins") {
-      o += 1;
-    }
-    if (op.tag !== "del") {
-      nw += 1;
-    }
-  }
-  const hunks: { header: string; lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] }[] = [];
-  let additions = 0;
-  let deletions = 0;
-  let maxLine = 0;
-  for (const group of groupHunks(ops, 3)) {
-    const oldStart = startOld[group.startIx] ?? 0;
-    const newStart = startNew[group.startIx] ?? 0;
-    let oldCount = 0;
-    let newCount = 0;
-    for (const op of group.ops) {
-      if (op.tag === "equal" || op.tag === "del") {
-        oldCount += 1;
-      }
-      if (op.tag === "equal" || op.tag === "ins") {
-        newCount += 1;
-      }
-    }
-    const header = `@@ -${oldStart + 1},${oldCount} +${newStart + 1},${newCount} @@`;
-    const lines: { kind: "context" | "add" | "del"; oldNo: number | null; newNo: number | null; text: string }[] = [];
-    for (const op of group.ops) {
-      if (op.tag === "del") {
-        deletions += 1;
-      } else if (op.tag === "ins") {
-        additions += 1;
-      }
-      const oldNo = op.tag === "ins" ? null : op.oldNo + 1;
-      const newNo = op.tag === "del" ? null : op.newNo + 1;
-      maxLine = Math.max(maxLine, oldNo ?? 0, newNo ?? 0);
-      lines.push({
-        kind: op.tag === "equal" ? "context" : op.tag === "ins" ? "add" : "del",
-        oldNo,
-        newNo,
-        text: op.tag === "ins" ? newLines[op.newNo]! : oldLines[op.oldNo]!,
-      });
-    }
-    hunks.push({ header, lines });
-  }
-  return {
-    path: diff.path,
-    oldPath: null,
-    status: diff.oldText === null || diff.oldText === undefined ? "added" : "modified",
-    binary: false,
-    notices: [],
-    hunks,
-    additions,
-    deletions,
-    maxLine,
-  };
 }
 
 /**
@@ -1053,12 +839,12 @@ export function chipsHeight(count: number): number {
 
 /**
  * Analytic height an open detail adds to its chip's card (separator + body)
- * (transcript.rs:1814) — output/thought by line count, diff via the changes
- * pane's own `body_height`, stats one row each. `diffLine` is the
+ * (transcript.rs:1814) — output/thought by line count, diff via the library
+ * block's own height accounting, stats one row each. `diffLine` is the
  * code-size-scaled diff row (`diff_line_height`); it defaults to the
  * 12.5px-code setting's 21px.
  */
-export function detailHeight(detail: ToolDetail, diffLine: number = DIFF_LINE_HEIGHT): number {
+export function detailHeight(detail: ToolDetail, diffLine: number = DIFF_LINE_BASELINE): number {
   let body: number;
   switch (detail.kind) {
     case "output":
@@ -1066,7 +852,7 @@ export function detailHeight(detail: ToolDetail, diffLine: number = DIFF_LINE_HE
       body = (detail.lines.length + (detail.truncatedBy > 0 ? 1 : 0)) * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
       break;
     case "diff":
-      body = bodyHeight(detail.file, diffLine);
+      body = toolDiffDetailHeight(detail.file, diffLine);
       break;
     case "stats":
       body = detail.stats.length * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD;
@@ -1784,7 +1570,7 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
       acc += `1${tool.detail.lines.length},${tool.detail.truncatedBy},${tool.detail.lines.join("").length}`;
     } else if (tool.detail.kind === "diff") {
       const file = tool.detail.file;
-      acc += `2${file.path},${file.additions},${file.deletions},${file.hunks.length}`;
+      acc += `2${file.name},${file.cacheKey ?? "?"},${file.hunks.length},${file.unifiedLineCount}`;
     } else if (tool.detail.kind === "stats") {
       acc += `3${tool.detail.stats.map((stat) => `${stat.path},${stat.additions},${stat.deletions}`).join(";")}`;
     } else {

@@ -39,7 +39,7 @@ import {
   type FoldState,
   type ToolGroupReveal,
 } from "./tool-motion";
-import { DIFF_LINE_HEIGHT } from "./diff";
+import { DIFF_LINE_BASELINE } from "./typography";
 
 // ---------------------------------------------------------------------------
 // The read-only state view
@@ -232,7 +232,7 @@ export interface ToolGroupGeometry {
  */
 export function toolGroupGeometry(input: ToolGroupGeometryInput): ToolGroupGeometry {
   const { rowId, tools, autoOpen, state, now, reduced } = input;
-  const diffLine = input.diffLineHeight ?? DIFF_LINE_HEIGHT;
+  const diffLine = input.diffLineHeight ?? DIFF_LINE_BASELINE;
   const collapses = toolGroupCollapses(tools);
   const fold = state.groupFold(rowId);
   const reveal = state.revealOf(rowId);
@@ -379,7 +379,7 @@ export function toolGroupMeasurementKey(
   tools: readonly ToolItem[],
   autoOpen: boolean,
   state: ToolGroupGeometryState,
-  diffLineHeight: number = DIFF_LINE_HEIGHT,
+  diffLineHeight: number = DIFF_LINE_BASELINE,
 ): string | null {
   if (!toolGroupCollapses(tools)) {
     return null;
@@ -410,7 +410,7 @@ export function toolGroupMeasurementKey(
 export function computeToolMeasurementKeys(
   rows: readonly TranscriptRow[],
   state: ToolGroupGeometryState,
-  diffLineHeight: number = DIFF_LINE_HEIGHT,
+  diffLineHeight: number = DIFF_LINE_BASELINE,
 ): Map<string, string> {
   const keys = new Map<string, string>();
   for (const row of rows) {
