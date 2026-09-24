@@ -2266,6 +2266,7 @@ fn render_code_block_source_with_actions(
                     .right(px(0.0))
                     .bottom(px(0.0))
                     .h(px(CODE_SCROLLBAR_HIT_HEIGHT))
+                    .cursor(CursorStyle::Arrow)
                     .on_hover(move |hovered, window, cx| hover(*hovered, window, cx))
                     .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
                         press(event.position.x, window, cx);
