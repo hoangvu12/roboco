@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Icon, type IconName } from "@roboco/icons";
+import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions } from "@pierre/diffs/react";
+import type { FileDiffMetadata } from "@pierre/diffs";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useNow } from "../state/hooks";
 import { useFleet, useFleetSnapshot } from "../state/fleet";
@@ -7,9 +9,13 @@ import { encodeScopedId } from "@roboco/engine-client";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
-import { reviewCommentStore, useReviewComments } from "../state/review-comments";
+import { useReviewComments } from "../state/review-comments";
 import { rightPaneStore } from "../state/right-pane";
+import { useUiSettings } from "../state/ui-settings";
 import { chatPageRow } from "../lib/view";
+import { diffLineHeight, diffTextSize } from "../lib/typography";
+import { diffCodeItems, fileDiffNotices, parseDiffFiles } from "../lib/changes-diff";
+import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../lib/pierre-theme";
 import {
   classifyDiffEmpty,
   cleanMessage,
@@ -23,9 +29,8 @@ import {
   type DiffScope,
   type FileFold,
 } from "../lib/diff";
-import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
 import { useResolvedAppearance } from "../state/appearance";
-import { CommentAdder } from "../components/review-comments/comment-adder";
+import type { Appearance } from "@roboco/theme";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
@@ -55,7 +60,20 @@ import type { ChangeRequestSummary } from "@roboco/proto";
  * absent. It is a documented web-only page-level addition — the desktop
  * never shows a CR inside the Changes tab; its badge lives in the sidebar
  * row and the composer footer, where the web also renders it.
+ *
+ * Ticket 02 (web-pierre-adoption) swapped the hand-rolled diff renderer for
+ * the Pierre diffs library's mixed virtualized code/diff list: the surface
+ * chrome above (banner, scope, base, tools) is untouched, the body renders
+ * `CodeView` items shaped by `lib/changes-diff.ts`, and code colors come
+ * from the registered Roboco theme (`lib/pierre-theme.ts`) generated from
+ * the theme artifact. Review comments render inline again in ticket 03,
+ * through the library's annotations — until then the per-line adder and
+ * comment cards are dark (the comment store keeps staging them).
  */
+
+// Registered once per process; the theme reads live `--rb-*` tokens, so no
+// re-registration ever follows an appearance or variant switch.
+registerRobocoDiffsTheme();
 
 export function ChangesSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const surface = useChangesSurface(chatId, surfaceId);
@@ -460,16 +478,25 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
     return changes.scoped?.diff ?? null;
   }, [changes, scope]);
 
-  const files = useParsedDiff(activeDiff);
+  // The branch scope's fetch base — the store's resolved base when the
+  // capture has landed, the requested one while it is in flight. The parse
+  // key folds it in so two bases never share a parse.
+  const activeBase = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
+
+  // The patch parses once per (checkout, checksum, scope, base) — the
+  // adapter's memoized LRU (the old `useParsedDiff` discipline); the
+  // per-file highlight cache keys ride the same key.
+  const files = parseDiffFiles(activeDiff, scope, activeBase);
   useEffect(() => {
-    changesSurfaceStore.setFiles(files);
+    changesSurfaceStore.setFiles(files.map((file) => file.name));
   }, [files]);
 
   // ── Ticket 23: staged review comments for this chat ─────────────────────
-  // The staged set drives the diff's comment rows; the open draft (with its
-  // live body) interleaves after its anchor line. The comment being edited
-  // is excluded — its card row becomes the draft row (staged_comments,
-  // changes.rs:2587-2597).
+  // The staged set stays the comment store's input to the surface store —
+  // ticket 03 re-renders it through the library's line annotations. The
+  // inline cards and the per-line adder are dark on the library path in
+  // this ticket (the interim the ticket plans for); the store keeps
+  // staging, so nothing authored here is lost.
   const review = useReviewComments(chatId);
   const diffDraft = review.diffDraft;
   const visibleComments = useMemo(
@@ -482,40 +509,9 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
   // The store's own object identity keeps the row-list memo stable between
   // unrelated re-renders.
   const reviewDraft = diffDraft;
-  // The fold heights must include comment cards (body_height_with reads the
-  // staged set at toggle time, changes.rs:2324-2329).
   useEffect(() => {
     changesSurfaceStore.setComments(visibleComments, reviewDraft);
   }, [visibleComments, reviewDraft]);
-  const reviewWiring: DiffReviewWiring = {
-    comments: visibleComments,
-    draft: reviewDraft,
-    onDraftBody: (body) => reviewCommentStore.setDiffDraftBody(chatId, body),
-    onDraftCancel: () => reviewCommentStore.cancelDiffDraft(chatId),
-    onDraftCommit: () => reviewCommentStore.commitDiffDraft(chatId),
-    onCardEdit: (id) => reviewCommentStore.editDiffComment(chatId, id),
-    onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
-  };
-  const renderAdder = useCallback(
-    (info: { readonly path: string; readonly side: "old" | "new"; readonly lineNo: number }) => {
-      // The adder needs the file's pre-rename path for the comment's anchor
-      // (open_draft → old_path_of, changes.rs:2757).
-      const oldPath = files.find((file) => file.path === info.path)?.oldPath ?? null;
-      return (
-        <CommentAdder
-          onOpen={() =>
-            reviewCommentStore.openDiffDraft(chatId, {
-              path: info.path,
-              side: info.side,
-              line: info.lineNo,
-              oldPath,
-            })
-          }
-        />
-      );
-    },
-    [chatId, files],
-  );
 
   const error = changes.error;
   // Scoped-fetch failures replace the content area; the two known engine
@@ -542,7 +538,7 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
   const fileCount = files.length;
   const additions = activeDiff?.additions ?? 0;
   const deletions = activeDiff?.deletions ?? 0;
-  const baseForLabel = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
+  const baseForLabel = activeBase;
 
   if (session === null || !paired) {
     return (
@@ -648,22 +644,113 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
             ) : phase === "clean" ? (
               <p className="changes-empty">{cleanMessage(scope, baseForLabel)}</p>
             ) : (
-              <DiffView
+              <ChangesDiffList
+                chatId={chatId}
+                surfaceId={surfaceId}
                 files={files}
-                appearance={appearance}
+                folds={folds}
                 layout={layout}
                 wrap={wrap}
-                folds={folds}
-                onToggleFold={(path) => changesSurfaceStore.toggleFold(chatId, surfaceId, path)}
+                appearance={appearance}
                 scrollEpoch={scrollEpoch}
-                renderAdder={scope === "commit" ? undefined : renderAdder}
-                review={reviewWiring}
               />
             )}
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The diff list itself — the library's mixed virtualized code/diff list
+ * (ticket 02). Everything the surface chrome owns maps onto the library's
+ * contract here: the surface store's layout/wrap become `diffStyle`/
+ * `overflow` options, its fold map becomes per-item `collapsed` (+ the
+ * version bump the controlled items need — `lib/changes-diff.ts`), and the
+ * per-file fold chevron + notices compose INTO the library's default file
+ * header through its header slots (light-DOM children the shadow tree
+ * slots in), so the header keeps the library's look with our controls.
+ *
+ * The scroll epoch (scope/base/layout/wrap switches) resets the list to the
+ * top through the handle's `scrollTo` — the old viewer's code-plane reset.
+ * Fonts/sizes/metrics and the diff add/delete colors map from web tokens on
+ * the host class (`changes-code-host`, app.css); the code colors come from
+ * the registered Roboco theme pair, whose `themeType` follows the resolved
+ * appearance.
+ */
+interface ChangesDiffListProps {
+  readonly chatId: string;
+  readonly surfaceId: string;
+  readonly files: readonly FileDiffMetadata[];
+  readonly folds: ReadonlyMap<string, FileFold>;
+  readonly layout: "unified" | "split";
+  readonly wrap: boolean;
+  readonly appearance: Appearance;
+  readonly scrollEpoch: number;
+}
+
+function ChangesDiffList({ chatId, surfaceId, files, folds, layout, wrap, appearance, scrollEpoch }: ChangesDiffListProps) {
+  const codeFontSize = useUiSettings().codeFontSize;
+  const items = useMemo(() => diffCodeItems(files, folds), [files, folds]);
+  const options = useMemo<CodeViewReactOptions<undefined, undefined>>(
+    () => ({
+      theme: robocoDiffsThemes(),
+      themeType: appearance,
+      diffStyle: layout === "split" ? "split" : "unified",
+      overflow: wrap ? "wrap" : "scroll",
+      stickyHeaders: true,
+    }),
+    [appearance, layout, wrap],
+  );
+  const handleRef = useRef<CodeViewHandle<undefined, undefined> | null>(null);
+  useEffect(() => {
+    // The epoch moves exactly when the horizontal-extent inputs do; the
+    // virtualized list restarts at the top instead of keeping a stale
+    // anchor into differently-shaped content.
+    handleRef.current?.scrollTo({ type: "position", position: 0, behavior: "instant" });
+  }, [scrollEpoch]);
+  const renderHeaderPrefix = useCallback(
+    (item: CodeViewItem<undefined>) => {
+      if (item.type !== "diff") {
+        return null;
+      }
+      return (
+        <button
+          type="button"
+          className="changes-fold-toggle"
+          aria-expanded={!item.collapsed}
+          aria-label={item.collapsed ? "Expand file" : "Collapse file"}
+          onClick={() => changesSurfaceStore.toggleFold(chatId, surfaceId, item.fileDiff.name)}
+        >
+          <Icon name={item.collapsed ? "altArrowRight" : "altArrowDown"} size={13} />
+        </button>
+      );
+    },
+    [chatId, surfaceId],
+  );
+  const renderHeaderMetadata = useCallback((item: CodeViewItem<undefined>) => {
+    if (item.type !== "diff") {
+      return null;
+    }
+    const notices = fileDiffNotices(item.fileDiff);
+    return notices.length === 0 ? null : (
+      <span className="changes-file-notices">{notices.join("  ·  ")}</span>
+    );
+  }, []);
+  return (
+    <CodeView
+      ref={handleRef}
+      className="changes-code-host"
+      style={{
+        ["--diffs-font-size" as string]: `${diffTextSize(codeFontSize)}px`,
+        ["--diffs-line-height" as string]: `${diffLineHeight(codeFontSize)}px`,
+      }}
+      items={items}
+      options={options}
+      renderHeaderPrefix={renderHeaderPrefix}
+      renderHeaderMetadata={renderHeaderMetadata}
+    />
   );
 }
 
