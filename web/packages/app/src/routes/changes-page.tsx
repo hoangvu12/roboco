@@ -3,6 +3,7 @@ import { Icon, type IconName } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useNow } from "../state/hooks";
 import { useFleet, useFleetSnapshot } from "../state/fleet";
+import { encodeScopedId } from "@roboco/engine-client";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
@@ -10,12 +11,15 @@ import { reviewCommentStore, useReviewComments } from "../state/review-comments"
 import { rightPaneStore } from "../state/right-pane";
 import { chatPageRow } from "../lib/view";
 import {
+  classifyDiffEmpty,
   cleanMessage,
   defaultBaseRef,
+  diffEmptyMessage,
   diffPhase,
   DIFF_SCOPE_CHIPS,
   DIFF_SCOPE_LABELS,
   scopeLabel,
+  type DiffEmptyKind,
   type DiffScope,
   type FileFold,
 } from "../lib/diff";
@@ -339,7 +343,15 @@ const NO_CHANGES: ChangesSnapshot = {
   generation: 0,
 };
 
-function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
+/**
+ * The Diff surface's body — everything below the host's toolbar row: the
+ * watch banner, scoped-error notice, the CR card, and the phase-driven
+ * content (the truthful empty states, the clean message, or the diff
+ * viewer). Exported for the mounted empty-state suite
+ * (`tests/changes-empty-states.test.ts`), which drives the classification
+ * through the real store/watch wiring the way `ChangesSurface` mounts it.
+ */
+export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
   const session = useEngineSession();
   const fleet = useFleet();
   const paired = fleet.engines.length > 0;
@@ -356,6 +368,14 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
+  // The chat row's device id arrives SCOPED through the merged fleet rows
+  // (`scopeChat`), while `status.info.deviceId` is the routed engine's raw
+  // id — the remote-device classification scopes the raw id to the routed
+  // engine before comparing, the composer footer's own idiom.
+  const ownDeviceId = useMemo(
+    () => (session !== null && deviceId !== null ? encodeScopedId(session.engine.baseUrl, deviceId) : null),
+    [session, deviceId],
+  );
 
   const [store, setStore] = useState<ChangesStore | null>(null);
   useEffect(() => {
@@ -550,6 +570,20 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   // `diff_phase(active_diff)` — preparing while the active capture is
   // pending, clean when it is empty, list otherwise.
   const phase = diffPhase(activeDiff);
+  // The preparing phase's truth (ticket 01): a remote-hosted chat, a
+  // cwd-less chat, a non-git folder — everything the eternal spinner used
+  // to hide. Pure classification over the chat row and the watch state;
+  // only the genuine-loading arm keeps the spinner.
+  const emptyKind: DiffEmptyKind | null =
+    phase === "preparing"
+      ? classifyDiffEmpty({
+          chatCwd: cwd,
+          chatDeviceId: chat?.deviceId ?? null,
+          ownDeviceId,
+          checkoutId,
+          watchLoaded: changes.watchLoaded,
+        })
+      : null;
   const crUnsupported = crSnap != null && !crSnap.supported;
 
   return (
@@ -600,11 +634,17 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
 
           <div className="changes-body">
             {phase === "preparing" ? (
-              <div className="changes-empty changes-preparing" role="status">
-                {/* `gradient_spinner("changes-preparing", cell 3.0)` (changes.rs:4831) → a 15px box. */}
-                <MatrixSpinner size={15} />
-                <span>Preparing diff…</span>
-              </div>
+              emptyKind === "loading" || emptyKind === null ? (
+                <div className="changes-empty changes-preparing" role="status">
+                  {/* `gradient_spinner("changes-preparing", cell 3.0)` (changes.rs:4831) → a 15px box. */}
+                  <MatrixSpinner size={15} />
+                  <span>Preparing diff…</span>
+                </div>
+              ) : (
+                <p className="changes-empty" role="status">
+                  {diffEmptyMessage(emptyKind)}
+                </p>
+              )
             ) : phase === "clean" ? (
               <p className="changes-empty">{cleanMessage(scope, baseForLabel)}</p>
             ) : (

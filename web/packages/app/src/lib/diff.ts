@@ -465,7 +465,13 @@ export function truncateFileLines(file: FileDiff, maxLines: number): FileDiff {
 /**
  * Resolve a per-checkout diff list to the diff that matches the given chat.
  * `checkout_id` first, then device+cwd, then cwd alone — desktop parity
- * (`crates/ui/src/changes.rs::resolve_diff`).
+ * (`crates/ui/src/changes.rs::resolve_diff`). The cwd fallback compares
+ * through `normalizeCheckoutPath`: engine frames carry the canonicalized
+ * cwd (Windows `std::fs::canonicalize` emits the verbatim `\\?\` form),
+ * chat rows carry plain paths, so raw string equality strands a
+ * checkout-id-less chat on an eternal spinner (research §2.2, live-
+ * observed). The desktop never normalized because its chat rows and frames
+ * share one path form; the web sees both.
  */
 export function resolveDiff<T extends { readonly checkoutId: string; readonly deviceId: string; readonly cwd: string }>(
   diffs: readonly T[],
@@ -481,11 +487,33 @@ export function resolveDiff<T extends { readonly checkoutId: string; readonly de
   if (cwd === null) {
     return null;
   }
-  const local = diffs.find((d) => d.deviceId === chat.deviceId && d.cwd === cwd);
+  const folder = normalizeCheckoutPath(cwd);
+  const local = diffs.find(
+    (d) => d.deviceId === chat.deviceId && normalizeCheckoutPath(d.cwd) === folder,
+  );
   if (local !== undefined) {
     return local;
   }
-  return diffs.find((d) => d.cwd === cwd) ?? null;
+  return diffs.find((d) => normalizeCheckoutPath(d.cwd) === folder) ?? null;
+}
+
+/**
+ * Canonical form for checkout-folder matching: strip the Windows verbatim
+ * prefix (`\\?\C:\…` — `std::fs::canonicalize`'s output — with the UNC form
+ * `\\?\UNC\server\share` folding back to `\\server\share`) and unify
+ * separators to `/`, so `\\?\C:\Users\x\repo`, `C:\Users\x\repo`, and
+ * `C:/Users/x/repo` all compare equal. Purely a comparison key: the
+ * original strings are never rewritten on either side.
+ */
+export function normalizeCheckoutPath(path: string): string {
+  let normalized = path;
+  if (normalized.startsWith("\\\\?\\")) {
+    normalized = normalized.slice(4);
+    if (normalized.startsWith("UNC\\")) {
+      normalized = `\\\\${normalized.slice(4)}`;
+    }
+  }
+  return normalized.replace(/\\/g, "/");
 }
 
 export type DiffPhase = "preparing" | "clean" | "list";
@@ -498,6 +526,81 @@ export function diffPhase(resolved: { readonly patch: string; readonly files: re
     return "clean";
   }
   return "list";
+}
+
+/**
+ * Why the pane's diff is still `preparing` — the truth the eternal spinner
+ * used to hide (ticket 01, web-pierre-adoption). The engine only tracks
+ * checkouts for chats hosted on its OWN device (`diff_sync.rs::reconcile`
+ * skips other-device chats) and never resolves a git identity for a plain
+ * folder (so the chat row's `checkoutId` stays unstamped); the watch's
+ * first frame enumerates every tracked checkout, so once it has arrived a
+ * checkout-id-less, same-device, cwd-bearing chat is conclusively not a
+ * git checkout rather than still loading. The desktop has no peer: its
+ * `DiffPhase::Preparing` spinner runs open-ended on exactly these chats.
+ */
+export type DiffEmptyKind = "loading" | "noCheckoutFolder" | "remoteDevice" | "notAGitRepository";
+
+/** The classification inputs — everything `ChangesBody` already resolves. */
+export interface DiffEmptyInputs {
+  /** The chat row's cwd; null (or blank) means the chat has no checkout folder. */
+  readonly chatCwd: string | null;
+  /**
+   * The chat row's host device id, in the SAME scope form as `ownDeviceId`
+   * (the fleet's merged rows carry scoped ids; tests may pass raw ones —
+   * only the pairwise equality matters).
+   */
+  readonly chatDeviceId: string | null;
+  /** The engine's own device id in that same scope form; null while unknown. */
+  readonly ownDeviceId: string | null;
+  /**
+   * The chat row's checkout id — non-null means the engine resolved a git
+   * identity for the folder, so an outstanding capture is still loading.
+   * (Whether it is engine-raw or fleet-scoped is irrelevant here: presence
+   * is the signal, the comparison lives in `resolveDiff`.)
+   */
+  readonly checkoutId: string | null;
+  /** True once the diff watch has delivered its first frame. */
+  readonly watchLoaded: boolean;
+}
+
+/**
+ * Classify why no diff resolved for a chat — pure, ordering matters:
+ * a remote-hosted chat can never resolve on this engine (its device's
+ * engine owns the tracking), a cwd-less chat has nothing to track, an
+ * undelivered watch or an unstamped-yet-tracked checkout is still loading,
+ * and only a delivered watch plus a never-stamped checkout id means the
+ * folder is not a git repository.
+ */
+export function classifyDiffEmpty(inputs: DiffEmptyInputs): DiffEmptyKind {
+  if (
+    inputs.chatDeviceId !== null &&
+    inputs.ownDeviceId !== null &&
+    inputs.chatDeviceId !== inputs.ownDeviceId
+  ) {
+    return "remoteDevice";
+  }
+  if (inputs.chatCwd === null || inputs.chatCwd.trim().length === 0) {
+    return "noCheckoutFolder";
+  }
+  if (!inputs.watchLoaded || inputs.checkoutId !== null) {
+    return "loading";
+  }
+  return "notAGitRepository";
+}
+
+/** The user-visible copy for each classified empty state. */
+export function diffEmptyMessage(kind: DiffEmptyKind): string {
+  switch (kind) {
+    case "noCheckoutFolder":
+      return "This chat has no checkout folder.";
+    case "remoteDevice":
+      return "This chat is hosted on another device — its diffs live on its own device.";
+    case "notAGitRepository":
+      return "This chat's checkout isn't a git repository.";
+    case "loading":
+      return "Preparing diff…";
+  }
 }
 
 /**
