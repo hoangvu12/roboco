@@ -1,49 +1,20 @@
 import { describe, expect, it } from "vitest";
-import type { WorkspaceEntry, WorkspaceFileText } from "@roboco/proto";
+import type { WorkspaceFileText } from "@roboco/proto";
 import {
-  compareEntries,
   fileReadOnlyReason,
-  formatBytes,
-  isDirectChild,
   isImagePath,
   isMarkdownPath,
-  parentPath,
   readOnlyMessage,
+  truncatedMessage,
   writableEncoding,
   writableLineEnding,
 } from "../src/lib/files";
 
-function entry(path: string, kind: WorkspaceEntry["kind"]): WorkspaceEntry {
-  return { path, name: path.split("/").pop() ?? path, kind, ignored: false, readOnly: kind === "symlink" };
-}
-
-describe("compareEntries (desktop compare_paths)", () => {
-  it("ranks directories, then files, then symlinks", () => {
-    const rows = [entry("b.txt", "file"), entry("link", "symlink"), entry("src", "directory"), entry("A.txt", "file")];
-    rows.sort(compareEntries);
-    expect(rows.map((row) => row.path)).toEqual(["src", "A.txt", "b.txt", "link"]);
-  });
-
-  it("orders names case-insensitively with a path tiebreak", () => {
-    const rows = [entry("Beta", "file"), entry("alpha", "file"), entry("Beta2", "file")];
-    rows.sort(compareEntries);
-    expect(rows.map((row) => row.path)).toEqual(["alpha", "Beta", "Beta2"]);
-  });
-});
-
-describe("workspace path math", () => {
-  it("computes parent paths like the desktop", () => {
-    expect(parentPath("src/lib.rs")).toBe("src");
-    expect(parentPath("src")).toBe("");
-    expect(parentPath("")).toBeNull();
-  });
-
-  it("recognizes direct children", () => {
-    expect(isDirectChild("src/lib.rs", "src")).toBe(true);
-    expect(isDirectChild("src/deep/lib.rs", "src")).toBe(false);
-    expect(isDirectChild("README.md", "")).toBe(true);
-  });
-});
+/**
+ * The entry-order and path-math suites (compareEntries, parentPath,
+ * isDirectChild, formatBytes) were deleted with their exports — ticket 06's
+ * library adapters (lib/tree-adapters.ts) own that math now.
+ */
 
 describe("preview classification", () => {
   it("detects images by extension, case-insensitively", () => {
@@ -124,11 +95,12 @@ describe("fileReadOnlyReason", () => {
   });
 });
 
-describe("formatBytes", () => {
-  it("formats compact sizes", () => {
-    expect(formatBytes(0)).toBe("0 B");
-    expect(formatBytes(512)).toBe("512 B");
-    expect(formatBytes(2048)).toBe("2.0 KB");
-    expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+describe("truncatedMessage", () => {
+  it("banners truncated text reads and stays quiet otherwise", () => {
+    expect(truncatedMessage(textFile({ truncated: true }))).toBe(
+      "Large file preview is truncated and read-only.",
+    );
+    expect(truncatedMessage(textFile({}))).toBeNull();
+    expect(truncatedMessage(textFile({ truncated: true, text: null }))).toBeNull();
   });
 });

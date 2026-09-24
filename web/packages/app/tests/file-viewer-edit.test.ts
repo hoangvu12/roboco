@@ -114,8 +114,14 @@ vi.mock("../src/state/session-provider", () => ({
 // IntersectionObserver (the Virtualizer), and the editor's canvas text
 // metrics (a 2d context jsdom does not implement) ─────────────────────────
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The code body arrives on its own chunk (the finding-4a lazy boundary);
+  // pre-warm it so the mounts below resolve it on the microtask — the
+  // production shape (the chunk streams in parallel, before the first
+  // open) — instead of paying the cold module load inside the first test's
+  // settle window.
+  await import("../src/components/files/file-code-body");
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,

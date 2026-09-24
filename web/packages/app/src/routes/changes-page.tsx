@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon, type IconName } from "@roboco/icons";
-import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions } from "@pierre/diffs/react";
-import type { FileDiffMetadata } from "@pierre/diffs";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useNow } from "../state/hooks";
 import { useFleet, useFleetSnapshot } from "../state/fleet";
@@ -9,21 +7,11 @@ import { encodeScopedId } from "@roboco/engine-client";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
-import { useReviewComments, reviewCommentStore, type DiffCommentDraft } from "../state/review-comments";
+import { useReviewComments } from "../state/review-comments";
 import { rightPaneStore } from "../state/right-pane";
-import { useUiSettings } from "../state/ui-settings";
 import { chatPageRow } from "../lib/view";
-import { diffLineHeight, diffTextSize } from "../lib/typography";
-import type { ReviewComment } from "../lib/review-comments";
-import {
-  diffAdderAnchor,
-  diffCodeItems,
-  diffCommentAnnotations,
-  fileDiffNotices,
-  parseDiffFiles,
-  type DiffCommentAnnotationData,
-} from "../lib/changes-diff";
-import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../lib/pierre-theme";
+import { parseDiffFiles } from "../lib/changes-diff";
+import { registerRobocoDiffsTheme } from "../lib/pierre-theme";
 import {
   classifyDiffEmpty,
   cleanMessage,
@@ -41,13 +29,10 @@ import { useResolvedAppearance } from "../state/appearance";
 import type { Appearance } from "@roboco/theme";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
-import { CommentCard } from "../components/review-comments/comment-card";
-import { CommentDraft } from "../components/review-comments/comment-draft";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
 import { PickerCard } from "../components/ui/PickerCard";
 import { MenuRowNav } from "../components/ui/MenuRows";
 import type { ChangeRequestSummary } from "@roboco/proto";
-import type { DiffLineAnnotation, LineAnnotation, SelectedLineRange } from "@pierre/diffs";
 
 /**
  * The right pane's Changes surface — the web peer of the desktop's Changes
@@ -88,6 +73,12 @@ import type { DiffLineAnnotation, LineAnnotation, SelectedLineRange } from "@pie
 // Registered once per process; the theme reads live `--rb-*` tokens, so no
 // re-registration ever follows an appearance or variant switch.
 registerRobocoDiffsTheme();
+
+// The lazy boundary (finding 4a): the diff list module pulls the library's
+// CodeView rendering machinery (and, through `renderAnnotation`, the review
+// cards) into its own chunk — it loads on the first diff body mount, not
+// with the main bundle. The fallback is the pane's own preparing look.
+const ChangesDiffList = lazy(() => import("./changes-diff-list"));
 
 export function ChangesSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const surface = useChangesSurface(chatId, surfaceId);
@@ -506,12 +497,11 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
   }, [files]);
 
   // ── Ticket 23: staged review comments for this chat ─────────────────────
-  // The staged set feeds BOTH the surface store's fold-height input and the
-  // annotation source the diff list renders (ticket 03): the visible set
-  // excludes the comment being edited (its card becomes the draft) and the
-  // file-sourced comments (those render in the file viewer). The store's
-  // own object identity keeps both consumers' memos stable between
-  // unrelated re-renders.
+  // The staged set is the annotation source the diff list renders (ticket
+  // 03): the visible set excludes the comment being edited (its card becomes
+  // the draft) and the file-sourced comments (those render in the file
+  // viewer). The useMemo's own object identity keeps the row-list memo
+  // stable between unrelated re-renders.
   const review = useReviewComments(chatId);
   const diffDraft = review.diffDraft;
   const visibleComments = useMemo(
@@ -524,9 +514,6 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
   // The store's own object identity keeps the row-list memo stable between
   // unrelated re-renders.
   const reviewDraft = diffDraft;
-  useEffect(() => {
-    changesSurfaceStore.setComments(visibleComments, reviewDraft);
-  }, [visibleComments, reviewDraft]);
 
   const error = changes.error;
   // Scoped-fetch failures replace the content area; the two known engine
@@ -659,221 +646,35 @@ export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha
             ) : phase === "clean" ? (
               <p className="changes-empty">{cleanMessage(scope, baseForLabel)}</p>
             ) : (
-              <ChangesDiffList
-                chatId={chatId}
-                surfaceId={surfaceId}
-                files={files}
-                folds={folds}
-                layout={layout}
-                wrap={wrap}
-                appearance={appearance}
-                scrollEpoch={scrollEpoch}
-                comments={visibleComments}
-                draft={reviewDraft}
-                offerAdder={scope !== "commit"}
-              />
+              // The library's rendering machinery arrives on its own chunk;
+              // while it streams in the pane keeps its preparing look.
+              <Suspense
+                fallback={
+                  <div className="changes-empty changes-preparing" role="status">
+                    <MatrixSpinner size={15} />
+                    <span>Preparing diff…</span>
+                  </div>
+                }
+              >
+                <ChangesDiffList
+                  chatId={chatId}
+                  surfaceId={surfaceId}
+                  files={files}
+                  folds={folds}
+                  layout={layout}
+                  wrap={wrap}
+                  appearance={appearance}
+                  scrollEpoch={scrollEpoch}
+                  comments={visibleComments}
+                  draft={reviewDraft}
+                  offerAdder={scope !== "commit"}
+                />
+              </Suspense>
             )}
           </div>
         </>
       )}
     </div>
-  );
-}
-
-/**
- * The diff list itself — the library's mixed virtualized code/diff list
- * (ticket 02). Everything the surface chrome owns maps onto the library's
- * contract here: the surface store's layout/wrap become `diffStyle`/
- * `overflow` options, its fold map becomes per-item `collapsed` (+ the
- * version bump the controlled items need — `lib/changes-diff.ts`), and the
- * per-file fold chevron + notices compose INTO the library's default file
- * header through its header slots (light-DOM children the shadow tree
- * slots in), so the header keeps the library's look with our controls.
- *
- * Ticket 03 rides the library's review surfaces:
- *
- * - **Cards + draft** — the visible staged comments and the open draft map
- *   onto the items' `annotations` (side/line matching the comment store's
- *   anchors) and re-mount `CommentCard`/`CommentDraft` through the library's
- *   `renderAnnotation` slot: the shadow tree hosts one slot per annotated
- *   line, and our light-DOM cards portal into it at that line. Commit /
- *   cancel / edit / remove flow through the unchanged comment store — this
- *   component only re-renders what that store stages.
- * - **The adder** — the library's built-in gutter utility (a `+` on hovered
- *   lines) with `onGutterUtilityClick` resolving the clicked (file, side,
- *   line) into `openDiffDraft` (pre-rename `oldPath` included). Commit-
- *   pinned tabs don't offer it — a commit diff is a record, not a review
- *   surface (the old `renderAdder` gate).
- *
- * The scroll epoch (scope/base/layout/wrap switches) resets the list to the
- * top through the handle's `scrollTo` — the old viewer's code-plane reset.
- * Fonts/sizes/metrics and the diff add/delete colors map from web tokens on
- * the host class (`changes-code-host`, app.css); the code colors come from
- * the registered Roboco theme pair, whose `themeType` follows the resolved
- * appearance.
- */
-interface ChangesDiffListProps {
-  readonly chatId: string;
-  readonly surfaceId: string;
-  readonly files: readonly FileDiffMetadata[];
-  readonly folds: ReadonlyMap<string, FileFold>;
-  readonly layout: "unified" | "split";
-  readonly wrap: boolean;
-  readonly appearance: Appearance;
-  readonly scrollEpoch: number;
-  /** The visible staged diff comments (edited + file-sourced excluded). */
-  readonly comments: readonly ReviewComment[];
-  /** The open diff-side draft; its card replaces the edited comment's. */
-  readonly draft: DiffCommentDraft | null;
-  /** Whether the "+" adder is offered (commit-pinned tabs don't). */
-  readonly offerAdder: boolean;
-}
-
-function ChangesDiffList({
-  chatId,
-  surfaceId,
-  files,
-  folds,
-  layout,
-  wrap,
-  appearance,
-  scrollEpoch,
-  comments,
-  draft,
-  offerAdder,
-}: ChangesDiffListProps) {
-  const codeFontSize = useUiSettings().codeFontSize;
-  // The annotation arrays derive memoized — same inputs (files, staged set,
-  // draft) → same arrays, so unrelated re-renders keep the item versions
-  // (and the library's annotation identity comparison) quiet.
-  const annotationsByFile = useMemo(
-    () => diffCommentAnnotations(files, comments, draft),
-    [files, comments, draft],
-  );
-  const items = useMemo(
-    () => diffCodeItems(files, folds, annotationsByFile),
-    [files, folds, annotationsByFile],
-  );
-  // The adder's click handler resolves the library's range into the store's
-  // draft anchor; identity follows only (chat, layout) so typing in a draft
-  // never churns the library's options comparison.
-  const onGutterUtilityClick = useCallback(
-    (range: SelectedLineRange, context: { item: CodeViewItem<DiffCommentAnnotationData> }) => {
-      const item = context.item;
-      if (item.type !== "diff") {
-        return;
-      }
-      const anchor = diffAdderAnchor(item.fileDiff, layout, range);
-      if (anchor === null) {
-        return;
-      }
-      reviewCommentStore.openDiffDraft(chatId, anchor);
-    },
-    [chatId, layout],
-  );
-  const options = useMemo<CodeViewReactOptions<DiffCommentAnnotationData, undefined>>(
-    () => ({
-      theme: robocoDiffsThemes(),
-      themeType: appearance,
-      diffStyle: layout === "split" ? "split" : "unified",
-      overflow: wrap ? "wrap" : "scroll",
-      stickyHeaders: true,
-      // The library's built-in "+" gutter affordance (hover a line, click,
-      // `onGutterUtilityClick` fires with the clicked side + line).
-      enableGutterUtility: offerAdder,
-      ...(offerAdder ? { onGutterUtilityClick } : {}),
-    }),
-    [appearance, layout, wrap, offerAdder, onGutterUtilityClick],
-  );
-  // The annotation card: the metadata identifies WHICH staged comment (or
-  // the draft) anchors here; the live object resolves from the CURRENT
-  // staged set — the callback identity moves with (chat, set, draft), which
-  // is exactly what re-renders the cards through the library's slot portal.
-  const renderAnnotation = useCallback(
-    (annotation: LineAnnotation<DiffCommentAnnotationData> | DiffLineAnnotation<DiffCommentAnnotationData>) => {
-      const data = annotation.metadata;
-      if (data.kind === "draft") {
-        if (draft === null) {
-          return null;
-        }
-        return (
-          <CommentDraft
-            // `draft_cite_path` (changes.rs:3291-3294): the header cites
-            // the same path the staged card and the prompt bullet will —
-            // the pre-rename path on the Old side.
-            path={draft.side === "old" && draft.oldPath !== null ? draft.oldPath : draft.path}
-            line={draft.line}
-            body={draft.body}
-            editing={draft.editingId !== null}
-            onBody={(body) => reviewCommentStore.setDiffDraftBody(chatId, body)}
-            onCancel={() => reviewCommentStore.cancelDiffDraft(chatId)}
-            onCommit={() => reviewCommentStore.commitDiffDraft(chatId)}
-          />
-        );
-      }
-      const comment = comments.find((candidate) => candidate.id === data.id);
-      if (comment === undefined) {
-        return null;
-      }
-      return (
-        <CommentCard
-          comment={comment}
-          onEdit={(id) => reviewCommentStore.editDiffComment(chatId, id)}
-          onRemove={(id) => reviewCommentStore.removeComment(chatId, id)}
-        />
-      );
-    },
-    [chatId, comments, draft],
-  );
-  const handleRef = useRef<CodeViewHandle<DiffCommentAnnotationData, undefined> | null>(null);
-  useEffect(() => {
-    // The epoch moves exactly when the horizontal-extent inputs do; the
-    // virtualized list restarts at the top instead of keeping a stale
-    // anchor into differently-shaped content.
-    handleRef.current?.scrollTo({ type: "position", position: 0, behavior: "instant" });
-  }, [scrollEpoch]);
-  const renderHeaderPrefix = useCallback(
-    (item: CodeViewItem<DiffCommentAnnotationData>) => {
-      if (item.type !== "diff") {
-        return null;
-      }
-      return (
-        <button
-          type="button"
-          className="changes-fold-toggle"
-          aria-expanded={!item.collapsed}
-          aria-label={item.collapsed ? "Expand file" : "Collapse file"}
-          onClick={() => changesSurfaceStore.toggleFold(chatId, surfaceId, item.fileDiff.name)}
-        >
-          <Icon name={item.collapsed ? "altArrowRight" : "altArrowDown"} size={13} />
-        </button>
-      );
-    },
-    [chatId, surfaceId],
-  );
-  const renderHeaderMetadata = useCallback((item: CodeViewItem<DiffCommentAnnotationData>) => {
-    if (item.type !== "diff") {
-      return null;
-    }
-    const notices = fileDiffNotices(item.fileDiff);
-    return notices.length === 0 ? null : (
-      <span className="changes-file-notices">{notices.join("  ·  ")}</span>
-    );
-  }, []);
-  return (
-    <CodeView
-      ref={handleRef}
-      className="changes-code-host"
-      style={{
-        ["--diffs-font-size" as string]: `${diffTextSize(codeFontSize)}px`,
-        ["--diffs-line-height" as string]: `${diffLineHeight(codeFontSize)}px`,
-      }}
-      items={items}
-      options={options}
-      renderHeaderPrefix={renderHeaderPrefix}
-      renderHeaderMetadata={renderHeaderMetadata}
-      renderAnnotation={renderAnnotation}
-    />
   );
 }
 

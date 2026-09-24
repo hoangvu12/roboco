@@ -2,21 +2,35 @@
 
 /**
  * Ticket 06 — the file tree panel on the trees library, mounted. The library
- * renders its rows inside shadow DOM (tested upstream); this suite drives
- * the REAL interaction path — a click on a row button inside the shadow
- * root, composed out to the panel's host handlers — and asserts the panel's
- * chrome, the model's own state (visible rows, expansion, the status lane),
- * and the flows the acceptance list names: lazy expand, pagination, watch
- * update, sequence-gap resync, git-status update, click-to-open, and the
- * RPC search (debounce, capped-results banner, reveal-and-open).
+ * renders its rows inside shadow DOM (tested upstream); per the spec's
+ * testing decisions this suite NEVER reaches inside it. Interactions are
+ * driven through the model's public handles (`model.tree.getItem(path)`
+ * `toggle()`, `model.loadMoreIfMarker`, watch/git-status frames) and the
+ * panel's own light-DOM chrome (the search input's keys), and the suite
+ * asserts the panel's chrome, the model's own state (visible rows,
+ * expansion, the status lane), and the flows the acceptance list names:
+ * lazy expand, pagination, watch update, sequence-gap resync, git-status
+ * update, click-to-open, and the RPC search (debounce, capped-results
+ * banner, reveal-and-open).
+ *
+ * Exactly ONE composed-click case remains (click-to-open, below): the row
+ * click → open wiring lives on the host element and no model API stands in
+ * for it, so that test drives a real row click through the shadow DOM's
+ * `data-item-path` markup — best-effort, non-load-bearing: if upstream
+ * renames the attribute, that single test fails and the rest still hold.
  */
 
-import { act } from "react";
+import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createElement } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { methods } from "@roboco/engine-client";
-import type { WorkspaceDirectoryPage, WorkspaceEntry, WorkspaceFileChanges, WorkspaceFileSearchMatch } from "@roboco/proto";
+import type {
+  WorkspaceDirectoryPage,
+  WorkspaceEntry,
+  WorkspaceFileChanges,
+  WorkspaceFileSearchMatch,
+  WorkspaceGitStatusFrame,
+} from "@roboco/proto";
 import { WorkspaceFilesClient, type FilesCaller } from "../src/lib/files-client";
 import { loadMoreMarkerPath } from "../src/lib/tree-adapters";
 import { WorkspaceTreeModel } from "../src/lib/workspace-tree";
@@ -127,7 +141,7 @@ interface Mounted {
   readonly container: HTMLDivElement;
   readonly openedFiles: string[];
   searchInput(): HTMLInputElement;
-  gitFrame(frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }): void;
+  gitFrame(frame: WorkspaceGitStatusFrame): void;
   watchFrame(frame: WorkspaceFileChanges): void;
 }
 
@@ -145,12 +159,10 @@ function mountPanel(engine: FakeEngine): Mounted {
   document.body.appendChild(container);
   const root: Root = createRoot(container);
   const openedFiles: string[] = [];
-  let gitHandler: ((frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }) => void) | null = null;
-  const gitStatus = (handlers: {
-    onItem: (frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }) => void;
-  }): { cancel(): void } => {
-    gitHandler = handlers.onItem;
-    return { cancel: () => {} };
+  let gitHandler: ((frame: WorkspaceGitStatusFrame) => void) | null = null;
+  const gitStatus: ComponentProps<typeof FileTreePanel>["gitStatus"] = (handlers) => {
+    gitHandler = (frame) => handlers.onItem(frame, { generation: 1 });
+    return { method: methods.WATCH_WORKSPACE_GIT_STATUS, cancel: () => {} };
   };
   act(() => {
     root.render(
@@ -187,18 +199,15 @@ function treeHost(container: HTMLElement): HTMLElement {
   return container.querySelector<HTMLElement>("file-tree-container.files-tree-host")!;
 }
 
-/** A row button inside the shadow DOM, by its data-item-path. */
-function rowButton(container: HTMLElement, path: string): HTMLElement | null {
-  const shadow = treeHost(container).shadowRoot;
-  if (shadow === null) {
-    return null;
-  }
-  return shadow.querySelector<HTMLElement>(`[data-item-path="${CSS.escape(path)}"]`);
-}
-
-/** Click a row inside the shadow DOM — the composed event path out to the panel. */
+/**
+ * Click a row inside the shadow DOM — the composed event path out to the
+ * panel's host handlers. Used by EXACTLY ONE test (click-to-open): the
+ * panel's row wiring has no model-API stand-in, so it needs a real composed
+ * click. It relies on the library's internal `data-item-path` row markup —
+ * best-effort, non-load-bearing (see the file header).
+ */
 function clickRow(container: HTMLElement, path: string): void {
-  const row = rowButton(container, path);
+  const row = treeHost(container).shadowRoot?.querySelector<HTMLElement>(`[data-item-path="${CSS.escape(path)}"]`);
   expect(row, `row ${path} should be rendered`).not.toBeNull();
   act(() => {
     row!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
@@ -234,7 +243,17 @@ describe("FileTreePanel on the trees library", () => {
     expect(visibleRows(mounted)).toEqual(["src/"]);
     expect(engine.listings.filter((c) => c.directory === "src")).toHaveLength(0);
 
-    clickRow(mounted.container, "src/");
+    // The library's public item handle — the same toggle a native row click
+    // performs — expands the directory; the model's notification re-check
+    // turns the expansion into the lazy listing. `toggle` is the directory
+    // handle's, so the union narrows first (`"toggle" in item`, the
+    // `treeDirectoryHandle` idiom in lib/workspace-tree.ts).
+    act(() => {
+      const item = mounted.model.tree.getItem("src");
+      if (item !== null && "toggle" in item) {
+        item.toggle();
+      }
+    });
     await act(async () => {
       await settle();
     });
@@ -249,6 +268,9 @@ describe("FileTreePanel on the trees library", () => {
       await settle();
     });
 
+    // The ONE composed-click case (see the file header): click-to-open has
+    // no model-API stand-in — the host element's click handler reads the
+    // row's data attributes out of the composed event path.
     clickRow(mounted.container, "b.txt");
     expect(mounted.openedFiles).toEqual(["b.txt"]);
   });
@@ -267,7 +289,11 @@ describe("FileTreePanel on the trees library", () => {
     });
     expect(visibleRows(mounted)).toEqual(["f0.txt", "f1.txt", loadMoreMarkerPath("")]);
 
-    clickRow(mounted.container, loadMoreMarkerPath(""));
+    // The marker row's activation — the model's own public helper, the
+    // same call the panel's row click makes for a marker path.
+    act(() => {
+      mounted.model.loadMoreIfMarker(loadMoreMarkerPath(""));
+    });
     await act(async () => {
       await settle();
     });
@@ -310,9 +336,13 @@ describe("FileTreePanel on the trees library", () => {
     await act(async () => {
       mounted.gitFrame({
         status: {
+          checkoutId: "co-1",
+          deviceId: "dev-own",
+          revision: "rev-1",
+          complete: true,
           files: [
-            { path: "a.txt", index: "modified", worktree: "unchanged" },
-            { path: "src/new.rs", index: "untracked", worktree: "untracked" },
+            { path: "a.txt", oldPath: null, index: "modified", worktree: "unchanged" },
+            { path: "src/new.rs", oldPath: null, index: "untracked", worktree: "untracked" },
           ],
         },
       });
@@ -371,8 +401,16 @@ describe("FileTreePanel on the trees library", () => {
     expect(mounted.container.querySelectorAll("file-tree-container.files-tree-host:not(.files-search-host)")).toHaveLength(0);
     expect(visibleRows(mounted)).toEqual(["src/"]); // the main tree is untouched
 
-    // Activating a result reveals it in the main tree and opens it.
-    clickRow(mounted.container, "src/f0.rs");
+    // Activating a result — the panel's own keyboard surface (the search
+    // input's arrow + enter keys, light DOM): the first result (the implied
+    // `src/` ancestor) is focused on load, ArrowDown moves to `src/f0.rs`,
+    // Enter activates it — reveal in the tree, then open.
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
     await act(async () => {
       await settle();
     });

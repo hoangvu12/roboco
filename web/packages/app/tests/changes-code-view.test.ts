@@ -106,8 +106,14 @@ vi.mock("../src/state/session-provider", () => ({
 
 // ── jsdom gaps the mounted body hits (base-tooltip.test.ts's set) ─────────
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The diff list arrives on its own chunk (the finding-4a lazy boundary);
+  // pre-warm it so the mounts below resolve it on the microtask — the
+  // production shape (the chunk streams in parallel, before the first
+  // diff body) — instead of paying the cold module load inside a settle
+  // window (racy under a loaded parallel run).
+  await import("../src/routes/changes-diff-list");
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,
@@ -261,11 +267,14 @@ describe("ChangesSurface renders diffs through the Pierre diffs library", () => 
     expect(mounted.container.querySelector(".changes-banner")).not.toBeNull();
     expect(mounted.container.textContent).toContain("1 Uncommitted change");
 
+    // The diff list now streams in on its own chunk (the finding-4a lazy
+    // boundary): settle resolves it before the host assertions below.
+    await settle();
+
     // The library host: the scroll container our wrapper class owns…
     const host = mounted.container.querySelector<HTMLElement>(".changes-code-host");
     expect(host).not.toBeNull();
     // …and at least one shadow-DOM host element for a file item inside it.
-    await settle();
     expect(host!.querySelector("diffs-container")).not.toBeNull();
   });
 

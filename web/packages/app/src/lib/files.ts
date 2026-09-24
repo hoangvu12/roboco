@@ -1,6 +1,4 @@
 import type {
-  WorkspaceEntry,
-  WorkspaceEntryKind,
   WorkspaceFileText,
   WorkspaceLineEnding,
   WorkspaceReadOnlyReason,
@@ -11,48 +9,11 @@ import type {
 
 /**
  * Pure helpers for the files surface, ported from the desktop's files model
- * (crates/ui/src/files/) so the web tree reads identically: same entry order,
- * same path math on workspace-relative "/" paths, same read-only copy.
+ * (crates/ui/src/files/) so the web tree reads identically: same path/name
+ * math on workspace-relative "/" paths, same read-only copy. (The entry
+ * ordering and parent-path helpers died with lib/file-tree.ts and
+ * lib/file-search-tree.ts — ticket 06's library adapters own that math now.)
  */
-
-/** Desktop `entry_rank` (model.rs): directories, then files, then symlinks. */
-export function entryRank(kind: WorkspaceEntryKind): number {
-  switch (kind) {
-    case "directory":
-      return 0;
-    case "file":
-      return 1;
-    case "symlink":
-      return 2;
-  }
-}
-
-/** Desktop `compare_paths` (model.rs): rank, then case-insensitive name, then path. */
-export function compareEntries(left: WorkspaceEntry, right: WorkspaceEntry): number {
-  const byRank = entryRank(left.kind) - entryRank(right.kind);
-  if (byRank !== 0) {
-    return byRank;
-  }
-  const byName = left.name.toLowerCase().localeCompare(right.name.toLowerCase());
-  if (byName !== 0) {
-    return byName;
-  }
-  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
-}
-
-/** Desktop `parent_path` (model.rs): workspace paths are "/" separated. */
-export function parentPath(path: string): string | null {
-  const slash = path.lastIndexOf("/");
-  if (slash >= 0) {
-    return path.slice(0, slash);
-  }
-  return path.length > 0 ? "" : null;
-}
-
-/** Desktop `is_direct_child` (model.rs). */
-export function isDirectChild(candidate: string, directory: string): boolean {
-  return parentPath(candidate) === directory;
-}
 
 /** The final path component. */
 export function fileName(path: string): string {
@@ -163,20 +124,4 @@ export function fileReadOnlyReason(file: WorkspaceFileText): WorkspaceReadOnlyRe
     writableEncoding(file.encoding) === null ||
     writableLineEnding(file.lineEnding) === null;
   return undecodable ? "notRegularFile" : null;
-}
-
-/** Compact byte size for the tree and the viewer header ("12 B", "4.2 KB"). */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "";
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const kib = bytes / 1024;
-  if (kib < 1024) {
-    return `${kib >= 100 ? Math.round(kib) : kib.toFixed(1)} KB`;
-  }
-  const mib = kib / 1024;
-  return `${mib >= 100 ? Math.round(mib) : mib.toFixed(1)} MB`;
 }

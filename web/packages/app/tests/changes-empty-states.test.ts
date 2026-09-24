@@ -117,8 +117,14 @@ vi.mock("../src/state/session-provider", () => ({
 
 // ── jsdom gaps the mounted body hits (base-tooltip.test.ts's set) ─────────
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The diff body arrives on its own chunk (the finding-4a lazy boundary);
+  // pre-warm it so the mounts below resolve it on the microtask — the
+  // production shape (the chunk streams in parallel, before the first
+  // diff body) — instead of paying the cold module load inside a settle
+  // window (racy under a loaded parallel run).
+  await import("../src/routes/changes-diff-list");
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,
@@ -321,6 +327,14 @@ describe("ChangesBody preparing-phase empty states", () => {
     h.chats.push(chatRow({ id: chatId, cwd: "C:/repo/probe" }));
     h.frames.push([frame("\\\\?\\C:\\repo\\probe", "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n-x\n+x\n+y\n")]);
     const mounted = await mountBody(chatId, "d-repo");
+
+    // The diff body now arrives on its own chunk (the finding-4a lazy
+    // boundary): flush the lazy import's retry render so the preparing
+    // note is gone for the right reason — the phase left, not the
+    // fallback still showing (the `settle` idiom of the code-view suite).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
 
     expect(text(mounted)).not.toContain("Preparing diff…");
     expect(text(mounted)).not.toContain("git repository");

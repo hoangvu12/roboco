@@ -13,3 +13,23 @@ Accepted consequences:
 - Trees is beta: pin the version, expect API churn, and keep the integration seam thin (one component wrapping the model).
 - Edit mode is beta and deferred; until it lands, web file viewing is read-only.
 - Known bugs fixed by adoption and not by us: tree indentation guides (stacking per level), diff rendering fidelity.
+
+## Update
+
+Edit mode landed (ticket 07, this branch): the file viewer runs the library's
+edit session through `EditProvider` (mounted by the app shell) plus the
+`lib/file-edit.ts` bridge — exactly the follow-up this ADR anticipated, so the
+web viewer is no longer read-only and the hand-rolled editor stays deleted.
+
+Measured bundle outcome (review fix, this branch): before the lazy boundaries
+the main bundle was 3,155.73 kB / 1,055.94 kB gzipped; after moving the diff
+list (`routes/changes-diff-list.tsx`) and the code body
+(`components/files/file-code-body.tsx`) behind `React.lazy`, the main bundle is
+3,095.06 kB / 1,040.77 kB gzipped, with a 60.89 kB / 16.32 kB gzipped
+`changes-diff-list` chunk loading on the first diff body mount (the file-code-body
+chunk is ~0.9 kB — the library's core stays on main through the eager
+`EditProvider` and theme registration). The decision text above is unchanged
+by design: it records the point-in-time measurement that was accepted then;
+the research probe's ~+120 KB marginal figure covered the file-viewer entry
+only, excluding the CodeView and edit entries that landed with the full
+adoption.

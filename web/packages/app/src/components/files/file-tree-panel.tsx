@@ -9,7 +9,8 @@ import {
   type RefObject,
 } from "react";
 import { FileTree as TreesView, useFileTree } from "@pierre/trees/react";
-import type { WorkspaceFileSearchMatch } from "@roboco/proto";
+import type { WorkspaceFileSearchMatch, WorkspaceGitStatusFrame } from "@roboco/proto";
+import type { WatchHandle, WatchHandlers } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import { directoryWorkspacePath, searchTreePaths } from "../../lib/tree-adapters";
 import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, treeFileIcons } from "../../lib/tree-icons";
@@ -57,13 +58,11 @@ export function FileTreePanel({
   onOpenFile: (path: string) => void;
   /**
    * The shared remote-safe Git status stream (b25dd404 parity): subscribe
-   * through the files client and feed frames to the model. The host owns
-   * the engine session wiring; omitting it leaves the tree uncolored.
+   * through the files client and feed `WorkspaceGitStatusFrame`s to the
+   * model. The host owns the engine session wiring; omitting it leaves the
+   * tree uncolored.
    */
-  gitStatus?: (handlers: {
-    onItem: (frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }) => void;
-    onEnd?: (error?: unknown) => void;
-  }) => { cancel(): void };
+  gitStatus?: (handlers: WatchHandlers<WorkspaceGitStatusFrame>) => WatchHandle;
 }) {
   const subscribe = useCallback((listener: () => void) => model.subscribe(listener), [model]);
   const getSnapshot = useCallback(() => model.getSnapshot(), [model]);

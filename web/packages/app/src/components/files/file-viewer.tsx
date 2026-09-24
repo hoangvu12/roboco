@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
-import { File as LibraryFile, Virtualizer, type FileEditChangeHandler, type FileEditCompleteHandler, type FileOptions } from "@pierre/diffs/react";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { fileName, isImagePath, isMarkdownPath, readOnlyMessage, truncatedMessage } from "../../lib/files";
-import { documentFileContents } from "../../lib/file-view";
-import { applyFileEditChange, completeFileEdit, fileEditStateKey, reconcileFileEditDraft } from "../../lib/file-edit";
-import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../../lib/pierre-theme";
+import { registerRobocoDiffsTheme } from "../../lib/pierre-theme";
 import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
 import { useResolvedAppearance } from "../../state/appearance";
@@ -15,7 +12,6 @@ import { rightPaneStore } from "../../state/right-pane";
 import { onShortcut } from "../../state/shortcuts";
 import { uiSettings, useUiSettings } from "../../state/ui-settings";
 import { useEngineSession } from "../../state/session-provider";
-import { previewLineHeight, previewTextSize } from "../../lib/typography";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
 import { FileIcon } from "./file-icon";
 import { ImageView, loadWorkspaceImage, type WorkspaceImageLoad } from "./image-view";
@@ -49,6 +45,12 @@ import { MarkdownView } from "./markdown-view";
  */
 
 registerRobocoDiffsTheme();
+
+// The lazy boundary (finding 4a): the code body module pulls the library's
+// File rendering machinery into its own chunk — it loads on the first
+// code-body mount, not with the main bundle. The fallback is the viewer's
+// own loading arm ("Loading file…").
+const FileCodeBody = lazy(() => import("./file-code-body"));
 
 export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const session = useEngineSession();
@@ -478,13 +480,17 @@ function TextViewer({
     body = (
       <div className="files-editor-body">
         {truncated !== null && <div className="files-truncated-banner" role="status">{truncated}</div>}
-        <FileCodeBody
-          path={path}
-          doc={doc}
-          snapshot={snapshot}
-          wordWrap={settings.filesWordWrap}
-          codeFontSize={settings.codeFontSize}
-        />
+        {/* The library's rendering machinery arrives on its own chunk; while
+            it streams in the viewer keeps its loading arm. */}
+        <Suspense fallback={<p className="files-note files-note-faint">Loading file…</p>}>
+          <FileCodeBody
+            path={path}
+            doc={doc}
+            snapshot={snapshot}
+            wordWrap={settings.filesWordWrap}
+            codeFontSize={settings.codeFontSize}
+          />
+        </Suspense>
       </div>
     );
   }
@@ -526,95 +532,6 @@ function TextViewer({
         <div className="files-viewer-body">{body}</div>
       </div>
     </div>
-  );
-}
-
-/**
- * The code body (web-pierre-adoption, ticket 05 read-only, ticket 07 edit
- * mode): the diffs library’s virtualized `File` inside a `Virtualizer`
- * scroll container — highlighted by the registered Roboco theme pair
- * (themeType following the resolved appearance), line numbers on, word
- * wrap per the setting, the content hash as the highlight cache key. The
- * library renders in shadow DOM; our host class (`.files-code-host`,
- * app.css) owns the layout and the `--diffs-*` token mapping exactly like
- * the Changes pane’s host.
- *
- * Editable documents additionally run the library’s edit session (the
- * `EditProvider` the app shell mounts supplies the editor factory): the
- * per-file `editStateKey` retains the draft, undo history, selection, and
- * caret across unmount/remount; `onEditChange` streams the live contents
- * into the document (`lib/file-edit.ts`); `onEditComplete` is always
- * present — it accepts the session’s final contents and runs the final
- * save, because a missing handler silently rejects them. Read-only
- * documents (truncated, binary, unwritable encoding) never pass `edit`.
- */
-function FileCodeBody({
-  path,
-  doc,
-  snapshot,
-  wordWrap,
-  codeFontSize,
-}: {
-  readonly path: string;
-  readonly doc: FileDocument | null;
-  readonly snapshot: FileDocumentSnapshot;
-  readonly wordWrap: boolean;
-  readonly codeFontSize: number;
-}) {
-  const appearance = useResolvedAppearance();
-  const file = useMemo(() => documentFileContents(path, snapshot), [path, snapshot]);
-  const options = useMemo<FileOptions<undefined, undefined>>(
-    () => ({
-      theme: robocoDiffsThemes(),
-      themeType: appearance,
-      overflow: wordWrap ? "wrap" : "scroll",
-      stickyHeader: true,
-    }),
-    [appearance, wordWrap],
-  );
-  const editable = snapshot.editable;
-  // The per-file edit state key — computed before the editor attaches so a
-  // retained draft that no longer matches this document’s buffer (a reload
-  // moved it) is dropped instead of resuming over fresh contents.
-  const editStateKey = useMemo(() => {
-    const key = fileEditStateKey(path);
-    if (editable) {
-      reconcileFileEditDraft(key, snapshot.text);
-    }
-    return key;
-  }, [path, editable, snapshot.text]);
-  const onEditChange = useCallback<FileEditChangeHandler<undefined, undefined>>(
-    (event) => {
-      if (doc !== null) {
-        applyFileEditChange(doc, event);
-      }
-    },
-    [doc],
-  );
-  // Mandatory in every mount path: a missing completion handler REJECTS
-  // the session’s final contents (silent data loss).
-  const onEditComplete = useCallback<FileEditCompleteHandler<undefined, undefined>>((event) => {
-    if (doc !== null) {
-      return completeFileEdit(doc, event);
-    }
-    return "accept";
-  }, [doc]);
-  return (
-    <Virtualizer className="files-code-host">
-      <LibraryFile
-        className="files-code-file"
-        style={{
-          ["--diffs-font-size" as string]: `${previewTextSize(codeFontSize)}px`,
-          ["--diffs-line-height" as string]: `${previewLineHeight(codeFontSize)}px`,
-        }}
-        file={file}
-        options={options}
-        edit={editable}
-        editStateKey={editable ? editStateKey : undefined}
-        onEditChange={onEditChange}
-        onEditComplete={onEditComplete}
-      />
-    </Virtualizer>
   );
 }
 

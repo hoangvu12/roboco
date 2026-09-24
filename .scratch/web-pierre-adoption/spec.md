@@ -143,7 +143,13 @@ parallel. Visual parity with the desktop client ends for these three surfaces (A
   pagination surfaces through the model's row-decoration or a plain trailing row. Git status from
   the existing checkout git-status watch maps onto the model's built-in status lane; ignored
   dimming and the show-all toggle are preserved. Icons come from a built-in set with targeted
-  per-name/per-extension remaps. Search uses the library's built-in search surface.
+  per-name/per-extension remaps. Search uses the library's built-in search
+  surface. (As built, the built-in surface only filters paths already loaded
+  into the model, so the tree kept the RPC `SearchWorkspaceFiles` flow as the
+  contract — 200 ms debounce, 200-result cap with its "showing the first N"
+  banner — rendering the matched paths through a second trees model and
+  revealing the activated result in the main tree; ticket 06's Comments
+  record the latitude decision.)
 - **Theme from one source.** One Roboco code theme is registered with the diff library, generated
   from the same compiled theme-variant source that feeds the web client's theme tokens — not
   hand-copied — so the theme artifact freshness gate remains authoritative for it. The libraries'
@@ -210,6 +216,25 @@ server.
 - The `\\?\`-verbatim folder prefix on Windows was observed live in diff frames; the chat row
   normally carries a stamped checkout id that matches first, so normalization only rescues the
   fallback path — it is nonetheless a real correctness fix.
+- Hunk context expansion in the Changes pane is within-patch only: the library's `loadDiffFiles`
+  hook (fetch a file's full pre-image to expand context beyond the patch) is deliberately
+  unwired. The existing wire carries only the patch string, so the pre-image is unreadable
+  without a new RPC, and feeding the post-image in its place would corrupt the diff's old
+  column — wiring it would require a wire change the spec forbids. Within-patch context
+  expansion (the library's unchanged-context collapsing, and the transcript tool-diff blocks'
+  expander, which works within the patch) still works.
+- **Bundle, measured as built (amends the Bundle decision above).** The ~+120 KB gzipped
+  figure came from a research probe that exercised only the file-viewer entry (`File` +
+  `Virtualizer`) — it excluded the CodeView and edit entries. With the full adoption landed,
+  the pre-lazy main bundle measured 3,155.73 kB / 1,055.94 kB gzipped (vs. the probe's
+  2.16 MB / 765 KB pre-adoption baseline — CodeView, edit, and the review wiring all rode
+  main). The review-fix lazy boundaries then moved the diff list (CodeView render path +
+  review cards) onto its own chunk — measured after: main 3,095.06 kB / 1,040.77 kB
+  gzipped, a 60.89 kB / 16.32 kB gzipped `changes-diff-list` chunk loading on the first
+  diff body mount, and a ~0.9 kB `file-code-body` chunk (the library core stays on main
+  through the eager `EditProvider` in the app shell and the theme registration). The
+  library cost is off the critical path for the diff surface; the edit/library core
+  remains on main by design.
 - Ticket split (blockers-first): (1) empty states + path normalization — independent; (2) diff
   library in the Changes pane (theme registration lands here, reused after); (3) read-only file
   viewer (deletes the custom editor; suspended editing per ADR); (4) trees library file tree;

@@ -1,11 +1,9 @@
 import { useSyncExternalStore } from "react";
 import {
-  type DiffDraftAnchor,
   type DiffMode,
   type DiffScope,
   type FileFold,
 } from "../lib/diff";
-import type { ReviewComment } from "../lib/review-comments";
 import { uiSettings } from "./ui-settings";
 
 /**
@@ -82,7 +80,6 @@ function freshState(): SurfaceState {
 }
 
 const EMPTY_BRANCHES: readonly string[] = [];
-const EMPTY_COMMENTS: readonly ReviewComment[] = [];
 
 export class ChangesSurfaceStore {
   readonly #bySurface = new Map<string, SurfaceState>();
@@ -90,13 +87,6 @@ export class ChangesSurfaceStore {
   readonly #listeners = new Set<() => void>();
   /** The foldable paths of the ACTIVE surface registration. */
   #files: readonly string[] = [];
-  /**
-   * The active surface's staged diff comments + draft anchor (ticket 23).
-   * Kept as the analytic input ticket 03 re-wires through the library's
-   * annotations; the library path does not read it for fold geometry.
-   */
-  #comments: readonly ReviewComment[] = EMPTY_COMMENTS;
-  #draft: DiffDraftAnchor | null = null;
 
   getVersion = (): number => this.#version;
 
@@ -122,16 +112,6 @@ export class ChangesSurfaceStore {
    * actions know what can fold. */
   setFiles(files: readonly string[]): void {
     this.#files = files;
-  }
-
-  /**
-   * The viewer's current staged comment set + draft anchor (ticket 23) —
-   * kept as ticket 03's annotation input. No notification: the rows
-   * themselves re-render through the comment store's own subscription.
-   */
-  setComments(comments: readonly ReviewComment[], draft: DiffDraftAnchor | null): void {
-    this.#comments = comments;
-    this.#draft = draft;
   }
 
   /**

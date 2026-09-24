@@ -98,8 +98,14 @@ vi.mock("../src/state/session-provider", () => ({
 // ── jsdom gaps the mounted body hits (base-tooltip.test.ts's set, plus the
 // library's Virtualizer, which constructs an IntersectionObserver) ────────
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The code body arrives on its own chunk (the finding-4a lazy boundary);
+  // pre-warm it so the mounts below resolve it on the microtask — the
+  // production shape (the chunk streams in parallel, before the first
+  // open) — instead of paying the cold module load inside a settle
+  // window (racy under a loaded parallel run).
+  await import("../src/components/files/file-code-body");
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,
