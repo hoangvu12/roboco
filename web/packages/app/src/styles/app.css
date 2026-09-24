@@ -7374,7 +7374,8 @@ button.files-save-pill:hover {
   color: var(--rb-danger-muted);
 }
 
-/* ── The code view (render_preview_line / the editor body) ─────────────── */
+/* ── The code view (web-pierre-adoption, ticket 05: the read-only library
+   File; the textarea-overlay editor and its token rows are deleted) ──── */
 
 .files-editor-body {
   flex: 1;
@@ -7386,126 +7387,59 @@ button.files-save-pill:hover {
   overflow: hidden;
 }
 
-.files-code {
+/*
+ * The edit-deferral notice (ADR 0008): where the editor's affordances used
+ * to be, a quiet strip — the surface never presents a dead editor. Only
+ * documents that WOULD have opened in the editor carry it (read-only files
+ * state their own reason).
+ */
+.files-readonly-note {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rb-border);
+  font-size: 10.5px;
+  color: var(--rb-text-faint);
+}
+
+/*
+ * The library's virtualized scroll container (the `Virtualizer` host): the
+ * library renders the file in a shadow DOM host (`<diffs-container>`) inside
+ * the content div, so the surface styles only the scroll container — layout
+ * here, and the library's documented `--diffs-*` variables themed from the
+ * web tokens exactly like `.changes-code-host`. Custom properties pierce the
+ * shadow boundary by inheritance: the tokens flip with the resolved
+ * appearance (themeType follows it), so the file follows the theme with no
+ * re-registration. Code font size/line height are runtime settings — they
+ * arrive as inline `--diffs-font-size`/`--diffs-line-height` from the
+ * component; the family/tab size map here. The code TOKEN colors come from
+ * the registered Roboco theme reading `--rb-syntax-*` (lib/pierre-theme.ts).
+ * The native scrollbar stays — the library's design language, same as the
+ * Changes pane host.
+ */
+.files-code-host {
   flex: 1;
   min-height: 0;
-  min-width: 0;
-  position: relative;
-  display: flex;
-  font-family: "Geist Mono", ui-monospace, monospace;
-  color: color-mix(in srgb, var(--rb-text) 93%, transparent);
-  background: transparent;
-}
-
-.files-code-scroll {
-  position: absolute;
-  inset: 0;
-  overflow: auto;
-  scrollbar-width: none;
-}
-
-.files-code-scroll::-webkit-scrollbar {
-  display: none;
-}
-
-.files-code-content {
-  position: relative;
-  min-width: 100%;
-  width: 100%;
-}
-
-.files-code:not(.files-code-wrap) .files-code-content {
-  width: max-content;
-}
-
-.files-code-row {
-  display: flex;
-  align-items: center;
-  min-height: 20px;
-}
-
-.files-code-wrap .files-code-row {
-  align-items: stretch;
-}
-
-/* The 48px gutter (preview.rs:3159-3171). While wrap is off the gutter
-   stays pinned at the scrollport's left edge (the desktop's editor gutter
-   sits outside the horizontal scroller) — sticky over an opaque plate so
-   the code slides under it. */
-.files-code-gutter {
-  flex: none;
-  width: 48px;
-  padding-right: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  font-size: 10px;
-  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
-  border-right: 1px solid color-mix(in srgb, var(--rb-border) 55%, transparent);
-  user-select: none;
-  position: sticky;
-  left: 0;
-  z-index: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--rb-bg);
+  color: var(--rb-text);
+  font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-header-font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  /* `DIFF_TAB_SIZE` — the old plane's visual tab advance. */
+  --diffs-tab-size: 4;
+  --diffs-addition-color-override: var(--rb-diff-add);
+  --diffs-deletion-color-override: var(--rb-diff-delete);
+  --diffs-modified-color-override: var(--rb-accent);
 }
 
-.files-code-wrap .files-code-gutter {
-  align-items: flex-start;
-}
-
-.files-code-line {
+/* The library's file element: a block host for the virtualized file. */
+.files-code-file {
   display: block;
-  padding: 0 18px 0 12px;
-  white-space: pre;
-  min-width: 0;
-  flex: 1;
-}
-
-.files-code-wrap .files-code-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding-top: 2px;
-  padding-bottom: 2px;
-}
-
-.files-code-row-active {
-  background: rgb(var(--rb-ink) / 0.025);
-}
-
-/* The input layer: transparent glyphs over the highlight, the caret in
-   --rb-caret, the selection wash accent at 0.22. */
-.files-code-input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: none;
-  outline: none;
-  resize: none;
-  overflow: hidden;
-  padding: 0 18px 0 60px;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--rb-caret);
-  font: inherit;
-  tab-size: 4;
-  white-space: pre;
-}
-
-.files-code-wrap .files-code-input {
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-}
-
-.files-code-input::selection {
-  background: rgb(var(--rb-accent) / 0.22);
-  color: transparent;
-}
-
-/* Read-only lines stay selectable (the desktop's copyable preview). */
-.files-code:not(.files-code-editable) .files-code-line {
-  user-select: text;
+  max-width: 100%;
 }
 
 /* ── The image viewer (image_viewer.rs) ────────────────────────────────── */
@@ -7651,12 +7585,6 @@ button.files-save-pill:hover {
   cursor: pointer;
 }
 
-/* ── The editor context menu (mod.rs:626) ──────────────────────────────── */
-
-.files-editor-menu .menu-row:disabled {
-  color: var(--rb-text-faint);
-  cursor: default;
-}
 /* ── Phone layout: drawer sidebar, drawer panes ─────────────────────── */
 
 @media (max-width: 768px) {
@@ -9085,7 +9013,9 @@ button.files-save-pill:hover {
 /*
  * The code frame (render.rs:1969-1990): a flex column — radius 10,
  * `ink(0.035)` translucent fill, 1px theme.border, overflow hidden so the
- * header band and body clip to the radius.
+ * header band and body clip to the radius. The body is the library's host
+ * (`.md-code-host`, ticket 05) — it paints the theme's `--rb-bg`, so the
+ * translucent fill tints the header band only.
  */
 .md-codeblock {
   position: relative;
@@ -9180,41 +9110,35 @@ button.files-save-pill:hover {
   color: var(--rb-text-muted);
 }
 
-.md-pre {
-  margin: 0;
-  padding: 10px 12px;
-  overflow-x: auto;
-  font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
-  /* Markdown code blocks scale 1:1 off the code font size (render.rs). */
-  font-size: var(--rb-code-size-px, 12.5px);
-  line-height: var(--rb-code-line-height, 18px);
-  /* Code lines participate in text selection (d353ebbf, render.rs): one
-     selectable line element per source line, blank lines included. Stated
-     explicitly so a future transcript-wide user-select rule cannot regress
-     the code body silently. */
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.md-codeline {
-  display: block;
-  min-height: var(--rb-code-line-height, 18px);
-  white-space: pre;
-}
-
 /*
- * Fit-content mode (render.rs:2132-2154): lines wrap (whitespace_normal)
- * with an 18px MINIMUM height, the body stops horizontal scrolling, and the
- * lines column fills the frame instead of keeping its own min width.
+ * The library's headerless `File` host (web-pierre-adoption, ticket 05):
+ * the fence body now renders inside the diffs library's shadow DOM, so our
+ * chrome stops at the frame and the header band — the old `.md-pre`/
+ * `.md-codeline` bodies (and their token spans) died with the hand-rolled
+ * tokenizer. The host maps the web tokens onto the library's documented
+ * variables exactly like `.changes-code-host` (font families, tab size, the
+ * theme's add/delete roles); the code font size and line height arrive as
+ * inline `--diffs-font-size`/`--diffs-line-height` from the runtime code-size
+ * setting, the fit toggle maps onto the library's wrap option, and the code
+ * TOKEN colors come from the registered Roboco theme reading
+ * `--rb-syntax-*` (lib/pierre-theme.ts). The body paints the theme's
+ * `--rb-bg` through the library (an opaque panel, the same body the tool
+ * diff and Changes hosts paint — ADR 0008's accepted divergence); the frame's
+ * translucent fill now tints the header band only.
  */
-.md-codeblock-fit .md-codeline {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  height: auto;
-}
-
-.md-codeblock-fit .md-pre {
-  overflow-x: hidden;
+.md-code-host {
+  display: block;
+  max-width: 100%;
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-header-font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  /* `DIFF_TAB_SIZE` — the old plane's visual tab advance. */
+  --diffs-tab-size: 4;
+  --diffs-addition-color-override: var(--rb-diff-add);
+  --diffs-deletion-color-override: var(--rb-diff-delete);
+  --diffs-modified-color-override: var(--rb-accent);
 }
 
 /*
@@ -9383,51 +9307,13 @@ button.files-save-pill:hover {
   background: var(--rb-selection);
 }
 
-/* Syntax tokens — roles colored from the variant's syntax map. */
-.tk-comment { color: var(--rb-syntax-comment); }
-.tk-keyword { color: var(--rb-syntax-keyword); }
-.tk-string { color: var(--rb-syntax-string); }
-.tk-stringSpecial { color: var(--rb-syntax-string-special); }
-.tk-escape { color: var(--rb-syntax-escape); }
-.tk-number { color: var(--rb-syntax-number); }
-.tk-boolean { color: var(--rb-syntax-boolean); }
-.tk-type { color: var(--rb-syntax-type); }
-.tk-function { color: var(--rb-syntax-function); }
-.tk-property { color: var(--rb-syntax-property); }
-.tk-constant { color: var(--rb-syntax-constant); }
-.tk-variableSpecial { color: var(--rb-syntax-variable-special); }
-.tk-operator { color: var(--rb-syntax-operator); }
-.tk-punctuation { color: var(--rb-syntax-punctuation); }
-.tk-tag { color: var(--rb-syntax-tag); }
-.tk-attribute { color: var(--rb-syntax-attribute); }
-.tk-macro { color: var(--rb-syntax-macro); }
 /*
- * The 14 roles the hand-rolled tokenizer never emits but the desktop's
- * `HighlightKind` covers (crates/syntax/src/lib.rs:60-92; ticket 21 §2.17):
- * the rules land now against the theme's own palette keys, so a future
- * tokenizer upgrade is a code change only.
+ * Syntax token colors — the `.tk-*` rules died with the hand-rolled
+ * tokenizer (web-pierre-adoption, ticket 05): code fences render through the
+ * diffs library, whose registered Roboco theme (lib/pierre-theme.ts) maps
+ * the same `--rb-syntax-*` tokens onto TextMate scopes inside the shadow
+ * DOM — the token palette lives there now, in one place, for every surface.
  */
-.tk-typeBuiltin { color: var(--rb-syntax-type-builtin); }
-.tk-constructor { color: var(--rb-syntax-constructor); }
-.tk-functionBuiltin { color: var(--rb-syntax-function-builtin); }
-.tk-variable { color: var(--rb-syntax-variable); }
-.tk-parameter { color: var(--rb-syntax-parameter); }
-.tk-label { color: var(--rb-syntax-label); }
-.tk-embedded { color: var(--rb-syntax-embedded); }
-.tk-invalid { color: var(--rb-syntax-invalid); }
-/*
- * The six markup roles have no `--rb-syntax-*` token (the artifact's palette
- * ships no markup* keys). They alias the desktop fallback's hue families
- * (theme.rs:523-528: heading indigo, raw emerald, link pink, reference
- * amber, emphasis pink, strong indigo) through the tokens that carry those
- * same families here.
- */
-.tk-markupHeading { color: var(--rb-syntax-keyword); }
-.tk-markupRaw { color: var(--rb-syntax-string); }
-.tk-markupLink { color: var(--rb-syntax-tag); }
-.tk-markupReference { color: var(--rb-syntax-number); }
-.tk-markupEmphasis { color: var(--rb-syntax-tag); }
-.tk-markupStrong { color: var(--rb-syntax-keyword); }
 
 /* ── Streaming veil ─────────────────────────────────────────────────── */
 /* Per-chunk opacity dissolve: alpha = 1 − (1 − p)^1.6 (mugen FadePainter),
@@ -14457,17 +14343,17 @@ button.segmented-option:hover {
  * Firefox + Chromium 121+/Safari 18.2+, `::-webkit-scrollbar` the rest).
  * Wheel, trackpad, keyboard and programmatic scroll are unaffected — only
  * the painted affordance (and thumb dragging) goes away, same as the desktop.
- * The terminal (xterm's own viewport) is ticket 26's; the horizontal
- * floating rail for the markdown code planes is ticket 21/25 debt.
+ * The terminal (xterm's own viewport) is ticket 26's. The markdown code
+ * planes' scrollbar died with the hand-rolled renderer (ticket 05,
+ * web-pierre-adoption): code fences render inside the diffs library's
+ * shadow DOM now.
  */
 .transcript,
 .sidebar-list,
 .settings-scroll,
 .settings-nav-sections,
-.files-code-scroll,
 .files-markdown-scroll,
 
-.md-pre,
 .md-table-wrap,
 .add-space-list,
 .command-palette-list,
@@ -14480,9 +14366,7 @@ button.segmented-option:hover {
 .sidebar-list::-webkit-scrollbar,
 .settings-scroll::-webkit-scrollbar,
 .settings-nav-sections::-webkit-scrollbar,
-.files-code-scroll::-webkit-scrollbar,
 
-.md-pre::-webkit-scrollbar,
 .md-table-wrap::-webkit-scrollbar,
 .add-space-list::-webkit-scrollbar,
 .command-palette-list::-webkit-scrollbar,
@@ -14782,63 +14666,11 @@ button.segmented-option:hover {
 }
 
 /*
- * The editor gutter's comment affordances (preview.rs:2801-2857): the cell
- * overlays the line number — a `chatRoundLine` icon (10.5px, text_muted,
- * the card plate, hover wash) on lines with a staged File comment, or a
- * hover-revealed solid `+` on lines without one. The cell rides the
- * gutter's sticky plate, so it stays pinned while the code scrolls.
+ * The editor gutter's comment affordances (preview.rs:2801-2857) are dormant
+ * — they floated over the hand-rolled editor's gutter cells, deleted with
+ * ticket 05 (web-pierre-adoption); ticket 07's library edit mode brings the
+ * editor-side comment surfaces back over the library's editor.
  */
-.files-gutter-comment {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--rb-card);
-  color: var(--rb-text-muted);
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  z-index: 2;
-}
-
-.files-gutter-comment:hover {
-  background: rgb(var(--rb-wash) / 0.08);
-}
-
-.files-gutter-add {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  z-index: 2;
-}
-
-.files-gutter-add:hover {
-  background: var(--rb-card);
-}
-
-.files-gutter-add-button {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--rb-solid);
-  color: var(--rb-on-solid);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
-}
-
-.files-gutter-add:hover .files-gutter-add-button {
-  opacity: 1;
-}
 
 /* ── History pane (ticket 27, history.rs) ───────────────────────────── */
 

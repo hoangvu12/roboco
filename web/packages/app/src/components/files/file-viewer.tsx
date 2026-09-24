@@ -1,21 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
+import { File as LibraryFile, Virtualizer, type FileOptions } from "@pierre/diffs/react";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { fileName, isImagePath, isMarkdownPath, readOnlyMessage, truncatedMessage } from "../../lib/files";
+import { documentFileContents } from "../../lib/file-view";
+import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../../lib/pierre-theme";
 import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
 import { useResolvedAppearance } from "../../state/appearance";
 import { fileDocuments, type FileSurfaceEntry } from "../../state/file-documents";
-import { reviewCommentStore, useReviewComments } from "../../state/review-comments";
 import { rightPaneStore } from "../../state/right-pane";
 import { onShortcut } from "../../state/shortcuts";
 import { uiSettings, useUiSettings } from "../../state/ui-settings";
 import { useEngineSession } from "../../state/session-provider";
+import { previewLineHeight, previewTextSize } from "../../lib/typography";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
-import { CodeView, type CodeReviewWiring } from "./code-view";
 import { FileIcon } from "./file-icon";
-import { EditorContextMenu } from "./editor-context-menu";
 import { ImageView, loadWorkspaceImage, type WorkspaceImageLoad } from "./image-view";
 import { MarkdownView } from "./markdown-view";
 
@@ -29,7 +30,21 @@ import { MarkdownView } from "./markdown-view";
  * watch; Mod-S saves through the shortcut bus; a close of a dirty tab goes
  * through `prepareClose` (allow / pending / blocked) with the
  * Retry/Keep Open/Discard banner instead of discarding edits.
+ *
+ * Web-pierre-adoption (ticket 05, ADR 0008): the code body is the diffs
+ * library's read-only `File` — highlighted, line-numbered, virtualized —
+ * fed by the document machinery (`lib/file-view.ts` maps the read outcome
+ * onto `FileContents`, content hash as the highlight cache key). Web file
+ * EDITING is suspended until ticket 07 bridges the library's edit mode onto
+ * the same machinery: the deferral notice stands where the editor's
+ * affordances used to be, so the surface never presents a dead editor. The
+ * save/autosave/conflict machinery stays live underneath (the markdown
+ * preview's task checkboxes still write through it, and 07 restores the
+ * code arm); the hand-rolled textarea-overlay editor and its tokenizer are
+ * deleted.
  */
+
+registerRobocoDiffsTheme();
 
 export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const session = useEngineSession();
@@ -290,18 +305,30 @@ function TextViewer({
   readonly client: WorkspaceFilesClient | null;
 }) {
   const settings = useUiSettings();
+  // The pre-attach snapshot (no document yet): cached so the store hook's
+  // getSnapshot stays referentially stable while the entry arrives.
+  const pendingSnapshot = useMemo<FileDocumentSnapshot>(
+    () => ({
+      phase: { kind: "loading" },
+      text: "",
+      file: null,
+      editable: false,
+      dirty: false,
+      showMarkdown: isMarkdownPath(path),
+    }),
+    [path],
+  );
   const subscribe = useCallback(
     (listener: () => void) => (doc === null ? () => {} : doc.subscribe(listener)),
     [doc],
   );
   const getSnapshot = useCallback(
-    () => doc?.getSnapshot() ?? { phase: { kind: "loading" as const }, text: "", file: null, editable: false, dirty: false, showMarkdown: isMarkdownPath(path) },
-    [doc, path],
+    () => doc?.getSnapshot() ?? pendingSnapshot,
+    [doc, pendingSnapshot],
   );
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const markdown = isMarkdownPath(path);
   const [confirmingReload, setConfirmingReload] = useState(false);
-  const [markdownFocus, setMarkdownFocus] = useState(false);
 
   // Autosave configuration follows the settings store (desktop
   // set_autosave_enabled / set_autosave_delay_ms fan-out).
@@ -373,30 +400,14 @@ function TextViewer({
     [doc, snapshot.editable, markdownClip.text],
   );
 
-  const showEditor = snapshot.editable && !snapshot.showMarkdown;
-  const editorInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // ── Ticket 23: the editor-side comments (staged per the chat's composer
-  // key; only File-sourced comments on THIS path reach the gutter —
-  // `staged_file_comments`, preview.rs:751-762). The overlay mounts only
-  // over a live editor (read-only documents get none, matching the
-  // desktop's `render_editor_comment_overlays` call site).
-  const stagedReview = useReviewComments(chatId);
-  const editorReview: CodeReviewWiring | null = showEditor
-    ? {
-      comments: stagedReview.comments.filter(
-        (comment) => comment.source.kind === "file" && comment.path === path,
-      ),
-      activeId: stagedReview.activeEditorComment,
-      draft: stagedReview.editorDraft !== null && stagedReview.editorDraft.path === path ? stagedReview.editorDraft : null,
-      onOpenDraft: (line) => reviewCommentStore.openEditorDraft(chatId, path, line),
-      onToggleActive: (id) => reviewCommentStore.toggleEditorComment(chatId, id),
-      onCardEdit: (id) => reviewCommentStore.editEditorComment(chatId, id),
-      onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
-      onDraftBody: (body) => reviewCommentStore.setEditorDraftBody(chatId, body),
-      onDraftCancel: () => reviewCommentStore.cancelEditorDraft(chatId),
-      onDraftCommit: () => reviewCommentStore.commitEditorDraft(chatId),
-    }
-    : null;
+  // Web file editing is suspended (ADR 0008; ticket 07 restores it through
+  // the library's edit mode) — the code body below is read-only. The
+  // editor-side review wiring (ticket 23's floating cards/drafts over the
+  // editable arm) goes dark with it, the same interim pattern the Changes
+  // pane's comments rode through 02→03: the review store's editor-draft
+  // methods and the editor-comment components stay intact for 07 to mount
+  // over the library's editor surface.
+
   const toolbar = (
     <ViewerToolbar
       path={path}
@@ -407,10 +418,6 @@ function TextViewer({
         doc !== null
           ? () => {
               doc.setShowMarkdown(!snapshot.showMarkdown);
-              if (snapshot.showMarkdown) {
-                // Turning the preview off focuses the code view.
-                setMarkdownFocus(true);
-              }
             }
           : null
       }
@@ -455,36 +462,26 @@ function TextViewer({
         />
       </div>
     );
-  } else if (showEditor) {
-    body = (
-      <EditorContextMenu textareaRef={editorInputRef} editable>
-        <div className="files-editor-body">
-          <CodeView
-            text={snapshot.text}
-            path={path}
-            editable
-            onChange={(text) => doc?.edit(text)}
-            codeFontSize={settings.codeFontSize}
-            wordWrap={settings.filesWordWrap}
-            autoFocus={markdownFocus}
-            inputRef={editorInputRef}
-            review={editorReview}
-          />
-        </div>
-      </EditorContextMenu>
-    );
   } else {
+    // The code body: read-only through the library (ADR 0008 — editing
+    // returns with ticket 07). The truncation banner is unchanged; the
+    // deferral notice stands where the editor's affordances used to be,
+    // only for documents that WOULD have opened in the editor (read-only
+    // files already carry their reason).
     const truncated = snapshot.file !== null ? truncatedMessage(snapshot.file) : null;
     body = (
       <div className="files-editor-body">
+        {snapshot.editable && (
+          <div className="files-readonly-note" role="note">
+            Web file editing isn’t available yet — this view is read-only.
+          </div>
+        )}
         {truncated !== null && <div className="files-truncated-banner" role="status">{truncated}</div>}
-        <CodeView
-          text={snapshot.text}
+        <ReadOnlyCodeBody
           path={path}
-          editable={false}
-          onChange={() => {}}
-          codeFontSize={settings.codeFontSize}
+          snapshot={snapshot}
           wordWrap={settings.filesWordWrap}
+          codeFontSize={settings.codeFontSize}
         />
       </div>
     );
@@ -527,6 +524,52 @@ function TextViewer({
         <div className="files-viewer-body">{body}</div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The read-only code body (web-pierre-adoption, ticket 05): the diffs
+ * library’s virtualized `File` inside a `Virtualizer` scroll container —
+ * highlighted by the registered Roboco theme pair (themeType following the
+ * resolved appearance), line numbers on, word wrap per the setting, the
+ * content hash as the highlight cache key. The library renders in shadow
+ * DOM; our host class (`.files-code-host`, app.css) owns the layout and the
+ * `--diffs-*` token mapping exactly like the Changes pane’s host.
+ */
+function ReadOnlyCodeBody({
+  path,
+  snapshot,
+  wordWrap,
+  codeFontSize,
+}: {
+  readonly path: string;
+  readonly snapshot: FileDocumentSnapshot;
+  readonly wordWrap: boolean;
+  readonly codeFontSize: number;
+}) {
+  const appearance = useResolvedAppearance();
+  const file = useMemo(() => documentFileContents(path, snapshot), [path, snapshot]);
+  const options = useMemo<FileOptions<undefined, undefined>>(
+    () => ({
+      theme: robocoDiffsThemes(),
+      themeType: appearance,
+      overflow: wordWrap ? "wrap" : "scroll",
+      stickyHeader: true,
+    }),
+    [appearance, wordWrap],
+  );
+  return (
+    <Virtualizer className="files-code-host">
+      <LibraryFile
+        className="files-code-file"
+        style={{
+          ["--diffs-font-size" as string]: `${previewTextSize(codeFontSize)}px`,
+          ["--diffs-line-height" as string]: `${previewLineHeight(codeFontSize)}px`,
+        }}
+        file={file}
+        options={options}
+      />
+    </Virtualizer>
   );
 }
 
