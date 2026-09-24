@@ -415,14 +415,17 @@ fn pi_spec() -> AcpAgentSpec {
         executable: "pi-acp",
         env_override: "PI_ACP_EXECUTABLE",
         args: &[],
-        npm_package: Some("pi-acp@0.0.33"),
+        // Our fork (hoangvu12/pi-acp), published as a scoped package: carries
+        // upstream's usage_update reporting plus turn-error surfacing that the
+        // community 0.0.33 release lacks. Bin entry stays `pi-acp`.
+        npm_package: Some("@hoangnguyenvu12/pi-acp@0.0.34"),
         archive: None,
         extra_paths: npm_global_paths("pi-acp"),
         cli_executable: "pi",
         cli_extra_paths: || npm_global_bins("pi"),
         install_hint: "pi-acp (searched PATH, the login shell's PATH, npm global bins, \
              and fnm/nvm/volta/pnpm/bun install dirs; roboco installs the pinned \
-             pi-acp automatically when npm is available — the pi CLI itself is \
+             @hoangnguyenvu12/pi-acp fork automatically when npm is available — the pi CLI itself is \
              still required, `npm install -g --ignore-scripts \
              @earendil-works/pi-coding-agent`; set PI_ACP_EXECUTABLE to override)",
         // pi routes models through its own provider config (~/.pi); the picker

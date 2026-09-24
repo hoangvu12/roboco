@@ -584,9 +584,9 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| roboco_harness::AcpHarness::hermes().installed()),
         Box::new(|| Ok(Arc::new(roboco_harness::AcpHarness::hermes()) as Arc<dyn Harness>)),
     );
-    // pi over ACP (community `pi-acp` adapter), same lazy pattern: the static
-    // descriptor mirrors AcpHarness::pi() exactly — turn-boundary steering,
-    // pi's thinking ladder minus its "off" tier.
+    // pi over ACP (our `@hoangnguyenvu12/pi-acp` fork of the community adapter),
+    // same lazy pattern: the static descriptor mirrors AcpHarness::pi() exactly —
+    // turn-boundary steering, pi's thinking ladder minus its "off" tier.
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Pi,
