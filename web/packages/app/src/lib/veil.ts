@@ -103,57 +103,9 @@ export class VeilTracker {
 // ---------------------------------------------------------------------------
 // Per-line slicing (render.rs `slice_spans`, :2065-2070 / 2141-2146)
 // ---------------------------------------------------------------------------
+// The code-block half of the veil died with the hand-rolled tokenizer
+// (web-pierre-adoption, ticket 05): code fences render inside the diffs
+// library's shadow DOM, where per-line fade spans cannot interleave. The
+// prose half (`splitRunsForVeil`, components/transcript.tsx) still slices
+// inline runs at chunk boundaries exactly like the desktop's `slice_spans`.
 
-/** A fading chunk range over a block's flat text. */
-export interface VeilRange {
-  readonly start: number;
-  readonly end: number;
-}
-
-/**
- * Split one rendered line's tokens at chunk boundaries (flat-text
- * coordinates): a chunk that starts or ends mid-token cuts it, so each
- * fading range wraps exactly its own text — the code-block half of the
- * desktop's veil, where code lines dissolve exactly like prose.
- */
-export function sliceTokensForVeil<
-  Token extends { readonly text: string },
-  Chunk extends VeilRange,
->(
-  tokens: readonly Token[],
-  lineStart: number,
-  lineEnd: number,
-  chunks: readonly Chunk[],
-): Array<{ readonly text: string; readonly token: Token; readonly chunk: Chunk | null }> {
-  const out: Array<{ text: string; token: Token; chunk: Chunk | null }> = [];
-  let at = lineStart;
-  for (const token of tokens) {
-    const tokenStart = at;
-    const tokenEnd = at + token.text.length;
-    at = tokenEnd;
-    const covering = chunks.filter((chunk) => chunk.start < tokenEnd && chunk.end > tokenStart);
-    if (covering.length === 0) {
-      out.push({ text: token.text, token, chunk: null });
-      continue;
-    }
-    const cuts = new Set<number>([tokenStart, tokenEnd]);
-    for (const chunk of covering) {
-      cuts.add(Math.max(tokenStart, chunk.start));
-      cuts.add(Math.min(tokenEnd, chunk.end));
-    }
-    const sorted = [...cuts].sort((a, b) => a - b);
-    for (let ix = 0; ix + 1 < sorted.length; ix++) {
-      const start = sorted[ix]!;
-      const end = sorted[ix + 1]!;
-      if (end <= start) {
-        continue;
-      }
-      const text = token.text.slice(start - tokenStart, end - tokenStart);
-      const chunk = covering.find((candidate) => candidate.start <= start && end <= candidate.end) ?? null;
-      if (text.length > 0) {
-        out.push({ text, token, chunk });
-      }
-    }
-  }
-  return out;
-}
