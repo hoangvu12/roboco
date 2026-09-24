@@ -1,19 +1,27 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { CodeViewDiffItem, CodeViewItem, FileDiffMetadata } from "@pierre/diffs";
+import type { CodeViewDiffItem, CodeViewItem, FileDiffMetadata, SelectedLineRange } from "@pierre/diffs";
 import {
   __resetChangesDiffForTests,
+  diffAdderAnchor,
   diffCodeItems,
+  diffCommentAnnotations,
   fileDiffNotices,
   isBinaryFileDiff,
   parseDiffFiles,
+  type DiffCommentAnnotation,
+  type DiffCommentAnnotationData,
+  type DiffDraftAnchorInput,
 } from "../src/lib/changes-diff";
+import { newDiffComment, newFileComment } from "../src/lib/review-comments";
 import type { FileFold } from "../src/lib/diff";
 
 /**
- * The Changes pane's Pierre-diffs adapter (ticket 02, web-pierre-adoption):
- * the patch → parsed-metadata mapping (memoized per checkout + checksum),
- * the fold/version state of the controlled items, and the file notices the
- * library header's metadata slot renders. Pure — no React, no DOM.
+ * The Changes pane's Pierre-diffs adapter (tickets 02 + 03,
+ * web-pierre-adoption): the patch → parsed-metadata mapping (memoized per
+ * checkout + checksum), the fold/version state of the controlled items,
+ * the review-comment → annotation mapping with its stable metadata ids, the
+ * adder's click → draft-anchor resolution, and the file notices the library
+ * header's metadata slot renders. Pure — no React, no DOM.
  */
 
 const MODIFIED_PATCH = `diff --git a/src/lib.ts b/src/lib.ts
@@ -45,9 +53,9 @@ function fold(collapsed: boolean): FileFold {
   return { collapsed, epoch: collapsed ? 1 : 0, from: 0, to: 0, toggledAt: null, folding: false };
 }
 
-function asDiffItem(item: CodeViewItem<undefined> | undefined): CodeViewDiffItem<undefined> {
+function asDiffItem(item: CodeViewItem<DiffCommentAnnotationData> | undefined): CodeViewDiffItem<DiffCommentAnnotationData> {
   expect(item?.type).toBe("diff");
-  return item as CodeViewDiffItem<undefined>;
+  return item as CodeViewDiffItem<DiffCommentAnnotationData>;
 }
 
 beforeEach(() => {
@@ -210,6 +218,173 @@ describe("diffCodeItems", () => {
     // re-versioned again (its fileDiff object identity differs).
     const again = diffCodeItems(parseDiffFiles(diff(MODIFIED_PATCH, "sum-1"), "workingTree", null), new Map());
     expect(again[0]!.version!).toBeGreaterThan(asDiffItem(after[0]).version!);
+  });
+
+  it("bumps the version when a file's annotations change, and holds it while they don't", () => {
+    const comment = newDiffComment("src/lib.ts", "new", 3, "tone");
+    const empty = diffCodeItems(files, new Map());
+    const annotated = diffCommentAnnotations(files, [comment], null);
+    const withCard = diffCodeItems(files, new Map(), annotated);
+    expect(asDiffItem(withCard[0]).annotations).toEqual([
+      { side: "additions", lineNumber: 3, metadata: { kind: "comment", id: comment.id } },
+    ]);
+    // The comment landed → the version moved.
+    expect(withCard[0]!.version!).toBeGreaterThan(asDiffItem(empty[0]).version!);
+    // The same annotation identity (same staged set) keeps the version —
+    // unrelated re-renders do not churn the library's layout.
+    expect(diffCodeItems(files, new Map(), annotated)[0]!.version).toBe(withCard[0]!.version);
+    // A fresh array (the staged set changed) re-versions, even when the
+    // card count is the same — the library must re-adopt the annotations.
+    const rederived = diffCommentAnnotations(files, [comment], null);
+    expect(rederived.get("src/lib.ts")).not.toBe(annotated.get("src/lib.ts"));
+    const reversioned = diffCodeItems(files, new Map(), rederived);
+    expect(reversioned[0]!.version!).toBeGreaterThan(withCard[0]!.version!);
+    // Emptying the set drops the annotations and moves the version again.
+    const emptied = diffCodeItems(files, new Map(), diffCommentAnnotations(files, [], null));
+    expect(asDiffItem(emptied[0]).annotations).toBeUndefined();
+    expect(emptied[0]!.version!).toBeGreaterThan(reversioned[0]!.version!);
+  });
+});
+
+describe("diffCommentAnnotations", () => {
+  const files = parseDiffFiles(
+    diff(
+      `diff --git a/src/lib.ts b/src/lib.ts
+index 3e2f1a..9b4c2d 100644
+--- a/src/lib.ts
++++ b/src/lib.ts
+@@ -1,3 +1,3 @@
+ context
+-removed
++added
+ context
+`,
+      "sum-ann",
+    ),
+    "workingTree",
+    null,
+  );
+  const draft = { path: "src/lib.ts", side: "new" as const, line: 3, editingId: null };
+
+  it("maps staged diff comments onto side-tagged annotations at their anchors", () => {
+    const newSide = newDiffComment("src/lib.ts", "new", 2, "one");
+    const oldSide = newDiffComment("src/lib.ts", "old", 3, "two");
+    const byFile = diffCommentAnnotations(files, [newSide, oldSide], null);
+    expect([...byFile.keys()]).toEqual(["src/lib.ts"]);
+    expect(byFile.get("src/lib.ts")).toEqual([
+      { side: "additions", lineNumber: 2, metadata: { kind: "comment", id: newSide.id } },
+      { side: "deletions", lineNumber: 3, metadata: { kind: "comment", id: oldSide.id } },
+    ]);
+  });
+
+  it("keeps staged order per anchor and renders the draft after same-anchor cards", () => {
+    const first = newDiffComment("src/lib.ts", "new", 2, "one");
+    const second = newDiffComment("src/lib.ts", "new", 2, "two");
+    const byFile = diffCommentAnnotations(files, [first, second], { ...draft, line: 2 });
+    expect(byFile.get("src/lib.ts")).toEqual([
+      { side: "additions", lineNumber: 2, metadata: { kind: "comment", id: first.id } },
+      { side: "additions", lineNumber: 2, metadata: { kind: "comment", id: second.id } },
+      { side: "additions", lineNumber: 2, metadata: { kind: "draft" } },
+    ]);
+  });
+
+  it("skips file-sourced comments and comments whose file is not in this diff", () => {
+    const fileComment = newFileComment("src/lib.ts", 1, "file-sourced");
+    const elsewhere = newDiffComment("other.ts", "new", 1, "not in this diff");
+    const byFile = diffCommentAnnotations(files, [fileComment, elsewhere], null);
+    expect(byFile.get("src/lib.ts")).toEqual([]);
+  });
+
+  it("skips the draft when its file is not in this diff", () => {
+    const byFile = diffCommentAnnotations(files, [], { ...draft, path: "gone.ts" });
+    expect(byFile.get("src/lib.ts")).toEqual([]);
+  });
+
+  it("keeps metadata identity stable per comment object (the library's contract)", () => {
+    const comment = newDiffComment("src/lib.ts", "new", 2, "one");
+    const first = diffCommentAnnotations(files, [comment], null).get("src/lib.ts")!;
+    const second = diffCommentAnnotations(files, [comment], null).get("src/lib.ts")!;
+    // Same comment object → the same metadata object, across recomputes.
+    expect(first[0]!.metadata).toBe(second[0]!.metadata);
+    // A re-staged comment (new object, same id — a body update) gets a new
+    // metadata object: the card must re-render.
+    const updated = { ...comment, body: "edited" };
+    const third = diffCommentAnnotations(files, [updated], null).get("src/lib.ts")!;
+    expect(third[0]!.metadata).not.toBe(first[0]!.metadata);
+    expect((third[0]!.metadata as { id: string }).id).toBe(comment.id);
+    // The draft's metadata is a singleton — a body keystroke never mints a
+    // new one; only the annotation's anchor fields can move.
+    const draftTyped: DiffDraftAnchorInput & { body: string } = { ...draft, body: "typed" };
+    const draftCard = diffCommentAnnotations(files, [], draft).get("src/lib.ts")!;
+    const draftTypedCard = diffCommentAnnotations(files, [], draftTyped).get("src/lib.ts")!;
+    expect(draftCard[0]!.metadata).toBe(draftTypedCard[0]!.metadata);
+  });
+});
+
+describe("diffAdderAnchor", () => {
+  function metadata(overrides: Partial<FileDiffMetadata> = {}): FileDiffMetadata {
+    return {
+      name: "new.txt",
+      type: "rename-changed",
+      hunks: [],
+      splitLineCount: 0,
+      unifiedLineCount: 0,
+      isPartial: true,
+      additionLines: [],
+      deletionLines: [],
+      prevName: "old.txt",
+      ...overrides,
+    } as FileDiffMetadata;
+  }
+
+  function click(overrides: Partial<SelectedLineRange>): SelectedLineRange {
+    return { start: 2, end: 2, side: "additions", ...overrides };
+  }
+
+  it("anchors an additions-side click on the new side, at the clicked line", () => {
+    expect(diffAdderAnchor(metadata(), "unified", click({}))).toEqual({
+      path: "new.txt",
+      side: "new",
+      line: 2,
+      oldPath: null,
+    });
+  });
+
+  it("anchors a deletions-side click on the old side citing the pre-rename path", () => {
+    expect(diffAdderAnchor(metadata(), "unified", click({ side: "deletions" }))).toEqual({
+      path: "new.txt",
+      side: "old",
+      line: 2,
+      oldPath: "old.txt",
+    });
+    // An unrenamed file carries no oldPath — the comment cites its only path.
+    expect(diffAdderAnchor(metadata({ type: "change", prevName: undefined }), "unified", click({ side: "deletions" }))).toEqual({
+      path: "new.txt",
+      side: "old",
+      line: 2,
+      oldPath: null,
+    });
+  });
+
+  it("offers the additions side only in split (the old right-half rule)", () => {
+    expect(diffAdderAnchor(metadata(), "split", click({ side: "deletions" }))).toBeNull();
+    expect(diffAdderAnchor(metadata(), "split", click({}))).toEqual({
+      path: "new.txt",
+      side: "new",
+      line: 2,
+      oldPath: null,
+    });
+  });
+
+  it("anchors a multi-line drag at the range's start (the line whose + was pressed)", () => {
+    expect(diffAdderAnchor(metadata(), "unified", click({ start: 2, end: 4 }))).toMatchObject({ line: 2 });
+    expect(
+      diffAdderAnchor(metadata(), "unified", click({ start: 2, end: 4, side: "deletions", endSide: "additions" })),
+    ).toMatchObject({ side: "old", line: 2 });
+  });
+
+  it("resolves nothing for a sideless range", () => {
+    expect(diffAdderAnchor(metadata(), "unified", click({ side: undefined, endSide: undefined }))).toBeNull();
   });
 });
 
