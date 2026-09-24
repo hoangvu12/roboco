@@ -13,7 +13,7 @@ import { Icon } from "@roboco/icons";
 import type { Block, BlockTree, InlineRun, TableAlign } from "../lib/markdown";
 import { PENDING_LINK_URL, tableColumns } from "../lib/markdown";
 import { graphemeBreaks, resolveWorkspaceFileLink, transcriptAddress } from "../lib/links";
-import { hasSpecificFileIcon, wellBg } from "../lib/file-icons";
+import { hasSpecificFileIcon, wellBg } from "../lib/tree-icons";
 import { highlightCode, splitTokenLines, type SyntaxRole, type SyntaxToken } from "../lib/syntax";
 import { sliceTokensForVeil } from "../lib/veil";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
@@ -498,7 +498,7 @@ function FileRefWell({ path, children }: { path: string; children: ReactNode }) 
   return (
     <span className="md-fileref">
       <span className="md-fileref-well" style={{ background: wellBg(appearance, false) }}>
-        <FileIcon kind="file" name={path} appearance={appearance} size={14} />
+        <FileIcon kind="file" name={path} size={14} />
       </span>
       <span className="md-fileref-body">{children}</span>
     </span>

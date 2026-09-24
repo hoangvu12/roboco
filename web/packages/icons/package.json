@@ -6,14 +6,12 @@
   "type": "module",
   "exports": {
     ".": "./src/index.tsx",
-    "./generated": "./src/generated/index.ts",
-    "./generated/file-icons": "./src/generated/file-icons-manifest.ts"
+    "./generated": "./src/generated/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "regenerate": "node scripts/generate.mjs",
-    "regenerate:file-icons": "node scripts/generate-file-icons.mjs",
-    "check": "node scripts/generate.mjs --check && node scripts/generate-file-icons.mjs --check"
+    "check": "node scripts/generate.mjs --check"
   },
   "packageManager": "pnpm@11.17.0",
   "peerDependencies": {

@@ -30,7 +30,7 @@ import {
   type ToolDetail,
   type ToolItem,
 } from "../lib/transcript";
-import { wellBg } from "../lib/file-icons";
+import { wellBg } from "../lib/tree-icons";
 import { toolGroupGeometry } from "../lib/tool-group-geometry";
 import {
   FOLD_TWEEN_WINDOW_MS,
@@ -563,7 +563,7 @@ function FileBadge({
     <span className="tool-chip-detail-slot">
       <span className={`tool-file-badge ${failed ? "tool-file-badge-failed" : ""}`}>
         <span className="tool-file-badge-well" style={{ background: wellBg(appearance, true) }}>
-          <FileIcon kind="file" name={path} appearance={appearance} size={14} />
+          <FileIcon kind="file" name={path} size={14} />
         </span>
         <span className="tool-file-badge-name">{fileBadgeName(path)}</span>
       </span>
@@ -692,7 +692,7 @@ function DetailBody({ detail, invocation = false }: { detail: ToolDetail; invoca
         <div className="tool-output tool-stats">
           {detail.stats.map((stat, ix) => (
             <div key={ix} className="tool-stat-row">
-              <FileIcon kind="file" name={stat.path} appearance={appearance} size={14} />
+              <FileIcon kind="file" name={stat.path} size={14} />
               <span className="tool-stat-path">{stat.path}</span>
               <span className="tool-stat-add">+{stat.additions}</span>
               <span className="tool-stat-del">−{stat.deletions}</span>

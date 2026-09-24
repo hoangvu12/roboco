@@ -3,7 +3,7 @@ import { Icon } from "@roboco/icons";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { fileName, isImagePath, isMarkdownPath, readOnlyMessage, truncatedMessage } from "../../lib/files";
-import { FileTreeModel } from "../../lib/file-tree";
+import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
 import { useResolvedAppearance } from "../../state/appearance";
 import { fileDocuments, type FileSurfaceEntry } from "../../state/file-documents";
@@ -63,7 +63,7 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
       autosaveDelayMs: uiSettings.getSnapshot().filesAutosaveDelayMs,
     });
     document.load();
-    const model = new FileTreeModel({
+    const model = new WorkspaceTreeModel({
       client,
       watch: (handlers) => client.watchFiles(session.client, handlers),
       includeIgnored: uiSettings.getSnapshot().filesShowAll,
@@ -152,7 +152,7 @@ function ViewerToolbar({
   const parts = path.split("/");
   return (
     <div className="files-breadcrumb-bar">
-      <FileIcon kind="file" name={path} appearance={appearance} size={14} className="files-breadcrumb-icon" />
+      <FileIcon kind="file" name={path} size={14} className="files-breadcrumb-icon" />
       <Tooltip
         label={path}
         delay={TOOLTIP_VIEW_OPTIONS_MS}

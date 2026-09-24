@@ -599,7 +599,7 @@ function FileHeaderRow({ file, appearance, expanded, animating, onToggle }: { fi
         <span className={`diff-chevron ${animating ? "diff-chevron-anim" : ""}`}>
           <Icon name={expanded ? "altArrowDown" : "altArrowRight"} size={13} />
         </span>
-        <FileIcon kind="file" name={file.path} appearance={appearance} size={14} className="diff-file-icon" />
+        <FileIcon kind="file" name={file.path} size={14} className="diff-file-icon" />
         <span className="diff-file-path mono">
           {file.oldPath !== null ? <span className="diff-file-rename">{file.oldPath} → </span> : null}
           {file.path}

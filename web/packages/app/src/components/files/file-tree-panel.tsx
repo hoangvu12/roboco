@@ -4,45 +4,42 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
+  type MouseEvent as ReactMouseEvent,
   type RefObject,
 } from "react";
-import { Icon } from "@roboco/icons";
-import type { Appearance } from "@roboco/theme";
+import { FileTree as TreesView, useFileTree } from "@pierre/trees/react";
 import type { WorkspaceFileSearchMatch } from "@roboco/proto";
-import { buildSearchTree, isSearchNodeExpanded, toggleSearchNode, type SearchTree, type SearchTreeRow } from "../../lib/file-search-tree";
-import { resolveDirectoryIcon, resolveFileIcon } from "../../lib/file-icons";
-import type { FileTreeModel, FileTreeSnapshot, TreeRow } from "../../lib/file-tree";
+import { Icon } from "@roboco/icons";
+import { directoryWorkspacePath, searchTreePaths } from "../../lib/tree-adapters";
+import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, treeFileIcons } from "../../lib/tree-icons";
+import type { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import type { WorkspaceFilesClient } from "../../lib/files-client";
 import { describeFilesError } from "../../lib/files-client";
-import { useResolvedAppearance } from "../../state/appearance";
 import { uiSettings, useUiSettings } from "../../state/ui-settings";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
-import { FileIcon } from "./file-icon";
 
 /** `search.rs:317-318` — the 200ms debounce after the last keystroke. */
 const SEARCH_DEBOUNCE_MS = 200;
 /** `search.rs:26` — the result cap the "showing first N" banner reports. */
 const SEARCH_RESULT_LIMIT = 200;
 
-/** Desktop `tree.rs:18` — the indent step shared by tree and search rows. */
-const TREE_INDENT = 14;
-
 /**
- * The tree pane — the desktop's browser-mode `tree_pane` (mod.rs):
- * `render_header` (the `surface_chrome` toolbar with the search field and
- * the show-all-files toggle), the watch-error banner with its "Refresh
- * now", and below it the search results (query non-empty) or the lazy
- * directory tree — 27px rows, file-type icons, keyboard navigation,
- * drag-out, paged "Load more" rows, error rows with retry.
+ * The tree pane on the trees library (ticket 06): the `surface_chrome`
+ * toolbar (search field + show-all-files toggle), the watch-error banner,
+ * and below it either the search results or the lazy tree — rendered by
+ * `<FileTree model={model.tree}>` in shadow DOM. The data layer (listings,
+ * watches, resync, pagination, git status, dimming) stays in
+ * `WorkspaceTreeModel`; this component is chrome and interaction wiring:
+ * row clicks open files (through the host element, since the library owns
+ * the rows), Enter/Space activate the focused row, and the search input
+ * drives the RPC search.
  */
 
 /**
  * The search keyboard surface — what the header's input talks to while
- * results are mounted (the desktop's `ComposerInput` mention events fanned
- * into `FileSearchState`). Arrows move the active row; Enter activates it.
+ * results are mounted. Arrows move the result tree's focus; Enter
+ * activates the focused row.
  */
 export interface SearchKeyboard {
   onArrow(delta: number): void;
@@ -55,7 +52,7 @@ export function FileTreePanel({
   onOpenFile,
   gitStatus,
 }: {
-  model: FileTreeModel;
+  model: WorkspaceTreeModel;
   client: WorkspaceFilesClient;
   onOpenFile: (path: string) => void;
   /**
@@ -71,7 +68,6 @@ export function FileTreePanel({
   const subscribe = useCallback((listener: () => void) => model.subscribe(listener), [model]);
   const getSnapshot = useCallback(() => model.getSnapshot(), [model]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
-  const appearance = useResolvedAppearance();
   const settings = useUiSettings();
   const [query, setQuery] = useState("");
   const searchKeyboard = useRef<SearchKeyboard | null>(null);
@@ -173,7 +169,6 @@ export function FileTreePanel({
           client={client}
           query={trimmed}
           includeIgnored={includeIgnored}
-          appearance={appearance}
           onOpenFile={onOpenFile}
           onDismiss={() => setQuery("")}
           keyboardRef={searchKeyboard}
@@ -188,7 +183,7 @@ export function FileTreePanel({
       ) : !snapshot.rootLoaded ? (
         <div className="files-placeholder" />
       ) : (
-        <TreeList model={model} snapshot={snapshot} appearance={appearance} onOpenFile={onOpenFile} />
+        <TreeHost model={model} onOpenFile={onOpenFile} />
       )}
     </div>
   );
@@ -196,283 +191,88 @@ export function FileTreePanel({
 
 // ── The tree ───────────────────────────────────────────────────────────────
 
-function TreeList({
+/** One clicked tree row, read back out of the shadow DOM via `composedPath()`. */
+interface TreeRowHit {
+  /** The row's canonical path (directories carry a trailing slash). */
+  readonly path: string;
+  readonly kind: "file" | "folder";
+}
+
+function treeRowFromEvent(event: ReactMouseEvent<HTMLElement>): TreeRowHit | null {
+  const path = event.nativeEvent.composedPath();
+  for (const node of path) {
+    if (node instanceof HTMLElement && node.dataset.itemPath !== undefined) {
+      return {
+        path: node.dataset.itemPath,
+        kind: node.dataset.itemType === "folder" ? "folder" : "file",
+      };
+    }
+  }
+  return null;
+}
+
+function TreeHost({
   model,
-  snapshot,
-  appearance,
   onOpenFile,
 }: {
-  model: FileTreeModel;
-  snapshot: FileTreeSnapshot;
-  appearance: Appearance;
+  model: WorkspaceTreeModel;
   onOpenFile: (path: string) => void;
 }) {
-  const listRef = useRef<HTMLUListElement | null>(null);
-
-  // `reveal_tree_selection` — keep the selected row in view, both for the
-  // keyboard walk and for the search reveal that lands on it.
-  const selected = snapshot.selected;
-  const rows = snapshot.rows;
-  useEffect(() => {
-    if (selected === null) {
+  // Click-to-open: the library owns the rows (per-item interactive content
+  // is unsupported on the beta), but click events are composed — they
+  // bubble out of the shadow DOM, and the row's data attributes carry the
+  // path. Directories toggle natively; a FAILED directory row's click is
+  // its retry; a file row opens (a load-more marker loads its page).
+  const onRowClick = (event: ReactMouseEvent<HTMLElement>): void => {
+    const row = treeRowFromEvent(event);
+    if (row === null) {
       return;
     }
-    const index = rows.findIndex((row) => row.path === selected);
-    if (index >= 0) {
-      listRef.current
-        ?.querySelector<HTMLElement>(`[data-row-index="${index}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+    if (row.kind === "folder") {
+      model.retryDirectory(directoryWorkspacePath(row.path));
+      return;
     }
-  }, [selected, rows]);
+    if (model.loadMoreIfMarker(row.path)) {
+      return;
+    }
+    onOpenFile(row.path);
+  };
 
-  /** `on_tree_key_down` (tree.rs:300-357). */
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLUListElement>): void => {
-    let handled = false;
-    switch (event.key) {
-      case "ArrowUp":
-        model.selectPrevious();
-        handled = true;
-        break;
-      case "ArrowDown":
-        model.selectNext();
-        handled = true;
-        break;
-      case "ArrowLeft": {
-        const path = model.selected();
-        if (path !== null) {
-          if (model.isExpanded(path)) {
-            model.toggleExpanded(path);
-          } else {
-            model.selectParent();
-          }
-        }
-        handled = true;
-        break;
-      }
-      case "ArrowRight": {
-        const path = model.selected();
-        const entry = path !== null ? model.entry(path) : undefined;
-        if (path !== null && entry !== undefined && entry.kind === "directory") {
-          if (model.isExpanded(path)) {
-            model.selectFirstChild();
-          } else {
-            model.toggleExpanded(path);
-          }
-        }
-        handled = true;
-        break;
-      }
-      case "Enter":
-      case " ": {
-        const path = model.selected();
-        if (path !== null) {
-          activateTreePath(model, rows, path, onOpenFile);
-        }
-        handled = true;
-        break;
-      }
-      default:
-        break;
+  // Keyboard: the library's a11y tree owns the arrows; Enter/Space do not
+  // activate files there (plain Space is its scroll key, Enter only its
+  // rename/search commits), so the host completes the desktop's
+  // `on_tree_key_down` activation: Enter/Space on the focused row toggles
+  // a directory, activates a marker, or opens a file.
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") {
+      return;
     }
-    if (handled) {
-      event.preventDefault();
-      event.stopPropagation();
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+      return;
     }
+    const focused = model.tree.getFocusedItem();
+    if (focused === null) {
+      return;
+    }
+    const path = focused.getPath();
+    if ("toggle" in focused) {
+      focused.toggle();
+    } else if (!model.loadMoreIfMarker(path)) {
+      onOpenFile(path);
+    }
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   return (
-    <ul ref={listRef} className="files-tree" role="tree" aria-label="Files" tabIndex={0} onKeyDown={onKeyDown}>
-      {rows.map((row, index) => (
-        <TreeRowView
-          key={row.path}
-          row={row}
-          index={index}
-          model={model}
-          snapshot={snapshot}
-          appearance={appearance}
-          onOpenFile={onOpenFile}
-        />
-      ))}
-    </ul>
+    <TreesView
+      model={model.tree}
+      className="files-tree-host"
+      aria-label="Files"
+      onClick={onRowClick}
+      onKeyDown={onKeyDown}
+    />
   );
-}
-
-/**
- * `activate_tree_path` (tree.rs:268): select, then toggle a directory or
- * open a file; the LoadMore row's activation is its own load.
- */
-function activateTreePath(
-  model: FileTreeModel,
-  rows: readonly TreeRow[],
-  path: string,
-  onOpenFile: (path: string) => void,
-): void {
-  const row = rows.find((candidate) => candidate.path === path);
-  if (row === undefined) {
-    return;
-  }
-  model.select(path);
-  if (row.kind === "loadMore") {
-    model.loadMore(row.directory);
-  } else if (row.kind === "entry") {
-    if (row.entry.kind === "directory") {
-      model.toggleExpanded(path);
-    } else {
-      onOpenFile(path);
-    }
-  }
-}
-
-function TreeRowView({
-  row,
-  index,
-  model,
-  snapshot,
-  appearance,
-  onOpenFile,
-}: {
-  row: TreeRow;
-  index: number;
-  model: FileTreeModel;
-  snapshot: FileTreeSnapshot;
-  appearance: Appearance;
-  onOpenFile: (path: string) => void;
-}) {
-  const selected = snapshot.selected === row.path;
-  switch (row.kind) {
-    case "entry": {
-      const entry = row.entry;
-      const isDirectory = entry.kind === "directory";
-      const git = snapshot.gitStatus.get(row.path);
-      const classes = [
-        "files-row",
-        selected ? "files-row-active" : "",
-        entry.ignored ? "files-row-ignored" : "",
-      ]
-        .filter((name) => name.length > 0)
-        .join(" ");
-      return (
-        <li role="treeitem" aria-expanded={isDirectory ? row.expanded : undefined} aria-selected={selected}>
-          <button
-            type="button"
-            className={classes}
-            style={{ paddingLeft: `${8 + row.depth * TREE_INDENT}px` }}
-            data-row-index={index}
-            data-git={git ?? undefined}
-            draggable
-            onDragStart={(event) => beginRowDrag(event, row.path, isDirectory, appearance)}
-            onClick={() => activateTreePath(model, snapshot.rows, row.path, onOpenFile)}
-          >
-            {/* Theme-aware indentation guides (c4d63fa8, tree.rs). */}
-            {row.depth > 0 && (
-              <span className="files-row-guides" aria-hidden>
-                {Array.from({ length: row.depth }, (_, level) => (
-                  <span key={level} className="files-row-guide" />
-                ))}
-              </span>
-            )}
-            <span className="files-chevron" aria-hidden>
-              {isDirectory ? <Icon name={row.expanded ? "altArrowDown" : "altArrowRight"} size={11} /> : null}
-            </span>
-            <FileIcon className="files-row-icon" kind={entry.kind} name={entry.name} expanded={row.expanded} appearance={appearance} />
-            <span className="files-row-name">{entry.name}</span>
-          </button>
-        </li>
-      );
-    }
-    case "loading":
-      return <StatusRow index={index} depth={row.depth} label="Loading…" noteClass="files-row-note" />;
-    case "empty":
-      return <StatusRow index={index} depth={row.depth} label="Empty folder" noteClass="files-row-note files-row-empty" />;
-    case "loadMore":
-      return (
-        <li>
-          <button
-            type="button"
-            className="files-row files-row-note files-row-action"
-            style={{ paddingLeft: `${8 + (row.depth + 1) * TREE_INDENT}px` }}
-            data-row-index={index}
-            onClick={() => model.loadMore(row.directory)}
-          >
-            <span className="files-row-name">Load more…</span>
-          </button>
-        </li>
-      );
-    case "error":
-      return (
-        <li>
-          <button
-            type="button"
-            className="files-row files-row-error"
-            style={{ paddingLeft: `${8 + (row.depth + 1) * TREE_INDENT}px` }}
-            data-row-index={index}
-            onClick={() => model.retryDirectory(row.directory)}
-          >
-            <span className="files-row-name">{row.message} — Retry</span>
-          </button>
-        </li>
-      );
-  }
-}
-
-/** `status_row` (tree.rs:374-395): 10.5px faint status text at depth+1. */
-function StatusRow({
-  index,
-  depth,
-  label,
-  noteClass,
-}: {
-  index: number;
-  depth: number;
-  label: string;
-  noteClass: string;
-}) {
-  return (
-    <li
-      className={`files-row files-row-status ${noteClass}`}
-      style={{ paddingLeft: `${8 + (depth + 1) * TREE_INDENT}px` }}
-      data-row-index={index}
-    >
-      <span className="files-row-name">{label}</span>
-    </li>
-  );
-}
-
-// ── Drag-out (WorkspacePathDrag + its ghost) ───────────────────────────────
-
-/**
- * `WorkspacePathDrag::new` + `workspace_path_drag_ghost` (mod.rs:67-137):
- * the payload is the workspace-relative path and an isDirectory flag; the
- * ghost is the compact pill (24px, ≤220px, raised surface, strong border,
- * 11.5px, opacity 0.85) the composer's drop target turns into a file
- * mention. `setDragImage` snapshots the detached node, which is removed
- * after the drag starts.
- */
-function beginRowDrag(
-  event: DragEvent<HTMLElement>,
-  path: string,
-  isDirectory: boolean,
-  appearance: Appearance,
-): void {
-  event.dataTransfer.setData("application/x-roboco-workspace-path", JSON.stringify({ path, isDirectory }));
-  event.dataTransfer.setData("text/plain", path);
-  event.dataTransfer.effectAllowed = "copyLink";
-
-  const title = path.trimEnd().split("/").pop() ?? path;
-  const ghost = document.createElement("div");
-  ghost.className = "files-drag-ghost";
-  const icon = document.createElement("img");
-  icon.src = isDirectory ? resolveDirectoryIcon(title, appearance) : resolveFileIcon(title, appearance);
-  icon.width = 14;
-  icon.height = 14;
-  icon.alt = "";
-  icon.draggable = false;
-  const label = document.createElement("span");
-  label.textContent = title;
-  ghost.append(icon, label);
-  document.body.append(ghost);
-  event.dataTransfer.setDragImage(ghost, 10, 12);
-  window.setTimeout(() => ghost.remove(), 0);
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────
@@ -482,45 +282,68 @@ type SearchState =
   | { readonly kind: "loaded"; readonly matches: readonly WorkspaceFileSearchMatch[] }
   | { readonly kind: "error"; readonly message: string };
 
+/**
+ * The RPC search results, rendered through a second trees model — the
+ * ticket's latitude decision: the built-in search only filters paths
+ * already loaded, so the contract stays the old one (`SearchWorkspaceFiles`
+ * over the whole checkout, 200ms debounce, 200-result cap). The matched
+ * paths (with their implied ancestors) become the result tree's path list,
+ * ordered by the desktop's bestScore rule; activating a file reveals it in
+ * the main tree and opens it.
+ */
 function SearchResults({
   model,
   client,
   query,
   includeIgnored,
-  appearance,
   onOpenFile,
   onDismiss,
   keyboardRef,
 }: {
-  model: FileTreeModel;
+  model: WorkspaceTreeModel;
   client: WorkspaceFilesClient;
   query: string;
   includeIgnored: boolean;
-  appearance: Appearance;
   onOpenFile: (path: string) => void;
   onDismiss: () => void;
   keyboardRef: RefObject<SearchKeyboard | null>;
 }) {
   const [state, setState] = useState<SearchState>({ kind: "searching" });
-  const [tree, setTree] = useState<SearchTree | null>(null);
-  const [active, setActive] = useState(0);
+  // The rank map the result tree's comparator reads (replaced per results
+  // — the comparator itself is fixed at construction, so it reads the ref).
+  const rankRef = useRef<ReadonlyMap<string, number>>(new Map());
+  const { model: searchTree } = useFileTree({
+    paths: [],
+    flattenEmptyDirectories: false,
+    sort: (left, right) => {
+      const rank = rankRef.current;
+      const leftRank = rank.get(left.path);
+      const rightRank = rank.get(right.path);
+      if (leftRank !== undefined && rightRank !== undefined) {
+        return leftRank - rightRank;
+      }
+      return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+    },
+    itemHeight: FILE_TREE_ROW_HEIGHT,
+    density: FILE_TREE_DENSITY,
+    icons: treeFileIcons,
+  });
   const requestRef = useRef(0);
-  const listRef = useRef<HTMLUListElement | null>(null);
 
   // 200ms debounce → `SearchWorkspaceFiles` (on_search_edited, search.rs:270).
   useEffect(() => {
     const request = ++requestRef.current;
     setState({ kind: "searching" });
-    setTree(null);
-    setActive(0);
     const timer = setTimeout(() => {
       void client
         .search(query, includeIgnored, SEARCH_RESULT_LIMIT)
         .then((matches) => {
           if (requestRef.current === request) {
             setState({ kind: "loaded", matches });
-            setTree(buildSearchTree(matches));
-            setActive(0);
+            const { orderedPaths, directoryPaths, rank } = searchTreePaths(matches);
+            rankRef.current = rank;
+            searchTree.resetPaths(orderedPaths, { initialExpandedPaths: directoryPaths });
+            searchTree.focusFirstItem();
           }
         })
         .catch((error: unknown) => {
@@ -532,147 +355,81 @@ function SearchResults({
     return () => {
       clearTimeout(timer);
     };
-  }, [client, query, includeIgnored]);
+  }, [client, query, includeIgnored, searchTree]);
 
-  const rows = tree?.rows ?? [];
-
-  /** `activate_search_result` (search.rs:357-388). */
-  const activateRow = useCallback(
-    (row: SearchTreeRow): void => {
-      if (tree === null) {
-        return;
-      }
-      if (row.kind === "directory" && row.hasChildren) {
-        const next = toggleSearchNode(tree, row.path);
-        if (next !== null) {
-          setTree(next);
-          const index = next.rows.findIndex((candidate) => candidate.path === row.path);
-          setActive(index >= 0 ? index : 0);
-        }
-        return;
-      }
-      void model.revealInTree(row.path).then((error) => {
+  /** `activate_search_result` (search.rs:357-388) — reveal in the tree, then open. */
+  const activateResult = useCallback(
+    (path: string): void => {
+      void model.revealInTree(path).then((error) => {
         if (error !== null) {
           setState({ kind: "error", message: error });
           return;
         }
         onDismiss();
-        if (row.kind !== "directory") {
-          onOpenFile(row.path);
-        }
+        onOpenFile(path);
       });
     },
-    [tree, model, onDismiss, onOpenFile],
+    [model, onDismiss, onOpenFile],
   );
+
+  // A result row click: directories toggle in-model (the library's row
+  // behavior); files reveal + open + dismiss the search.
+  const onRowClick = (event: ReactMouseEvent<HTMLElement>): void => {
+    const row = treeRowFromEvent(event);
+    if (row === null || row.kind === "folder") {
+      return;
+    }
+    activateResult(row.path);
+  };
 
   // The header input's arrow/enter reach the results through the keyboard
   // ref — the web shape of the ComposerInput's mention events.
   useEffect(() => {
     keyboardRef.current = {
       onArrow: (delta) => {
-        if (rows.length === 0) {
-          return;
+        if (delta > 0) {
+          searchTree.focusNextItem();
+        } else {
+          searchTree.focusPreviousItem();
         }
-        setActive((current) => Math.max(0, Math.min(rows.length - 1, current + delta)));
       },
       onEnter: () => {
-        const row = rows[active];
-        if (row !== undefined) {
-          activateRow(row);
+        const focused = searchTree.getFocusedItem();
+        if (focused === null) {
+          return;
+        }
+        if ("toggle" in focused) {
+          focused.toggle();
+        } else {
+          activateResult(focused.getPath());
         }
       },
     };
     return () => {
       keyboardRef.current = null;
     };
-  }, [keyboardRef, rows, active, activateRow]);
-
-  // `search_list.scroll_to_reveal_item` — the active row stays in view.
-  useEffect(() => {
-    if (rows.length === 0) {
-      return;
-    }
-    listRef.current
-      ?.querySelector<HTMLElement>(`[data-row-index="${active}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [active, rows]);
+  }, [keyboardRef, searchTree, activateResult]);
 
   const banner =
     state.kind === "loaded" && state.matches.length >= SEARCH_RESULT_LIMIT ? (
       <div className="files-search-banner">Showing the first {SEARCH_RESULT_LIMIT} matches</div>
     ) : null;
 
-  let body: ReactNode;
-  if (state.kind === "error") {
-    body = <div className="files-search-message files-search-message-error">{state.message}</div>;
-  } else if (rows.length === 0) {
-    body = <div className="files-search-message">{state.kind === "searching" ? "Searching…" : "No files found."}</div>;
-  } else {
-    body = (
-      <ul ref={listRef} className="files-tree files-search-results" role="tree" aria-label="Search results">
-        {rows.map((row, index) => (
-          <SearchRowView
-            key={row.path}
-            row={row}
-            index={index}
-            active={index === active}
-            appearance={appearance}
-            expanded={tree !== null && isSearchNodeExpanded(tree, row.path)}
-            onSelect={() => setActive(index)}
-            onActivate={() => activateRow(row)}
-          />
-        ))}
-      </ul>
-    );
-  }
+  const loaded = state.kind === "loaded";
+  const empty = loaded && state.matches.length === 0;
 
   return (
     <div className="files-search-results-panel">
       {banner}
-      {body}
+      {state.kind === "error" ? (
+        <div className="files-search-message files-search-message-error">{state.message}</div>
+      ) : empty ? (
+        <div className="files-search-message">No files found.</div>
+      ) : !loaded ? (
+        <div className="files-search-message">Searching…</div>
+      ) : (
+        <TreesView model={searchTree} className="files-tree-host files-search-host" aria-label="Search results" onClick={onRowClick} />
+      )}
     </div>
-  );
-}
-
-/** `render_search_row` (search.rs:516-605). */
-function SearchRowView({
-  row,
-  index,
-  active,
-  appearance,
-  expanded,
-  onSelect,
-  onActivate,
-}: {
-  row: SearchTreeRow;
-  index: number;
-  active: boolean;
-  appearance: Appearance;
-  expanded: boolean;
-  onSelect: () => void;
-  onActivate: () => void;
-}) {
-  const isDirectory = row.kind === "directory";
-  return (
-    <li role="treeitem" aria-expanded={row.hasChildren ? expanded : undefined} aria-selected={active}>
-      <button
-        type="button"
-        className={`files-row files-row-search${active ? " files-row-active" : ""}`}
-        style={{ paddingLeft: `${8 + row.depth * TREE_INDENT}px` }}
-        data-row-index={index}
-        draggable
-        onDragStart={(event) => beginRowDrag(event, row.path, isDirectory, appearance)}
-        onClick={() => {
-          onSelect();
-          onActivate();
-        }}
-      >
-        <span className="files-chevron" aria-hidden>
-          {row.hasChildren ? <Icon name={expanded ? "altArrowDown" : "altArrowRight"} size={11} /> : null}
-        </span>
-        <FileIcon className="files-row-icon" kind={row.kind} name={row.name} expanded={expanded} appearance={appearance} />
-        <span className={`files-row-name${isDirectory ? " files-row-name-directory" : ""}`}>{row.name}</span>
-      </button>
-    </li>
   );
 }
