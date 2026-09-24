@@ -218,8 +218,8 @@ function registerDefaults(): void {
     title: titleOf("File"),
     detail: (s, ctx) => facts(s, ctx)?.detail ?? null,
     // The tab strip's IconName slot is monochrome by design; the
-    // polychrome file-type icon lives in the surface's breadcrumb toolbar
-    // (`FileIcon`, ticket 24's manifest).
+    // file-type icon lives in the surface's breadcrumb toolbar (`FileIcon`,
+    // the trees library's built-in set).
     icon: () => "document",
     render: (s, ctx) => (s.kind === "file" ? <FileSurface chatId={ctx.chatId} surfaceId={s.id} /> : null),
   });

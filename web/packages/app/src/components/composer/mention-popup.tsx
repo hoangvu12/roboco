@@ -170,7 +170,7 @@ function MentionRow({
       className="composer-completion-row"
     >
       <span className="composer-completion-row-icon">
-        <FileIcon kind={isDir ? "directory" : "file"} name={path} appearance={appearance} size={14} />
+        <FileIcon kind={isDir ? "directory" : "file"} name={path} size={14} />
       </span>
       <span className="composer-completion-row-name">{name}</span>
       {directory.length > 0 && <span className="composer-completion-row-directory">{directory}</span>}

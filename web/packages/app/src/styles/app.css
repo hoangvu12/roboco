@@ -6972,127 +6972,45 @@ button.files-root-retry:hover {
   min-height: 0;
 }
 
-.files-tree {
+/*
+ * The trees library host (`<file-tree-container>`, ticket 06): the library
+ * renders rows in shadow DOM, so the panel styles only the host — layout
+ * here, and the library's `--trees-*` variables themed from the web tokens
+ * below. The tokens themselves flip with the resolved appearance, and the
+ * `-override` forms win over every library default and `themeToTreeStyles`
+ * fallback, so the tree follows the theme. The library paints
+ * `--trees-item-height`/`--trees-density-override` from its density
+ * options (27px rows, the old density) onto the same host.
+ */
+.files-tree-host {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  outline: none;
-}
-
-/*
- * `render_tree_row` (tree.rs:95-265): 27px rows, the row gap of 4, 11.5px
- * labels in text-muted (text when selected), square corners, full-bleed
- * washes. Ignored rows dim the whole row to 0.52 — not a color swap.
- */
-.files-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  height: 27px;
-  padding: 0 8px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--rb-text-muted);
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-}
-
-li.files-row {
-  cursor: default;
-}
-
-button.files-row:hover {
-  background: rgb(var(--rb-wash) / 0.055);
-}
-
-/*
- * Selection is a NEUTRAL wash — never the accent (tree.rs:149): 0.12 while
- * the tree holds focus, 0.08 unfocused; search rows are always 0.1.
- */
-.files-row-active,
-button.files-row:hover.files-row-active {
-  background: rgb(var(--rb-wash) / 0.08);
-  color: var(--rb-text);
-}
-
-.files-tree:focus-within .files-row-active,
-.files-tree:focus-within button.files-row:hover.files-row-active {
-  background: rgb(var(--rb-wash) / 0.12);
-}
-
-.files-row-search.files-row-active,
-button.files-row-search:hover.files-row-active {
-  background: rgb(var(--rb-wash) / 0.1);
-  color: var(--rb-text);
-}
-
-.files-row-ignored {
-  opacity: 0.52;
-}
-
-/*
- * The disclosure slot (tree.rs:164-181): a 14px box with the 11px
- * ALT_ARROW_RIGHT/DOWN glyph in text-faint. The icon SWAPS instantly — the
- * desktop tweens nothing here, so neither does this.
- */
-.files-chevron {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--rb-text-faint);
-}
-
-/* The polychrome file-type icon (tree.rs:183-187): an <img>, never tinted. */
-.files-row-icon {
-  flex: none;
-  display: block;
-}
-
-.files-row-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Search rows: files in text, directories in text_muted (search.rs:597-601). */
-.files-row-search {
-  color: var(--rb-text);
-}
-
-.files-row-name-directory {
-  color: var(--rb-text-muted);
-}
-
-/* `status_row` (tree.rs:199-211, 374-395): 10.5px faint status text. */
-.files-row-note {
-  font-size: 10.5px;
-  color: var(--rb-text-faint);
-}
-
-.files-row-empty {
-  color: color-mix(in srgb, var(--rb-text-faint) 70%, transparent);
-}
-
-.files-row-action {
-  color: var(--rb-text-muted);
-}
-
-/* The error row: "{message} — Retry" in danger(0.82), the whole row is the
- * retry target (tree.rs:213-243). */
-.files-row-error {
-  font-size: 10.5px;
-  color: color-mix(in srgb, var(--rb-danger) 82%, transparent);
+  --trees-bg-override: var(--rb-bg);
+  --trees-fg-override: var(--rb-text);
+  --trees-fg-muted-override: var(--rb-text-muted);
+  --trees-bg-muted-override: rgb(var(--rb-wash) / 0.055);
+  --trees-border-color-override: var(--rb-border);
+  --trees-font-family-override: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --trees-font-size-override: 11.5px;
+  --trees-accent-override: var(--rb-accent);
+  --trees-focus-ring-color-override: var(--rb-accent);
+  --trees-selected-fg-override: var(--rb-text);
+  /* Selection stays a neutral wash — never the accent (tree.rs:149). */
+  --trees-selected-bg-override: rgb(var(--rb-wash) / 0.1);
+  --trees-selected-focused-border-color-override: var(--rb-accent);
+  /* Per-row indentation hairlines at the old guides' border tone. */
+  --trees-indent-guide-bg-override: color-mix(in srgb, var(--rb-border) 55%, transparent);
+  /* files/git_status.rs decorations: edits warn, adds succeed, deletions
+     endanger, untracked warns (the old untracked italics have no variable). */
+  --trees-git-modified-color-override: var(--rb-warning);
+  --trees-git-renamed-color-override: var(--rb-warning);
+  --trees-git-added-color-override: var(--rb-success);
+  --trees-git-deleted-color-override: var(--rb-danger);
+  --trees-git-untracked-color-override: var(--rb-warning);
+  --trees-git-ignored-color-override: var(--rb-text-faint);
+  /* The old pane hid the painted scrollbar (desktop parity); the library's
+     thin scroll thumb goes transparent — wheel/keys still scroll. */
+  --trees-scrollbar-thumb-override: transparent;
 }
 
 /* ── Search results ─────────────────────────────────────────────────── */
@@ -7102,15 +7020,6 @@ button.files-row-search:hover.files-row-active {
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.files-search-results {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }
 
 /* The capped-results banner (search.rs:487-502). */
@@ -7139,40 +7048,6 @@ button.files-row-search:hover.files-row-active {
 
 .files-search-message-error {
   color: color-mix(in srgb, var(--rb-danger) 82%, transparent);
-}
-
-/* `WorkspacePathDragGhost` (mod.rs:94-129): the drag pill — 24px, ≤220px,
-   raised surface, strong border, 11.5px, opacity 0.85. Off-stage (its only
-   job is to be snapshotted by setDragImage). */
-.files-drag-ghost {
-  position: fixed;
-  top: 0;
-  left: -9999px;
-  height: 24px;
-  max-width: 220px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  border: 1px solid var(--rb-border-strong);
-  border-radius: 6px;
-  background: var(--rb-raised);
-  color: var(--rb-text);
-  font-size: 11.5px;
-  opacity: 0.85;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.files-drag-ghost span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.files-drag-ghost img {
-  flex: none;
-  display: block;
 }
 
 /* ── Files viewer: the promoted editor presentation (preview.rs) ────────── */
@@ -12779,8 +12654,7 @@ button.files-save-pill:hover {
 
 /* files.rs:146-300 gives the first four rows no separators; the LAST row
    ("Show all files") is the only one carrying a top border. The classes
-   carry the `settings-files-` stem — the bare `files-row` name belongs to
-   the Files pane's tree rows (27px tall) and must not leak here. */
+   carry the `settings-files-` stem to stay distinct from the Files pane. */
 .settings-files-nosep + .settings-files-nosep {
   border-top: none;
 }
@@ -14937,8 +14811,6 @@ button.segmented-option:hover {
 .sidebar-list,
 .settings-scroll,
 .settings-nav-sections,
-.files-tree,
-.files-search-results,
 .files-code-scroll,
 .files-markdown-scroll,
 
@@ -14956,8 +14828,6 @@ button.segmented-option:hover {
 .sidebar-list::-webkit-scrollbar,
 .settings-scroll::-webkit-scrollbar,
 .settings-nav-sections::-webkit-scrollbar,
-.files-tree::-webkit-scrollbar,
-.files-search-results::-webkit-scrollbar,
 .files-code-scroll::-webkit-scrollbar,
 
 .md-pre::-webkit-scrollbar,
@@ -16241,39 +16111,3 @@ button.segmented-option:hover {
   transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
 }
 
-/* Git status entry colors (files/git_status.rs decorations, theme tokens):
-   staged/unstaged edits read as warning, additions as success, deletions
-   and conflicts as danger, untracked as the muted accent. Directories
-   aggregate their descendants (the ancestor rule). */
-.files-row[data-git="modified"] .files-row-name,
-.files-row[data-git="renamed"] .files-row-name {
-  color: var(--rb-warning, #b8860b);
-}
-.files-row[data-git="added"] .files-row-name {
-  color: var(--rb-success, #2f9e44);
-}
-.files-row[data-git="deleted"] .files-row-name,
-.files-row[data-git="conflicted"] .files-row-name {
-  color: var(--rb-danger, #d9480f);
-}
-.files-row[data-git="untracked"] .files-row-name {
-  color: var(--rb-warning, #b8860b);
-  font-style: italic;
-}
-
-/* Theme-aware indentation guides (tree.rs with_indent_guides): one hairline
-   per depth level, the border tone at low alpha, so deep paths stay
-   scannable in light and dark themes. */
-.files-row-guides {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  pointer-events: none;
-}
-.files-row-guide {
-  width: 14px;
-  flex: none;
-  border-left: 1px solid color-mix(in srgb, var(--rb-border, #888) 55%, transparent);
-}

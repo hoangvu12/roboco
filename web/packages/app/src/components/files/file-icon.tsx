@@ -1,16 +1,20 @@
 import type { CSSProperties } from "react";
-import type { Appearance } from "@roboco/theme";
-import { resolveDirectoryIcon, resolveFileIcon } from "../../lib/file-icons";
+import { fileIconSpriteSheet, resolveStandaloneFileIcon, standaloneDirectoryIcon } from "../../lib/tree-icons";
 
 /**
- * `FileIcon` — the polychrome file-type icon, rendered as an `<img>` of the
- * resolved manifest asset (desktop `file_icons::icon`, a `gpui::img`).
+ * `FileIcon` — the file-type icon on the trees library's built-in set
+ * (ticket 06). The tree renders the same set inside its shadow DOM; this
+ * component serves the non-tree consumers (markdown file references, tool
+ * stat rows and badges, diff file headers, the viewer breadcrumb, the
+ * mention popup) by resolving through the shared icon configuration and
+ * rendering a `<use>` reference into a document-level sprite built from
+ * `getBuiltInSpriteSheet("complete")`.
  *
- * The img form is the point: these are authored multi-color VS Code-derived
- * SVGs whose fills must NOT be tinted — unlike the monochrome `@roboco/icons`
- * `Icon`, which is a `currentColor` control glyph. Dark appearance is a
- * different asset path (`file-icons/dark/…`), so a theme switch forces a
- * fresh image load by construction. (file_icons.rs §icon / tree.rs:184-186)
+ * The built-in symbols are single-hue `currentColor` glyphs, so an icon
+ * tints with the `color` of whatever it sits in — unlike the old manifest's
+ * polychrome `<img>` assets (one set per appearance) or the monochrome
+ * `@roboco/icons` `Icon`. Directories render the folder glyph from the same
+ * sprite (the tree itself uses its own chevron-only folder look).
  */
 
 export type FileIconKind = "file" | "directory" | "symlink";
@@ -20,30 +24,56 @@ export interface FileIconProps {
   readonly kind: FileIconKind;
   /** The name or path to resolve — basenames win, extensions follow. */
   readonly name: string;
-  /** Threaded for the caller's chevron glyph; the folder image ignores it. */
-  readonly expanded?: boolean;
-  readonly appearance: Appearance;
-  /** Default 14 — `tree.rs:184-186` / `search.rs` rows / drag ghosts. */
+  /** Default 14 — the row/stat/badge icon size across the consumers. */
   readonly size?: number;
   readonly className?: string;
   readonly style?: CSSProperties;
 }
 
-export function FileIcon({ kind, name, expanded, appearance, size = 14, className, style }: FileIconProps) {
-  const src =
-    kind === "directory"
-      ? resolveDirectoryIcon(name, appearance, expanded)
-      : resolveFileIcon(name, appearance);
+/** The document-level sprite host id (injected once, on first render). */
+const SPRITE_HOST_ID = "roboco-file-icons-sprite";
+
+let spriteInjected = false;
+
+/** Inject the built-in sprite (plus the folder glyph) once per document. */
+function ensureFileIconSprite(): void {
+  if (spriteInjected || typeof document === "undefined") {
+    return;
+  }
+  spriteInjected = true;
+  if (document.getElementById(SPRITE_HOST_ID) !== null) {
+    return;
+  }
+  const host = document.createElement("div");
+  host.id = SPRITE_HOST_ID;
+  host.setAttribute("aria-hidden", "true");
+  // Off-stage and zero-sized, like the library's own sprite: symbols only
+  // render at their `<use>` sites.
+  host.style.position = "absolute";
+  host.style.width = "0";
+  host.style.height = "0";
+  host.style.overflow = "hidden";
+  // The sprite is build-time output from the trees library, not user or
+  // engine content.
+  host.innerHTML = fileIconSpriteSheet();
+  document.body.appendChild(host);
+}
+
+export function FileIcon({ kind, name, size = 14, className, style }: FileIconProps) {
+  ensureFileIconSprite();
+  const icon = kind === "directory" ? standaloneDirectoryIcon() : resolveStandaloneFileIcon(name);
   return (
-    <img
+    <svg
       className={className}
       style={style}
-      src={src}
-      alt=""
       width={size}
       height={size}
-      draggable={false}
-      loading="lazy"
-    />
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      focusable="false"
+    >
+      <use href={`#${icon.name}`} />
+    </svg>
   );
 }
