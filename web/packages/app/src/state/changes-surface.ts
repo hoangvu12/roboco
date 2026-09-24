@@ -25,10 +25,8 @@ import { uiSettings } from "./ui-settings";
  *
  * The fold model is the `collapsed`/`epoch` pair the Pierre diffs library's
  * items consume (ticket 02's `lib/changes-diff.ts`: `item.collapsed` plus a
- * version bump). The legacy `FileFold` tween fields (`from`/`to`/`folding`/
- * `toggledAt`) stay on the type for the old row model (`lib/diff.ts`, deleted
- * by ticket 04), but this store writes them steady — the library owns the
- * collapse rendering now.
+ * version bump) — the library owns the collapse rendering; the old
+ * hand-rolled tween fields died with the row model (ticket 04).
  */
 
 export interface ChangesSurfaceSnapshot {
@@ -238,10 +236,6 @@ export class ChangesSurfaceStore {
       const fold: FileFold = {
         collapsed,
         epoch: (current?.epoch ?? 0) + 1,
-        from: 0,
-        to: 0,
-        toggledAt: null,
-        folding: false,
       };
       const folds = new Map(state.folds);
       folds.set(path, fold);
@@ -263,7 +257,7 @@ export class ChangesSurfaceStore {
     this.#update(chatId, surfaceId, (state) => {
       const folds = new Map<string, FileFold>();
       for (const path of this.#files) {
-        folds.set(path, { collapsed: collapse, epoch: 0, from: 0, to: 0, toggledAt: null, folding: false });
+        folds.set(path, { collapsed: collapse, epoch: 0 });
       }
       return { ...state, folds };
     });

@@ -2,7 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useRef,
+  useMemo,
   useState,
   useSyncExternalStore,
   type CSSProperties,
@@ -11,10 +11,12 @@ import {
 import { Icon } from "@roboco/icons";
 import type { FetchToolBlobReply } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
+import { FileDiff as LibraryFileDiff, type FileDiffOptions } from "@pierre/diffs/react";
+import type { FileDiffMetadata } from "@pierre/diffs";
 import { useResolvedAppearance } from "../state/appearance";
 import { useUiSettings } from "../state/ui-settings";
-import { diffLineHeight as scaledDiffLineHeight } from "../lib/typography";
-import type { FileDiff } from "../lib/diff";
+import { diffLineHeight as scaledDiffLineHeight, diffTextSize } from "../lib/typography";
+import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../lib/pierre-theme";
 import type { InlineRun } from "../lib/markdown";
 import {
   CHIP_CARD_HEIGHT,
@@ -43,9 +45,13 @@ import {
   type FoldState,
 } from "../lib/tool-motion";
 import { ActivityRail } from "./activity-rail";
-import { FileBodyUpto, FilePlaneScroll } from "./diff-view";
 import { FileIcon } from "./files/file-icon";
 import { GlyphSpinner } from "./glyph-spinner";
+
+// Registered once per process (idempotent; the Changes pane registers the
+// same pair) — the transcript's diff blocks read the live `--rb-*` tokens
+// through it, so no re-registration follows an appearance switch.
+registerRobocoDiffsTheme();
 
 /**
  * The transcript's task tree — the desktop's `render_tool_group`
@@ -701,7 +707,7 @@ function DetailBody({ detail, invocation = false }: { detail: ToolDetail; invoca
         </div>
       );
     case "diff":
-      return <ToolDiffBody file={detail.file} />;
+      return <ToolDiffBody file={detail.file} notices={detail.notices} />;
   }
 }
 
@@ -732,20 +738,44 @@ function ThoughtRun({ run }: { run: InlineRun }) {
 }
 
 /**
- * The diff detail: the Changes pane's own body renderer (`FileBodyUpto`,
- * ticket 22's port of `render_file_body_with_syntax`), comments disabled —
- * an inline tool diff is a record, not a review surface.
+ * The diff detail: the Pierre diffs library's non-virtualized `FileDiff`
+ * (web-pierre-adoption, ticket 04) — always expanded, unified layout, no
+ * comment affordances (an inline tool diff is a record, not a review
+ * surface). The notices ride the library header's metadata slot, the same
+ * slot the Changes pane uses (`lib/changes-diff.ts`), so both surfaces read
+ * the notice copy from one place.
  */
-function ToolDiffBody({ file }: { file: FileDiff }) {
-  const scrollRef = useRef<FilePlaneScroll | null>(null);
-  if (scrollRef.current === null) {
-    scrollRef.current = new FilePlaneScroll();
-  }
-  const lineHeight = scaledDiffLineHeight(useUiSettings().codeFontSize);
+function ToolDiffBody({ file, notices }: { file: FileDiffMetadata; notices: readonly string[] }) {
+  const appearance = useResolvedAppearance();
+  const codeFontSize = useUiSettings().codeFontSize;
+  const options = useMemo<FileDiffOptions<undefined, undefined>>(
+    () => ({
+      theme: robocoDiffsThemes(),
+      themeType: appearance,
+      diffStyle: "unified",
+      overflow: "scroll",
+    }),
+    [appearance],
+  );
+  const renderHeaderMetadata = useCallback(
+    (meta: FileDiffMetadata) =>
+      notices.length === 0 ? null : (
+        <span className="changes-file-notices">{notices.join("  ·  ")}</span>
+      ),
+    [notices],
+  );
   return (
     <div className="tool-diff-body">
-      <FileBodyUpto file={file} maxPx={Number.POSITIVE_INFINITY} layout="unified" scroll={scrollRef.current} lineHeight={lineHeight} />
-      <div className="diff-body-pad" aria-hidden />
+      <LibraryFileDiff
+        className="tool-diff-host"
+        style={{
+          ["--diffs-font-size" as string]: `${diffTextSize(codeFontSize)}px`,
+          ["--diffs-line-height" as string]: `${scaledDiffLineHeight(codeFontSize)}px`,
+        }}
+        fileDiff={file}
+        options={options}
+        renderHeaderMetadata={renderHeaderMetadata}
+      />
     </div>
   );
 }

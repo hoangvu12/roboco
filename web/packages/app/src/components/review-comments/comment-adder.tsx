@@ -1,9 +1,11 @@
 /**
  * The diff line's comment adder — `comment_ui.rs::render_comment_adder`
- * (:18-46): a 16px solid square with an 11px plus. Rendered only while its
- * owning line is hovered (mount/unmount, per ticket 22's hover-hook
- * contract), positioned by the row's `.diff-adder-slot` at
- * `comment_adder_left` (lib/diff.ts).
+ * (:18-46): a 16px solid square with an 11px plus. Superseded as the live
+ * affordance: ticket 03 offers the adder through the diffs library's
+ * built-in gutter utility (`enableGutterUtility` + `onGutterUtilityClick`,
+ * routes/changes-page.tsx), so this component is no longer mounted. The
+ * `.diff-adder-slot` row positioning and `comment_adder_left`
+ * (lib/diff.ts) it used died with the old row renderer (ticket 04).
  */
 
 import type { MouseEvent as ReactMouseEvent } from "react";

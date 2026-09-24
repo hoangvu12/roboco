@@ -3,7 +3,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessagePart, SessionMessageEntry, ToolCall, TranscriptFrame } from "@roboco/proto";
 import { parseMarkdown, type InlineRun } from "../src/lib/markdown";
-import { bodyHeight } from "../src/lib/diff";
 import {
   CHIPS_TOP_PAD,
   CHIP_HEIGHT,
@@ -448,27 +447,26 @@ describe("tool details (ticket 19)", () => {
     expect(detail!.kind).toBe("diff");
     const file = detail!.kind === "diff" ? detail!.file : null;
     expect(file).not.toBeNull();
-    // One hunk: the change plus 3 context lines each side, real numbers.
+    // One hunk: the change plus 3 context lines each side, real numbers
+    // (the library's parser groups with the same 3-context discipline the
+    // old Myers walk used).
     expect(file!.hunks.length).toBe(1);
     const hunk = file!.hunks[0]!;
-    expect(hunk.header).toBe("@@ -7,7 +7,7 @@");
-    expect(hunk.lines.length).toBe(8); // 6 context + 1 del + 1 add
-    const del = hunk.lines.find((line) => line.kind === "del");
-    expect(del).toBeDefined();
-    expect(del!.oldNo).toBe(10);
-    expect(del!.newNo).toBeNull();
-    expect(del!.text).toBe("line 10");
-    const add = hunk.lines.find((line) => line.kind === "add");
-    expect(add).toBeDefined();
-    expect(add!.newNo).toBe(10);
-    expect(add!.oldNo).toBeNull();
-    expect(add!.text).toBe("LINE 10");
-    expect(file!.additions).toBe(1);
-    expect(file!.deletions).toBe(1);
-    // New files carry Added status (and no old numbers).
+    expect(hunk.unifiedLineCount).toBe(8); // 6 context + 1 del + 1 add
+    expect(hunk.additionStart).toBe(7);
+    expect(hunk.deletionStart).toBe(7);
+    // The changed line rides both sides' index 9 — line 10 on each.
+    const change = hunk.hunkContent.find((block) => block.type === "change");
+    expect(change).toMatchObject({ additions: 1, deletions: 1, additionLineIndex: 9, deletionLineIndex: 9 });
+    // The library's line arrays keep each line's trailing newline.
+    expect(file!.additionLines[9]).toBe("LINE 10\n");
+    expect(file!.deletionLines[9]).toBe("line 10\n");
+    // New files carry the New-file type and its notice.
     const created = toolDetail(null, { path: "/w/new.txt", oldText: null, newText: "only\n" }, null);
-    expect(created!.kind === "diff" && created!.file.status).toBe("added");
-    expect(created!.kind === "diff" && created!.file.hunks[0]!.lines.every((line) => line.oldNo === null)).toBe(true);
+    expect(created!.kind === "diff" && created!.file.type).toBe("new");
+    expect(created!.kind === "diff" && created!.notices).toEqual(["New file"]);
+    // Identical sides parse to no hunks — no detail at all.
+    expect(toolDetail(null, { path: "/w/x.rs", oldText: "a\n", newText: "a\n" }, null)).toBeNull();
     // Output: verbatim lines (indentation intact), counted-tail cap.
     const output = Array.from({ length: 40 }, (_, i) => `    indented ${i}`).join("\n");
     const outDetail = toolDetail(output, null, null);
@@ -512,7 +510,9 @@ describe("tool details (ticket 19)", () => {
     const stats = toolDetail(null, null, [{ path: "a", additions: 1, deletions: 0 }])!;
     expect(detailHeight(stats)).toBe(1 + 1 * 18 + 12);
     const diff = toolDetail(null, { path: "a.rs", oldText: null, newText: "one\ntwo\n" }, null)!;
-    expect(detailHeight(diff)).toBe(1 + bodyHeight(diff.kind === "diff" ? diff.file : null!));
+    // The library block's own accounting: header 44 + 2 line rows at the
+    // default 21px row + the 8px bottom pad (no gap rows for a new file).
+    expect(detailHeight(diff)).toBe(1 + 44 + 2 * 21 + 8);
   });
 
   it("formatKb never shows decimals", () => {

@@ -50,7 +50,7 @@ function diff(patch: string, checksum: string): { checkoutId: string; checksum: 
 }
 
 function fold(collapsed: boolean): FileFold {
-  return { collapsed, epoch: collapsed ? 1 : 0, from: 0, to: 0, toggledAt: null, folding: false };
+  return { collapsed, epoch: collapsed ? 1 : 0 };
 }
 
 function asDiffItem(item: CodeViewItem<DiffCommentAnnotationData> | undefined): CodeViewDiffItem<DiffCommentAnnotationData> {
