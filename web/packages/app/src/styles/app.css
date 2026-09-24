@@ -13427,6 +13427,77 @@ button.segmented-option:hover {
   overflow: hidden;
 }
 
+/* ── Pierre diff list host (ticket 02, web-pierre-adoption) ─────────── */
+
+/*
+ * The diffs library's scroll container: the library renders each file in a
+ * shadow DOM host (`<diffs-container>`) inside this div, so the surface
+ * styles only the host — layout here, and the library's documented
+ * `--diffs-*` variables themed from the web tokens below. Custom properties
+ * pierce the shadow boundary by inheritance: the tokens flip with the
+ * resolved appearance (themeType follows it), so the list follows the theme
+ * with no re-registration. Code font size/line height are runtime settings —
+ * they arrive as inline `--diffs-font-size`/`--diffs-line-height` from the
+ * component; the family/tab size/diff colors map here. The code TOKEN colors
+ * come from the registered Roboco theme reading `--rb-syntax-*` (lib/pierre-
+ * theme.ts), not from these variables.
+ */
+.changes-code-host {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-header-font-family: var(--rb-font-sans, "Geist", ui-sans-serif, system-ui, sans-serif);
+  --diffs-font-family: var(--rb-font-mono, "Geist Mono", ui-monospace, monospace);
+  /* `DIFF_TAB_SIZE` — the old plane's visual tab advance. */
+  --diffs-tab-size: 4;
+  /* The classic diff washes from the theme's own add/delete roles; the
+     `-override` forms win over every library default and the theme's ansi
+     fallbacks, so an appearance flip re-tints without re-render. The
+     library's context/separator washes and the number gutter already
+     derive from its `--diffs-bg`/`--diffs-fg` — which the registered theme
+     points at `--rb-bg`/`--rb-text` — so they follow the tokens on their
+     own. */
+  --diffs-addition-color-override: var(--rb-diff-add);
+  --diffs-deletion-color-override: var(--rb-diff-delete);
+  --diffs-modified-color-override: var(--rb-accent);
+}
+
+/*
+ * The per-file fold chevron in the library header's prefix slot — the old
+ * `.diff-chevron` role, at the header's 1lh rhythm; the notices (new/
+ * deleted/binary/mode) ride the metadata slot in the same row.
+ */
+.changes-fold-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: none;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.changes-fold-toggle:hover {
+  background: rgb(var(--rb-wash) / 0.12);
+  color: var(--rb-text);
+}
+
+.changes-file-notices {
+  color: var(--rb-text-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Diff viewer (ticket 22) ────────────────────────────────────────── */
 
 /*

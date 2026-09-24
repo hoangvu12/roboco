@@ -1,15 +1,11 @@
 import { useSyncExternalStore } from "react";
 import {
-  bodyHeightWith,
-  FOLD_TWEEN_WINDOW_MS,
   type DiffDraftAnchor,
   type DiffMode,
   type DiffScope,
-  type FileDiff,
   type FileFold,
 } from "../lib/diff";
 import type { ReviewComment } from "../lib/review-comments";
-import { diffLineHeight } from "../lib/typography";
 import { uiSettings } from "./ui-settings";
 
 /**
@@ -27,12 +23,12 @@ import { uiSettings } from "./ui-settings";
  * `settings::update` with `SavePolicy::Immediate`); the fold map and scope
  * are tab-local, in memory only.
  *
- * The fold model is the desktop's `FileFold` + tween arming: toggling a
- * header swaps the file's body rows for one height-animated stand-in whose
- * `from`/`to` are analytic (`bodyHeightWith`), and a settle sweep after the
- * 400ms window swaps in the steady rows. Under `prefers-reduced-motion` (and
- * whenever wrap is on, whose rows have no analytic height) the toggle writes
- * steady state directly — no tween, matching `cx.reduce_motion()` handling.
+ * The fold model is the `collapsed`/`epoch` pair the Pierre diffs library's
+ * items consume (ticket 02's `lib/changes-diff.ts`: `item.collapsed` plus a
+ * version bump). The legacy `FileFold` tween fields (`from`/`to`/`folding`/
+ * `toggledAt`) stay on the type for the old row model (`lib/diff.ts`, deleted
+ * by ticket 04), but this store writes them steady — the library owns the
+ * collapse rendering now.
  */
 
 export interface ChangesSurfaceSnapshot {
@@ -42,8 +38,8 @@ export interface ChangesSurfaceSnapshot {
   readonly wrap: boolean;
   readonly folds: ReadonlyMap<string, FileFold>;
   /**
-   * Bumped whenever the horizontal-scroll-extent inputs change (scope,
-   * layout, wrap) — the viewer resets every file's code-plane offset.
+   * Bumped whenever the view-extent inputs change (scope, base, layout,
+   * wrap) — the diff list scrolls back to the top.
    */
   readonly scrollEpoch: number;
   /**
@@ -58,12 +54,6 @@ export interface ChangesSurfaceSnapshot {
    * the surface's scope never moves off it.
    */
   readonly commitSha: string | null;
-}
-
-function reducedMotion(): boolean {
-  return (globalThis as { matchMedia?: (query: string) => { matches: boolean } })
-    .matchMedia?.("(prefers-reduced-motion: reduce)")
-    .matches === true;
 }
 
 interface SurfaceState {
@@ -100,14 +90,12 @@ export class ChangesSurfaceStore {
   readonly #bySurface = new Map<string, SurfaceState>();
   #version = 0;
   readonly #listeners = new Set<() => void>();
-  #settleTimer: ReturnType<typeof setTimeout> | null = null;
-  /** The parsed files of the ACTIVE surface registration (fold heights). */
-  #files: readonly FileDiff[] = [];
+  /** The foldable paths of the ACTIVE surface registration. */
+  #files: readonly string[] = [];
   /**
-   * The active surface's staged diff comments + draft anchor (ticket 23):
-   * `bodyHeightWith` reads the live set at toggle time, so a file whose
-   * body carries comment cards folds at the height the rows actually sum
-   * to (changes.rs:2324-2329).
+   * The active surface's staged diff comments + draft anchor (ticket 23).
+   * Kept as the analytic input ticket 03 re-wires through the library's
+   * annotations; the library path does not read it for fold geometry.
    */
   #comments: readonly ReviewComment[] = EMPTY_COMMENTS;
   #draft: DiffDraftAnchor | null = null;
@@ -132,14 +120,15 @@ export class ChangesSurfaceStore {
     return state;
   }
 
-  /** The viewer's current parse, registered so fold actions can measure. */
-  setFiles(files: readonly FileDiff[]): void {
+  /** The viewer's current parse (the foldable paths), registered so fold
+   * actions know what can fold. */
+  setFiles(files: readonly string[]): void {
     this.#files = files;
   }
 
   /**
    * The viewer's current staged comment set + draft anchor (ticket 23) —
-   * the fold heights' second analytic input. No notification: the rows
+   * kept as ticket 03's annotation input. No notification: the rows
    * themselves re-render through the comment store's own subscription.
    */
   setComments(comments: readonly ReviewComment[], draft: DiffDraftAnchor | null): void {
@@ -223,77 +212,58 @@ export class ChangesSurfaceStore {
   }
 
   /**
-   * Wrap ⇄ nowrap (`toggle_wrap`). Wrapped rows have no analytic height, so
-   * any folding stand-in settles to steady rows first — the desktop does the
-   * same before `remeasure`.
+   * Wrap ⇄ nowrap (`toggle_wrap`) — persisted immediately; the re-render
+   * re-lays every row out through the library's wrap mode.
    */
   toggleWrap(chatId: string, surfaceId: string): void {
     this.#update(chatId, surfaceId, (state) => {
       const wrap = !state.wrap;
       uiSettings.update({ diffWrap: wrap }, "immediate");
-      const folds = wrap ? settleFolds(state.folds) : state.folds;
-      return { ...state, wrap, folds, scrollEpoch: state.scrollEpoch + 1 };
+      return { ...state, wrap, scrollEpoch: state.scrollEpoch + 1 };
     });
   }
 
   /**
-   * Fold/unfold one file (`toggle_fold`). With wrap on or motion reduced the
-   * write is steady-state; otherwise the body becomes a stand-in row tweened
-   * from `from` to `to` over the 180ms COLLAPSE curve, settled by the sweep.
+   * Fold/unfold one file (`toggle_fold`): a steady write — the library's
+   * `collapsed` item flag renders it; the epoch bumps the item's version
+   * so the controlled update lands.
    */
   toggleFold(chatId: string, surfaceId: string, path: string): void {
-    const file = this.#files.find((candidate) => candidate.path === path);
-    if (file === undefined) {
+    if (!this.#files.includes(path)) {
       return;
     }
-    const fileComments = this.#comments.filter(
-      (comment) => comment.source.kind === "diff" && comment.path === path,
-    );
-    const fileDraft = this.#draft !== null && this.#draft.path === path ? this.#draft : null;
-    let armed = false;
     this.#update(chatId, surfaceId, (state) => {
       const current = state.folds.get(path);
       const collapsed = !(current?.collapsed ?? false);
-      const steady = state.wrap || reducedMotion();
-      // `bodyHeightWith` reads the live code size at toggle time (the same
-      // value the renderer's FileBodyUpto paints against).
-      const bodyLineHeight = diffLineHeight(uiSettings.getSnapshot().codeFontSize);
-      const fold: FileFold = steady
-        ? { collapsed, epoch: (current?.epoch ?? 0) + 1, from: 0, to: 0, toggledAt: null, folding: false }
-        : {
-          collapsed,
-          epoch: (current?.epoch ?? 0) + 1,
-          from: current?.collapsed === true ? 0 : bodyHeightWith(file, state.layout, fileComments, fileDraft, bodyLineHeight),
-          to: current?.collapsed === true ? bodyHeightWith(file, state.layout, fileComments, fileDraft, bodyLineHeight) : 0,
-          toggledAt: Date.now(),
-          folding: true,
-        };
+      const fold: FileFold = {
+        collapsed,
+        epoch: (current?.epoch ?? 0) + 1,
+        from: 0,
+        to: 0,
+        toggledAt: null,
+        folding: false,
+      };
       const folds = new Map(state.folds);
       folds.set(path, fold);
-      const next = { ...state, folds };
-      armed = !steady;
-      return next;
+      return { ...state, folds };
     });
-    if (armed) {
-      this.#armSettle();
-    }
   }
 
   /**
    * Collapse every file, or expand them all when everything is already shut
-   * (`toggle_collapse_all`) — a steady-state write, no per-row tween.
+   * (`toggle_collapse_all`) — one steady write over the registered paths.
    */
   toggleCollapseAll(chatId: string, surfaceId: string): void {
     if (this.#files.length === 0) {
       return;
     }
     const collapse = !this.#files.every(
-      (file) => this.snapshotFor(chatId, surfaceId).folds.get(file.path)?.collapsed === true,
+      (path) => this.snapshotFor(chatId, surfaceId).folds.get(path)?.collapsed === true,
     );
     this.#update(chatId, surfaceId, (state) => {
       const folds = new Map<string, FileFold>();
-      for (const file of this.#files) {
-        folds.set(file.path, { collapsed: collapse, epoch: 0, from: 0, to: 0, toggledAt: null, folding: false });
+      for (const path of this.#files) {
+        folds.set(path, { collapsed: collapse, epoch: 0, from: 0, to: 0, toggledAt: null, folding: false });
       }
       return { ...state, folds };
     });
@@ -327,67 +297,11 @@ export class ChangesSurfaceStore {
     this.#emit();
   }
 
-  /**
-   * The settle sweep: while any stand-in rows remain, tick after the tween
-   * window and convert the elapsed ones to steady rows (`ensure_fold_settle`).
-   */
-  #armSettle(): void {
-    if (this.#settleTimer !== null) {
-      return;
-    }
-    this.#settleTimer = setTimeout(() => {
-      this.#settleTimer = null;
-      let pending = false;
-      for (const [key, state] of this.#bySurface) {
-        if (!someFolding(state.folds)) {
-          continue;
-        }
-        const folds = settleFolds(state.folds);
-        pending = someFolding(folds) || pending;
-        this.#bySurface.set(key, { ...state, folds });
-      }
-      if (pending) {
-        this.#armSettle();
-      }
-      this.#version += 1;
-      this.#emit();
-    }, FOLD_TWEEN_WINDOW_MS);
-  }
-
   #emit(): void {
     for (const listener of this.#listeners) {
       listener();
     }
   }
-}
-
-/** True while any fold still owns a stand-in row. */
-function someFolding(folds: ReadonlyMap<string, FileFold>): boolean {
-  for (const fold of folds.values()) {
-    if (fold.folding) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Convert elapsed tweens to steady rows; returns the input when none ran. */
-function settleFolds(folds: ReadonlyMap<string, FileFold>): ReadonlyMap<string, FileFold> {
-  let next: Map<string, FileFold> | null = null;
-  for (const [path, fold] of folds) {
-    if (!fold.folding) {
-      continue;
-    }
-    const elapsed = fold.toggledAt === null || Date.now() - fold.toggledAt >= FOLD_TWEEN_WINDOW_MS;
-    if (!elapsed) {
-      continue;
-    }
-    if (next === null) {
-      next = new Map(folds);
-    }
-    next.set(path, { ...fold, folding: false, toggledAt: null });
-  }
-  return next ?? folds;
 }
 
 function surfaceKey(chatId: string, surfaceId: string): string {
