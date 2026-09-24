@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
-import { File as LibraryFile, Virtualizer, type FileOptions } from "@pierre/diffs/react";
+import { File as LibraryFile, Virtualizer, type FileEditChangeHandler, type FileEditCompleteHandler, type FileOptions } from "@pierre/diffs/react";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { fileName, isImagePath, isMarkdownPath, readOnlyMessage, truncatedMessage } from "../../lib/files";
 import { documentFileContents } from "../../lib/file-view";
+import { applyFileEditChange, completeFileEdit, fileEditStateKey, reconcileFileEditDraft } from "../../lib/file-edit";
 import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../../lib/pierre-theme";
 import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
@@ -32,16 +33,19 @@ import { MarkdownView } from "./markdown-view";
  * Retry/Keep Open/Discard banner instead of discarding edits.
  *
  * Web-pierre-adoption (ticket 05, ADR 0008): the code body is the diffs
- * library's read-only `File` — highlighted, line-numbered, virtualized —
- * fed by the document machinery (`lib/file-view.ts` maps the read outcome
- * onto `FileContents`, content hash as the highlight cache key). Web file
- * EDITING is suspended until ticket 07 bridges the library's edit mode onto
- * the same machinery: the deferral notice stands where the editor's
- * affordances used to be, so the surface never presents a dead editor. The
- * save/autosave/conflict machinery stays live underneath (the markdown
- * preview's task checkboxes still write through it, and 07 restores the
- * code arm); the hand-rolled textarea-overlay editor and its tokenizer are
- * deleted.
+ * library's `File` — highlighted, line-numbered, virtualized — fed by the
+ * document machinery (`lib/file-view.ts` maps the read outcome onto
+ * `FileContents`, content hash as the highlight cache key). Ticket 07
+ * restores web file EDITING through the library's edit mode, bridged onto
+ * the same machinery by `lib/file-edit.ts` (the one bridge module): one
+ * `EditProvider` mounted in the app shell supplies the shared editor
+ * factory; the body becomes an editable `File` when the document is
+ * editable (never for read-only documents), `onEditChange` feeds
+ * `document.edit` (dirty + autosave — the textarea's onChange's role), and
+ * `onEditComplete` always accepts and runs the final save, so an edit
+ * session can never silently reject its contents. The editor-side review
+ * wiring (ticket 23's floating cards/drafts over the editable arm) is
+ * still dormant — see the ticket 07 Comments for the gap.
  */
 
 registerRobocoDiffsTheme();
@@ -400,13 +404,15 @@ function TextViewer({
     [doc, snapshot.editable, markdownClip.text],
   );
 
-  // Web file editing is suspended (ADR 0008; ticket 07 restores it through
-  // the library's edit mode) — the code body below is read-only. The
+  // Web file editing runs through the library's edit mode (ticket 07's
+  // bridge, `lib/file-edit.ts`): the code body below mounts an editable
+  // `File` for documents the phase machine marks editable — the live
+  // change stream feeds `document.edit` (dirty + autosave), and the
+  // always-present completion handler accepts and runs the final save. The
   // editor-side review wiring (ticket 23's floating cards/drafts over the
-  // editable arm) goes dark with it, the same interim pattern the Changes
-  // pane's comments rode through 02→03: the review store's editor-draft
-  // methods and the editor-comment components stay intact for 07 to mount
-  // over the library's editor surface.
+  // editable arm) stays dormant until it is re-mounted over the library's
+  // editor surface — the review store's editor-draft methods and the
+  // editor-comment components keep their suite coverage in the interim.
 
   const toolbar = (
     <ViewerToolbar
@@ -463,22 +469,18 @@ function TextViewer({
       </div>
     );
   } else {
-    // The code body: read-only through the library (ADR 0008 — editing
-    // returns with ticket 07). The truncation banner is unchanged; the
-    // deferral notice stands where the editor's affordances used to be,
-    // only for documents that WOULD have opened in the editor (read-only
-    // files already carry their reason).
+    // The code body: the library's file view — EDITABLE through the
+    // library's edit mode when the document accepts edits (ticket 07's
+    // bridge, `lib/file-edit.ts`); read-only documents never mount an edit
+    // session and state their own reason. The truncation banner is
+    // unchanged (a truncated read is never editable).
     const truncated = snapshot.file !== null ? truncatedMessage(snapshot.file) : null;
     body = (
       <div className="files-editor-body">
-        {snapshot.editable && (
-          <div className="files-readonly-note" role="note">
-            Web file editing isn’t available yet — this view is read-only.
-          </div>
-        )}
         {truncated !== null && <div className="files-truncated-banner" role="status">{truncated}</div>}
-        <ReadOnlyCodeBody
+        <FileCodeBody
           path={path}
+          doc={doc}
           snapshot={snapshot}
           wordWrap={settings.filesWordWrap}
           codeFontSize={settings.codeFontSize}
@@ -528,21 +530,33 @@ function TextViewer({
 }
 
 /**
- * The read-only code body (web-pierre-adoption, ticket 05): the diffs
- * library’s virtualized `File` inside a `Virtualizer` scroll container —
- * highlighted by the registered Roboco theme pair (themeType following the
- * resolved appearance), line numbers on, word wrap per the setting, the
- * content hash as the highlight cache key. The library renders in shadow
- * DOM; our host class (`.files-code-host`, app.css) owns the layout and the
- * `--diffs-*` token mapping exactly like the Changes pane’s host.
+ * The code body (web-pierre-adoption, ticket 05 read-only, ticket 07 edit
+ * mode): the diffs library’s virtualized `File` inside a `Virtualizer`
+ * scroll container — highlighted by the registered Roboco theme pair
+ * (themeType following the resolved appearance), line numbers on, word
+ * wrap per the setting, the content hash as the highlight cache key. The
+ * library renders in shadow DOM; our host class (`.files-code-host`,
+ * app.css) owns the layout and the `--diffs-*` token mapping exactly like
+ * the Changes pane’s host.
+ *
+ * Editable documents additionally run the library’s edit session (the
+ * `EditProvider` the app shell mounts supplies the editor factory): the
+ * per-file `editStateKey` retains the draft, undo history, selection, and
+ * caret across unmount/remount; `onEditChange` streams the live contents
+ * into the document (`lib/file-edit.ts`); `onEditComplete` is always
+ * present — it accepts the session’s final contents and runs the final
+ * save, because a missing handler silently rejects them. Read-only
+ * documents (truncated, binary, unwritable encoding) never pass `edit`.
  */
-function ReadOnlyCodeBody({
+function FileCodeBody({
   path,
+  doc,
   snapshot,
   wordWrap,
   codeFontSize,
 }: {
   readonly path: string;
+  readonly doc: FileDocument | null;
   readonly snapshot: FileDocumentSnapshot;
   readonly wordWrap: boolean;
   readonly codeFontSize: number;
@@ -558,6 +572,33 @@ function ReadOnlyCodeBody({
     }),
     [appearance, wordWrap],
   );
+  const editable = snapshot.editable;
+  // The per-file edit state key — computed before the editor attaches so a
+  // retained draft that no longer matches this document’s buffer (a reload
+  // moved it) is dropped instead of resuming over fresh contents.
+  const editStateKey = useMemo(() => {
+    const key = fileEditStateKey(path);
+    if (editable) {
+      reconcileFileEditDraft(key, snapshot.text);
+    }
+    return key;
+  }, [path, editable, snapshot.text]);
+  const onEditChange = useCallback<FileEditChangeHandler<undefined, undefined>>(
+    (event) => {
+      if (doc !== null) {
+        applyFileEditChange(doc, event);
+      }
+    },
+    [doc],
+  );
+  // Mandatory in every mount path: a missing completion handler REJECTS
+  // the session’s final contents (silent data loss).
+  const onEditComplete = useCallback<FileEditCompleteHandler<undefined, undefined>>((event) => {
+    if (doc !== null) {
+      return completeFileEdit(doc, event);
+    }
+    return "accept";
+  }, [doc]);
   return (
     <Virtualizer className="files-code-host">
       <LibraryFile
@@ -568,6 +609,10 @@ function ReadOnlyCodeBody({
         }}
         file={file}
         options={options}
+        edit={editable}
+        editStateKey={editable ? editStateKey : undefined}
+        onEditChange={onEditChange}
+        onEditComplete={onEditComplete}
       />
     </Virtualizer>
   );
