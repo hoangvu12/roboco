@@ -7388,21 +7388,11 @@ button.files-save-pill:hover {
 }
 
 /*
- * The edit-deferral notice (ADR 0008): where the editor's affordances used
- * to be, a quiet strip — the surface never presents a dead editor. Only
- * documents that WOULD have opened in the editor carry it (read-only files
- * state their own reason).
+ * The edit-deferral notice (ADR 0008) is gone — ticket 07 restored web
+ * file editing through the library's edit mode: the body below is the
+ * editable `File` (the editor lives in the library's shadow DOM, themed
+ * through the same `--diffs-*` variables).
  */
-.files-readonly-note {
-  flex: none;
-  height: 26px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--rb-border);
-  font-size: 10.5px;
-  color: var(--rb-text-faint);
-}
 
 /*
  * The library's virtualized scroll container (the `Virtualizer` host): the

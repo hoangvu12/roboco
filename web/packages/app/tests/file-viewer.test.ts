@@ -2,21 +2,24 @@
 
 /**
  * Ticket 05 (web-pierre-adoption): the right pane's File surface renders its
- * code body through the Pierre diffs library's read-only `File`. The real
+ * code body through the Pierre diffs library's `File`. The real
  * `FileSurface` mounts (no JSX, per-file jsdom pragma, the base-tooltip
  * idiom) over a scripted `WorkspaceFilesClient` double — the read outcome
  * and the workspace watch drive the file-document state machine exactly as
  * the engine would. Assertions stay OUTSIDE the shadow DOM — our chrome
- * (the breadcrumb toolbar, the deferral notice, the truncation banner, the
- * save-status pill) and the library host elements the virtualizer carries
- * (`diffs-container`, a light-DOM custom element our classes own).
+ * (the breadcrumb toolbar, the truncation banner, the save-status pill) and
+ * the library host elements the virtualizer carries (`diffs-container`, a
+ * light-DOM custom element our classes own). The edit-mode wiring (ticket
+ * 07) has its own mounted suite: `file-viewer-edit.test.ts`.
  */
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceFileChanges, WorkspaceFileText } from "@roboco/proto";
+import { EditProvider } from "@pierre/diffs/react";
 import { FileSurface } from "../src/components/files/file-viewer";
+import { createRobocoFileEditor } from "../src/lib/file-edit";
 import { rightPaneStore } from "../src/state/right-pane";
 import { fileDocuments } from "../src/state/file-documents";
 import type { FileDocument } from "../src/lib/file-document";
@@ -176,7 +179,8 @@ async function settle(ms = 160): Promise<void> {
   });
 }
 
-/** Open the path as a file surface and mount it — the tree's tab click path. */
+/** Open the path as a file surface and mount it — the tree's tab click path,
+ * wrapped in the edit provider the app shell mounts above the pane. */
 async function mountViewer(): Promise<Mounted> {
   rightPaneStore.addFileSurface(CHAT_ID, PATH);
   const pane = rightPaneStore.stateFor(CHAT_ID);
@@ -189,7 +193,13 @@ async function mountViewer(): Promise<Mounted> {
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(createElement(FileSurface, { chatId: CHAT_ID, surfaceId }));
+    root.render(
+      createElement(
+        EditProvider,
+        { createEditor: createRobocoFileEditor },
+        createElement(FileSurface, { chatId: CHAT_ID, surfaceId }),
+      ),
+    );
   });
   await settle();
   const document_ = fileDocuments.documentFor(surfaceId);
@@ -218,12 +228,10 @@ describe("FileSurface renders the read-only code view through the Pierre diffs l
     h.disk = textFile();
     const mounted = await mountViewer();
 
-    // Our chrome: the breadcrumb toolbar and the edit-deferral notice —
-    // the surface never presents a dead editor (ADR 0008).
+    // Our chrome: the breadcrumb toolbar. The edit-deferral notice is gone
+    // (ticket 07 restored editing); the read path itself is unchanged.
     expect(mounted.container.querySelector(".files-breadcrumb")).not.toBeNull();
-    const notice = mounted.container.querySelector<HTMLElement>(".files-readonly-note");
-    expect(notice).not.toBeNull();
-    expect(notice!.textContent).toContain("read-only");
+    expect(mounted.container.querySelector(".files-readonly-note")).toBeNull();
 
     // The library's scroll container (the Virtualizer host)…
     const host = mounted.container.querySelector<HTMLElement>(".files-code-host");
@@ -256,15 +264,13 @@ describe("FileSurface renders the read-only code view through the Pierre diffs l
     expect(mounted.container.querySelector(".files-code-host")).toBeNull();
   });
 
-  it("keeps the truncation banner for large truncated previews (read-only, no deferral notice)", async () => {
+  it("keeps the truncation banner for large truncated previews (read-only, never editable)", async () => {
     h.disk = textFile({ truncated: true, readOnlyReason: null });
     const mounted = await mountViewer();
 
     const banner = mounted.container.querySelector<HTMLElement>(".files-truncated-banner");
     expect(banner).not.toBeNull();
     expect(banner!.textContent).toContain("Large file preview is truncated and read-only.");
-    // A truncated read is not editable — the deferral notice stays quiet.
-    expect(mounted.container.querySelector(".files-readonly-note")).toBeNull();
     // The truncated text still renders through the library.
     expect(mounted.container.querySelector("diffs-container.files-code-file")).not.toBeNull();
   });
