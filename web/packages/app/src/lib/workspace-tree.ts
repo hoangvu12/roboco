@@ -13,7 +13,7 @@ import {
   workspacePathOf,
   watchRemoval,
 } from "./tree-adapters";
-import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, treeFileIcons, treeSortComparator } from "./tree-icons";
+import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, TREE_GUIDE_UNSAFE_CSS, treeFileIcons, treeSortComparator } from "./tree-icons";
 import type { WorkspaceFilesClient } from "./files-client";
 import { describeFilesError } from "./files-client";
 
@@ -126,6 +126,8 @@ export class WorkspaceTreeModel {
       itemHeight: FILE_TREE_ROW_HEIGHT,
       density: FILE_TREE_DENSITY,
       icons: treeFileIcons,
+      // Always-on solid guides — see TREE_GUIDE_UNSAFE_CSS (tree-icons.ts).
+      unsafeCSS: TREE_GUIDE_UNSAFE_CSS,
       gitStatus: [],
       renderRowDecoration: (context) => this.#rowDecoration(context),
     });

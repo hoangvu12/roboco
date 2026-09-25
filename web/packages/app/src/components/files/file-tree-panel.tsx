@@ -13,7 +13,7 @@ import type { WorkspaceFileSearchMatch, WorkspaceGitStatusFrame } from "@roboco/
 import type { WatchHandle, WatchHandlers } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
 import { directoryWorkspacePath, searchTreePaths } from "../../lib/tree-adapters";
-import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, treeFileIcons } from "../../lib/tree-icons";
+import { FILE_TREE_DENSITY, FILE_TREE_ROW_HEIGHT, TREE_GUIDE_UNSAFE_CSS, treeFileIcons } from "../../lib/tree-icons";
 import type { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import type { WorkspaceFilesClient } from "../../lib/files-client";
 import { describeFilesError } from "../../lib/files-client";
@@ -326,6 +326,7 @@ function SearchResults({
     itemHeight: FILE_TREE_ROW_HEIGHT,
     density: FILE_TREE_DENSITY,
     icons: treeFileIcons,
+    unsafeCSS: TREE_GUIDE_UNSAFE_CSS,
   });
   const requestRef = useRef(0);
 

@@ -39,6 +39,22 @@ export const FILE_TREE_DENSITY = 0.9;
 export const LOAD_MORE_BASENAME = "Load more…";
 
 /**
+ * Indentation guides are always on, matching the desktop's solid 1px
+ * hairlines (crates/ui/src/files/tree.rs `with_indent_guides`): the library
+ * ships them as hover-gated ghosts (`opacity: 0` → `.75` while the mouse is
+ * over the tree, `1` only on the focused row's parent rail, with a fade),
+ * which reads as flickering rails while navigating nested folders. The
+ * `unsafe` layer is the library's documented escape hatch and wins over its
+ * base stylesheet regardless of specificity; the escape hatch carries no
+ * version-compatibility guarantee, which the exact pin absorbs.
+ */
+export const TREE_GUIDE_UNSAFE_CSS = `
+[data-item-section="spacing-item"] {
+  opacity: 1;
+  transition: none;
+}`;
+
+/**
  * Targeted remaps on top of the complete set: the Rust build files, the
  * lock files the set has no glyph for, `makefile`/`license` (the set's
  * LICENSE entry is cased for its extension table, so basenames miss), the

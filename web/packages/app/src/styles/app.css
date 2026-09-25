@@ -6998,8 +6998,10 @@ button.files-root-retry:hover {
   /* Selection stays a neutral wash — never the accent (tree.rs:149). */
   --trees-selected-bg-override: rgb(var(--rb-wash) / 0.1);
   --trees-selected-focused-border-color-override: var(--rb-accent);
-  /* Per-row indentation hairlines at the old guides' border tone. */
-  --trees-indent-guide-bg-override: color-mix(in srgb, var(--rb-border) 55%, transparent);
+  /* Per-row indentation hairlines, always on like the desktop's solid
+     guides (tree.rs `with_indent_guides` paints bg(theme.border)) — the
+     opacity gating itself is forced on via TREE_GUIDE_UNSAFE_CSS. */
+  --trees-indent-guide-bg-override: var(--rb-border);
   /* files/git_status.rs decorations: edits warn, adds succeed, deletions
      endanger, untracked warns (the old untracked italics have no variable). */
   --trees-git-modified-color-override: var(--rb-warning);
