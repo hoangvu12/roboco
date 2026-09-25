@@ -1,27 +1,32 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon, type IconName } from "@roboco/icons";
 import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus, useNow } from "../state/hooks";
 import { useFleet, useFleetSnapshot } from "../state/fleet";
+import { encodeScopedId } from "@roboco/engine-client";
 import { ChangesStore, type ChangesSnapshot } from "../state/changes-store";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
 import { changesSurfaceStore, useChangesSurface } from "../state/changes-surface";
-import { reviewCommentStore, useReviewComments } from "../state/review-comments";
+import { useReviewComments } from "../state/review-comments";
 import { rightPaneStore } from "../state/right-pane";
 import { chatPageRow } from "../lib/view";
+import { parseDiffFiles } from "../lib/changes-diff";
+import { registerRobocoDiffsTheme } from "../lib/pierre-theme";
 import {
+  classifyDiffEmpty,
   cleanMessage,
   defaultBaseRef,
+  diffEmptyMessage,
   diffPhase,
   DIFF_SCOPE_CHIPS,
   DIFF_SCOPE_LABELS,
   scopeLabel,
+  type DiffEmptyKind,
   type DiffScope,
   type FileFold,
 } from "../lib/diff";
-import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
 import { useResolvedAppearance } from "../state/appearance";
-import { CommentAdder } from "../components/review-comments/comment-adder";
+import type { Appearance } from "@roboco/theme";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
@@ -51,7 +56,29 @@ import type { ChangeRequestSummary } from "@roboco/proto";
  * absent. It is a documented web-only page-level addition — the desktop
  * never shows a CR inside the Changes tab; its badge lives in the sidebar
  * row and the composer footer, where the web also renders it.
+ *
+ * Ticket 02 (web-pierre-adoption) swapped the hand-rolled diff renderer for
+ * the Pierre diffs library's mixed virtualized code/diff list: the surface
+ * chrome above (banner, scope, base, tools) is untouched, the body renders
+ * `CodeView` items shaped by `lib/changes-diff.ts`, and code colors come
+ * from the registered Roboco theme (`lib/pierre-theme.ts`) generated from
+ * the theme artifact. Ticket 03 restored the review-comment affordances on
+ * top of that: the staged set + the open draft map onto the library's diff
+ * line annotations (the cards and draft re-mount through `renderAnnotation`
+ * at their anchored lines), and the per-line "+" adder rides the library's
+ * built-in gutter utility (`enableGutterUtility` + `onGutterUtilityClick`)
+ * — both flowing through the unchanged comment store.
  */
+
+// Registered once per process; the theme reads live `--rb-*` tokens, so no
+// re-registration ever follows an appearance or variant switch.
+registerRobocoDiffsTheme();
+
+// The lazy boundary (finding 4a): the diff list module pulls the library's
+// CodeView rendering machinery (and, through `renderAnnotation`, the review
+// cards) into its own chunk — it loads on the first diff body mount, not
+// with the main bundle. The fallback is the pane's own preparing look.
+const ChangesDiffList = lazy(() => import("./changes-diff-list"));
 
 export function ChangesSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const surface = useChangesSurface(chatId, surfaceId);
@@ -339,7 +366,15 @@ const NO_CHANGES: ChangesSnapshot = {
   generation: 0,
 };
 
-function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
+/**
+ * The Diff surface's body — everything below the host's toolbar row: the
+ * watch banner, scoped-error notice, the CR card, and the phase-driven
+ * content (the truthful empty states, the clean message, or the diff
+ * viewer). Exported for the mounted empty-state suite
+ * (`tests/changes-empty-states.test.ts`), which drives the classification
+ * through the real store/watch wiring the way `ChangesSurface` mounts it.
+ */
+export function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layout, wrap, folds, scrollEpoch }: ChangesBodyProps) {
   const session = useEngineSession();
   const fleet = useFleet();
   const paired = fleet.engines.length > 0;
@@ -356,6 +391,14 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   const branch = chat?.branch ?? null;
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
+  // The chat row's device id arrives SCOPED through the merged fleet rows
+  // (`scopeChat`), while `status.info.deviceId` is the routed engine's raw
+  // id — the remote-device classification scopes the raw id to the routed
+  // engine before comparing, the composer footer's own idiom.
+  const ownDeviceId = useMemo(
+    () => (session !== null && deviceId !== null ? encodeScopedId(session.engine.baseUrl, deviceId) : null),
+    [session, deviceId],
+  );
 
   const [store, setStore] = useState<ChangesStore | null>(null);
   useEffect(() => {
@@ -440,16 +483,25 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
     return changes.scoped?.diff ?? null;
   }, [changes, scope]);
 
-  const files = useParsedDiff(activeDiff);
+  // The branch scope's fetch base — the store's resolved base when the
+  // capture has landed, the requested one while it is in flight. The parse
+  // key folds it in so two bases never share a parse.
+  const activeBase = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
+
+  // The patch parses once per (checkout, checksum, scope, base) — the
+  // adapter's memoized LRU (the old `useParsedDiff` discipline); the
+  // per-file highlight cache keys ride the same key.
+  const files = parseDiffFiles(activeDiff, scope, activeBase);
   useEffect(() => {
-    changesSurfaceStore.setFiles(files);
+    changesSurfaceStore.setFiles(files.map((file) => file.name));
   }, [files]);
 
   // ── Ticket 23: staged review comments for this chat ─────────────────────
-  // The staged set drives the diff's comment rows; the open draft (with its
-  // live body) interleaves after its anchor line. The comment being edited
-  // is excluded — its card row becomes the draft row (staged_comments,
-  // changes.rs:2587-2597).
+  // The staged set is the annotation source the diff list renders (ticket
+  // 03): the visible set excludes the comment being edited (its card becomes
+  // the draft) and the file-sourced comments (those render in the file
+  // viewer). The useMemo's own object identity keeps the row-list memo
+  // stable between unrelated re-renders.
   const review = useReviewComments(chatId);
   const diffDraft = review.diffDraft;
   const visibleComments = useMemo(
@@ -462,40 +514,6 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   // The store's own object identity keeps the row-list memo stable between
   // unrelated re-renders.
   const reviewDraft = diffDraft;
-  // The fold heights must include comment cards (body_height_with reads the
-  // staged set at toggle time, changes.rs:2324-2329).
-  useEffect(() => {
-    changesSurfaceStore.setComments(visibleComments, reviewDraft);
-  }, [visibleComments, reviewDraft]);
-  const reviewWiring: DiffReviewWiring = {
-    comments: visibleComments,
-    draft: reviewDraft,
-    onDraftBody: (body) => reviewCommentStore.setDiffDraftBody(chatId, body),
-    onDraftCancel: () => reviewCommentStore.cancelDiffDraft(chatId),
-    onDraftCommit: () => reviewCommentStore.commitDiffDraft(chatId),
-    onCardEdit: (id) => reviewCommentStore.editDiffComment(chatId, id),
-    onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
-  };
-  const renderAdder = useCallback(
-    (info: { readonly path: string; readonly side: "old" | "new"; readonly lineNo: number }) => {
-      // The adder needs the file's pre-rename path for the comment's anchor
-      // (open_draft → old_path_of, changes.rs:2757).
-      const oldPath = files.find((file) => file.path === info.path)?.oldPath ?? null;
-      return (
-        <CommentAdder
-          onOpen={() =>
-            reviewCommentStore.openDiffDraft(chatId, {
-              path: info.path,
-              side: info.side,
-              line: info.lineNo,
-              oldPath,
-            })
-          }
-        />
-      );
-    },
-    [chatId, files],
-  );
 
   const error = changes.error;
   // Scoped-fetch failures replace the content area; the two known engine
@@ -522,7 +540,7 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   const fileCount = files.length;
   const additions = activeDiff?.additions ?? 0;
   const deletions = activeDiff?.deletions ?? 0;
-  const baseForLabel = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
+  const baseForLabel = activeBase;
 
   if (session === null || !paired) {
     return (
@@ -550,6 +568,20 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   // `diff_phase(active_diff)` — preparing while the active capture is
   // pending, clean when it is empty, list otherwise.
   const phase = diffPhase(activeDiff);
+  // The preparing phase's truth (ticket 01): a remote-hosted chat, a
+  // cwd-less chat, a non-git folder — everything the eternal spinner used
+  // to hide. Pure classification over the chat row and the watch state;
+  // only the genuine-loading arm keeps the spinner.
+  const emptyKind: DiffEmptyKind | null =
+    phase === "preparing"
+      ? classifyDiffEmpty({
+          chatCwd: cwd,
+          chatDeviceId: chat?.deviceId ?? null,
+          ownDeviceId,
+          checkoutId,
+          watchLoaded: changes.watchLoaded,
+        })
+      : null;
   const crUnsupported = crSnap != null && !crSnap.supported;
 
   return (
@@ -600,25 +632,44 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
 
           <div className="changes-body">
             {phase === "preparing" ? (
-              <div className="changes-empty changes-preparing" role="status">
-                {/* `gradient_spinner("changes-preparing", cell 3.0)` (changes.rs:4831) → a 15px box. */}
-                <MatrixSpinner size={15} />
-                <span>Preparing diff…</span>
-              </div>
+              emptyKind === "loading" || emptyKind === null ? (
+                <div className="changes-empty changes-preparing" role="status">
+                  {/* `gradient_spinner("changes-preparing", cell 3.0)` (changes.rs:4831) → a 15px box. */}
+                  <MatrixSpinner size={15} />
+                  <span>Preparing diff…</span>
+                </div>
+              ) : (
+                <p className="changes-empty" role="status">
+                  {diffEmptyMessage(emptyKind)}
+                </p>
+              )
             ) : phase === "clean" ? (
               <p className="changes-empty">{cleanMessage(scope, baseForLabel)}</p>
             ) : (
-              <DiffView
-                files={files}
-                appearance={appearance}
-                layout={layout}
-                wrap={wrap}
-                folds={folds}
-                onToggleFold={(path) => changesSurfaceStore.toggleFold(chatId, surfaceId, path)}
-                scrollEpoch={scrollEpoch}
-                renderAdder={scope === "commit" ? undefined : renderAdder}
-                review={reviewWiring}
-              />
+              // The library's rendering machinery arrives on its own chunk;
+              // while it streams in the pane keeps its preparing look.
+              <Suspense
+                fallback={
+                  <div className="changes-empty changes-preparing" role="status">
+                    <MatrixSpinner size={15} />
+                    <span>Preparing diff…</span>
+                  </div>
+                }
+              >
+                <ChangesDiffList
+                  chatId={chatId}
+                  surfaceId={surfaceId}
+                  files={files}
+                  folds={folds}
+                  layout={layout}
+                  wrap={wrap}
+                  appearance={appearance}
+                  scrollEpoch={scrollEpoch}
+                  comments={visibleComments}
+                  draft={reviewDraft}
+                  offerAdder={scope !== "commit"}
+                />
+              </Suspense>
             )}
           </div>
         </>

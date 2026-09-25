@@ -1,4 +1,4 @@
-import type { FileTreeModel } from "../lib/file-tree";
+import type { WorkspaceTreeModel } from "../lib/workspace-tree";
 import type { CloseDisposition, FileDocument } from "../lib/file-document";
 
 /**
@@ -18,10 +18,10 @@ import type { CloseDisposition, FileDocument } from "../lib/file-document";
  * re-render without either module importing the other's internals.
  */
 
-/** One open file tab's live state: the document plus its tree sidebar. */
+/** One open file tab's live state: the document plus its tree model. */
 export interface FileSurfaceEntry {
   readonly document: FileDocument;
-  readonly model: FileTreeModel;
+  readonly model: WorkspaceTreeModel;
   readonly path: string;
 }
 

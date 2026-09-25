@@ -68,6 +68,8 @@ import {
 } from "../state/right-pane";
 import { useSidebar } from "../state/sidebar";
 import { useNewThreadBackground } from "../state/appearance";
+import { EditProvider } from "@pierre/diffs/react";
+import { createRobocoFileEditor } from "../lib/file-edit";
 import { SidebarBody } from "./sidebar-body";
 import { SettingsNavBody } from "./settings-nav";
 import { PaneSeam } from "./pane-seam";
@@ -791,7 +793,16 @@ export function AppShell() {
         */}
         {hasPane && (
           <>
-            <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+            {/*
+              The one edit provider (ticket 07): the library's edit-mode
+              factory as shared context above the right-pane surfaces — each
+              editable File surface creates its editor through this context
+              (the per-file state keys live on the individual surfaces, not
+              here). Mounted once, high, because the factory is not per-file.
+            */}
+            <EditProvider createEditor={createRobocoFileEditor}>
+              <RightPane chatId={paneChatId} pane={pane} openWidth={paneOpenWidth} glide={glide} />
+            </EditProvider>
             {/*
               The docked explorer portion of the one right pane
               (`render_files_panel`): independent of the surface host, sharing

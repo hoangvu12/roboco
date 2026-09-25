@@ -24,7 +24,7 @@ import {
   resolveWorkspaceFileLink,
   transcriptAddress,
 } from "../src/lib/links";
-import { sliceTokensForVeil } from "../src/lib/veil";
+import { codeFenceLanguage } from "../src/lib/code-fence";
 import {
   VEIL_CURVE_POW,
   VEIL_EMA_SEED_MS,
@@ -364,38 +364,71 @@ describe("veil", () => {
   });
 });
 
-describe("per-line veil slicing for a code block", () => {
-  it("splits tokens at chunk boundaries in flat-text coordinates", () => {
-    // One line `let x = 1;` (10 chars): tokens "let x" [0,5), " = " [5,8),
-    // "1;" [8,10). The chunk starts mid-token-2 and runs past the line.
-    const tokens = [
-      { text: "let x", role: "keyword" },
-      { text: " = ", role: "operator" },
-      { text: "1;", role: "number" },
-    ];
-    const chunks = [{ start: 6, end: 17, key: "6:1", durationMs: 200 }];
-    const pieces = sliceTokensForVeil(tokens, 0, 10, chunks);
-    expect(pieces.map((piece) => [piece.text, piece.chunk === null ? null : piece.chunk.key])).toEqual([
-      ["let x", null],
-      [" ", null],
-      ["= ", "6:1"],
-      ["1;", "6:1"],
-    ]);
+// ---------------------------------------------------------------------------
+// Code fence language mapping (web-pierre-adoption, ticket 05: the fence
+// label → the library's language id — never an unresolvable id, which
+// would leave the block blank)
+// ---------------------------------------------------------------------------
+
+describe("codeFenceLanguage", () => {
+  it("resolves full language names and common aliases to bundled ids", () => {
+    expect(codeFenceLanguage("rust")).toBe("rust");
+    expect(codeFenceLanguage("Rust")).toBe("rust");
+    expect(codeFenceLanguage("python")).toBe("python");
+    expect(codeFenceLanguage("js")).toBe("javascript");
+    expect(codeFenceLanguage("ts")).toBe("typescript");
+    expect(codeFenceLanguage("py")).toBe("python");
+    expect(codeFenceLanguage("rs")).toBe("rust");
+    expect(codeFenceLanguage("md")).toBe("markdown");
+    expect(codeFenceLanguage("json")).toBe("json");
+    expect(codeFenceLanguage("csharp")).toBe("csharp");
+    expect(codeFenceLanguage("go")).toBe("go");
   });
 
-  it("a line fully outside every chunk stays plain", () => {
-    const tokens = [{ text: "// done", role: "comment" }];
-    const chunks = [{ start: 0, end: 10, key: "0:1", durationMs: 200 }];
-    const pieces = sliceTokensForVeil(tokens, 11, 18, chunks);
-    expect(pieces).toEqual([{ text: "// done", token: tokens[0], chunk: null }]);
+  it("maps the fence-only aliases the extension oracle misses", () => {
+    expect(codeFenceLanguage("bash")).toBe("zsh");
+    expect(codeFenceLanguage("sh")).toBe("zsh");
+    expect(codeFenceLanguage("shell")).toBe("zsh");
+    expect(codeFenceLanguage("svg")).toBe("xml");
   });
 
-  it("a chunk ending exactly at the line end covers the line's tail", () => {
-    const tokens = [{ text: "fn main", role: "keyword" }, { text: "() {}", role: null }];
-    const chunks = [{ start: 7, end: 14, key: "7:1", durationMs: 200 }];
-    const pieces = sliceTokensForVeil(tokens, 0, 14, chunks);
-    expect(pieces.map((piece) => piece.text)).toEqual(["fn main", "() {}"]);
-    expect(pieces.map((piece) => piece.chunk?.key ?? null)).toEqual([null, "7:1"]);
+  it("unknown labels, attributes, and emptiness degrade to plain text", () => {
+    expect(codeFenceLanguage("some-prose-label")).toBe("text");
+    expect(codeFenceLanguage(null)).toBe("text");
+    expect(codeFenceLanguage("")).toBe("text");
+    expect(codeFenceLanguage("  ")).toBe("text");
+    // A fence info string may carry attributes after the language.
+    expect(codeFenceLanguage("rust,ignore")).toBe("rust");
+    expect(codeFenceLanguage("js title=app.tsx")).toBe("javascript");
+    // The library's own plain-text ids pass straight through.
+    expect(codeFenceLanguage("text")).toBe("text");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code blocks through the diffs library (render.rs, ported — ticket 05)
+// ---------------------------------------------------------------------------
+
+describe("code blocks render through the diffs library", () => {
+  it("renders our header chrome around the library's headerless host", () => {
+    const html = renderToString(createElement(CodeBlock, { code: "fn main() {}", language: "Rust" }));
+    // Our chrome: the verbatim fence-info label and the copy/fit actions.
+    expect(html).toContain("md-codehead");
+    expect(html).toContain(">Rust<");
+    expect(html).toContain("md-copy");
+    // The library's host element (a custom element — string-rendered with
+    // our token-mapping class and the inline runtime metrics; the code body
+    // itself renders inside its shadow DOM once mounted).
+    expect(html).toContain("md-code-host");
+    expect(html).toMatch(/--diffs-font-size:12\.5px/);
+    expect(html).toMatch(/--diffs-line-height:18px/);
+  });
+
+  it("the CSS maps the web tokens onto the library host", () => {
+    const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+    const rule = /\.md-code-host\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(rule).toContain("--diffs-font-family: var(--rb-font-mono");
+    expect(rule).toContain("--diffs-tab-size: 4");
   });
 });
 
@@ -553,29 +586,8 @@ describe("parseInline autolink integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Code-block text selection (d353ebbf — render.rs + selection.rs, ported)
+// Code-block text selection (d353ebbf — ported onto the library path in the
+// "code blocks render through the diffs library" suite above: selection of
+// the code body is the library's own behavior inside its shadow DOM; our
+// chrome's contract is the host + token mapping)
 // ---------------------------------------------------------------------------
-
-describe("code-block text selection", () => {
-  it("the code body is selectable: one line span per source line, blank lines kept", () => {
-    const html = renderToString(createElement(CodeBlock, { code: "selectable\n\nsecond", language: null }));
-    // One md-codeline per source line — the blank line keeps its own element
-    // so a selection crossing it contributes its newline (join_spans parity).
-    const lines = html.match(/<span class="md-codeline">/g) ?? [];
-    expect(lines.length).toBe(3);
-    const pre = /<pre class="md-pre">([\s\S]*?)<\/pre>/.exec(html);
-    if (pre === null) {
-      throw new Error("md-pre");
-    }
-    // Strip tags: the browser's native selection joins exactly this text —
-    // "selectable\n\nsecond" (blank line preserved), plus the last line's
-    // trailing terminator.
-    expect(pre[1]!.replace(/<[^>]+>/g, "")).toBe("selectable\n\nsecond\n");
-  });
-
-  it("the CSS pins user-select: text on the code body", () => {
-    const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
-    const rule = /\.md-pre\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
-    expect(rule).toContain("user-select: text");
-  });
-});

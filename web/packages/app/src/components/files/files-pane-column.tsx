@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useEngineSession } from "../../state/session-provider";
 import { WorkspaceFilesClient } from "../../lib/files-client";
-import { FileTreeModel } from "../../lib/file-tree";
+import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { FileTreePanel } from "./file-tree-panel";
 import { rightPaneStore, type ChatPaneState } from "../../state/right-pane";
 import { uiSettings } from "../../state/ui-settings";
@@ -31,14 +31,14 @@ export function FilesPaneColumn({
     () => (session !== null ? new WorkspaceFilesClient(session.client, { chatId }) : null),
     [session, chatId],
   );
-  const [model, setModel] = useState<FileTreeModel | null>(null);
+  const [model, setModel] = useState<WorkspaceTreeModel | null>(null);
 
   useEffect(() => {
     if (client === null || session === null) {
       setModel(null);
       return;
     }
-    const created = new FileTreeModel({
+    const created = new WorkspaceTreeModel({
       client,
       watch: (handlers) => client.watchFiles(session.client, handlers),
       includeIgnored: uiSettings.getSnapshot().filesShowAll,
@@ -74,7 +74,7 @@ export function FilesPaneColumn({
 }
 
 /** Re-render on store bumps and consume the pending reveal when it lands. */
-function useSyncExternalStoreConsume(chatId: string, model: FileTreeModel | null): void {
+function useSyncExternalStoreConsume(chatId: string, model: WorkspaceTreeModel | null): void {
   const [reveal, setReveal] = useState(rightPaneStore.pendingFilesReveal());
   useEffect(() => {
     return rightPaneStore.subscribe(() => {

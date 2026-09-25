@@ -2313,7 +2313,7 @@ function LiveMarkdownRow({ row }: { row: TranscriptRow }) {
   const kind = row.rowKind;
   const block = kind.kind === "liveMarkdown" ? kind.tree.blocks[kind.blockIx]?.block : undefined;
   const veils =
-    block !== undefined && (block.kind === "paragraph" || block.kind === "heading" || block.kind === "codeBlock")
+    block !== undefined && (block.kind === "paragraph" || block.kind === "heading")
       ? block
       : null;
   const flat = veils === null ? null : blockFlatText(veils);
@@ -2345,10 +2345,10 @@ function LiveMarkdownRow({ row }: { row: TranscriptRow }) {
   const codeBlock = block.kind === "codeBlock" ? block : null;
   return (
     <div className="row-md row-md-live">
-      {flat !== null && chunks.length > 0 && veils !== null && (veils.kind === "paragraph" || veils.kind === "heading") ? (
+      {flat !== null && chunks.length > 0 && veils !== null ? (
         <VeiledBlock block={veils} chunks={chunks} onChunkEnd={dropChunk} />
-      ) : codeBlock !== null && flat !== null && chunks.length > 0 ? (
-        <CodeBlock code={codeBlock.code} language={codeBlock.language} chunks={chunks} onChunkEnd={dropChunk} />
+      ) : codeBlock !== null ? (
+        <CodeBlock code={codeBlock.code} language={codeBlock.language} />
       ) : (
         <MarkdownBlockView block={block} />
       )}

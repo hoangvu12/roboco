@@ -13,6 +13,8 @@
   "packageManager": "pnpm@11.17.0",
   "dependencies": {
     "@base-ui/react": "1.8.0",
+    "@pierre/diffs": "1.4.3",
+    "@pierre/trees": "1.0.0-beta.6",
     "@roboco/engine-client": "workspace:*",
     "@roboco/icons": "workspace:*",
     "@roboco/proto": "workspace:*",

@@ -1,21 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Icon } from "@roboco/icons";
 import { FileDocument, type FileDocumentSnapshot } from "../../lib/file-document";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { fileName, isImagePath, isMarkdownPath, readOnlyMessage, truncatedMessage } from "../../lib/files";
-import { FileTreeModel } from "../../lib/file-tree";
+import { registerRobocoDiffsTheme } from "../../lib/pierre-theme";
+import { WorkspaceTreeModel } from "../../lib/workspace-tree";
 import { clipMarkdownBytes, parseMarkdown, type TaskMarker } from "../../lib/markdown-doc";
 import { useResolvedAppearance } from "../../state/appearance";
 import { fileDocuments, type FileSurfaceEntry } from "../../state/file-documents";
-import { reviewCommentStore, useReviewComments } from "../../state/review-comments";
 import { rightPaneStore } from "../../state/right-pane";
 import { onShortcut } from "../../state/shortcuts";
 import { uiSettings, useUiSettings } from "../../state/ui-settings";
 import { useEngineSession } from "../../state/session-provider";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../ui/Tooltip";
-import { CodeView, type CodeReviewWiring } from "./code-view";
 import { FileIcon } from "./file-icon";
-import { EditorContextMenu } from "./editor-context-menu";
 import { ImageView, loadWorkspaceImage, type WorkspaceImageLoad } from "./image-view";
 import { MarkdownView } from "./markdown-view";
 
@@ -29,7 +27,30 @@ import { MarkdownView } from "./markdown-view";
  * watch; Mod-S saves through the shortcut bus; a close of a dirty tab goes
  * through `prepareClose` (allow / pending / blocked) with the
  * Retry/Keep Open/Discard banner instead of discarding edits.
+ *
+ * Web-pierre-adoption (ticket 05, ADR 0008): the code body is the diffs
+ * library's `File` — highlighted, line-numbered, virtualized — fed by the
+ * document machinery (`lib/file-view.ts` maps the read outcome onto
+ * `FileContents`, content hash as the highlight cache key). Ticket 07
+ * restores web file EDITING through the library's edit mode, bridged onto
+ * the same machinery by `lib/file-edit.ts` (the one bridge module): one
+ * `EditProvider` mounted in the app shell supplies the shared editor
+ * factory; the body becomes an editable `File` when the document is
+ * editable (never for read-only documents), `onEditChange` feeds
+ * `document.edit` (dirty + autosave — the textarea's onChange's role), and
+ * `onEditComplete` always accepts and runs the final save, so an edit
+ * session can never silently reject its contents. The editor-side review
+ * wiring (ticket 23's floating cards/drafts over the editable arm) is
+ * still dormant — see the ticket 07 Comments for the gap.
  */
+
+registerRobocoDiffsTheme();
+
+// The lazy boundary (finding 4a): the code body module pulls the library's
+// File rendering machinery into its own chunk — it loads on the first
+// code-body mount, not with the main bundle. The fallback is the viewer's
+// own loading arm ("Loading file…").
+const FileCodeBody = lazy(() => import("./file-code-body"));
 
 export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: string }) {
   const session = useEngineSession();
@@ -63,7 +84,7 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
       autosaveDelayMs: uiSettings.getSnapshot().filesAutosaveDelayMs,
     });
     document.load();
-    const model = new FileTreeModel({
+    const model = new WorkspaceTreeModel({
       client,
       watch: (handlers) => client.watchFiles(session.client, handlers),
       includeIgnored: uiSettings.getSnapshot().filesShowAll,
@@ -152,7 +173,7 @@ function ViewerToolbar({
   const parts = path.split("/");
   return (
     <div className="files-breadcrumb-bar">
-      <FileIcon kind="file" name={path} appearance={appearance} size={14} className="files-breadcrumb-icon" />
+      <FileIcon kind="file" name={path} size={14} className="files-breadcrumb-icon" />
       <Tooltip
         label={path}
         delay={TOOLTIP_VIEW_OPTIONS_MS}
@@ -290,18 +311,30 @@ function TextViewer({
   readonly client: WorkspaceFilesClient | null;
 }) {
   const settings = useUiSettings();
+  // The pre-attach snapshot (no document yet): cached so the store hook's
+  // getSnapshot stays referentially stable while the entry arrives.
+  const pendingSnapshot = useMemo<FileDocumentSnapshot>(
+    () => ({
+      phase: { kind: "loading" },
+      text: "",
+      file: null,
+      editable: false,
+      dirty: false,
+      showMarkdown: isMarkdownPath(path),
+    }),
+    [path],
+  );
   const subscribe = useCallback(
     (listener: () => void) => (doc === null ? () => {} : doc.subscribe(listener)),
     [doc],
   );
   const getSnapshot = useCallback(
-    () => doc?.getSnapshot() ?? { phase: { kind: "loading" as const }, text: "", file: null, editable: false, dirty: false, showMarkdown: isMarkdownPath(path) },
-    [doc, path],
+    () => doc?.getSnapshot() ?? pendingSnapshot,
+    [doc, pendingSnapshot],
   );
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const markdown = isMarkdownPath(path);
   const [confirmingReload, setConfirmingReload] = useState(false);
-  const [markdownFocus, setMarkdownFocus] = useState(false);
 
   // Autosave configuration follows the settings store (desktop
   // set_autosave_enabled / set_autosave_delay_ms fan-out).
@@ -373,30 +406,16 @@ function TextViewer({
     [doc, snapshot.editable, markdownClip.text],
   );
 
-  const showEditor = snapshot.editable && !snapshot.showMarkdown;
-  const editorInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // ── Ticket 23: the editor-side comments (staged per the chat's composer
-  // key; only File-sourced comments on THIS path reach the gutter —
-  // `staged_file_comments`, preview.rs:751-762). The overlay mounts only
-  // over a live editor (read-only documents get none, matching the
-  // desktop's `render_editor_comment_overlays` call site).
-  const stagedReview = useReviewComments(chatId);
-  const editorReview: CodeReviewWiring | null = showEditor
-    ? {
-      comments: stagedReview.comments.filter(
-        (comment) => comment.source.kind === "file" && comment.path === path,
-      ),
-      activeId: stagedReview.activeEditorComment,
-      draft: stagedReview.editorDraft !== null && stagedReview.editorDraft.path === path ? stagedReview.editorDraft : null,
-      onOpenDraft: (line) => reviewCommentStore.openEditorDraft(chatId, path, line),
-      onToggleActive: (id) => reviewCommentStore.toggleEditorComment(chatId, id),
-      onCardEdit: (id) => reviewCommentStore.editEditorComment(chatId, id),
-      onCardRemove: (id) => reviewCommentStore.removeComment(chatId, id),
-      onDraftBody: (body) => reviewCommentStore.setEditorDraftBody(chatId, body),
-      onDraftCancel: () => reviewCommentStore.cancelEditorDraft(chatId),
-      onDraftCommit: () => reviewCommentStore.commitEditorDraft(chatId),
-    }
-    : null;
+  // Web file editing runs through the library's edit mode (ticket 07's
+  // bridge, `lib/file-edit.ts`): the code body below mounts an editable
+  // `File` for documents the phase machine marks editable — the live
+  // change stream feeds `document.edit` (dirty + autosave), and the
+  // always-present completion handler accepts and runs the final save. The
+  // editor-side review wiring (ticket 23's floating cards/drafts over the
+  // editable arm) stays dormant until it is re-mounted over the library's
+  // editor surface — the review store's editor-draft methods and the
+  // editor-comment components keep their suite coverage in the interim.
+
   const toolbar = (
     <ViewerToolbar
       path={path}
@@ -407,10 +426,6 @@ function TextViewer({
         doc !== null
           ? () => {
               doc.setShowMarkdown(!snapshot.showMarkdown);
-              if (snapshot.showMarkdown) {
-                // Turning the preview off focuses the code view.
-                setMarkdownFocus(true);
-              }
             }
           : null
       }
@@ -455,37 +470,27 @@ function TextViewer({
         />
       </div>
     );
-  } else if (showEditor) {
-    body = (
-      <EditorContextMenu textareaRef={editorInputRef} editable>
-        <div className="files-editor-body">
-          <CodeView
-            text={snapshot.text}
-            path={path}
-            editable
-            onChange={(text) => doc?.edit(text)}
-            codeFontSize={settings.codeFontSize}
-            wordWrap={settings.filesWordWrap}
-            autoFocus={markdownFocus}
-            inputRef={editorInputRef}
-            review={editorReview}
-          />
-        </div>
-      </EditorContextMenu>
-    );
   } else {
+    // The code body: the library's file view — EDITABLE through the
+    // library's edit mode when the document accepts edits (ticket 07's
+    // bridge, `lib/file-edit.ts`); read-only documents never mount an edit
+    // session and state their own reason. The truncation banner is
+    // unchanged (a truncated read is never editable).
     const truncated = snapshot.file !== null ? truncatedMessage(snapshot.file) : null;
     body = (
       <div className="files-editor-body">
         {truncated !== null && <div className="files-truncated-banner" role="status">{truncated}</div>}
-        <CodeView
-          text={snapshot.text}
-          path={path}
-          editable={false}
-          onChange={() => {}}
-          codeFontSize={settings.codeFontSize}
-          wordWrap={settings.filesWordWrap}
-        />
+        {/* The library's rendering machinery arrives on its own chunk; while
+            it streams in the viewer keeps its loading arm. */}
+        <Suspense fallback={<p className="files-note files-note-faint">Loading file…</p>}>
+          <FileCodeBody
+            path={path}
+            doc={doc}
+            snapshot={snapshot}
+            wordWrap={settings.filesWordWrap}
+            codeFontSize={settings.codeFontSize}
+          />
+        </Suspense>
       </div>
     );
   }

@@ -10,12 +10,14 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@roboco/icons";
+import type { FileContents } from "@pierre/diffs";
+import { File as LibraryFile, type FileOptions } from "@pierre/diffs/react";
 import type { Block, BlockTree, InlineRun, TableAlign } from "../lib/markdown";
 import { PENDING_LINK_URL, tableColumns } from "../lib/markdown";
 import { graphemeBreaks, resolveWorkspaceFileLink, transcriptAddress } from "../lib/links";
-import { hasSpecificFileIcon, wellBg } from "../lib/file-icons";
-import { highlightCode, splitTokenLines, type SyntaxRole, type SyntaxToken } from "../lib/syntax";
-import { sliceTokensForVeil } from "../lib/veil";
+import { hasSpecificFileIcon, wellBg } from "../lib/tree-icons";
+import { codeFenceLanguage } from "../lib/code-fence";
+import { registerRobocoDiffsTheme, robocoDiffsThemes } from "../lib/pierre-theme";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
 import { codeBlockLineHeight, codeBlockTextSize } from "../lib/typography";
 import { useResolvedAppearance } from "../state/appearance";
@@ -35,7 +37,7 @@ import { Tooltip } from "./ui/Tooltip";
  * Renders the parsed markdown model (`../lib/markdown.ts`) — one React
  * element tree per top-level block, so transcript rows re-render only the
  * block whose bytes changed. Colors come from `--rb-*` custom properties
- * (`md-*`/`tk-*` classes in app.css); no color is hardcoded here.
+ * (`md-*` classes in app.css); no color is hardcoded here.
  *
  * The interactive layer is the web port of the desktop markdown stack's host
  * hooks (`crates/ui/src/markdown/render.rs`): the code header with its
@@ -47,9 +49,11 @@ import { Tooltip } from "./ui/Tooltip";
  * `link_interaction.rs`), images as real media elements
  * (`text_element` :1593-1637), workspace-file links
  * (`workspace_links.rs`, `render.rs:1711-1793`), the desktop's own list
- * markers and task checkbox (:552-690), and the veil slicing for code
+ * markers and task checkbox (:552-690), and the veil slicing for prose
  * (`veil.rs` + `render.rs:2065-2070, 2141-2146`).
  */
+
+registerRobocoDiffsTheme();
 
 // ---------------------------------------------------------------------------
 // Surface context — the host hooks the desktop threads through RenderOptions
@@ -498,7 +502,7 @@ function FileRefWell({ path, children }: { path: string; children: ReactNode }) 
   return (
     <span className="md-fileref">
       <span className="md-fileref-well" style={{ background: wellBg(appearance, false) }}>
-        <FileIcon kind="file" name={path} appearance={appearance} size={14} />
+        <FileIcon kind="file" name={path} size={14} />
       </span>
       <span className="md-fileref-body">{children}</span>
     </span>
@@ -711,34 +715,53 @@ function measureCanvas(): CanvasRenderingContext2D | null {
 
 /**
  * A fenced code block: the 28px header (verbatim fence-info label, the
- * global fit toggle, copy), the 12.5/18 mono body, and — on live rows — the
- * per-line veil fade over freshly appended code.
+ * global fit toggle, copy) — OUR chrome, kept exactly as the markdown
+ * surface shows it today — around the diffs library's headerless `File`
+ * (web-pierre-adoption, ticket 05): `disableFileHeader` + line numbers
+ * off, so the block reads as the compact transcript fence it always was,
+ * with real syntax highlighting from the registered Roboco theme and wrap
+ * driven by the fit toggle.
  *
  * Mermaid fences render as their source, deliberately: the desktop's
  * diagram closure lives in the files preview, and shipping Mermaid.js
  * (megabytes of bundle) into the engine-embedded app for a diagram renderer
  * is judged too heavy — see the ticket's Comments.
+ *
+ * Note the streaming veil is prose-only now: the veil fades the paragraph/
+ * heading tail through `VeiledBlock`, but the library renders the code
+ * body in shadow DOM where per-line fade spans cannot interleave — a
+ * streaming fence appears as it settles (highlighted) instead of
+ * dissolving. ADR 0008 accepts the divergence.
  */
 export function CodeBlock({
   code,
   language,
-  chunks = null,
-  onChunkEnd,
 }: {
   code: string;
   language: string | null;
-  /** Live rows only: fading chunk ranges over the flat code text. */
-  chunks?: readonly VeilChunk[] | null;
-  onChunkEnd?: (key: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const settings = useUiSettings();
   const fit = settings.codeFencesFitContent;
+  const appearance = useResolvedAppearance();
   // Code blocks scale 1:1 off the code font size (render.rs) — the same
   // value the transcript estimator's analytic code-row height reads.
   const codeTextPx = codeBlockTextSize(settings.codeFontSize);
   const codeLinePx = codeBlockLineHeight(settings.codeFontSize);
-  const lines = useMemo(() => splitTokenLines(highlightCode(code, language)), [code, language]);
+  // A fence has no filename: the label IS the language, normalized through
+  // the adapter so the library never gets an unresolvable id.
+  const lang = useMemo(() => codeFenceLanguage(language), [language]);
+  const file = useMemo<FileContents>(() => ({ name: "code", contents: code, lang }), [code, lang]);
+  const options = useMemo<FileOptions<undefined, undefined>>(
+    () => ({
+      theme: robocoDiffsThemes(),
+      themeType: appearance,
+      disableFileHeader: true,
+      disableLineNumbers: true,
+      overflow: fit ? "wrap" : "scroll",
+    }),
+    [appearance, fit],
+  );
 
   const copy = (): void => {
     const clipboard = (navigator as Navigator | undefined)?.clipboard;
@@ -758,13 +781,7 @@ export function CodeBlock({
   };
 
   return (
-    <div
-      className={`md-codeblock${fit ? " md-codeblock-fit" : ""}`}
-      style={{
-        ["--rb-code-size-px" as string]: `${codeTextPx}px`,
-        ["--rb-code-line-height" as string]: `${codeLinePx}px`,
-      }}
-    >
+    <div className="md-codeblock">
       <div className="md-codehead">
         <div className="md-codehead-lang">{language ?? ""}</div>
         <div className="md-codehead-actions">
@@ -793,99 +810,16 @@ export function CodeBlock({
           </button>
         </div>
       </div>
-      <pre className="md-pre">
-        <code>
-          <CodeLines
-            lines={lines}
-            code={code}
-            chunks={chunks}
-            onChunkEnd={onChunkEnd ?? (() => {})}
-          />
-        </code>
-      </pre>
+      <LibraryFile
+        className="md-code-host"
+        style={{
+          ["--diffs-font-size" as string]: `${codeTextPx}px`,
+          ["--diffs-line-height" as string]: `${codeLinePx}px`,
+        }}
+        file={file}
+        options={options}
+      />
     </div>
   );
 }
 
-function CodeLines({
-  lines,
-  code,
-  chunks,
-  onChunkEnd,
-}: {
-  lines: readonly SyntaxToken[][];
-  code: string;
-  chunks: readonly VeilChunk[] | null;
-  onChunkEnd: (key: string) => void;
-}) {
-  // Line offsets over the flat code text (render.rs:2135-2140's scan).
-  let offset = 0;
-  return (
-    <>
-      {lines.map((line, ix) => {
-        const start = offset;
-        const text = line.map((token) => token.text).join("");
-        offset = start + text.length + 1;
-        return (
-          <span key={ix} className="md-codeline">
-            {chunks === null || chunks.length === 0 ? (
-              line.map((token, tokenIx) => (
-                <SyntaxTokenView key={tokenIx} text={token.text} role={token.role} />
-              ))
-            ) : (
-              <VeiledCodeLine
-                tokens={line}
-                lineStart={start}
-                lineEnd={start + text.length}
-                chunks={chunks}
-                onChunkEnd={onChunkEnd}
-              />
-            )}
-            {"\n"}
-          </span>
-        );
-      })}
-    </>
-  );
-}
-
-/** One code line with its tail chunks dissolving in (`slice_spans`). */
-function VeiledCodeLine({
-  tokens,
-  lineStart,
-  lineEnd,
-  chunks,
-  onChunkEnd,
-}: {
-  tokens: readonly SyntaxToken[];
-  lineStart: number;
-  lineEnd: number;
-  chunks: readonly VeilChunk[];
-  onChunkEnd: (key: string) => void;
-}) {
-  return (
-    <>
-      {sliceTokensForVeil(tokens, lineStart, lineEnd, chunks).map((piece, ix) =>
-        piece.chunk === null ? (
-          <SyntaxTokenView key={ix} text={piece.text} role={piece.token.role} />
-        ) : (
-          <span
-            key={ix}
-            className="veil-fade"
-            style={{ animationDuration: `${piece.chunk.durationMs}ms` }}
-            onAnimationEnd={() => onChunkEnd(piece.chunk!.key)}
-          >
-            <SyntaxTokenView text={piece.text} role={piece.token.role} />
-          </span>
-        ),
-      )}
-    </>
-  );
-}
-
-function SyntaxTokenView({ text, role }: { text: string; role: SyntaxRole | null }) {
-  if (role === null) {
-    return <>{text}</>;
-  }
-  return <span className={`tk-${role}`}>{text}</span>;
-}
