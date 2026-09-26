@@ -121,6 +121,10 @@ pub struct Repos {
 }
 
 impl Repos {
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.inner.data_dir
+    }
+
     /// `data_dir` holds `repos.json` + cloned/created repos; the worktree root
     /// comes from `$ROBOCO_WORKTREES_DIR` or `~/.roboco/worktrees`.
     pub fn new(data_dir: &Path, device_id: &str) -> Self {

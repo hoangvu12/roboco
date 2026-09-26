@@ -23,6 +23,7 @@ pub mod doc_host;
 mod http_error;
 pub mod instance_lock;
 pub mod listener;
+mod model_catalogs;
 pub mod pairing;
 pub mod remote_access;
 pub mod profile;
