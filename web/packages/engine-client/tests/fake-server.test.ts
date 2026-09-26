@@ -295,6 +295,38 @@ describe("connection against a scripted fake engine", () => {
   });
 });
 
+describe("unary call deadlines", () => {
+  test("model discovery outlives the default unary timeout, other calls do not", async () => {
+    const fake = new FakeEngine();
+    // Adapter catalog discovery may cold-boot a CLI; it gets the 100s
+    // discovery budget instead of the default unary timeout.
+    fake.calls["ListModels"] = (_params, reply) => {
+      setTimeout(() => reply.ok([{ id: "model", label: "Model" }]), 250);
+    };
+    fake.calls["ListCommands"] = (_params, reply) => {
+      setTimeout(() => reply.ok([]), 250);
+    };
+    fake.calls["Slow"] = (params, reply) => {
+      setTimeout(() => reply.ok(params), 250);
+    };
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    const { client } = newClient(fake, { callTimeoutMs: 60 });
+
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+
+    const models = await client.call("ListModels", { harness: "codex" });
+    expect(models).toEqual([{ id: "model", label: "Model" }]);
+    const commands = await client.call("ListCommands", { harness: "codex" });
+    expect(commands).toEqual([]);
+
+    await expect(client.call("Slow", { value: 1 })).rejects.toMatchObject({
+      kind: "timeout",
+    });
+  });
+});
+
 describe("the backoff curve", () => {
   test("doubles from the initial delay and caps at the maximum", () => {
     const curve = new ReconnectBackoff({ initialMs: 500, maxMs: 15_000, jitterMs: 0 });
