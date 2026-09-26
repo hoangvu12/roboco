@@ -9,6 +9,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().any(|arg| arg == "--managed") {
+        use roboco_harness::Harness;
+        let result = roboco_harness::AcpHarness::antigravity().models().await;
+        println!("managed discovery: {result:?}");
+        return;
+    }
     let server = std::env::var_os("ANTIGRAVITY_ACP_EXECUTABLE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
