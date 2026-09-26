@@ -42,6 +42,17 @@ for line in sys.stdin:
         prompt = frame["params"]["prompt"][0]["text"]
         if prompt == "idle-pid":
             update(str(os.getpid()))
+        if prompt in ("wedge", "late-settle"):
+            pending = ident
+            if prompt == "late-settle":
+                def late_response(_signal, _frame):
+                    emit({"id": pending, "result": {"stopReason": "end_turn", "usage": {
+                        "inputTokens": 900, "outputTokens": 900}}})
+                signal.signal(signal.SIGTERM, late_response)
+            else:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            update("ready")
+            continue
         if prompt == "foreign":
             pending = ident
             emit({"method": "_x.ai/session/prompt_complete", "params": {"sessionId": "child", "stopReason": "end_turn"}})

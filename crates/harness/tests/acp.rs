@@ -1573,3 +1573,31 @@ async fn dropping_idle_stream_reaps_warm_adapter() {
         while path.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("dropped consumer reaps the idle child");
 }
+
+#[tokio::test]
+async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
+    for adapter in [AcpHarness::grok(), AcpHarness::pi(), AcpHarness::antigravity()] {
+        let adapter = adapter.with_executable(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+        ).with_graces(Duration::from_millis(50), Duration::from_millis(50));
+        for scenario in ["wedge", "late-settle"] {
+            let (ctl, _steer, token) = controls();
+            let mut req = request(scenario);
+            req.model = None;
+            req.cwd = std::env::temp_dir().display().to_string();
+            let mut stream = adapter.run(req, ctl).await.unwrap();
+            let mut events = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(event) = stream.next().await {
+                    let event = event.unwrap();
+                    if matches!(&event, AgentEvent::TextDelta { text } if text == "ready") {
+                        token.cancel();
+                    }
+                    assert!(!matches!(event, AgentEvent::Usage { .. }), "late usage in {scenario}");
+                    events.push(event);
+                }
+            }).await.unwrap();
+            assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{scenario}");
+        }
+    }
+}
