@@ -43,7 +43,19 @@ try {
     $manifest = Invoke-RestMethod "$releases/manifest.json"
     $version = [string]$manifest.version
     if (-not $version) { throw 'manifest.json has no version.' }
-    $zip = "roboco-$version-windows-x86_64.zip"
+    # Native aarch64 packages exist only since the ARM64 release matrix;
+    # pick the native zip on ARM64 Windows when the release carries it, else
+    # fall back to the x86_64 build, which runs (and self-updates) under x64
+    # emulation. PROCESSOR_ARCHITEW6432 covers 32-bit shells on ARM64 hosts.
+    $arch = 'x86_64'
+    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+        if ($manifest.files."roboco-$version-windows-aarch64.zip".sha256) {
+            $arch = 'aarch64'
+        } else {
+            Write-Host 'This release has no native aarch64 package; installing the x86_64 build (it runs under x64 emulation).'
+        }
+    }
+    $zip = "roboco-$version-windows-$arch.zip"
     $expected = $manifest.files.$zip.sha256
     if (-not $expected) { throw "manifest.json has no SHA-256 for $zip." }
 
