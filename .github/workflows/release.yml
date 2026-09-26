@@ -3,7 +3,7 @@ name: release
 # Build release artifacts for Roboco's platforms (Windows + Linux) and
 # publish them to a GitHub Release:
 #   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
-#   - Windows portable zip (x86_64) via scripts/package-windows.ps1
+#   - Windows portable zips (x86_64 + aarch64) via scripts/package-windows.ps1
 #   - scripts/install-windows.ps1, published as `install.ps1` (the Windows
 #     one-liner: irm .../releases/latest/download/install.ps1 | iex)
 # The in-app updater reads back from this repo's GitHub Releases.
@@ -66,8 +66,19 @@ jobs:
           if-no-files-found: error
 
   windows:
-    runs-on: windows-2022
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022 # x86_64
+            timeout: 90
+          - runner: windows-11-arm # aarch64
+            # More headroom: slower compiles, and the aarch64 rust-cache
+            # starts cold (rust-cache keys include the runner arch, so the
+            # two entries never share cache entries).
+            timeout: 150
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
     defaults:
       run:
         shell: pwsh
@@ -75,9 +86,27 @@ jobs:
       - uses: actions/checkout@v4
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Ensure clang for aarch64 ring builds
+        # ring 0.17 has no MSVC assembly path for aarch64-pc-windows-msvc,
+        # so native ARM64 builds need LLVM's clang on PATH (see
+        # docs/reference/windows-development.md). The arm64 runner image
+        # ships LLVM; choco is the fallback if PATH differs.
+        if: runner.arch == 'ARM64'
+        run: |
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            choco install llvm -y --no-progress
+          }
+          clang --version | Select-Object -First 1
       - name: Locate Windows SDK shader compiler
         run: |
-          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+          # fxc compiles GPUI's shaders and is host-architecture neutral;
+          # accept the SDK's x64 or arm64 build — the arm64 image may only
+          # carry one of them.
+          $patterns = @(
+            "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe",
+            "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/arm64/fxc.exe"
+          )
+          $fxc = Get-ChildItem $patterns -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
@@ -124,7 +153,8 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           ls dist/
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
-              windows-x86_64.zip windows-x86_64.exe; do
+              windows-x86_64.zip windows-x86_64.exe \
+              windows-aarch64.zip windows-aarch64.exe; do
             test -f "dist/roboco-$ver-$platform" \
               || { echo "missing artifact for tag v$ver: $platform — check builds and Cargo.toml version"; exit 1; }
           done
