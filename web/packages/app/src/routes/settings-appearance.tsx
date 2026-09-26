@@ -9,14 +9,8 @@ import { Icon } from "@roboco/icons";
 import { PickerCard } from "../components/ui/PickerCard";
 import { MenuHeading, MenuRow } from "../components/ui/MenuRows";
 import { Dialog, BtnPrimary } from "../components/ui/Dialog";
-import {
-  RbSelect,
-  RbSelectItem,
-  RbSelectPopup,
-  RbSelectPortal,
-  RbSelectPositioner,
-  RbSelectTrigger,
-} from "../components/base/select";
+import { RbSelect, RbSelectItem, RbSelectPopup, RbSelectPortal, RbSelectPositioner, RbSelectTrigger } from "../components/base/select";
+import { RbSwitch } from "../components/base/switch";
 import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
 import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
@@ -347,6 +341,7 @@ export function AppearanceSettingsPage() {
       <MonoFontBlock kind="terminal" settings={settings} />
       <MonoFontBlock kind="code" settings={settings} />
       <ConversationWidthBlock settings={settings} />
+      <CompactModeBlock settings={settings} />
 
       {(libraryError ?? libraryWarning) !== null && (
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
@@ -657,6 +652,39 @@ function FontSizeSelect(props: {
         </RbSelectPositioner>
       </RbSelectPortal>
     </RbSelect>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Compact transcript mode (appearance.rs `Compact mode` row, upstream 94dbfc6d)
+// ---------------------------------------------------------------------------
+
+/**
+ * A boolean switch on the conversation column: fold a turn's thinking,
+ * tool calls, and narration into one collapsed work row — only the reply
+ * shows, and settled turns carry "Worked for Xm Ys".
+ */
+function CompactModeBlock(props: {
+  readonly settings: ReturnType<typeof useUiSettings>;
+}) {
+  const enabled = props.settings.transcriptCompactMode;
+  return (
+    <section className="settings-card">
+      <div className="settings-row">
+        <RowTile icon="eyeClosed" />
+        <div className="settings-row-main">
+          <span className="settings-row-title">Compact mode</span>
+          <span className="settings-row-meta">
+            Fold a turn's thinking, tool calls, and narration into one collapsed row — only the reply shows.
+          </span>
+        </div>
+        <RbSwitch
+          checked={enabled}
+          onCheckedChange={() => uiSettings.updateImmediate({ transcriptCompactMode: !enabled })}
+          aria-label="Compact mode"
+        />
+      </div>
+    </section>
   );
 }
 

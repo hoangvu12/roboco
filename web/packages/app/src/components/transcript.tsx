@@ -96,7 +96,7 @@ import { MessageBadges } from "./badges";
 import { MessageRail } from "./message-rail";
 import { StickController } from "./stick-controller";
 import { ToolGroupRow, type SubagentOpen } from "./tool-group";
-import { ToolGroupMotionStore } from "../lib/tool-motion";
+import { ToolGroupMotionStore, FOLD_TWEEN_WINDOW_MS, TOOL_FOLD_MS, toolFoldProgress, toolRevealClock } from "../lib/tool-motion";
 import { UserAttachments } from "./attachments/user-attachments";
 import { MatrixSpinner } from "./glyph-spinner";
 import { WorkingTrailer, type WorkingTrailerState } from "./working-trailer";
@@ -290,10 +290,16 @@ function TranscriptSurface({
   // `parse_for_row` state: incremental while live, handoff on settle, cache
   // for settled trees. Bounded like the entry cache below.
   const parseStateRef = useRef(new Map<string, { text: string; live: boolean; tree: ReturnType<typeof parseMarkdown> }>());
-  const entryRowsCacheRef = useRef(new Map<string, { entry: SessionMessageEntry; rows: TranscriptRow[] }>());
+  const entryRowsCacheRef = useRef(
+    new Map<string, { entry: SessionMessageEntry; compact: boolean; rows: TranscriptRow[] }>(),
+  );
 
   // Rows are rebuilt per entry only when the entry's identity changes; the
-  // parse state keeps settled markdown trees shared across stream ticks.
+  // parse state keeps settled markdown trees shared across stream ticks. A
+  // compact-mode flip rebuilds every row (the mode keys the cache) — the
+  // row ids and fingerprints re-splice into the virtualized list, just like
+  // the desktop's render poll.
+  const compactMode = useUiSettings().transcriptCompactMode;
   const rows = useMemo(() => {
     const cache = entryRowsCacheRef.current;
     const parseState = parseStateRef.current;
@@ -307,11 +313,13 @@ function TranscriptSurface({
     const out: TranscriptRow[] = [];
     for (const entry of snapshot.entries) {
       let hit = cache.get(entry.id);
-      if (hit === undefined || hit.entry !== entry) {
+      if (hit === undefined || hit.entry !== entry || hit.compact !== compactMode) {
         hit = {
           entry,
+          compact: compactMode,
           rows: rowsForEntry(entry, {
             parse: (key, text, live) => parseForRow(parseState, key, text, live).tree,
+            compact: compactMode,
           }),
         };
         cache.set(entry.id, hit);
@@ -319,7 +327,7 @@ function TranscriptSurface({
       out.push(...hit.rows);
     }
     return out;
-  }, [snapshot.entries]);
+  }, [snapshot.entries, compactMode]);
 
   // The optimistic echo overlay (`AppState.echoes`). Each still-unconfirmed
   // send renders as an ORDINARY user bubble at the end of the list — the
@@ -433,7 +441,7 @@ function TranscriptSurface({
       if (baseline.provenance === "reset") {
         chatArrival.arm(performance.now());
       }
-      toolMotion.sync(baselineRows(mountBaselineEntriesRef.current ?? baseline.entries), true);
+      toolMotion.sync(baselineRows(mountBaselineEntriesRef.current ?? baseline.entries, compactMode), true);
       mountBaselineEntriesRef.current = null;
       toolMotion.sync(rows, false);
       return;
@@ -442,7 +450,7 @@ function TranscriptSurface({
     // for its reset): rows are kept through it, and a genuinely empty pending
     // frame (a fresh mount) is harmless.
     toolMotion.sync(rows, false, snapshot.replay === "pending");
-  }, [rows, snapshot.baseline, snapshot.replay, toolMotion]);
+  }, [rows, snapshot.baseline, snapshot.replay, toolMotion, compactMode]);
 
   const allRows = useMemo(() => {
     if (pendingSends.length === 0) {
@@ -588,10 +596,10 @@ function echoEntry(send: PendingSend, deviceId: string | null): SessionMessageEn
  */
 const BASELINE_PARSE_TREE = parseMarkdown("", false);
 
-function baselineRows(entries: readonly SessionMessageEntry[]): TranscriptRow[] {
+function baselineRows(entries: readonly SessionMessageEntry[], compact: boolean): TranscriptRow[] {
   const out: TranscriptRow[] = [];
   for (const entry of entries) {
-    out.push(...rowsForEntry(entry, { parse: () => BASELINE_PARSE_TREE }));
+    out.push(...rowsForEntry(entry, { parse: () => BASELINE_PARSE_TREE, compact }));
   }
   return out;
 }
@@ -644,7 +652,7 @@ interface CollapseScroll {
 }
 
 function TranscriptScroller({
-  rows,
+  rows: allRows,
   ticks,
   streaming,
   loaded,
@@ -696,12 +704,21 @@ function TranscriptScroller({
   // rows in place and unmounted rows fall back to estimates until remount.
   const measuredWidthRef = useRef(transcriptWidth);
   const anchorRef = useRef<{ id: string; offset: number; top: number } | null>(null);
-  const rowsRef = useRef(rows);
+  const rowsRef = useRef(allRows);
   const positionsRef = useRef<readonly number[]>([]);
   const rowHeightsRef = useRef<readonly number[]>([]);
   const measuredTextRef = useRef(new Map<string, number>());
   const holdTimersRef = useRef(new Map<string, number>());
   const collapseScrollRef = useRef<CollapseScroll | null>(null);
+  /**
+   * Compact work folds: the NATURAL (unclipped) inner heights of the body
+   * rows — the web peer of the desktop's prepaint height probes
+   * (transcript.rs `compact_fold_heights`), written by the inner observer
+   * without notifying so the fold's TOOL_FOLD budget never reads its own
+   * clipped output back.
+   */
+  const compactNaturalsRef = useRef(new Map<string, number>());
+  const compactInnerObserverRef = useRef<ResizeObserver | null>(null);
   /**
    * Ticket 71 — the tool-fold viewport compensation: the clicked header (an
    * explicit fold) or the top visible row (an automatic closure while no
@@ -727,6 +744,33 @@ function TranscriptScroller({
       ? globalThis.matchMedia("(prefers-reduced-motion: reduce)")
       : null;
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
+
+  // ── Compact work folds (transcript.rs rows.retain + compact_body_height) ─
+  // A compact-fold body row renders only while its fold is OPEN or its close
+  // tween is still in flight; a closed fold's body drops from the virtualized
+  // list entirely (the heights pruned with it, so a reopen starts from
+  // estimates until the rows remount). While a tween runs, each body row
+  // clips against the fold's shared TOOL_FOLD height budget — `fold.from`
+  // lerped toward the rows' natural total (open) or zero (closed) — so the
+  // work group opens and closes exactly like an ordinary tool fold's single
+  // overflow-hidden container, including reversals (a mid-tween click seeds
+  // `from` with the budget in flight).
+  const renderNow = performance.now();
+  const compactReduced = reduced?.matches === true;
+  const compactFoldLive = (workId: string): boolean => {
+    const fold = toolMotion.groupFold(workId);
+    if (fold === null) {
+      return false;
+    }
+    if (fold.open === true) {
+      return true;
+    }
+    return fold.toggledAt !== null && renderNow - fold.toggledAt < FOLD_TWEEN_WINDOW_MS;
+  };
+  const hasCompactRows = allRows.some((row) => row.compactFold !== null);
+  const rows: readonly TranscriptRow[] = hasCompactRows
+    ? allRows.filter((row) => row.compactFold === null || compactFoldLive(row.compactFold))
+    : allRows;
 
   // The engine connection drives the offline strip (§2.1); a null status is
   // the pre-first-connect state, which reads as "Reconnecting…".
@@ -820,6 +864,111 @@ function TranscriptScroller({
     [rows, alignTop],
   );
 
+  // ── Compact work folds: clip geometry (transcript.rs :2613-2655) ─────────
+  // Each retained body row clips to `budget − prefix` of its contiguous run
+  // (`compact_fold_geometry`), with naturals from the inner-height probes
+  // (unmeasured rows report 0 and stay clipped for that one pass — they
+  // never flash open at full height). The shell row carries the fold's
+  // current budget so a mid-tween toggle seeds `from` with the budget in
+  // flight.
+  const compactClips = new Map<string, number>();
+  const compactBodyBudgets = new Map<string, number>();
+  const compactTweenActive =
+    !compactReduced &&
+    rows.some((row) => {
+      if (row.compactFold === null) {
+        return false;
+      }
+      const fold = toolMotion.groupFold(row.compactFold);
+      return fold?.toggledAt !== null && renderNow - (fold?.toggledAt ?? renderNow) < TOOL_FOLD_MS;
+    });
+  {
+    // Contiguous runs per work id (the inner rows splice as one block).
+    let run: { workId: string; start: number } | null = null;
+    let ix = 0;
+    while (ix < rows.length) {
+      const workId = rows[ix]!.compactFold;
+      if (workId === null) {
+        run = null;
+        ix++;
+        continue;
+      }
+      if (run === null || run.workId !== workId) {
+        run = { workId, start: ix };
+      }
+      // Extend the run to its last contiguous member.
+      let end = ix;
+      while (end + 1 < rows.length && rows[end + 1]!.compactFold === workId) {
+        end++;
+      }
+      const naturals: number[] = [];
+      let total = 0;
+      for (let j = run.start; j <= end; j++) {
+        // Root-unit naturals: the inner content height plus the row's own gap
+        // (the clip sets the ROOT border-box height, padding included).
+        const natural = (compactNaturalsRef.current.get(rows[j]!.id) ?? 0) + gapFor(j);
+        naturals.push(natural);
+        total += natural;
+      }
+      const fold = toolMotion.groupFold(workId);
+      const open = fold?.open ?? false;
+      const target = open ? total : 0;
+      let budget = target;
+      const at = fold?.toggledAt ?? null;
+      if (at !== null && !compactReduced && renderNow - at < TOOL_FOLD_MS) {
+        const t = toolFoldProgress(fold, renderNow) ?? 0;
+        budget = (fold?.from ?? 0) * (1 - t) + target * t;
+      }
+      compactBodyBudgets.set(workId, budget);
+      let prefix = 0;
+      for (let j = run.start; j <= end; j++) {
+        const own = naturals[j - run.start]!;
+        compactClips.set(rows[j]!.id, Math.min(Math.max(budget - prefix, 0), own));
+        prefix += own;
+      }
+      ix = end + 1;
+    }
+  }
+  // The body rows' inner-height probe (the desktop's prepaint observer):
+  // mounted compact-fold rows report their natural content height without
+  // notifying, so the budget reads unclipped values even mid-tween.
+  const registerCompactInner = useCallback((id: string, el: HTMLDivElement | null) => {
+    if (compactInnerObserverRef.current === null) {
+      if (typeof ResizeObserver === "undefined") {
+        return;
+      }
+      compactInnerObserverRef.current = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const el = entry.target as HTMLDivElement;
+          const id = el.dataset["rid"];
+          if (id === undefined) {
+            continue;
+          }
+          const height = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+          const prev = compactNaturalsRef.current.get(id);
+          if (prev === undefined || Math.abs(prev - height) > 0.5) {
+            compactNaturalsRef.current.set(id, height);
+            bumpMeasure((tick) => tick + 1);
+          }
+        }
+      });
+    }
+    const observer = compactInnerObserverRef.current;
+    if (el === null) {
+      return;
+    }
+    observer.observe(el);
+    return () => observer.unobserve(el);
+  }, []);
+  // Keep frames pumping while a compact fold tweens (the clips recompute per
+  // frame against the shared budget).
+  useEffect(() => {
+    if (!compactTweenActive) {
+      return;
+    }
+    return toolRevealClock.subscribe(() => bumpMeasure((tick) => tick + 1));
+  }, [compactTweenActive]);
+
   // The own-turn reservation: while a runway is live the LAST row has a
   // minimum height, so the prompt can sit at the viewport top with the
   // scroll ending at the app's bottom (`set_tail_reservation`; the floor is
@@ -872,9 +1021,12 @@ function TranscriptScroller({
     positions[ix] = total;
     const gap = gapFor(ix);
     const isLast = ix === lastIx;
+    const clip = compactClips.get(rows[ix]!.id);
     const natural =
-      heights.get(rows[ix]!.id) ??
-      estimateRowHeight(rows[ix]!, estimateCtx) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
+      clip !== undefined
+        ? clip
+        : heights.get(rows[ix]!.id) ??
+          estimateRowHeight(rows[ix]!, estimateCtx) + gap + (isLast ? lastRowPad : 0) + (isLast && trailerLive ? TRAILER_ESTIMATE_HEIGHT : 0);
     naturalHeights[ix] = natural;
     rowHeights[ix] = natural;
     total += natural;
@@ -1649,6 +1801,8 @@ function TranscriptScroller({
               bottomPad={isLast ? lastRowPad : 0}
               register={registerRow}
               onHover={setHoveredEntry}
+              clipHeight={compactClips.get(row.id)}
+              registerInner={row.compactFold !== null ? registerCompactInner : undefined}
             >
               <RowContent
                 row={row}
@@ -1664,6 +1818,7 @@ function TranscriptScroller({
                 onHoldTimer={onHoldTimer}
                 onToolFoldNav={onToolFoldNav}
                 reduced={reduced?.matches === true}
+                compactBodyHeight={row.compactFold !== null ? compactBodyBudgets.get(row.compactFold) : undefined}
               />
               {isLast && <WorkingTrailer state={trailer} />}
             </RowShell>
@@ -1804,6 +1959,12 @@ export function estimateRowHeight(
       return 30;
     }
     case "toolGroup": {
+      if (kind.compactShell) {
+        // A compact work shell is its 26px header + 2px top pad — the body
+        // is the sibling rows the fold clips (they keep their own
+        // estimates).
+        return 28;
+      }
       if (!toolGroupCollapses(kind.tools)) {
         return chipsHeight(kind.tools.length);
       }
@@ -1876,6 +2037,8 @@ function RowShell({
   bottomPad,
   register,
   onHover,
+  clipHeight,
+  registerInner,
   children,
 }: {
   row: TranscriptRow;
@@ -1883,9 +2046,19 @@ function RowShell({
   bottomPad: number;
   register: (id: string, el: HTMLDivElement | null) => void;
   onHover: Dispatch<SetStateAction<{ rowId: string; entryId: string } | null>>;
+  /** Compact work fold: the row's clipped root height (border-box). */
+  clipHeight?: number;
+  /** The compact-fold inner-height probe registration (naturals). */
+  registerInner?: (id: string, el: HTMLDivElement | null) => (() => void) | void;
   children: ReactNode;
 }) {
   const ref = useCallback((el: HTMLDivElement | null) => register(row.id, el), [register, row.id]);
+  const innerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      registerInner?.(row.id, el);
+    },
+    [registerInner, row.id],
+  );
   return (
     // Wide gutters (roboco `px-4 @3xl:px-12`) around the configurable
     // conversation-width column; the last row's bottom pad clears the chrome
@@ -1894,7 +2067,11 @@ function RowShell({
       ref={ref}
       data-rid={row.id}
       className="trow"
-      style={{ paddingTop: gap, paddingBottom: bottomPad > 0 ? bottomPad : undefined }}
+      style={{
+        paddingTop: gap,
+        paddingBottom: bottomPad > 0 ? bottomPad : undefined,
+        ...(clipHeight !== undefined ? { height: clipHeight, overflow: "hidden" } : undefined),
+      }}
       onMouseEnter={() => onHover({ rowId: row.id, entryId: row.entryId })}
       onMouseLeave={() =>
         // Only the row that OWNS the current reveal may clear it — a stale
@@ -1903,7 +2080,9 @@ function RowShell({
         onHover((current) => (current !== null && current.rowId === row.id ? null : current))
       }
     >
-      <div className="trow-col">{children}</div>
+      <div className="trow-col" ref={innerRef} data-rid={row.id}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -1922,6 +2101,7 @@ function RowContent({
   onHoldTimer,
   onToolFoldNav,
   reduced,
+  compactBodyHeight,
 }: {
   row: TranscriptRow;
   hovered: boolean;
@@ -1936,6 +2116,8 @@ function RowContent({
   onHoldTimer: (rowId: string, timer: number) => void;
   onToolFoldNav?: (nav: { rowId: string; header: HTMLElement }) => void;
   reduced: boolean;
+  /** The compact work fold's current body-height budget (shell rows only). */
+  compactBodyHeight?: number;
 }) {
   const kind = row.rowKind;
   return (
@@ -1965,6 +2147,9 @@ function RowContent({
           rowId={row.id}
           tools={kind.tools}
           autoOpen={kind.autoOpen}
+          workedSecs={kind.workedSecs}
+          compactShell={kind.compactShell}
+          compactBodyHeight={compactBodyHeight}
           chatId={docId}
           motion={toolMotion}
           onOpenSubagent={onOpenSubagent ?? (() => {})}

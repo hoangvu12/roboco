@@ -272,6 +272,13 @@ export interface UiSettings {
    * the composer's width is independent. Snapped to the 16px ladder.
    */
   readonly transcriptWidth: number;
+  /**
+   * Compact transcript mode (`transcript_compact_mode`, default off): every
+   * working step of a turn folds into one collapsed work accordion with the
+   * reply text left visible, and settled turns carry "Worked for Xm Ys"
+   * from the doc's measured `durationMs`.
+   */
+  readonly transcriptCompactMode: boolean;
   readonly filesAutosaveEnabled: boolean;
   readonly filesAutosaveDelayMs: number;
   readonly filesWordWrap: boolean;
@@ -381,6 +388,7 @@ export function defaultUiSettings(): UiSettings {
     diffWrap: false,
     codeFencesFitContent: false,
     transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT,
+    transcriptCompactMode: false,
     filesAutosaveEnabled: false,
     filesAutosaveDelayMs: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     filesWordWrap: false,
@@ -717,6 +725,7 @@ export function healUiSettings(value: unknown): UiSettings {
     diffWrap: bool(raw.diffWrap, false),
     codeFencesFitContent: bool(raw.codeFencesFitContent, false),
     transcriptWidth: normalizeTranscriptWidth(raw.transcriptWidth),
+    transcriptCompactMode: bool(raw.transcriptCompactMode, false),
     filesAutosaveEnabled: bool(raw.filesAutosaveEnabled, false),
     filesAutosaveDelayMs: clampOr(
       raw.filesAutosaveDelayMs,
