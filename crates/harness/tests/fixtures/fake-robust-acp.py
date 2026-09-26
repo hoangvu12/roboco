@@ -2,6 +2,8 @@
 """ACP wire edge cases shared by adapter specifications."""
 import json
 import sys
+import signal
+import os
 
 
 def emit(frame):
@@ -38,6 +40,8 @@ for line in sys.stdin:
         emit({"id": ident, "result": {"sessionId": "parent"}})
     elif method == "session/prompt":
         prompt = frame["params"]["prompt"][0]["text"]
+        if prompt == "idle-pid":
+            update(str(os.getpid()))
         if prompt == "foreign":
             pending = ident
             emit({"method": "_x.ai/session/prompt_complete", "params": {"sessionId": "child", "stopReason": "end_turn"}})
