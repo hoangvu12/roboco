@@ -501,6 +501,39 @@ export function diffPhase(resolved: { readonly patch: string; readonly files: re
 }
 
 /**
+ * Ticket 12 (upstream a456eb09): the destructive request the Changes pane's
+ * trash button would issue — `null` disarms the button. The engine
+ * re-verifies everything (checksum, checkout, live agents) before any
+ * mutation; this only decides whether the button is armed: full
+ * (non-truncated), non-empty working-tree snapshots only.
+ */
+export interface DiscardWorkingTreeTarget {
+  readonly chatId: string;
+  readonly checkoutId: string;
+  readonly checksum: string;
+  readonly fileCount: number;
+}
+
+export function discardWorkingTreeTarget(
+  scope: DiffScope,
+  resolved: { readonly truncated: boolean; readonly files: readonly unknown[]; readonly patch: string; readonly checkoutId: string; readonly checksum: string } | null,
+  chat: { readonly id: string } | null,
+): DiscardWorkingTreeTarget | null {
+  if (scope !== "workingTree" || resolved === null || chat === null) {
+    return null;
+  }
+  if (resolved.truncated || (resolved.files.length === 0 && resolved.patch.trim().length === 0)) {
+    return null;
+  }
+  return {
+    chatId: chat.id,
+    checkoutId: resolved.checkoutId,
+    checksum: resolved.checksum,
+    fileCount: resolved.files.length,
+  };
+}
+
+/**
  * The single-frame arm of the desktop's `apply_diff_frame`: an unknown
  * checkout appends, a known one upserts in place, and an identical frame is
  * a no-op (identity-stable, so `getSnapshot` never churns). List frames

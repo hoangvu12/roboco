@@ -127,6 +127,11 @@ export interface DiffViewProps {
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
   /** Ticket 23's comment rows + actions. */
   readonly review?: DiffReviewWiring | null;
+  /**
+   * Ticket 12 (upstream c2230f07): fires when a file header's browser button
+   * is clicked — the POST-rename path, for opening in the Files pane.
+   */
+  readonly onOpenFile?: (path: string) => void;
 }
 
 /**
@@ -163,6 +168,7 @@ export function DiffView({
   onLineHover,
   renderAdder,
   review,
+  onOpenFile,
 }: DiffViewProps) {
   const scrollRef = useRef(new FilePlaneScroll());
   const scroll = scrollRef.current;
@@ -184,6 +190,7 @@ export function DiffView({
       onLineHover={onLineHover}
       renderAdder={renderAdder}
       review={review}
+      onOpenFile={onOpenFile}
     />
   );
 }
@@ -199,9 +206,10 @@ interface DiffSurfaceProps {
   readonly onLineHover?: LineHoverHandler;
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
   readonly review?: DiffReviewWiring | null;
+  readonly onOpenFile?: (path: string) => void;
 }
 
-function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review }: DiffSurfaceProps) {
+function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scroll, onLineHover, renderAdder, review, onOpenFile }: DiffSurfaceProps) {
   const emptyFolds = useRef(EMPTY_FOLDS).current;
   const foldMap = folds ?? emptyFolds;
   // The code font size drives the diff's text and row geometry together
@@ -239,6 +247,7 @@ function DiffSurface({ files, appearance, layout, wrap, folds, onToggleFold, scr
       review={review}
       lineHeight={lineHeight}
       textSize={textSize}
+      onOpenFile={onOpenFile}
     />
   );
 }
@@ -326,9 +335,11 @@ interface ScrollerProps {
   readonly lineHeight: number;
   /** The code-size-scaled diff text size (`diff_text_size`). */
   readonly textSize: number;
+  /** Ticket 12: the file header's open-in-file-browser callback. */
+  readonly onOpenFile?: (path: string) => void;
 }
 
-function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight, textSize }: ScrollerProps) {
+function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight, textSize, onOpenFile }: ScrollerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef(new Map<string, number>());
   const positionsRef = useRef<readonly number[]>([]);
@@ -464,6 +475,7 @@ function DiffScroller({ rows, appearance, layout, wrap, onToggleFold, scroll, ho
                   renderAdder={renderAdder}
                   review={review}
                   lineHeight={lineHeight}
+                  onOpenFile={onOpenFile}
                 />
               </div>
             );
@@ -501,9 +513,10 @@ interface RowContentProps {
   readonly renderAdder?: (info: LineHoverInfo) => ReactNode;
   readonly review?: DiffReviewWiring | null;
   readonly lineHeight: number;
+  readonly onOpenFile?: (path: string) => void;
 }
 
-function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight }: RowContentProps) {
+function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover, onHover, renderAdder, review, lineHeight, onOpenFile }: RowContentProps) {
   switch (row.kind) {
     case "fileHeader":
       return (
@@ -513,6 +526,7 @@ function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover
           expanded={row.expanded}
           animating={row.animating}
           onToggle={() => onToggleFold?.(row.file.path)}
+          onOpenFile={onOpenFile}
         />
       );
     case "hunkHeader":
@@ -592,7 +606,7 @@ function RowContent({ row, appearance, layout, wrap, onToggleFold, scroll, hover
  * added/deleted/renamed state is carried by the notice row alone
  * (`render_file_header`, changes.rs:3348-3482).
  */
-function FileHeaderRow({ file, appearance, expanded, animating, onToggle }: { file: FileDiff; appearance: Appearance; expanded: boolean; animating: boolean; onToggle: () => void }) {
+function FileHeaderRow({ file, appearance, expanded, animating, onToggle, onOpenFile }: { file: FileDiff; appearance: Appearance; expanded: boolean; animating: boolean; onToggle: () => void; onOpenFile?: (path: string) => void }) {
   return (
     <div className={`diff-file-header ${expanded ? "diff-file-expanded" : "diff-file-collapsed"}`}>
       <button type="button" className="diff-file-button" onClick={onToggle} aria-expanded={expanded}>
@@ -608,6 +622,23 @@ function FileHeaderRow({ file, appearance, expanded, animating, onToggle }: { fi
         {file.additions > 0 || !file.binary ? <span className="diff-file-add mono">+{file.additions}</span> : null}
         {file.deletions > 0 || !file.binary ? <span className="diff-file-del mono">−{file.deletions}</span> : null}
       </button>
+      {/* Ticket 12 (upstream c2230f07): open the POST-rename path in the
+          Files pane — a quiet document-icon button beside the counters,
+          never inside the fold toggle (stopPropagation). */}
+      {onOpenFile !== undefined ? (
+        <button
+          type="button"
+          className="diff-file-open"
+          title="Open in file browser"
+          aria-label={`Open ${file.path} in file browser`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenFile(file.path);
+          }}
+        >
+          <Icon name="document" size={13} />
+        </button>
+      ) : null}
     </div>
   );
 }

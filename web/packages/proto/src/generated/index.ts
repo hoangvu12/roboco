@@ -31,6 +31,8 @@ export * from "./ConversationSourceContext";
 export * from "./CreateWorktreeOutcome";
 export * from "./Device";
 export * from "./DiffFileSummary";
+export * from "./DiscardWorkingTreeOutcome";
+export * from "./DiscardWorkingTreeRequest";
 export * from "./DoneStatus";
 export * from "./DriveEntry";
 export * from "./DriveListing";
