@@ -52,8 +52,8 @@ use roboco_proto::{
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
-use crate::scratch::ScratchDir;
 use crate::process::{Command, Stdio};
+use crate::scratch::ScratchDir;
 use child::Child;
 mod child;
 use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
@@ -915,7 +915,7 @@ impl AcpHarness {
     /// sign-in stored.
     pub async fn sign_out(&self) -> Result<(), HarnessError> {
         let home = std::env::var("HOME").ok();
-        let (mut child, _stderr, _scratch) = self.spawn_agent(home.as_deref(), false, &[]).await?;
+        let (_scratch, mut child, _stderr) = self.spawn_agent(home.as_deref(), false, &[]).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
@@ -1228,7 +1228,7 @@ impl AcpHarness {
         cwd: Option<&str>,
         block_on_install: bool,
         extra_args: &[String],
-    ) -> Result<(Child, crate::StderrTail, Option<ScratchDir>), HarnessError> {
+    ) -> Result<(Option<ScratchDir>, Child, crate::StderrTail), HarnessError> {
         let (exe, args) = self.resolve_program(block_on_install).await?;
         let mut cmd = Command::new(&exe);
         cmd.args(args);
@@ -1269,7 +1269,7 @@ impl AcpHarness {
                 tail.close();
             });
         }
-        Ok((child, stderr_tail, scratch))
+        Ok((scratch, child, stderr_tail))
     }
 
     /// Short-lived discovery run for [`Harness::commands`]: initialize, scan
@@ -1278,7 +1278,7 @@ impl AcpHarness {
     /// refuses sessions before login still surfaces whatever the handshake
     /// advertised.
     async fn discover_commands(&self) -> Result<Vec<SlashCommand>, HarnessError> {
-        let (mut child, _stderr, _scratch) = self.spawn_agent(None, false, &[]).await?;
+        let (_scratch, mut child, _stderr) = self.spawn_agent(None, false, &[]).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
@@ -1342,7 +1342,7 @@ impl AcpHarness {
     /// wire is the source of truth — the spec's static catalog only enriches
     /// matching entries and names the pick when the agent advertises nothing.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
-        let (mut child, stderr_tail, _scratch) = self.spawn_agent(None, false, &[]).await?;
+        let (_scratch, mut child, stderr_tail) = self.spawn_agent(None, false, &[]).await?;
         let (client, _incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
@@ -1747,7 +1747,8 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let (mut child, stderr_tail, scratch) = self.spawn_agent(Some(&request.cwd), true, &[]).await?;
+        let (scratch, mut child, stderr_tail) =
+            self.spawn_agent(Some(&request.cwd), true, &[]).await?;
         let stdin = child
             .stdin
             .take()
@@ -2882,7 +2883,11 @@ async fn run_session(session: Session) {
         // runs.
         let efforts = effort_values(request.reasoning, request.model.as_deref());
         let session_commands = scan_available_commands(&session_response);
-        let init_commands = if session_commands.is_empty() { init_commands } else { session_commands };
+        let init_commands = if session_commands.is_empty() {
+            init_commands
+        } else {
+            session_commands
+        };
         let options_snapshot = session_response;
         for (config_id, payload) in config_option_sets(
             &options_snapshot,
@@ -4870,13 +4875,32 @@ mod tests {
 async fn setup_retains_bounded_session_metadata_before_response() {
     let mut child = Command::new(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
-    ).stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
-    let (client, mut incoming) = RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
-    let result = tokio::time::timeout(Duration::from_secs(5), request_draining(
-        &client, &mut incoming, "session/new", json!({}),
-    )).await.unwrap().unwrap();
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .unwrap();
+    let (client, mut incoming) =
+        RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        request_draining(&client, &mut incoming, "session/new", json!({})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(result["availableCommands"][0]["name"], "early");
     assert_eq!(result["configOptions"], json!([]));
     assert_eq!(result["modes"]["currentModeId"], "plan");
     child.kill().await.unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn explicit_program_launches_do_not_get_archive_scratch_roots() {
+    let harness = AcpHarness::antigravity().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-antigravity-acp.sh"),
+    );
+    assert!(harness.adapter_scratch().unwrap().is_none());
 }
