@@ -7531,6 +7531,7 @@ dependencies = [
  "libc",
  "reqwest",
  "roboco-proto",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

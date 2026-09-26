@@ -1,4 +1,5 @@
 //! Read-only profiler for exported local snapshots. Prints timings, not content.
+use std::time::Instant;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in std::env::args().skip(1) {
         let started = Instant::now();
