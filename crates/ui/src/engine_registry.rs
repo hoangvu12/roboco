@@ -343,6 +343,12 @@ fn call_deadline(method: &str) -> Duration {
     if method == methods::LIST_MODELS || method == methods::LIST_COMMANDS {
         return Duration::from_secs(100);
     }
+    if method == methods::DISCARD_WORKING_TREE {
+        // A discard batches several git invocations per step on big working
+        // trees; unlike a read, a timeout here would misreport an in-flight
+        // destructive task that the engine always runs to completion.
+        return Duration::from_secs(900);
+    }
     Duration::from_secs(30)
 }
 

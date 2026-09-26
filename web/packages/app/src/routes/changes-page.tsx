@@ -13,21 +13,25 @@ import {
   cleanMessage,
   defaultBaseRef,
   diffPhase,
+  discardWorkingTreeTarget,
   DIFF_SCOPE_CHIPS,
   DIFF_SCOPE_LABELS,
   scopeLabel,
   type DiffScope,
+  type DiscardWorkingTreeTarget,
   type FileFold,
 } from "../lib/diff";
 import { DiffView, useParsedDiff, type DiffReviewWiring } from "../components/diff-view";
 import { useResolvedAppearance } from "../state/appearance";
+import { BtnDanger, BtnGhost, BtnPrimary, Dialog, DialogBody, DialogCard, DialogTitle } from "../components/ui/Dialog";
+import { methods } from "@roboco/engine-client";
+import type { ChangeRequestSummary, DiscardWorkingTreeOutcome } from "@roboco/proto";
 import { CommentAdder } from "../components/review-comments/comment-adder";
 import { ChangeRequestBadge } from "../components/change-request-badge";
 import { MatrixSpinner } from "../components/glyph-spinner";
 import { Tooltip, TOOLTIP_VIEW_OPTIONS_MS } from "../components/ui/Tooltip";
 import { PickerCard } from "../components/ui/PickerCard";
 import { MenuRowNav } from "../components/ui/MenuRows";
-import type { ChangeRequestSummary } from "@roboco/proto";
 
 /**
  * The right pane's Changes surface — the web peer of the desktop's Changes
@@ -524,6 +528,49 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
   const deletions = activeDiff?.deletions ?? 0;
   const baseForLabel = scope === "branch" ? changes.scoped?.baseRef ?? requestedBase : null;
 
+  // ── Ticket 12 (upstream a456eb09): the working-tree trash button ──────
+  // Armed only for a full (non-truncated), non-empty working-tree snapshot.
+  // The engine re-verifies the checksum, checkout, and live agents before
+  // mutating; the confirm dialog and failure card mirror the desktop's
+  // shell-owned `DiscardWorkingTreeFlow`.
+  const discardTarget = discardWorkingTreeTarget(scope, activeDiff, chat);
+  const [discardFlow, setDiscardFlow] = useState<
+    | { readonly phase: "confirm"; readonly target: DiscardWorkingTreeTarget }
+    | { readonly phase: "failed"; readonly message: string }
+    | null
+  >(null);
+  const [discardInFlight, setDiscardInFlight] = useState(false);
+  const confirmDiscard = useCallback(() => {
+    if (discardFlow === null || discardFlow.phase !== "confirm" || discardInFlight || session === null) {
+      return;
+    }
+    const target = discardFlow.target;
+    setDiscardFlow(null);
+    setDiscardInFlight(true);
+    // Repeat clicks stay inert while the destructive request runs — one
+    // discard per confirmation, ever (the desktop's retained task).
+    session.client
+      .call<DiscardWorkingTreeOutcome>(methods.DISCARD_WORKING_TREE, {
+        chatId: target.chatId,
+        checkoutId: target.checkoutId,
+        expectedChecksum: target.checksum,
+      })
+      .then(
+        () => {
+          // Success is silent: the diff watch re-captures on the next commit
+          // (the checksum moves) and the banner settles to "clean".
+          setDiscardInFlight(false);
+        },
+        (error: unknown) => {
+          setDiscardInFlight(false);
+          setDiscardFlow({
+            phase: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
+  }, [discardFlow, discardInFlight, session]);
+
   if (session === null || !paired) {
     return (
       <div className="changes-page changes-page-surface">
@@ -577,6 +624,29 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
               {activeDiff !== null && activeDiff.truncated ? (
                 <span className="changes-banner-warn">Partial snapshot</span>
               ) : null}
+              {/* Ticket 12 (upstream a456eb09): the working-tree trash button —
+                  dim when the snapshot can't be safely discarded (partial,
+                  empty, or another scope); the engine re-verifies regardless. */}
+              <Tooltip
+                label="Discard working tree changes"
+                delay={TOOLTIP_VIEW_OPTIONS_MS}
+                trigger={
+                  <button
+                    type="button"
+                    id="changes-discard-working-tree"
+                    className={`changes-banner-discard ${discardTarget === null ? "changes-banner-discard-off" : ""}`}
+                    aria-label="Discard working tree changes"
+                    disabled={discardTarget === null || discardInFlight}
+                    onClick={() => {
+                      if (discardTarget !== null) {
+                        setDiscardFlow({ phase: "confirm", target: discardTarget });
+                      }
+                    }}
+                  >
+                    <Icon name="trashBinMinimalistic" size={14} />
+                  </button>
+                }
+              />
             </div>
           ) : null}
 
@@ -618,11 +688,47 @@ function ChangesBody({ chatId, surfaceId, scope, requestedBase, commitSha, layou
                 scrollEpoch={scrollEpoch}
                 renderAdder={scope === "commit" ? undefined : renderAdder}
                 review={reviewWiring}
+                onOpenFile={(path) => rightPaneStore.revealInFilesPanel(chatId, path)}
               />
             )}
           </div>
         </>
       )}
+      {/* Ticket 12: the discard confirmation / failure dialog — the desktop's
+          shell-owned flow, scoped here to the Changes surface. */}
+      {discardFlow !== null ? (
+        <Dialog
+          ariaLabel={discardFlow.phase === "confirm" ? "Discard working tree changes" : "Couldn't discard changes"}
+          onClose={() => {
+            if (discardFlow.phase === "confirm" || !discardInFlight) {
+              setDiscardFlow(null);
+            }
+          }}
+        >
+          <DialogCard>
+            {discardFlow.phase === "confirm" ? (
+              <>
+                <DialogTitle>Discard working tree changes?</DialogTitle>
+                <DialogBody>
+                  Discard all uncommitted changes in this working tree? This can&apos;t be undone.
+                </DialogBody>
+                <div className="dialog-actions-row">
+                  <BtnGhost onClick={() => setDiscardFlow(null)}>Cancel</BtnGhost>
+                  <BtnDanger onClick={confirmDiscard}>Discard changes</BtnDanger>
+                </div>
+              </>
+            ) : (
+              <>
+                <DialogTitle>Couldn&apos;t discard changes</DialogTitle>
+                <DialogBody>{discardFlow.message}</DialogBody>
+                <div className="dialog-actions-row">
+                  <BtnPrimary onClick={() => setDiscardFlow(null)}>Close</BtnPrimary>
+                </div>
+              </>
+            )}
+          </DialogCard>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

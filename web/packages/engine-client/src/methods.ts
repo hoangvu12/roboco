@@ -147,6 +147,12 @@ export const WATCH_SIDEBAR_STATE = "WatchSidebarState";
 export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";
 /** One-shot scoped capture (`mode` = workingTree | branch | turn). */
 export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
+/**
+ * Permanently restore one chat-owned checkout to its current HEAD and
+ * remove only its untracked, non-ignored paths. Destructive; the engine
+ * re-verifies the confirmed snapshot (`expectedChecksum`) first.
+ */
+export const DISCARD_WORKING_TREE = "DiscardWorkingTree";
 /** Full text of one side of a file in a diff (used for non-truncated text view). */
 export const GET_CHECKOUT_FILE_DIFF_TEXT = "GetCheckoutFileDiffText";
 /** Branches for a checkout (one-shot). Default branch first. */

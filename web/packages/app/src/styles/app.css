@@ -13509,6 +13509,36 @@ button.segmented-option:hover {
   color: var(--rb-text-muted);
 }
 
+/*
+ * Ticket 12 (upstream a456eb09): the working-tree trash button — a quiet
+ * 24×22 icon slot at the banner's end. Dim while the snapshot can't be
+ * safely discarded (partial, empty, another scope); a click on the armed
+ * button opens the confirmation dialog, never the mutation itself.
+ */
+.changes-banner-discard {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.changes-banner-discard:hover:not(:disabled) {
+  color: var(--rb-text);
+}
+
+.changes-banner-discard-off,
+.changes-banner-discard:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .changes-banner-warn {
   flex: none;
   font-size: 10px;
@@ -13634,6 +13664,29 @@ button.segmented-option:hover {
   background:
     linear-gradient(rgb(var(--rb-ink) / 0.05), rgb(var(--rb-ink) / 0.05)),
     var(--rb-bg);
+}
+
+/*
+ * Ticket 12 (upstream c2230f07): the header's open-in-file-browser button —
+ * a quiet 24×22 icon slot beside the +N/−N counters, never inside the fold
+ * toggle; text_muted, brightening on header hover like the chevron.
+ */
+.diff-file-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.diff-file-open:hover {
+  color: var(--rb-text);
 }
 
 .diff-file-button {
