@@ -52,7 +52,10 @@ use roboco_proto::{
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
-use crate::process::{Child, Command, Stdio};
+use crate::process::{Command, Stdio};
+use crate::scratch::ScratchDir;
+use child::Child;
+mod child;
 use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
 use normalize::{map_update, parse_commands, preferred_allow_option};
 use subagent::SubagentTracker;
@@ -899,7 +902,7 @@ impl AcpHarness {
     /// The pi coding agent over ACP — the community `pi-acp` adapter wrapping
     /// pi's RPC mode.
     pub fn pi() -> Self {
-        Self::with_spec(pi_spec())
+        Self::with_spec(pi_spec()).with_model_discovery_timeout(Duration::from_secs(60))
     }
 
     /// google antigravity over its acp server (`agy_acp_server`).
@@ -911,11 +914,11 @@ impl AcpHarness {
     /// sign-in stored.
     pub async fn sign_out(&self) -> Result<(), HarnessError> {
         let home = std::env::var("HOME").ok();
-        let (mut child, _stderr) = self.spawn_agent(home.as_deref(), false, &[]).await?;
+        let (_scratch, mut child, _stderr) = self.spawn_agent(home.as_deref(), false, &[]).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
-                shutdown_child(&mut child, self.kill_grace).await;
+                child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
@@ -926,7 +929,7 @@ impl AcpHarness {
             request_draining(&client, &mut incoming, "logout", json!({})).await
         };
         let result = tokio::time::timeout(SIGN_OUT_TIMEOUT, flow).await;
-        shutdown_child(&mut child, self.kill_grace).await;
+        child.shutdown(self.kill_grace).await;
         match result {
             Ok(outcome) => outcome.map(|_| ()),
             Err(_) => Err(HarnessError::Protocol(format!(
@@ -979,6 +982,10 @@ impl AcpHarness {
         }
         if let Some(browser) = browser {
             cmd.env("BROWSER", browser);
+        }
+        let scratch = self.adapter_scratch()?;
+        if let Some(dir) = &scratch {
+            dir.apply(&mut cmd);
         }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1209,16 +1216,23 @@ impl AcpHarness {
         }
     }
 
+    fn adapter_scratch(&self) -> Result<Option<ScratchDir>, HarnessError> {
+        Ok(matches!(self.resolve_launch()?, Launch::Archive { .. })
+            .then(|| ScratchDir::new(self.spec.executable))
+            .transpose()?)
+    }
+
     async fn spawn_agent(
         &self,
         cwd: Option<&str>,
         block_on_install: bool,
         extra_args: &[String],
-    ) -> Result<(Child, crate::StderrTail), HarnessError> {
+    ) -> Result<(Option<ScratchDir>, Child, crate::StderrTail), HarnessError> {
         let (exe, args) = self.resolve_program(block_on_install).await?;
         let mut cmd = Command::new(&exe);
         cmd.args(args);
         cmd.args(extra_args);
+        child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
             cmd.current_dir(cwd);
@@ -1226,17 +1240,22 @@ impl AcpHarness {
         if self.spec.id == HarnessId::Antigravity {
             cmd.env("GEMINI_HOME", antigravity_paths::home()?);
         }
+        let scratch = self.adapter_scratch()?;
+        if let Some(dir) = &scratch {
+            dir.apply(&mut cmd);
+        }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| {
+        let child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
             } else {
                 HarnessError::Io(e)
             }
         })?;
+        let mut child = Child::new(child);
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -1246,9 +1265,10 @@ impl AcpHarness {
                     tracing::debug!(target: "roboco_harness::acp", "stderr: {line}");
                     tail.push(&line);
                 }
+                tail.close();
             });
         }
-        Ok((child, stderr_tail))
+        Ok((scratch, child, stderr_tail))
     }
 
     /// Short-lived discovery run for [`Harness::commands`]: initialize, scan
@@ -1257,11 +1277,11 @@ impl AcpHarness {
     /// refuses sessions before login still surfaces whatever the handshake
     /// advertised.
     async fn discover_commands(&self) -> Result<Vec<SlashCommand>, HarnessError> {
-        let (mut child, _stderr) = self.spawn_agent(None, false, &[]).await?;
+        let (_scratch, mut child, _stderr) = self.spawn_agent(None, false, &[]).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
-                shutdown_child(&mut child, self.kill_grace).await;
+                child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
@@ -1308,7 +1328,7 @@ impl AcpHarness {
             Ok::<Vec<SlashCommand>, HarnessError>(commands)
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
-        shutdown_child(&mut child, self.kill_grace).await;
+        child.shutdown(self.kill_grace).await;
         match result {
             Ok(inner) => inner,
             Err(_) => Err(HarnessError::Protocol("command discovery timed out".into())),
@@ -1321,11 +1341,11 @@ impl AcpHarness {
     /// wire is the source of truth — the spec's static catalog only enriches
     /// matching entries and names the pick when the agent advertises nothing.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
-        let (mut child, stderr_tail) = self.spawn_agent(None, false, &[]).await?;
+        let (_scratch, mut child, stderr_tail) = self.spawn_agent(None, false, &[]).await?;
         let (client, _incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => RpcClient::new(stdin, stdout),
             _ => {
-                shutdown_child(&mut child, self.kill_grace).await;
+                child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
@@ -1355,7 +1375,7 @@ impl AcpHarness {
             Ok::<Vec<Model>, HarnessError>(models)
         };
         let result = tokio::time::timeout(self.model_discovery_timeout, discovery).await;
-        shutdown_child(&mut child, self.kill_grace).await;
+        child.shutdown(self.kill_grace).await;
         match result {
             Ok(inner) => inner,
             Err(_) => {
@@ -1761,7 +1781,8 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let (mut child, stderr_tail) = self.spawn_agent(Some(&request.cwd), true, &[]).await?;
+        let (scratch, mut child, stderr_tail) =
+            self.spawn_agent(Some(&request.cwd), true, &[]).await?;
         let stdin = child
             .stdin
             .take()
@@ -1774,6 +1795,7 @@ impl Harness for AcpHarness {
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         tokio::spawn(run_session(Session {
             child,
+            scratch,
             client,
             incoming,
             event_tx,
@@ -1808,6 +1830,7 @@ impl Harness for AcpHarness {
 
 struct Session {
     child: Child,
+    scratch: Option<ScratchDir>,
     client: RpcClient,
     incoming: mpsc::Receiver<Incoming>,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
@@ -2270,6 +2293,10 @@ fn stop_outcome(
     match res {
         Ok(resp) => match resp.get("stopReason").and_then(Value::as_str) {
             Some("cancelled") => (DoneStatus::Interrupted, None),
+            Some("error") => (
+                DoneStatus::Errored,
+                Some("The agent failed to complete the turn.".to_owned()),
+            ),
             Some("refusal") => (
                 DoneStatus::Errored,
                 Some("The agent refused to continue.".to_owned()),
@@ -2373,7 +2400,12 @@ fn handle_server_request_live(
     method: &str,
     params: &Value,
     request_input: &std::sync::Arc<RequestInputFn>,
+    session_id: &str,
 ) -> Vec<AgentEvent> {
+    if params.get("sessionId").and_then(Value::as_str).is_some_and(|id| id != session_id) {
+        client.respond(&id, json!({"outcome": {"outcome": "cancelled"}}));
+        return Vec::new();
+    }
     if method != "session/request_permission" {
         return handle_server_request(client, id, method, params);
     }
@@ -2615,21 +2647,26 @@ async fn request_draining(
         .get("sessionId")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let mut config_updates = std::collections::HashMap::new();
+    let mut metadata = VecDeque::new();
     let mut handle_incoming = |inc| match inc {
         Incoming::Request { id, method, params } => {
-            handle_server_request(client, id, &method, &params);
+            if method == "session/request_permission"
+                && params.get("sessionId").and_then(Value::as_str) != requested_session.as_deref()
+            {
+                client.respond(&id, json!({"outcome": {"outcome": "cancelled"}}));
+            } else {
+                handle_server_request(client, id, &method, &params);
+            }
         }
         Incoming::Notification { method, params }
-            if loading_session
-                && method == "session/update"
-                && params["update"]["sessionUpdate"] == "config_option_update" =>
+            if loading_session && method == "session/update"
+                && matches!(params["update"]["sessionUpdate"].as_str(),
+                    Some("config_option_update" | "available_commands_update" | "current_mode_update")) =>
         {
-            if let Some(id) = params.get("sessionId").and_then(Value::as_str)
-                && params["update"]["configOptions"].is_array()
-            {
-                config_updates.insert(id.to_owned(), params["update"]["configOptions"].clone());
+            if metadata.len() == 32 {
+                metadata.pop_front();
             }
+            metadata.push_back(params);
         }
         _ => {}
     };
@@ -2661,8 +2698,27 @@ async fn request_draining(
             .get("sessionId")
             .and_then(Value::as_str)
             .or(requested_session.as_deref());
-        if let Some(options) = id.and_then(|id| config_updates.remove(id)) {
-            response["configOptions"] = options;
+        let id = id.map(str::to_owned);
+        for params in metadata {
+            if params["sessionId"].as_str() != id.as_deref() {
+                continue;
+            }
+            let update = &params["update"];
+            match update["sessionUpdate"].as_str() {
+                Some("config_option_update") if update["configOptions"].is_array() => {
+                    response["configOptions"] = update["configOptions"].clone();
+                }
+                Some("available_commands_update") if update["availableCommands"].is_array() => {
+                    response["availableCommands"] = update["availableCommands"].clone();
+                }
+                Some("current_mode_update") if update["currentModeId"].is_string() => {
+                    if !response["modes"].is_object() {
+                        response["modes"] = json!({});
+                    }
+                    response["modes"]["currentModeId"] = update["currentModeId"].clone();
+                }
+                _ => {}
+            }
         }
         response
     })
@@ -2709,6 +2765,8 @@ fn steering_call_future(
 /// turn, the steering mailbox, the interrupt token, and consumer liveness.
 async fn run_session(session: Session) {
     let Session {
+        // Locals drop in reverse binding order: reap the child before cleanup.
+        scratch: _scratch,
         mut child,
         client,
         mut incoming,
@@ -2757,6 +2815,13 @@ async fn run_session(session: Session) {
                         target: "roboco_harness::acp",
                         "session/load failed (starting fresh): {e}"
                     );
+                    let _ = send(
+                        &event_tx,
+                        AgentEvent::Error {
+                            message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
+                        },
+                    )
+                    .await;
                     let new = new_session(
                         &client,
                         &mut incoming,
@@ -2810,8 +2875,8 @@ async fn run_session(session: Session) {
         }
         // ACP has had two model-selection surfaces. Newer config-option agents
         // use category=model below; Grok Build currently advertises only the
-        // first-class `models` state and requires `session/set_model`. Paseo
-        // follows the same split. Unlike the best-effort auxiliary options,
+        // first-class `models` state and requires `session/set_model`. Other
+        // ACP clients follow the same split. Unlike the best-effort auxiliary options,
         // an explicit model switch is strict: prompting with a different
         // model than the picker shows is worse than surfacing the RPC error.
         let requested_model: Option<String> = match request.model.as_deref() {
@@ -2851,6 +2916,12 @@ async fn run_session(session: Session) {
         // traits: a rejected auxiliary set is logged and the agent default
         // runs.
         let efforts = effort_values(request.reasoning, request.model.as_deref());
+        let session_commands = scan_available_commands(&session_response);
+        let init_commands = if session_commands.is_empty() {
+            init_commands
+        } else {
+            session_commands
+        };
         let options_snapshot = session_response;
         for (config_id, payload) in config_option_sets(
             &options_snapshot,
@@ -2942,7 +3013,7 @@ async fn run_session(session: Session) {
                             session_id: None,
                         }))
                         .await;
-                    shutdown_child(&mut child, kill_grace).await;
+                    child.shutdown(kill_grace).await;
                     return;
                 }
             }
@@ -2956,7 +3027,7 @@ async fn run_session(session: Session) {
                     session_id: None,
                 }))
                 .await;
-            shutdown_child(&mut child, kill_grace).await;
+            child.shutdown(kill_grace).await;
             return;
         }
     };
@@ -2975,7 +3046,7 @@ async fn run_session(session: Session) {
     )
     .await
     {
-        shutdown_child(&mut child, kill_grace).await;
+        child.shutdown(kill_grace).await;
         return;
     }
     if !init_commands.is_empty()
@@ -2987,7 +3058,7 @@ async fn run_session(session: Session) {
         )
         .await
     {
-        shutdown_child(&mut child, kill_grace).await;
+        child.shutdown(kill_grace).await;
         return;
     }
 
@@ -3009,8 +3080,8 @@ async fn run_session(session: Session) {
     // one prompt is outstanding at a time, identified by `current_prompt_id`;
     // settled ids are remembered so a STALE `prompt_complete` (a late replay
     // of an already-settled prompt) can never settle a newer turn.
-    let mut prompt_seq: u64 = 0;
-    let mut current_prompt_id: Option<String> = None;
+    let mut prompt_seq: u64 = 1;
+    let mut current_prompt_id = prompt_complete_extension.then(|| format!("roboco-p{prompt_seq}"));
     let mut completed_prompts: VecDeque<String> = VecDeque::new();
     // `ROBOCO_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
     let prompt_stall: Option<Duration> = match std::env::var("ROBOCO_ACP_PROMPT_STALL_MS")
@@ -3023,16 +3094,14 @@ async fn run_session(session: Session) {
     };
     let mut prompt_stall_deadline: Option<tokio::time::Instant> =
         prompt_stall.map(|d| tokio::time::Instant::now() + d);
-    let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some({
-        prompt_seq += 1;
-        current_prompt_id = prompt_complete_extension.then(|| format!("roboco-p{prompt_seq}"));
+    let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some(
         prompt_turn(
             client.clone(),
             session_id.clone(),
             prompt_transform(request.reasoning, &request.prompt),
             current_prompt_id.clone(),
         )
-    });
+    );
     // Steers waiting for the turn boundary (agents without the extension, or
     // extension steers that lost the turn-end race).
     let mut queued_steers: VecDeque<String> = VecDeque::new();
@@ -3049,7 +3118,9 @@ async fn run_session(session: Session) {
     let mut interrupt_sent = false;
     let mut done_current = false;
     let mut done_after_interrupt = false;
-    let mut escalation: Option<tokio::task::JoinHandle<()>> = None;
+    let mut escalation_target = None;
+    let mut escalation_deadline = None;
+    let mut escalation_signal = Signal::Term;
     // Starved-turn recovery (2026-08-12 stuck-Working incident): a
     // `session/prompt` sent while the agent runs a SELF-CONTINUED turn (a
     // background-task re-invocation no prompt started) starves —
@@ -3083,10 +3154,26 @@ async fn run_session(session: Session) {
     const CANCEL_FLUSH: Duration = Duration::from_secs(2);
     let mut cancel_flush_deadline: Option<tokio::time::Instant> = None;
 
+    let mut child_exit = None;
+    let mut exit_drain_deadline = None;
     'main: loop {
         tokio::select! {
+            status = child.wait(), if child_exit.is_none() => {
+                escalation_deadline = None;
+                child_exit = Some(status.ok());
+                child.request_group_shutdown();
+                // Descendants can hold stdout open after an adapter crash.
+                // Drain already-written frames, but never wait on them forever.
+                exit_drain_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(200));
+            },
+            _ = tokio::time::sleep_until(exit_drain_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if exit_drain_deadline.is_some() => break 'main,
+
             res = async { turn.as_mut().expect("guarded by if").await }, if turn.is_some() => {
                 turn = None;
+                if res.is_err() && client.is_closed() {
+                    break 'main;
+                }
                 starve_deadline = None;
                 prompt_stall_deadline = None;
                 if let Some(id) = current_prompt_id.take() {
@@ -3168,6 +3255,7 @@ async fn run_session(session: Session) {
                                 &method,
                                 &params,
                                 &request_input,
+                                &session_id,
                             ) {
                                 if !send(&event_tx, ev).await {
                                     consumer_gone = true;
@@ -3258,6 +3346,9 @@ async fn run_session(session: Session) {
 
             inc = incoming.recv() => match inc {
                 Some(Incoming::Notification { method, params }) => {
+                    if params.get("sessionId").and_then(Value::as_str).is_some_and(|id| id != session_id) {
+                        continue;
+                    }
                     last_update_at = tokio::time::Instant::now();
                     // Wire traffic is a sign of life for the prompt-stall
                     // watchdog — EXCEPT session boilerplate: opencode emits
@@ -3340,6 +3431,7 @@ async fn run_session(session: Session) {
                         &method,
                         &params,
                         &request_input,
+                        &session_id,
                     ) {
                         if !send(&event_tx, ev).await {
                             break 'main;
@@ -3449,6 +3541,7 @@ async fn run_session(session: Session) {
                                         &method,
                                         &params,
                                         &request_input,
+                                        &session_id,
                                     ) {
                                         if !send(&event_tx, ev).await {
                                             consumer_gone = true;
@@ -3748,12 +3841,8 @@ async fn run_session(session: Session) {
                     // Escalate if the agent doesn't wind down (stopReason
                     // "cancelled") within the grace periods.
                     if let Some(pid) = crate::process::signal_target(&child) {
-                        escalation = Some(tokio::spawn(async move {
-                            tokio::time::sleep(interrupt_grace).await;
-                            send_signal(&pid, Signal::Term);
-                            tokio::time::sleep(kill_grace).await;
-                            send_signal(&pid, Signal::Kill);
-                        }));
+                        escalation_target = Some(pid);
+                        escalation_deadline = Some(tokio::time::Instant::now() + interrupt_grace);
                     }
                 } else {
                     // Idle between turns: nothing to cancel — the terminal
@@ -3771,7 +3860,6 @@ async fn run_session(session: Session) {
             _ = tokio::time::sleep_until(
                 prompt_stall_deadline.unwrap_or_else(tokio::time::Instant::now),
             ), if prompt_stall_deadline.is_some() && turn.is_some() && !interrupted => {
-                prompt_stall_deadline = None;
                 let _ = send(
                     &event_tx,
                     AgentEvent::Error {
@@ -3798,6 +3886,25 @@ async fn run_session(session: Session) {
                 )
                 .await;
                 break 'main;
+            },
+
+            // Keep escalation in the owner task: it cannot outlive child.wait()
+            // or signal a pid after the child has been reaped.
+            _ = tokio::time::sleep_until(escalation_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if escalation_deadline.is_some() => {
+                // Once signal escalation starts, a late prompt response no longer
+                // owns this turn (including any usage attached to that response).
+                turn = None;
+                if let Some(target) = &escalation_target {
+                    send_signal(target, escalation_signal);
+                }
+                escalation_deadline = match escalation_signal {
+                    Signal::Term => {
+                        escalation_signal = Signal::Kill;
+                        Some(tokio::time::Instant::now() + kill_grace)
+                    }
+                    Signal::Kill => None,
+                };
             },
 
             _ = event_tx.closed() => break 'main,
@@ -3831,7 +3938,15 @@ async fn run_session(session: Session) {
                 .await;
         } else if !interrupted && !done_current {
             // A child killed mid-turn must not read as a silent success.
-            let status = child.try_wait().ok().flatten();
+            let status = match child_exit {
+                Some(status) => status,
+                None => tokio::time::timeout(Duration::from_millis(200), child.wait())
+                    .await
+                    .ok()
+                    .and_then(Result::ok),
+            };
+            child.request_group_shutdown();
+            stderr_tail.wait_closed().await;
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
@@ -3843,18 +3958,20 @@ async fn run_session(session: Session) {
         }
     }
 
-    // Escalation dies BEFORE the child is reaped: after `shutdown_child`
-    // waits the pid, a still-armed SIGTERM/SIGKILL timer would fire at a
-    // freed (reusable) pid.
-    if let Some(handle) = escalation {
-        handle.abort();
-    }
-    shutdown_child(&mut child, kill_grace).await;
+    child.shutdown(kill_grace).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_discovery_allows_cold_extension_startup() {
+        let pi = AcpHarness::pi();
+        assert_eq!(pi.model_discovery_timeout, Duration::from_secs(60));
+        assert_eq!(pi.handshake_timeout, Duration::from_secs(120));
+        assert!(pi.spec.prompt_stall.is_none());
+    }
 
     fn all_antigravity_auth_methods() -> Value {
         json!({
@@ -4785,4 +4902,39 @@ mod tests {
         assert_eq!(commands[0].name, "compact");
         assert!(scan_available_commands(&json!({ "protocolVersion": 1 })).is_empty());
     }
+}
+
+#[cfg(all(test, unix))]
+#[tokio::test]
+async fn setup_retains_bounded_session_metadata_before_response() {
+    let mut child = Command::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .unwrap();
+    let (client, mut incoming) =
+        RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        request_draining(&client, &mut incoming, "session/new", json!({})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["availableCommands"][0]["name"], "early");
+    assert_eq!(result["configOptions"], json!([]));
+    assert_eq!(result["modes"]["currentModeId"], "plan");
+    child.kill().await.unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn explicit_program_launches_do_not_get_archive_scratch_roots() {
+    let harness = AcpHarness::antigravity().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-antigravity-acp.sh"),
+    );
+    assert!(harness.adapter_scratch().unwrap().is_none());
 }

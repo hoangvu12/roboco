@@ -1269,3 +1269,360 @@ async fn antigravity_auth_path_subprocess() {
     .expect("sign-in timed out")
     .expect("configured business sign-in");
 }
+
+fn pi_fixture() -> AcpHarness {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-pi-acp.sh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    AcpHarness::pi()
+        .with_executable(path)
+        .with_graces(Duration::from_millis(100), Duration::from_millis(150))
+}
+
+#[tokio::test]
+async fn pi_crash_reports_status_and_stderr_once() {
+    for (prompt, status, tail) in [
+        ("crash", "exit code 23", "last stderr context"),
+        ("signal-crash", "signal 9", "signal context"),
+        (
+            "inherited-pipe-crash",
+            "exit code 25",
+            "inherited pipe context",
+        ),
+    ] {
+        let (controls, _steer, _) = controls();
+        let events = run_to_end(&pi_fixture(), request(prompt), controls).await;
+        let done = dones(&events);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, DoneStatus::Errored);
+        let error = done[0].1.as_deref().unwrap();
+        assert!(error.contains(status) && error.contains(tail), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn pi_idle_crash_then_load_preserves_session() {
+    let (ctl, _steer, _) = controls();
+    let events = run_to_end(&pi_fixture(), request("idle-crash"), ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    let session = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::Done { session_id, .. } => session_id.clone(),
+            _ => None,
+        })
+        .unwrap();
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("resumed");
+    req.resume = Some(session);
+    let events = run_to_end(&pi_fixture(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert!(events.contains(&AgentEvent::TextDelta {
+        text: "reply:resumed".into()
+    }));
+}
+
+#[tokio::test]
+async fn pi_failed_load_announces_lost_context() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("fresh");
+    req.resume = Some("missing".into());
+    let events = run_to_end(&pi_fixture(), req, ctl).await;
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { message } if message.contains("without the previous context"))));
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[tokio::test]
+async fn pi_frames_and_model_effort_round_trip() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("frames");
+    req.model = Some("mock/model".into());
+    req.reasoning = Some(ReasoningLevel::Max);
+    let events = run_to_end(&pi_fixture(), req, ctl).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text.len() == 1024 * 1024 + 17))
+    );
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert_eq!(pi_fixture().models().await.unwrap()[0].id, "mock/model");
+}
+
+#[tokio::test]
+async fn pi_error_stop_reason_is_failed() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let events = run_to_end(&pi_fixture(), request("error"), ctl).await;
+    assert_eq!(dones(&events)[0].0, DoneStatus::Errored);
+}
+
+#[tokio::test]
+async fn pi_interrupt_error_and_duplicate_terminal_settle_once() {
+    let (ctl, _steer, token) = controls();
+    let mut stream = pi_fixture()
+        .run(request("interrupt-error"), ctl)
+        .await
+        .unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            if matches!(&event, AgentEvent::TextDelta { text } if text == "working") {
+                token.cancel();
+            }
+            events.push(event);
+        }
+        events
+    })
+    .await
+    .unwrap();
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)]);
+}
+
+#[tokio::test]
+async fn pi_interrupt_kills_tool_process_group() {
+    let (ctl, _steer, token) = controls();
+    let mut stream = pi_fixture().run(request("tree"), ctl).await.unwrap();
+    let mut tree_pids = Vec::new();
+    let events = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            if let AgentEvent::TextDelta { text } = &event
+                && let Some(pid) = text.strip_prefix("tree:")
+            {
+                tree_pids.push(pid.parse::<i32>().unwrap());
+                token.cancel();
+            }
+            events.push(event);
+        }
+        events
+    })
+    .await
+    .unwrap();
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)]);
+    assert_eq!(tree_pids.len(), 2);
+    for pid in tree_pids {
+        // A zombie awaiting the host reaper is dead; no tool may remain running.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        assert!(
+            stat.is_empty() || stat.split_whitespace().nth(2) == Some("Z"),
+            "{stat}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pi_rejected_model_config_keeps_default_and_runs_prompt() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("config-rejected");
+    req.model = Some("mock/reject".into());
+    let events = run_to_end(&pi_fixture(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+}
+
+#[tokio::test]
+async fn pi_dropping_stream_terminates_tool_tree() {
+    let (ctl, _steer, _) = controls();
+    let mut stream = pi_fixture().run(request("tree"), ctl).await.unwrap();
+    let mut pids = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while pids.len() < 2 {
+            if let AgentEvent::TextDelta { text } = stream.next().await.unwrap().unwrap()
+                && let Some(pid) = text.strip_prefix("tree:")
+            {
+                pids.push(pid.parse::<i32>().unwrap());
+            }
+        }
+    })
+    .await
+    .unwrap();
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if pids.iter().all(|pid| {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                stat.is_empty() || stat.split_whitespace().nth(2) == Some("Z")
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("consumer shutdown must terminate the tool tree");
+}
+
+fn robust_harness() -> AcpHarness {
+    AcpHarness::grok().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+    )
+}
+
+#[tokio::test]
+async fn noise_and_large_crlf_frame_preserve_the_complete_turn() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("frames");
+    req.model = None;
+    req.cwd = std::env::temp_dir().display().to_string();
+    let events = run_to_end(&robust_harness(), req, ctl).await;
+    let text: String = events.iter().filter_map(|event| match event {
+        AgentEvent::TextDelta { text } => Some(text.as_str()),
+        _ => None,
+    }).collect();
+    assert_eq!(text, "x".repeat(2 * 1024 * 1024));
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[tokio::test]
+async fn queued_updates_are_drained_before_completion_under_backpressure() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("burst");
+    req.model = None;
+    req.cwd = std::env::temp_dir().display().to_string();
+    let mut stream = robust_harness().run(req, ctl).await.unwrap();
+    // Fill both bounded queues before allowing the consumer to progress.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut text = String::new();
+    let mut completed = false;
+    let mut done = 0;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                AgentEvent::TextDelta { text: chunk } => {
+                    assert!(!completed);
+                    text.push_str(&chunk);
+                }
+                AgentEvent::AssistantMessageCompleted { .. } => completed = true,
+                AgentEvent::Done { status, .. } => {
+                    assert_eq!(status, DoneStatus::Completed);
+                    assert_eq!(text, (0..300).map(|i| format!("{i},")).collect::<String>());
+                    done += 1;
+                }
+                _ => {}
+            }
+        }
+    }).await.unwrap();
+    assert!(completed);
+    assert_eq!(done, 1);
+}
+
+#[tokio::test]
+async fn foreign_notifications_and_permissions_cannot_affect_parent_turn() {
+    let (ctl, steer, _) = controls();
+    drop(steer);
+    let mut req = request("foreign");
+    req.model = None;
+    req.cwd = std::env::temp_dir().display().to_string();
+    let events = run_to_end(&robust_harness(), req, ctl).await;
+    let text: String = events.iter().filter_map(|event| match event {
+        AgentEvent::TextDelta { text } => Some(text.as_str()),
+        _ => None,
+    }).collect();
+    assert_eq!(text, "foreign permission rejected");
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn dropping_idle_stream_reaps_warm_adapter() {
+    let (ctl, _steer, _) = controls();
+    let mut req = request("idle-pid");
+    req.model = None;
+    req.cwd = std::env::temp_dir().display().to_string();
+    let adapter = robust_harness().with_graces(Duration::from_millis(50), Duration::from_millis(50));
+    let mut stream = adapter.run(req, ctl).await.unwrap();
+    let mut pid = None;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = stream.next().await {
+            match event.unwrap() {
+                AgentEvent::TextDelta { text } => pid = Some(text.parse::<u32>().unwrap()),
+                AgentEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+    }).await.unwrap();
+    let path = PathBuf::from(format!("/proc/{}", pid.unwrap()));
+    assert!(path.exists(), "mailbox keeps the idle adapter warm");
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while path.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+    }).await.expect("dropped consumer reaps the idle child");
+}
+
+#[tokio::test]
+async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
+    for adapter in [AcpHarness::grok(), AcpHarness::pi(), AcpHarness::antigravity()] {
+        let adapter = adapter.with_executable(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+        ).with_graces(Duration::from_millis(50), Duration::from_millis(50));
+        for scenario in ["wedge", "late-settle"] {
+            let (ctl, _steer, token) = controls();
+            let mut req = request(scenario);
+            req.model = None;
+            req.cwd = std::env::temp_dir().display().to_string();
+            let mut stream = adapter.run(req, ctl).await.unwrap();
+            let mut events = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(event) = stream.next().await {
+                    let event = event.unwrap();
+                    if matches!(&event, AgentEvent::TextDelta { text } if text == "ready") {
+                        token.cancel();
+                    }
+                    assert!(!matches!(event, AgentEvent::Usage { .. }), "late usage in {scenario}");
+                    events.push(event);
+                }
+            }).await.unwrap();
+            assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{scenario}");
+        }
+    }
+}
+
+async fn pi_boundary_steer(scenario: &str, trigger_on_done: bool) {
+    let adapter = AcpHarness::pi().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+    );
+    let (ctl, steer, _) = controls();
+    let mut steer = Some(steer);
+    let mut req = request(scenario);
+    req.model = None;
+    req.cwd = std::env::temp_dir().display().to_string();
+    let mut stream = adapter.run(req, ctl).await.unwrap();
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            let trigger = if trigger_on_done { matches!(event, AgentEvent::Done { .. }) }
+                else { matches!(&event, AgentEvent::TextDelta { text } if text == "first") };
+            if trigger && let Some(sender) = steer.take() {
+                sender.send(roboco_harness::SteerMessage { prompt: "second".into(), message_id: None }).await.unwrap();
+            }
+            events.push(event);
+        }
+    }).await.unwrap();
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None); 2]);
+    assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second")).count(), 1);
+    let first_done = events.iter().position(|e| matches!(e, AgentEvent::Done { .. })).unwrap();
+    let second_text = events.iter().position(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second")).unwrap();
+    assert!(first_done < second_text);
+}
+
+#[tokio::test]
+async fn pi_without_steering_extension_queues_live_steer_once() {
+    pi_boundary_steer("steer-live", false).await;
+}
+
+#[tokio::test]
+async fn pi_without_steering_extension_dispatches_idle_steer_immediately() {
+    pi_boundary_steer("steer-idle", true).await;
+}

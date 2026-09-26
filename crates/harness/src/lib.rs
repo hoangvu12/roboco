@@ -154,6 +154,7 @@ pub mod mock;
 mod model_context;
 pub mod opencode;
 pub mod process;
+mod scratch;
 pub mod shell_env;
 #[cfg(windows)]
 pub mod windows_process;
@@ -203,9 +204,21 @@ fn compose_path<'a>(
 /// unexpectedly (<status>): <last stderr lines>" instead of a bare shrug —
 /// the proper background-crash message old roboco showed (user requirement).
 #[derive(Clone, Default)]
-pub(crate) struct StderrTail(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>);
+pub(crate) struct StderrTail(
+    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
 
 impl StderrTail {
+    pub(crate) fn close(&self) {
+        self.1.notify_one();
+    }
+
+    pub(crate) async fn wait_closed(&self) {
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(200), self.1.notified()).await;
+    }
+
     const KEEP_LINES: usize = 6;
     const KEEP_BYTES: usize = 700;
 
@@ -234,7 +247,11 @@ impl StderrTail {
             return None;
         }
         let mut joined = tail.iter().cloned().collect::<Vec<_>>().join("\n");
-        joined.truncate(Self::KEEP_BYTES * 2);
+        let mut start = joined.len().saturating_sub(Self::KEEP_BYTES * 2);
+        while !joined.is_char_boundary(start) {
+            start += 1;
+        }
+        joined.drain(..start);
         Some(joined)
     }
 }
@@ -258,6 +275,68 @@ pub(crate) fn describe_exit(status: Option<std::process::ExitStatus>) -> String 
     "unknown exit".into()
 }
 
+/// Remove recognizable credentials at the boundary where diagnostics become UI text.
+fn redact_secrets(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let markers = ["bearer ", "basic ", "sk-", "ghp_", "xox", "api_key="];
+    let mut result = String::new();
+    let mut offset = 0;
+    while let Some((start, marker)) = markers
+        .iter()
+        .filter_map(|marker| {
+            lower[offset..]
+                .find(marker)
+                .map(|at| (offset + at, *marker))
+        })
+        .min_by_key(|(at, _)| *at)
+    {
+        let credential = if marker.ends_with(' ') || marker.ends_with('=') {
+            start + marker.len()
+        } else {
+            start
+        };
+        let credential = credential + text[credential..].len()
+            - text[credential..]
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '\"' || c == '\'')
+                .len();
+        let end = text[credential..]
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ';' | '&' | '<' | '>')
+            })
+            .map_or(text.len(), |at| credential + at);
+        result.push_str(&text[offset..credential]);
+        result.push_str("[REDACTED]");
+        // Empty credentials still advance past the marker.
+        offset = end.max(start + marker.len());
+    }
+    result.push_str(&text[offset..]);
+    result
+}
+
+#[cfg(test)]
+#[test]
+fn crash_diagnostics_redact_credentials_but_keep_context() {
+    let raw = "request failed: Bearer secret-one Basic secret-two sk-private ghp-private ghp_private xoxp-private api_key=private&code=401 café";
+    let clean = redact_secrets(raw);
+    assert_eq!(
+        clean,
+        "request failed: Bearer [REDACTED] Basic [REDACTED] [REDACTED] ghp-private [REDACTED] [REDACTED] api_key=[REDACTED]&code=401 café"
+    );
+    assert_eq!(
+        redact_secrets("Authorization: bEaReR token"),
+        "Authorization: bEaReR [REDACTED]"
+    );
+    assert_eq!(
+        redact_secrets("Bearer   hidden api_key=\"secret\""),
+        "Bearer   [REDACTED] api_key=\"[REDACTED]\""
+    );
+    let tail = StderrTail::default();
+    tail.push(raw);
+    let message = crash_message("agent", None, &tail);
+    assert!(message.ends_with(&clean));
+    assert!(!message.contains("secret-one"));
+}
+
 /// The full crash message: status plus the stderr tail when there is one.
 pub(crate) fn crash_message(
     name: &str,
@@ -266,7 +345,10 @@ pub(crate) fn crash_message(
 ) -> String {
     let status = describe_exit(status);
     match stderr.snapshot() {
-        Some(tail) => format!("{name} exited unexpectedly ({status}): {tail}"),
+        Some(tail) => format!(
+            "{name} exited unexpectedly ({status}): {}",
+            redact_secrets(&tail)
+        ),
         None => format!("{name} exited unexpectedly ({status})"),
     }
 }
@@ -293,14 +375,24 @@ pub(crate) async fn shutdown_child(child: &mut process::Child, kill_grace: std::
     }
     #[cfg(not(windows))]
     {
+        let target = process::signal_target(child);
         if matches!(child.try_wait(), Ok(Some(_))) {
+            if let Some(group) = target.filter(|pid| *pid < 0) {
+                send_signal(&group, Signal::Kill);
+            }
             return;
         }
-        if let Some(pid) = child.id() {
+        if let Some(pid) = target {
             send_signal(&pid, Signal::Term);
             if tokio::time::timeout(kill_grace, child.wait()).await.is_ok() {
+                if pid < 0 {
+                    send_signal(&pid, Signal::Kill);
+                }
                 return;
             }
+        }
+        if let Some(pid) = target {
+            send_signal(&pid, Signal::Kill);
         }
         let _ = child.start_kill();
         let _ = child.wait().await;
@@ -314,14 +406,15 @@ pub(crate) enum Signal {
 }
 
 #[cfg(unix)]
-pub(crate) fn send_signal(pid: &u32, signal: Signal) {
+pub(crate) fn send_signal(pid: &i32, signal: Signal) {
     let sig = match signal {
         Signal::Term => libc::SIGTERM,
         Signal::Kill => libc::SIGKILL,
     };
-    // SAFETY: plain kill(2) on a pid we spawned and have not yet reaped.
+    // SAFETY: kill(2) targets an owned child or its private process group.
+    // Negative targets include descendants after the group leader exits.
     unsafe {
-        libc::kill(*pid as libc::pid_t, sig);
+        libc::kill(*pid, sig);
     }
 }
 
@@ -341,4 +434,18 @@ pub fn supports_titles(id: HarnessId) -> bool {
         id,
         HarnessId::Codex | HarnessId::ClaudeCode | HarnessId::Mock
     )
+}
+
+#[cfg(test)]
+mod stderr_tests {
+    #[test]
+    fn stderr_tail_truncates_at_utf8_boundaries() {
+        let tail = super::StderrTail::default();
+        tail.push(&"界".repeat(700));
+        tail.push(&"界".repeat(700));
+        tail.push("last stderr line");
+        let snapshot = tail.snapshot().unwrap();
+        assert!(snapshot.len() <= 1400);
+        assert!(snapshot.ends_with("last stderr line"));
+    }
 }
