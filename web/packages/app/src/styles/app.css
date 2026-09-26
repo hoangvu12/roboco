@@ -9650,6 +9650,24 @@ button.files-save-pill:hover {
 }
 
 /*
+ * The compact work fold's crossfade (transcript.rs compact_work_title): the
+ * summary line fades out and sinks 4px while "Worked for Xm Ys" rises from
+ * below, both clipped to the 18px title line — opacity/transform driven
+ * inline per frame, never a CSS transition (the tween clock is shared).
+ */
+.compact-work-title {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+}
+
+.compact-work-title .tool-group-title {
+  position: absolute;
+  inset: 0;
+}
+
+/*
  * BoardUI's measured recipe (transcript.rs:2233): a 300%-wide repeating
  * gradient moves from 200% to −100%; its 38→50→62% highlight maps to a
  * 36%-of-title shoulder around each peak, adjacent copies three

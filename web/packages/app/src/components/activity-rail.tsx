@@ -62,7 +62,7 @@ export function ActivityRail({
         style={{ left: ACTIVITY_ICON_LEFT, top: bendRowHeight / 2 - ACTIVITY_ICON_SIZE / 2, opacity: branch }}
       >
         <Icon
-          name={tool.isThought ? "chatRoundLine" : toolIconName(tool.call)}
+          name={tool.kind === "thought" ? "chatRoundLine" : tool.kind === "note" ? "pen" : toolIconName(tool.call)}
           size={ACTIVITY_ICON_SIZE}
         />
       </span>
