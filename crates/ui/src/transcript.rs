@@ -120,8 +120,6 @@ const TOOL_TEXT_SIZE: f32 = 12.0;
 const TOOL_LABEL_SIZE: f32 = TOOL_TEXT_SIZE;
 const TOOL_LABEL_LINE_HEIGHT: f32 = 18.0;
 const TOOL_GROUP_HEADER_HEIGHT: f32 = 26.0;
-/// Settled compact-mode subtitle under the work accordion.
-const WORKED_FOR_HEIGHT: f32 = 16.0;
 /// Compact rows retain the analytic heights used by row and group folds.
 const TOOL_TREE_ROW_HEIGHT: f32 = 32.0;
 const TOOL_FOLD: motion::MotionSpec = motion::MotionSpec::new(140, motion::EASE_OUT);
@@ -1584,9 +1582,13 @@ pub fn rows_for_entry(
                         tools: Arc::new(tools),
                         auto_open: false,
                         worked_secs: (!streaming)
-                            .then(|| entry.duration_ms)
-                            .flatten()
-                            .map(|ms| (ms / 1000).max(0)),
+                            .then(|| {
+                                entry
+                                    .duration_ms
+                                    .filter(|&ms| ms > 0)
+                                    .map(|ms| (ms / 1000).max(1))
+                            })
+                            .flatten(),
                     },
                     entry_id: entry.id.clone().into(),
                     timestamp: None,
@@ -2122,6 +2124,53 @@ pub fn format_elapsed(secs: i64) -> String {
 
 fn worked_for_label(secs: i64) -> String {
     format!("Worked for {}", format_elapsed(secs))
+}
+
+/// Compact-mode header: the live tool summary crossfades into "Worked for".
+/// `t` is 0 = summary, 1 = duration.
+fn compact_work_title(
+    summary: SharedString,
+    worked: SharedString,
+    t: f32,
+    shimmer_phase: Option<f32>,
+    theme: &Theme,
+) -> AnyElement {
+    if t >= 1.0 {
+        return tool_group_title(worked, None, theme);
+    }
+    if t <= 0.0 {
+        return tool_group_title(summary, shimmer_phase, theme);
+    }
+    div()
+        .relative()
+        .min_w_0()
+        .w_full()
+        .h(px(TOOL_LABEL_LINE_HEIGHT))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top_0()
+                .h(px(TOOL_LABEL_LINE_HEIGHT))
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .opacity(1.0 - t)
+                .child(tool_group_title(summary, None, theme)),
+        )
+        .child(
+            div()
+                .relative()
+                .top(px(4.0 * (1.0 - t)))
+                .h(px(TOOL_LABEL_LINE_HEIGHT))
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .opacity(t)
+                .child(tool_group_title(worked, None, theme)),
+        )
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -5000,6 +5049,22 @@ impl Transcript {
         cx.notify();
     }
 
+    fn compact_worked_secs_for(&self, entry: &SessionMessageEntry) -> Option<i64> {
+        if !self.compact_mode || entry.role != MessageRole::Assistant {
+            return None;
+        }
+        if entry.status == Some(MessageStatus::Streaming) {
+            return None;
+        }
+        if let Some(ms) = entry.duration_ms {
+            return (ms > 0).then_some((ms / 1000).max(1));
+        }
+        self.compact_last_elapsed
+            .get(&entry.id)
+            .copied()
+            .filter(|&secs| secs > 0)
+    }
+
     /// Cached row build for one entry (streaming entries bypass the cache).
     fn rows_for(&mut self, entry: &SessionMessageEntry, pending: bool) -> Vec<Row> {
         let streaming = entry.status == Some(MessageStatus::Streaming);
@@ -5013,38 +5078,31 @@ impl Transcript {
         } else {
             entry_fingerprint(entry, pending) ^ ((self.compact_mode as u64) << 63)
         };
-        if !streaming
+        let mut rows = if !streaming
             && let Some(cached) = self.row_cache.get(&entry.id)
             && cached.fingerprint == fingerprint
         {
-            return cached.rows.clone();
-        }
-
-        let live_parsers = &mut self.live_parsers;
-        let tree_cache = &mut self.tree_cache;
-        let mut parse = |key: &str, text: &str| -> Arc<BlockTree> {
-            // Render-cache invalidation rides on the row diff in `sync` (only
-            // rows whose content hash changed are spliced — the reparsed tail).
-            parse_for_row(streaming, key, text, live_parsers, tree_cache).0
+            cached.rows.clone()
+        } else {
+            let live_parsers = &mut self.live_parsers;
+            let tree_cache = &mut self.tree_cache;
+            let mut parse = |key: &str, text: &str| -> Arc<BlockTree> {
+                // Render-cache invalidation rides on the row diff in `sync` (only
+                // rows whose content hash changed are spliced — the reparsed tail).
+                parse_for_row(streaming, key, text, live_parsers, tree_cache).0
+            };
+            rows_for_entry(entry, pending, self.compact_mode, &mut parse)
         };
-        let mut rows = rows_for_entry(entry, pending, self.compact_mode, &mut parse);
-        if self.compact_mode && !streaming {
-            let secs = entry
-                .duration_ms
-                .filter(|&ms| ms > 0)
-                .map(|ms| (ms / 1000).max(1))
-                .or_else(|| self.compact_last_elapsed.get(&entry.id).copied());
-            if let Some(secs) = secs.filter(|&s| s > 0) {
-                for row in &mut rows {
-                    if let RowKind::ToolGroup {
-                        worked_secs,
-                        auto_open,
-                        ..
-                    } = &mut row.kind
-                        && !*auto_open
-                    {
-                        *worked_secs = Some(secs);
-                    }
+        if let Some(secs) = self.compact_worked_secs_for(entry) {
+            for row in &mut rows {
+                if let RowKind::ToolGroup {
+                    worked_secs,
+                    auto_open,
+                    ..
+                } = &mut row.kind
+                    && !*auto_open
+                {
+                    *worked_secs = Some(secs);
                 }
             }
         }
@@ -6827,7 +6885,7 @@ impl Transcript {
         if self.compact_mode && active {
             self.compact_live_entries.insert(row_id.clone());
         }
-        let worked_secs = worked_secs.filter(|_| self.compact_mode && !active);
+        let worked_secs = worked_secs.filter(|_| self.compact_mode);
         if worked_secs.is_some() && self.compact_live_entries.remove(row_id) {
             self.compact_worked_fade_at
                 .insert(row_id.clone(), Instant::now());
@@ -6836,6 +6894,19 @@ impl Transcript {
             .compact_worked_fade_at
             .get(row_id)
             .is_some_and(|at| at.elapsed() < motion::FADE_IN.total());
+        let worked_fade_t = match worked_secs {
+            Some(_) if animate_worked && !cx.reduce_motion() => self
+                .compact_worked_fade_at
+                .get(row_id)
+                .map(|at| {
+                    motion::FADE_IN.progress(
+                        at.elapsed().as_secs_f32() / motion::FADE_IN.total().as_secs_f32(),
+                    )
+                })
+                .unwrap_or(1.0),
+            Some(_) => 1.0,
+            None => 0.0,
+        };
 
         // A settled collapsed group has no visible body. Do not construct or
         // format thousands of hidden chips merely to clip them to zero height.
@@ -7161,41 +7232,18 @@ impl Transcript {
                     .h(px(TOOL_LABEL_LINE_HEIGHT))
                     .flex()
                     .items_center()
-                    .truncate()
-                    .child(tool_group_title(summary.clone(), shimmer_phase, theme)),
+                    .overflow_hidden()
+                    .child(match worked_secs {
+                        Some(secs) => compact_work_title(
+                            summary.clone(),
+                            SharedString::from(worked_for_label(secs)),
+                            worked_fade_t,
+                            shimmer_phase,
+                            theme,
+                        ),
+                        None => tool_group_title(summary.clone(), shimmer_phase, theme),
+                    }),
             );
-        let worked_line = worked_secs.map(|secs| {
-            let label = div()
-                .pl(px(28.0))
-                .h(px(WORKED_FOR_HEIGHT))
-                .flex()
-                .items_center()
-                .text_size(px(11.0))
-                .text_color(theme.text_faint)
-                .child(SharedString::from(worked_for_label(secs)));
-            if animate_worked && !cx.reduce_motion() {
-                motion::fade_in(SharedString::from(format!("{row_id}-worked")), label)
-                    .into_any_element()
-            } else {
-                label.into_any_element()
-            }
-        });
-        let header_height = TOOL_GROUP_HEADER_HEIGHT
-            + if worked_line.is_some() {
-                WORKED_FOR_HEIGHT
-            } else {
-                0.0
-            };
-        let header = if let Some(worked_line) = worked_line {
-            div()
-                .flex()
-                .flex_col()
-                .child(header)
-                .child(worked_line)
-                .into_any_element()
-        } else {
-            header.into_any_element()
-        };
 
         let chips = div()
             .pt(px(CHIPS_TOP_PAD))
@@ -7441,7 +7489,11 @@ impl Transcript {
             // retain their explicit mono/diff typography below this boundary.
             .font_family(theme.font_sans_fixed.clone())
             .when(collapses, |el| {
-                el.child(reveal_tool_row(header, header_height, header_reveal))
+                el.child(reveal_tool_row(
+                    header.into_any_element(),
+                    TOOL_GROUP_HEADER_HEIGHT,
+                    header_reveal,
+                ))
             })
             .child(body)
             .when(motion_active || animate_worked, |group| {
@@ -11088,6 +11140,7 @@ mod tests {
         };
         assert_eq!(*worked_secs, Some(310));
         assert_eq!(worked_for_label(310), "Worked for 5m 10s");
+        assert_eq!(worked_for_label(95), "Worked for 1m 35s");
 
         let streaming = assistant("a1", MessageStatus::Streaming, vec![tool_part("t0", "ls")]);
         let mut streaming = streaming;
@@ -11099,6 +11152,35 @@ mod tests {
         assert_eq!(
             *worked_secs, None,
             "live compact groups keep the working trailer, not a settled duration"
+        );
+
+        let mut zero = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![tool_part("t0", "ls"), text_part("r0", "done")],
+        );
+        zero.duration_ms = Some(0);
+        let rows = rows_for_entry(&zero, false, true, &mut parse);
+        let RowKind::ToolGroup { worked_secs, .. } = &rows[0].kind else {
+            panic!("expected a tool group");
+        };
+        assert_eq!(
+            *worked_secs, None,
+            "a zero stamp is a real finish, not a missing field to guess from"
+        );
+
+        let missing = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![tool_part("t0", "ls"), text_part("r0", "done")],
+        );
+        let rows = rows_for_entry(&missing, false, true, &mut parse);
+        let RowKind::ToolGroup { worked_secs, .. } = &rows[0].kind else {
+            panic!("expected a tool group");
+        };
+        assert_eq!(
+            *worked_secs, None,
+            "pre-durationMs history keeps the tool summary"
         );
     }
 
