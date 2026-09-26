@@ -794,6 +794,27 @@ pub struct CheckoutFileDiffText {
     pub stale: bool,
 }
 
+/// `DiscardWorkingTree` request — the chat-owned checkout is restored to its
+/// current HEAD only after the engine re-verifies the snapshot the user
+/// confirmed (`expected_checksum`). Destructive; there is no dry-run form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardWorkingTreeRequest {
+    pub chat_id: String,
+    pub checkout_id: String,
+    pub expected_checksum: String,
+}
+
+/// The discard outcome — `ok` is true only when the whole working tree came
+/// back clean; `checksum` is the post-discard snapshot's, for staleness checks
+/// against a re-opened confirmation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardWorkingTreeOutcome {
+    pub ok: bool,
+    pub checksum: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAccount {
@@ -1146,6 +1167,34 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn discard_working_tree_contract_is_camel_case() {
+        let request = DiscardWorkingTreeRequest {
+            chat_id: "chat-1".into(),
+            checkout_id: "checkout".into(),
+            expected_checksum: "abc".into(),
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["chatId"], "chat-1");
+        assert_eq!(value["checkoutId"], "checkout");
+        assert_eq!(value["expectedChecksum"], "abc");
+        assert_eq!(
+            serde_json::from_value::<DiscardWorkingTreeRequest>(value).unwrap(),
+            request
+        );
+        let outcome = DiscardWorkingTreeOutcome {
+            ok: true,
+            checksum: "def".into(),
+        };
+        let value = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["checksum"], "def");
+        assert_eq!(
+            serde_json::from_value::<DiscardWorkingTreeOutcome>(value).unwrap(),
+            outcome
         );
     }
 

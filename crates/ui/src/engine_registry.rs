@@ -294,12 +294,20 @@ impl EngineTarget {
         let method = method.to_owned();
         runtime
             .spawn(async move {
-                let timeout =
-                    Duration::from_secs(if method.contains("Clone") || method.contains("Fetch") {
+                let timeout = Duration::from_secs(
+                    if method.contains("Clone")
+                        || method.contains("Fetch")
+                        || method == roboco_rpc::methods::DISCARD_WORKING_TREE
+                    {
+                        // A discard batches several git invocations per step on
+                        // big working trees; unlike a read, a timeout here would
+                        // misreport an in-flight destructive task that the
+                        // engine always runs to completion.
                         900
                     } else {
                         30
-                    });
+                    },
+                );
                 tokio::time::timeout(timeout, client.call(&method, params))
                     .await
                     .map_err(|_| RpcError::Transport("Engine request timed out".into()))?
