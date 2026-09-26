@@ -25,7 +25,7 @@ use gpui::{
 use gpui_tokio::Tokio;
 use roboco_rpc::methods;
 
-use crate::changes::{Changes, ChangesEvent};
+use crate::changes::{Changes, ChangesEvent, DiscardWorkingTreeRequest};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::files::{FilesCloseDisposition, FilesEvent, FilesSurface, WorkspacePathDrag};
 use crate::icons::{self, icon};
@@ -138,6 +138,14 @@ struct ChatMenuState {
     chat_id: String,
     position: Point<Pixels>,
     page: ChatMenuPage,
+}
+
+/// The Changes pane's trash button flow: the confirmation the shell shows on
+/// click, or the failure card after the RPC rejects the discard.
+#[derive(Debug, Clone)]
+enum DiscardWorkingTreeFlow {
+    Confirm(DiscardWorkingTreeRequest),
+    Failed(SharedString),
 }
 
 /// Interruptible height tween for the sidebar's device/archive disclosures.
@@ -1300,6 +1308,10 @@ pub struct Shell {
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    /// Global confirmation/error dialog for the Changes-pane trash action. The
+    /// RPC task is retained separately so rerenders do not cancel it.
+    discard_working_tree: Option<DiscardWorkingTreeFlow>,
+    discard_working_tree_task: Option<Task<()>>,
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
@@ -1695,6 +1707,8 @@ impl Shell {
             chat_menu: popover::Popup::default(),
             rename_dialog: None,
             delete_confirm: None,
+            discard_working_tree: None,
+            discard_working_tree_task: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
             section_dialog: None,
@@ -2893,6 +2907,13 @@ impl Shell {
                     }
                     ChangesEvent::OpenFile(path) => {
                         this.add_file_surface(path.clone(), window, cx);
+                    }
+                    ChangesEvent::DiscardWorkingTree(request) => {
+                        if this.discard_working_tree_task.is_none() {
+                            this.discard_working_tree =
+                                Some(DiscardWorkingTreeFlow::Confirm(request.clone()));
+                            cx.notify();
+                        }
                     }
                 },
             );
@@ -4165,6 +4186,54 @@ impl Shell {
             self.jump_hints = visible;
             cx.notify();
         }
+    }
+
+    /// Confirm the Changes pane's trash dialog: dismiss it, then run the
+    /// destructive `DiscardWorkingTree` RPC on the engine that owns the chat.
+    /// The retained task makes repeat clicks inert — one destructive request
+    /// per confirmation, ever — and the engine re-verifies the checksum before
+    /// touching anything, so a stale dismissal is a no-op with an error card.
+    fn confirm_discard_working_tree(&mut self, cx: &mut Context<Self>) {
+        if self.discard_working_tree_task.is_some() {
+            return;
+        }
+        let Some(DiscardWorkingTreeFlow::Confirm(request)) = self.discard_working_tree.clone()
+        else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).target_for_id(&request.chat_id).ok() else {
+            self.discard_working_tree = Some(DiscardWorkingTreeFlow::Failed(
+                "Engine is not connected.".into(),
+            ));
+            cx.notify();
+            return;
+        };
+
+        let params = serde_json::to_value(&roboco_proto::DiscardWorkingTreeRequest {
+            chat_id: request.chat_id,
+            checkout_id: request.checkout_id,
+            expected_checksum: request.expected_checksum,
+        })
+        .unwrap_or_else(|_| serde_json::Value::Null);
+
+        // Dismiss the confirmation immediately. The task remains retained so
+        // repeat clicks cannot issue a second destructive request.
+        self.discard_working_tree = None;
+        self.discard_working_tree_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .call(methods::DISCARD_WORKING_TREE, params)
+                .await;
+            this.update(cx, |shell, cx| {
+                shell.discard_working_tree_task = None;
+                shell.discard_working_tree = match result {
+                    Ok(_) => None,
+                    Err(error) => Some(DiscardWorkingTreeFlow::Failed(format!("{error}").into())),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     fn delete_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
@@ -6529,6 +6598,15 @@ impl Shell {
             cx.notify();
             return true;
         }
+        // The discard confirmation cancels like the rename dialogs — the
+        // dialog card itself is never focused, so its own key handler never
+        // fires; without this arm Escape would fall through to surfaces
+        // underneath the modal.
+        if self.discard_working_tree.is_some() {
+            self.discard_working_tree = None;
+            cx.notify();
+            return true;
+        }
         if self.rename_space_dialog.is_some() {
             self.rename_space_dialog = None;
             cx.notify();
@@ -6921,6 +6999,69 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("delete-chat-dialog", viewport, card));
+        }
+
+        if let Some(flow) = self.discard_working_tree.clone() {
+            let card = match flow {
+                DiscardWorkingTreeFlow::Confirm(_) => {
+                    popover::dialog_card(&theme)
+                        .child(popover::dialog_title(
+                            &theme,
+                            "Discard working tree changes?",
+                        ))
+                        .child(div().mt(px(6.0)).child(popover::dialog_body(
+                            &theme,
+                            "Discard all uncommitted changes in this working tree? This can’t be undone.",
+                        )))
+                        .child(
+                            div()
+                                .mt(px(16.0))
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .child(
+                                    popover::btn_ghost(
+                                        &theme,
+                                        "Cancel",
+                                        "discard-working-tree-cancel",
+                                    )
+                                    .id("discard-working-tree-cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.discard_working_tree = None;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    popover::btn_danger(&theme, "Discard changes")
+                                        .id("discard-working-tree-confirm")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_discard_working_tree(cx)
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                }
+                DiscardWorkingTreeFlow::Failed(error) => popover::dialog_card(&theme)
+                    .child(popover::dialog_title(&theme, "Couldn’t discard changes"))
+                    .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, error)))
+                    .child(
+                        div().mt(px(16.0)).flex().justify_end().child(
+                            popover::btn_primary(&theme, "Close")
+                                .id("discard-working-tree-error-close")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.discard_working_tree = None;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .into_any_element(),
+            };
+            overlays.push(popover::modal(
+                "discard-working-tree-dialog",
+                viewport,
+                card,
+            ));
         }
 
         overlays

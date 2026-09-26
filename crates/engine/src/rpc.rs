@@ -1544,6 +1544,90 @@ impl RpcService for EngineRpc {
                 })
                 .await
             }
+            // The Changes pane's trash action: an explicit, verified,
+            // all-or-nothing revert of a chat-owned working tree. Refuses
+            // before mutating whenever the confirmed snapshot went stale, the
+            // checkout moved, or an agent is live in the tree.
+            methods::DISCARD_WORKING_TREE => {
+                // This destructive branch performs several nested filesystem
+                // futures. Box it so unrelated RPC calls do not inherit that
+                // state in the already-large dispatcher stack frame.
+                Box::pin(async move {
+                    let p: roboco_proto::DiscardWorkingTreeRequest = parse_params(params)?;
+                    let chat = self
+                        .workspace
+                        .chat(&p.chat_id)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
+                    if chat.device_id != self.doc_host.device_id() {
+                        return Err(RpcError::Failed("chat is not hosted by this device".into()));
+                    }
+                    let cwd = chat
+                        .cwd
+                        .as_deref()
+                        .ok_or_else(|| RpcError::Failed("chat has no checkout".into()))?;
+                    let identity = self
+                        .repos
+                        .checkout_identity(std::path::Path::new(cwd))
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if identity.id != p.checkout_id {
+                        return Err(RpcError::Failed(
+                            "chat checkout changed since the confirmation was opened".into(),
+                        ));
+                    }
+
+                    // Refuse the mutation when any local chat on this exact
+                    // checkout has a live run. We never interrupt an agent as a
+                    // side effect of discarding files.
+                    let chats = self.workspace.watch_chats().borrow().clone();
+                    for candidate in chats {
+                        if candidate.device_id != self.doc_host.device_id() {
+                            continue;
+                        }
+                        let same_checkout =
+                            if candidate.checkout_id.as_deref() == Some(identity.id.as_str()) {
+                                true
+                            } else if let Some(candidate_cwd) = candidate.cwd.as_deref() {
+                                self.repos
+                                    .checkout_identity(std::path::Path::new(candidate_cwd))
+                                    .await
+                                    .is_ok_and(|candidate_identity| {
+                                        candidate_identity.id == identity.id
+                                    })
+                            } else {
+                                false
+                            };
+                        if same_checkout
+                            && self
+                                .sessions
+                                .session_status(&candidate.id)
+                                .is_some_and(|session| {
+                                    matches!(
+                                        session.status,
+                                        roboco_proto::SessionStatus::Working
+                                            | roboco_proto::SessionStatus::AwaitingInput
+                                    )
+                                })
+                        {
+                            return Err(RpcError::Failed(
+                                "an agent is active in this working tree".into(),
+                            ));
+                        }
+                    }
+
+                    let snapshot = self
+                        .diff_sync
+                        .discard_working_tree(&identity.id, &p.expected_checksum)
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    RpcReply::value(&roboco_proto::DiscardWorkingTreeOutcome {
+                        ok: true,
+                        checksum: snapshot.checksum,
+                    })
+                })
+                .await
+            }
             methods::GET_CHECKOUT_FILE_DIFF_TEXT => {
                 // This branch contains several large nested async futures. Keep it
                 // behind an allocation so every unrelated RPC does not carry that
