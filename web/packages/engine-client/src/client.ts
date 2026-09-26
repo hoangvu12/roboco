@@ -7,7 +7,7 @@ import {
   type ClientFrame,
   type ServerFrame,
 } from "./codec";
-import { ENGINE_INFO } from "./methods";
+import { ENGINE_INFO, LIST_COMMANDS, LIST_MODELS } from "./methods";
 import { wireParams } from "./request-routing";
 import { RpcError, wireError } from "./rpc-error";
 import { browserWebSocket, type WebSocketFactory, type WsSocket, type SocketClose } from "./socket";
@@ -550,6 +550,11 @@ export class EngineClient {
   #timeoutFor(method: string): number {
     if (method.includes("Clone") || method.includes("Fetch")) {
       return this.#longCallTimeoutMs;
+    }
+    if (method === LIST_MODELS || method === LIST_COMMANDS) {
+      // Adapter catalog discovery may cold-boot a CLI for up to ~90s; give it
+      // the discovery budget plus shutdown overhead (desktop registry parity).
+      return 100_000;
     }
     return this.#callTimeoutMs;
   }
