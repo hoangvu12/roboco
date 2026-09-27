@@ -71,10 +71,10 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
             "irm 'https://cursor.com/install?win32=true' | iex",
         )],
         Cursor => vec![Shell("curl https://cursor.com/install -fsS | bash", "bash")],
-        Opencode if windows => vec![Npm("opencode-ai", false)],
+        Opencode if windows => vec![Npm("@opencode/cli", false)],
         Opencode => vec![
             Shell("curl -fsSL https://opencode.ai/install | bash", "bash"),
-            Npm("opencode-ai", false),
+            Npm("@opencode/cli", false),
         ],
         Pi if windows => vec![Npm("@earendil-works/pi-coding-agent", true)],
         Pi => vec![
@@ -153,7 +153,7 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         ClaudeCode => "curl -fsSL https://claude.ai/install.sh | bash",
         Codex => "npm install -g @openai/codex",
         Cursor => "curl https://cursor.com/install -fsS | bash",
-        Opencode => "npm install -g opencode-ai",
+        Opencode => "npm install -g @opencode/cli",
         Pi => "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
         Grok => "npm install -g @xai-official/grok",
         Hermes => "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
@@ -436,6 +436,14 @@ mod tests {
             methods(HarnessId::Pi, Platform::Windows)[0],
             Method::Npm(_, true)
         ));
+        assert!(matches!(
+            methods(HarnessId::Opencode, Platform::Windows)[0],
+            Method::Npm("@opencode/cli", false)
+        ));
+        assert!(matches!(
+            methods(HarnessId::Opencode, Platform::Unix)[1],
+            Method::Npm("@opencode/cli", false)
+        ));
     }
 
     #[tokio::test]
@@ -548,6 +556,10 @@ mod tests {
             let (cli, dir) = cli_and_dir(id);
             assert!(!cli.is_empty() && !dir.is_empty());
         }
+        assert_eq!(
+            manual_command(HarnessId::Opencode),
+            Some("npm install -g @opencode/cli")
+        );
         assert!(
             post_install(HarnessId::Mock)
                 .unwrap_err()
