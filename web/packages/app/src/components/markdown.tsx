@@ -64,7 +64,10 @@ import { Tooltip } from "./ui/Tooltip";
  */
 export interface MarkdownSurface {
   readonly workspaceRoot: string | null;
-  readonly openWorkspaceFile: (path: string) => void;
+  /** The internal link action: opening a workspace file in the right pane,
+   * carrying the link's referenced line/column (d1010657's
+   * `add_file_surface_at`) so the viewer jumps to it. */
+  readonly openWorkspaceFile: (path: string, line: number | null, column: number | null) => void;
 }
 
 const MarkdownSurfaceContext = createContext<MarkdownSurface | null>(null);
@@ -357,7 +360,7 @@ function LinkChrome({
     if (address !== null) {
       window.open(address, "_blank", "noopener,noreferrer");
     } else if (workspace !== null) {
-      surface.openWorkspaceFile(workspace.path);
+      surface.openWorkspaceFile(workspace.path, workspace.line, workspace.column);
     }
   };
 

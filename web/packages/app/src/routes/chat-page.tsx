@@ -348,12 +348,19 @@ export function ConversationPage() {
 
   // The markdown host hooks (transcript.rs:5341-5349 `workspace_root` +
   // `LinkOutcome::Internal`): the chat's cwd resolves agent-authored file
-  // links, and an internal click opens the file's right-pane tab.
+  // links, and an internal click opens the file's right-pane tab — carrying
+  // the link's line/column so the viewer jumps to the referenced line
+  // (d1010657's `add_file_surface_at`).
   const markdownSurface = useMemo<MarkdownSurface>(
     () => ({
       workspaceRoot: cwd,
-      openWorkspaceFile: (path) => {
-        rightPaneStore.addFileSurface(chatId, path);
+      openWorkspaceFile: (path, line, column) => {
+        rightPaneStore.addFileSurface(
+          chatId,
+          path,
+          chatId,
+          line !== null ? { line, column } : null,
+        );
         if (!rightPaneStore.stateFor(chatId).open) {
           rightPaneStore.toggle(chatId);
         }

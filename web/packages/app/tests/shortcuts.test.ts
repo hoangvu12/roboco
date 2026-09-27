@@ -113,14 +113,15 @@ describe("shortcut event bus", () => {
 // ---------------------------------------------------------------------------
 
 describe("SHORTCUT_IDS", () => {
-  it("has exactly 21 entries in settings.rs order", () => {
-    expect(SHORTCUT_IDS).toHaveLength(21);
+  it("has exactly 22 entries in settings.rs order", () => {
+    expect(SHORTCUT_IDS).toHaveLength(22);
     expect(SHORTCUT_IDS).toEqual([
       "captureAppshot",
       "saveFile",
       "browserReload",
       "toggleSidebar",
       "toggleChanges",
+      "toggleFiles",
       "toggleTerminal",
       "newSession",
       "newProject",
@@ -146,6 +147,7 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutLabel("browserReload")).toBe("Reload browser page");
     expect(shortcutLabel("toggleSidebar")).toBe("Toggle left sidebar");
     expect(shortcutLabel("toggleChanges")).toBe("Toggle right sidebar");
+    expect(shortcutLabel("toggleFiles")).toBe("Toggle files panel");
     expect(shortcutLabel("toggleTerminal")).toBe("Toggle terminal");
     expect(shortcutLabel("newSession")).toBe("New session");
     expect(shortcutLabel("newProject")).toBe("New project");
@@ -162,6 +164,7 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutGroup("browserReload")).toBe("Browser");
     expect(shortcutGroup("toggleSidebar")).toBe("Panels");
     expect(shortcutGroup("toggleChanges")).toBe("Panels");
+    expect(shortcutGroup("toggleFiles")).toBe("Panels");
     expect(shortcutGroup("toggleTerminal")).toBe("Panels");
     expect(shortcutGroup("newSession")).toBe("Sessions");
     expect(shortcutGroup("newProject")).toBe("Projects");
@@ -366,11 +369,12 @@ describe("BROWSER_RESERVED", () => {
 describe("applyKeymap", () => {
   it("registers every available default and both fixed chords", () => {
     const table = applyKeymap(defaultKeymap(false), false);
-    // 10 available scalar ids + 9 jump slots + mod-k + mod-,.
-    expect(table.size).toBe(21);
+    // 11 available scalar ids + 9 jump slots + mod-k + mod-,.
+    expect(table.size).toBe(22);
     expect(table.get("ctrl-s")?.event).toBe("save-file");
     expect(table.get("ctrl-b")?.event).toBe("toggle-sidebar");
     expect(table.get("ctrl-r")?.event).toBe("toggle-changes");
+    expect(table.get("ctrl-e")?.event).toBe("toggle-files");
     expect(table.get("ctrl-j")?.event).toBe("toggle-terminal");
     expect(table.get("ctrl-n")?.event).toBe("new-chat");
     // New project lands on the add-space palette (its own toggle).
@@ -392,6 +396,7 @@ describe("applyKeymap", () => {
   it("spells the mac table with cmd and leaves Next/Prev on real ctrl", () => {
     const table = applyKeymap(defaultKeymap(true), true);
     expect(table.get("cmd-b")?.event).toBe("toggle-sidebar");
+    expect(table.get("cmd-e")?.event).toBe("toggle-files");
     expect(table.get("cmd-1")?.slot).toBe(0);
     expect(table.get("cmd-/")?.event).toBe("open-model-picker");
     expect(table.get("ctrl-tab")?.event).toBe("next-session");
@@ -560,6 +565,11 @@ describe("healReservedComposerShortcuts", () => {
     expect(healReservedComposerShortcuts(mac, true).nextSession).toBe("ctrl-tab");
     const other: KeymapConfig = { ...defaultKeymap(false), nextSession: "mod-enter" };
     expect(healReservedComposerShortcuts(other, false).nextSession).toBe("mod-tab");
+  });
+
+  it("heals the files-panel shortcut like every other id (b9b35665)", () => {
+    const config: KeymapConfig = { ...defaultKeymap(false), toggleFiles: "mod-enter" };
+    expect(healReservedComposerShortcuts(config, false).toggleFiles).toBe("mod-e");
   });
 });
 

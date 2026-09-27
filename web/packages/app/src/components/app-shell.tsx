@@ -323,6 +323,13 @@ export function AppShell() {
             emitShortcut("toggle-changes");
           }
           return;
+        case "toggle-files":
+          // The explorer's own toggle (the titlebar tree button): chat-scoped
+          // like the other panel toggles, quiet nowhere else.
+          if (route === "chat" && paneChatId !== null) {
+            emitShortcut("toggle-files");
+          }
+          return;
         case "toggle-terminal":
           if (route === "chat") {
             emitShortcut("toggle-terminal");
@@ -383,6 +390,18 @@ export function AppShell() {
         // its own, so the composer's textarea is the mounted target.
         if (!rightPaneStore.stateFor(paneChatId).open) {
           document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+        }
+      }),
+    [paneChatId],
+  );
+  useEffect(
+    () =>
+      // `ToggleFiles` — docks/undocks the explorer portion of the one right
+      // pane without touching the surface host, the same call the titlebar's
+      // tree button makes (b9b35665's `toggle_files_panel`).
+      onShortcut("toggle-files", () => {
+        if (paneChatId !== null) {
+          rightPaneStore.toggleFilesPanel(paneChatId);
         }
       }),
     [paneChatId],

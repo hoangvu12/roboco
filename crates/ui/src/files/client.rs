@@ -26,7 +26,12 @@ pub struct FilesRequestContext {
 impl FilesRequestContext {
     pub fn for_chat(state: &AppState, chat_id: &str) -> Option<Self> {
         let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
-        let cwd = chat.cwd.clone()?;
+        // A projectless chat (no space) reports the portable `~` marker; the
+        // host engine expands it to its own home.
+        let cwd = chat
+            .cwd
+            .clone()
+            .or_else(|| chat.space_id.is_none().then(|| "~".to_string()))?;
         let target_device_id = None;
         Some(Self {
             engine: crate::engine_registry::ScopedId::parse(chat_id)
@@ -39,8 +44,12 @@ impl FilesRequestContext {
             },
             target_device_id,
             cwd,
+            // A projectless tree is rooted at the chat's directory, even if
+            // that directory happens to live inside a Git checkout.
             checkout_id: chat
-                .checkout_id
+                .space_id
+                .as_ref()
+                .and(chat.checkout_id.clone())
                 .as_deref()
                 .map(crate::request_routing::raw_id)
                 .transpose()

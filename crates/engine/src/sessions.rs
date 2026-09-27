@@ -360,7 +360,9 @@ impl SessionsEngine {
     ) -> Result<String, EngineError> {
         // Project-less chats store cwd `~` (the creating device can't know the
         // host's home); expand it here, on the host, where the run spawns.
-        request.cwd = crate::repos::expand_home(&request.cwd);
+        request.cwd = crate::repos::expand_home(&request.cwd)
+            .map_err(|error| EngineError::Other(error.to_string()))?;
+
         // Every dispatched prompt is a turn — routed steer or fresh run alike.
         self.note_turn_start(chat_id, &request.cwd);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {

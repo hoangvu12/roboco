@@ -262,6 +262,25 @@ describe("heal", () => {
     expect(reserved.openModelPicker).toBe("mod-/");
   });
 
+  it("keymap — a new shortcut default yields to an existing custom binding (b9b35665)", () => {
+    // The web port of a_new_shortcut_default_yields_to_an_existing_custom_
+    // binding (settings.rs): a file that predates the files-panel shortcut
+    // and had already put its default chord on another action keeps that
+    // binding, and the new row arrives unbound rather than double-bound.
+    const taken = storedWith({
+      keymap: { saveFile: "mod-s", toggleTerminal: "mod-e" },
+    }).keymap;
+    expect(taken.toggleTerminal).toBe("mod-e");
+    expect(taken.toggleFiles).toBe("");
+
+    // With the chord free, the new row takes its default; a stored value
+    // always wins outright.
+    const free = storedWith({ keymap: { saveFile: "mod-s" } }).keymap;
+    expect(free.toggleFiles).toBe("mod-e");
+    const custom = storedWith({ keymap: { toggleFiles: "mod-shift-e" } }).keymap;
+    expect(custom.toggleFiles).toBe("mod-shift-e");
+  });
+
   it("gitHistoryColumnOrder — dedups and appends the missing columns", () => {
     expect(storedWith({ gitHistoryColumnOrder: ["sha", "sha", "date"] }).gitHistoryColumnOrder).toEqual([
       "sha",

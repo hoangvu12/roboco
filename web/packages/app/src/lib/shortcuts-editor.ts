@@ -131,6 +131,8 @@ export function shortcutDescription(id: ShortcutId): string {
       return "Show or hide sessions and settings navigation.";
     case "toggleChanges":
       return "Show or hide the right sidebar for the current session.";
+    case "toggleFiles":
+      return "Show or hide the files panel for the current session.";
     case "toggleTerminal":
       return "Show or hide the terminal for the current session.";
     case "newSession":

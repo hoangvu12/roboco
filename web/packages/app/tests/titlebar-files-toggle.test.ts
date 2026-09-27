@@ -110,11 +110,17 @@ describe("the stylesheet half — the active wash and the band budget", () => {
     );
   });
 
-  it("the toggle-slots token is the desktop's PANEL_TOGGLE_SLOTS pair (56px)", () => {
+  it("the toggle-slots token is the desktop's PANEL_TOGGLE_SLOTS pair (60px)", () => {
     const token = css.match(/--rb-titlebar-toggle-slots:\s*(\d+(?:\.\d+)?)px;/)?.[1];
     expect(token, "--rb-titlebar-toggle-slots must resolve to px").toBeDefined();
     expect(Number(token)).toBe(PANEL_TOGGLE_SLOTS);
-    expect(PANEL_TOGGLE_SLOTS).toBe(56);
+    // 28 + 28 + the 4px gap between the two anchors (b9b35665).
+    expect(PANEL_TOGGLE_SLOTS).toBe(60);
+    // The gap itself ships as its own token so the two toggles never render
+    // as one fused block.
+    const gap = css.match(/--rb-titlebar-toggle-gap:\s*(\d+(?:\.\d+)?)px;/)?.[1];
+    expect(gap, "--rb-titlebar-toggle-gap must resolve to px").toBeDefined();
+    expect(Number(gap)).toBe(4);
   });
 
   it("the pane band's inner width budgets the pair, not one slot", () => {

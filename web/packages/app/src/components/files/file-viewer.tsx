@@ -93,6 +93,35 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
     };
   }, [client, session, path, surfaceId]);
 
+  // ── Chat file links (d1010657) ────────────────────────────────────────
+  // A pending line navigation from the pane store — the desktop's
+  // `pending_line_navigation` — is consumed here: it may arrive before the
+  // entry exists (the link opened the tab), so the markdown flip waits for
+  // the document and the code view retries its scroll once the text loads.
+  const [reveal, setReveal] = useState<{ line: number; column: number | null; seq: number } | null>(null);
+  const pending = rightPaneStore.pendingFileLine();
+  useEffect(() => {
+    if (pending === null || pending.surfaceId !== surfaceId) {
+      return;
+    }
+    rightPaneStore.clearFileLine();
+    setReveal({ line: pending.line, column: pending.column, seq: pending.seq });
+  }, [pending, surfaceId]);
+  const fileDoc = entry?.document ?? null;
+  useEffect(() => {
+    // Source line numbers do not map to the rendered Markdown blocks, so a
+    // line jump switches the preview to source (the desktop suspends the
+    // preview's parsed tree and decoded media in the same breath).
+    if (reveal === null || fileDoc === null || !fileDoc.getSnapshot().showMarkdown) {
+      return;
+    }
+    fileDoc.setShowMarkdown(false);
+  }, [reveal, fileDoc]);
+
+  const clearReveal = useCallback((): void => {
+    setReveal(null);
+  }, []);
+
   if (path === null) {
     return (
       <div className="files-viewer">
@@ -119,6 +148,8 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
           chatId={chatId}
           surfaceId={surfaceId}
           client={client}
+          reveal={reveal}
+          onRevealApplied={clearReveal}
         />
       )}
     </div>
@@ -282,12 +313,17 @@ function TextViewer({
   chatId,
   surfaceId,
   client,
+  reveal,
+  onRevealApplied,
 }: {
   readonly doc: FileDocument | null;
   readonly path: string;
   readonly chatId: string;
   readonly surfaceId: string;
   readonly client: WorkspaceFilesClient | null;
+  /** A pending chat-link line jump (the desktop's pending_line_navigation). */
+  readonly reveal: { line: number; column: number | null; seq: number } | null;
+  readonly onRevealApplied: () => void;
 }) {
   const settings = useUiSettings();
   const subscribe = useCallback(
@@ -469,6 +505,10 @@ function TextViewer({
             autoFocus={markdownFocus}
             inputRef={editorInputRef}
             review={editorReview}
+            revealLine={reveal?.line ?? null}
+            revealColumn={reveal?.column ?? null}
+            revealSeq={reveal?.seq ?? 0}
+            onRevealApplied={onRevealApplied}
           />
         </div>
       </EditorContextMenu>
@@ -485,6 +525,10 @@ function TextViewer({
           onChange={() => {}}
           codeFontSize={settings.codeFontSize}
           wordWrap={settings.filesWordWrap}
+          revealLine={reveal?.line ?? null}
+          revealColumn={reveal?.column ?? null}
+          revealSeq={reveal?.seq ?? 0}
+          onRevealApplied={onRevealApplied}
         />
       </div>
     );

@@ -423,6 +423,25 @@ describe("resolve_workspace_file_link", () => {
     });
   });
 
+  it("line ranges open at their first line (d1010657)", () => {
+    const root = "/work/comet";
+    for (const target of ["src/lib.rs#L10-L20", "src/lib.rs#L10-20"]) {
+      expect(resolveWorkspaceFileLink(target, root)).toEqual({
+        path: "src/lib.rs",
+        line: 10,
+        column: null,
+      });
+    }
+    for (const target of [
+      "src/lib.rs#L10-",
+      "src/lib.rs#L10-Lx",
+      "src/lib.rs#L0-L2",
+      "src/lib.rs#L99999999999",
+    ]) {
+      expect(resolveWorkspaceFileLink(target, root)?.line ?? null).toBeNull();
+    }
+  });
+
   it("resolves canonical file mentions", () => {
     expect(resolveWorkspaceFileLink("roboco-file:src/a%20file.rs", "/work/comet")).toEqual({
       path: "src/a file.rs",

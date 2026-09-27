@@ -396,14 +396,18 @@ export function titlebarRowLeft(options: {
 export const TITLEBAR_EDGE_INSET = 6;
 /** One fixed trailing control's slot: a 28px `header_icon_button` (shell.rs:7552). */
 const TITLEBAR_TOGGLE_SLOT = 28;
+/** `PANEL_TOGGLE_GAP` (tabs.rs, b9b35665): the 4px rhythm the surface strip
+ * keeps between its controls, so the explorer toggle and the pane toggle
+ * never render as one fused block. */
+export const PANEL_TOGGLE_GAP = 4;
 /**
  * `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the two fixed right-edge anchors — the
- * Files toggle and the pane toggle, two 28px `header_icon_button`s. They keep
- * their slots even while the pane is shut (`(files_visible -
+ * Files toggle and the pane toggle, two 28px `header_icon_button`s plus their
+ * gap. They keep their slots even while the pane is shut (`(files_visible -
  * right_pad).max(PANEL_TOGGLE_SLOTS)`, tabs.rs:59), so every band budgeting
  * the trailing group reserves the PAIR.
  */
-export const PANEL_TOGGLE_SLOTS = TITLEBAR_TOGGLE_SLOT * 2;
+export const PANEL_TOGGLE_SLOTS = TITLEBAR_TOGGLE_SLOT * 2 + PANEL_TOGGLE_GAP;
 
 /**
  * The pane header strip's width — `render_session_title_bar`'s

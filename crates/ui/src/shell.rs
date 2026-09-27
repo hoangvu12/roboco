@@ -76,6 +76,7 @@ actions!(
         SaveFile,
         ToggleSidebar,
         ToggleChanges,
+        ToggleFiles,
         AddSpacePalette,
         OpenModelPicker,
         ToggleCommandPalette,
@@ -372,6 +373,11 @@ pub fn apply_keymap(
         KeyBinding::new(
             &valid_or_default(&keymap.toggle_changes, "mod-r"),
             ToggleChanges,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(&keymap.toggle_files, "mod-e"),
+            ToggleFiles,
             None,
         ),
         KeyBinding::new(
@@ -2768,6 +2774,18 @@ impl Shell {
 
     /// Open or focus a session-owned editor tab. The explorer is independent.
     fn add_file_surface(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_file_surface_at(path, None, window, cx);
+    }
+
+    /// Open or focus a session-owned editor tab, optionally navigating to a
+    /// referenced line/column (a chat file link).
+    fn add_file_surface_at(
+        &mut self,
+        path: String,
+        location: Option<(u32, Option<u32>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_chat.is_empty() {
             return;
         }
@@ -2777,6 +2795,11 @@ impl Shell {
         if let Some(id) = self.file_surface_keys.get(&lookup).copied() {
             let surface = RightSurface::File(id);
             self.set_right_active(surface, cx);
+            if let Some((line, column)) = location
+                && let Some(file) = self.file_surfaces.get(&id).cloned()
+            {
+                file.update(cx, |file, cx| file.navigate_to_line(line, column, cx));
+            }
             self.focus_right_file_editor(surface, window, cx);
             return;
         }
@@ -2851,6 +2874,11 @@ impl Shell {
             RightSurface::File(id),
         );
         self.set_right_active(RightSurface::File(id), cx);
+        if let Some((line, column)) = location
+            && let Some(file) = self.file_surfaces.get(&id).cloned()
+        {
+            file.update(cx, |file, cx| file.navigate_to_line(line, column, cx));
+        }
     }
 
     fn open_workspace_file_link(
@@ -2882,7 +2910,12 @@ impl Shell {
         if !was_open {
             self.right_tween = Some(WidthTween::new(from, self.right_target(cx)));
         }
-        self.add_file_surface(link.path, window, cx);
+        self.add_file_surface_at(
+            link.path,
+            link.line.map(|line| (line, link.column)),
+            window,
+            cx,
+        );
         true
     }
 
@@ -9298,6 +9331,13 @@ impl Render for Shell {
                         // Restore a mounted target so the next shortcut can reopen it.
                         window.focus(&this.composer.focus_handle(cx), cx);
                     }
+                }
+            }))
+            // The explorer's own toggle (the titlebar tree button): docks or
+            // undocks the explorer portion without touching the surface host.
+            .on_action(cx.listener(|this, _: &ToggleFiles, window, cx| {
+                if matches!(this.route, Route::Chat) {
+                    this.toggle_files_panel(window, cx);
                 }
             }))
             // Chat-scoped like the panel toggles: Settings has no current

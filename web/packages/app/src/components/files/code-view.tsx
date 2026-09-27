@@ -79,6 +79,19 @@ export interface CodeViewProps {
    * desktop renders the overlay only over a live editor).
    */
   readonly review?: CodeReviewWiring | null;
+  /**
+   * A chat file link's referenced line (1-based, d1010657's
+   * `center_active_line`): scrolled into view centered once the rows
+   * exist — the browser clamps at the top, which is exactly the desktop's
+   * clamp-at-top fix. The caret lands at the line (editable views).
+   */
+  readonly revealLine?: number | null;
+  /** The link's referenced column (1-based), when it had one. */
+  readonly revealColumn?: number | null;
+  /** Bumped per navigation so repeat jumps to the same line re-run. */
+  readonly revealSeq?: number;
+  /** The reveal landed — the host clears its pending request. */
+  readonly onRevealApplied?: () => void;
 }
 
 /** The editor-side comment wiring `CodeView` hosts (preview.rs:2794-2893). */
@@ -108,7 +121,7 @@ function languageForPath(path: string): string | null {
   return name.slice(dot + 1).toLowerCase();
 }
 
-export function CodeView({ text, path, editable, onChange, codeFontSize, wordWrap, autoFocus, inputRef, review }: CodeViewProps) {
+export function CodeView({ text, path, editable, onChange, codeFontSize, wordWrap, autoFocus, inputRef, review, revealLine, revealColumn, revealSeq, onRevealApplied }: CodeViewProps) {
   const language = useMemo(() => languageForPath(path), [path]);
   // Markdown files highlight as markdown; everything else keys off its
   // extension (`lib/syntax.ts` resolves aliases).
@@ -178,6 +191,49 @@ export function CodeView({ text, path, editable, onChange, codeFontSize, wordWra
       textareaRef.current?.focus();
     }
   }, [autoFocus, editable]);
+
+  // A chat file link's line jump: place the caret at the referenced line
+  // (the desktop's set_cursor_position) and center the row (the desktop's
+  // center_active_line). A document still loading has no rows yet — the
+  // reveal re-runs when the text lands (lines.length in the deps).
+  useEffect(() => {
+    if (revealLine === null || revealLine === undefined || revealLine <= 0) {
+      return;
+    }
+    const scroller = scrollRef.current;
+    if (scroller === null) {
+      return;
+    }
+    const row = Math.min(revealLine, Math.max(lines.length, 1));
+    const target = scroller.querySelector<HTMLElement>(`[data-line="${row}"]`);
+    if (target === null) {
+      return;
+    }
+    if (editable) {
+      const textarea = textareaRef.current;
+      if (textarea !== null) {
+        let offset = 0;
+        for (let index = 0; index < row - 1 && index < lines.length; index += 1) {
+          offset += lines[index]!.length + 1;
+        }
+        const column = Math.max(0, (revealColumn ?? 1) - 1);
+        offset += Math.min(column, lines[row - 1]?.length ?? 0);
+        textarea.focus();
+        textarea.setSelectionRange(offset, offset);
+        setActiveLine(row - 1);
+      }
+    }
+    const viewport = scroller.getBoundingClientRect();
+    const rowRect = target.getBoundingClientRect();
+    // The browser clamps scrollTop at the top (the first line never dips
+    // below the fold — the desktop's explicit clamp-at-top fix); clamp
+    // explicitly so the behavior holds everywhere.
+    scroller.scrollTop = Math.max(
+      0,
+      scroller.scrollTop + rowRect.top + rowRect.height / 2 - (viewport.top + viewport.height / 2),
+    );
+    onRevealApplied?.();
+  }, [revealLine, revealColumn, revealSeq, lines.length, editable, onRevealApplied]);
 
   // Read-only views tokenize synchronously; editable ones debounce at the
   // desktop's 120ms so long files keep typing smooth — the plain rows hold
