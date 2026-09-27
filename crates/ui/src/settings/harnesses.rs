@@ -1430,6 +1430,8 @@ fn install_phase_copy_and_cancel_target_match_install() {
         install_hint(HarnessId::Codex, true, false)
             .starts_with("codex CLI not installed — turn it off or install it.")
     );
+}
+
 #[cfg(feature = "appshots-fixture")]
 impl HarnessesPage {
     pub fn fixture_completion(&self, cx: &mut Context<Self>) -> AnyElement {

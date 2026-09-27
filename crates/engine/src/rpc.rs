@@ -803,7 +803,7 @@ impl EngineRpc {
     async fn catalog_root(&self, p: &FileSearchParams) -> Result<std::path::PathBuf, RpcError> {
         if p.space_id.is_none() && p.path.is_none() {
             let Some(chat_id) = &p.chat_id else {
-                return Ok(home_dir());
+                return Ok(crate::repos::home_dir());
             };
             let chat = self
                 .workspace
@@ -816,8 +816,12 @@ impl EngineRpc {
             if chat.space_id.is_none() {
                 return Ok(chat
                     .cwd
-                    .map(|cwd| std::path::PathBuf::from(crate::sessions::expand_home(&cwd)))
-                    .unwrap_or_else(home_dir));
+                    .map(|cwd| {
+                        crate::repos::expand_home(&cwd)
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| crate::repos::home_dir())
+                    })
+                    .unwrap_or_else(crate::repos::home_dir));
             }
         }
         self.file_search_root(p).await
