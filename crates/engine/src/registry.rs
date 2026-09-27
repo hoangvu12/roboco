@@ -1027,11 +1027,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn antigravity_cli_path_controls_detection_and_enablement() {
+    fn antigravity_server_path_controls_detection_and_enablement() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
+        let cli = bin.join("agy");
+        std::fs::write(&cli, "#!/bin/sh\nexit 91\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
         let server = bin.join("agy_acp_server");
         for installed in [false, true] {
             if installed {
