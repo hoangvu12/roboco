@@ -570,3 +570,37 @@ pub fn warning_strip(theme: &Theme, message: impl Into<SharedString>) -> gpui::D
         )
         .child(div().min_w_0().child(message.into()))
 }
+
+/// A one-line hover note for settings controls (reset times, icon-only
+/// actions), in the same frosted chip as the rest of the app's tooltips.
+pub struct TextTooltip(pub SharedString);
+
+impl Render for TextTooltip {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        let card = div()
+            .max_w(px(320.0))
+            .px(px(9.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(crate::popover::surface_bg(theme))
+            .text_size(px(11.0))
+            .text_color(theme.text_muted)
+            .child(self.0.clone());
+        crate::frost::frosted(6.0, crate::frost::MENU_BLUR, card)
+    }
+}
+
+/// `.tooltip(...)` builder for a [`TextTooltip`].
+pub fn text_tooltip(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    let text: SharedString = text.into();
+    move |_, cx| cx.new(|_| TextTooltip(text.clone())).into()
+}

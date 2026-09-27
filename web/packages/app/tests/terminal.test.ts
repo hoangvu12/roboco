@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeScopedId } from "@roboco/engine-client";
 import { RpcError, type WatchHandlers, type WatchOptions } from "@roboco/engine-client";
 import type { TerminalEvent, TerminalSession } from "@roboco/proto";
 import {
@@ -17,7 +18,7 @@ import {
   shellTitle,
   slideOffset,
 } from "../src/terminal/tabs";
-import { TerminalSessionController, type TerminalSink } from "../src/terminal/session";
+import { TerminalSessionController, type TerminalSink, canvasTerminalKey, terminalOpenCwd, terminalPanelKey, wireTerminalChatId, CANVAS_TERMINAL_PREFIX } from "../src/terminal/session";
 import { xtermThemeFromPalette } from "../src/terminal/theme";
 import type { TerminalPalette } from "@roboco/theme";
 
@@ -431,5 +432,98 @@ describe("TerminalSessionController", () => {
     expect(rpc.callsFor("CloseTerminal")).toHaveLength(1);
     expect(rpc.callsFor("CloseTerminal")[0]!.params).toEqual({ terminalId: "run-9" });
     expect(rpc.watchMethod).toBeNull();
+  });
+});
+
+// ── The new-chat canvas's terminal keys (upstream 23e258ff, #474) ────────
+
+describe("canvas terminal key scheme (state.rs canvas_panel_key & co.)", () => {
+  it("keys the canvas per space; chats keep their own id", () => {
+    expect(canvasTerminalKey("space-1")).toBe("space-canvas:space-1");
+    expect(canvasTerminalKey(null)).toBe("space-canvas:");
+    expect(terminalPanelKey("chat-1", "space-1")).toBe("chat-1");
+    expect(terminalPanelKey("", "space-1")).toBe("space-canvas:space-1");
+    expect(terminalPanelKey(null, null)).toBe("space-canvas:");
+  });
+
+  it("resolves the canvas cwd like terminal_open_cwd_for", () => {
+    // Project folder once the row landed; ~ for a project-less canvas; null
+    // while the row is still missing (the engine resolves the space itself).
+    expect(terminalOpenCwd("space-canvas:space-1", "/Users/me/proj")).toBe("/Users/me/proj");
+    expect(terminalOpenCwd("space-canvas:", null)).toBe("~");
+    expect(terminalOpenCwd("space-canvas:space-1", null)).toBeNull();
+    expect(terminalOpenCwd("space-canvas:space-1", "  ")).toBeNull();
+    // Chat keys never carry a cwd — the engine reads the chat row.
+    expect(terminalOpenCwd("chat-1", "/Users/me/proj")).toBeNull();
+  });
+
+  it("decodes the canvas key's scoped id before the wire (wire_chat_id)", () => {
+    const scoped = encodeScopedId("https://engine.local", "space-1");
+    expect(wireTerminalChatId(`${CANVAS_TERMINAL_PREFIX}${scoped}`)).toBe("space-canvas:space-1");
+    // Unscoped space ids and chat keys pass verbatim; a malformed scoped id
+    // falls back to the key whole, like the desktop's raw_id fallback.
+    expect(wireTerminalChatId("space-canvas:space-1")).toBe("space-canvas:space-1");
+    expect(wireTerminalChatId("chat-1")).toBe("chat-1");
+    expect(wireTerminalChatId("space-canvas:engine:v1:not-base64!")).toBe(
+      "space-canvas:engine:v1:not-base64!",
+    );
+  });
+});
+
+describe("TerminalSessionController canvas open (panel.rs spawn_session)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends the decoded canvas chat id and the explicit cwd", async () => {
+    const rpc = new FakeRpc();
+    const sink = new FakeSink();
+    const scoped = encodeScopedId("https://engine.local", "space-1");
+    const controller = new TerminalSessionController({
+      client: rpc,
+      chatId: `${CANVAS_TERMINAL_PREFIX}${scoped}`,
+      cwd: "/Users/me/proj",
+      sink,
+    });
+    const pending = controller.open(80, 24);
+    expect(rpc.callsFor("OpenTerminal")).toHaveLength(1);
+    expect(rpc.callsFor("OpenTerminal")[0]!.params).toEqual({
+      chatId: "space-canvas:space-1",
+      cols: 80,
+      rows: 24,
+      cwd: "/Users/me/proj",
+    });
+    rpc.resolveLast("OpenTerminal", SESSION);
+    await pending;
+    expect(controller.terminalId).toBe("term-1");
+  });
+
+  it("omits cwd for plain chats and null-cwd canvas keys", async () => {
+    const rpc = new FakeRpc();
+    const sink = new FakeSink();
+    const noCwd = new TerminalSessionController({ client: rpc, chatId: "chat-1", sink });
+    const pending = noCwd.open(80, 24);
+    expect(rpc.callsFor("OpenTerminal")[0]!.params).toEqual({ chatId: "chat-1", cols: 80, rows: 24 });
+    rpc.resolveLast("OpenTerminal", SESSION);
+    await pending;
+
+    const waiting = new TerminalSessionController({
+      client: rpc,
+      chatId: "space-canvas:space-1",
+      cwd: null,
+      sink,
+    });
+    const pendingRow = waiting.open(80, 24);
+    expect(rpc.callsFor("OpenTerminal")[1]!.params).toEqual({
+      chatId: "space-canvas:space-1",
+      cols: 80,
+      rows: 24,
+    });
+    rpc.resolveLast("OpenTerminal", SESSION);
+    await pendingRow;
   });
 });

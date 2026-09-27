@@ -1,5 +1,5 @@
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
-import { methods } from "@roboco/engine-client";
+import { methods, parseScopedId } from "@roboco/engine-client";
 import type { TerminalEvent, TerminalSession } from "@roboco/proto";
 import { COALESCE_MS, RESIZE_DEBOUNCE_MS, decodeBase64, encodeBase64, exitMessage } from "./tabs";
 
@@ -7,8 +7,11 @@ import { COALESCE_MS, RESIZE_DEBOUNCE_MS, decodeBase64, encodeBase64, exitMessag
  * The engine half of one terminal tab, mirroring the desktop panel's
  * per-tab data path (`crates/ui/src/terminal/panel.rs`):
  *
- * - `OpenTerminal {chatId, cols, rows}` → `TerminalSession`; a failure lands
- *   in the emulator as a red one-liner and a dead tab (exited = -1).
+ * - `OpenTerminal {chatId, cols, rows, cwd?}` → `TerminalSession`; a failure lands
+ *   in the emulator as a red one-liner and a dead tab (exited = -1). The
+ *   chat id crosses the wire decoded — a `space-canvas:{spaceId}` canvas
+ *   key's scoped id never survives request routing whole — and the canvas
+ *   passes its project folder (or `~`) as the explicit `cwd`.
  * - `SubscribeTerminal {terminalId, afterSeq}` streams replay-then-live-tail
  *   `TerminalEvent`s; `seq` is tracked so engine-client's automatic
  *   re-subscribe after a reconnect resumes instead of replaying (the params
@@ -39,6 +42,73 @@ export interface TerminalSessionOptions {
   readonly client: TerminalRpc;
   readonly chatId: string;
   readonly sink: TerminalSink;
+  /**
+   * Optional explicit `OpenTerminal` cwd (`terminal_open_cwd_for`): the
+   * new-session canvas has no chat row, so its selected project's folder
+   * rides here — `~` for a deliberate project-less canvas. Existing chats
+   * leave it unset and the engine reads the chat row.
+   */
+  readonly cwd?: string | null;
+}
+
+/** The new-session canvas's per-space panel key prefix (CANVAS_PANEL_PREFIX). */
+export const CANVAS_TERMINAL_PREFIX = "space-canvas:";
+
+/**
+ * Per-space key for new-session-canvas terminal chrome (`canvas_panel_key`):
+ * tabs, drawer open flag, and height belong to the canvas per project, so
+ * two projects never share one drawer. `null` = project-less.
+ */
+export function canvasTerminalKey(spaceId: string | null): string {
+  return `${CANVAS_TERMINAL_PREFIX}${spaceId ?? ""}`;
+}
+
+/**
+ * The panel's session key (`panel_session_key`): the selected chat's id, or
+ * the per-space canvas key when the new-thread canvas is showing.
+ */
+export function terminalPanelKey(chatId: string | null, spaceId: string | null): string {
+  return chatId !== null && chatId !== "" ? chatId : canvasTerminalKey(spaceId);
+}
+
+/**
+ * The canvas's `OpenTerminal` cwd (`terminal_open_cwd_for`): `~` for a
+ * project-less canvas, the project folder once its row has landed, and null
+ * while the row is still missing (the engine resolves the space named by a
+ * `space-canvas:{spaceId}` chat id itself). Chat keys never carry a cwd.
+ */
+export function terminalOpenCwd(
+  sessionKey: string,
+  spacePath: string | null | undefined,
+): string | null {
+  if (!sessionKey.startsWith(CANVAS_TERMINAL_PREFIX)) {
+    return null;
+  }
+  const spaceId = sessionKey.slice(CANVAS_TERMINAL_PREFIX.length);
+  if (spaceId === "") {
+    return "~";
+  }
+  return typeof spacePath === "string" && spacePath.trim() !== "" ? spacePath : null;
+}
+
+/**
+ * The wire chat id (`wire_chat_id`, panel.rs): a canvas key embeds an
+ * engine-SCOPED space id, and the client's request routing decodes whole
+ * identity fields only — never the `space-canvas:` composite — so the
+ * scoped id is decoded here before the params cross the socket. Unscoped
+ * ids (and malformed payloads, matching the desktop's fallback) pass
+ * through verbatim.
+ */
+export function wireTerminalChatId(sessionKey: string): string {
+  if (!sessionKey.startsWith(CANVAS_TERMINAL_PREFIX)) {
+    return sessionKey;
+  }
+  const spaceId = sessionKey.slice(CANVAS_TERMINAL_PREFIX.length);
+  try {
+    return CANVAS_TERMINAL_PREFIX + parseScopedId(spaceId).rawId;
+  } catch {
+    return sessionKey;
+  }
 }
 
 type Timer = ReturnType<typeof setTimeout> | undefined;
@@ -46,6 +116,7 @@ type Timer = ReturnType<typeof setTimeout> | undefined;
 export class TerminalSessionController {
   readonly #client: TerminalRpc;
   readonly #chatId: string;
+  readonly #cwd: string | null;
   readonly #sink: TerminalSink;
 
   #terminalId: string | null = null;
@@ -64,6 +135,7 @@ export class TerminalSessionController {
   constructor(options: TerminalSessionOptions) {
     this.#client = options.client;
     this.#chatId = options.chatId;
+    this.#cwd = options.cwd ?? null;
     this.#sink = options.sink;
   }
 
@@ -90,13 +162,20 @@ export class TerminalSessionController {
   async open(cols: number, rows: number): Promise<void> {
     this.#cols = cols;
     this.#rows = rows;
+    // The canvas's cwd rides as the explicit `OpenTerminal` param — the
+    // engine prefers it, then the chat row, then the space named by a
+    // `space-canvas:{spaceId}` chat id.
+    const params: Record<string, unknown> = {
+      chatId: wireTerminalChatId(this.#chatId),
+      cols,
+      rows,
+    };
+    if (this.#cwd !== null) {
+      params.cwd = this.#cwd;
+    }
     let opened: TerminalSession;
     try {
-      opened = await this.#client.call<TerminalSession>(methods.OPEN_TERMINAL, {
-        chatId: this.#chatId,
-        cols,
-        rows,
-      });
+      opened = await this.#client.call<TerminalSession>(methods.OPEN_TERMINAL, params);
     } catch (error) {
       this.#exitCode = -1;
       const message = error instanceof Error ? error.message : String(error);
