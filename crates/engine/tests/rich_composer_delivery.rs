@@ -165,8 +165,30 @@ fn expected(raw: &str, readable: &str, id: HarnessId) -> String {
             &roboco_proto::file_mentions::local_file_link("src/é file.rs", false),
             "[é file.rs](src/%C3%A9%20file.rs)",
         )
+    } else if id == HarnessId::Opencode {
+        // OpenCode receives canonical identity and converts it locally so a
+        // disappearing project command cannot become ordinary slash text.
+        raw.into()
     } else {
         readable.into()
+    }
+}
+fn assert_delivered(actual: &str, raw: &str, readable: &str, id: HarnessId) {
+    let expected = expected(raw, readable, id);
+    if id == HarnessId::Cursor
+        && let Some(json) = actual.strip_prefix("The preceding user messages may not have reached a Cursor checkpoint before startup stopped. Retain this JSON as conversation history; do not rerun prior tools or side effects. Respond to the current message.\n")
+    {
+        let history: serde_json::Value = serde_json::from_str(json)
+            .expect("rich selections must not corrupt Cursor's recovery JSON");
+        assert_eq!(history["currentUserMessage"], expected, "{id:?}");
+        assert!(
+            history["previousUserMessages"]
+                .as_array()
+                .is_some_and(|messages| !messages.is_empty()),
+            "Cursor recovery must retain the preceding canonical user turns"
+        );
+    } else {
+        assert_eq!(actual, expected, "{id:?}");
     }
 }
 async fn receive(rx: &mut mpsc::UnboundedReceiver<Delivery>) -> Delivery {
@@ -240,7 +262,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let Delivery::Run(run) = receive(&mut rx).await else {
             panic!("fresh run expected")
         };
-        assert_eq!(run.prompt, expected(&raw, &readable, id), "{id:?}");
+        assert_delivered(&run.prompt, &raw, &readable, id);
         assert_eq!(core.sessions.last_request(CHAT).unwrap().prompt, raw);
         assert_persisted(&core, &raw, 1);
 
@@ -252,7 +274,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let Delivery::Steer(text) = receive(&mut rx).await else {
             panic!("warm run must use mailbox")
         };
-        assert_eq!(text, expected(&warm, &readable, id), "{id:?}");
+        assert_delivered(&text, &warm, &readable, id);
         assert_persisted(&core, &warm, 2);
 
         let (steer, readable) = rich_text("steer");
@@ -263,7 +285,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let Delivery::Steer(text) = receive(&mut rx).await else {
             panic!("steer expected")
         };
-        assert_eq!(text, expected(&steer, &readable, id), "{id:?}");
+        assert_delivered(&text, &steer, &readable, id);
         assert_persisted(&core, &steer, 3);
 
         let (attached, readable) = rich_text("attachment");
@@ -278,7 +300,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let Delivery::Run(run) = receive(&mut rx).await else {
             panic!("attachments require a new run")
         };
-        assert_eq!(run.prompt, expected(&attached, &readable, id), "{id:?}");
+        assert_delivered(&run.prompt, &attached, &readable, id);
         assert_eq!(run.attachments, req.attachments);
         assert_persisted(&core, &attached, 4);
         core.shutdown().await;
@@ -323,7 +345,7 @@ async fn rich_selections_are_converted_once_on_startup_retry_for_every_harness()
             let Delivery::Run(run) = receive(&mut rx).await else {
                 panic!("fresh run expected")
             };
-            assert_eq!(run.prompt, expected(&raw, &readable, id), "{id:?}");
+            assert_delivered(&run.prompt, &raw, &readable, id);
         }
         assert_persisted(&core, &raw, 2);
         assert_eq!(core.sessions.last_request(CHAT).unwrap().prompt, raw);
@@ -383,7 +405,7 @@ async fn queue_edits_preserve_reselected_skills_until_delivery_for_every_harness
         let Delivery::Run(run) = receive(&mut rx).await else {
             panic!("send now replaces run")
         };
-        assert_eq!(run.prompt, expected(&edited, &readable, id), "{id:?}");
+        assert_delivered(&run.prompt, &edited, &readable, id);
         assert_persisted(&core, &edited, 2);
         core.shutdown().await;
     }
