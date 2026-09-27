@@ -1,6 +1,7 @@
 import type { HarnessId, Invocation, Skill, SlashCommand } from "@roboco/proto";
 import type { RpcErrorKind } from "@roboco/engine-client";
 import { filterIndices } from "./picker-search";
+import type { SkillCompletionPreferences } from "../state/ui-settings";
 import {
   completionMarkdownEnd,
   fileMentionLinks,
@@ -24,19 +25,15 @@ import {
  * it shares.
  */
 
-/** `SkillCompletionSettings::for_harness` (settings.rs:682): `$` triggers
- * only where the provider speaks it natively (Codex); separated slash menus
- * likewise. The web has no per-harness settings surface yet, so the
- * preferences stay at these defaults — see the ticket notes. */
-export interface SkillCompletionPreferences {
-  readonly dollar: boolean;
-  readonly separateFromSlash: boolean;
-}
+export type { SkillCompletionPreferences };
 
-export function skillCompletionFor(harness: HarnessId): SkillCompletionPreferences {
-  const nativeDollar = harness === "codex";
-  return { dollar: nativeDollar, separateFromSlash: nativeDollar };
-}
+/**
+ * The per-harness preferences now live in the ui-settings store
+ * (`skillCompletionFor` in state/ui-settings.ts, desktop settings.rs:1425);
+ * the composer derives them from the current snapshot, so the Shortcuts
+ * page's toggles apply without a reload. `completionTrigger` below keeps
+ * accepting the resolved pair.
+ */
 
 /**
  * `invocation_token` (composer.rs:5048): invocation triggers share file

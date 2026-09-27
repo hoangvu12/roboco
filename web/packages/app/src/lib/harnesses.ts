@@ -127,6 +127,20 @@ export function bumpHarnessCatalog(session: EngineSession | null): void {
   void session?.catalog.loadHarnesses({ force: true });
 }
 
+/**
+ * The Shortcuts page's completion list (`settings::completion::active_agents`,
+ * upstream 13cb6d7c): `offeredHarnesses` (the composer's own installed +
+ * enabled gate) narrowed to the skill-completion settings order — the same
+ * order `SKILL_COMPLETION_HARNESSES` pins in state/ui-settings.ts.
+ */
+export function activeCompletionAgents(
+  list: readonly HarnessDescriptor[],
+  order: readonly (readonly [HarnessId, string])[],
+): HarnessId[] {
+  const offered = new Set(offeredHarnesses(list).map((descriptor) => descriptor.id));
+  return order.filter(([id]) => offered.has(id)).map(([id]) => id);
+}
+
 // ── Page copy (harnesses.rs blurb/cli_name, harness lib.rs supports_titles) ──
 
 /** One-line blurb per agent (harnesses.rs:41-53), verbatim. */

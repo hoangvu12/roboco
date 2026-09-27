@@ -98,7 +98,7 @@ import { menuStep } from "../lib/picker-search";
 import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
 import { createChat, waitForChatRow } from "../lib/chat-actions";
 import { echoStore } from "../state/transcript-store";
-import { useUiSettings } from "../state/ui-settings";
+import { useUiSettings, skillCompletionFor } from "../state/ui-settings";
 import { useIsPhone } from "../state/media";
 import {
   seedAttachment,
@@ -129,7 +129,6 @@ import {
   parseSlashCommands,
   refilterSlash,
   referencesRequireUpdate,
-  skillCompletionFor,
   slashErrorMessage,
   type InvocationRow,
 } from "../lib/invocations";
@@ -397,6 +396,10 @@ export function Composer({
   // `ComposerSendBehavior` — which Enter submits. Default "enter": bare
   // Enter sends, Mod+Enter is `ModifiedSubmit`.
   const sendBehavior = useUiSettings().composerSendBehavior;
+  // Per-harness composer completion preferences (desktop settings.rs:1425
+  // via ui-settings): resolved from the settings snapshot so the Shortcuts
+  // page's toggles apply live, exactly like the desktop's `current(cx)`.
+  const completionSettings = useUiSettings();
   // The phone layer (≤768px, state/media.ts) flips a bare Enter to a native
   // newline (ticket 75) — a LIVE media match read at render, so a viewport
   // crossing re-arms the key policy without remounting the input, clearing
@@ -543,6 +546,10 @@ export function Composer({
       catalog.getModels(chat.config?.harness ?? "claude-code").rows,
       composerDefaults.getSnapshot().reasoning,
     ),
+  );
+  const completionPreferences = useMemo(
+    () => skillCompletionFor(completionSettings, draft.harness),
+    [completionSettings, draft.harness],
   );
   const models = useSyncExternalStore(
     useCallback((listener: () => void) => catalog.subscribeModels(draft.harness, listener), [catalog, draft.harness]),
@@ -1482,7 +1489,7 @@ export function Composer({
     // ── invocation: `/` and `$` at prose boundaries (update_slash,
     //   composer.rs:6811-6955) ──
     const harness = draft.harness;
-    const preferences = skillCompletionFor(harness);
+    const preferences = completionPreferences;
     const trigger = completionTrigger(currentText, caretNow, preferences);
     const slashTokenNow = trigger.token;
     if (slashTokenNow === null) {
@@ -1760,7 +1767,7 @@ export function Composer({
     // NOT via a cleanup, so an unchanged token's in-flight search survives
     // caret moves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, selection, draft.harness, chat.id, chat.deviceId, chat.cwd, chat.spaceId, session.client]);
+  }, [text, selection, draft.harness, chat.id, chat.deviceId, chat.cwd, chat.spaceId, session.client, completionPreferences]);
 
   // The desktop force-closes both popups on every render while the wizard is
   // active or the input is not focused (composer.rs:7176-7185).
@@ -3393,7 +3400,7 @@ export function Composer({
                 error={slash.error}
                 skill={slash.skill}
                 supported={slash.supported}
-                separateFromSlash={skillCompletionFor(draft.harness).separateFromSlash}
+                separateFromSlash={completionPreferences.separateFromSlash}
                 onAccept={(rowIx) => {
                   setSlash((current) => (current.active === rowIx ? current : { ...current, active: rowIx }));
                   acceptSlash(rowIx);

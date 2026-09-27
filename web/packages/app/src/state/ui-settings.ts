@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { AccentPresetId } from "@roboco/theme";
+import type { HarnessId } from "@roboco/proto";
 import type { StorageLike } from "../lib/engine-store";
 
 /**
@@ -200,8 +201,57 @@ export interface SidebarSection {
   readonly collapsed: boolean;
 }
 
+/** Trigger preferences belong to each harness, not the currently selected
+ *  model (`SkillCompletionSettings`, settings.rs:676). */
+export interface SkillCompletionPreferences {
+  readonly dollar: boolean;
+  readonly separateFromSlash: boolean;
+}
+
+/** `SkillCompletionSettings::for_harness` (settings.rs:682): `$` triggers
+ *  only where the provider speaks it natively (Codex); separated slash menus
+ *  likewise. */
+export function defaultSkillCompletion(harness: HarnessId): SkillCompletionPreferences {
+  const nativeDollar = harness === "codex";
+  return { dollar: nativeDollar, separateFromSlash: nativeDollar };
+}
+
+/** `UiSettings::skill_completion` (settings.rs:1425): the per-harness
+ *  override wins; the legacy global `skillsInSlashMenu` opt-in only fills
+ *  the default (it un-separates the menu, never forces a separation). */
+export function skillCompletionFor(
+  settings: UiSettings,
+  harness: HarnessId,
+): SkillCompletionPreferences {
+  const override = settings.skillCompletionByHarness[harness];
+  if (override !== undefined) {
+    return override;
+  }
+  const defaults = defaultSkillCompletion(harness);
+  return settings.skillsInSlashMenu
+    ? { ...defaults, separateFromSlash: false }
+    : defaults;
+}
+
+/** `SKILL_COMPLETION_HARNESSES` (settings.rs:692): the settings-page order
+ *  — every harness that can appear in the completion preferences. */
+export const SKILL_COMPLETION_HARNESSES: readonly (readonly [HarnessId, string])[] = [
+  ["antigravity", "Antigravity"],
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"],
+  ["cursor", "Cursor"],
+  ["devin", "Devin"],
+  ["grok", "Grok"],
+  ["hermes", "Hermes"],
+  ["pi", "Pi"],
+  ["opencode", "OpenCode"],
+];
+
 export interface UiSettings {
   readonly composerSendBehavior: ComposerSendBehavior;
+  /** Legacy global opt-in; per-harness preferences take precedence. */
+  readonly skillsInSlashMenu: boolean;
+  readonly skillCompletionByHarness: Readonly<Record<string, SkillCompletionPreferences>>;
   readonly sidebarWidth: number;
   readonly sidebarCollapsed: boolean;
   /** Legacy on the desktop: persisted, never read. Kept for round-tripping. */
@@ -350,6 +400,8 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
 export function defaultUiSettings(): UiSettings {
   return {
     composerSendBehavior: "enter",
+    skillsInSlashMenu: false,
+    skillCompletionByHarness: {},
     sidebarWidth: SIDEBAR_DEFAULT,
     sidebarCollapsed: false,
     sidebarGrouped: false,
@@ -579,6 +631,19 @@ function healStringMap(value: unknown): Record<string, string> {
   return out;
 }
 
+/** `skill_completion_by_harness`: keep only harness keys whose entry carries
+ *  both booleans; anything else heals to the per-harness defaults. */
+function healSkillCompletion(value: unknown): Record<string, SkillCompletionPreferences> {
+  const out: Record<string, SkillCompletionPreferences> = {};
+  for (const [harness, entry] of Object.entries(record(value))) {
+    const raw = record(entry);
+    if (typeof raw.dollar === "boolean" && typeof raw.separateFromSlash === "boolean") {
+      out[harness] = { dollar: raw.dollar, separateFromSlash: raw.separateFromSlash };
+    }
+  }
+  return out;
+}
+
 function healUiFontFamily(value: unknown, fallback: UiFontFamily = "geist"): UiFontFamily {
   if (value === "geist" || value === "geistMono" || value === "system") {
     return value;
@@ -682,6 +747,8 @@ export function healUiSettings(value: unknown): UiSettings {
   );
   return {
     composerSendBehavior: oneOf(raw.composerSendBehavior, ["enter", "modEnter"], "enter"),
+    skillsInSlashMenu: bool(raw.skillsInSlashMenu, false),
+    skillCompletionByHarness: healSkillCompletion(raw.skillCompletionByHarness),
     sidebarWidth: clampOr(raw.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT),
     sidebarCollapsed: bool(raw.sidebarCollapsed, false),
     sidebarGrouped: bool(raw.sidebarGrouped, false),
