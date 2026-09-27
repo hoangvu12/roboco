@@ -74,9 +74,9 @@ impl FontKind {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Ui => "Menus, sidebars, and conversation text.",
-            Self::Terminal => "Terminal panes and shell output. Fixed-width families only.",
-            Self::Code => "Code blocks, diffs, and workspace file editors.",
+            Self::Ui => "Menus and conversations",
+            Self::Terminal => "Terminal output · monospace only",
+            Self::Code => "Code, diffs, and files",
         }
     }
 
@@ -387,13 +387,13 @@ impl AppearancePage {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(widgets::field_label(theme, "Conversation width"))
+                    .child(widgets::row_title(theme, "Conversation width"))
                     .child(
                         div()
                             .text_size(typography::ui_rems(12.0))
                             .line_height(px(18.0))
                             .text_color(theme.text_muted)
-                            .child("Maximum width of messages. Adapts to smaller windows."),
+                            .child("Maximum width for messages and the composer."),
                     ),
             )
             .child(
@@ -1220,13 +1220,8 @@ fn bar(fraction: f32, tone: Hsla) -> gpui::Div {
 
 fn accent_helper(accent: AccentSelection) -> String {
     match accent {
-        AccentSelection::ThemeDefault => {
-            "Theme default · Uses the palette's intended color.".into()
-        }
-        AccentSelection::Preset(preset) => format!(
-            "{} · Controls, glyphs, selections, code, and activity.",
-            preset.label()
-        ),
+        AccentSelection::ThemeDefault => "Theme default".into(),
+        AccentSelection::Preset(preset) => preset.label().into(),
     }
 }
 
@@ -1241,14 +1236,14 @@ fn surface_label(surface: SurfacePreference) -> &'static str {
 fn surface_helper(surface: SurfacePreference, resolved: SurfaceTreatment) -> String {
     match surface {
         SurfacePreference::ThemeDefault => format!(
-            "Uses this theme's {} default.",
+            "Theme default: {}",
             match resolved {
                 SurfaceTreatment::Frosted => "frosted",
                 SurfaceTreatment::Opaque => "opaque",
             }
         ),
-        SurfacePreference::Frosted => "Theme-colored glass where supported.".into(),
-        SurfacePreference::Opaque => "Solid surfaces for every theme.".into(),
+        SurfacePreference::Frosted => "Translucent surfaces".into(),
+        SurfacePreference::Opaque => "Solid surfaces".into(),
     }
 }
 
@@ -1281,17 +1276,12 @@ fn background_row_meta(
     resolved: Option<&crate::settings::NewThreadComposerBackground>,
 ) -> Vec<SharedString> {
     match (stored.is_some(), resolved) {
-        (_, Some(background)) => vec![
-            SharedString::from(background.name.clone()),
-            SharedString::from("Softened automatically on frosted themes."),
-        ],
+        (_, Some(background)) => vec![SharedString::from(background.name.clone())],
         (true, None) => vec![
             SharedString::from("Image unavailable"),
             SharedString::from("Choose a replacement or remove it."),
         ],
-        (false, None) => vec![SharedString::from(
-            "Add an image behind the composer on empty new threads.",
-        )],
+        (false, None) => vec![SharedString::from("No image selected")],
     }
 }
 
@@ -2942,15 +2932,7 @@ impl AppearancePage {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(widgets::row_title(theme, "Theme library"))
-                        .child(widgets::meta_line(
-                            theme,
-                            vec![
-                                div()
-                                    .child("Import or link custom themes.")
-                                    .into_any_element(),
-                            ],
-                        )),
+                        .child(widgets::row_title(theme, "Theme library")),
                 )
                 .child(
                     popover::btn_primary(theme, "Add theme")
@@ -2970,7 +2952,7 @@ impl AppearancePage {
                     .text_size(crate::typography::ui_rems(10.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_faint)
-                    .child("IMPORTED")
+                    .child("Imported")
                     .into_any_element(),
             );
             rows.extend(
@@ -2990,7 +2972,7 @@ impl AppearancePage {
                     .text_size(crate::typography::ui_rems(10.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text_faint)
-                    .child("LINKED")
+                    .child("Linked")
                     .into_any_element(),
             );
             rows.extend(
@@ -3020,7 +3002,6 @@ impl Render for AppearancePage {
         // preserves the "Image unavailable" distinction (ticket 48).
         let current_background = crate::settings::active_new_thread_background(cx);
         let current_background_effect = ui_settings.new_thread_background_effect;
-        let compact_mode = ui_settings.transcript_compact_mode;
         let cards = AppearanceMode::ALL
             .into_iter()
             .map(|mode| {
@@ -3057,17 +3038,7 @@ impl Render for AppearancePage {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(widgets::row_title(&theme, label))
-                            .child(widgets::meta_line(
-                                &theme,
-                                vec![
-                                    div()
-                                        .child(SharedString::from(
-                                            "Used whenever this appearance is active.",
-                                        ))
-                                        .into_any_element(),
-                                ],
-                            )),
+                            .child(widgets::row_title(&theme, label)),
                     )
                     .child(selector)
                     .into_any_element(),
@@ -3194,7 +3165,7 @@ impl Render for AppearancePage {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(widgets::row_title(&theme, "New thread composer background"))
+                        .child(widgets::row_title(&theme, "New thread background"))
                         .child(widgets::meta_line(&theme, background_meta)),
                 )
                 .child(
@@ -3300,36 +3271,6 @@ impl Render for AppearancePage {
                     .into_any_element(),
             );
         }
-        settings_rows.push(
-            widgets::card_row(&theme, false)
-                .child(widgets::row_tile(&theme, icons::EYE_CLOSED))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(widgets::row_title(&theme, "Compact mode"))
-                        .child(widgets::meta_line(
-                            &theme,
-                            vec![
-                                div()
-                                    .child(SharedString::from(
-                                        "Fold a turn's thinking, tool calls, and narration into one collapsed row — only the reply shows.",
-                                    ))
-                                    .into_any_element(),
-                            ],
-                        )),
-                )
-                .child(
-                    widgets::toggle_switch(&theme, compact_mode)
-                        .id("transcript-compact-mode-toggle")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            crate::settings::set_transcript_compact_mode(!compact_mode, cx);
-                            cx.notify();
-                        })),
-                )
-                .into_any_element(),
-        );
         settings_rows.extend(self.render_theme_library_rows(&theme, cx));
         let library_warning = self
             .library_error
@@ -3518,24 +3459,34 @@ mod tests {
     }
 
     #[test]
-    fn accent_helper_explains_default_and_override_scope() {
-        assert!(accent_helper(AccentSelection::ThemeDefault).contains("intended"));
-        let copy = accent_helper(AccentSelection::Preset(AccentPreset::Pink));
-        assert!(copy.starts_with("Pink ·"));
-        assert!(copy.contains("glyphs"));
+    fn accent_helper_names_the_selected_accent() {
+        assert_eq!(
+            accent_helper(AccentSelection::ThemeDefault),
+            "Theme default"
+        );
+        assert_eq!(
+            accent_helper(AccentSelection::Preset(AccentPreset::Pink)),
+            "Pink"
+        );
     }
 
     #[test]
-    fn surface_helper_explains_theme_default_and_global_overrides() {
-        let default = surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Opaque);
-        assert!(default.contains("opaque default"));
-        assert!(
-            surface_helper(SurfacePreference::Frosted, SurfaceTreatment::Opaque)
-                .contains("where supported")
+    fn surface_helper_distinguishes_inherited_and_explicit_materials() {
+        assert_eq!(
+            surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Opaque),
+            "Theme default: opaque"
         );
-        assert!(
-            surface_helper(SurfacePreference::Opaque, SurfaceTreatment::Frosted)
-                .contains("every theme")
+        assert_eq!(
+            surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Frosted),
+            "Theme default: frosted"
+        );
+        assert_eq!(
+            surface_helper(SurfacePreference::Frosted, SurfaceTreatment::Opaque),
+            "Translucent surfaces"
+        );
+        assert_eq!(
+            surface_helper(SurfacePreference::Opaque, SurfaceTreatment::Frosted),
+            "Solid surfaces"
         );
     }
 
@@ -3582,17 +3533,11 @@ mod tests {
         };
         assert_eq!(
             background_row_meta(None, Some(&default_background)),
-            vec![
-                SharedString::from("Roboco"),
-                SharedString::from("Softened automatically on frosted themes."),
-            ]
+            vec![SharedString::from("Roboco")]
         );
         assert_eq!(
             background_row_meta(Some(&user_background), Some(&user_background)),
-            vec![
-                SharedString::from("wall.png"),
-                SharedString::from("Softened automatically on frosted themes."),
-            ]
+            vec![SharedString::from("wall.png")]
         );
         assert_eq!(
             background_row_meta(Some(&user_background), None),
@@ -3603,9 +3548,7 @@ mod tests {
         );
         assert_eq!(
             background_row_meta(None, None),
-            vec![SharedString::from(
-                "Add an image behind the composer on empty new threads."
-            )]
+            vec![SharedString::from("No image selected")]
         );
     }
 
