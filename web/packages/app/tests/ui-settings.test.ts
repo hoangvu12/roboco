@@ -10,6 +10,7 @@ import {
   UiSettingsStore,
   defaultUiSettings,
   healUiSettings,
+  skillCompletionFor,
   type UiSettings,
 } from "../src/state/ui-settings";
 
@@ -443,6 +444,57 @@ describe("per-field healing", () => {
     const storage = memoryStorage();
     storage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify([1, 2, 3]));
     expect(new UiSettingsStore({ storage }).getSnapshot()).toEqual(defaultUiSettings());
+  });
+});
+
+describe("skill completion (settings.rs:1425, upstream 13cb6d7c)", () => {
+  it("defaults: `$` and separated menus only where the provider speaks them", () => {
+    const settings = defaultUiSettings();
+    expect(skillCompletionFor(settings, "codex")).toEqual({ dollar: true, separateFromSlash: true });
+    expect(skillCompletionFor(settings, "claude-code")).toEqual({
+      dollar: false,
+      separateFromSlash: false,
+    });
+    expect(skillCompletionFor(settings, "opencode")).toEqual({
+      dollar: false,
+      separateFromSlash: false,
+    });
+  });
+
+  it("the per-harness override wins; the legacy opt-in only fills defaults", () => {
+    expect(
+      skillCompletionFor(
+        storedWith({ skillCompletionByHarness: { codex: { dollar: false, separateFromSlash: true } } }),
+        "codex",
+      ),
+    ).toEqual({ dollar: false, separateFromSlash: true });
+    // `skills_in_slash_menu` un-separates the DEFAULT resolution only; an
+    // explicit override is untouched (settings.rs:1425-1437).
+    expect(
+      skillCompletionFor(storedWith({ skillsInSlashMenu: true }), "codex").separateFromSlash,
+    ).toBe(false);
+    expect(
+      skillCompletionFor(
+        storedWith({
+          skillsInSlashMenu: true,
+          skillCompletionByHarness: { codex: { dollar: true, separateFromSlash: true } },
+        }),
+        "codex",
+      ),
+    ).toEqual({ dollar: true, separateFromSlash: true });
+  });
+
+  it("per-field healing keeps valid entries and drops junk", () => {
+    expect(
+      storedWith({
+        skillCompletionByHarness: {
+          "claude-code": { dollar: true, separateFromSlash: false },
+          codex: { dollar: "banana", separateFromSlash: true },
+          grok: { separateFromSlash: true },
+        },
+      }).skillCompletionByHarness,
+    ).toEqual({ "claude-code": { dollar: true, separateFromSlash: false } });
+    expect(storedWith({ skillsInSlashMenu: "yes" }).skillsInSlashMenu).toBe(false);
   });
 });
 

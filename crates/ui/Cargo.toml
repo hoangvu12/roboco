@@ -46,10 +46,6 @@ required-features = ["project-palette-fixture"]
 name = "command-palette-fixture"
 required-features = ["command-palette-fixture"]
 
-[[example]]
-name = "composer-polish-fixture"
-required-features = ["appshots-fixture"]
-
 [dependencies]
 url = "2"
 roboco-proto.workspace = true

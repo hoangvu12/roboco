@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
 import type { AgentLoginPoll, HarnessDescriptor, Model, TitleSettings } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
+import { SKILL_COMPLETION_HARNESSES } from "../src/state/ui-settings";
 import {
+  activeCompletionAgents,
   blurb,
   cancelInstall,
   cliName,
@@ -83,6 +85,35 @@ describe("visible/offered harnesses (pickers.rs:4031-4069)", () => {
     expect(
       offeredHarnesses([real, descriptor({ id: "codex", name: "Codex", enabled: false }), mock]).map((d) => d.id),
     ).toEqual(["codex"]);
+  });
+});
+
+describe("activeCompletionAgents (settings/completion.rs, upstream 13cb6d7c)", () => {
+  it("lists only installed-and-enabled agents in settings order", () => {
+    // The desktop's `completion_only_lists_installed_enabled_agents_in_
+    // settings_order` fixture: enabled-with-null (an engine predating the
+    // flag) still counts as offered for every non-opt-in harness.
+    const list = [
+      descriptor({ id: "opencode", name: "OpenCode", enabled: true }),
+      descriptor({ id: "cursor", name: "Cursor", enabled: false }),
+      descriptor({ id: "devin", name: "Devin", enabled: true, installed: false }),
+      descriptor({ id: "codex", name: "Codex", enabled: true }),
+      descriptor({ id: "claude-code", name: "Claude Code", enabled: null }),
+      descriptor({ id: "grok", name: "Grok", enabled: null, installed: false }),
+      descriptor({ id: "mock", name: "Mock", enabled: true }),
+    ];
+    expect(activeCompletionAgents(list, SKILL_COMPLETION_HARNESSES)).toEqual([
+      "claude-code",
+      "codex",
+      "opencode",
+    ]);
+    expect(activeCompletionAgents([], SKILL_COMPLETION_HARNESSES)).toEqual([]);
+    expect(
+      activeCompletionAgents(
+        [descriptor({ id: "codex", name: "Codex", enabled: false })],
+        SKILL_COMPLETION_HARNESSES,
+      ),
+    ).toEqual([]);
   });
 });
 

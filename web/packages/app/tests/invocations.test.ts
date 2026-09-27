@@ -11,11 +11,11 @@ import {
   parseSlashCommands,
   refilterSlash,
   referencesRequireUpdate,
-  skillCompletionFor,
   skillDisplayName,
   slashDescription,
   slashErrorMessage,
 } from "../src/lib/invocations";
+import { defaultSkillCompletion, defaultUiSettings, skillCompletionFor } from "../src/state/ui-settings";
 
 /**
  * The invocation unit tests — mirrors of the desktop's composer.rs tests
@@ -103,8 +103,8 @@ describe("invocation_tokens_preserve_unicode_graphemes", () => {
 });
 
 describe("completion_trigger_interprets_the_trigger_before_discovery", () => {
-  const native = skillCompletionFor("codex");
-  const ordinary = skillCompletionFor("claude-code");
+  const native = defaultSkillCompletion("codex");
+  const ordinary = defaultSkillCompletion("claude-code");
 
   it("defaults: only Codex speaks `$` natively and separates its menus", () => {
     expect(native).toEqual({ dollar: true, separateFromSlash: true });
@@ -121,6 +121,21 @@ describe("completion_trigger_interprets_the_trigger_before_discovery", () => {
     expect(slash).toEqual({ token: { start: 0, end: 4, query: "rev" }, skill: false, includeSkills: true, commandsAllowed: true });
     const slashCodex = completionTrigger("/rev", 4, native);
     expect(slashCodex.includeSkills).toBe(false);
+  });
+
+  it("preferences resolve from the ui-settings store the Shortcuts page writes", () => {
+    // The composer resolves per-harness preferences from the settings
+    // snapshot (settings.rs:1425); an override turns `$` on for a harness
+    // whose defaults keep it ordinary text.
+    const overridden = {
+      ...defaultUiSettings(),
+      skillCompletionByHarness: { "claude-code": { dollar: true, separateFromSlash: false } },
+    };
+    const preferences = skillCompletionFor(overridden, "claude-code");
+    expect(preferences).toEqual({ dollar: true, separateFromSlash: false });
+    const enabled = completionTrigger("use $review", 11, preferences);
+    expect(enabled.skill).toBe(true);
+    expect(skillCompletionFor(defaultUiSettings(), "claude-code")).toEqual({ dollar: false, separateFromSlash: false });
   });
 });
 

@@ -13012,6 +13012,53 @@ button.segmented-option:hover {
   gap: 12px;
 }
 
+/* ── Composer completion (settings/completion.rs, upstream 13cb6d7c) ── */
+
+/* The section (completion.rs:83-95): mt 28, column, 12px apart — the header
+   label + "Restore defaults", the subtitle, then one card per active agent. */
+.completion-section {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.completion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.completion-subtitle {
+  margin-top: 0;
+}
+
+.completion-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* The agent cards' rows sit tight behind their dividers (the group card's
+   28px gap is for multi-card groups; one agent = one tight card). */
+.completion-section .settings-card {
+  gap: 0;
+  margin-top: 0;
+}
+
+/* The card's identity row (completion.rs:130-146): brand tile + name,
+   16px top / 4px bottom, no divider to the first toggle row. */
+.completion-agent-head {
+  padding: 16px 20px 4px;
+}
+
+.completion-agent-head + .settings-row {
+  border-top: none;
+}
+
 /* One shortcut row (shortcuts.rs:275-303): min-h 72, px 20, gap 20. */
 .shortcut-row {
   min-height: 72px;
