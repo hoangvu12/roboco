@@ -87,7 +87,7 @@ describe("PickerCatalog", () => {
 
   it("loadHarnesses fetches once and caches the rows", async () => {
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     await catalog.loadHarnesses();
     expect(client.calls).toEqual([{ method: "ListHarnesses", params: {} }]);
@@ -124,7 +124,7 @@ describe("PickerCatalog", () => {
     const listener = vi.fn();
     catalog.subscribe(listener);
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     await catalog.loadHarnesses();
     expect(listener).toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe("PickerCatalog", () => {
 
   it("invalidate clears the catalog so the next fetch re-loads", async () => {
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     await catalog.loadHarnesses();
     expect(catalog.getHarnesses().rows).toHaveLength(1);
@@ -145,7 +145,7 @@ describe("PickerCatalog", () => {
 
   it("a forced refresh reloads a loaded slot without clearing its rows", async () => {
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     await catalog.loadHarnesses();
     const stale = catalog.getHarnesses().rows;
@@ -160,7 +160,7 @@ describe("PickerCatalog", () => {
 
   it("rides targetDeviceId when the catalog targets another device", async () => {
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     catalog.setTargetDevice("remote-device");
     await catalog.loadHarnesses();
@@ -170,7 +170,7 @@ describe("PickerCatalog", () => {
 
   it("setTargetDevice invalidates and re-kicks the harness catalog", async () => {
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     await catalog.loadHarnesses();
     catalog.setTargetDevice("remote-device");
@@ -187,7 +187,7 @@ describe("PickerCatalog", () => {
     expect(catalog.getHarnesses().error).toBe("Engine is offline; reconnecting");
     expect(catalog.getHarnesses().loaded).toBe(false);
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     client.emitConnected();
     // The connected status re-kicked the errored slot.
@@ -208,7 +208,7 @@ describe("PickerCatalog", () => {
     await catalog.loadHarnesses();
     expect(catalog.getHarnesses().error).toBe("Engine is offline; reconnecting");
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     client.emitStatus("connecting");
     await Promise.resolve();
@@ -227,7 +227,7 @@ describe("PickerCatalog", () => {
     await catalog.loadHarnesses();
     expect(catalog.getHarnesses().error).toBe("call timed out");
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     client.emitStatus("reconnecting");
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -246,7 +246,7 @@ describe("PickerCatalog", () => {
     // cadence's non-forced kick race in one commit — the in-flight guard
     // keeps them single-flight, so the skeletons never double-load.
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     const forced = catalog.loadHarnesses({ force: true });
     void catalog.loadHarnesses();
@@ -275,7 +275,7 @@ describe("PickerCatalog", () => {
       const rekick = catalog.loadHarnesses({ force: true });
       expect(client.harnessDeferreds).toHaveLength(2);
       client.harnessDeferreds[1]!.resolve([
-        { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+        { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
       ]);
       await rekick;
       expect(catalog.getHarnesses().loaded).toBe(true);
@@ -287,12 +287,12 @@ describe("PickerCatalog", () => {
       const third = catalog.loadHarnesses({ force: true });
       expect(client.harnessDeferreds).toHaveLength(3);
       client.harnessDeferreds[0]!.resolve([
-        { id: "codex", name: "Codex", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+        { id: "codex", name: "Codex", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
       ]);
       await wedged;
       expect(catalog.getHarnesses().rows.map((row) => row.id)).toEqual(["claude-code"]);
       client.harnessDeferreds[2]!.resolve([
-        { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+        { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
       ]);
       await third;
       expect(catalog.getHarnesses().rows.map((row) => row.id)).toEqual(["claude-code"]);
@@ -313,7 +313,7 @@ describe("PickerCatalog", () => {
     await catalog.loadHarnesses(); // the teardown rejection lands
     expect(catalog.getHarnesses().error).toBe("Engine connection closed (1006)");
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     client.emitStatus("connecting"); // dial 2 starts
     await Promise.resolve();
@@ -333,7 +333,7 @@ describe("PickerCatalog", () => {
     await catalog.loadHarnesses();
     expect(catalog.getHarnesses().error).toBe("Engine connection closed (1011)");
     client.harnesses = [
-      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+      { id: "claude-code", name: "Claude", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
     ];
     client.emitStatus("reconnecting");
     await Promise.resolve();

@@ -50,6 +50,39 @@ export function setHarnessEnabled(
   });
 }
 
+/**
+ * `InstallHarness` — an explicit, user-requested CLI install on the engine
+ * the client picked (never the relay: `targetDeviceId` selects the paired
+ * engine's connection client-side and is stripped at the socket). The reply
+ * is the device's fresh `ListHarnesses` catalog, so the rows repaint from
+ * the authoritative state in one round trip.
+ */
+export function installHarness(
+  client: EngineClient,
+  harness: HarnessId,
+  targetDeviceId?: string | null,
+): Promise<HarnessDescriptor[]> {
+  return client.call<HarnessDescriptor[]>(methods.INSTALL_HARNESS, {
+    harness,
+    ...targetParams(targetDeviceId),
+  });
+}
+
+/**
+ * `CancelInstall` — cancel the running explicit install of one harness on
+ * the engine the install went to (same params as `installHarness`).
+ */
+export function cancelInstall(
+  client: EngineClient,
+  harness: HarnessId,
+  targetDeviceId?: string | null,
+): Promise<void> {
+  return client.call<void>(methods.CANCEL_INSTALL, {
+    harness,
+    ...targetParams(targetDeviceId),
+  });
+}
+
 /** `GetTitleSettings` — the device's automatic-title pair. */
 export function getTitleSettings(
   client: EngineClient,
@@ -224,6 +257,75 @@ export function notInstalledHint(harness: HarnessId, enabled: boolean): string {
   return enabled
     ? `${cliName(harness)} CLI not installed — turn it off or install it`
     : `Install the ${cliName(harness)} CLI to enable`;
+}
+
+/**
+ * The documented manual command (`roboco_harness::install::manual_command`,
+ * install.rs): the audited terminal escape hatch a row keeps when the
+ * engine can't install (no prerequisites resolve). Antigravity (archive
+ * install, no shell command) and Mock offer none.
+ */
+export function manualCommand(harness: HarnessId): string | null {
+  switch (harness) {
+    case "claude-code":
+      return "curl -fsSL https://claude.ai/install.sh | bash";
+    case "codex":
+      return "npm install -g @openai/codex";
+    case "cursor":
+      return "curl https://cursor.com/install -fsS | bash";
+    case "opencode":
+      return "npm install -g @opencode/cli";
+    case "pi":
+      return "npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
+    case "grok":
+      return "npm install -g @xai-official/grok";
+    case "hermes":
+      return "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash";
+    case "devin":
+      return "curl -fsSL https://cli.devin.ai/install.sh | bash";
+    case "antigravity":
+    case "mock":
+      return null;
+  }
+}
+
+/**
+ * The row hint for a not-installed agent (`install_hint`, harnesses.rs):
+ * antigravity's own copy (its archive/env story), otherwise the state copy
+ * with the manual command appended when the engine can't install — the row
+ * still explains what enabling needs while offering the terminal route.
+ */
+export function installHint(harness: HarnessId, enabled: boolean, canInstall: boolean): string {
+  if (harness === "antigravity") {
+    return canInstall
+      ? "Install Antigravity to enable"
+      : "Set ANTIGRAVITY_ACP_EXECUTABLE to enable Antigravity";
+  }
+  const hint = notInstalledHint(harness, enabled);
+  const command = canInstall ? null : manualCommand(harness);
+  return command === null ? hint : `${hint}. Install with \`${command}\``;
+}
+
+/**
+ * Whether a row offers the Install action (`offers_install`, harnesses.rs):
+ * every real harness that isn't installed and whose install prerequisites
+ * resolve on the target device (`canInstall` — the engine stamps
+ * install::can_install there). Mock never installs.
+ */
+export function offersInstall(
+  harness: HarnessId,
+  installed: boolean,
+  canInstall: boolean,
+): boolean {
+  return harness !== "mock" && !installed && canInstall;
+}
+
+/**
+ * The in-flight row copy (`install_label`, harnesses.rs): "Installing
+ * <name>…" — shown beside the Cancel action while the request runs.
+ */
+export function installLabel(name: string): string {
+  return `Installing ${name}…`;
 }
 
 /**

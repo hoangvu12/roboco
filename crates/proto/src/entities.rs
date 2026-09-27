@@ -856,7 +856,6 @@ pub struct AgentAccountsSnapshot {
     pub warnings: Vec<AgentAccountWarning>,
 }
 
-/// A per-harness detection warning (e.g. Keychain denied reading the live login).
 /// `InstallHarness` / `CancelInstall` request — the explicit, user-requested
 /// install (or its cancellation) for one harness on the engine this call
 /// reaches. Catalog probes never install; only this request does.
@@ -866,6 +865,7 @@ pub struct InstallHarnessRequest {
     pub harness: HarnessId,
 }
 
+/// A per-harness detection warning (e.g. Keychain denied reading the live login).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAccountWarning {

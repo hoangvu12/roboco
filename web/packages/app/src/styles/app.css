@@ -12720,6 +12720,21 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
 }
 
+/*
+ * An explicit install in flight (harnesses.rs install_label meta row): the
+ * "Installing <agent>…" status line reads text_muted like the sign-in one
+ * (the desktop pairs it with the mono spinner); Install and Cancel take the
+ * ghost-action slot beside it, flex-locked like the sign-in cancel.
+ */
+.harness-install-status {
+  color: var(--rb-text-muted);
+}
+
+.harness-install,
+.harness-cancel-install {
+  flex: none;
+}
+
 .harness-sign-in-cancel,
 .harness-sign-in-retry {
   flex: none;

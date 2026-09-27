@@ -52,6 +52,7 @@ export * from "./GitHistoryRef";
 export * from "./GitHistoryRefKind";
 export * from "./HarnessDescriptor";
 export * from "./HarnessId";
+export * from "./InstallHarnessRequest";
 export * from "./ListWorkspaceDirectoryRequest";
 export * from "./MessagePart";
 export * from "./MessageRole";

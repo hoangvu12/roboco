@@ -49,6 +49,15 @@ export const LIST_DRIVES = "ListDrives";
 export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 /** Harness catalog for the pickers (one row per harness). */
 export const LIST_HARNESSES = "ListHarnesses";
+/** Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES
+ *  (engine-local: the client picks the paired engine's connection; the
+ *  engine owns the install and never forwards it). Replies with the
+ *  device's fresh `ListHarnesses` catalog. */
+export const INSTALL_HARNESS = "InstallHarness";
+/** The explicit install flow's cancel, addressed to the engine the install
+ *  went to (engine-local routing): the engine owns the install, guards
+ *  against duplicates, and never forwards. Params match `InstallHarness`. */
+export const CANCEL_INSTALL = "CancelInstall";
 /** Settings → Agents: flip one harness's enablement; the reply is the
  *  device's fresh `ListHarnesses` catalog (a raced toggle self-corrects). */
 export const SET_HARNESS_ENABLED = "SetHarnessEnabled";
