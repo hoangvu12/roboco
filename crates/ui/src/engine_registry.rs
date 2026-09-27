@@ -340,6 +340,13 @@ fn call_deadline(method: &str) -> Duration {
     if method.contains("Clone") || method.contains("Fetch") {
         return Duration::from_secs(900);
     }
+    if method == methods::INSTALL_HARNESS {
+        // An explicit CLI install may download and extract for many minutes
+        // (the installer's own deadline is 15 minutes; matches upstream's
+        // forward deadline for the relay route we do not have — here the
+        // client leash is the only cut-off).
+        return Duration::from_secs(900);
+    }
     if method == methods::LIST_MODELS || method == methods::LIST_COMMANDS {
         return Duration::from_secs(100);
     }

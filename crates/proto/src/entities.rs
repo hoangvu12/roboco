@@ -857,6 +857,15 @@ pub struct AgentAccountsSnapshot {
 }
 
 /// A per-harness detection warning (e.g. Keychain denied reading the live login).
+/// `InstallHarness` / `CancelInstall` request — the explicit, user-requested
+/// install (or its cancellation) for one harness on the engine this call
+/// reaches. Catalog probes never install; only this request does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallHarnessRequest {
+    pub harness: HarnessId,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAccountWarning {
@@ -1195,6 +1204,25 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<DiscardWorkingTreeOutcome>(value).unwrap(),
             outcome
+        );
+    }
+
+    #[test]
+    fn install_harness_request_contract_is_camel_case() {
+        let request = InstallHarnessRequest {
+            harness: HarnessId::Pi,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["harness"], "pi");
+        assert_eq!(
+            serde_json::from_value::<InstallHarnessRequest>(value).unwrap(),
+            request
+        );
+        // A client's routing passthrough must not break the parse.
+        let forwarded = serde_json::json!({ "harness": "pi", "targetDeviceId": "dev-2" });
+        assert_eq!(
+            serde_json::from_value::<InstallHarnessRequest>(forwarded).unwrap(),
+            request
         );
     }
 

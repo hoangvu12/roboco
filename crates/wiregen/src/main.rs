@@ -180,6 +180,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::CheckoutFileDiffText,
         roboco_proto::DiscardWorkingTreeRequest,
         roboco_proto::DiscardWorkingTreeOutcome,
+        roboco_proto::InstallHarnessRequest,
         roboco_proto::AgentAccount,
         roboco_proto::AgentAuthKind,
         roboco_proto::AgentAccountsSnapshot,

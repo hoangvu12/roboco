@@ -5825,6 +5825,7 @@ mod tests {
             id,
             name: name.into(),
             installed: true,
+            can_install: false,
             enabled: Some(true),
             reasoning_levels: Vec::new(),
             steering_mode: roboco_proto::SteeringMode::StepBoundary,
@@ -6312,6 +6313,7 @@ mod tests {
             steering_mode: roboco_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
+            can_install: false,
             enabled: None,
         };
         let mixed = vec![
@@ -6338,6 +6340,7 @@ mod tests {
             steering_mode: roboco_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
+            can_install: false,
             enabled,
         };
         let catalog = |claude: Option<bool>, codex: Option<bool>, grok: Option<bool>| {
@@ -6390,6 +6393,7 @@ mod tests {
                 steering_mode: roboco_proto::SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed,
+                can_install: false,
                 enabled,
             };
         // Enabled-but-missing-CLI agents stay out of the rail; an installed
