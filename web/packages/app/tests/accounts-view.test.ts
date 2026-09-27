@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
-import type { AgentAccount, AgentAccountsSnapshot, AgentLoginPoll } from "@roboco/proto";
+import type { AgentAccount, AgentAccountsSnapshot, AgentLoginPoll, HarnessId } from "@roboco/proto";
 import {
   accountInitial,
   accountLabel,
   activateAgentAccount,
   addOptionLabel,
+  activeAccount,
   cancelAgentLogin,
   completeAgentLogin,
   forceUsageFor,
@@ -22,8 +23,11 @@ import {
   providerName,
   providerNote,
   PROVIDERS,
+  reportsUsage,
+  signsIn,
   startAgentLogin,
   switchesAccounts,
+  usedFraction,
   usageFallback,
   usageLevel,
   USAGE_CRITICAL_FRACTION,
@@ -337,5 +341,52 @@ describe("account RPC wrappers", () => {
     // The default sign-in sends no provider param.
     await startAgentLogin(client, "claude-code", null, null);
     expect(calls[1]!.params).toEqual({ harness: "claude-code" });
+  });
+});
+
+// ── The footer's usage ring (account_usage.rs pure helpers) ────────────────
+
+function ringAccount(harness: HarnessId, active: boolean, used: number[]): AgentAccount {
+  return {
+    id: `${harness}-${active}`,
+    harness,
+    email: `${harness}@example.com`,
+    planLabel: null,
+    active,
+    switchable: true,
+    usageWindows: used.map((fraction) => ({ label: "5h", usedFraction: fraction, resetsAt: null })),
+  };
+}
+
+describe("usedFraction / activeAccount (account_usage.rs:29-53)", () => {
+  it("ringShowsTheMostUsedWindow", () => {
+    expect(usedFraction(ringAccount("codex", true, []))).toBeNull();
+    expect(usedFraction(ringAccount("codex", true, [0.12, 0.64]))).toBe(0.64);
+    // Out-of-range fractions clamp to 0..1.
+    expect(usedFraction(ringAccount("codex", true, [1.4]))).toBe(1);
+  });
+
+  it("activeAccountIsScopedToTheHarness", () => {
+    const snapshot: AgentAccountsSnapshot = {
+      accounts: [
+        ringAccount("claude-code", true, [0.3]),
+        ringAccount("codex", false, [0.1]),
+        ringAccount("codex", true, [0.2]),
+      ],
+      warnings: [],
+    };
+    expect(activeAccount(snapshot, "codex")?.id).toBe("codex-true");
+    expect(activeAccount(snapshot, "cursor")).toBeNull();
+  });
+});
+
+describe("signsIn / reportsUsage (the ring's harness gates)", () => {
+  it("every provider with accounts signs in; antigravity reports no usage", () => {
+    for (const provider of PROVIDERS) {
+      expect(signsIn(provider.harness)).toBe(true);
+    }
+    expect(signsIn("antigravity")).toBe(false);
+    expect(reportsUsage("antigravity")).toBe(false);
+    expect(reportsUsage("codex")).toBe(true);
   });
 });

@@ -131,9 +131,22 @@ pub const PROVIDERS: [(HarnessId, &str, &str); 8] = [
     (HarnessId::Hermes, "Hermes", "hermes auth add"),
 ];
 
+/// Whether `harness` has an Accounts section (and sign-in flow). Pure.
+pub fn signs_in(harness: HarnessId) -> bool {
+    PROVIDERS
+        .iter()
+        .any(|(provider, _, _)| *provider == harness)
+}
+
+/// Whether the provider reports plan usage. One that doesn't shows no meters
+/// and no "usage unavailable" note — there is nothing missing. Pure.
+pub fn reports_usage(harness: HarnessId) -> bool {
+    harness != HarnessId::Antigravity
+}
+
 /// Display name of one agent (upstream `provider_name`) — the fallback
 /// [`LoginOption`] label for single-login agents. Pure.
-fn provider_name(harness: HarnessId) -> &'static str {
+pub(crate) fn provider_name(harness: HarnessId) -> &'static str {
     match harness {
         HarnessId::ClaudeCode => "Claude Code",
         HarnessId::Codex => "Codex",
@@ -238,6 +251,77 @@ pub fn mark_switched(snapshot: &mut AgentAccountsSnapshot, account: &AgentAccoun
     }
 }
 
+/// Usage meter columns (upstream accounts.rs): window label, a short bar,
+/// percent — the compact one-line meter the footer's account-usage card
+/// renders (the page's rows keep the pre-redesign meter until ticket 18).
+const USAGE_LABEL_WIDTH: f32 = 52.0;
+const USAGE_BAR_WIDTH: f32 = 88.0;
+const USAGE_PERCENT_WIDTH: f32 = 34.0;
+
+/// One mini meter line of the usage column: label, a short bar, percent.
+/// The reset moment rides the row's tooltip instead of taking a column.
+pub(crate) fn render_usage_meter(
+    window: &roboco_proto::AgentUsageWindow,
+    theme: &Theme,
+) -> AnyElement {
+    let fraction = window.used_fraction.clamp(0.0, 1.0);
+    let level = usage_level(fraction);
+    let fill = usage_color(level, theme).opacity(match level {
+        UsageLevel::Normal => 0.8,
+        _ => 0.9,
+    });
+    div()
+        .h(px(16.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .text_size(crate::typography::ui_rems(11.5))
+        .child(
+            div()
+                .w(px(USAGE_LABEL_WIDTH))
+                .flex_none()
+                .truncate()
+                .text_color(theme.text_muted)
+                .child(SharedString::from(window.label.clone())),
+        )
+        .child(
+            div()
+                .w(px(USAGE_BAR_WIDTH))
+                .flex_none()
+                .h(px(4.0))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(theme.wash(0.08))
+                .when(fraction > 0.0, |el| {
+                    el.child(
+                        div()
+                            .h_full()
+                            // A 1.5% floor keeps tiny non-zero usage
+                            // visible (zeron `max(used, 1.5)%`).
+                            .w(gpui::relative(fraction.max(0.015)))
+                            .rounded_full()
+                            .bg(fill),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .w(px(USAGE_PERCENT_WIDTH))
+                .flex_none()
+                .text_right()
+                .text_color(match level {
+                    UsageLevel::Normal => theme.text_muted,
+                    _ => usage_color(level, theme),
+                })
+                .child(SharedString::from(format!(
+                    "{}%",
+                    (fraction * 100.0).round() as u32
+                ))),
+        )
+        .into_any_element()
+}
+
 /// The sign-in dialog's browser-wait copy — one sentence per provider, same
 /// shape. Pure.
 fn login_copy(harness: HarnessId, provider: Option<&str>) -> &'static str {
@@ -282,6 +366,16 @@ fn login_copy(harness: HarnessId, provider: Option<&str>) -> &'static str {
 // ---------------------------------------------------------------------------
 // Entity
 // ---------------------------------------------------------------------------
+
+/// The last accounts list per target device (`None` = this device), shared
+/// by every accounts view (the page and the composer footer's usage ring)
+/// so a switch in either shows up in the other.
+#[derive(Default)]
+pub(crate) struct AccountsSnapshotCache(
+    pub(crate) std::collections::HashMap<Option<String>, AgentAccountsSnapshot>,
+);
+
+impl gpui::Global for AccountsSnapshotCache {}
 
 enum LoginFlow {
     /// StartAgentLogin in flight.
@@ -613,14 +707,31 @@ impl AccountsPage {
             self.snapshot = Loadable::Error("Engine not connected".into());
             return;
         };
-        self.snapshot = Loadable::Loading;
+        // Stale-while-revalidate: a painted snapshot stays on screen while
+        // the list runs (the footer's usage ring shares the same cache, so
+        // a switch there shows up here on the next reload).
+        let key = self.target_device.clone();
+        if !matches!(self.snapshot, Loadable::Ready(_)) {
+            self.snapshot = match cx
+                .try_global::<AccountsSnapshotCache>()
+                .and_then(|cache| cache.0.get(&key))
+            {
+                Some(cached) => Loadable::Ready(cached.clone()),
+                None => Loadable::Loading,
+            };
+        }
         let params = self.params(serde_json::json!({ "forceUsage": force_usage }));
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.call(methods::LIST_AGENT_ACCOUNTS, params).await;
             this.update(cx, |page, cx| {
                 page.snapshot = match result {
                     Ok(value) => match serde_json::from_value::<AgentAccountsSnapshot>(value) {
-                        Ok(snapshot) => Loadable::Ready(snapshot),
+                        Ok(snapshot) => {
+                            cx.default_global::<AccountsSnapshotCache>()
+                                .0
+                                .insert(key, snapshot.clone());
+                            Loadable::Ready(snapshot)
+                        }
                         Err(err) => Loadable::Error(err.to_string()),
                     },
                     Err(err) => Loadable::Error(err.to_string()),

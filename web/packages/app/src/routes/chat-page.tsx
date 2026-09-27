@@ -1381,7 +1381,12 @@ export function ConversationPage() {
                   ) : null
                 }
                 footerSlot={
-                  <ComposerFooter chat={effectiveChat} crSummary={crSummary} contextUsage={contextUsage} />
+                  <ComposerFooter
+                    chat={effectiveChat}
+                    crSummary={crSummary}
+                    contextUsage={contextUsage}
+                    harness={chat?.config?.harness ?? null}
+                  />
                 }
               />
               {hasSelection && <JumpPillAnchor state={jumpState} />}
