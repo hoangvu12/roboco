@@ -15,18 +15,17 @@ async fn main() {
         println!("managed discovery: {result:?}");
         return;
     }
-    let server = std::env::var_os("ANTIGRAVITY_ACP_EXECUTABLE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            roboco_harness::AcpHarness::antigravity()
-                .launch_program()
-                .expect("installed antigravity acp server")
-        });
+    let (server, args) = roboco_harness::AcpHarness::antigravity()
+        .resolve_program(true)
+        .await
+        .expect("install or resolve server");
     let workspace = std::env::temp_dir().join("antigravity-acp-probe");
     std::fs::create_dir_all(&workspace).unwrap();
     let mut command = tokio::process::Command::new(&server);
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    command.args(args);
+    #[cfg(unix)]
+    command.env("BROWSER", "/usr/bin/true %s");
+    let started = std::time::Instant::now();
     let mut child = command
         .current_dir(&workspace)
         .stdin(Stdio::piped())
@@ -78,6 +77,7 @@ async fn main() {
         "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
     }))
     .await;
+    println!("initialize elapsed: {:?}", started.elapsed());
     println!(
         "initialize agentCapabilities: {}",
         init.pointer("/result/agentCapabilities")
@@ -85,6 +85,7 @@ async fn main() {
     );
 
     let session = call("session/new", json!({ "cwd": workspace, "mcpServers": [] })).await;
+    println!("session/new elapsed: {:?}", started.elapsed());
     if let Some(error) = session.get("error") {
         println!("session/new error: {error}");
         return;

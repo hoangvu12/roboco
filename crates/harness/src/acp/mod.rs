@@ -716,9 +716,8 @@ fn antigravity_spec() -> AcpAgentSpec {
         extra_paths: Vec::new,
         cli_executable: "agy_acp_server",
         cli_extra_paths: Vec::new,
-        install_hint: "agy_acp_server (roboco downloads Google's pinned Antigravity ACP \
-             server 1.1.1 on first use, but this platform has no published build; set \
-             ANTIGRAVITY_ACP_EXECUTABLE to a server binary to override)",
+        install_hint: "Install the Antigravity ACP server or set ANTIGRAVITY_ACP_EXECUTABLE \
+             to a server binary",
         models: || {
             use ReasoningLevel::{High, Low, Medium};
             vec![
@@ -751,9 +750,7 @@ fn antigravity_spec() -> AcpAgentSpec {
         // preserves any method already selected in antigravity's settings.
         auth_method: Some("oauth-personal"),
         skill_dirs: antigravity_skill_dirs,
-        // signing out belongs to the Settings toggle, which keeps enablement
-        // and the stored login in step
-        hidden_commands: &["logout"],
+        hidden_commands: &[],
     }
 }
 
@@ -1143,7 +1140,9 @@ impl AcpHarness {
     /// never waits on npm: it kicks the install in the background and errors
     /// out, so a picker open falls back to the static catalog instead of
     /// stalling for however long a 500MB dependency tree takes to land.
-    async fn resolve_program(
+    /// Resolve the server, optionally waiting for its managed installation.
+    #[doc(hidden)]
+    pub async fn resolve_program(
         &self,
         block_on_install: bool,
     ) -> Result<(PathBuf, Vec<String>), HarnessError> {
@@ -1239,6 +1238,9 @@ impl AcpHarness {
         }
         if self.spec.id == HarnessId::Antigravity {
             cmd.env("GEMINI_HOME", antigravity_paths::home()?);
+            // Python webbrowser accepts an executable template; never launch a browser here.
+            #[cfg(unix)]
+            cmd.env("BROWSER", "/usr/bin/true %s");
         }
         let scratch = self.adapter_scratch()?;
         if let Some(dir) = &scratch {
@@ -1678,8 +1680,15 @@ impl Harness for AcpHarness {
         {
             return crate::executable::validate_native_override(&PathBuf::from(p)).is_ok();
         }
-        // a published server build is enough: signing in installs it
-        if self.spec.archive.is_some() {
+        // a server build being published is not the server being present:
+        // detection follows what is actually installed here, and sign-in (not
+        // detection) is what downloads the pinned archive.
+        if self
+            .spec
+            .archive
+            .as_ref()
+            .is_some_and(|pin| crate::archive_install::installed_entry(pin).is_some())
+        {
             return true;
         }
         find_on_paths(self.spec.cli_executable, (self.spec.cli_extra_paths)()).is_some()
@@ -1782,7 +1791,20 @@ impl Harness for AcpHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let (scratch, mut child, stderr_tail) =
-            self.spawn_agent(Some(&request.cwd), true, &[]).await?;
+            match self.spawn_agent(Some(&request.cwd), true, &[]).await {
+                Ok(spawned) => spawned,
+                Err(error) if self.spec.id == HarnessId::Antigravity => {
+                    return Ok(Box::pin(futures::stream::once(async move {
+                        Ok(AgentEvent::Done {
+                            status: DoneStatus::Errored,
+                            result: None,
+                            error: Some(error.to_string()),
+                            session_id: None,
+                        })
+                    })));
+                }
+                Err(error) => return Err(error),
+            };
         let stdin = child
             .stdin
             .take()
@@ -2477,7 +2499,7 @@ async fn new_session(
     match request_draining(client, incoming, "session/new", params).await {
         Err(error) if signs_in_from_settings && is_auth_required(&error) => {
             Err(HarnessError::Protocol(format!(
-                "{agent_name} isn't signed in. Turn it on again in Settings → Agents to sign in."
+                "{agent_name} isn't signed in. Use Settings → Agents → Sign in."
             )))
         }
         other => other,
@@ -2809,6 +2831,11 @@ async fn run_session(session: Session) {
             load["sessionId"] = Value::String(resume.clone());
             match request_draining(&client, &mut incoming, "session/load", load).await {
                 Ok(resp) => (resume.clone(), resp),
+                Err(e) if auth_method.is_some() && is_auth_required(&e) => {
+                    return Err(HarnessError::Protocol(format!(
+                        "{agent_name} isn't signed in. Use Settings → Agents → Sign in."
+                    )));
+                }
                 // A missing/foreign session falls back to a fresh one.
                 Err(e) => {
                     tracing::debug!(
@@ -3288,7 +3315,15 @@ async fn run_session(session: Session) {
                 {
                     break 'main;
                 }
-                let (status, error) = stop_outcome(&res, interrupted);
+                let (status, mut error) = stop_outcome(&res, interrupted);
+                if !interrupted
+                    && auth_method.is_some()
+                    && res.as_ref().is_err_and(is_auth_required)
+                {
+                    error = Some(format!(
+                        "{agent_name} isn't signed in. Use Settings → Agents → Sign in."
+                    ));
+                }
                 done_current = true;
                 if interrupted {
                     done_after_interrupt = true;
