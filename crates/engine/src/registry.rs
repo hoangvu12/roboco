@@ -134,6 +134,7 @@ enum Slot {
 }
 
 pub struct HarnessRegistry {
+    pub(crate) installs: crate::rpc::Installations,
     slots: Mutex<HashMap<HarnessId, Slot>>,
     order: Mutex<Vec<HarnessId>>,
     /// This device's enabled set; `None` inner value = the default set.
@@ -151,6 +152,7 @@ impl Default for HarnessRegistry {
 impl HarnessRegistry {
     pub fn new() -> Self {
         Self {
+            installs: Default::default(),
             slots: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             prefs: Mutex::new(HarnessPrefsFile::default()),
@@ -386,7 +388,7 @@ impl HarnessRegistry {
                     None => return None,
                 };
                 descriptor.enabled = Some(enabled.contains(id));
-                descriptor.can_install = roboco_harness::acp::can_install(*id);
+                descriptor.can_install = roboco_harness::install::can_install(*id);
                 Some(descriptor)
             })
             .collect()
@@ -892,6 +894,7 @@ mod tests {
         };
         let claude = parse("claude-code");
         assert!(claude.installed);
+        assert!(!claude.can_install);
         assert_eq!(claude.enabled, None);
         // Unknown enablement follows detection: a found CLI is offered...
         assert!(descriptor_enabled(&claude));
