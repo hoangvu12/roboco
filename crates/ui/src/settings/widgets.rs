@@ -46,6 +46,125 @@ pub fn column_width(window: &gpui::Window, cx: &gpui::App) -> f32 {
     pane.min(PAGE_MAX_WIDTH) - 2.0 * PAGE_PAD_X
 }
 
+/// A settings dropdown, contained to the page pane: the menu measures
+/// itself after layout, then places on whichever side of the trigger has
+/// room without leaving the pane (see [`popover::contained_menu`]).
+pub fn dropdown(
+    id: impl Into<SharedString>,
+    content: gpui::Div,
+    closing: Option<std::time::Instant>,
+    trigger_height: f32,
+) -> AnyElement {
+    SettingsDropdown {
+        id: id.into(),
+        content,
+        closing,
+        trigger_height,
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct SettingsDropdown {
+    id: SharedString,
+    content: gpui::Div,
+    closing: Option<std::time::Instant>,
+    trigger_height: f32,
+}
+
+impl RenderOnce for SettingsDropdown {
+    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+        let limits = dropdown_limits(window.viewport_size(), sidebar_width(cx));
+        popover::contained_menu(
+            self.id,
+            self.content,
+            self.closing,
+            self.trigger_height,
+            limits,
+        )
+    }
+}
+
+fn dropdown_limits(viewport: gpui::Size<Pixels>, sidebar_width: f32) -> gpui::Bounds<Pixels> {
+    let pane = pane_bounds(viewport, sidebar_width);
+    gpui::Bounds::new(
+        pane.origin + gpui::point(px(8.0), px(8.0)),
+        gpui::size(
+            (pane.size.width - px(16.0)).max(px(1.0)),
+            (pane.size.height - px(16.0)).max(px(1.0)),
+        ),
+    )
+}
+
+/// Scroll only a dropdown's options, keeping its frame and optional heading
+/// fixed. The available height follows the same placement budget as the card.
+pub fn dropdown_rows(
+    id: impl Into<SharedString>,
+    rows: impl IntoIterator<Item = AnyElement>,
+    trigger_height: f32,
+    chrome_height: f32,
+) -> AnyElement {
+    DropdownRows {
+        id: id.into(),
+        rows: rows.into_iter().collect(),
+        trigger_height,
+        chrome_height,
+    }
+    .into_any_element()
+}
+
+/// The scrollable list height for a dropdown whose rows scroll through
+/// [`dropdown_rows`]: the placement budget minus the fixed chrome above
+/// the rows.
+pub fn dropdown_list_height(
+    viewport: gpui::Size<Pixels>,
+    trigger_height: f32,
+    chrome_height: f32,
+) -> f32 {
+    // Height alone matters here, and the pane's does not depend on the
+    // section column's width.
+    let limits = pane_bounds(viewport, 0.0);
+    let card_height = ((f32::from(limits.size.height) - 16.0 - trigger_height) / 2.0 - 6.0)
+        .max(1.0)
+        .min(320.0);
+    (card_height - chrome_height).max(1.0)
+}
+
+#[derive(IntoElement)]
+struct DropdownRows {
+    id: SharedString,
+    rows: Vec<AnyElement>,
+    trigger_height: f32,
+    chrome_height: f32,
+}
+
+impl RenderOnce for DropdownRows {
+    fn render(self, window: &mut gpui::Window, _: &mut gpui::App) -> impl IntoElement {
+        let key: SharedString = format!("{}-list-scroll", self.id).into();
+        let scroll = window.with_global_id(key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<ScrollHandle>, _| {
+                let scroll = previous.unwrap_or_default();
+                (scroll.clone(), scroll)
+            })
+        });
+        let list = div()
+            .id(format!("{}-list", self.id))
+            .debug_selector(|| "settings-dropdown-list".into())
+            .max_h(px(dropdown_list_height(
+                window.viewport_size(),
+                self.trigger_height,
+                self.chrome_height,
+            )))
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(self.rows);
+        crate::edge_fade::edge_faded(12.0, true, true, list).fade_overflow_y(&scroll)
+    }
+}
+
 /// Owned scroll + floating-scrollbar state for one settings page.
 ///
 /// This is the dedicated settings scroll container state. It wraps the same
