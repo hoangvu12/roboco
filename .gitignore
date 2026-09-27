@@ -11,3 +11,6 @@ node_modules
 build/
 # Staged web bundle for rust-embed — written by crates/engine/build.rs.
 crates/engine/web-staging/
+# Local agent tooling scratch (skills, per-agent instructions).
+.agents/
+agents.md
