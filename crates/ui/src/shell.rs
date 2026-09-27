@@ -1337,6 +1337,8 @@ pub struct Shell {
     delete_space_confirm: Option<String>,
     /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
+    /// The New project palette's collapsed-breadcrumbs (`…`) menu.
+    project_crumb_menu: popover::Popup<()>,
     command_palette: Option<command_palette::CommandPalette>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
@@ -1753,6 +1755,7 @@ impl Shell {
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            project_crumb_menu: popover::Popup::default(),
             update_flow: UpdateFlow::Idle,
             update_task: None,
             update_dismissed: None,
@@ -6567,6 +6570,11 @@ impl Shell {
         if self.rename_space_dialog.is_some() {
             self.rename_space_dialog = None;
             cx.notify();
+            return true;
+        }
+        if self.add_space.is_some() && self.project_crumb_menu.is_open() {
+            // The folded-breadcrumbs menu floats over the palette; it closes first.
+            self.close_project_crumb_menu(cx);
             return true;
         }
         if self.add_space.is_some() {
