@@ -4,8 +4,8 @@
 //! shell persists them and re-applies the app keymap.
 
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, Keystroke, SharedString, Window, div, prelude::*,
-    px,
+    AnyElement, Context, Entity, EventEmitter, FocusHandle, Keystroke, SharedString, Window, div,
+    prelude::*, px,
 };
 
 use crate::appshots::{AppshotCapabilities, AppshotDestination};
@@ -60,6 +60,7 @@ pub enum ShortcutsEvent {
 
 pub struct ShortcutsPage {
     appshots_page: bool,
+    general_page: bool,
     appshots_focus_pending: bool,
     scroll: crate::settings::widgets::PageScroll,
     /// Working copy (kept in sync with the shell via change events).
@@ -82,6 +83,8 @@ pub struct ShortcutsPage {
     state: Entity<AppState>,
     completion_harnesses: popover::Loadable<Vec<roboco_engine::registry::HarnessDescriptor>>,
     completion_task: Option<gpui::Task<()>>,
+    /// Settings → General's thread naming card (its own title-bound picker).
+    thread_naming: Entity<crate::settings::thread_naming::ThreadNamingCard>,
 }
 
 impl EventEmitter<ShortcutsEvent> for ShortcutsPage {}
@@ -101,6 +104,7 @@ impl ShortcutsPage {
             .detach();
         Self {
             appshots_page: false,
+            general_page: false,
             appshots_focus_pending: false,
             scroll: crate::settings::widgets::PageScroll::default(),
             keymap,
@@ -117,19 +121,27 @@ impl ShortcutsPage {
             appshot_capabilities: crate::appshots::capabilities(),
             capture_access_prompted: false,
             semantic_access_prompted: false,
-            state,
+            state: state.clone(),
             completion_harnesses: popover::Loadable::Idle,
             completion_task: None,
+            thread_naming: cx.new(|cx| {
+                crate::settings::thread_naming::ThreadNamingCard::new(state, cx)
+            }),
         }
     }
 
     pub fn show_appshots(&mut self, appshots: bool) {
-        if self.appshots_page != appshots {
+        self.show_section(appshots, false);
+    }
+
+    pub fn show_section(&mut self, appshots: bool, general: bool) {
+        if self.appshots_page != appshots || self.general_page != general {
             self.stop_recording();
             self.conflict_notice = None;
             self.appshots_page = appshots;
+            self.general_page = general;
             self.appshots_focus_pending = appshots;
-            // One scroll state serves both pages — rewind it so each opens
+            // One scroll state serves these pages — rewind it so each opens
             // at the top instead of where the other was left.
             self.scroll.reset();
         }
@@ -403,6 +415,203 @@ impl ShortcutsPage {
             )
     }
 
+    /// Settings → General: the conversation-behavior controls that used to
+    /// live on this page (send key, compact mode, Escape) plus the thread
+    /// naming card (upstream b782d043 moved them off the Shortcuts page).
+    fn render_general_page(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let escape_stops_active_agent = self.escape_stops_active_agent;
+        let send_behavior = self.composer_send_behavior;
+        let compact_mode = crate::settings::transcript_compact_mode(cx);
+        let modifier_label = modifier_send_label(cfg!(target_os = "macos"));
+
+        let send_behavior_control = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .when(send_behavior != ComposerSendBehavior::Enter, |el| {
+                el.child(
+                    div()
+                        .id("composer-send-reset")
+                        .size(px(26.0))
+                        .rounded(px(7.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(crate::theme::ink(0.04)).text_color(theme.text))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_composer_send_behavior(ComposerSendBehavior::Enter, cx)
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::RESTART)
+                                .size(px(13.0))
+                                .text_color(theme.text_muted),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .id("composer-send-behavior")
+                    .debug_selector(|| "composer-send-behavior".into())
+                    .flex()
+                    .flex_row()
+                    .rounded(px(9.0))
+                    .p(px(2.0))
+                    .bg(crate::theme::ink(0.04))
+                    .children(
+                        [
+                            (ComposerSendBehavior::Enter, "Enter"),
+                            (ComposerSendBehavior::ModEnter, modifier_label),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, (behavior, label))| {
+                            let selected = send_behavior == behavior;
+                            div()
+                                .id(("composer-send-option", ix))
+                                .debug_selector(move || {
+                                    format!("composer-send-behavior-option-{ix}")
+                                })
+                                .min_w(px(72.0))
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .rounded(px(7.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(px(12.0))
+                                .text_color(if selected {
+                                    theme.text
+                                } else {
+                                    theme.text_muted
+                                })
+                                .when(selected, |el| {
+                                    el.bg(theme.bg)
+                                        .border_1()
+                                        .border_color(theme.border.opacity(0.8))
+                                })
+                                .when(!selected, |el| {
+                                    el.cursor_pointer()
+                                        .hover(|s| s.text_color(theme.text))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_composer_send_behavior(behavior, cx)
+                                        }))
+                                })
+                                .child(SharedString::from(label))
+                        }),
+                    ),
+            );
+
+        let send_behavior_row = widgets::card_row(theme, true)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(160.0))
+                    .child(widgets::row_title(theme, "Send messages with")),
+            )
+            .child(send_behavior_control);
+        let compact_mode_row = widgets::card_row(theme, false)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(widgets::row_title(theme, "Compact mode"))
+                    .child(widgets::meta_line(
+                        theme,
+                        vec![
+                            div()
+                                .child("Collapse thinking and tools.")
+                                .into_any_element(),
+                        ],
+                    )),
+            )
+            .child(
+                widgets::toggle_switch(theme, compact_mode)
+                    .id("transcript-compact-mode-toggle")
+                    .tab_index(0)
+                    .role(gpui::Role::Switch)
+                    .aria_label("Compact mode")
+                    .aria_toggled(if compact_mode {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::settings::set_transcript_compact_mode(!compact_mode, cx);
+                        cx.notify();
+                    })),
+            );
+        let escape_behavior_row = widgets::card_row(theme, false)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(160.0))
+                    .child(widgets::row_title(theme, "Stop agent with Escape"))
+                    .child(widgets::meta_line(
+                        theme,
+                        vec![
+                            div()
+                                .child("When no dialog or menu is open.")
+                                .into_any_element(),
+                        ],
+                    )),
+            )
+            .child(
+                widgets::toggle_switch(theme, escape_stops_active_agent)
+                    .id("escape-stops-active-agent-toggle")
+                    .debug_selector(|| "escape-stops-active-agent-toggle".into())
+                    .tab_index(0)
+                    .role(gpui::Role::Switch)
+                    .aria_label("Stop agent with Escape")
+                    .aria_toggled(if escape_stops_active_agent {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_escape_stops_active_agent(!escape_stops_active_agent, cx);
+                    })),
+            );
+        let scrollbar = self.render_scrollbar(theme, cx);
+        div()
+            .id("general-settings-page-host")
+            .relative()
+            .size_full()
+            .on_hover(cx.listener(Self::on_scroll_hovered))
+            .child(
+                div()
+                    .id("general-settings-page")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll.scroll)
+                    .child(
+                        widgets::page_column()
+                            .child(widgets::page_header(theme, "General", None))
+                            .child(
+                                widgets::section_card(theme)
+                                    .child(send_behavior_row)
+                                    .child(compact_mode_row)
+                                    .child(escape_behavior_row),
+                            )
+                            .child(self.thread_naming.clone()),
+                    ),
+            )
+            .children(scrollbar)
+            .into_any_element()
+    }
+
     fn on_scroll_hovered(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
         if self.scroll.set_list_hovered(*hovered) {
             cx.notify();
@@ -431,6 +640,8 @@ impl ShortcutsPage {
     ) -> Option<gpui::AnyElement> {
         let id = if self.appshots_page {
             "appshots-settings-page-scrollbar"
+        } else if self.general_page {
+            "general-settings-page-scrollbar"
         } else {
             "shortcuts-page-scrollbar"
         };
@@ -535,6 +746,9 @@ impl Render for ShortcutsPage {
             return self.render_appshots(cx);
         }
         let theme = Theme::of(cx).clone();
+        if self.general_page {
+            return self.render_general_page(&theme, cx);
+        }
         if matches!(self.completion_harnesses, popover::Loadable::Idle) {
             self.load_completion_harnesses(cx);
         }
@@ -545,143 +759,7 @@ impl Render for ShortcutsPage {
         let customized = self.keymap != KeymapConfig::default()
             || escape_stops_active_agent
             || send_behavior != ComposerSendBehavior::default();
-        let modifier_label = modifier_send_label(cfg!(target_os = "macos"));
 
-        let escape_behavior_row = widgets::section_card(&theme).child(
-            widgets::card_row(&theme, true)
-                .min_h(px(84.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(widgets::row_title(&theme, "Stop active agent with Escape"))
-                        .child(
-                            div()
-                                .mt(px(4.0))
-                                .max_w(px(430.0))
-                                .text_size(crate::typography::ui_rems(11.5))
-                                .line_height(px(17.0))
-                                .text_color(theme.text_muted.opacity(0.65))
-                                .child(SharedString::from(
-                                    "When no dialog, menu, picker, or terminal handles Escape, stop the agent in the active session.",
-                                )),
-                        ),
-                )
-                .child(
-                    widgets::toggle_switch(&theme, escape_stops_active_agent)
-                        .id("escape-stops-active-agent-toggle")
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_escape_stops_active_agent(!escape_stops_active_agent, cx);
-                        })),
-                ),
-        );
-
-        let send_behavior_control = div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.0))
-            .when(send_behavior != ComposerSendBehavior::Enter, |el| {
-                el.child(
-                    div()
-                        .id("composer-send-reset")
-                        .size(px(26.0))
-                        .rounded(px(7.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_color(theme.text_muted)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(crate::theme::ink(0.04)).text_color(theme.text))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_composer_send_behavior(ComposerSendBehavior::Enter, cx)
-                        }))
-                        .child(
-                            crate::icons::icon(crate::icons::RESTART)
-                                .size(px(13.0))
-                                .text_color(theme.text_muted),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .id("composer-send-behavior")
-                    .flex()
-                    .flex_row()
-                    .rounded(px(9.0))
-                    .p(px(2.0))
-                    .bg(crate::theme::ink(0.04))
-                    .children(
-                        [
-                            (ComposerSendBehavior::Enter, "Enter"),
-                            (ComposerSendBehavior::ModEnter, modifier_label),
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, (behavior, label))| {
-                            let selected = send_behavior == behavior;
-                            div()
-                                .id(("composer-send-option", ix))
-                                .min_w(px(72.0))
-                                .px(px(12.0))
-                                .py(px(6.0))
-                                .rounded(px(7.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .font_family(theme.font_mono.clone())
-                                .text_size(px(12.0))
-                                .text_color(if selected {
-                                    theme.text
-                                } else {
-                                    theme.text_muted
-                                })
-                                .when(selected, |el| {
-                                    el.bg(theme.bg)
-                                        .border_1()
-                                        .border_color(theme.border.opacity(0.8))
-                                })
-                                .when(!selected, |el| {
-                                    el.cursor_pointer()
-                                        .hover(|s| s.text_color(theme.text))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.set_composer_send_behavior(behavior, cx)
-                                        }))
-                                })
-                                .child(SharedString::from(label))
-                        }),
-                    ),
-            );
-
-        let send_behavior_row = widgets::section_card(&theme)
-            .child(
-                widgets::card_row(&theme, true)
-                    .min_h(px(84.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(widgets::row_title(&theme, "Send messages with"))
-                            .child(
-                                div()
-                                    .mt(px(4.0))
-                                    .max_w(px(430.0))
-                                    .text_size(px(11.5))
-                                    .line_height(px(17.0))
-                                    .text_color(theme.text_muted.opacity(0.65))
-                                    .child(SharedString::from(
-                                        "Choose whether Enter sends immediately or starts a new paragraph. Cmd/Ctrl+Enter always submits; with an empty composer it sends the most recently queued message. Shift+Enter always inserts a line break.",
-                                    )),
-                            ),
-                    )
-                    .child(send_behavior_control),
-            );
         // One card per group, each under its small section label — the flat
         // 16-row table read as one undifferentiated wall. `ix` (the id's
         // position in ALL) keys the interactive elements, so ids stay unique
@@ -800,7 +878,6 @@ impl Render for ShortcutsPage {
                                             .child(SharedString::from("Restore defaults"))
                                     }),
                             )
-                            .child(send_behavior_row.mt(px(32.0)))
                             .child(completion)
                             .child(
                                 div()
@@ -820,8 +897,7 @@ impl Render for ShortcutsPage {
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted)
                                     .child(helper),
-                            )
-                            .child(escape_behavior_row),
+                            ),
                     ),
             )
             .children(scrollbar)
@@ -832,6 +908,48 @@ impl Render for ShortcutsPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn conversation_controls_work_after_moving_out_of_shortcuts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+        let (page, cx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            let mut page = ShortcutsPage::new(
+                state,
+                KeymapConfig::default(),
+                false,
+                ComposerSendBehavior::Enter,
+                false,
+                false,
+                AppshotDestination::Automatic,
+                cx,
+            );
+            page.show_section(false, true);
+            page
+        });
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(cx.debug_bounds("composer-send-behavior").is_some());
+        let option = cx.debug_bounds("composer-send-behavior-option-1").unwrap();
+        cx.simulate_click(option.center(), gpui::Modifiers::default());
+        let escape = cx.debug_bounds("escape-stops-active-agent-toggle").unwrap();
+        cx.simulate_click(escape.center(), gpui::Modifiers::default());
+        page.update(cx, |page, _| {
+            assert_eq!(page.composer_send_behavior, ComposerSendBehavior::ModEnter);
+            assert!(page.escape_stops_active_agent);
+            page.show_section(false, false);
+        });
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(cx.debug_bounds("composer-send-behavior").is_none());
+        assert!(
+            cx.debug_bounds("escape-stops-active-agent-toggle")
+                .is_none()
+        );
+    }
 
     #[gpui::test]
     fn appshots_setup_can_be_enabled_and_configured_by_keyboard(cx: &mut gpui::TestAppContext) {
