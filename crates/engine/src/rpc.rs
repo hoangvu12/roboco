@@ -2800,9 +2800,10 @@ mod tests {
         .await
         .unwrap();
         assert!(result[0].installed);
-        // Roboco keeps antigravity opt-in (upstream removed the rule): the
-        // fresh catalog flips installed, enablement still waits for the user.
-        assert_eq!(result[0].enabled, Some(false));
+        // Enablement follows detection (ticket 06's port of upstream
+        // 3f8f159b removed the opt-in rule): the fresh catalog flips
+        // installed, and a non-mock harness is on unless opted out.
+        assert_eq!(result[0].enabled, Some(true));
         assert!(result[0].can_install);
         assert!(installed_entry(&pin).unwrap().is_file());
         server.await.unwrap();
