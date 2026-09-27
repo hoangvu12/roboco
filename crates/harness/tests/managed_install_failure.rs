@@ -5,6 +5,9 @@
 //! (exit code 254)" with nothing actionable. The managed install must instead
 //! fail the run with the decoded errno and a recovery hint.
 //!
+//! Retargeted to grok when the pi-acp path was retired (ticket 21): grok
+//! carries the managed-install surface now.
+//!
 //! Single-test binary: it mutates PATH/SHELL/ROBOCO_* env process-wide.
 
 #![cfg(unix)]
@@ -32,10 +35,10 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
         std::env::set_var("ROBOCO_NO_LOGIN_SHELL", "1");
         std::env::set_var("PATH", &bin);
         std::env::set_var("HOME", dir.path());
-        std::env::remove_var("PI_ACP_EXECUTABLE");
+        std::env::remove_var("GROK_EXECUTABLE");
     }
 
-    let harness = AcpHarness::pi();
+    let harness = AcpHarness::grok();
     let (_steer_tx, steering) = mpsc::channel(1);
     let controls = RunControls {
         request_input: Box::new(|_| tokio::sync::oneshot::channel().1),
@@ -66,5 +69,5 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
     assert!(message.contains("exit code 254"), "{message}");
     assert!(message.contains("ENOENT"), "{message}");
     assert!(message.contains("failed silently"), "{message}");
-    assert!(message.contains("pi-acp"), "names the package: {message}");
+    assert!(message.contains("grok"), "names the package: {message}");
 }

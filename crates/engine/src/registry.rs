@@ -570,9 +570,11 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| roboco_harness::AcpHarness::hermes().installed()),
         Box::new(|| Ok(Arc::new(roboco_harness::AcpHarness::hermes()) as Arc<dyn Harness>)),
     );
-    // pi over ACP (our `@hoangnguyenvu12/pi-acp` fork of the community adapter),
-    // same lazy pattern: the static descriptor mirrors AcpHarness::pi() exactly —
-    // turn-boundary steering, pi's thinking ladder minus its "off" tier.
+    // pi over its NATIVE RPC mode (`pi --mode rpc`, the maintainer-supported
+    // embedding path), same lazy pattern: the static descriptor mirrors
+    // PiHarness exactly — turn-boundary steering via pi's own steer queue,
+    // pi's thinking ladder minus its "off" tier, deterministic turn ends
+    // (agent_settled).
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Pi,
@@ -591,8 +593,8 @@ pub fn default_registry() -> HarnessRegistry {
             can_install: false,
             enabled: None,
         },
-        Box::new(|| roboco_harness::AcpHarness::pi().installed()),
-        Box::new(|| Ok(Arc::new(roboco_harness::AcpHarness::pi()) as Arc<dyn Harness>)),
+        Box::new(|| roboco_harness::PiHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(roboco_harness::PiHarness::new()) as Arc<dyn Harness>)),
     );
     // opencode over its NATIVE HTTP/SSE protocol (the one the opencode
     // desktop app speaks — `opencode serve` + the /global/event bus), same
