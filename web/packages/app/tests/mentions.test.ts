@@ -3,6 +3,8 @@ import {
   displayRowSegments,
   droppedFileMention,
   fileMentionLinks,
+  invocationLink,
+  invocationLinks,
   localFileLink,
   mentionDisplayLabels,
   mentionResponseIsCurrent,
@@ -13,6 +15,7 @@ import {
   sentMentionDisplay,
   TextProjection,
   type FileMentionLink,
+  type Invocation,
   type MentionTooltipPhase,
   type MentionTooltipTarget,
 } from "../src/lib/mentions";
@@ -36,6 +39,27 @@ describe("mention_token_requires_a_token_boundary_and_tracks_full_token", () => 
   it("allows punctuation boundaries", () => {
     expect(mentionToken("See (@lib", 9)?.start).toBe(5);
     expect(mentionToken("See (@lib", 9)?.end).toBe(9);
+  });
+
+  it("bracketed mentions close at their matching bracket; escaped and mid-bracket @s never open", () => {
+    expect(mentionToken("(@src)", 5)).toEqual({ start: 1, end: 5, query: "src" });
+    expect(mentionToken("[@src]", 5)).toEqual({ start: 1, end: 5, query: "src" });
+    expect(mentionToken("(@src)", 6)).toBeNull();
+    expect(mentionToken("\\@src", 5)).toBeNull();
+  });
+
+  it("a quote continuation is still a token boundary (the `>` rule)", () => {
+    expect(mentionToken(">@src", 5)?.start).toBe(1);
+  });
+
+  it("a token inside a canonical chip, a code span, or an unfinished link never opens", () => {
+    const chip = localFileLink("src/@weird.rs", false);
+    const raw = `see ${chip}`;
+    expect(mentionToken(raw, raw.indexOf(".rs") + 1)).toBeNull();
+    expect(mentionToken("`code @src` tail", 10)).toBeNull();
+    expect(mentionToken("```\n@src\n``` tail", 7)).toBeNull();
+    expect(mentionToken("    @src indent", 9)).toBeNull();
+    expect(mentionToken("[label](https://ex @src", 24)).toBeNull();
   });
 });
 
@@ -68,6 +92,65 @@ describe("file_mentions_reject_external_or_noncanonical_markdown", () => {
     expect(fileMentionLinks("[a.rs](src/a.rs)")).toEqual([]);
     expect(fileMentionLinks("[a.rs](src%5Cfake%5Ca.rs)")).toEqual([]);
     expect(fileMentionLinks("[a.rs](src/a%0A.rs)")).toEqual([]);
+  });
+});
+
+describe("invocations_serialize_to_canonical_links_that_round_trip", () => {
+  const command: Invocation = { kind: "command", name: "compact" };
+  const skill: Invocation = {
+    kind: "skill",
+    name: "review",
+    path: "/repo/a b/SKILL.md",
+    command: { name: "plugin:review", harness: "claude-code" },
+  };
+
+  it("the link carries the prefix label and a hex JSON payload", () => {
+    const raw = invocationLink(command);
+    expect(raw).toContain("[/compact](roboco-invoke:");
+    expect(invocationLinks(raw)).toHaveLength(1);
+    expect(invocationLinks(raw)[0]?.invocation).toEqual(command);
+    expect(invocationLinks(raw)[0]?.prefix).toBe("/");
+    expect(invocationLinks(raw)[0]?.path).toBe("/compact");
+    expect(invocationLink(skill)).toContain("[$review](roboco-invoke:");
+    expect(invocationLinks(invocationLink(skill))[0]?.invocation).toEqual({ ...skill, command: skill.command });
+  });
+
+  it("only canonical links decode — literal `$`, code, and images never activate", () => {
+    const link = invocationLink(skill);
+    for (const literal of [
+      `\`${link}\``,
+      "```\n" + link + "\n```",
+      `\\${link}`,
+      `![example ${link}](example.png)`,
+    ]) {
+      expect(invocationLinks(literal)).toEqual([]);
+    }
+    expect(invocationLinks("plain $review text")).toEqual([]);
+    expect(invocationLinks("[/x](roboco-invoke:bad)").length === 0).toBe(true);
+    expect(invocationLinks("[/x](roboco-invoke:zz)").length === 0).toBe(true);
+  });
+
+  it("the pre-backtick-escaping label form remains recognizable", () => {
+    const backtickSkill: Invocation = { kind: "skill", name: "review`ui", path: "/repo/SKILL.md" };
+    const legacy = invocationLink(backtickSkill).replaceAll("\\`", "`");
+    expect(invocationLinks(legacy)).toHaveLength(1);
+    expect(invocationLinks(legacy)[0]?.invocation).toEqual({ ...backtickSkill, command: null });
+    // File labels escape backticks now, and recognize the legacy form too.
+    const file = localFileLink("src/a`b.rs", false);
+    expect(file).toBe("[a\\`b.rs](roboco-file:src/a%60b.rs)");
+    expect(fileMentionLinks(file)[0]?.path).toBe("src/a`b.rs");
+    expect(fileMentionLinks(file.replaceAll("\\`", "`"))[0]?.path).toBe("src/a`b.rs");
+  });
+
+  it("two references in one draft stay ordered and independent", () => {
+    const raw = `first ${invocationLink(command)} then ${invocationLink({
+      kind: "skill",
+      name: "review",
+      path: "/repo/SKILL.md",
+    })} finally`;
+    const links = invocationLinks(raw);
+    expect(links).toHaveLength(2);
+    expect(links[0]!.start).toBeLessThan(links[1]!.start);
   });
 });
 
@@ -104,8 +187,8 @@ describe("duplicate_mention_basenames_use_unique_suffixes", () => {
 describe("mention_suffixes_compare_path_components", () => {
   it("foo/mod.rs + bar/oomod.rs stay distinct — components, never substrings", () => {
     const links: FileMentionLink[] = [
-      { start: 0, end: 0, basename: "mod.rs", path: "foo/mod.rs", isDir: false },
-      { start: 0, end: 0, basename: "oomod.rs", path: "bar/oomod.rs", isDir: false },
+      { start: 0, end: 0, basename: "mod.rs", path: "foo/mod.rs", isDir: false, prefix: "@", invocation: null },
+      { start: 0, end: 0, basename: "oomod.rs", path: "bar/oomod.rs", isDir: false, prefix: "@", invocation: null },
     ];
     expect(mentionDisplayLabels(links)).toEqual(["mod.rs", "oomod.rs"]);
   });
@@ -119,7 +202,6 @@ describe("projection_maps_and_expands_atomic_chip_ranges", () => {
   it("projects NBSP @label NBSP", () => {
     expect(projection.display.slice(chip.start, chip.end)).toBe("\u00a0@composer.rs\u00a0");
   });
-
   it("display offsets inside the chip snap to its raw edges", () => {
     expect(projection.displayToRaw(chip.start + 1)).toBe(chip.link.start);
     expect(projection.displayToRaw(chip.end - 1)).toBe(chip.link.end);
@@ -135,6 +217,43 @@ describe("projection_maps_and_expands_atomic_chip_ranges", () => {
       start: chip.link.start,
       end: chip.link.end,
     });
+  });
+});
+
+describe("invocation_chips_share_the_projection_and_the_sent_display", () => {
+  const command: Invocation = { kind: "command", name: "compact" };
+  const skill: Invocation = { kind: "skill", name: "review", path: "/repo/SKILL.md" };
+  const raw = `run ${invocationLink(command)} with ${invocationLink(skill)} and ${localFileLink("src/lib.rs", false)}`;
+
+  it("chips carry their own prefix and stay atomic, files and invocations merged in range order", () => {
+    const projection = new TextProjection(raw);
+    expect(projection.mentions.map((chip) => chip.link.prefix)).toEqual(["/", "$", "@"]);
+    expect(projection.display).toContain("\u00a0/compact\u00a0");
+    expect(projection.display).toContain("\u00a0$review\u00a0");
+    const skillChip = projection.mentions[1]!;
+    expect(projection.previousBoundary(skillChip.link.end)).toBe(skillChip.link.start);
+    expect(projection.displayToRaw(skillChip.start + 1)).toBe(skillChip.link.start);
+  });
+
+  it("duplicate invocation names disambiguate as `name · suffix`", () => {
+    const raw2 = `${invocationLink({ kind: "skill", name: "review", path: "/a/SKILL.md" })} ${invocationLink({
+      kind: "skill",
+      name: "review",
+      path: "/b/SKILL.md",
+    })}`;
+    const projection2 = new TextProjection(raw2);
+    expect(projection2.display).toContain("review\u00a0·\u00a0a/SKILL.md");
+    expect(projection2.display).toContain("review\u00a0·\u00a0b/SKILL.md");
+  });
+
+  it("sent_mention_display projects invocation chips with the reference's detail as the path", () => {
+    const sent = sentMentionDisplay(raw);
+    expect(sent).not.toBeNull();
+    const { display, mentions } = sent!;
+    expect(display).not.toContain("roboco-invoke:");
+    expect(mentions.map((span) => span.path)).toEqual(["/compact", "/repo/SKILL.md", "src/lib.rs"]);
+    expect(mentions.every((span) => span.isDir === false)).toBe(true);
+    expect(sentMentionDisplay("ordinary $dollar /slash text")).toBeNull();
   });
 });
 

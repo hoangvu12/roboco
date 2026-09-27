@@ -68,9 +68,13 @@ export const SET_TITLE_SETTINGS = "SetTitleSettings";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
 export const LIST_MODELS = "ListModels";
 /** The composer's `/` discovery (crates/rpc/src/lib.rs:42): harness-advertised
- *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Cached
- *  once per harness per composer lifetime, filtered locally per keystroke. */
+ *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Catalogs
+ *  re-probe on each fresh open (warm caches show their rows meanwhile). */
 export const LIST_COMMANDS = "ListCommands";
+/** The composer's `$` skill discovery (crates/rpc/src/lib.rs:44):
+ *  `{harness, chatId? | spaceId?, path?}` → `Skill[] | null` — `null` when
+ *  the provider does not advertise skills at all. */
+export const LIST_SKILLS = "ListSkills";
 /** The composer's `@` file-mention search (crates/rpc/src/lib.rs:131):
  *  `{query, chatId? | spaceId?, path?, targetDeviceId?}` → `FileSearchMatch[]`.
  *  Debounced 80ms client-side; one retry after 250ms on transport failure. */

@@ -223,6 +223,10 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::DoneStatus,
         roboco_proto::AgentEvent,
         roboco_proto::ContextUsage,
+        // invocation.rs
+        roboco_proto::invocation::SkillCommand,
+        roboco_proto::invocation::Skill,
+        roboco_proto::invocation::Invocation,
         // remote.rs
         roboco_proto::RemoteAccessStatus,
         roboco_proto::PairedSession,
@@ -292,6 +296,10 @@ fn constants_ts() -> String {
     out.push_str(
         "/** Protocol feature strings advertised in `EngineInfo.capabilities` / `Device.capabilities`. */\n",
     );
+    out.push_str(&format!(
+        "export const COMPOSER_REFERENCES_V1 = {:?};\n",
+        capabilities::COMPOSER_REFERENCES_V1
+    ));
     out.push_str(&format!(
         "export const MESSAGE_QUEUE_V1 = {:?};\n",
         capabilities::MESSAGE_QUEUE_V1

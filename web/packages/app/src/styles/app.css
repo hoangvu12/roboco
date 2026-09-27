@@ -4337,7 +4337,8 @@ a:focus-visible,
 
 /* Slash rows (composer.rs:5596-5624): command glyph, `/{name}` at
    12.5/500, the description at 12 truncated. */
-.slash-row-command {
+.slash-row-command,
+.slash-row-widget {
   color: var(--rb-text-muted);
 }
 
