@@ -76,7 +76,7 @@ use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::project_actions::ProjectActionsStore;
 use crate::registry::HarnessRegistry;
-use crate::repos::{Repos, home_dir};
+use crate::repos::Repos;
 use crate::sessions::SessionsEngine;
 use crate::sidebar_state::SidebarStateStore;
 use crate::terminals::Terminals;
@@ -2273,15 +2273,19 @@ impl RpcService for EngineRpc {
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
-                // The terminal runs in the chat's checkout; a chat with no cwd (or
-                // no row yet) gets the home directory.
+                // The terminal runs in the chat's checkout; a chat with no cwd
+                // (or no row yet) starts in the home directory. Project-less
+                // chats store cwd `~`, expanded here on the host, and a
+                // missing home is an error rather than a silent `/`.
                 let cwd = self
                     .workspace
                     .chat(&p.chat_id)
                     .ok()
                     .flatten()
                     .and_then(|chat| chat.cwd)
-                    .unwrap_or_else(|| home_dir().to_string_lossy().to_string());
+                    .unwrap_or_else(|| "~".to_string());
+                let cwd = crate::repos::expand_home(&cwd)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
                 let session = self
                     .terminals
                     .open(&cwd, p.cols, p.rows)
