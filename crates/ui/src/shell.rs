@@ -204,6 +204,30 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
     (viewport - sidebar - right).max(0.0)
 }
 
+/// The chat's working directory as the host device spells it — the folder the
+/// harness runs in (a worktree chat's worktree). Projectless `~` chats have
+/// none. Deliberately not `source_context.repo_root`: that is canonicalized
+/// (symlinks resolved, `\\?\` verbatim prefix on Windows hosts).
+fn chat_copy_path(chat: &roboco_proto::Chat) -> Option<&str> {
+    chat.cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| is_host_absolute_path(cwd))
+}
+
+/// Absolute on the HOST, whatever the viewer's OS: a remote engine may hand a
+/// POSIX path to a Windows viewport (no drive, so `Path::is_absolute` says
+/// no) or a drive path to a POSIX one.
+fn is_host_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'))
+}
+
 fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
     if is_chat_route && has_selected_chat {
         1.0
@@ -3566,6 +3590,23 @@ impl Shell {
         cx.notify();
     }
 
+    fn copy_chat_path(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let path = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .and_then(chat_copy_path)
+            .map(str::to_owned);
+        if let Some(path) = path {
+            cx.write_to_clipboard(ClipboardItem::new_string(path));
+            self.sidebar_notice = Some("Path copied".into());
+        }
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.command_palette = None;
         // Recreate per visit: the page's ListHarnesses load re-probes which
@@ -6733,9 +6774,11 @@ impl Shell {
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
+                    let has_path = chat.as_ref().and_then(chat_copy_path).is_some();
                     let roboco_id = chat_id.clone();
                     let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
+                    let path_chat_id = chat_id.clone();
                     menu.child(
                         popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
                             .id("chat-copy-back")
@@ -6753,6 +6796,21 @@ impl Shell {
                             .child(SharedString::from("Back")),
                     )
                     .child(popover::menu_separator())
+                    .when(has_path, |menu| {
+                        menu.child(
+                            popover::menu_row(&theme, false, format!("chat-copy-path-{chat_id}"))
+                                .id("chat-copy-path")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_chat_path(&path_chat_id, cx)
+                                }))
+                                .child(
+                                    icon(icons::COPY)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Path")),
+                        )
+                    })
                     .child(
                         popover::menu_row(&theme, false, format!("chat-copy-roboco-{chat_id}"))
                             .id("chat-copy-roboco")
@@ -9449,6 +9507,81 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat_with_path(cwd: Option<&str>, source: Option<(&str, &str)>) -> roboco_proto::Chat {
+        roboco_proto::Chat {
+            id: "chat".into(),
+            device_id: "remote-device".into(),
+            title: None,
+            archived: false,
+            cwd: cwd.map(str::to_owned),
+            branch: None,
+            checkout_id: None,
+            source_context: source.map(|(source_cwd, repo_root)| {
+                roboco_proto::ConversationSourceContext {
+                    checkout_id: "checkout".into(),
+                    repo_root: repo_root.into(),
+                    cwd: source_cwd.into(),
+                    branch: "main".into(),
+                    head_sha: None,
+                    observed_at: chrono::Utc::now(),
+                }
+            }),
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+        }
+    }
+
+    #[test]
+    fn copy_path_copies_the_chat_cwd_not_the_canonical_repo_root() {
+        let chat = chat_with_path(
+            Some("/remote/repo/packages/app"),
+            Some(("/remote/repo/packages/app", "/remote/repo")),
+        );
+        assert_eq!(chat_copy_path(&chat), Some("/remote/repo/packages/app"));
+
+        let windows = chat_with_path(
+            Some(r"C:\Users\me\repo"),
+            Some((r"C:\Users\me\repo", r"\\?\C:\Users\me\repo")),
+        );
+        assert_eq!(chat_copy_path(&windows), Some(r"C:\Users\me\repo"));
+    }
+
+    #[test]
+    fn copy_path_accepts_host_absolute_paths_from_any_os() {
+        for cwd in [
+            "/home/me/repo",
+            r"C:\Users\me\repo",
+            "D:/work/repo",
+            r"\\server\share\repo",
+        ] {
+            let chat = chat_with_path(Some(cwd), None);
+            assert_eq!(chat_copy_path(&chat), Some(cwd));
+        }
+    }
+
+    #[test]
+    fn copy_path_is_unavailable_without_an_absolute_path() {
+        for cwd in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("~"),
+            Some("~/repo"),
+            Some("."),
+            Some("C:"),
+        ] {
+            let chat = chat_with_path(cwd, None);
+            assert_eq!(chat_copy_path(&chat), None);
+        }
+    }
 
     #[test]
     fn update_strip_labels_cover_every_install_kind() {
