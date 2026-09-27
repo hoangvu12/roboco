@@ -7513,6 +7513,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "ts-rs",
  "uuid",

@@ -527,6 +527,10 @@ struct AgentAccountParams {
 #[serde(rename_all = "camelCase")]
 struct StartAgentLoginParams {
     harness: HarnessId,
+    /// For agents that keep a login per model provider (OpenCode, Pi,
+    /// Hermes): which provider to sign in to; `None` = the agent's default.
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2559,7 +2563,7 @@ impl RpcService for EngineRpc {
                 let p: StartAgentLoginParams = parse_params(params)?;
                 let start = self
                     .agent_accounts
-                    .start_login(p.harness)
+                    .start_login_with(p.harness, p.provider.as_deref())
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&start)
