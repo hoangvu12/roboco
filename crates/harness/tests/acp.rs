@@ -689,11 +689,11 @@ async fn antigravity_sign_in_reports_the_browser_url_and_authenticates() {
 }
 
 #[tokio::test]
-async fn antigravity_commands_hide_logout_but_keep_the_servers_own() {
+async fn antigravity_commands_include_logout() {
     let commands = antigravity_harness().commands().await.expect("commands");
     let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"plan"), "{names:?}");
-    assert!(!names.contains(&"logout"), "{names:?}");
+    assert!(names.contains(&"logout"), "{names:?}");
 }
 
 #[tokio::test]
@@ -716,7 +716,7 @@ async fn antigravity_run_without_sign_in_points_to_settings_instead_of_a_browser
     assert_eq!(dones.len(), 1, "{events:?}");
     assert_eq!(dones[0].0, DoneStatus::Errored);
     let error = dones[0].1.as_deref().unwrap_or_default();
-    assert!(error.contains("Settings → Agents"), "{error}");
+    assert!(error.contains("Settings → Agents → Sign in"), "{error}");
 }
 
 #[test]
@@ -1678,4 +1678,171 @@ async fn pi_without_steering_extension_queues_live_steer_once() {
 #[tokio::test]
 async fn pi_without_steering_extension_dispatches_idle_steer_immediately() {
     pi_boundary_steer("steer-idle", true).await;
+}
+
+#[tokio::test]
+async fn antigravity_wedge_emits_one_interrupted_done() {
+    let (controls, _steer, token) = controls();
+    let harness = AcpHarness::antigravity().with_executable(fixture_path());
+    let stream = harness
+        .run(request("scenario:wedge"), controls)
+        .await
+        .expect("run starts");
+    let events = tokio::time::timeout(Duration::from_secs(6), async move {
+        let mut events = Vec::new();
+        let mut stream = stream;
+        while let Some(ev) = stream.next().await {
+            let ev = ev.expect("stream event");
+            if matches!(ev, AgentEvent::TextDelta { ref text } if text == "working") {
+                token.cancel();
+            }
+            events.push(ev);
+        }
+        events
+    })
+    .await
+    .expect("escalation reaped the child in time");
+    let dones = dones(&events);
+    assert_eq!(dones.len(), 1, "{events:?}");
+    assert_eq!(dones[0].0, DoneStatus::Interrupted);
+}
+
+#[tokio::test]
+async fn antigravity_load_and_prompt_auth_expiry_point_to_sign_in() {
+    for resume in [false, true] {
+        let workspace = tempfile::Builder::new()
+            .prefix("prompt-auth")
+            .tempdir()
+            .unwrap();
+        let mut req = request("hi");
+        req.model = None;
+        req.cwd = workspace.path().display().to_string();
+        req.resume = resume.then(|| "expired-session".into());
+        let (controls, _, _) = controls();
+        let events = run_to_end(&antigravity_harness(), req, controls).await;
+        let done = dones(&events);
+        assert_eq!(done.len(), 1, "{events:?}");
+        assert_eq!(done[0].0, DoneStatus::Errored);
+        assert!(
+            done[0]
+                .1
+                .as_deref()
+                .unwrap()
+                .contains("Settings → Agents → Sign in"),
+            "{events:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn antigravity_empty_reply_completes_once() {
+    let workspace = tempfile::Builder::new()
+        .prefix("empty-reply")
+        .tempdir()
+        .unwrap();
+    let mut req = request("hi");
+    req.model = None;
+    req.cwd = workspace.path().display().to_string();
+    let (controls, _, _) = controls();
+    let events = run_to_end(&antigravity_harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[tokio::test]
+async fn antigravity_unknown_saved_model_fails_clearly() {
+    let events = antigravity_config_sets("unknown-saved-model", None).await;
+    let done = dones(&events);
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].0, DoneStatus::Errored);
+    assert!(
+        done[0]
+            .1
+            .as_deref()
+            .unwrap()
+            .contains("unknown-saved-model")
+    );
+}
+
+#[tokio::test]
+async fn antigravity_spawn_failure_returns_an_error_for_the_engine_to_surface() {
+    let workspace = tempfile::tempdir().unwrap();
+    let missing = workspace.path().join("missing-acp-server");
+    let harness = AcpHarness::antigravity().with_executable(&missing);
+    let (controls, _, _) = controls();
+    let result = harness.run(request("hi"), controls).await;
+    let Err(error) = result else {
+        panic!("spawn failure must reach the engine");
+    };
+    assert!(error.to_string().contains("missing-acp-server"), "{error}");
+}
+
+#[tokio::test]
+async fn antigravity_strips_echoed_background_task_wakeups_from_the_reply() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut req = request("echo-wakeup");
+    req.model = None;
+    req.cwd = workspace.path().display().to_string();
+    let (controls, _steer, _token) = controls();
+    let events = run_to_end(&antigravity_harness(), req, controls).await;
+
+    let reply: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reply, "Waiting for the build.\n\n\n\nThe build finished.");
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[tokio::test]
+async fn antigravity_stdout_sign_in_and_sibling_environment_on_every_spawn() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let server = dir.path().join("server");
+    let sibling = dir.path().join("localharness_external");
+    std::fs::write(&sibling, "fixture").unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/fake-antigravity-acp.sh");
+    let original = std::fs::read_to_string(&fixture).unwrap();
+    let modified = original.replace(
+        "printf 'Sign in here: https://accounts.google.com/o/oauth2/auth?client_id=fake\\n' >&2",
+        "printf 'Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/auth?client_id=fake\\n'",
+    );
+    assert_ne!(original, modified);
+    let checks = format!(
+        "[ \"$ANTIGRAVITY_HARNESS_PATH\" = '{}' ] || exit 3\n[ \"$PYTHONUNBUFFERED\" = 1 ] || exit 4\n",
+        sibling.display(),
+    );
+    std::fs::write(
+        &server,
+        modified.replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{checks}"), 1),
+    )
+    .unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let harness = AcpHarness::antigravity().with_executable(&server);
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<SignInProgress>>> = Default::default();
+    let recorder = seen.clone();
+    harness
+        .sign_in(None, move |p| recorder.lock().unwrap().push(p))
+        .await
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![SignInProgress::OpenBrowser(
+            "https://accounts.google.com/o/oauth2/auth?client_id=fake".into(),
+        )]
+    );
+    harness.sign_out().await.unwrap();
+    assert!(!harness.models().await.unwrap().is_empty());
+    assert!(!harness.commands().await.unwrap().is_empty());
+    let (ctl, _steer, _) = controls();
+    let mut req = request("hello");
+    req.model = None;
+    req.cwd = dir.path().display().to_string();
+    assert_eq!(
+        dones(&run_to_end(&harness, req, ctl).await),
+        vec![(DoneStatus::Completed, None)]
+    );
 }
