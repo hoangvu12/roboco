@@ -78,6 +78,8 @@ import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
 import { ProjectActionsControl } from "./project-actions-control";
 import { TerminalProvider, drawerTerminalStore } from "../terminal/store";
+import { canvasTerminalKey, terminalOpenCwd } from "../terminal/session";
+import { useNewThreadTarget } from "./composer/new-thread-selectors";
 
 /**
  * The app shell — the desktop's `shell.rs` chrome.
@@ -957,11 +959,25 @@ function isEditableTarget(target: EventTarget | null): boolean {
  */
 function TerminalShortcutBridge() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  // The canvas arm's target: the picked project's id (the per-space
+  // `space-canvas:{spaceId}` key) and its folder as the PTY cwd
+  // (`terminal_open_cwd_for`; `~` project-less).
+  const target = useNewThreadTarget();
   useEffect(
     () =>
       onShortcut("toggle-terminal", () => {
         const chatId = chatIdOf(pathname);
         if (chatId === null) {
+          // The new-thread canvas: the drawer keys per space and its first
+          // tab opens in the picked project's folder (upstream 23e258ff).
+          if (pathname !== "/") {
+            return;
+          }
+          const key = canvasTerminalKey(target.projectId);
+          drawerTerminalStore.toggle(key, terminalOpenCwd(key, target.space?.path ?? null));
+          if (drawerTerminalStore.stateFor(key)?.open !== true) {
+            document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+          }
           return;
         }
         drawerTerminalStore.toggle(chatId);
@@ -969,7 +985,7 @@ function TerminalShortcutBridge() {
           document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
         }
       }),
-    [pathname],
+    [pathname, target],
   );
   return null;
 }
