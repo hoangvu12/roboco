@@ -310,13 +310,20 @@ async fn unknown_events_and_id_less_responses_are_tolerated() {
 
 #[tokio::test]
 async fn thinking_level_is_applied_at_startup() {
-    let (controls, _steer, _token) = controls();
-    let mut req = request("hello");
+    let cwd = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("hello", &cwd.path().display().to_string());
     req.reasoning = Some(ReasoningLevel::XHigh);
-    let events = run_to_end(&harness(), req, controls).await;
+    let events = run_to_end(&harness(), req, ctl).await;
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-    // The fixture records the applied level and reports it in get_state; the
-    // run only proves the command was accepted (best-effort by design).
+    // The fixture appends the applied level to its session file: the
+    // set_thinking_level command carried the run's reasoning level.
+    let recorded = std::fs::read_to_string(
+        cwd.path().join(".pi-fixture-session.jsonl"),
+    )
+    .unwrap();
+    assert!(recorded.contains("thinking:xhigh"), "{recorded}");
 }
 
 // ---------------------------------------------------------------------------

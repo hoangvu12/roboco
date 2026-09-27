@@ -4,6 +4,8 @@
 # responses, every event type the native driver maps, stdout noise/CRLF
 # tolerance, turn errors, auto-retry, compaction, extension UI dialogs, and
 # the steering queue. Replaces fake-pi-acp.sh for the native driver.
+# NOTE: the python below is embedded in a sh single-quoted string - it must
+# never contain an apostrophe (a stray one splits the script into argv).
 exec python3 -u -c '
 import json, os, signal, subprocess, sys, time
 
@@ -314,6 +316,10 @@ while True:
         response(command, state_data())
     elif kind == "set_thinking_level":
         thinking_level_seen = command["level"]
+        # Record the applied level in the session file so tests can prove
+        # the wire command carried the requested reasoning level.
+        with open(session_file, "a") as handle:
+            handle.write("thinking:" + command["level"] + "\n")
         response(command)
     elif kind == "get_session_stats":
         response(command, stats_data())
