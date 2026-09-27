@@ -35,6 +35,16 @@ pub mod methods {
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
+    /// Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES
+    /// (engine-local: the client picks the paired engine's connection; the
+    /// engine owns the install and never forwards it). Replies with the
+    /// device's fresh `ListHarnesses` catalog.
+    pub const INSTALL_HARNESS: &str = "InstallHarness";
+    /// InstallHarness / CancelInstall — the explicit install flow for one
+    /// harness ON THE ENGINE THE CALL REACHES. The client picks the paired
+    /// engine's connection (engine-local routing); this engine owns the
+    /// install, guards against duplicate installs, and never forwards.
+    pub const CANCEL_INSTALL: &str = "CancelInstall";
     /// Flip a harness's enablement on the target device (Settings → Agents);
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";

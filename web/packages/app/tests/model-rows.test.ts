@@ -19,6 +19,7 @@ function descriptor(id: HarnessId, name: string, extra: Partial<HarnessDescripto
     steeringMode: "step-boundary",
     reasoningLevels: [],
     installed: true,
+    canInstall: false,
     enabled: null,
     ...extra,
   };

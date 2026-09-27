@@ -85,6 +85,7 @@ describe("effective_reasoning_ladder_prefers_model_then_descriptor", () => {
     steeringMode: "step-boundary",
     reasoningLevels,
     installed: true,
+  canInstall: false,
     enabled: true,
   });
 

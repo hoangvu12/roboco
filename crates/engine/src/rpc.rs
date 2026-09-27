@@ -3,6 +3,11 @@
 //!
 //! Methods (feature-inventory §2):
 //! - `ListHarnesses` → `[HarnessDescriptor]`
+//! - `InstallHarness {harness}` → `[HarnessDescriptor]` — explicit,
+//!   user-requested CLI install ON THIS ENGINE (never a probe side effect;
+//!   never forwarded — the client picked this engine's connection)
+//! - `CancelInstall {harness}` → `{}` — cancels the running explicit install
+//!   on this engine (one per harness; duplicates are refused)
 //! - `ListModels {harness}` → `[Model]`
 //! - `QueueCommand {chatId, command}` → `{commandId}` (durable doc command)
 //! - `WatchDocMessages {chatId}` → stream of joined `SessionMessageEntry[]`,
@@ -115,6 +120,92 @@ async fn update_harness_enabled(
     registry
         .set_enabled(harness, enabled)
         .map_err(RpcError::Failed)
+}
+
+/// Run one explicit, user-requested harness install and reply with the fresh
+/// catalog. The install happens ON THIS ENGINE — the device whose connection
+/// the call arrived on (engine-local: the client picked it; this engine owns
+/// the install and never forwards it anywhere).
+///
+/// In-flight installs are guarded per harness: a second request for the same
+/// harness is refused while one runs, and `CancelInstall` cancels the running
+/// one (killing its owned process group). The guard cancels on drop too, so a
+/// dropped request never leaves an unowned installer behind.
+#[derive(Default)]
+pub(crate) struct Installations(
+    std::sync::Mutex<std::collections::HashMap<HarnessId, roboco_harness::CancellationToken>>,
+);
+
+struct Installing<'a> {
+    installs: &'a Installations,
+    harness: HarnessId,
+    cancel: roboco_harness::CancellationToken,
+}
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.installs
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.harness);
+    }
+}
+impl Installations {
+    fn begin(&self, harness: HarnessId) -> Result<Installing<'_>, RpcError> {
+        let mut installs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if installs.contains_key(&harness) {
+            return Err(RpcError::Failed("already installing".into()));
+        }
+        let cancel = roboco_harness::CancellationToken::new();
+        installs.insert(harness, cancel.clone());
+        Ok(Installing {
+            installs: self,
+            harness,
+            cancel,
+        })
+    }
+    fn cancel(&self, harness: HarnessId) {
+        if let Some(cancel) = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&harness)
+        {
+            cancel.cancel();
+        }
+    }
+}
+
+async fn run_requested_install(
+    harness: HarnessId,
+    cancel: roboco_harness::CancellationToken,
+) -> Result<(), roboco_harness::HarnessError> {
+    #[cfg(test)]
+    if let Ok(script) = std::env::var(format!("ROBOCO_INSTALLER_COMMAND_{harness:?}").to_uppercase()) {
+        return roboco_harness::install::install_with_command(harness, &script, cancel).await;
+    }
+    roboco_harness::install::install_harness(harness, cancel).await
+}
+
+async fn install_harness_with<F, Fut>(
+    registry: &HarnessRegistry,
+    harness: HarnessId,
+    install: F,
+) -> Result<Vec<crate::registry::HarnessDescriptor>, RpcError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), roboco_harness::HarnessError>>,
+{
+    if !roboco_harness::install::can_install(harness) {
+        return Err(RpcError::Failed(
+            "No supported installer or required tools available on this device".into(),
+        ));
+    }
+    install()
+        .await
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+    Ok(registry.descriptors())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1096,6 +1187,20 @@ impl RpcService for EngineRpc {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
+            methods::INSTALL_HARNESS => {
+                let p: roboco_proto::InstallHarnessRequest = parse_params(params)?;
+                let installing = self.registry.installs.begin(p.harness)?;
+                let descriptors = install_harness_with(&self.registry, p.harness, || {
+                    run_requested_install(p.harness, installing.cancel.clone())
+                })
+                .await?;
+                RpcReply::value(&descriptors)
+            }
+            methods::CANCEL_INSTALL => {
+                let p: roboco_proto::InstallHarnessRequest = parse_params(params)?;
+                self.registry.installs.cancel(p.harness);
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.registry.title_settings()),
             methods::SET_TITLE_SETTINGS => {
                 let p: crate::registry::TitleSettings = parse_params(params)?;
@@ -2460,6 +2565,262 @@ impl RpcService for EngineRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Each subprocess has private HOME/PATH/overrides, avoiding process-global test races.
+    #[cfg(unix)]
+    async fn installer_rpc_fixture(mode: &str) {
+        use std::{os::unix::fs::PermissionsExt, sync::Arc};
+        if std::env::var_os("ROBOCO_INSTALL_FIXTURE_CHILD").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let script = match mode {
+                "success" => {
+                    "test -z \"$ROBOCO_INSTALL_FIXTURE_CHILD\" && test -z \"$CLAUDECODE\" && printf '#!/bin/sh\\necho 99.0.0\\n' > \"$CODEX_EXECUTABLE\" && /bin/chmod +x \"$CODEX_EXECUTABLE\""
+                }
+                "failure" => "echo 'fixture failure api_key=private' >&2; exit 7",
+                "missing" => "exit 0",
+                "cancel" => "echo ready > \"$READY_FILE\"; sleep 60",
+                "npm" => "npm install -g @openai/codex",
+                _ => unreachable!(),
+            };
+            let test = format!("rpc::tests::installer_rpc_{mode}");
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test, "--nocapture", "--include-ignored"])
+                .env("ROBOCO_INSTALL_FIXTURE_CHILD", root.path())
+                .env("ROBOCO_INSTALLER_COMMAND_CODEX", script)
+                .env("ROBOCO_NO_LOGIN_SHELL", "1")
+                .env("HOME", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("CODEX_EXECUTABLE", bin.join("codex"))
+                .env("CLAUDECODE", "nested-test")
+                .env("READY_FILE", root.path().join("ready"))
+                .env("npm_config_prefix", root.path())
+                .env("npm_config_cache", root.path().join("npm-cache"))
+                .env(
+                    "PATH",
+                    std::env::join_paths(
+                        std::iter::once(bin)
+                            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+                    )
+                    .unwrap(),
+                )
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            println!("{}", String::from_utf8_lossy(&output.stdout));
+            return;
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("ROBOCO_INSTALL_FIXTURE_CHILD").unwrap());
+        let registry = Arc::new(HarnessRegistry::new());
+        registry.register(Arc::new(roboco_harness::CodexHarness::new()));
+        let core = crate::EngineCore::assemble(
+            &root.join("engine"),
+            registry.clone(),
+            HarnessId::Codex,
+        )
+        .unwrap();
+        let rpc = core.rpc_service();
+        let params = serde_json::json!({"harness": "codex"});
+        assert!(!registry.descriptors()[0].installed);
+        assert_eq!(registry.descriptors()[0].enabled, Some(false));
+        let result = if mode == "cancel" {
+            let rpc = rpc.clone();
+            let task = tokio::spawn(async move {
+                rpc.handle(
+                    methods::INSTALL_HARNESS,
+                    serde_json::json!({"harness": "codex"}),
+                )
+                .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !root.join("ready").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // A second service for the same device must share the in-flight guard.
+            let other = core.rpc_service();
+            assert!(
+                matches!(other.handle(methods::INSTALL_HARNESS, params.clone()).await, Err(RpcError::Failed(e)) if e == "already installing")
+            );
+            other.handle(methods::CANCEL_INSTALL, params).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            rpc.handle(methods::INSTALL_HARNESS, params).await
+        };
+        match mode {
+            "success" | "npm" => {
+                let RpcReply::Value(value) = result.unwrap() else {
+                    panic!("expected descriptors");
+                };
+                let list: Vec<crate::registry::HarnessDescriptor> =
+                    serde_json::from_value(value).unwrap();
+                assert!(list[0].installed);
+                assert_eq!(list[0].enabled, Some(true));
+                assert!(list[0].can_install);
+                let path = root.join("bin/codex");
+                assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
+                println!(
+                    "InstallHarness ({mode}): installed=false/enabled=false -> installed=true/enabled=true; {}",
+                    path.display()
+                );
+            }
+            "failure" => assert!(
+                matches!(result, Err(RpcError::Failed(e)) if e.contains("fixture failure") && e.contains("[REDACTED]") && !e.contains("private"))
+            ),
+            "missing" => assert!(
+                matches!(result, Err(RpcError::Failed(e)) if e.contains("installer finished but `codex` was not found on PATH"))
+            ),
+            "cancel" => {
+                assert!(matches!(result, Err(RpcError::Failed(e)) if e.contains("cancelled")));
+                assert!(registry.installs.begin(HarnessId::Codex).is_ok());
+            }
+            _ => unreachable!(),
+        }
+        core.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_success() {
+        installer_rpc_fixture("success").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_failure() {
+        installer_rpc_fixture("failure").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_missing() {
+        installer_rpc_fixture("missing").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_cancel() {
+        installer_rpc_fixture("cancel").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "downloads the official npm package into an isolated temporary prefix"]
+    async fn installer_rpc_npm() {
+        installer_rpc_fixture("npm").await;
+    }
+
+    #[tokio::test]
+    async fn explicit_install_rpc_verifies_archive_and_refreshes_descriptors() {
+        use sha2::{Digest, Sha512};
+        use std::io::Write;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use roboco_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
+        if std::env::var_os("ROBOCO_INSTALL_RPC_TEST").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "rpc::tests::explicit_install_rpc_verifies_archive_and_refreshes_descriptors",
+                    "--nocapture",
+                ])
+                .env("ROBOCO_INSTALL_RPC_TEST", "1")
+                .env("ROBOCO_ADAPTERS_DIR", root.path())
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if !roboco_harness::acp::can_install(HarnessId::Antigravity) {
+            return;
+        }
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("server", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        let digest = Box::leak(format!("{:x}", Sha512::digest(&bytes)).into_boxed_str());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Box::leak(
+            format!("http://{}/archive.zip", listener.local_addr().unwrap()).into_boxed_str(),
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            socket.read(&mut buf).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&bytes).await.unwrap();
+        });
+        let pin = ArchivePin {
+            name: "explicit-install-test",
+            version: "1",
+            url,
+            entry: "server",
+            sha512: digest,
+        };
+        let registry = HarnessRegistry::new();
+        let descriptor = serde_json::from_value(serde_json::json!({
+            "id": "antigravity", "name": "Antigravity", "supportsSteering": true,
+            "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false
+        }))
+        .unwrap();
+        registry.register_lazy(
+            descriptor,
+            Box::new(move || installed_entry(&pin).is_some()),
+            Box::new(|| panic!("installation must not spawn the harness")),
+        );
+        assert!(!registry.descriptors()[0].installed);
+        let result = install_harness_with(&registry, HarnessId::Antigravity, || async {
+            ensure_installed(pin, "Test adapter").await.map(|_| ())
+        })
+        .await
+        .unwrap();
+        assert!(result[0].installed);
+        // Roboco keeps antigravity opt-in (upstream removed the rule): the
+        // fresh catalog flips installed, enablement still waits for the user.
+        assert_eq!(result[0].enabled, Some(false));
+        assert!(result[0].can_install);
+        assert!(installed_entry(&pin).unwrap().is_file());
+        server.await.unwrap();
+        // The verified marker makes another explicit install idempotent, even
+        // after the archive server has stopped.
+        install_harness_with(&registry, HarnessId::Antigravity, || async {
+            ensure_installed(pin, "Test adapter").await.map(|_| ())
+        })
+        .await
+        .unwrap();
+        assert!(
+            install_harness_with(&registry, HarnessId::Mock, || async {
+                panic!("unsupported harness must not invoke an installer")
+            })
+            .await
+            .is_err()
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_opening_tail_arrives_before_full_mirror_and_keeps_all_history() {

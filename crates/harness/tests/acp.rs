@@ -10,7 +10,9 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
 use roboco_harness::acp::SignInProgress;
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
+use roboco_harness::{
+    AcpHarness, CancellationToken, Harness, HarnessError, RunControls, SteerMessage,
+};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
     TodoItem, ToolCall, UserInputAnswer,
@@ -1734,6 +1736,62 @@ async fn antigravity_load_and_prompt_auth_expiry_point_to_sign_in() {
     }
 }
 
+#[test]
+fn antigravity_detection_and_missing_server_never_install() {
+    use std::os::unix::fs::PermissionsExt;
+    for scenario in [
+        "cli-only",
+        "partial",
+        "server",
+        "par",
+        "exe",
+        "override",
+        "invalid-override",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let name = match scenario {
+            "server" => "agy_acp_server",
+            "par" => "agy_acp_server.par",
+            "exe" => "agy_acp_server.exe",
+            "override" => "custom-server",
+            _ => "agy",
+        };
+        let exe = bin.join(name);
+        std::fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let adapters = dir.path().join("adapters");
+        if scenario == "partial" {
+            let partial = adapters.join("antigravity-acp/1.1.1");
+            std::fs::create_dir_all(&partial).unwrap();
+            std::fs::write(partial.join("agy_acp_server.par"), "incomplete").unwrap();
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", "antigravity_detection_subprocess", "--nocapture"])
+            .env("HOME", dir.path())
+            .env("PATH", &bin)
+            .env("SHELL", "/nonexistent-shell")
+            .env("ROBOCO_ADAPTERS_DIR", &adapters)
+            .env("ROBOCO_TEST_DETECTION", scenario)
+            .env_remove("ANTIGRAVITY_ACP_EXECUTABLE");
+        if scenario == "override" {
+            child.env("ANTIGRAVITY_ACP_EXECUTABLE", &exe);
+        }
+        if scenario == "invalid-override" {
+            child.env("ANTIGRAVITY_ACP_EXECUTABLE", bin.join("missing"));
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{scenario}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!adapters.join(".tmp-antigravity-acp-1.1.1").exists());    }
+}
+
 #[tokio::test]
 async fn antigravity_empty_reply_completes_once() {
     let workspace = tempfile::Builder::new()
@@ -1846,3 +1904,52 @@ async fn antigravity_stdout_sign_in_and_sibling_environment_on_every_spawn() {
         vec![(DoneStatus::Completed, None)]
     );
 }
+
+#[tokio::test]
+async fn antigravity_detection_subprocess() {
+    let Ok(scenario) = std::env::var("ROBOCO_TEST_DETECTION") else {
+        return;
+    };
+    let harness = AcpHarness::antigravity();
+    let installed = matches!(scenario.as_str(), "server" | "par" | "exe" | "override");
+    assert_eq!(harness.installed(), installed);
+    if installed {
+        assert!(harness.resolve_program(false).await.is_ok());
+        return;
+    }
+    for block in [false, true] {
+        assert!(matches!(
+            harness.resolve_program(block).await,
+            Err(HarnessError::NotInstalled(_))
+        ));
+    }
+    assert!(matches!(
+        harness.models().await,
+        Err(HarnessError::NotInstalled(_))
+    ));
+    assert!(matches!(
+        harness.commands().await,
+        Err(HarnessError::NotInstalled(_))
+    ));
+    assert!(matches!(
+        harness
+            .sign_in(None, |_| panic!("no sign-in progress when missing"))
+            .await,
+        Err(HarnessError::NotInstalled(_))
+    ));
+    let (ctl, _, _) = controls();
+    assert!(matches!(
+        harness.run(request("hello"), ctl).await,
+        Err(HarnessError::NotInstalled(_))
+    ));
+    let adapters = PathBuf::from(std::env::var_os("ROBOCO_ADAPTERS_DIR").unwrap());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        std::fs::read_dir(adapters)
+            .map(|entries| entries
+                .map(Result::unwrap)
+                .all(|entry| entry.file_name() == "antigravity-acp"))
+            .unwrap_or(true)
+    );
+}
+

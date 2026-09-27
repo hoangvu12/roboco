@@ -700,8 +700,8 @@ impl AgentAccounts {
     }
 
     /// antigravity: the acp server's own google sign-in, run when the agent is
-    /// turned on rather than mid-chat. the start replies at once because a
-    /// first sign-in downloads a large server; polls carry the browser url
+    /// turned on rather than mid-chat. the start replies at once because the
+    /// sign-in runs in a spawned task; polls carry the browser url
     /// once the server prints it.
     fn start_antigravity_login(&self) -> AgentLoginStart {
         self.reap_spawned_flows(HarnessId::Antigravity);
@@ -726,9 +726,6 @@ impl AgentAccounts {
                 .sign_in(browser, move |progress| {
                     let mut state = lock(&progress_state);
                     match progress {
-                        roboco_harness::acp::SignInProgress::Installing => {
-                            state.message = Some("Downloading Antigravity.".into());
-                        }
                         roboco_harness::acp::SignInProgress::OpenBrowser(url) => {
                             state.message = Some("Finish signing in in your browser.".into());
                             state.url = Some(url);

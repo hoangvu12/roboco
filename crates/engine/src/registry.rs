@@ -31,6 +31,9 @@ pub struct HarnessDescriptor {
     /// field never read as uninstallable.
     #[serde(default = "default_installed")]
     pub installed: bool,
+    /// Explicit CLI installation is available on the listing device.
+    #[serde(default)]
+    pub can_install: bool,
     /// Whether the listing device offers this harness (Settings → Agents).
     /// `None` — the catalog came from an engine predating the setting — means
     /// "unknown": consumers fall back to detection (see [`descriptor_enabled`]).
@@ -77,6 +80,7 @@ fn describe(harness: &dyn Harness) -> HarnessDescriptor {
         steering_mode: harness.steering_mode(),
         reasoning_levels: harness.reasoning_levels().to_vec(),
         installed: harness.installed(),
+        can_install: false,
         enabled: None,
     }
 }
@@ -121,6 +125,7 @@ enum Slot {
 }
 
 pub struct HarnessRegistry {
+    pub(crate) installs: crate::rpc::Installations,
     slots: Mutex<HashMap<HarnessId, Slot>>,
     order: Mutex<Vec<HarnessId>>,
     /// This device's enabled set; `None` inner value = the default set.
@@ -138,6 +143,7 @@ impl Default for HarnessRegistry {
 impl HarnessRegistry {
     pub fn new() -> Self {
         Self {
+            installs: Default::default(),
             slots: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             prefs: Mutex::new(HarnessPrefsFile::default()),
@@ -355,6 +361,7 @@ impl HarnessRegistry {
                     None => return None,
                 };
                 descriptor.enabled = Some(enabled.contains(id));
+                descriptor.can_install = roboco_harness::install::can_install(*id);
                 Some(descriptor)
             })
             .collect()
@@ -454,6 +461,7 @@ pub fn default_registry() -> HarnessRegistry {
                 ReasoningLevel::Max,
             ],
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::ClaudeHarness::new().installed()),
@@ -481,6 +489,7 @@ pub fn default_registry() -> HarnessRegistry {
                 ReasoningLevel::Ultra,
             ],
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::CodexHarness::new().installed()),
@@ -497,6 +506,7 @@ pub fn default_registry() -> HarnessRegistry {
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::CursorHarness::new().installed()),
@@ -514,6 +524,7 @@ pub fn default_registry() -> HarnessRegistry {
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::AcpHarness::devin().installed()),
@@ -535,6 +546,7 @@ pub fn default_registry() -> HarnessRegistry {
                 ReasoningLevel::High,
             ],
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::AcpHarness::grok().installed()),
@@ -552,6 +564,7 @@ pub fn default_registry() -> HarnessRegistry {
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::AcpHarness::hermes().installed()),
@@ -575,6 +588,7 @@ pub fn default_registry() -> HarnessRegistry {
                 ReasoningLevel::Max,
             ],
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::AcpHarness::pi().installed()),
@@ -599,6 +613,7 @@ pub fn default_registry() -> HarnessRegistry {
                 ReasoningLevel::Max,
             ],
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::OpencodeHarness::new().installed()),
@@ -616,6 +631,7 @@ pub fn default_registry() -> HarnessRegistry {
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
+            can_install: false,
             enabled: None,
         },
         Box::new(|| roboco_harness::AcpHarness::antigravity().installed()),
@@ -637,6 +653,7 @@ mod tests {
             steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
+            can_install: false,
             enabled: Some(true),
         };
         assert!(descriptor.steers_mid_turn());
@@ -663,6 +680,7 @@ mod tests {
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed: true,
+                can_install: false,
                 enabled: None,
             },
             Box::new(|| false),
@@ -849,6 +867,7 @@ mod tests {
         };
         let claude = parse("claude-code");
         assert!(claude.installed);
+        assert!(!claude.can_install);
         assert_eq!(claude.enabled, None);
         // Unknown enablement follows detection: a found CLI is offered...
         assert!(descriptor_enabled(&claude));
@@ -871,6 +890,7 @@ mod tests {
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed: true,
+                can_install: false,
                 enabled: None,
             },
             Box::new(move || installed),
@@ -953,6 +973,7 @@ mod tests {
                 steering_mode: SteeringMode::TurnBoundary,
                 reasoning_levels: vec![],
                 installed: true,
+                can_install: false,
                 enabled: None,
             },
             Box::new(move || probe.load(Ordering::SeqCst)),

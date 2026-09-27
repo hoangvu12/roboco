@@ -15,6 +15,10 @@ export type HarnessDescriptor = { id: HarnessId, name: string, supportsSteering:
  */
 installed: boolean, 
 /**
+ * Explicit CLI installation is available on the listing device.
+ */
+canInstall: boolean, 
+/**
  * Whether the listing device offers this harness (Settings → Agents).
  * `None` — the catalog came from an engine predating the setting — means
  * "unknown": consumers fall back to detection (see [`descriptor_enabled`]).

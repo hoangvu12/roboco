@@ -313,6 +313,7 @@ const HARNESS: HarnessDescriptor = {
   steeringMode: "step-boundary",
   reasoningLevels: ["medium"],
   installed: true,
+  canInstall: false,
   enabled: true,
 };
 const MODEL: Model = { id: "sonnet", label: "Sonnet", reasoningLevels: ["medium"], options: [] };

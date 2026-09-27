@@ -40,8 +40,8 @@ function chat(overrides: Partial<{ config: ChatConfig | null }> = {}): Parameter
 }
 
 const HARNESSES: readonly HarnessDescriptor[] = [
-  { id: "claude-code", name: "Claude Code", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["low", "medium", "high"], installed: true, enabled: true },
-  { id: "codex", name: "Codex", supportsSteering: false, steeringMode: "turn-boundary", reasoningLevels: ["medium"], installed: true, enabled: true },
+  { id: "claude-code", name: "Claude Code", supportsSteering: true, steeringMode: "step-boundary", reasoningLevels: ["low", "medium", "high"], installed: true, canInstall: false, enabled: true },
+  { id: "codex", name: "Codex", supportsSteering: false, steeringMode: "turn-boundary", reasoningLevels: ["medium"], installed: true, canInstall: false, enabled: true },
 ];
 
 const MODELS: readonly Model[] = [

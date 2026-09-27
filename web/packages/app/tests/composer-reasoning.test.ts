@@ -107,6 +107,7 @@ const CLAUDE: HarnessDescriptor = {
   steeringMode: "step-boundary",
   reasoningLevels: ["low", "medium", "high"],
   installed: true,
+  canInstall: false,
   enabled: true,
 };
 
@@ -118,6 +119,7 @@ const BARE: HarnessDescriptor = {
   steeringMode: "turn-boundary",
   reasoningLevels: [],
   installed: true,
+  canInstall: false,
   enabled: true,
 };
 
