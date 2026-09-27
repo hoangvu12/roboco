@@ -12,9 +12,18 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "@roboco/icons";
-import type { Chat, FileSearchMatch, HarnessDescriptor, HarnessId, UserInputAnswer } from "@roboco/proto";
-import { MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
+import type {
+  Chat,
+  FileSearchMatch,
+  HarnessDescriptor,
+  HarnessId,
+  Skill,
+  SlashCommand,
+  UserInputAnswer,
+} from "@roboco/proto";
+import { COMPOSER_REFERENCES_V1, MESSAGE_QUEUE_ATTACHMENTS_V1, MESSAGE_QUEUE_V1 } from "@roboco/proto";
 import { encodeScopedId, methods, RpcError } from "@roboco/engine-client";
+import type { RpcErrorKind } from "@roboco/engine-client";
 import type { EngineSession } from "../state/engine-session";
 import type { TranscriptStore } from "../state/transcript-store";
 import { useEngineStatus, useNow } from "../state/hooks";
@@ -112,7 +121,18 @@ import {
   type MentionTooltipPhase,
   type MentionTooltipTarget,
 } from "../lib/mentions";
-import { parseSlashCommands, refilterSlash, slashErrorMessage, slashToken, type SlashCache } from "../lib/slash";
+import {
+  completionTrigger,
+  invocationInsertion,
+  mergeInvocationResults,
+  parseSkillsReply,
+  parseSlashCommands,
+  refilterSlash,
+  referencesRequireUpdate,
+  skillCompletionFor,
+  slashErrorMessage,
+  type InvocationRow,
+} from "../lib/invocations";
 import {
   AUTO_ADVANCE_MS,
   COMPOSER_REST_PLACEHOLDER,
@@ -163,13 +183,26 @@ interface MentionUiState {
   readonly error: string | null;
 }
 
-/** `SlashState` (composer.rs:3930-3942) — the `/` popup's state. */
+/** `SlashState` (composer.rs:5245-5266, post-rich-references) — the `/`+`$
+ * popup's state. Commands and skills share focus and keyboard handling;
+ * `context` is the full menu identity (trigger kind, mode flags, catalog
+ * identity) and doubles as the cache key, `catalogContext` is the shared
+ * catalog identity (switching trigger characters never invalidates another
+ * catalog for the same provider). */
 interface SlashUiState {
   readonly token: CompletionToken | null;
   readonly filtered: readonly number[];
   readonly active: number | null;
-  /** The harness the popup is showing commands for (the cache key). */
+  /** The harness the popup is showing invocations for. */
   readonly harness: HarnessId | null;
+  /** Shared identity for the command and skill catalogs (cache scope). */
+  readonly catalogContext: string;
+  /** The menu's full identity — the slash cache key. */
+  readonly context: string;
+  /** `true` while a `$` skill token is open. */
+  readonly skill: boolean;
+  /** `false` only for a `$` token on a provider with no skill catalog. */
+  readonly supported: boolean;
   readonly loading: boolean;
   readonly error: string | null;
 }
@@ -423,6 +456,10 @@ export function Composer({
     filtered: [],
     active: null,
     harness: null,
+    catalogContext: "",
+    context: "",
+    skill: false,
+    supported: true,
     loading: false,
     error: null,
   });
@@ -430,9 +467,13 @@ export function Composer({
   slashRef.current = slash;
   const slashRequestRef = useRef(0);
   const slashDismissedRef = useRef<{ start: number; end: number; text: string } | null>(null);
-  /** `slash_cache` (composer.rs:4026): one ListCommands per harness per
-   * composer lifetime; filtering is local per keystroke. */
-  const slashCacheRef = useRef<SlashCache>(new Map());
+  /** `slash_cache` (composer.rs:5443-5445): advertised invocations for the
+   * current device/harness/workspace, keyed by the menu's full context.
+   * Invalidated on catalog-scope changes (harness, chat, cwd); filtering
+   * stays local while typing, and a fresh open re-probes so account,
+   * plugin and workspace changes are not hidden behind a stale catalog
+   * (upstream a75cf1a6). */
+  const slashCacheRef = useRef<Map<string, readonly InvocationRow[]>>(new Map());
 
   // The wizard: one instance + a render generation (the Wizard mutates in
   // place, like the desktop's entity); `answered_requests` and the latch's
@@ -1267,6 +1308,50 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── The queue capability gate + the reference delivery gate ───────────
+  // MESSAGE_QUEUE_V1 (and MESSAGE_QUEUE_ATTACHMENTS_V1 when the send
+  // carries attachments) checked on the engine before taking the draft. On
+  // failure, do not send: raise the verbatim notice and leave the draft.
+  // (The desktop also checks the chat's HOST device; the web's engine-local
+  // pairing has no host registry yet — the engine check stands in until
+  // ticket 31's fleet.)
+  const engineSupports = useCallback(
+    (capability: string): boolean => {
+      const capabilities = session.client.engineInfo?.capabilities ?? [];
+      return capabilities.includes(capability);
+    },
+    [session.client],
+  );
+
+  // `reference_delivery_supported` (composer.rs:7406): COMPOSER_REFERENCES_V1
+  // on the delivery target — the engine decodes durable composer references
+  // at the harness boundary. The desktop also checks the chat's HOST device
+  // through its registry; the web's engine-local pairing has no host registry
+  // yet (the same stand-in the queue gate takes), so the connected engine's
+  // EngineInfo decides. When unsupported, commands insert plain text and a
+  // send holding references fails with the draft preserved.
+  const referenceDeliverySupported = useCallback(
+    (): boolean => engineSupports(COMPOSER_REFERENCES_V1),
+    [engineSupports],
+  );
+
+  /** `check_reference_delivery` (composer.rs:7417): consumed before drafts,
+   * attachments, or an edited queue row. `true` when the send may proceed. */
+  const checkReferenceDelivery = useCallback(
+    (draftText: string): boolean => {
+      if (referencesRequireUpdate(draftText, referenceDeliverySupported())) {
+        setFailure({
+          message:
+            "Update the selected device’s Roboco to send file, command, or skill references. Your draft is preserved.",
+          key: chat.id,
+        });
+        return false;
+      }
+      return true;
+    },
+    [chat.id, referenceDeliverySupported],
+  );
+
   // ── Completion state machines (on_input_edited / update_slash) ─────────
 
   const setTooltipPhase = useCallback((phase: MentionTooltipPhase): void => {
@@ -1306,15 +1391,29 @@ export function Composer({
     [invalidateTooltip],
   );
 
-  /** `reset_slash` (composer.rs:5501). */
+  /** `reset_slash` (composer.rs:6988-7002): tear the completion down,
+   * bumping the request so queued catalog replies are dropped. The catalog
+   * identity, the context, and `supported` survive — a reopen reuses the
+   * warm cache while re-probing — and a catalog with a warning is evicted
+   * so the next open retries the failed provider call. */
   const resetSlash = useCallback(
     (dismissed: DismissedToken | null): void => {
       slashRequestRef.current += 1;
       slashDismissedRef.current = dismissed;
+      if (slashRef.current.error !== null) {
+        slashCacheRef.current.delete(slashRef.current.context);
+      }
       setSlash((current) =>
-        current.token === null && current.filtered.length === 0 && !current.loading && current.error === null
+        current.token === null && current.filtered.length === 0 && !current.loading
           ? current
-          : { ...current, token: null, filtered: [], active: null, loading: false, error: null },
+          : {
+              ...current,
+              token: null,
+              filtered: [],
+              active: null,
+              loading: false,
+              error: null,
+            },
       );
     },
     [],
@@ -1343,11 +1442,11 @@ export function Composer({
     }
   }, [resetMention, resetSlash]);
 
-  /** `refilter_slash` (composer.rs:5430): the local re-rank for the open
-   * token's query. */
-  const refilterSlashFor = useCallback((query: string, harness: HarnessId): void => {
-    const commands = slashCacheRef.current.get(harness) ?? [];
-    const { filtered, active } = refilterSlash(query, commands);
+  /** `refilter_slash` (composer.rs:6969): the local re-rank for the open
+   * token's query over the current context's cached rows. */
+  const refilterSlashFor = useCallback((query: string): void => {
+    const rows = slashCacheRef.current.get(slashRef.current.context) ?? [];
+    const { filtered, active } = refilterSlash(query, rows);
     setSlash((current) => {
       if (
         current.active === active &&
@@ -1380,76 +1479,174 @@ export function Composer({
     const currentText = text;
     const caretNow = selectionRef.current[0];
 
-    // ── slash: whole-prompt prefixes only ──
-    const slashTokenNow = slashToken(currentText, caretNow);
-    const slashDismissed = slashDismissedRef.current;
-    const slashStillDismissed =
-      slashTokenNow !== null &&
-      slashDismissed !== null &&
-      slashTokenNow.start === slashDismissed.start &&
-      slashTokenNow.end === slashDismissed.end &&
-      currentText.slice(slashTokenNow.start, slashTokenNow.end) === slashDismissed.text;
-    if (slashStillDismissed) {
-      setSlash((current) => (current.token === null ? current : { ...current, token: null }));
+    // ── invocation: `/` and `$` at prose boundaries (update_slash,
+    //   composer.rs:6811-6955) ──
+    const harness = draft.harness;
+    const preferences = skillCompletionFor(harness);
+    const trigger = completionTrigger(currentText, caretNow, preferences);
+    const slashTokenNow = trigger.token;
+    if (slashTokenNow === null) {
+      // Leaving a token must not replace the catalog identity with the
+      // idle context and evict the warm cache.
+      resetSlash(null);
     } else {
-      slashDismissedRef.current = null;
-      const harness = draft.harness;
-      const harnessChanged = slashRef.current.harness !== harness;
-      const sameToken = tokensEqual(slashTokenNow, slashRef.current.token);
-      if (!slashStillDismissed && sameToken && !harnessChanged) {
-        refilterSlashFor(slashTokenNow === null ? "" : slashTokenNow.query, harness);
+      const catalogParams: Record<string, unknown> = { harness };
+      if (chat.id !== "") {
+        catalogParams.chatId = chat.id;
+        catalogParams.targetDeviceId = chat.deviceId;
+        if (chat.cwd !== null) {
+          catalogParams.cwd = chat.cwd;
+        }
+      } else if (chat.spaceId !== null) {
+        catalogParams.spaceId = chat.spaceId;
+        if (chat.cwd !== null) {
+          catalogParams.cwd = chat.cwd;
+        }
+        if (chat.deviceId !== "") {
+          catalogParams.targetDeviceId = chat.deviceId;
+        }
+      } else if (chat.deviceId !== "") {
+        catalogParams.targetDeviceId = chat.deviceId;
+      }
+      // `catalog_params` + `completion_connection_context` (composer.rs:6468,
+      // 6500): the shared catalog identity — harness, target chat/space,
+      // cwd, and the connection the catalog rides on.
+      const catalogContext = `${session.client.state}:${JSON.stringify(catalogParams)}`;
+      const context = `${trigger.skill ? "skill" : "command"}:${trigger.includeSkills}:${
+        trigger.commandsAllowed
+      }:${preferences.dollar}:${preferences.separateFromSlash}:${catalogContext}`;
+      const slashDismissed = slashDismissedRef.current;
+      const stillDismissed =
+        slashDismissed !== null &&
+        slashTokenNow.start === slashDismissed.start &&
+        slashTokenNow.end === slashDismissed.end &&
+        currentText.slice(slashTokenNow.start, slashTokenNow.end) === slashDismissed.text;
+      const contextChanged = slashRef.current.context !== context;
+      if (
+        (!contextChanged && stillDismissed) ||
+        (!contextChanged && tokensEqual(slashTokenNow, slashRef.current.token))
+      ) {
+        refilterSlashFor(slashTokenNow.query);
       } else {
-        const cached = slashCacheRef.current.get(harness);
-        setSlash({
-          token: slashTokenNow,
-          filtered: [],
-          active: null,
-          harness,
-          loading: false,
-          error: null,
-        });
-        if (slashTokenNow === null) {
-          // closed
-        } else if (cached !== undefined) {
-          refilterSlashFor(slashTokenNow.query, harness);
+        // A fresh open (token None → Some) re-probes even with a warm cache
+        // (upstream a75cf1a6): provider account, plugin and workspace
+        // changes must surface without a context change.
+        const refreshCatalog = contextChanged || slashRef.current.token === null;
+        slashDismissedRef.current = null;
+        if (contextChanged) {
+          slashRequestRef.current += 1;
+          if (slashRef.current.catalogContext !== catalogContext) {
+            slashCacheRef.current.clear();
+          } else if (slashRef.current.error !== null || !slashRef.current.supported) {
+            slashCacheRef.current.delete(slashRef.current.context);
+          }
+          setSlash((current) => ({
+            ...current,
+            token: slashTokenNow,
+            filtered: [],
+            active: null,
+            harness,
+            catalogContext,
+            context,
+            skill: trigger.skill,
+            supported: true,
+            loading: false,
+            error: null,
+          }));
         } else {
-          // First open for this harness: ONE ListCommands, targeted like
-          // file search (the chat's host device owns the agent binary).
+          setSlash((current) => ({
+            ...current,
+            token: slashTokenNow,
+            filtered: [],
+            active: null,
+          }));
+        }
+        const cached = slashCacheRef.current.get(context);
+        const warmCacheHeld = cached !== undefined && !refreshCatalog;
+        // The in-flight guard never blocks a CONTEXT CHANGE from issuing its
+        // replacement request (upstream a75cf1a6) — the state reset above
+        // already cleared `loading` for the new context, so the guard only
+        // dedupes re-issues of the SAME open context.
+        const loadingSameContext = slashRef.current.loading && !contextChanged;
+        if (warmCacheHeld || loadingSameContext) {
+          refilterSlashFor(slashTokenNow.query);
+        } else if (session.client.state !== "connected") {
+          // No engine target: command discovery reports the connection
+          // failure; skills simply stay closed.
+          if (!trigger.skill && trigger.commandsAllowed) {
+            setSlash((current) => ({
+              ...current,
+              loading: false,
+              error: "Agent command discovery requires a connection",
+            }));
+          }
+          refilterSlashFor(slashTokenNow.query);
+        } else {
           slashRequestRef.current += 1;
           const request = slashRequestRef.current;
           setSlash((current) => ({ ...current, loading: true }));
-          refilterSlashFor(slashTokenNow.query, harness);
-          if (session.client.state !== "connected") {
-            setSlash((current) => ({ ...current, loading: false }));
-          } else {
-            const params: Record<string, unknown> = { harness, targetDeviceId: chat.deviceId };
-            void session.client
-              .call<unknown>(methods.LIST_COMMANDS, params)
-              .then((reply) => {
-                if (slashRequestRef.current !== request) {
-                  return;
-                }
-                const commands = parseSlashCommands(reply);
-                if (commands === null) {
-                  setSlash((current) => ({ ...current, loading: false }));
-                  return;
-                }
-                slashCacheRef.current.set(harness, commands);
-                setSlash((current) => ({ ...current, loading: false }));
-                refilterSlashFor(slashTokenNow.query, harness);
-              })
-              .catch((error: unknown) => {
-                if (slashRequestRef.current !== request) {
-                  return;
-                }
-                const kind = error instanceof RpcError ? error.kind : "failed";
-                setSlash((current) => ({
-                  ...current,
-                  loading: false,
-                  error: slashErrorMessage(kind),
-                }));
-              });
-          }
+          refilterSlashFor(slashTokenNow.query);
+          const fetchCatalog = async (): Promise<{
+            commands: { ok: true; value: readonly SlashCommand[] } | { ok: false; kind: RpcErrorKind };
+            skills: { ok: true; value: readonly Skill[] | null } | { ok: false; kind: RpcErrorKind };
+          }> => {
+            const commands = await (async () => {
+              if (trigger.skill || !trigger.commandsAllowed) {
+                return { ok: true as const, value: [] as readonly SlashCommand[] };
+              }
+              try {
+                const reply = await session.client.call<unknown>(methods.LIST_COMMANDS, catalogParams);
+                const parsed = parseSlashCommands(reply);
+                return parsed === null
+                  ? { ok: false as const, kind: "failed" as RpcErrorKind }
+                  : { ok: true as const, value: parsed };
+              } catch (error) {
+                return { ok: false as const, kind: rpcErrorKind(error) };
+              }
+            })();
+            // Even separated slash menus need this metadata to exclude
+            // provider commands that are actually skill aliases.
+            const skills = await (async () => {
+              try {
+                const reply = await session.client.call<unknown>(methods.LIST_SKILLS, catalogParams);
+                const parsed = parseSkillsReply(reply);
+                return parsed.ok
+                  ? { ok: true as const, value: parsed.skills }
+                  : { ok: false as const, kind: "failed" as RpcErrorKind };
+              } catch (error) {
+                return { ok: false as const, kind: rpcErrorKind(error) };
+              }
+            })();
+            return { commands, skills };
+          };
+          void fetchCatalog().then(({ commands, skills }) => {
+            if (slashRequestRef.current !== request || slashRef.current.context !== context) {
+              return;
+            }
+            const merged = mergeInvocationResults(commands, skills, trigger.skill);
+            if ("error" in merged) {
+              slashCacheRef.current.delete(context);
+              setSlash((current) => ({
+                ...current,
+                loading: false,
+                error: slashErrorMessage(merged.error, trigger.skill),
+              }));
+              refilterSlashFor(slashTokenNow.query);
+              return;
+            }
+            let rows = merged.rows;
+            if (!trigger.includeSkills) {
+              rows = rows.filter((row) => row.invocation.kind === "command");
+            }
+            slashCacheRef.current.set(context, rows);
+            setSlash((current) => ({
+              ...current,
+              loading: false,
+              supported: merged.supported,
+              error: merged.warning,
+            }));
+            refilterSlashFor(slashTokenNow.query);
+          });
         }
       }
     }
@@ -1557,12 +1754,13 @@ export function Composer({
         });
       })();
     }, 80);
-    // text/selection drive the machines; the harness dep keeps the slash
-    // cache keyed when the draft's harness changes. The debounce timer is
-    // cleared explicitly on token change/reset/unmount — NOT via a cleanup,
-    // so an unchanged token's in-flight search survives caret moves.
+    // text/selection drive the machines; the harness/chat/cwd deps keep the
+    // slash catalog keyed on its identity (context changes re-probe). The
+    // debounce timer is cleared explicitly on token change/reset/unmount —
+    // NOT via a cleanup, so an unchanged token's in-flight search survives
+    // caret moves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, selection, draft.harness, chat.id, chat.deviceId, session.client]);
+  }, [text, selection, draft.harness, chat.id, chat.deviceId, chat.cwd, chat.spaceId, session.client]);
 
   // The desktop force-closes both popups on every render while the wizard is
   // active or the input is not focused (composer.rs:7176-7185).
@@ -1602,8 +1800,10 @@ export function Composer({
     [applyEdit, resetMention],
   );
 
-  /** `accept_slash` (composer.rs:5475): plain `/name` text — no link, no
-   * chip projection. */
+  /** `accept_slash` (composer.rs:6960): insert the selected invocation —
+   * the canonical `roboco-invoke:` link chip (plain `/name` text only for a
+   * command on a delivery target without composer-references support),
+   * caret after the trailing separator. */
   const acceptSlash = useCallback(
     (rowIx: number): void => {
       const token = slashRef.current.token;
@@ -1612,14 +1812,14 @@ export function Composer({
       }
       const state = slashRef.current;
       const commandIx = state.filtered[rowIx];
-      const command =
-        commandIx === undefined || state.harness === null
+      const row =
+        commandIx === undefined
           ? undefined
-          : slashCacheRef.current.get(state.harness)?.[commandIx];
-      if (command === undefined) {
+          : slashCacheRef.current.get(state.context)?.[commandIx];
+      if (row === undefined) {
         return;
       }
-      const replacement = `/${command.name}`;
+      const replacement = invocationInsertion(row.invocation, referenceDeliverySupported());
       const currentText = textRef.current;
       const existing = separatorAfter(currentText, token.end);
       const inserted = existing !== null ? replacement : `${replacement} `;
@@ -1627,7 +1827,7 @@ export function Composer({
       applyEdit(token.start, token.end, inserted, caretAfter);
       resetSlash(null);
     },
-    [applyEdit, resetSlash],
+    [applyEdit, resetSlash, referenceDeliverySupported],
   );
 
   const acceptCompletion = useCallback(
@@ -2056,21 +2256,6 @@ export function Composer({
     [session.client, chat.id],
   );
 
-  // ── The queue capability gate (composer.rs:6096-6110) ──────────────────
-  // MESSAGE_QUEUE_V1 (and MESSAGE_QUEUE_ATTACHMENTS_V1 when the send
-  // carries attachments) checked on the engine before taking the draft. On
-  // failure, do not send: raise the verbatim notice and leave the draft.
-  // (The desktop also checks the chat's HOST device; the web's engine-local
-  // pairing has no host registry yet — the engine check stands in until
-  // ticket 31's fleet.)
-  const engineSupports = useCallback(
-    (capability: string): boolean => {
-      const capabilities = session.client.engineInfo?.capabilities ?? [];
-      return capabilities.includes(capability);
-    },
-    [session.client],
-  );
-
   // ── Interrupt (`interrupt_selected`, composer.rs:6707-6737) ────────────
   const interrupt = useCallback(async (): Promise<void> => {
     if (!beginInterrupt(interruptingRef.current, chat.id)) {
@@ -2098,6 +2283,13 @@ export function Composer({
           });
           return;
         }
+      }
+      // `check_reference_delivery` (composer.rs:7417, called from
+      // `Composer::send` before the draft is consumed): a draft holding
+      // file/command/skill references the target cannot decode fails with
+      // the draft preserved, never silently degrades (upstream ec4ba814).
+      if (!checkReferenceDelivery(typed)) {
+        return;
       }
       const trimmed = typed.trim();
       // The resolved send cwd (composer.rs:6433-6440, `resolveSendCwd`): a
@@ -2319,7 +2511,7 @@ export function Composer({
         setBusy(false);
       }
     },
-    [chat.id, chat.cwd, draft, session.client, session.engine.baseUrl, staged, engineSupports, onNewThreadLaunched, commentCount],
+    [chat.id, chat.cwd, draft, session.client, session.engine.baseUrl, staged, engineSupports, checkReferenceDelivery, onNewThreadLaunched, commentCount],
   );
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
@@ -2333,6 +2525,12 @@ export function Composer({
     if (editing === null) {
       return;
     }
+    // `check_reference_delivery` runs before the composer is consumed
+    // (queue.rs:1436, upstream ec4ba814): an edit holding references the
+    // target cannot deliver fails with the draft preserved in place.
+    if (!checkReferenceDelivery(text)) {
+      return;
+    }
     const trimmed = text.trim();
     const empty = trimmed.length === 0 && staged.length === 0;
     onEditFinish?.(
@@ -2340,7 +2538,7 @@ export function Composer({
         ? { action: "discard", text: "" }
         : { action: "commit", text: trimmed, staged },
     );
-  }, [editingMessage, text, staged, onEditFinish]);
+  }, [editingMessage, text, staged, onEditFinish, checkReferenceDelivery]);
 
   useEffect(() => {
     if (editCommitRef === undefined) {
@@ -3166,9 +3364,9 @@ export function Composer({
             </div>
             {/*
               The two completion popups — mutually exclusive by token shape
-              (`/` at offset 0 vs `@` at a token boundary), so at most one
-              is ever mounted. Absolutely positioned children of the
-              composer surface, spanning the pill's width above it.
+              (`/` or `$` at a prose boundary vs `@` at a token boundary),
+              so at most one is ever mounted. Absolutely positioned children
+              of the composer surface, spanning the pill's width above it.
             */}
             {mention.token !== null && (
               <MentionPopup
@@ -3188,11 +3386,14 @@ export function Composer({
             {slash.token !== null && (
               <SlashPopup
                 token={slash.token}
-                commands={slash.harness !== null ? slashCacheRef.current.get(slash.harness) ?? [] : []}
+                rows={slashCacheRef.current.get(slash.context) ?? []}
                 filtered={slash.filtered}
                 active={slash.active}
                 loading={slash.loading}
                 error={slash.error}
+                skill={slash.skill}
+                supported={slash.supported}
+                separateFromSlash={skillCompletionFor(draft.harness).separateFromSlash}
                 onAccept={(rowIx) => {
                   setSlash((current) => (current.active === rowIx ? current : { ...current, active: rowIx }));
                   acceptSlash(rowIx);
@@ -3285,6 +3486,12 @@ function tokensEqual(
     return false;
   }
   return a.start === b.start && a.end === b.end && a.query === b.query;
+}
+
+/** The `RpcErrorKind` of a failed catalog call (unknown shapes read as
+ * plain failures, like the old inline `error instanceof RpcError` checks). */
+function rpcErrorKind(error: unknown): RpcErrorKind {
+  return error instanceof RpcError ? error.kind : "failed";
 }
 
 /** The non-newline whitespace following a token, if any (`replace_mention`'s
