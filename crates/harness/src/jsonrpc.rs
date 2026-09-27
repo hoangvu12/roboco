@@ -286,7 +286,10 @@ mod tests {
         };
         client.notify("session/cancel", Some(json!({"sessionId": "parent"})));
         let frame: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
-        assert_eq!(frame, json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "parent"}}));
+        assert_eq!(
+            frame,
+            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "parent"}})
+        );
         assert!(frame.get("id").is_none());
         assert!(client.pending.lock().unwrap().is_empty());
     }

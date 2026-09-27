@@ -1475,10 +1475,13 @@ async fn noise_and_large_crlf_frame_preserve_the_complete_turn() {
     req.model = None;
     req.cwd = std::env::temp_dir().display().to_string();
     let events = run_to_end(&robust_harness(), req, ctl).await;
-    let text: String = events.iter().filter_map(|event| match event {
-        AgentEvent::TextDelta { text } => Some(text.as_str()),
-        _ => None,
-    }).collect();
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(text, "x".repeat(2 * 1024 * 1024));
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
 }
@@ -1512,7 +1515,9 @@ async fn queued_updates_are_drained_before_completion_under_backpressure() {
                 _ => {}
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     assert!(completed);
     assert_eq!(done, 1);
 }
@@ -1525,10 +1530,13 @@ async fn foreign_notifications_and_permissions_cannot_affect_parent_turn() {
     req.model = None;
     req.cwd = std::env::temp_dir().display().to_string();
     let events = run_to_end(&robust_harness(), req, ctl).await;
-    let text: String = events.iter().filter_map(|event| match event {
-        AgentEvent::TextDelta { text } => Some(text.as_str()),
-        _ => None,
-    }).collect();
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(text, "foreign permission rejected");
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
 }
@@ -1540,7 +1548,8 @@ async fn dropping_idle_stream_reaps_warm_adapter() {
     let mut req = request("idle-pid");
     req.model = None;
     req.cwd = std::env::temp_dir().display().to_string();
-    let adapter = robust_harness().with_graces(Duration::from_millis(50), Duration::from_millis(50));
+    let adapter =
+        robust_harness().with_graces(Duration::from_millis(50), Duration::from_millis(50));
     let mut stream = adapter.run(req, ctl).await.unwrap();
     let mut pid = None;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1551,21 +1560,33 @@ async fn dropping_idle_stream_reaps_warm_adapter() {
                 _ => {}
             }
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let path = PathBuf::from(format!("/proc/{}", pid.unwrap()));
     assert!(path.exists(), "mailbox keeps the idle adapter warm");
     drop(stream);
     tokio::time::timeout(Duration::from_secs(2), async {
-        while path.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
-    }).await.expect("dropped consumer reaps the idle child");
+        while path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dropped consumer reaps the idle child");
 }
 
 #[tokio::test]
 async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
-    for adapter in [AcpHarness::grok(), AcpHarness::pi(), AcpHarness::antigravity()] {
-        let adapter = adapter.with_executable(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
-        ).with_graces(Duration::from_millis(50), Duration::from_millis(50));
+    for adapter in [
+        AcpHarness::grok(),
+        AcpHarness::pi(),
+        AcpHarness::antigravity(),
+    ] {
+        let adapter = adapter
+            .with_executable(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
+            )
+            .with_graces(Duration::from_millis(50), Duration::from_millis(50));
         for scenario in ["wedge", "late-settle"] {
             let (ctl, _steer, token) = controls();
             let mut req = request(scenario);
@@ -1579,11 +1600,20 @@ async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
                     if matches!(&event, AgentEvent::TextDelta { text } if text == "ready") {
                         token.cancel();
                     }
-                    assert!(!matches!(event, AgentEvent::Usage { .. }), "late usage in {scenario}");
+                    assert!(
+                        !matches!(event, AgentEvent::Usage { .. }),
+                        "late usage in {scenario}"
+                    );
                     events.push(event);
                 }
-            }).await.unwrap();
-            assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{scenario}");
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                dones(&events),
+                vec![(DoneStatus::Interrupted, None)],
+                "{scenario}"
+            );
         }
     }
 }
@@ -1602,18 +1632,41 @@ async fn pi_boundary_steer(scenario: &str, trigger_on_done: bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(event) = stream.next().await {
             let event = event.unwrap();
-            let trigger = if trigger_on_done { matches!(event, AgentEvent::Done { .. }) }
-                else { matches!(&event, AgentEvent::TextDelta { text } if text == "first") };
+            let trigger = if trigger_on_done {
+                matches!(event, AgentEvent::Done { .. })
+            } else {
+                matches!(&event, AgentEvent::TextDelta { text } if text == "first")
+            };
             if trigger && let Some(sender) = steer.take() {
-                sender.send(roboco_harness::SteerMessage { prompt: "second".into(), message_id: None }).await.unwrap();
+                sender
+                    .send(roboco_harness::SteerMessage {
+                        prompt: "second".into(),
+                        message_id: None,
+                    })
+                    .await
+                    .unwrap();
             }
             events.push(event);
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None); 2]);
-    assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second")).count(), 1);
-    let first_done = events.iter().position(|e| matches!(e, AgentEvent::Done { .. })).unwrap();
-    let second_text = events.iter().position(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second")).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second"))
+            .count(),
+        1
+    );
+    let first_done = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Done { .. }))
+        .unwrap();
+    let second_text = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::TextDelta { text } if text == "second"))
+        .unwrap();
     assert!(first_done < second_text);
 }
 
