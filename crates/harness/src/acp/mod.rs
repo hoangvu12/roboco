@@ -1791,20 +1791,7 @@ impl Harness for AcpHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let (scratch, mut child, stderr_tail) =
-            match self.spawn_agent(Some(&request.cwd), true, &[]).await {
-                Ok(spawned) => spawned,
-                Err(error) if self.spec.id == HarnessId::Antigravity => {
-                    return Ok(Box::pin(futures::stream::once(async move {
-                        Ok(AgentEvent::Done {
-                            status: DoneStatus::Errored,
-                            result: None,
-                            error: Some(error.to_string()),
-                            session_id: None,
-                        })
-                    })));
-                }
-                Err(error) => return Err(error),
-            };
+            self.spawn_agent(Some(&request.cwd), true, &[]).await?;
         let stdin = child
             .stdin
             .take()
