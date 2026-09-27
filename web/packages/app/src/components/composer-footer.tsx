@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
 import { encodeScopedId, methods } from "@roboco/engine-client";
-import type { ChangeRequestSummary, ContextUsage, Device, RepoRef, Space } from "@roboco/proto";
+import type { ChangeRequestSummary, ContextUsage, Device, HarnessId, RepoRef, Space } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
 import { useFleetSnapshot } from "../state/fleet";
@@ -11,6 +11,7 @@ import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberNoProject, rememberTarget } from "../lib/composer-draft";
 import { sidebarStore } from "../state/sidebar";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
+import { AccountUsageIndicator } from "./account-usage";
 import { ChangeRequestBadge } from "./change-request-badge";
 import { FooterChip, FooterLabel } from "./ui/Chip";
 import { PickerSearchField, useCursorList } from "./ui/CursorList";
@@ -64,12 +65,16 @@ export interface ComposerFooterProps {
     readonly config: unknown;
     readonly spaceId?: string | null;
     readonly cwd: string | null;
+    /** The chat's host device — the usage ring targets its accounts. */
+    readonly deviceId: string;
   };
   readonly crSummary: ChangeRequestSummary | null;
   readonly contextUsage: ContextUsage | null;
+  /** The chat's configured harness — drives the plan-usage ring. */
+  readonly harness: HarnessId | null;
 }
 
-export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooterProps) {
+export function ComposerFooter({ chat, crSummary, contextUsage, harness }: ComposerFooterProps) {
   const session = useEngineSession();
   // The MERGED fleet snapshot: the footer's device/space lookups read the
   // scoped rows of every engine; the RPCs below go through the routed
@@ -175,6 +180,19 @@ export function ComposerFooter({ chat, crSummary, contextUsage }: ComposerFooter
       )}
       <span className="footer-spring" />
       {crSummary !== null && <ChangeRequestBadge summary={crSummary} />}
+      {/*
+        The trailing ring cluster (account_usage.rs): plan usage of the
+        session harness's live account, then context occupancy — the
+        account ring keeps its 4px distance from the badge (its own chip
+        padding), and each opens a popover on click.
+      */}
+      <AccountUsageIndicator
+        client={session?.client ?? null}
+        harness={harness}
+        targetDeviceId={
+          chat.deviceId.length > 0 && chat.deviceId !== ownDeviceId ? chat.deviceId : null
+        }
+      />
       {hasWindow(contextUsage) && <ContextUsageIndicator usage={contextUsage} />}
     </div>
   );

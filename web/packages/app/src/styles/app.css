@@ -8632,6 +8632,169 @@ button.files-save-pill:hover {
 }
 
 /*
+ * `account_usage.rs`: the plan-usage ring — the context ring's geometry,
+ * its arc on the theme accent (amber at 80%, red at 95%) so the two read
+ * apart. The label stays muted below the thresholds (the desktop's
+ * `text_muted` at Normal); the wash holds while its popover is up.
+ */
+.account-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding-inline: 6px;
+  border-radius: var(--rb-radius-control);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.account-usage:hover,
+.account-usage[data-open] {
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.account-usage[data-tone="warning"] {
+  color: var(--rb-warning);
+}
+
+.account-usage[data-tone="danger"] {
+  color: var(--rb-danger);
+}
+
+.account-usage-track {
+  stroke: color-mix(in srgb, var(--rb-text-faint) 25%, transparent);
+}
+
+.account-usage-arc {
+  stroke: var(--rb-accent);
+}
+
+.account-usage[data-tone="warning"] .account-usage-arc {
+  stroke: var(--rb-warning);
+}
+
+.account-usage[data-tone="danger"] .account-usage-arc {
+  stroke: var(--rb-danger);
+}
+
+/*
+ * The accounts card (account_usage.rs `accounts_card`): a menu heading
+ * (`.menu-heading`) over one row per account — label + meta line left, the
+ * compact usage meters below, `In use` accented. The row is the standard
+ * `.menu-row`; non-switchable rows go static (no pointer, no wash).
+ */
+.account-usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.account-usage-card .menu-row-static {
+  cursor: default;
+}
+
+.account-usage-card .menu-row-static:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.account-usage-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-usage-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.account-usage-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.account-usage-row-plan,
+.account-usage-row-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-usage-row-in-use {
+  color: var(--rb-accent);
+}
+
+/*
+ * One compact meter line (`render_usage_meter`): 52px label, an 88px bar,
+ * 34px right-aligned percent. The bar's fill keeps the level color at the
+ * desktop's opacity (accent 0.8, warning/danger 0.9) with a 1.5% floor so
+ * tiny non-zero usage stays visible.
+ */
+.account-usage-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-usage-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.account-usage-meter-label {
+  width: 52px;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-usage-meter-track {
+  width: 88px;
+  flex: none;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgb(var(--rb-wash) / 0.08);
+}
+
+.account-usage-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.account-usage-meter-percent {
+  width: 34px;
+  flex: none;
+  text-align: right;
+  color: var(--rb-text-muted);
+}
+
+.account-usage-meter-percent-warn {
+  color: var(--rb-warning);
+}
+
+.account-usage-meter-percent-critical {
+  color: var(--rb-danger);
+}
+
+/*
  * `render_jump_to_bottom` + `jump_pill` (shell.rs:6161-6254). The anchor
  * floats 36px ABOVE the composer, centred across the composer's width less
  * its 10px right inset; it paints outside the transcript's fade. The anchor

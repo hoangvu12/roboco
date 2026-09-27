@@ -248,6 +248,17 @@ export function switchesAccounts(harness: HarnessId): boolean {
   return harness !== "hermes" && harness !== "antigravity";
 }
 
+/** Whether `harness` has an Accounts section (and sign-in flow). Pure. */
+export function signsIn(harness: HarnessId): boolean {
+  return PROVIDERS.some((provider) => provider.harness === harness);
+}
+
+/** Whether the provider reports plan usage. One that doesn't shows no meters
+ * and no "usage unavailable" note — there is nothing missing. Pure. */
+export function reportsUsage(harness: HarnessId): boolean {
+  return harness !== "antigravity";
+}
+
 /** A standing note under a provider's card, for an agent whose accounts
  * work differently. Hermes owns its credential pool: Roboco lists it and
  * adds to it through Hermes' own CLI, but never switches or removes its
@@ -343,6 +354,27 @@ export function markSwitched(snapshot: AgentAccountsSnapshot, account: AgentAcco
  */
 export function providerAccounts(snapshot: AgentAccountsSnapshot, harness: HarnessId): AgentAccount[] {
   return snapshot.accounts.filter((account) => account.harness === harness);
+}
+
+/**
+ * The binding limit: the most-used window of the account
+ * (`used_fraction`). Pure.
+ */
+export function usedFraction(account: AgentAccount): number | null {
+  let max: number | null = null;
+  for (const window of account.usageWindows) {
+    const fraction = Math.min(Math.max(window.usedFraction, 0), 1);
+    max = max === null ? fraction : Math.max(max, fraction);
+  }
+  return max;
+}
+
+/** The harness's live account (`active_account`). Pure. */
+export function activeAccount(
+  snapshot: AgentAccountsSnapshot,
+  harness: HarnessId,
+): AgentAccount | null {
+  return snapshot.accounts.find((account) => account.harness === harness && account.active) ?? null;
 }
 
 /** The empty-card copy under a provider with no accounts. */
