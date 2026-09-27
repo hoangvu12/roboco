@@ -171,6 +171,7 @@ pub(crate) mod jsonrpc;
 pub mod mock;
 mod model_context;
 pub mod opencode;
+pub mod pi;
 pub mod process;
 mod scratch;
 pub mod shell_env;
@@ -377,6 +378,7 @@ pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
 pub use cursor::CursorHarness;
 pub use opencode::OpencodeHarness;
+pub use pi::PiHarness;
 
 // ---------------------------------------------------------------------------
 // Child lifecycle (shared by the codex and ACP harnesses)
