@@ -76,7 +76,7 @@ use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::project_actions::ProjectActionsStore;
 use crate::registry::HarnessRegistry;
-use crate::repos::{Repos, home_dir};
+use crate::repos::Repos;
 use crate::sessions::SessionsEngine;
 use crate::sidebar_state::SidebarStateStore;
 use crate::terminals::Terminals;
