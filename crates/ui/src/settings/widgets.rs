@@ -1,12 +1,50 @@
-//! Shared scaffolding for the settings pages — the original's page rhythm
-//! (`mx-auto max-w-3xl px-6 pb-16 pt-8`), section cards, row layout, badges
-//! and small buttons, so every page reads as the same product surface
+//! Shared scaffolding for the settings pages — a centered page column, large
+//! title, small section labels over filled blocks of hairline-split rows,
+//! badges and small buttons, so every page reads as the same product surface
 //! (roboco settings.devices.tsx / settings.agents.tsx / settings.archived.tsx).
 
 use gpui::{AnyElement, Context, Pixels, ScrollHandle, SharedString, div, prelude::*, px};
 
 use crate::popover::{self, MenuScrollbarMetrics, MenuScrollbarState, ScrollRailHost};
 use crate::theme::{Theme, ink};
+
+/// Width of the section column beside the settings page, published by the
+/// shell each frame so dropdowns and responsive pages measure the page pane.
+struct SettingsSidebarWidth(f32);
+
+impl gpui::Global for SettingsSidebarWidth {}
+
+pub fn set_sidebar_width(width: f32, cx: &mut gpui::App) {
+    if cx.try_global::<SettingsSidebarWidth>().map(|w| w.0) != Some(width) {
+        cx.set_global(SettingsSidebarWidth(width));
+    }
+}
+
+fn sidebar_width(cx: &gpui::App) -> f32 {
+    cx.try_global::<SettingsSidebarWidth>()
+        .map_or(crate::settings::SIDEBAR_DEFAULT, |w| w.0)
+}
+
+/// The page pane: right of the section column, below the titlebar strip.
+pub fn pane_bounds(viewport: gpui::Size<Pixels>, sidebar_width: f32) -> gpui::Bounds<Pixels> {
+    let left = px(sidebar_width).min(viewport.width);
+    let top = px(Theme::TITLEBAR_HEIGHT).min(viewport.height);
+    gpui::Bounds::new(
+        gpui::point(left, top),
+        gpui::size(viewport.width - left, viewport.height - top),
+    )
+}
+
+/// Inner width of the [`page_column`] at the current window size, for pages
+/// that choose a layout by the room they get (the Devices grid).
+pub fn column_width(window: &gpui::Window, cx: &gpui::App) -> f32 {
+    let pane = f32::from(
+        pane_bounds(window.viewport_size(), sidebar_width(cx))
+            .size
+            .width,
+    );
+    pane.min(PAGE_MAX_WIDTH) - 2.0 * PAGE_PAD_X
+}
 
 /// Owned scroll + floating-scrollbar state for one settings page.
 ///
@@ -151,15 +189,22 @@ pub fn rail<V: 'static>(
 pub const ROW_TITLE_SIZE: f32 = 13.0;
 pub const ROW_DESCRIPTION_SIZE: f32 = 12.0;
 
-/// Centered page column: `mx-auto w-full max-w-3xl px-6 pb-16 pt-8`.
+/// The page column's outer max width and side padding: a centered ~680px
+/// content measure with generous air on either side.
+const PAGE_MAX_WIDTH: f32 = 760.0;
+const PAGE_PAD_X: f32 = 40.0;
+
+/// Centered page column under the titlebar strip.
 pub fn page_column() -> gpui::Div {
     div()
         .w_full()
-        .max_w(px(768.0))
+        .max_w(px(PAGE_MAX_WIDTH))
         .mx_auto()
-        .px(px(24.0))
-        .pt(px(32.0))
-        .pb(px(64.0))
+        .px(px(PAGE_PAD_X))
+        // Titlebar clearance lives inside the scroll so content can scroll
+        // up to the window edge and fade there, mirroring the bottom.
+        .pt(px(Theme::TITLEBAR_HEIGHT + 16.0))
+        .pb(px(48.0))
         .flex()
         .flex_col()
 }
@@ -465,6 +510,99 @@ pub fn badge_active(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div 
         .child(label.into())
 }
 
+/// Retargetable selected-state fade for a settings tab. First paint and
+/// reduced-motion changes settle immediately instead of flashing an entrance.
+#[derive(Clone, Copy)]
+struct TabSelectionTravel {
+    from: f32,
+    target: f32,
+    started: std::time::Instant,
+}
+
+impl TabSelectionTravel {
+    fn value(&self, now: std::time::Instant) -> f32 {
+        let seconds = crate::motion::TAB_SLIDE.total().as_secs_f32() * crate::motion::speed_scale();
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let progress = crate::motion::TAB_SLIDE.progress((elapsed / seconds).min(1.0));
+        self.from + (self.target - self.from) * progress
+    }
+}
+
+/// Retargetable selected-state fade for a settings tab. First paint and
+/// reduced-motion changes settle immediately instead of flashing an entrance.
+pub fn tab_selection_t(
+    window: &mut gpui::Window,
+    key: impl Into<SharedString>,
+    selected: bool,
+    reduced_motion: bool,
+) -> f32 {
+    let now = std::time::Instant::now();
+    let target = if selected { 1.0 } else { 0.0 };
+    let value = window.with_global_id(key.into().into(), |id, window| {
+        window.with_element_state(id, |previous: Option<TabSelectionTravel>, _| {
+            let mut travel = previous.unwrap_or(TabSelectionTravel {
+                from: target,
+                target,
+                started: now,
+            });
+            let current = travel.value(now);
+            if travel.target != target {
+                travel = TabSelectionTravel {
+                    from: current,
+                    target,
+                    started: now,
+                };
+            }
+            if reduced_motion {
+                travel.from = target;
+                travel.target = target;
+            }
+            (travel.value(now), travel)
+        })
+    });
+    if (value - target).abs() > 0.001 {
+        window.request_animation_frame();
+    }
+    value
+}
+
+/// One treatment for settings section tabs: the selected wash and text ease
+/// over the tab-slide timing, while hover keeps the normal sidebar color fade.
+pub fn section_tab(
+    theme: &Theme,
+    selected: bool,
+    selection_t: f32,
+    id: impl Into<SharedString>,
+    hover_key: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let hover_key = hover_key.into();
+    let base_bg = crate::motion::mix(
+        crate::theme::wash(0.0),
+        crate::theme::glass_selected_bg(),
+        selection_t,
+    );
+    let base_text = crate::motion::mix(theme.text_muted, theme.text, selection_t);
+    let hover_bg = if selected { base_bg } else { theme.glass_hover() };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(8.0))
+        .px(px(Theme::SPACE_SM))
+        .py(px(6.0))
+        .min_h(px(32.0))
+        .flex_shrink_0()
+        .text_size(crate::typography::ui_rems(13.0))
+        .when(selected, |el| el.font_weight(gpui::FontWeight::MEDIUM))
+        .text_color(crate::motion::hover_blend(
+            &hover_key, base_text, theme.text,
+        ))
+        .bg(crate::motion::hover_blend(&hover_key, base_bg, hover_bg))
+        .id(id.into())
+        .on_hover(crate::motion::hover_listener(hover_key))
+}
+
 /// Display-only toggle switch (roboco branch-picker.tsx `Toggle`): an 18×32
 /// pill whose knob slides right and track flips white when on. State is owned
 /// by the parent row — the caller adds `.id(..)` and `.on_click(..)`.
@@ -509,6 +647,65 @@ pub fn ghost_action(theme: &Theme) -> gpui::Div {
 /// hover:text-foreground`).
 pub fn ghost_hover(theme: &Theme, s: gpui::StyleRefinement) -> gpui::StyleRefinement {
     s.bg(ink(0.06)).text_color(theme.text)
+}
+
+/// A settings control's fill on a settings block: a translucent wash one step
+/// above the row's own material, lifting while hovered or open. Washes read
+/// through frost and stay tonal on solid surfaces, in both appearances.
+pub(crate) fn select_fill(theme: &Theme, lifted: bool) -> gpui::Hsla {
+    theme.wash(if lifted { 0.10 } else { 0.06 })
+}
+
+/// Tone presets shared by every settings action button, so quiet inline
+/// actions, outlined controls, filled pills and solid CTAs read as one family
+/// (upstream unifies them; the glass-control pass may refine their material).
+#[derive(Clone, Copy)]
+pub enum ActionTone {
+    Quiet,
+    Outlined,
+    Filled,
+    Solid,
+}
+
+pub fn action_button(theme: &Theme, tone: ActionTone) -> gpui::Div {
+    let button = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .min_h(px(32.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .text_size(crate::typography::ui_rems(12.5))
+        .cursor_pointer();
+    match tone {
+        ActionTone::Quiet => button
+            .text_color(theme.text_muted)
+            .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text)),
+        ActionTone::Outlined => button
+            .bg(theme.input_glass_bg())
+            .border_1()
+            .border_color(theme.border)
+            .text_color(theme.text)
+            .hover(|s| s.bg(theme.glass_hover()).border_color(theme.border_strong)),
+        ActionTone::Filled => {
+            let lifted = select_fill(theme, true);
+            button
+                .bg(select_fill(theme, false))
+                .text_color(theme.text)
+                .hover(move |s| s.bg(lifted))
+        }
+        ActionTone::Solid => button
+            .bg(theme.solid)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.on_solid)
+            .hover(|s| s.opacity(0.9)),
+    }
+}
+
+pub fn text_action(theme: &Theme, tone: ActionTone, label: impl Into<SharedString>) -> gpui::Div {
+    action_button(theme, tone).child(label.into())
 }
 
 /// The dismissible red error strip (`flex items-start gap-2 rounded-xl border
@@ -569,6 +766,37 @@ pub fn warning_strip(theme: &Theme, message: impl Into<SharedString>) -> gpui::D
             ),
         )
         .child(div().min_w_0().child(message.into()))
+}
+
+/// The sidebar's paint-time overflow fade, with a persistent scroll handle per
+/// settings surface. No fade is painted when the content fits or at a reached edge.
+pub fn scroll_faded(
+    key: impl Into<SharedString>,
+    area: gpui::Stateful<gpui::Div>,
+) -> impl IntoElement {
+    SettingsScroll {
+        key: key.into(),
+        area,
+    }
+}
+
+#[derive(IntoElement)]
+struct SettingsScroll {
+    key: SharedString,
+    area: gpui::Stateful<gpui::Div>,
+}
+
+impl RenderOnce for SettingsScroll {
+    fn render(self, window: &mut gpui::Window, _: &mut gpui::App) -> impl IntoElement {
+        let scroll = window.with_global_id(self.key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<gpui::ScrollHandle>, _| {
+                let scroll = previous.unwrap_or_default();
+                (scroll.clone(), scroll)
+            })
+        });
+        crate::edge_fade::edge_faded(16.0, true, true, self.area.track_scroll(&scroll))
+            .fade_overflow_y(&scroll)
+    }
 }
 
 /// A one-line hover note for settings controls (reset times, icon-only

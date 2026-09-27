@@ -24,6 +24,7 @@ pub mod harnesses;
 pub mod notifications;
 pub mod remote_access;
 pub mod shortcuts;
+pub mod thread_naming;
 pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).
