@@ -5,18 +5,25 @@ import {
   accountInitial,
   accountLabel,
   activateAgentAccount,
+  addOptionLabel,
   cancelAgentLogin,
   completeAgentLogin,
   forceUsageFor,
   forgetAgentAccount,
   formatReset,
   listAgentAccounts,
+  loginCopy,
+  loginOptions,
   loginTitle,
+  markSwitched,
   pollAgentLogin,
   providerAccounts,
   providerEmptyCopy,
+  providerName,
+  providerNote,
   PROVIDERS,
   startAgentLogin,
+  switchesAccounts,
   usageFallback,
   usageLevel,
   USAGE_CRITICAL_FRACTION,
@@ -65,15 +72,68 @@ describe("formatReset", () => {
 });
 
 describe("providers", () => {
-  it("lists Claude Code, Codex, Cursor in the desktop's order", () => {
-    expect(PROVIDERS.map((provider) => provider.name)).toEqual(["Claude Code", "Codex", "Cursor"]);
-    expect(PROVIDERS.map((provider) => provider.cli)).toEqual(["claude", "codex", "cursor-agent"]);
+  it("lists every agent with a login of its own in the desktop's order", () => {
+    expect(PROVIDERS.map((provider) => provider.name)).toEqual([
+      "Claude Code",
+      "Codex",
+      "Cursor",
+      "Grok",
+      "Devin",
+      "OpenCode",
+      "Pi",
+      "Hermes",
+    ]);
+    expect(PROVIDERS.map((provider) => provider.cli)).toEqual([
+      "claude",
+      "codex",
+      "cursor-agent",
+      "grok login",
+      "devin auth login",
+      "opencode auth login",
+      "pi",
+      "hermes auth add",
+    ]);
   });
 
   it("names the CLI in the empty-state copy, except Cursor", () => {
     expect(providerEmptyCopy(PROVIDERS[0]!)).toContain("claude");
     expect(providerEmptyCopy(PROVIDERS[2]!)).toContain("isn't connected");
     expect(providerEmptyCopy(PROVIDERS[2]!)).not.toContain("cursor-agent login — sign in");
+  });
+
+  it("offers one default sign-in for single-login agents", () => {
+    for (const harness of ["claude-code", "codex", "cursor", "grok", "devin"] as const) {
+      const options = loginOptions(harness);
+      expect(options).toHaveLength(1);
+      expect(options[0]!.provider).toBeNull();
+      expect(addOptionLabel(options[0]!, false)).toBe("Add account");
+    }
+  });
+
+  it("offers one sign-in per model provider for OpenCode, Pi and Hermes", () => {
+    expect(loginOptions("opencode").map((option) => option.label)).toEqual(["ChatGPT", "GitHub Copilot"]);
+    expect(loginOptions("pi").map((option) => option.provider)).toEqual(["openai-codex"]);
+    expect(loginOptions("hermes").map((option) => option.provider)).toEqual(["openai-codex", "nous"]);
+    const [chatgpt, copilot] = loginOptions("opencode");
+    expect(addOptionLabel(chatgpt!, true)).toBe("Connect ChatGPT");
+    expect(addOptionLabel(copilot!, false)).toBe("Add GitHub Copilot account");
+  });
+
+  it("Hermes owns its pool: never switched, and says so under its card", () => {
+    expect(switchesAccounts("hermes")).toBe(false);
+    expect(switchesAccounts("grok")).toBe(true);
+    expect(providerNote("hermes")).toContain("hermes auth add");
+    expect(providerNote("grok")).toBeNull();
+  });
+
+  it("gives every provider a browser-wait sentence (loginCopy)", () => {
+    for (const harness of PROVIDERS.map((provider) => provider.harness)) {
+      for (const option of loginOptions(harness)) {
+        expect(loginCopy(harness, option.provider)).toMatch(/^Finish signing in/);
+      }
+    }
+    expect(loginCopy("opencode", "github-copilot")).toContain("enter the code shown below");
+    expect(loginCopy("hermes", null)).toContain("credential pool");
   });
 });
 
@@ -119,9 +179,33 @@ describe("account labels", () => {
     expect(accountInitial(account({ email: null, displayName: null }))).toBe("U");
   });
 
-  it("reserves 'Usage unavailable' for switchable accounts", () => {
+  it("reserves 'Usage unavailable' for a plain gap; reasons and unidentified logins say so", () => {
     expect(usageFallback(account({ switchable: true }))).toBe("Usage unavailable");
+    // Keychain denied: the login is there, its secret isn't.
     expect(usageFallback(account({ switchable: false }))).toBe("Credentials unavailable");
+    // An opaque token whose account couldn't be looked up (per-provider
+    // agents): switchable is the engine's "couldn't identify" marker.
+    expect(usageFallback(account({ harness: "opencode", switchable: false, provider: "github-copilot" }))).toBe(
+      "Couldn't identify this login",
+    );
+    // The engine's probe reason replaces the bare shrug.
+    expect(usageFallback(account({ switchable: true, usageError: "Rate limited by Anthropic — retrying in 2m" }))).toBe(
+      "Rate limited by Anthropic — retrying in 2m",
+    );
+    expect(usageFallback(account({ switchable: true }), true)).toBe("Checking usage…");
+  });
+
+  it("switches only move the live login within its provider group", () => {
+    const snapshot = snapshotOf([
+      account({ id: "gpt-a", harness: "opencode", provider: "openai", active: true }),
+      account({ id: "gpt-b", harness: "opencode", provider: "openai", active: false }),
+      account({ id: "copilot", harness: "opencode", provider: "github-copilot", active: true }),
+      account({ id: "grok-a", harness: "grok", active: true }),
+    ]);
+    markSwitched(snapshot, snapshot.accounts[1]!);
+    expect(
+      snapshot.accounts.filter((row) => row.active).map((row) => row.id),
+    ).toEqual(["gpt-b", "copilot", "grok-a"]);
   });
 });
 
@@ -130,6 +214,12 @@ describe("loginTitle", () => {
     expect(loginTitle("codex")).toBe("Add Codex account");
     expect(loginTitle("cursor")).toBe("Connect Cursor");
     expect(loginTitle("claude-code")).toBe("Add Claude account");
+  });
+
+  it("names the provider a per-provider sign-in is for", () => {
+    expect(loginTitle("pi", "openai-codex")).toBe("Sign in to ChatGPT for Pi");
+    expect(loginTitle("opencode", "github-copilot")).toBe("Sign in to GitHub Copilot for OpenCode");
+    expect(providerName("grok")).toBe("Grok");
   });
 });
 
@@ -236,5 +326,16 @@ describe("account RPC wrappers", () => {
     expect(calls[0]!.params).toEqual({ harness: "claude-code" });
     expect(calls[1]!.params).toEqual({ loginId: "l1", code: "code-123" });
     expect(calls[2]!.params).toEqual({ loginId: "l1" });
+  });
+
+  it("startAgentLogin carries the provider for per-provider agents", async () => {
+    const { client, calls } = fakeClient({ loginId: "l1", url: "https://example.com", mode: "browser" });
+    await startAgentLogin(client, "opencode", null, "github-copilot");
+    expect(calls).toEqual([
+      { method: "StartAgentLogin", params: { harness: "opencode", provider: "github-copilot" } },
+    ]);
+    // The default sign-in sends no provider param.
+    await startAgentLogin(client, "claude-code", null, null);
+    expect(calls[1]!.params).toEqual({ harness: "claude-code" });
   });
 });

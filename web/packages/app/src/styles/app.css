@@ -10904,6 +10904,12 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
+/* A standing note under a provider's section header (accounts.rs
+ * `provider_note`): the footnote copy at header spacing, not page spacing. */
+.settings-provider-note {
+  margin-top: 4px;
+}
+
 /* Toggle switch — the desktop's 32×18 toggle_switch. */
 .toggle {
   flex: none;
