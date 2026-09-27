@@ -6465,6 +6465,34 @@ impl Composer {
         target.map(|_| params)
     }
 
+    fn catalog_params(&self, cx: &App) -> serde_json::Value {
+        let harness = self.pickers.read(cx).resolved(cx).harness;
+        let selected_worktree = match self.pickers.read(cx).checkout_plan() {
+            crate::pickers::CheckoutPlan::ReuseWorktree { path, .. } => Some(path),
+            _ => None,
+        };
+        let mut params = serde_json::json!({ "harness": harness });
+        {
+            let state = self.state.read(cx);
+            if let Some(chat) = state.selected_chat_row() {
+                params["chatId"] = chat.id.clone().into();
+                params["targetDeviceId"] = chat.device_id.clone().into();
+                // Include the resolved cwd in the cache identity, too.
+                params["cwd"] = chat.cwd.clone().into();
+            } else if let Some(space) = state.selected_space_row() {
+                params["spaceId"] = space.id.clone().into();
+                params["targetDeviceId"] = space.device_id.clone().into();
+                params["cwd"] = space.path.clone().into();
+                if let Some(path) = selected_worktree {
+                    params["path"] = path.into();
+                }
+            } else if let Some(device) = state.effective_device_id() {
+                params["targetDeviceId"] = device.into();
+            }
+        }
+        params
+    }
+
     fn completion_connection_context(&self, cx: &App) -> String {
         let state = self.state.read(cx);
         let engine = state
@@ -6779,7 +6807,7 @@ impl Composer {
     // ---- slash commands ---------------------------------------------------
 
     /// Track the `/` token on every edit: open/refresh the popup, fetch the
-    /// harness's command list on first open, filter locally per keystroke.
+    /// harness's command list on each open, filter locally per keystroke.
     fn update_slash(&mut self, text: &str, cursor: usize, cx: &mut Context<Self>) {
         let harness = self.pickers.read(cx).resolved(cx).harness;
         let preferences =
@@ -6792,29 +6820,7 @@ impl Composer {
             self.reset_slash(None, cx);
             return;
         }
-        let selected_worktree = match self.pickers.read(cx).checkout_plan() {
-            crate::pickers::CheckoutPlan::ReuseWorktree { path, .. } => Some(path),
-            _ => None,
-        };
-        let mut params = serde_json::json!({ "harness": harness });
-        {
-            let state = self.state.read(cx);
-            if let Some(chat) = state.selected_chat_row() {
-                params["chatId"] = chat.id.clone().into();
-                params["targetDeviceId"] = chat.device_id.clone().into();
-                // Include the resolved cwd in the cache identity, too.
-                params["cwd"] = chat.cwd.clone().into();
-            } else if let Some(space) = state.selected_space_row() {
-                params["spaceId"] = space.id.clone().into();
-                params["targetDeviceId"] = space.device_id.clone().into();
-                params["cwd"] = space.path.clone().into();
-                if let Some(path) = selected_worktree {
-                    params["path"] = path.into();
-                }
-            } else if let Some(device) = state.effective_device_id() {
-                params["targetDeviceId"] = device.into();
-            }
-        }
+        let params = self.catalog_params(cx);
         let catalog_context = format!(
             "{preferences:?}:{}:{params}",
             self.completion_connection_context(cx),
@@ -6836,6 +6842,7 @@ impl Composer {
         if !context_changed && token == self.slash.token {
             return;
         }
+        let refresh_catalog = context_changed || self.slash.token.is_none();
         self.slash.dismissed = None;
         if context_changed {
             self.slash.request = self.slash.request.wrapping_add(1);
@@ -6864,7 +6871,10 @@ impl Composer {
                 with_workspace_commands(vec![], self.state.read(cx).selected_chat.is_some()),
             );
         }
-        if harness.is_none() || self.slash_cache.contains_key(&context) || self.slash.loading {
+        if harness.is_none()
+            || (self.slash_cache.contains_key(&context) && !refresh_catalog)
+            || self.slash.loading
+        {
             self.refilter_slash(cx);
             return;
         }
@@ -6935,6 +6945,7 @@ impl Composer {
                         composer.slash_cache.insert(context, candidates);
                     }
                     Err(err) => {
+                        composer.slash_cache.remove(&context);
                         composer.slash.error = Some(slash_error_message(&err, skill));
                         if !skill && commands_allowed {
                             composer.slash_cache.insert(
@@ -11377,34 +11388,64 @@ mod tests {
         assert_eq!(skill_requests.len(), 1);
         respond(skill_requests, "current");
         cx.run_until_parked();
-        for token in ["$", "/", "$", "/"] {
+        let mut names = ["current-skill".to_string(), "current-command".to_string()];
+        for (index, token) in ["$", "/", "$", "/"].into_iter().enumerate() {
+            let kind = usize::from(token == "/");
             composer.update(cx, |composer, cx| {
                 composer.reset_slash(None, cx);
                 composer.update_slash("ordinary prose ", 15, cx);
                 composer.update_slash(token, token.len(), cx);
+                assert!(composer.slash.loading, "each open refreshes the catalog");
                 assert!(
-                    !composer.slash.loading,
-                    "warm {token} must not show a skeleton"
+                    visible_names(composer).contains(&names[kind]),
+                    "warm rows stay visible"
                 );
-                let names = visible_names(composer);
-                assert!(names.iter().any(|name| name
-                    == if token == "$" {
-                        "current-skill"
-                    } else {
-                        "current-command"
-                    }));
+                let query = format!("{token}refreshed");
+                composer.update_slash(&query, query.len(), cx);
             });
             cx.run_until_parked();
+            // Same pump: the re-opened catalog rides EngineTarget::call's
+            // tokio spawn.
+            for _ in 0..16 {
+                runtime.block_on(async {
+                    tokio::task::yield_now().await;
+                });
+            }
+            cx.run_until_parked();
+            let mut refresh = Vec::new();
             while let Ok(frame) = requests.try_recv() {
                 let frame: roboco_rpc::ClientFrame = serde_json::from_str(&frame).unwrap();
-                assert!(
-                    !matches!(
-                        frame.method.as_deref(),
-                        Some(methods::LIST_COMMANDS | methods::LIST_SKILLS)
-                    ),
-                    "warm completion reissued discovery"
-                );
+                if matches!(
+                    frame.method.as_deref(),
+                    Some(methods::LIST_COMMANDS | methods::LIST_SKILLS)
+                ) {
+                    refresh.push(frame);
+                }
             }
+            assert_eq!(
+                refresh.len(),
+                if token == "$" { 1 } else { 2 },
+                "typing shares the open's request"
+            );
+            let fresh = format!("refreshed-{index}");
+            respond(refresh, &fresh);
+            cx.run_until_parked();
+            let expected = if token == "$" {
+                format!("{fresh}-skill")
+            } else {
+                fresh
+            };
+            composer.read_with(cx, |composer, _| {
+                assert!(!composer.slash.loading);
+                assert_eq!(visible_names(composer), [expected.clone()]);
+                assert!(
+                    !composer.slash_cache[&composer.slash.context]
+                        .iter()
+                        .any(|row| row.name == names[kind]),
+                    "removed catalog entries must disappear"
+                );
+            });
+            names[kind] = expected;
         }
     }
 
