@@ -5,6 +5,8 @@
 
 pub mod agent;
 pub mod entities;
+pub mod file_mentions;
+pub mod invocation;
 pub mod layout;
 pub mod motion;
 pub mod preview;

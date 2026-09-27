@@ -1626,3 +1626,67 @@ async fn pi_without_steering_extension_queues_live_steer_once() {
 async fn pi_without_steering_extension_dispatches_idle_steer_immediately() {
     pi_boundary_steer("steer-idle", true).await;
 }
+#[tokio::test]
+async fn all_acp_harnesses_use_project_scoped_session_command_updates() {
+    for h in [
+        AcpHarness::devin(),
+        AcpHarness::grok(),
+        AcpHarness::hermes(),
+        AcpHarness::pi(),
+        AcpHarness::antigravity(),
+    ] {
+        let h = h.with_executable(fixture_path());
+        for name in ["project-a", "project-b"] {
+            let cwd = tempfile::tempdir().unwrap();
+            std::fs::write(cwd.path().join(".command-fixture"), name).unwrap();
+            let commands = h
+                .commands_for(&cwd.path().canonicalize().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(commands.len(), 1, "{:?}", h.id());
+            assert_eq!(commands[0].name, name, "{:?}", h.id());
+        }
+    }
+}
+
+#[tokio::test]
+async fn all_acp_harnesses_bind_selected_skills_to_native_commands() {
+    use roboco_proto::invocation::{Invocation, harness_prompt};
+    for h in [
+        AcpHarness::devin(),
+        AcpHarness::grok(),
+        AcpHarness::hermes(),
+        AcpHarness::pi(),
+        AcpHarness::antigravity(),
+    ] {
+        let h = h.with_executable(fixture_path());
+        let cwd = tempfile::tempdir().unwrap();
+        let skill_dir = cwd.path().join(".agents/skills/roboco-fixture-review");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: roboco-fixture-review\ndescription: Review changes\n---\nReview the changes.").unwrap();
+        let command_name = if h.id() == HarnessId::Pi {
+            "skill:roboco-fixture-review"
+        } else {
+            "roboco-fixture-review"
+        };
+        std::fs::write(cwd.path().join(".command-fixture"), command_name).unwrap();
+        let skills = h
+            .skills(&cwd.path().canonicalize().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let skill = skills
+            .into_iter()
+            .find(|s| s.name == "roboco-fixture-review")
+            .unwrap();
+        let invocation = Invocation::Skill {
+            name: skill.name,
+            path: skill.path,
+            command: skill.command,
+        };
+        assert_eq!(
+            harness_prompt(&format!("{} inspect tests", invocation.link()), h.id()),
+            format!("/{command_name} inspect tests")
+        );
+    }
+}
