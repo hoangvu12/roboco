@@ -249,8 +249,12 @@ a:focus-visible,
   --rb-titlebar-control-gap: 2px;
   --rb-titlebar-edge-inset: 6px;
   /* `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the Files toggle + the pane toggle,
-     two 28px `header_icon_button`s that keep their slots while shut. */
-  --rb-titlebar-toggle-slots: 56px;
+     two 28px `header_icon_button`s plus the 4px `PANEL_TOGGLE_GAP` between
+     them (b9b35665) — they keep their slots while shut. */
+  --rb-titlebar-toggle-slots: 60px;
+  /* `PANEL_TOGGLE_GAP` (tabs.rs): the 4px gap between the two fixed trailing
+     anchors, the surface strip's own control rhythm. */
+  --rb-titlebar-toggle-gap: 4px;
   /*
    * The stacking ladder — the web's mapping of gpui's `deferred` priorities
    * (menus 1, modals 2; popover.rs:629-637, 688-704). Nothing may invent a
@@ -692,6 +696,17 @@ a:focus-visible,
   /* The row's own padding now lands the edge inset; this holds the group at
      the right edge on rows with no identity to push it there. */
   margin-left: auto;
+}
+
+/*
+ * `PANEL_TOGGLE_GAP` (tabs.rs, b9b35665): the 4px rhythm the surface strip
+ * keeps between its controls, applied between the two fixed right-edge
+ * anchors so the explorer toggle and the pane toggle never render as one
+ * fused block. The Files toggle itself gets no left margin — the pane band
+ * ahead of it already ends in its own 4px stable pad.
+ */
+.titlebar-trailing .header-icon-button + .header-icon-button {
+  margin-left: var(--rb-titlebar-toggle-gap);
 }
 
 /*
@@ -16304,6 +16319,21 @@ button.segmented-option:hover {
   flex-direction: column;
   padding-top: var(--rb-titlebar-height, 38px);
   transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * The projectless root label (files/mod.rs, 03b67beb): "Files in <cwd> ·
+ * <device>" under the explorer toolbar — 10px/5px padding, 10px faint text,
+ * truncated to one line, mirroring the desktop's header strip.
+ */
+.files-projectless-root {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: var(--rb-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pane-seam-files {

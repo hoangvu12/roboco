@@ -234,6 +234,13 @@ export class RightPaneStore {
   readonly #fileKeys = new Map<string, string>();
   /** The RevealFile request the docked explorer column consumes. */
   #pendingReveal: { chatId: string; path: string; seq: number } | null = null;
+  /** A chat file link's pending line navigation (seq-keyed, one at a time):
+   * the promoted File surface consumes it once its document is live. The seq
+   * is a dedicated monotonic counter so a navigation recorded after a clear
+   * still re-triggers a repeat jump to the same line. */
+  #pendingFileLine: { surfaceId: string; line: number; column: number | null; seq: number } | null =
+    null;
+  #fileLineSeq = 0;
   /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
   readonly #diffMeta = new Map<string, DiffMeta>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
@@ -401,15 +408,34 @@ export class RightPaneStore {
   }
 
   /**
-   * `add_file_surface`: one tab per `(panel, path)`. An already-open path
-   * activates the existing tab; a fresh open mints a monotonic id so the
-   * basename title is stable for the tab's whole life.
+   * `add_file_surface` / `add_file_surface_at`: one tab per `(panel, path)`. An
+   * already-open path activates the existing tab; a fresh open mints a
+   * monotonic id so the basename title is stable for the tab's whole life.
+   * A chat file link's location (d1010657 `add_file_surface_at`) rides along:
+   * whichever tab ends up active gets a pending line navigation the File
+   * surface consumes — markdown previews flip to source and the code view
+   * scrolls to the referenced line, on both a fresh open and a re-focus.
    */
-  addFileSurface(chatId: string, path: string, panelFor: string = chatId): void {
+  addFileSurface(
+    chatId: string,
+    path: string,
+    panelFor: string = chatId,
+    location: { line: number; column: number | null } | null = null,
+  ): void {
     const key = `${panelFor}\u{0}${path}`;
     const existingId = this.#fileKeys.get(key);
     if (existingId !== undefined) {
       this.setActive(chatId, { kind: "file", id: existingId });
+      if (location !== null) {
+        this.#fileLineSeq += 1;
+        this.#pendingFileLine = {
+          surfaceId: existingId,
+          line: location.line,
+          column: location.column,
+          seq: this.#fileLineSeq,
+        };
+        this.#notify();
+      }
       return;
     }
     this.#fileSeq += 1;
@@ -418,6 +444,26 @@ export class RightPaneStore {
     this.#fileKeys.set(key, id);
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "file", id }] }));
     this.setActive(chatId, { kind: "file", id });
+    if (location !== null) {
+      this.#fileLineSeq += 1;
+      this.#pendingFileLine = {
+        surfaceId: id,
+        line: location.line,
+        column: location.column,
+        seq: this.#fileLineSeq,
+      };
+      this.#notify();
+    }
+  }
+
+  /** The pending chat-link line navigation (consumed on render). */
+  pendingFileLine(): { surfaceId: string; line: number; column: number | null; seq: number } | null {
+    return this.#pendingFileLine;
+  }
+
+  /** The consuming File surface clears its navigation. */
+  clearFileLine(): void {
+    this.#pendingFileLine = null;
   }
 
   /**
@@ -636,6 +682,9 @@ export class RightPaneStore {
     this.#files.delete(id);
     if (entry !== undefined) {
       this.#fileKeys.delete(`${entry.panel}\u{0}${entry.path}`);
+    }
+    if (this.#pendingFileLine?.surfaceId === id) {
+      this.#pendingFileLine = null;
     }
   }
 

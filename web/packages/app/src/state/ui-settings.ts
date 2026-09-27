@@ -146,6 +146,7 @@ export interface KeymapConfig {
   readonly browserReload: string;
   readonly toggleSidebar: string;
   readonly toggleChanges: string;
+  readonly toggleFiles: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
   readonly newProject: string;
@@ -333,6 +334,7 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     browserReload: "mod-shift-r",
     toggleSidebar: "mod-b",
     toggleChanges: "mod-r",
+    toggleFiles: "mod-e",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
     newProject: "mod-shift-n",
@@ -615,6 +617,25 @@ function healBackground(value: unknown): NewThreadComposerBackground | null {
 export function healKeymap(value: unknown): KeymapConfig {
   const raw = record(value);
   const defaults = defaultKeymap();
+  // A shortcut added after the file was written takes its default only when
+  // that combo is free: a user who had already bound the same chord elsewhere
+  // keeps their binding and the new row arrives unbound rather than
+  // double-bound (the desktop's load-time `toggleFiles` upgrade, b9b35665).
+  for (const field of ["toggleFiles"] as const) {
+    if (raw[field] !== undefined) {
+      continue;
+    }
+    const primary = isMacPlatform() ? "cmd" : "ctrl";
+    const defaultCombo = defaults[field].split("-").map((part) => (part === "mod" ? primary : part)).join("-");
+    const taken = Object.values(raw).some(
+      (existing) =>
+        typeof existing === "string" &&
+        existing.split("-").map((part) => (part === "mod" ? primary : part)).join("-") === defaultCombo,
+    );
+    if (taken) {
+      raw[field] = "";
+    }
+  }
   const storedJumps = Array.isArray(raw.jumpSession) ? raw.jumpSession : [];
   const jumpSession = JUMP_DEFAULTS.map((fallback, slot) => {
     const stored: unknown = storedJumps[slot];
@@ -631,6 +652,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     browserReload: combo("browserReload"),
     toggleSidebar: combo("toggleSidebar"),
     toggleChanges: combo("toggleChanges"),
+    toggleFiles: combo("toggleFiles"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
     newProject: combo("newProject"),

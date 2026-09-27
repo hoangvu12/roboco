@@ -55,6 +55,7 @@ export type ShortcutId =
   | "browserReload"
   | "toggleSidebar"
   | "toggleChanges"
+  | "toggleFiles"
   | "toggleTerminal"
   | "newSession"
   | "newProject"
@@ -71,6 +72,7 @@ export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "browserReload",
   "toggleSidebar",
   "toggleChanges",
+  "toggleFiles",
   "toggleTerminal",
   "newSession",
   "newProject",
@@ -106,6 +108,8 @@ export function shortcutLabel(id: ShortcutId): string {
       return "Toggle left sidebar";
     case "toggleChanges":
       return "Toggle right sidebar";
+    case "toggleFiles":
+      return "Toggle files panel";
     case "toggleTerminal":
       return "Toggle terminal";
     case "newSession":
@@ -137,6 +141,7 @@ export function shortcutGroup(id: ShortcutId): string {
       return "Browser";
     case "toggleSidebar":
     case "toggleChanges":
+    case "toggleFiles":
     case "toggleTerminal":
       return "Panels";
     case "newProject":
@@ -530,6 +535,7 @@ export type ShortcutEvent =
   | "save-file"
   | "toggle-sidebar"
   | "toggle-changes"
+  | "toggle-files"
   | "toggle-terminal"
   | "open-model-picker"
   | "next-session"
@@ -575,6 +581,10 @@ function bindingFor(id: ShortcutId): Keybinding {
       return { event: "toggle-sidebar", bare: false };
     case "toggleChanges":
       return { event: "toggle-changes", bare: false };
+    case "toggleFiles":
+      // The explorer's own toggle (the titlebar tree button): docks or
+      // undocks the explorer portion without touching the surface host.
+      return { event: "toggle-files", bare: false };
     case "toggleTerminal":
       return { event: "toggle-terminal", bare: false };
     case "newSession":
@@ -742,6 +752,7 @@ export function healReservedComposerShortcuts(
     browserReload: heal(config.browserReload, defaults.browserReload),
     toggleSidebar: heal(config.toggleSidebar, defaults.toggleSidebar),
     toggleChanges: heal(config.toggleChanges, defaults.toggleChanges),
+    toggleFiles: heal(config.toggleFiles, defaults.toggleFiles),
     toggleTerminal: heal(config.toggleTerminal, defaults.toggleTerminal),
     newSession: heal(config.newSession, defaults.newSession),
     newProject: heal(config.newProject, defaults.newProject),
