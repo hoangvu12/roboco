@@ -393,7 +393,7 @@ impl AppearancePage {
                             .text_size(typography::ui_rems(12.0))
                             .line_height(px(18.0))
                             .text_color(theme.text_muted)
-                            .child("Maximum width for messages and the composer."),
+                            .child("Maximum width of messages and the composer in conversations. Adapts to smaller windows."),
                     ),
             )
             .child(
@@ -958,6 +958,17 @@ impl AppearancePage {
             error: None,
         });
         cx.notify();
+    }
+
+    /// Escape that reached Settings unclaimed closes the topmost dialog
+    /// (import, else the mapping review) first, so it never closes Settings
+    /// under it. Returns whether it did.
+    pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.import_dialog.take().is_none() && self.review_entry.take().is_none() {
+            return false;
+        }
+        cx.notify();
+        true
     }
 
     fn compile_import(&mut self, cx: &mut Context<Self>) {

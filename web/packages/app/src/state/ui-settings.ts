@@ -2,6 +2,11 @@ import { useSyncExternalStore } from "react";
 import type { AccentPresetId } from "@roboco/theme";
 import type { HarnessId } from "@roboco/proto";
 import type { StorageLike } from "../lib/engine-store";
+import {
+  SETTINGS_SECTION_DEFAULT,
+  isSettingsSectionSlug,
+  type SettingsSectionSlug,
+} from "./settings-section";
 
 /**
  * Every device-local preference, in one store — the web peer of the desktop's
@@ -303,6 +308,12 @@ export interface UiSettings {
   readonly keymap: KeymapConfig;
   readonly escapeStopsActiveAgent: boolean;
   /**
+   * The Settings section last viewed (`settingsSection`): the `/settings`
+   * index reopens it; visiting a section becomes the remembered one. Unknown
+   * or missing values heal to the web default (see `settings-section.ts`).
+   */
+  readonly settingsSection: SettingsSectionSlug;
+  /**
    * The update version the user dismissed from the sidebar's update strip
    * (`update_dismissed` on the desktop). Null while nothing is dismissed.
    */
@@ -429,6 +440,7 @@ export function defaultUiSettings(): UiSettings {
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
     keymap: defaultKeymap(),
     escapeStopsActiveAgent: false,
+    settingsSection: SETTINGS_SECTION_DEFAULT,
     dismissedUpdateVersion: null,
     appearance: "system",
     gitHistoryColumns: { author: true, date: true, sha: true },
@@ -790,6 +802,9 @@ export function healUiSettings(value: unknown): UiSettings {
     ),
     keymap: healKeymap(raw.keymap),
     escapeStopsActiveAgent: bool(raw.escapeStopsActiveAgent, false),
+    settingsSection: isSettingsSectionSlug(raw.settingsSection)
+      ? raw.settingsSection
+      : SETTINGS_SECTION_DEFAULT,
     dismissedUpdateVersion: nullableString(raw.dismissedUpdateVersion),
     appearance: oneOf(raw.appearance, ["system", "light", "dark"], "system"),
     gitHistoryColumns: {

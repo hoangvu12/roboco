@@ -4,6 +4,8 @@ import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./routes/chat-page";
 import { PairPage } from "./routes/pair-page";
 import { SettingsLayout } from "./components/settings-layout";
+import { settingsIndexTarget } from "./state/settings-section";
+import { uiSettings } from "./state/ui-settings";
 import { RemoteAccessSettingsPage } from "./routes/settings-remote-access";
 import { AccountsSettingsPage } from "./routes/settings-accounts";
 import { AppearanceSettingsPage } from "./routes/settings-appearance";
@@ -37,9 +39,12 @@ const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
   beforeLoad: () => {
-    // The desktop's `OpenSettings`/user-menu always lands on Devices
-    // (SettingsSection::ALL's first row, shell.rs:3268/5294/7792).
-    throw redirect({ to: "/settings/devices" });
+    // The desktop's generic ways into Settings (⌘,, the footer gear, the
+    // palette) reopen the section last viewed (upstream d268830b); the web's
+    // equivalent entry points all land here. A remembered section this build
+    // does not know heals to the web default (Devices) inside the helper —
+    // the desktop's General fallback has no web page.
+    throw redirect({ href: settingsIndexTarget(uiSettings.getSnapshot().settingsSection) });
   },
 });
 const remoteAccessRoute = createRoute({
