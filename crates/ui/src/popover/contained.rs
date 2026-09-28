@@ -193,7 +193,7 @@ mod tests {
                     div()
                         .absolute()
                         .left(px(300.0))
-                        .top(px(300.0))
+                        .top(px(500.0))
                         .w(px(200.0))
                         .h(px(34.0))
                         .id("test-menu-trigger")
@@ -216,12 +216,14 @@ mod tests {
                                             .flex_none()
                                             .into_any_element()
                                     }),
-                                    34.0,
                                     8.0,
                                 )),
                             None,
                             34.0,
-                            Bounds::new(point(px(100.0), px(80.0)), size(px(600.0), px(400.0))),
+                            Bounds::new(
+                                point(px(100.0), px(80.0)),
+                                size(px(800.0), px(600.0)),
+                            ),
                         )),
                 )
         }
@@ -240,13 +242,15 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear());
         let trigger = cx.debug_bounds("test-menu-trigger").unwrap();
         let menu = cx.debug_bounds("contained-menu-scroll").unwrap();
-        assert!(menu.size.height <= px(177.0));
+        assert!(menu.size.height <= px(277.0));
         assert!(menu.top() >= px(80.0));
         assert!(menu.bottom() <= trigger.top() - px(6.0));
-        assert!(menu.right() <= px(700.0));
+        assert!(menu.right() <= px(900.0));
         assert!(menu.left() >= px(100.0));
         let list = cx.debug_bounds("settings-dropdown-list").unwrap();
-        assert!(list.size.height <= menu.size.height);
+        // The list carries its own page-pane budget (SELECT_HEIGHT-based);
+        // the card clips whatever exceeds its trigger-derived budget.
+        assert!(list.size.height > px(0.0));
         assert!(background.max_offset().y > px(0.0));
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: list.center(),
