@@ -25,7 +25,7 @@ const STATE_LABEL: Readonly<Record<ChangeRequestState, string>> = {
 
 export function badgeModel(summary: ChangeRequestSummary): BadgeModel {
   return {
-    number: `#${summary.number}`,
+    number: String(summary.number),
     stateLabel: STATE_LABEL[summary.state],
     title: summary.title.replace(/[\r\n]+/g, " "),
     tone: toneFor(summary.state),

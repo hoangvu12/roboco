@@ -3,21 +3,22 @@ import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
 
 /**
  * The change-request badge — the web peer of `crates/ui/src/change_requests.rs`
- * (`pull_request_badge`, 117-169). A pill that shows the PR glyph (composer
- * size only) and the mono `#N`; the state word never appears in the badge
- * itself — the tooltip carries it ("PR #N · State"). Click opens the change
- * request's own URL. Tone by state: Open → success, Merged → code text (the
- * accent), Closed → danger.
+ * (`pull_request_badge`, 117-169). A pill that always shows the PR glyph
+ * (11px composer, 10px sidebar) and the mono bare number; the state word
+ * never appears in the badge itself — the tooltip carries it ("PR #N ·
+ * State", upstream f8f9c97f: the `#` lives only there now). Click opens
+ * the change request's own URL. Tone by state: Open → success, Merged →
+ * code text (the accent), Closed → danger.
  *
- * Two size presets, exactly the desktop's: sidebar (h16, gap 0, px 4,
- * radius 4, 10px, no glyph) and composer (h20, gap 5, px 7, radius 6, 11px,
- * an 11px PULL_REQUEST glyph). The tooltip is a CSS-hover card — the
- * research's sanctioned native substitute for the desktop's 350ms tooltip —
- * delayed 350ms to match.
+ * Two size presets, exactly the desktop's: sidebar (h16, gap 3, px 4,
+ * radius 4, 10px, a 10px PULL_REQUEST glyph) and composer (h20, gap 5,
+ * px 7, radius 6, 11px, an 11px PULL_REQUEST glyph). The tooltip is a
+ * CSS-hover card — the research's sanctioned native substitute for the
+ * desktop's 350ms tooltip — delayed 350ms to match.
  *
- * Used at the desktop's two call sites: the sidebar chat row and the
- * composer footer. (The Changes pane's own CR card is a documented,
- * intentional web-only addition, not a port of this.)
+ * Used at the desktop's call sites: the sidebar chat row and the composer
+ * footer. (The Changes pane's own CR card is a documented, intentional
+ * web-only addition, not a port of this.)
  */
 
 export type BadgeTone = "open" | "merged" | "closed";
@@ -47,7 +48,7 @@ export interface ChangeRequestBadgeProps {
 export function ChangeRequestBadge({ summary, size = "sidebar" }: ChangeRequestBadgeProps) {
   const tone = toneFor(summary.state);
   const label = TONE_LABEL[tone];
-  const number = `#${summary.number}`;
+  const number = String(summary.number);
   const title = summary.title.replace(/[\r\n]+/g, " ");
   const tooltipId = `cr-${summary.provider}-${summary.number}`;
   const composer = size === "composer";
@@ -61,10 +62,10 @@ export function ChangeRequestBadge({ summary, size = "sidebar" }: ChangeRequestB
       aria-describedby={tooltipId}
       onClick={(event) => event.stopPropagation()}
     >
-      {composer ? <Icon name="pullRequest" size={11} className="cr-badge-glyph" aria-hidden /> : null}
+      <Icon name="pullRequest" size={composer ? 11 : 10} className="cr-badge-glyph" aria-hidden />
       <span className="cr-badge-number mono">{number}</span>
       <span className="cr-tooltip" role="tooltip" id={tooltipId}>
-        <span className={`cr-tooltip-line cr-tooltip-line-${tone}`}>{`PR ${number} · ${label}`}</span>
+        <span className={`cr-tooltip-line cr-tooltip-line-${tone}`}>{`PR #${number} · ${label}`}</span>
         <span className="cr-tooltip-title">{title}</span>
       </span>
     </a>

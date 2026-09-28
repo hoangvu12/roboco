@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import type { ChangeRequestState, ChangeRequestSummary } from "@roboco/proto";
+import { ChangeRequestBadge } from "../src/components/change-request-badge";
 import {
   PROVIDERS,
   badgeModel,
@@ -20,7 +23,7 @@ function summary(state: ChangeRequestState): ChangeRequestSummary {
 }
 
 describe("badgeModel", () => {
-  it("renders the Open / Merged / Closed labels and tones", () => {
+  it("renders the Open / Merged / Closed labels and tones with the bare number", () => {
     const cases: Array<[ChangeRequestState, string, "open" | "merged" | "closed"]> = [
       ["open", "Open", "open"],
       ["merged", "Merged", "merged"],
@@ -28,7 +31,9 @@ describe("badgeModel", () => {
     ];
     for (const [state, label, tone] of cases) {
       const model = badgeModel(summary(state));
-      expect(model.number).toBe("#90");
+      // Upstream f8f9c97f: the badge model carries the bare number — the `#`
+      // lives only in the tooltip's "PR #N".
+      expect(model.number).toBe("90");
       expect(model.stateLabel).toBe(label);
       expect(model.tone).toBe(tone);
       expect(model.title).toBe("First line Second line");
@@ -66,5 +71,35 @@ describe("normalizeProvider", () => {
 
   it("passes an unknown host through lower-cased rather than guessing a key", () => {
     expect(normalizeProvider("gitlab.example.com")).toBe("gitlab.example.com");
+  });
+});
+
+describe("ChangeRequestBadge render (upstream f8f9c97f)", () => {
+  // Server-render both sizes like the changes-surface smoke: the node suite
+  // cannot dispatch DOM events, and the badge's own behavior (glyph, number,
+  // tooltip copy) is fully visible in the static markup.
+  it("always renders the PR glyph and the bare number; the tooltip keeps PR #N", () => {
+    for (const size of ["sidebar", "composer"] as const) {
+      const html = renderToString(
+        createElement(ChangeRequestBadge, { summary: summary("open"), size }),
+      );
+      // The glyph rides along in every state and surface, not just the
+      // composer's (upstream f8f9c97f).
+      expect(html).toContain("cr-badge-glyph");
+      // The badge itself shows the bare number.
+      expect(html).toContain(">90</span>");
+      expect(html).not.toContain(">#90</span>");
+      // The `#` survives only in the tooltip's "PR #N · State".
+      expect(html).toContain("PR #90 · Open");
+    }
+  });
+
+  it("maps the state tone onto the badge and tooltip line classes", () => {
+    const html = renderToString(
+      createElement(ChangeRequestBadge, { summary: summary("closed"), size: "sidebar" }),
+    );
+    expect(html).toContain("cr-badge-closed");
+    expect(html).toContain("cr-tooltip-line-closed");
+    expect(html).toContain("PR #90 · Closed");
   });
 });

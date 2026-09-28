@@ -14427,10 +14427,11 @@ button.segmented-option:hover {
 /* ── Change-request badges (ticket 22) ───────────────────────────────── */
 
 /*
- * `pull_request_badge` (change_requests.rs:117-169): mono `#N` — the state
- * word NEVER appears in the badge (the tooltip carries it). Two presets:
- * composer (h20, gap 5, px 7, radius 6, 11px, 11px PULL_REQUEST glyph) and
- * sidebar (h16, gap 0, px 4, radius 4, 10px, no glyph). Tone: Open →
+ * `pull_request_badge` (change_requests.rs:117-169): mono bare number —
+ * the state word NEVER appears in the badge (the tooltip carries it,
+ * keeping `PR #N`; upstream f8f9c97f). Two presets: composer (h20, gap 5,
+ * px 7, radius 6, 11px, 11px PULL_REQUEST glyph) and sidebar (h16, gap 3,
+ * px 4, radius 4, 10px, 10px PULL_REQUEST glyph). Tone: Open →
  * success, Merged → code text (the accent), Closed → danger; bg at 8%,
  * hover 16%, text at 0.85, hover full.
  */
@@ -14455,7 +14456,7 @@ button.segmented-option:hover {
   height: 16px;
   padding: 0 4px;
   border-radius: 4px;
-  gap: 0;
+  gap: 3px;
   font-size: 10px;
 }
 
