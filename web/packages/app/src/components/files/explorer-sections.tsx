@@ -9,15 +9,13 @@ import { useFleetSnapshot } from "../../state/fleet";
 import { useNow } from "../../state/hooks";
 import { rightPaneStore } from "../../state/right-pane";
 import { sidebarNotice } from "../../state/notice";
-import { seedPendingSideChat } from "../../state/side-chats";
+import { beginUnsavedSideChat, seedPendingSideChat } from "../../state/side-chats";
 import { mintId } from "../../lib/id";
 import {
   beginSideChatCreate,
-  createChildChat,
   endSideChatCreate,
   forkSideChat,
 } from "../../lib/side-chat-actions";
-import { describeMutateError } from "../../lib/chat-actions";
 import {
   bodyBudget,
   childChatRows,
@@ -86,7 +84,9 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
     chats: 10,
   });
   // The one-at-a-time creation guard (`side_chat_creating`) — local so the
-  // header buttons' disabled state re-renders with it.
+  // header buttons' disabled state re-renders with it. Only the FORK arms it
+  // now (upstream #568): "New side chat" mints nothing up front, so there
+  // is no in-flight RPC to double-trigger.
   const [creating, setCreating] = useState(false);
 
   // The active chat's transcript — the SAME store the chat page renders
@@ -173,37 +173,25 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
       sidebarNotice.set("Start a conversation before creating a side chat.");
       return;
     }
-    if (!beginSideChatCreate()) {
-      return;
-    }
-    setCreating(true);
-    void (async () => {
-      try {
-        // Raw mint on the wire; scoped for the surface the moment it exists
-        // (§2.3 — the merged fleet rows are all scoped).
-        const raw = await createChildChat(session.client, parentChat);
-        const scoped = encodeScopedId(session.engine.baseUrl, raw);
-        // The desktop's `pending_side_chat` (state.rs:1881): seed the row so
-        // the surface renders before the registry frame carries it. Same
-        // field copy the engine writes (workspace_host create_chat).
-        seedPendingSideChat({
-          ...parentChat,
-          id: scoped,
-          title: null,
-          lastMessagePreview: null,
-          lastMessageAt: null,
-          lastSeenAt: null,
-          createdAt: new Date().toISOString(),
-          parentChatId: parentChat.id,
-        });
-        rightPaneStore.addSideChatSurface(chatId, { chatId: scoped, title: "New side chat" });
-      } catch (error) {
-        sidebarNotice.set(describeMutateError(error));
-      } finally {
-        endSideChatCreate();
-        setCreating(false);
-      }
-    })();
+    // "New side chat" writes NOTHING up front (upstream #568): the tab
+    // opens on a local-only chat — no doc watch, no registry row — whose
+    // first send runs the createChat (with the parent link) before the run.
+    // Closing it unsent drops it, draft or not: no row could reopen it. The
+    // id mints locally and scopes immediately — every merged fleet row id is
+    // scoped, and the surface keys on the scoped form (§2.3); the wire
+    // decodes either form on the first send's mint.
+    const scoped = encodeScopedId(session.engine.baseUrl, mintId());
+    beginUnsavedSideChat({
+      ...parentChat,
+      id: scoped,
+      title: null,
+      lastMessagePreview: null,
+      lastMessageAt: null,
+      lastSeenAt: null,
+      createdAt: new Date().toISOString(),
+      parentChatId: parentChat.id,
+    });
+    rightPaneStore.addSideChatSurface(chatId, { chatId: scoped, title: "New side chat" });
   }, [session, parentChat, chatId]);
   const forkChat = useCallback(() => {
     if (session === null || parentChat === null) {

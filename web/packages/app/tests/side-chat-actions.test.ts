@@ -1,21 +1,33 @@
 import { describe, expect, it } from "vitest";
-import type { Chat } from "@roboco/proto";
+import type { Chat, ChatConfig } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
 import {
   beginSideChatCreate,
-  createChildChat,
   endSideChatCreate,
   forkSideChat,
+  mintUnsavedSideChat,
   resetSideChatCreate,
   sideChatCreating,
 } from "../src/lib/side-chat-actions";
+import {
+  beginUnsavedSideChat,
+  clearPendingSideChat,
+  dropUnsavedSideChat,
+  isUnsavedSideChat,
+  markSideChatSaved,
+  pendingSideChat,
+  sideChatDrafts,
+  sideChatHasDraft,
+  unsavedSideChat,
+} from "../src/state/side-chats";
 import { chatDrafts } from "../src/lib/composer-draft";
-import { sideChatDrafts, sideChatHasDraft } from "../src/state/side-chats";
 
 /**
  * Side-chat creation on the wire — the RPC half of
  * `crates/ui/src/shell/side_chats.rs` (731697b6): `FORK_SIDE_CHAT` and
- * `Mutate createChat` with `parentChatId`, plus the one-at-a-time guard.
+ * `Mutate createChat` with `parentChatId` (the fresh child's createChat now
+ * lands on the FIRST SEND, upstream #568), plus the one-at-a-time guard and
+ * the local-only side-chat registry (`state/side-chats.ts`).
  */
 
 interface Recorded {
@@ -89,48 +101,101 @@ describe("forkSideChat", () => {
   });
 });
 
-describe("createChildChat", () => {
-  it("copies the parent's device/space/config/branch/cwd onto createChat with parentChatId", async () => {
+describe("mintUnsavedSideChat (the first send's createChat, upstream #568)", () => {
+  it("copies the parent row's device/space/config/branch/cwd onto createChat with the parent link and the picked config", async () => {
     const caller = new FakeCaller();
-    const chatId = await createChildChat(caller, parent(), { mintId: () => "child-1" });
-    expect(chatId).toBe("child-1");
+    const picked: ChatConfig = {
+      harness: "codex",
+      model: null,
+      reasoning: null,
+      sandbox: "workspace-write",
+      modelOptions: {},
+    };
+    const row: Chat = { ...parent(), id: "scoped-side", parentChatId: "source-1" };
+    await mintUnsavedSideChat(caller, row, "scoped-side", picked);
     expect(caller.calls).toEqual([
       {
         method: methods.MUTATE,
         params: {
           op: "createChat",
-          chatId: "child-1",
+          chatId: "scoped-side",
           spaceId: "space-1",
           cwd: "/repo",
           branch: "main",
-          config: {
-            harness: "claude-code",
-            model: null,
-            reasoning: null,
-            sandbox: "workspace-write",
-            modelOptions: {},
-          },
+          config: picked,
           parentChatId: "source-1",
         },
       },
     ]);
   });
 
-  it("a projectless parent names its own device and never rides the '~' cwd", async () => {
+  it("a projectless row names its own device and never rides the '~' cwd; a null config rides nothing", async () => {
     const caller = new FakeCaller();
-    await createChildChat(caller, parent({ spaceId: null, cwd: "~", branch: null }), {
-      mintId: () => "child-2",
-    });
+    const row: Chat = {
+      ...parent({ spaceId: null, cwd: "~", branch: null, config: null }),
+      id: "side-2",
+      parentChatId: "source-1",
+    };
+    await mintUnsavedSideChat(caller, row, "side-2", null);
     const params = caller.calls[0]!.params as Record<string, unknown>;
     expect(params).toMatchObject({
       op: "createChat",
-      chatId: "child-2",
+      chatId: "side-2",
       deviceId: "dev-1",
       parentChatId: "source-1",
     });
     expect(params).not.toHaveProperty("spaceId");
     expect(params).not.toHaveProperty("cwd");
     expect(params).not.toHaveProperty("branch");
+    expect(params).not.toHaveProperty("config");
+  });
+
+  it("mints with the tab's id — the mutation is idempotent by the id the surface keys on", async () => {
+    const caller = new FakeCaller();
+    const row: Chat = { ...parent(), id: "tab-id", parentChatId: "source-1" };
+    await mintUnsavedSideChat(caller, row, "tab-id", null);
+    const params = caller.calls[0]!.params as Record<string, unknown>;
+    expect(params).toMatchObject({ op: "createChat", chatId: "tab-id" });
+  });
+});
+
+describe("the unsaved side-chat registry (unsaved_side_chat, state.rs)", () => {
+  it("a hand-started side chat is local-only until its first send marks it saved", () => {
+    const row: Chat = {
+      ...parent(),
+      id: "side-local",
+      parentChatId: "source-1",
+      lastMessageAt: null,
+    };
+    beginUnsavedSideChat(row);
+    expect(isUnsavedSideChat("side-local")).toBe(true);
+    expect(unsavedSideChat("side-local")?.id).toBe("side-local");
+    // No registry row yet: the surface renders from the local copy, not a
+    // creation seed (a fork's shape — that row exists on the engine).
+    expect(pendingSideChat("side-local")).toBeNull();
+
+    // The first send minted it: the flag retires and the row seeds the gap
+    // before the fleet frame lands (the fork flow's shape).
+    markSideChatSaved("side-local");
+    expect(isUnsavedSideChat("side-local")).toBe(false);
+    expect(pendingSideChat("side-local")?.id).toBe("side-local");
+
+    // The fleet row landed: the seed retires with it (and an unsaved
+    // registration cannot outlive the row it was waiting for).
+    beginUnsavedSideChat(row);
+    clearPendingSideChat("side-local");
+    expect(pendingSideChat("side-local")).toBeNull();
+    expect(isUnsavedSideChat("side-local")).toBe(false);
+  });
+
+  it("closing an unsent unsaved side chat drops it — the row and the flag", () => {
+    const row: Chat = { ...parent(), id: "side-dropped", parentChatId: "source-1" };
+    beginUnsavedSideChat(row);
+    // A draft cannot keep it: no row could reopen it. The pane store's
+    // close arm drops the entity (drafts included) and the registration.
+    dropUnsavedSideChat("side-dropped");
+    expect(isUnsavedSideChat("side-dropped")).toBe(false);
+    expect(unsavedSideChat("side-dropped")).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import type { Chat, ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import { methods, type ChatStatus } from "@roboco/engine-client";
@@ -12,10 +12,14 @@ import { useFleetSnapshot } from "../state/fleet";
 import { TranscriptStore, chatDeliveryDegraded, echoStore } from "../state/transcript-store";
 import {
   clearPendingSideChat,
+  dropUnsavedSideChat,
+  isUnsavedSideChat,
   pendingSideChat,
   seedPendingSideChat,
   sideChatDrafts,
   sideChatHasDraft,
+  subscribeUnsavedSideChats,
+  unsavedSideChat,
 } from "../state/side-chats";
 import { reviewCommentStore } from "../state/review-comments";
 import { chatDrafts } from "../lib/composer-draft";
@@ -98,9 +102,11 @@ paneTerminalStore.subscribe(() => {
  */
 rightPaneStore.setSideChatEntitySource({
   hasDraft: (chatId) => sideChatHasDraft(chatId, (id) => reviewCommentStore.stagedFor(id).length),
+  isUnsaved: (chatId) => isUnsavedSideChat(chatId),
   dispose: (chatId) => {
     sideChatDrafts.clear(chatId);
     clearPendingSideChat(chatId);
+    dropUnsavedSideChat(chatId);
   },
 });
 
@@ -271,30 +277,47 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const sideChatId = meta?.chatId ?? null;
   // The row: the fleet's, else the freshly created seed (the desktop's
   // `pending_side_chat`) — a fork that just landed owns its row before the
-  // registry's watch frame carries it.
+  // registry's watch frame carries it — else the UNSAVED local row (the
+  // desktop's `unsaved_side_chat`): a hand-started side chat exists only
+  // client-side until its first send mints it.
   const chat =
     sideChatId !== null && snapshot.chats.loaded
       ? snapshot.chats.rows.find((row) => row.id === sideChatId) ?? null
       : null;
-  const effectiveChat = chat ?? (sideChatId !== null ? pendingSideChat(sideChatId) : null);
+  const effectiveChat =
+    chat ??
+    (sideChatId !== null ? (pendingSideChat(sideChatId) ?? unsavedSideChat(sideChatId)) : null);
+  // The unsaved flag is store-shaped: the first send's mint flips it and the
+  // surface re-renders — the transcript store effect re-runs with its watch.
+  const unsaved = useSyncExternalStore(
+    subscribeUnsavedSideChats,
+    () => sideChatId !== null && isUnsavedSideChat(sideChatId),
+  );
   const deviceId = status !== null && status.state === "connected" ? status.info.deviceId : null;
 
   // The transcript store: the surface's own, like the subagent pane's. It
   // unmounts with the surface (the pane renders one surface at a time) and
   // re-subscribes on remount — the watch re-sends a full reset, so the rows
-  // come back exactly as they were.
+  // come back exactly as they were. An UNSAVED side chat defers its doc
+  // watch (`select_chat`'s skip, upstream #568): the store mounts watchless
+  // and seeded empty (nothing transient to shimmer), and the first send's
+  // mint flips `unsaved` — this effect re-runs and the fresh store attaches
+  // the deferred watch (`side_chat_saved` → `start_chat_watches`).
   const [store, setStore] = useState<TranscriptStore | null>(null);
   useEffect(() => {
     if (session === null || sideChatId === null) {
       return;
     }
-    const created = new TranscriptStore(session.client, sideChatId);
+    const created = new TranscriptStore(session.client, sideChatId, { follow: !unsaved });
+    if (unsaved) {
+      created.seedEntries([]);
+    }
     setStore(created);
     return () => {
       created.dispose();
       setStore((current) => (current === created ? null : current));
     };
-  }, [session, sideChatId]);
+  }, [session, sideChatId, unsaved]);
 
   // The tab title follows the chat row — `child_chat_title` (title →
   // lastMessagePreview → placeholder), refreshed as the row changes so the
@@ -314,9 +337,11 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   }, [chat, sideChatId]);
 
   // Opening a side chat IS reading it (`mark_chat_seen`) — same rule as the
-  // chat page, keyed to the side chat's own id.
+  // chat page, keyed to the side chat's own id. An unsaved one skips it:
+  // the desktop's `mark_chat_seen` early-returns on a chat with no messages,
+  // and this chat has none until its first send.
   useEffect(() => {
-    if (session === null || sideChatId === null) {
+    if (session === null || sideChatId === null || isUnsavedSideChat(sideChatId)) {
       return;
     }
     markChatSeen(session.client, sideChatId);

@@ -165,11 +165,15 @@ export function panelKey(chatId: string | null, space: string): string {
  * by the surface registry (the `setTerminalSource` pattern, so this module
  * stays free of the composer-draft and review-comment wiring). Mirrors the
  * desktop's `side_chats` map fields the TAB lifecycle consults:
- * `has_draft` (close retention) and the entity drop when a chat is deleted.
+ * `has_draft` (close retention), `side_chat_unsaved` (an unsaved close
+ * drops, draft or not — upstream #568: no row could reopen it), and the
+ * entity drop when a chat is deleted.
  */
 export interface SideChatEntitySource {
   /** `composer.has_draft` — text, staged attachments, staged comments. */
   hasDraft(chatId: string): boolean;
+  /** `side_chat_unsaved` — the chat's first send has yet to mint it. */
+  isUnsaved(chatId: string): boolean;
   /** Drop the entity's backing draft — the chat row is gone for good. */
   dispose(chatId: string): void;
 }
@@ -703,12 +707,16 @@ export class RightPaneStore {
    * whose chat row is gone, pull its tabs from every pane, hand the active
    * pick to the first remaining tab (else the picker), and collapse panes
    * left empty. The caller feeds the live chat ids — the fleet registry's
-   * rows — on each registry change.
+   * rows — on each registry change. An UNSAVED side chat is spared (upstream
+   * #568): it has no row by construction — its first send mints it — exactly
+   * the desktop's `pending_side_chat`, which `apply_chats` re-inserts until
+   * its row lands, so no frame ever prunes it.
    */
   pruneSideChats(liveChatIds: ReadonlySet<string>): void {
     const removed: string[] = [];
     for (const [surfaceId, meta] of this.#sideChats) {
-      if (!liveChatIds.has(meta.chatId)) {
+      const unsaved = this.#sideChatEntities?.isUnsaved(meta.chatId) ?? false;
+      if (!liveChatIds.has(meta.chatId) && !unsaved) {
         removed.push(surfaceId);
       }
     }
@@ -766,12 +774,16 @@ export class RightPaneStore {
       return;
     }
     if (surface.kind === "sidechat") {
-      // `close_right_surface`'s SideChat arm (shell.rs:3535-3542): an unsent
-      // draft outlives the tab — the entity stays loaded, detached, and
-      // reopening it restores the draft. Without a draft it drops with the
-      // tab (its backing draft store entry goes with it).
+      // `close_right_surface`'s SideChat arm (shell.rs:3535-3542, upstream
+      // #568): an unsent draft outlives the tab — the entity stays loaded,
+      // detached, and reopening it restores the draft — UNLESS the side chat
+      // is still unsaved: no row could reopen it, so it drops with the tab,
+      // draft or not (its backing draft store entry goes with it). Without a
+      // draft it drops with the tab either way.
       const meta = this.#sideChats.get(surface.id);
-      const keep = meta !== undefined && (this.#sideChatEntities?.hasDraft(meta.chatId) ?? false);
+      const unsaved = meta !== undefined && (this.#sideChatEntities?.isUnsaved(meta.chatId) ?? false);
+      const keep =
+        !unsaved && meta !== undefined && (this.#sideChatEntities?.hasDraft(meta.chatId) ?? false);
       if (meta !== undefined && !keep) {
         this.#sideChats.delete(surface.id);
         this.#sideChatEntities?.dispose(meta.chatId);

@@ -1,7 +1,6 @@
 import { methods } from "@roboco/engine-client";
-import type { Chat } from "@roboco/proto";
+import type { Chat, ChatConfig } from "@roboco/proto";
 import { createChat, type MutateCaller } from "./chat-actions";
-import { mintId } from "./id";
 
 /**
  * Side-chat creation on the wire — the RPC half of the desktop's
@@ -16,11 +15,15 @@ import { mintId } from "./id";
  * - **fresh child** (`Mutate createChat` with `parentChatId`): an empty chat
  *   hanging under the parent, inheriting its device/space/config/branch —
  *   the same shape the Roboco MCP server's `create_chat` mints, so
- *   agent-spawned and hand-started side chats list together.
+ *   agent-spawned and hand-started side chats list together. Since upstream
+ *   #568 the hand-started half is LOCAL-ONLY until its first send
+ *   ([`mintUnsavedSideChat`]): the tab opens on a locally minted row and the
+ *   createChat lands on the send, not on the open.
  *
  * The one-at-a-time guard (`side_chat_creating`) is module state like the
- * desktop's shell field: creation is async and a double click must not mint
- * two children.
+ * desktop's shell field: the fork's creation is async and a double click
+ * must not mint two children (the fresh child opens instantly — nothing is
+ * in flight to guard).
  */
 
 /**
@@ -60,41 +63,38 @@ export async function forkSideChat(
   });
 }
 
-/** Options for {@link createChildChat} beyond the parent row itself. */
-export interface CreateChildChatOptions {
-  /** Id factory — client-minted like the desktop's `Uuid::new_v4`. */
-  readonly mintId?: () => string;
-}
-
 /**
- * A fresh, empty side chat under `parent` (the active chat), inheriting its
- * host device, space, config, ref and cwd — the desktop's `create_child_chat`
- * field copy. Returns the minted chat id (the mutation is idempotent by it,
- * so an optimistic retry never duplicates). The projectless `"~"` cwd never
- * rides the wire: it is the engine's own default, and it lives on the
- * `RunRequest` per the composer's rule.
+ * Mint an UNSAVED side chat on its first send — the wire half of the
+ * desktop's `unsaved_side_chat_create` (state.rs, upstream #568). The tab
+ * already keys on `chatId` (locally minted; scoped or raw — the wire decodes
+ * either form), so the mutation is idempotent by it. The parent link,
+ * inherited device/space/branch/cwd come from the local row (the parent's
+ * field copy); `config` is the one picked meanwhile — the LIVE composer
+ * draft (the desktop stamps the pending copy through `apply_chat_config`,
+ * which is the draft's job here). A `null` config rides nothing: the engine
+ * resolves its default, like the parent-less `create_chat`.
  */
-export async function createChildChat(
+export async function mintUnsavedSideChat(
   caller: MutateCaller,
-  parent: Chat,
-  options: CreateChildChatOptions = {},
-): Promise<string> {
-  const cwd = parent.cwd !== null && parent.cwd !== "~" ? parent.cwd : undefined;
-  return createChat(caller, {
-    // The parent's space decides the host device; a projectless parent
-    // names its own device outright.
-    ...(parent.spaceId != null ? { spaceId: parent.spaceId } : { deviceId: parent.deviceId }),
+  chat: Chat,
+  chatId: string,
+  config: ChatConfig | null,
+): Promise<void> {
+  const cwd = chat.cwd !== null && chat.cwd !== "~" ? chat.cwd : undefined;
+  await createChat(caller, {
+    ...(chat.spaceId != null ? { spaceId: chat.spaceId } : { deviceId: chat.deviceId }),
     ...(cwd !== undefined ? { cwd } : {}),
-    ...(parent.branch !== null ? { branch: parent.branch } : {}),
-    ...(parent.config !== null ? { config: parent.config } : {}),
-    parentChatId: parent.id,
-    mintId: options.mintId,
+    ...(chat.branch !== null ? { branch: chat.branch } : {}),
+    ...(config !== null ? { config } : {}),
+    ...(chat.parentChatId !== null ? { parentChatId: chat.parentChatId } : {}),
+    mintId: () => chatId,
   });
 }
 
 /*
- * The one-at-a-time guard (`side_chat_creating`, side_chats.rs:92/127): both
- * creators set it before the RPC and clear it when the spawn callback lands.
+ * The one-at-a-time guard (`side_chat_creating`, side_chats.rs:92/127): the
+ * FORK arms it before its RPC and clears it when the spawn callback lands
+ * (upstream #568 removed the fresh child's arming — nothing is in flight).
  * `begin` returns false (and does NOT arm) while one is in flight.
  */
 let creating = false;

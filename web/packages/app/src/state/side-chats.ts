@@ -78,6 +78,75 @@ export const sideChatDrafts = new SideChatDraftStore();
  */
 const pendingSideChats = new Map<string, Chat>();
 
+/*
+ * Hand-started side chats whose first send has yet to mint them — the web
+ * half of the desktop's `unsaved_side_chat` (state.rs, upstream #568).
+ * "New side chat" opens a tab on a row that exists only here: it opens no
+ * doc watch and writes no registry row; its first send runs `Mutate
+ * createChat` before the run (`mintUnsavedSideChat`); closing it unsent
+ * drops it, draft or not, since no row could reopen it. The map is module
+ * state like the seed map: it must outlive whichever surface happens to be
+ * mounted.
+ */
+const unsavedSideChats = new Map<string, Chat>();
+const unsavedListeners = new Set<() => void>();
+
+function notifyUnsavedListeners(): void {
+  for (const listener of unsavedListeners) {
+    listener();
+  }
+}
+
+/** Subscribe to unsaved-side-chat changes (the saved flip re-renders). */
+export function subscribeUnsavedSideChats(listener: () => void): () => void {
+  unsavedListeners.add(listener);
+  return () => {
+    unsavedListeners.delete(listener);
+  };
+}
+
+/** Register a locally minted side chat row awaiting its first send. */
+export function beginUnsavedSideChat(chat: Chat): void {
+  unsavedSideChats.set(chat.id, chat);
+  notifyUnsavedListeners();
+}
+
+/** The local-only row for a side chat whose first send has yet to mint it. */
+export function unsavedSideChat(chatId: string): Chat | null {
+  return unsavedSideChats.get(chatId) ?? null;
+}
+
+/** Whether `chatId` is a hand-started side chat nothing has written yet. */
+export function isUnsavedSideChat(chatId: string): boolean {
+  return unsavedSideChats.has(chatId);
+}
+
+/**
+ * The unsaved side chat now exists (`side_chat_saved`, state.rs): retire
+ * the unsaved flag — a close-with-draft keeps it from here on — and keep
+ * the row as a creation seed until the registry frame lands it (the fork
+ * flow's shape).
+ */
+export function markSideChatSaved(chatId: string): void {
+  const chat = unsavedSideChats.get(chatId);
+  if (chat === undefined) {
+    return;
+  }
+  unsavedSideChats.delete(chatId);
+  if (!pendingSideChats.has(chatId)) {
+    pendingSideChats.set(chatId, chat);
+  }
+  notifyUnsavedListeners();
+}
+
+/** Drop an unsaved side chat for good — closed unsent (nothing reopens it). */
+export function dropUnsavedSideChat(chatId: string): void {
+  if (unsavedSideChats.delete(chatId)) {
+    pendingSideChats.delete(chatId);
+    notifyUnsavedListeners();
+  }
+}
+
 /** Seed a just-created side chat's row (scoped id on the key). */
 export function seedPendingSideChat(chat: Chat): void {
   pendingSideChats.set(chat.id, chat);
@@ -91,6 +160,11 @@ export function pendingSideChat(chatId: string): Chat | null {
 /** Drop the seed — the row landed, or the chat is gone for good. */
 export function clearPendingSideChat(chatId: string): void {
   pendingSideChats.delete(chatId);
+  // The row landed (or the chat is gone for good) — an unsaved registration
+  // cannot outlive the row it was waiting for.
+  if (unsavedSideChats.delete(chatId)) {
+    notifyUnsavedListeners();
+  }
 }
 
 /**

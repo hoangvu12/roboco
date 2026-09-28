@@ -97,6 +97,8 @@ import {
 import { menuStep } from "../lib/picker-search";
 import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
 import { createChat, waitForChatRow } from "../lib/chat-actions";
+import { mintUnsavedSideChat } from "../lib/side-chat-actions";
+import { isUnsavedSideChat, markSideChatSaved, unsavedSideChat } from "../state/side-chats";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings, skillCompletionFor } from "../state/ui-settings";
 import { useIsPhone } from "../state/media";
@@ -2298,9 +2300,14 @@ export function Composer({
 
   // The composer's mid-session model / reasoning / options changes persist
   // through `Mutate setChatConfig` (pickers.rs:1474) — a picker change, never
-  // a send.
+  // a send. An UNSAVED side chat has no row to write yet: the first send's
+  // createChat persists the picked config (upstream #568 — the desktop's
+  // doomed setChatConfig fails silently there and the local draft stands).
   const persistDraft = useCallback(
     (next: DraftConfig) => {
+      if (chat.id !== "" && isUnsavedSideChat(chat.id)) {
+        return;
+      }
       void persistChatConfig(session.client, chat.id, next).catch((error: unknown) => {
         setFailure({ message: describeSendError(error), key: chat.id });
       });
@@ -2395,6 +2402,40 @@ export function Composer({
         // The host scopes the id at navigation (§2.3): the raw id stays on
         // the wire, the route carries the scoped form.
         onNewThreadLaunched?.(chatId);
+      } else if (isUnsavedSideChat(chatId)) {
+        // A hand-started side chat is minted by THIS send (upstream #568,
+        // the desktop's `unsaved_side_chat_create` → `call_with_timeout`):
+        // unlike a fresh session the createChat must land — the doc host
+        // would materialize the chat without its parent link — carrying
+        // the parent's device/space/branch/cwd and the CONFIG PICKED
+        // MEANWHILE (the live draft; the desktop stamps the pending copy
+        // through `apply_chat_config`). The tab already keys on this id,
+        // so the mutation is idempotent by it.
+        if (session.client.state !== "connected") {
+          setFailure({ message: "Send failed: Engine not connected", key: null });
+          return;
+        }
+        const unsavedRow = unsavedSideChat(chatId);
+        if (unsavedRow === null) {
+          return;
+        }
+        try {
+          await mintUnsavedSideChat(
+            session.client,
+            unsavedRow,
+            chatId,
+            buildChatConfig(draft),
+          );
+        } catch (error) {
+          setFailure({
+            message: `Couldn't create the side chat. ${describeSendError(error)}`,
+            key: chatId,
+          });
+          return;
+        }
+        // `side_chat_saved`: the chat exists now — a close-with-draft keeps
+        // it, and the surface's deferred doc watch attaches.
+        markSideChatSaved(chatId);
       }
       // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
       // instant you hit send; a failure hands the files back by id.
