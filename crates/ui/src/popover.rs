@@ -11,7 +11,9 @@
 //! classification) lives in free functions with unit tests; the elements only
 //! feed them measurements/events.
 
+mod contained;
 mod hover_intent;
+pub(crate) use contained::contained_menu;
 pub use hover_intent::{HoverAction, HoverIntent};
 
 use gpui::{
@@ -868,6 +870,10 @@ fn modal_with(
             .child(
                 div()
                     .occlude()
+                    // Scrolling inside the dialog stays there: the scrim
+                    // swallows unconsumed wheel events so content behind the
+                    // modal never scrolls underneath it.
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .w(viewport.width)
                     .h(viewport.height)
                     .bg(scrim_alpha(scrim))

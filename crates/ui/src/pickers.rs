@@ -4931,15 +4931,25 @@ impl Render for Pickers {
             )
         });
         // Harness unknown while the catalog resolves: the pixel-glyph loader
-        // instead of guessing a brand mark.
-        let chip_icon_loading =
-            self.effective_harness(cx).is_none() && !no_agents && catalog_loading;
+        // instead of guessing a brand mark. The title-bound chip never
+        // guesses: it shows the saved agent or no mark at all.
+        let chip_icon_loading = self.title.is_none()
+            && self.effective_harness(cx).is_none()
+            && !no_agents
+            && catalog_loading;
         // Harness known but nothing names the model yet (fresh install, no
         // remembered pick): a ghost label instead of a bare icon.
         let chip_label_loading =
             !no_agents && model_label.is_empty() && (catalog_loading || models_loading);
-        let harness_icon: (&'static str, Option<gpui::Hsla>) = match self.effective_harness(cx) {
+        // The title-bound chip brands the SAVED agent ("Session agent" shows
+        // no mark), not the tab being browsed.
+        let chip_harness = match &self.title {
+            Some(title) => title.harness,
+            None => self.effective_harness(cx),
+        };
+        let harness_icon: (&'static str, Option<gpui::Hsla>) = match chip_harness {
             Some(harness) => harness_brand_icon(harness),
+            None if self.title.is_some() => (crate::icons::CHAT_ROUND_LINE, Some(theme.text_muted)),
             None if no_agents => (crate::icons::TERMINAL, Some(theme.text_muted)),
             None => (
                 crate::icons::CLAUDE_MARK,
@@ -4987,24 +4997,27 @@ impl Render for Pickers {
         // run's configuration reads without opening anything, and the suffix
         // brightens only when something departs from its default. No suffix
         // when the model has neither a ladder nor options (e.g. Hermes).
-        let chip_suffix = traits_set.map(|summary| {
+        // No traits suffix on the title-bound chip: titles run at minimal
+        // reasoning and never show a tray to adjust.
+        let chip_suffix = traits_set.filter(|_| self.title.is_none()).map(|summary| {
             (
                 SharedString::from(summary),
                 traits_active.then(|| theme.text.opacity(0.85)),
             )
         });
-        let fast = self.selected_model(cx).is_some_and(|model| {
-            model.options.iter().any(|option| {
-                option.id == "serviceTier"
-                    && self
-                        .resolved(cx)
-                        .model_options
-                        .get(&option.id)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&option.default_choice)
-                        == "fast"
-            })
-        });
+        let fast = self.title.is_none()
+            && self.selected_model(cx).is_some_and(|model| {
+                model.options.iter().any(|option| {
+                    option.id == "serviceTier"
+                        && self
+                            .resolved(cx)
+                            .model_options
+                            .get(&option.id)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&option.default_choice)
+                            == "fast"
+                })
+            });
         let model_chip = self
             .trigger_chip(
                 PickerKind::HarnessModel,
