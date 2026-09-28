@@ -119,9 +119,9 @@ export function shortcutLabel(id: ShortcutId): string {
     case "openModelPicker":
       return "Open model picker";
     case "nextSession":
-      return "Next session";
+      return "Next session or right pane tab";
     case "prevSession":
-      return "Previous session";
+      return "Previous session or right pane tab";
     case "archiveSession":
       return "Archive session";
   }
@@ -822,6 +822,26 @@ export function sessionNavFires(
       // route must decide for itself rather than silently inherit the guard.
       return !overlayOwnsKeyboard;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Focus-following cycling (upstream a1ccea18, shell/tabs.rs)
+// ---------------------------------------------------------------------------
+
+/**
+ * `cycle_navigation`'s branch choice: the SAME next/prev binding navigates
+ * the focused pane — sessions in the sidebar when the main area holds focus
+ * (or the pane is closed, or the route is Settings), the pane's surface tabs
+ * when the right pane's content or its titlebar strip holds focus. A
+ * right-tabs pane with zero or one tab stays put (`cycleRightTabTarget`'s
+ * null), exactly like the desktop's `rows.len() <= 1` early return. Pure.
+ */
+export function cycleNavigationKind(
+  route: "chat" | "settings",
+  paneOpen: boolean,
+  focusInRightPane: boolean,
+): "sessions" | "right-tabs" {
+  return route === "chat" && paneOpen && focusInRightPane ? "right-tabs" : "sessions";
 }
 
 // ---------------------------------------------------------------------------

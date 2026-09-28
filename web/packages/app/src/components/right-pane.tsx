@@ -156,6 +156,11 @@ export function RightPane({
       ref={asideRef}
       className={`right-pane ${pane.expanded ? "right-pane-expanded" : ""}${holdExpandedClose ? " right-pane-closing-expanded" : ""}`}
       data-pane-snap={paneKeyChanged ? "1" : "0"}
+      // `navigation_focus.right`'s web stand-in (upstream a1ccea18): a
+      // programmatic-only focus target (tabIndex -1, never a tab stop) so the
+      // focus-following cycle can pin focus on the pane while the surface
+      // that held focus unmounts, and so the next cycle stays in the pane.
+      tabIndex={-1}
       // At phone the drawer's width is CSS-owned (`min(30rem, 88vw)`, and
       // `100vw` expanded) — the inline column width is the desktop glide's
       // input and is skipped so it cannot fight the drawer rule.
