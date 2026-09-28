@@ -86,6 +86,15 @@ export const QUEUE_COMMAND = "QueueCommand";
  *  ids; the user-entry pre-write dedupes by id, so the optimistic echo acks
  *  without doubling. */
 export const RETRY_DELIVERY = "RetryDelivery";
+/**
+ * Side-chat fork (crates/engine/src/rpc.rs `FORK_SIDE_CHAT`): mints a child
+ * chat by copying the source's transcript through its latest completed
+ * response and stamping the `Forked from` seam part. Params
+ * `{chatId, sourceChatId, parentChatId?, targetDeviceId?}` — the reply is
+ * the fresh `Chat`. `parentChatId` defaults to the source (a side chat's
+ * own fork passes its parent so the copy lists as a sibling).
+ */
+export const FORK_SIDE_CHAT = "ForkSideChat";
 /** Message-queue surface (crates/engine/rpc.rs §3.5). The queue lives on the chat doc;
  *  `WatchQueue` streams `{items}` snapshots, the rest are mutations that require
  *  an explicit ack so a racing device's row never silently moves. Edit leases

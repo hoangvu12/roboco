@@ -4,6 +4,7 @@ import { useFleetSnapshot } from "../../state/fleet";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { FileTreeModel } from "../../lib/file-tree";
 import { FileTreePanel } from "./file-tree-panel";
+import { ExplorerSections } from "./explorer-sections";
 import { rightPaneStore, type ChatPaneState } from "../../state/right-pane";
 import { uiSettings } from "../../state/ui-settings";
 
@@ -92,6 +93,13 @@ export function FilesPaneColumn({
       ) : (
         <div className="files-tree-panel" />
       )}
+      {/*
+        The explorer's footer (ticket 10, the desktop's `render_sections`):
+        Subagents/Chats docked under the tree, inside the footer's height
+        budget. Mounted whenever the column is — the desktop's sections
+        render for the explorer presentation, which this column always is.
+      */}
+      <ExplorerSections chatId={chatId} />
     </aside>
   );
 }

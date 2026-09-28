@@ -365,6 +365,21 @@ interface ComposerProps {
    * correction are DOM writes; only the settle republishes `layout`.
    */
   readonly dockEvaluateRef?: { current: (() => void) | null };
+  /**
+   * Ticket 10 (side chats): the staged set a remounting composer seeds its
+   * strip from — the host's draft mirror (`state/side-chats.ts`). Applied
+   * once per chat-id mount; the main chat's composer passes nothing and is
+   * unaffected (its strip rides the instance's `stagedByChat`).
+   */
+  readonly seedStaged?: readonly StagedAttachment[];
+  /**
+   * Ticket 10 (side chats): the host's draft mirror push — every text or
+   * staged change lands in the host's store, so a surface that unmounts
+   * (tab close with a draft kept, pane close, chat switch) restores its
+   * draft on remount. Text seeds back through the shared `chatDrafts` map
+   * the host writes alongside; staged through `seedStaged`.
+   */
+  readonly onDraftChange?: (draft: { text: string; staged: readonly StagedAttachment[] }) => void;
 }
 
 export function Composer({
@@ -386,6 +401,8 @@ export function Composer({
   dockEvaluateRef,
   onNewThreadLaunched,
   dockCorrectionRef,
+  seedStaged,
+  onDraftChange,
 }: ComposerProps) {
   // The MERGED fleet snapshot: the composer's per-chat status lookups read
   // scoped rows across engines; the calls themselves go through the routed
@@ -581,7 +598,35 @@ export function Composer({
   // The failure notice (composer.rs:7309-7411). Chat-scoped failures
   // survive navigation and only render under their own chat.
   const [failure, setFailure] = useState<FailureNotice | null>(null);
-  const staged = stagedByChat[chat.id] ?? [];
+  // The stable empty set: `staged`'s identity drives the draft mirror's
+  // effect below, so a fresh `[]` per render would fire it every frame.
+  const staged = stagedByChat[chat.id] ?? NO_STAGED;
+
+  // ── Ticket 10: the side-chat surface's draft channel ───────────────────
+  // A side chat's composer unmounts with its surface (the pane renders one
+  // surface at a time), so its draft needs a host-owned mirror to survive:
+  // the host seeds the staged strip from its store once per chat mount, and
+  // every text/staged change pushes back. The main chat's composer never
+  // unmounts (one persistent fiber across routes), so it passes neither and
+  // behaves exactly as before.
+  const seededChatRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (seedStaged === undefined || seededChatRef.current === chat.id) {
+      return;
+    }
+    seededChatRef.current = chat.id;
+    setStagedByChat((current) => ({
+      ...current,
+      ...(seedStaged.length > 0 ? { [chat.id]: seedStaged } : {}),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.id, seedStaged]);
+  useEffect(() => {
+    if (onDraftChange === undefined) {
+      return;
+    }
+    onDraftChange({ text, staged });
+  }, [onDraftChange, text, staged, chat.id]);
 
   // ── Per-chat drafts (composer.rs `drafts: HashMap<chat_key, String>`) ──
   // Swap on navigation: save the outgoing chat's text, load the incoming
@@ -3466,6 +3511,9 @@ export function Composer({
 }
 
 function NOOP(): void {}
+
+/** The stable empty staged set (identity feeds the draft mirror effect). */
+const NO_STAGED: readonly StagedAttachment[] = [];
 
 /** Stage a queued row's already-committed attachment from the shared cache
  *  (`begin_queue_edit`'s loaded set, queue.rs:1300-1314). Null on a cache

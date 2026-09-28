@@ -482,7 +482,9 @@ describe("topGapFor / diffRows", () => {
             ? { kind, text: "", mentions: [], badges: [], pending: false, attachments: [] }
             : kind === "inputChip"
               ? { kind, header: "", resolved: false }
-              : { kind, message: "" };
+              : kind === "forkMarker"
+                ? { kind, sourceChatId: "", sourceTitle: "" }
+                : { kind, message: "" };
     return {
       id,
       version: 0,

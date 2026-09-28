@@ -1518,7 +1518,14 @@ export type TranscriptRowKind =
       readonly compactShell: boolean;
     }
   | { readonly kind: "inputChip"; readonly header: string; readonly resolved: boolean }
-  | { readonly kind: "errorChip"; readonly message: string };
+  | { readonly kind: "errorChip"; readonly message: string }
+  /**
+   * The fork seam (`RowKind::ForkMarker`, transcript.rs:1040-1046): a
+   * labeled divider between copied history and the chat's own turns. The
+   * source title is stamped on the part at fork time, so a later rename or
+   * delete of the source never rewrites the seam.
+   */
+  | { readonly kind: "forkMarker"; readonly sourceChatId: string; readonly sourceTitle: string };
 
 /** A transcript row: stable id + content version (diff key) + block payload. */
 export interface TranscriptRow {
@@ -1827,6 +1834,27 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         copyText: null,
         compactFold: null,
       });
+      return;
+    }
+    if (part.kind === "fork") {
+      // `MessagePart::Fork` (transcript.rs:1574-1594): the seam row. Its
+      // version hashes the source title — the only thing that ever
+      // changes presentationally — and the title is one line so a long
+      // source can never widen the divider.
+      rows.push({
+        id: `${entry.id}#${part.id}`,
+        version: fnv1a(part.sourceTitle),
+        turnStart: false,
+        rowKind: {
+          kind: "forkMarker",
+          sourceChatId: part.sourceChatId,
+          sourceTitle: singleLine(part.sourceTitle),
+        },
+        entryId: entry.id,
+        timestamp: null,
+        copyText: null,
+        compactFold: null,
+      });
     }
   });
   if (compact) {
@@ -1885,8 +1913,14 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
     rows[0] = { ...rows[0]!, turnStart: true };
   }
   // Timestamp strip under the entry's LAST row once the turn has settled
-  // ("No timestamp hover mid-stream").
-  if (!streaming && rows.length > 0) {
+  // ("No timestamp hover mid-stream"). The fork seam carries NO message
+  // metadata lane (transcript.rs:1674-1683 excludes ForkMarker — a quiet
+  // divider, never a hover target).
+  if (
+    !streaming &&
+    rows.length > 0 &&
+    rows[rows.length - 1]!.rowKind.kind !== "forkMarker"
+  ) {
     const last = rows[rows.length - 1]!;
     rows[rows.length - 1] = {
       ...last,
