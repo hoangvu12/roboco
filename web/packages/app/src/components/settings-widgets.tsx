@@ -1,5 +1,6 @@
 import { Fragment, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { Icon, type IconName } from "@roboco/icons";
+import { PickerCard } from "./ui/PickerCard";
 
 /**
  * The settings pages' shared widget vocabulary — the web ports of
@@ -9,7 +10,7 @@ import { Icon, type IconName } from "@roboco/icons";
  * trailing ghost-button recipe every theme-library/background action and
  * the import dialog's footer buttons reuse). The card/row/badge shells
  * stay plain `div`s with `.settings-*` classes at the page (the pages
- * already carry them); these are the three shapes that carry behavior or
+ * already carry them); these are the shapes that carry behavior or
  * repeat per-fragment structure.
  */
 
@@ -61,5 +62,51 @@ export function CompactActionDanger(props: CompactActionProps) {
     <button type="button" className={`compact-action compact-action-danger ${className ?? ""}`} {...rest}>
       {children}
     </button>
+  );
+}
+
+/**
+ * One settings picker row (harnesses.rs:286-316) — the settings pages'
+ * shared dropdown row: a row label plus the portaled choices card below
+ * the trigger. Ticket 18 moved the choices onto `PickerCard` — the
+ * settings-appearance pattern (the theme variant picker); desktop: the
+ * portaled card below the trigger; phone: the shared bottom sheet.
+ * `initialFocus: false` keeps focus put, the shared contract for pickers
+ * driven from a settings row. Inside the settings dialog the card is
+ * contained to the dialog (the containment context, ticket 24).
+ */
+export function TitlePickerRow(props: {
+  readonly label: string;
+  readonly display: string;
+  readonly interactive: boolean;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className={`settings-row title-picker-row ${props.interactive ? "" : "title-picker-inert"}`}>
+      <span className="settings-row-title title-picker-label">{props.label}</span>
+      <PickerCard
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        placement="anchorBelow"
+        cardClassName="popover-card title-picker-menu"
+        role="menu"
+        ariaLabel={props.label}
+        width={260}
+        initialFocus={false}
+        trigger={
+          <button
+            type="button"
+            className="btn btn-ghost title-picker-trigger"
+            disabled={!props.interactive}
+          >
+            {props.display}
+          </button>
+        }
+      >
+        {props.children}
+      </PickerCard>
+    </div>
   );
 }

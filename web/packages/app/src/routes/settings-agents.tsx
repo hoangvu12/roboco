@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactElement, ReactNode } from "react";
+import type { ReactElement } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
 import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
-import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
 import { useWatchSnapshot } from "../state/hooks";
+import { TitlePickerRow } from "../components/settings-widgets";
 import {
   blurb,
   bumpHarnessCatalog,
@@ -718,49 +718,6 @@ function TitleSettingsCard(props: {
         </p>
       )}
     </section>
-  );
-}
-
-/** One picker row (harnesses.rs:286-316) — exported for the mounted test. */
-export function TitlePickerRow(props: {
-  readonly label: string;
-  readonly display: string;
-  readonly interactive: boolean;
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly children: ReactNode;
-}) {
-  // Ticket 18: the choices ride `PickerCard` — the settings-appearance
-  // pattern (the theme variant picker) instead of the old inline
-  // `.title-picker-options` expander. Desktop: the portaled card below the
-  // trigger; phone: the shared bottom sheet (where the old inline expander
-  // stacked full-width rows). `initialFocus: false` keeps focus put, the
-  // shared contract for pickers driven from a settings row.
-  return (
-    <div className={`settings-row title-picker-row ${props.interactive ? "" : "title-picker-inert"}`}>
-      <span className="settings-row-title title-picker-label">{props.label}</span>
-      <PickerCard
-        open={props.open}
-        onOpenChange={props.onOpenChange}
-        placement="anchorBelow"
-        cardClassName="popover-card title-picker-menu"
-        role="menu"
-        ariaLabel={props.label}
-        width={260}
-        initialFocus={false}
-        trigger={
-          <button
-            type="button"
-            className="btn btn-ghost title-picker-trigger"
-            disabled={!props.interactive}
-          >
-            {props.display}
-          </button>
-        }
-      >
-        {props.children}
-      </PickerCard>
-    </div>
   );
 }
 

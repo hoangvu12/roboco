@@ -242,7 +242,7 @@ describe("AccountRow — the user menu escapes the clipping sidebar (bug 2)", ()
     outside.remove();
   });
 
-  it("the Settings row closes the menu and navigates to the Devices section", async () => {
+  it("the Settings row closes the menu and lands on the remembered section", async () => {
     const handle = mountAccountRow();
     press(handle.trigger());
     const row = handle.card()!.querySelector<HTMLButtonElement>(".menu-item");
@@ -252,9 +252,10 @@ describe("AccountRow — the user menu escapes the clipping sidebar (bug 2)", ()
       row!.click();
     });
 
-    // `open_settings(SettingsSection::Devices)` (shell.rs:6417-6427): the
-    // row's press closes the card first, then lands on the devices route.
-    expect(h.navigateCalls).toEqual([{ to: "/settings/devices" }]);
+    // `open_last_settings` (shell.rs:6417-6427): the row's press closes the
+    // card first, then lands on the remembered section through the
+    // `/settings` index redirect (ticket 26).
+    expect(h.navigateCalls).toEqual([{ to: "/settings" }]);
     expect(handle.card()).toBeNull();
   });
 });
@@ -282,7 +283,7 @@ describe("AccountRow — phone arm", () => {
     expect(handle.trigger().getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("the sheet's Settings row navigates to the devices route too", async () => {
+  it("the sheet's Settings row lands on the remembered section too", async () => {
     h.cells.phone = true;
     const handle = mountAccountRow();
     press(handle.trigger());
@@ -293,6 +294,6 @@ describe("AccountRow — phone arm", () => {
       row!.click();
     });
 
-    expect(h.navigateCalls).toEqual([{ to: "/settings/devices" }]);
+    expect(h.navigateCalls).toEqual([{ to: "/settings" }]);
   });
 });

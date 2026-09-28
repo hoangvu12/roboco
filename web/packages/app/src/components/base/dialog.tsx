@@ -105,6 +105,14 @@ export interface RbDialogGlassProps {
   readonly onOpenChangeComplete?: DialogRootProps["onOpenChangeComplete"];
   /** The dialog's accessible name. */
   readonly ariaLabel?: string;
+  /**
+   * The element to focus on open — the settings dialog passes its card
+   * container so focus lands on the dialog itself, never a first control
+   * (the desktop's `settings_focus` semantics); defaults to the first
+   * tabbable element. Passed to both arms (the phone sheet takes the same
+   * element).
+   */
+  readonly initialFocus?: DialogPopupProps["initialFocus"];
   /** Registers this name on the `overlayKeyboard` registry while claimed. */
   readonly overlaySource?: string;
   /**
@@ -159,6 +167,7 @@ export function RbDialogGlass(props: RbDialogGlassProps) {
         style={props.style}
         overlaySource={props.overlaySource}
         overlayOpen={props.overlayOpen}
+        initialFocus={props.initialFocus}
       >
         {props.children}
       </RbDrawerSheet>
@@ -177,6 +186,7 @@ export function RbDialogGlass(props: RbDialogGlassProps) {
           className={`modal-card rb-dialog-card ${props.cardClassName ?? ""}`}
           style={props.style}
           aria-label={props.ariaLabel}
+          initialFocus={props.initialFocus}
         >
           {props.children}
         </Dialog.Popup>

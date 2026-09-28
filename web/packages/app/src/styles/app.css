@@ -10744,36 +10744,102 @@ button.files-save-pill:hover {
 /* ── Settings (ticket 16) ───────────────────────────────────────────── */
 
 /*
- * The settings page body: the sidebar column owns the nav now (the desktop
- * swaps `render_settings_nav` INTO the sidebar pane, shell.rs:993-1008), so
- * the route shell is just the scrolling outlet.
+ * The settings dialog (ticket 26, the modal redesign's web surface): the
+ * `/settings/*` routes render the settings DIALOG — one `RbDialogGlass`
+ * overlay in the command-palette material, floating over the dimmed app.
+ * The route shell (settings-layout.tsx) provides a neutral underlay in the
+ * conversation column; the card carries the two columns the desktop's
+ * modal does — the nav column (Back above the grouped sections) and the
+ * scrolling page column (the routed section page, its `.settings-page`
+ * classes unchanged but rescoped here).
  */
-.settings-scroll {
+
+/* The underlay: the conversation column's neutral ground while the dialog
+   owns the route — the conversation is not mounted under Settings (the
+   desktop's modal replaces the window too; Back returns to it). */
+.settings-underlay {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+}
+
+/* The frost wrapper: the desktop arm carries the palette's 16px radius
+   (scoped off `.rb-dialog-card` so the phone sheet keeps its own
+   top-only rounding); the mount-while-open pattern unmounts on close (no
+   exit window), so the `[data-closed]` rule only guards a hypothetical
+   host that adds one. */
+.rb-dialog-card.settings-dialog-frost {
+  border-radius: 16px;
+}
+
+.settings-dialog-frost[data-closed] {
+  pointer-events: none;
+  animation: rb-add-space-exit var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
 }
 
 /*
- * The settings sidebar — `render_settings_nav` (shell.rs:4309-4429) rendered
- * inside the persistent `.sidebar-inner` column, so it inherits the dragged
- * width and the titlebar pad and owns no width/border of its own. Structure:
- * a section region (caption + rows) that fills the column, and the Back row
- * pinned to the bottom (shell.rs:4333-4335 / 4401-4427).
+ * The card body: the dialog's own column frame. Command-palette material
+ * (the same 1px hairline border, overlay plate, and popover shadow), wide
+ * enough for the desktop's page column (760px) beside the nav column, and
+ * capped by `.rb-dialog-card`'s viewport clamp so a short window scrolls
+ * INSIDE the page column rather than growing the card.
  */
-.settings-nav {
-  flex: 1;
-  min-height: 0;
+.settings-dialog-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  overflow: hidden;
+  width: min(940px, calc(100vw - 2 * var(--rb-space-lg)));
+  height: min(640px, calc(100dvh - 2 * var(--rb-space-lg)));
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: 16px;
+  background: var(--rb-overlay);
+  box-shadow: var(--rb-shadow-popover);
+  color: var(--rb-text);
+}
+
+/*
+ * The nav column — the desktop's settings-page sidebar column
+ * (render_settings_page): the Back row pinned above the section rows,
+ * grouped by spacing alone (preferences, providers and devices, then
+ * workspace data — the group-start margin IS the grouping).
+ */
+.settings-dialog-nav {
+  flex: none;
+  width: 232px;
   display: flex;
   flex-direction: column;
+  border-right: 1px solid var(--rb-border);
   padding: var(--rb-space-sm);
 }
 
-/* The sections region — not a scroll region on the desktop (the rows fit);
-   the clip is a web-only safety for very short windows. */
-.settings-nav-sections {
+/* The Back row (shell.rs:5383-5411): the chevron is deliberately NOT the
+   history-back arrow — Back returns to the active chat unconditionally. */
+.settings-dialog-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--rb-text-muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-dialog-back:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.settings-dialog-sections {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -10783,12 +10849,110 @@ button.files-save-pill:hover {
   gap: 2px;
 }
 
-/* The caption (shell.rs:4343-4350): 11px Medium at text_muted 60%. */
-.settings-nav-title {
-  padding: 12px 8px 4px;
-  font-size: 11px;
+/*
+ * A section row (shell.rs:4362-4374): flex, 8px gap, rounded 8, px 8 / py 6,
+ * 13px. Selected uses the SAME neutral translucent wash the chat sidebar's
+ * session rows use — "the two sidebars must feel alike" (shell.rs:4375-4387)
+ * — plus weight Medium; the 16px icon is ALWAYS text_muted, selected or not
+ * (shell.rs:4392-4394).
+ */
+.settings-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--rb-text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-nav-link:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.settings-nav-active,
+.settings-nav-active:hover {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
   font-weight: 500;
-  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* The group starts (starts_nav_group, shell.rs:574-577): Harnesses opens
+   "providers and devices" (SPACE_LG above), Files opens "workspace data". */
+.settings-nav-group-start {
+  margin-top: var(--rb-space-lg);
+}
+
+.settings-nav-icon {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The page column: the routed section page scrolls inside the card. The
+ * pages keep their `.settings-page` classes; scoped here they sit at the
+ * desktop's `page_column` metrics (max 760px, tighter pads — no titlebar
+ * clearance to carry, the card carries its own).
+ */
+.settings-dialog-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-dialog-page .settings-page {
+  max-width: 760px;
+  padding: 24px 28px 48px;
+}
+
+/* Phones: the sheet replaces placement, and the two columns stack — the
+   nav becomes a horizontal section strip above the page (the sheet is too
+   narrow for the column pair). */
+@media (max-width: 768px) {
+  .settings-dialog-card {
+    width: 100%;
+    height: auto;
+    max-height: inherit;
+    flex-direction: column;
+  }
+
+  .settings-dialog-nav {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--rb-border);
+    padding: 8px;
+  }
+
+  .settings-dialog-sections {
+    flex: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-direction: row;
+    gap: 4px;
+    padding-bottom: 2px;
+  }
+
+  .settings-nav-link {
+    flex: none;
+    padding: 6px 10px;
+  }
+
+  .settings-nav-group-start {
+    margin-top: 0;
+    margin-left: var(--rb-space-lg);
+  }
+
+  .settings-dialog-back {
+    margin-bottom: 6px;
+    width: auto;
+    align-self: flex-start;
+  }
 }
 
 /*
@@ -10826,36 +10990,6 @@ button.files-save-pill:hover {
 .settings-nav-icon {
   flex: none;
   color: var(--rb-text-muted);
-}
-
-/*
- * The Back row, pinned to the column's bottom (shell.rs:4401-4427): the
- * chevron — deliberately NOT the history-back arrow — 16px text_muted, gap 6.
- */
-.settings-back {
-  flex: none;
-  margin-top: 12px;
-  padding: 0 0 12px;
-}
-
-.settings-back-inner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 8px;
-  background: none;
-  color: var(--rb-text-muted);
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.settings-back-inner:hover {
-  background: var(--rb-hover);
-  color: var(--rb-text);
 }
 
 .settings-page {
@@ -15253,8 +15387,8 @@ button.segmented-option:hover {
  */
 .transcript,
 .sidebar-list,
-.settings-scroll,
-.settings-nav-sections,
+.settings-dialog-sections,
+.settings-dialog-page,
 .files-tree,
 .files-search-results,
 .files-code-scroll,
@@ -15272,8 +15406,8 @@ button.segmented-option:hover {
 
 .transcript::-webkit-scrollbar,
 .sidebar-list::-webkit-scrollbar,
-.settings-scroll::-webkit-scrollbar,
-.settings-nav-sections::-webkit-scrollbar,
+.settings-dialog-sections::-webkit-scrollbar,
+.settings-dialog-page::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
 .files-search-results::-webkit-scrollbar,
 .files-code-scroll::-webkit-scrollbar,

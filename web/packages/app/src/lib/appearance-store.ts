@@ -143,22 +143,24 @@ export function surfaceLabel(surface: SurfacePreference): string {
   }
 }
 
-/** Helper copy under the accent row (accent_helper). */
+/** Helper copy under the accent row (accent_helper) — the concise
+ *  b782d043 pass: names the selection, never explains scope. */
 export function accentHelper(accent: AccentSelection): string {
   if (accent === "themeDefault") {
-    return "Theme default · Uses the palette's intended color.";
+    return "Theme default";
   }
   const preset = accentPresets.find((entry) => entry.id === accent);
-  return `${preset?.label ?? accent} · Controls, glyphs, selections, code, and activity.`;
+  return `${preset?.label ?? accent}`;
 }
 
-/** Helper copy under the glass row (surface_helper). */
+/** Helper copy under the glass row (surface_helper) — the concise
+ *  b782d043 pass. */
 export function surfaceHelper(surface: SurfacePreference, resolved: SurfaceTreatment): string {
   switch (surface) {
     case "themeDefault":
-      return `Uses this theme's ${resolved} default.`;
+      return `Theme default: ${resolved}`;
     case "opaque":
-      return "Solid surfaces for every theme.";
+      return "Solid surfaces";
   }
 }
 

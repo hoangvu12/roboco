@@ -58,7 +58,10 @@ export function AccountRow() {
 
   function goSettings(): void {
     setOpen(false);
-    void navigate({ to: "/settings/devices" });
+    // The user menu's Settings row is one of the desktop's generic entries
+    // (`open_last_settings`): it lands on the remembered section through the
+    // `/settings` index redirect, not a hard-coded section.
+    void navigate({ to: "/settings" });
   }
 
   return (
