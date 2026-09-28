@@ -369,17 +369,24 @@ async fn connect_ws_with_session(
         request.headers_mut().insert("authorization", header);
     }
     // The dial is manual so the session rides the bounded pump with byte
-    // progress tracking (roboco only ever dials plain `ws://` engines).
+    // progress tracking. `wss://` engines (TLS-terminating tunnels such as
+    // cloudflared) ride the same pump: client_async_tls wraps our progress
+    // stream with rustls when the URI scheme is wss and passes it through
+    // untouched for plain ws.
     let uri = request.uri().clone();
-    if uri.scheme_str() != Some("ws") {
-        return Err(RpcError::Transport(format!(
-            "unsupported engine URL scheme (expected ws): {url}"
-        )));
-    }
+    let secure = match uri.scheme_str() {
+        Some("ws") => false,
+        Some("wss") => true,
+        _ => {
+            return Err(RpcError::Transport(format!(
+                "unsupported engine URL scheme (expected ws or wss): {url}"
+            )))
+        }
+    };
     let host = uri
         .host()
         .ok_or_else(|| RpcError::Transport("engine URL has no host".into()))?;
-    let port = uri.port_u16().unwrap_or(80);
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
     let io = tokio::time::timeout(
         CONNECT_TIMEOUT,
         tokio::net::TcpStream::connect((host, port)),
@@ -390,7 +397,7 @@ async fn connect_ws_with_session(
     let (io, progress) = crate::pump::ProgressIo::new(io);
     let (ws, _) = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        tokio_tungstenite::client_async(request, io),
+        tokio_tungstenite::client_async_tls(request, io),
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
@@ -406,4 +413,36 @@ async fn connect_ws_with_session(
         in_tx,
     ));
     Ok(RpcClient::new(out_tx, in_rx))
+}
+
+#[cfg(test)]
+mod wss_dial_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_non_websocket_engine_schemes() {
+        let err = match connect_ws("http://127.0.0.1:27655").await {
+            Err(err) => err,
+            Ok(_) => panic!("http engine URLs must be rejected at the scheme gate"),
+        };
+        assert!(
+            err.to_string().contains("unsupported engine URL scheme"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wss_passes_the_scheme_gate_and_dials_port_443() {
+        // A wss URL must clear the scheme check and reach the TCP dial
+        // (127.0.0.1:1 refuses instantly) instead of being rejected as an
+        // unsupported scheme — proving TLS engine URLs are dialable.
+        let err = match connect_ws("wss://127.0.0.1:1/").await {
+            Err(err) => err,
+            Ok(_) => panic!("nothing listens on 127.0.0.1:1; the dial must fail"),
+        };
+        assert!(
+            !err.to_string().contains("unsupported engine URL scheme"),
+            "wss was rejected at the scheme gate: {err}"
+        );
+    }
 }
