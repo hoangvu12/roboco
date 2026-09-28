@@ -24,6 +24,7 @@ import {
   forceUsageFor,
   forgetAgentAccount,
   formatReset,
+  keepsOneLogin,
   listAgentAccounts,
   loginCopy,
   loginOptions,
@@ -338,7 +339,10 @@ function ProviderSection({
     <section className="settings-provider">
       <div className="settings-section-header">
         <h2>{provider.name}</h2>
+        {/* A one-login provider (Antigravity) that is connected offers
+            nothing to add — signing in again only re-confirms it. */}
         {!loading &&
+          (accounts.length === 0 || !keepsOneLogin(provider.harness)) &&
           loginOptions(provider.harness).map((option) => (
             <button type="button" className="btn btn-ghost" key={option.label} onClick={() => onAdd(option)}>
               {addOptionLabel(option, accounts.length === 0)}

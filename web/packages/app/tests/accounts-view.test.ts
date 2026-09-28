@@ -12,6 +12,7 @@ import {
   forceUsageFor,
   forgetAgentAccount,
   formatReset,
+  keepsOneLogin,
   listAgentAccounts,
   loginCopy,
   loginOptions,
@@ -81,6 +82,7 @@ describe("providers", () => {
       "Claude Code",
       "Codex",
       "Cursor",
+      "Antigravity",
       "Grok",
       "Devin",
       "OpenCode",
@@ -91,6 +93,7 @@ describe("providers", () => {
       "claude",
       "codex",
       "cursor-agent",
+      "Antigravity",
       "grok login",
       "devin auth login",
       "opencode auth login",
@@ -99,10 +102,21 @@ describe("providers", () => {
     ]);
   });
 
-  it("names the CLI in the empty-state copy, except Cursor", () => {
+  it("names the CLI in the empty-state copy, except Cursor and Antigravity", () => {
     expect(providerEmptyCopy(PROVIDERS[0]!)).toContain("claude");
     expect(providerEmptyCopy(PROVIDERS[2]!)).toContain("isn't connected");
     expect(providerEmptyCopy(PROVIDERS[2]!)).not.toContain("cursor-agent login — sign in");
+    const antigravity = PROVIDERS[3]!;
+    expect(providerEmptyCopy(antigravity)).toContain("isn't connected");
+    expect(providerEmptyCopy(antigravity)).toContain("Antigravity sessions");
+  });
+
+  it("keeps one login on Antigravity: nothing to add once it is connected", () => {
+    expect(keepsOneLogin("antigravity")).toBe(true);
+    expect(keepsOneLogin("cursor")).toBe(false);
+    expect(loginOptions("antigravity")).toHaveLength(1);
+    expect(loginCopy("antigravity", null)).toContain("Google");
+    expect(loginCopy("antigravity", null)).toContain("one login");
   });
 
   it("offers one default sign-in for single-login agents", () => {
@@ -385,7 +399,8 @@ describe("signsIn / reportsUsage (the ring's harness gates)", () => {
     for (const provider of PROVIDERS) {
       expect(signsIn(provider.harness)).toBe(true);
     }
-    expect(signsIn("antigravity")).toBe(false);
+    expect(signsIn("claude-code")).toBe(true);
+    expect(signsIn("opencode")).toBe(true);
     expect(reportsUsage("antigravity")).toBe(false);
     expect(reportsUsage("codex")).toBe(true);
   });

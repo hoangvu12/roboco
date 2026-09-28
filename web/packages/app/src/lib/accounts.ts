@@ -202,12 +202,13 @@ export interface ProviderDescriptor {
 
 /** The provider cards, in display order (accounts.rs PROVIDERS). Every
  * agent with a login of its own is here; what each one supports is
- * documented engine-side. Antigravity's section arrives with the
- * settings/providers polish wave. */
+ * documented engine-side. Antigravity's command never prints in the copy —
+ * it has no CLI login (see `providerEmptyCopy`). */
 export const PROVIDERS: readonly ProviderDescriptor[] = [
   { harness: "claude-code", name: "Claude Code", cli: "claude" },
   { harness: "codex", name: "Codex", cli: "codex" },
   { harness: "cursor", name: "Cursor", cli: "cursor-agent" },
+  { harness: "antigravity", name: "Antigravity", cli: "Antigravity" },
   { harness: "grok", name: "Grok", cli: "grok login" },
   { harness: "devin", name: "Devin", cli: "devin auth login" },
   { harness: "opencode", name: "OpenCode", cli: "opencode auth login" },
@@ -257,6 +258,12 @@ export function signsIn(harness: HarnessId): boolean {
  * and no "usage unavailable" note — there is nothing missing. Pure. */
 export function reportsUsage(harness: HarnessId): boolean {
   return harness !== "antigravity";
+}
+
+/** Providers whose agent holds exactly ONE login (Antigravity): once it is
+ * connected there is nothing to add — signing in again only re-confirms it. */
+export function keepsOneLogin(harness: HarnessId): boolean {
+  return harness === "antigravity";
 }
 
 /** A standing note under a provider's card, for an agent whose accounts
@@ -332,6 +339,8 @@ export function loginCopy(harness: HarnessId, provider: string | null): string {
       return "Finish signing in to ChatGPT in your browser. The agent gets its own login, saved next to any current one — nothing changes until you switch.";
     case "hermes":
       return "Finish signing in in your browser — enter the code shown below. Hermes adds the login to its own credential pool and rotates through it itself.";
+    case "antigravity":
+      return "Finish signing in to Google in your browser. Antigravity keeps one login on this device; if it is already signed in, this just confirms it.";
     default:
       return "Finish signing in in your browser.";
   }
@@ -379,9 +388,11 @@ export function activeAccount(
 
 /** The empty-card copy under a provider with no accounts. */
 export function providerEmptyCopy(provider: ProviderDescriptor): string {
-  if (provider.harness === "cursor") {
-    // Cursor's app login is separate from `cursor-agent login`.
-    return `${provider.name} isn't connected on this device — connect it to run Cursor sessions.`;
+  if (provider.harness === "cursor" || provider.harness === "antigravity") {
+    // Cursor's app login is separate from `cursor-agent login` — pointing at
+    // the CLI would send users to a sign-in that does not light this up.
+    // Antigravity has no CLI login at all.
+    return `${provider.name} isn't connected on this device — connect it to run ${provider.name} sessions.`;
   }
   return `No ${provider.name} login detected on this device — sign in with “${provider.cli}” or add an account.`;
 }
