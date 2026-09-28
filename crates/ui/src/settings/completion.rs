@@ -237,7 +237,11 @@ impl ShortcutsPage {
                                                 .child(description),
                                         ),
                                 )
-                                .child(widgets::toggle_switch(theme, enabled).flex_none()),
+                                .child(widgets::toggle_switch(
+                                    theme,
+                                    enabled,
+                                    format!("completion-{harness:?}-{dollar}"),
+                                ).flex_none()),
                         );
                     }
                     section = section.child(card);

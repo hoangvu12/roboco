@@ -111,7 +111,8 @@ impl Render for RemoteAccessPage {
                             page.request(methods::GET_REMOTE_ACCESS, json!({}), cx)
                         })),
                 )
-                .child(widgets::toggle_switch(&theme, enabled).id("remote-access-toggle").cursor_pointer()
+                .child(widgets::toggle_switch(&theme, enabled, "remote-access")
+                    .id("remote-access-toggle").cursor_pointer()
                     .on_click(cx.listener(move |page, _, _, cx| page.request(methods::SET_REMOTE_ACCESS, json!({"enabled":!enabled}), cx))))));
         if let Some(error) = error {
             page = page.child(widgets::error_strip(&theme, error));

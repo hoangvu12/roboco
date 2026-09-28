@@ -1100,7 +1100,7 @@ impl HarnessesPage {
                         )
                     })
                     .child(
-                        widgets::toggle_switch(&theme, enabled)
+                        widgets::toggle_switch(&theme, enabled, format!("harness-toggle-{ix}"))
                             .id(("harness-toggle", ix))
                             .when(!interactive, |el| el.opacity(0.35))
                             .when(interactive, |el| {

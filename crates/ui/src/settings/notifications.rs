@@ -146,13 +146,14 @@ impl Render for NotificationsPage {
         let desktop = self.desktop;
         let background_only = self.background_only;
         let toggle = |id: &'static str, label: &'static str, enabled: bool, interactive: bool| {
-            // Keep the familiar 32×18 visual inside a 40×40 activation target.
+            // Keep the visual inside its 56×40 activation target.
             // Disabled subordinate controls remain named switches in the
             // accessibility tree, but have no focus or input handlers.
             div()
                 .id(id)
                 .flex_none()
-                .size(px(40.0))
+                .w(px(widgets::SWITCH_WIDTH))
+                .h(px(40.0))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -166,7 +167,7 @@ impl Render for NotificationsPage {
                 .when(!interactive, |el| {
                     el.aria_description("Unavailable while its parent setting is off")
                 })
-                .child(widgets::toggle_switch(&theme, enabled))
+                .child(widgets::toggle_switch(&theme, enabled, id))
         };
         let card = widgets::section_card(&theme)
             .child(

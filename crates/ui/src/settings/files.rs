@@ -139,7 +139,7 @@ impl Render for FilesSettingsPage {
                             )),
                     )
                     .child(
-                        widgets::toggle_switch(&theme, autosave_enabled)
+                        widgets::toggle_switch(&theme, autosave_enabled, "files-autosave")
                             .id("files-autosave-toggle")
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -200,7 +200,7 @@ impl Render for FilesSettingsPage {
                             )),
                     )
                     .child(
-                        widgets::toggle_switch(&theme, word_wrap)
+                        widgets::toggle_switch(&theme, word_wrap, "files-word-wrap")
                             .id("files-word-wrap-toggle")
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -232,7 +232,7 @@ impl Render for FilesSettingsPage {
                             )),
                     )
                     .child(
-                        widgets::toggle_switch(&theme, show_all_files)
+                        widgets::toggle_switch(&theme, show_all_files, "files-show-all")
                             .id("files-show-all-toggle")
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
