@@ -4,6 +4,7 @@ import { SidebarViewMenu, SpaceFilter } from "./space-filter";
 import { NewChatListener } from "./new-chat-button";
 import { ArchivedSection } from "./archived-section";
 import { SidebarNotice } from "./sidebar-notice";
+import { StarBanner } from "./star-banner";
 import { AccountRow } from "./account-row";
 import { ConnectionPill } from "./connection-pill";
 import { UpdateStrip } from "./update-strip";
@@ -14,7 +15,8 @@ import { CommandPalette } from "./command-palette";
  * The sidebar's column — the desktop's `render_chat_sidebar`: the space
  * filter header (the trigger plus the view-options button in one row), the
  * global active-chat list, the archived shelf, the notice strip, the
- * connection line, the update strip, and the user menu pinned to the bottom.
+ * connection line, the "Star on GitHub" banner, the update strip, and the
+ * user menu pinned to the bottom.
  *
  * The filter row sits ABOVE the scroll region (the desktop pins it there so
  * its dropdown floats unclipped by the list's overflow — and so the edge
@@ -49,6 +51,10 @@ export function SidebarBody() {
       </SidebarScroll>
       <ConnectionPill />
       <SidebarNotice />
+      {/* The desktop stacks banner-above-strip above the user menu
+          (upstream d92d56a2); the web keeps its notice-above-strip order and
+          mounts the banner directly above the strip. */}
+      <StarBanner />
       <UpdateStrip />
       <AccountRow />
       <AddSpacePalette />

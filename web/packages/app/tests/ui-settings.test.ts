@@ -65,6 +65,8 @@ describe("defaults", () => {
     expect(settings.sidebarCompact).toBe(true);
     expect(settings.sidebarShowProjectIcon).toBe(true);
     expect(settings.sidebarShowProjectLabel).toBe(true);
+    // The star banner shows until dismissed (upstream d92d56a2).
+    expect(settings.githubStarBannerDismissed).toBe(false);
     expect(settings.filesAutosaveDelayMs).toBe(900);
     expect(settings.terminalFontFamily).toBe("geistMono");
     expect(settings.terminalFontSize).toBe(13);
@@ -199,6 +201,12 @@ describe("heal", () => {
     expect(storedWith({ sidebarCompact: "junk" }).sidebarCompact).toBe(true);
     expect(storedWith({ sidebarShowProjectIcon: false }).sidebarShowProjectIcon).toBe(false);
     expect(storedWith({ sidebarShowProjectLabel: false }).sidebarShowProjectLabel).toBe(false);
+  });
+
+  it("githubStarBannerDismissed — a healed boolean, false by default (upstream d92d56a2)", () => {
+    expect(storedWith({ githubStarBannerDismissed: true }).githubStarBannerDismissed).toBe(true);
+    expect(storedWith({ githubStarBannerDismissed: "junk" }).githubStarBannerDismissed).toBe(false);
+    expect(storedWith({}).githubStarBannerDismissed).toBe(false);
   });
 
   it("sidebar_display_defaults_and_preferences_round_trip", () => {
