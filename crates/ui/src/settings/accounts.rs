@@ -306,7 +306,7 @@ pub(crate) fn render_usage_meter(
                         div()
                             .h_full()
                             // A 1.5% floor keeps tiny non-zero usage
-                            // visible (zeron `max(used, 1.5)%`).
+                            // visible (upstream zeron: `max(used, 1.5)%`).
                             .w(gpui::relative(fraction.max(0.015)))
                             .rounded_full()
                             .bg(fill),

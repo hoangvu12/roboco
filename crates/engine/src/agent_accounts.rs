@@ -1,6 +1,7 @@
 //! AgentAccounts — the logins of every agent CLI on this device that has one
-//! (feature-inventory §3.7 "Agent accounts"; port of roboco's
-//! `agent-accounts.ts`).
+//! (feature-inventory §3.7 "Agent accounts" — legacy wire naming, ADR 0005:
+//! the canonical term is "harness account"; web peer
+//! `web/packages/app/src/lib/accounts.ts`).
 //!
 //! Grok, Devin, OpenCode, Pi and Hermes live in [`stores`] (credential
 //! formats and detection), [`oauth`] (the sign-ins the engine drives itself)
