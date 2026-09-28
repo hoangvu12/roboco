@@ -24,4 +24,11 @@ branch?: string,
 /**
  * Cwd override (isolated-worktree path); default = the space's folder.
  */
-cwd?: string, } | { "op": "createSpace", spaceId: string, deviceId: string, path: string, name?: string, gitDetected: boolean, } | { "op": "renameSpace", spaceId: string, name?: string, } | { "op": "deleteSpace", spaceId: string, } | { "op": "renameChat", chatId: string, title: string, } | { "op": "setChatBranch", chatId: string, branch: string, } | { "op": "setChatCwd", chatId: string, cwd: string, } | { "op": "setChatActivity", chatId: string, lastMessageAt?: number, createdAt?: number, } | { "op": "setChatHost", chatId: string, deviceId: string, } | { "op": "setChatArchived", chatId: string, archived: boolean, } | { "op": "setChatConfig", chatId: string, config: ChatConfig, } | { "op": "deleteChat", chatId: string, } | { "op": "renameDevice", deviceId: string, name: string, } | { "op": "markChatSeen", chatId: string, at?: number, };
+cwd?: string, 
+/**
+ * The chat this one hangs off: the conversation a side chat was
+ * forked from, or the chat whose agent is creating this one (Roboco
+ * MCP). Recorded on the row as `parentChatId` — children list under
+ * their parent in the explorer instead of the main sidebar.
+ */
+parentChatId?: string, } | { "op": "createSpace", spaceId: string, deviceId: string, path: string, name?: string, gitDetected: boolean, } | { "op": "renameSpace", spaceId: string, name?: string, } | { "op": "deleteSpace", spaceId: string, } | { "op": "renameChat", chatId: string, title: string, } | { "op": "setChatBranch", chatId: string, branch: string, } | { "op": "setChatCwd", chatId: string, cwd: string, } | { "op": "setChatActivity", chatId: string, lastMessageAt?: number, createdAt?: number, } | { "op": "setChatHost", chatId: string, deviceId: string, } | { "op": "setChatArchived", chatId: string, archived: boolean, } | { "op": "setChatConfig", chatId: string, config: ChatConfig, } | { "op": "deleteChat", chatId: string, } | { "op": "renameDevice", deviceId: string, name: string, } | { "op": "markChatSeen", chatId: string, at?: number, };

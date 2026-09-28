@@ -129,6 +129,29 @@ pub struct RunRequest {
     /// host ignores it and runs in `cwd` (the repo's main checkout).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeSpec>,
+    /// Roboco's own MCP server, injected by the HOST engine as it starts the
+    /// run: the `roboco mcp` subcommand of this same binary, pointed at the
+    /// engine's loopback IPC and stamped with the originating chat so the
+    /// agent can spawn, read, and message side chats. Additive +
+    /// serde-defaulted — an old host leaves it unset and the agent simply has
+    /// no Roboco tools; title runs never carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpServer>,
+}
+
+/// A stdio MCP server the harness should add to the agent's session, on top
+/// of whatever the user configured. Each driver spells it in its own dialect
+/// (Claude `--mcp-config`, ACP `session/new` `mcpServers`, Codex
+/// `mcp_servers.*` config overrides).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
@@ -549,6 +572,35 @@ mod tests {
         let round: RunRequest =
             serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
         assert_eq!(round.attachments, vec!["/tmp/a.png".to_string()]);
+    }
+
+    #[test]
+    fn run_request_mcp_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.mcp.is_none());
+        // …and `None` serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("mcp").is_none());
+        // A populated server round-trips camelCased, env sorted by key.
+        let req = RunRequest {
+            mcp: Some(McpServer {
+                name: "roboco".into(),
+                command: "/usr/bin/roboco".into(),
+                args: vec!["mcp".into()],
+                env: [("ROBOCO_CHAT_ID".to_owned(), "chat-1".to_owned())]
+                    .into_iter()
+                    .collect(),
+            }),
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["mcp"]["name"], "roboco");
+        assert_eq!(json["mcp"]["args"], serde_json::json!(["mcp"]));
+        assert_eq!(json["mcp"]["env"]["ROBOCO_CHAT_ID"], "chat-1");
+        let round: RunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round.mcp, req.mcp);
     }
 
     #[test]

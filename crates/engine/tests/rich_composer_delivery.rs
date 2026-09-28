@@ -141,6 +141,7 @@ fn request(prompt: &str) -> RunRequest {
         resume: None,
         attachments: vec![],
         worktree: None,
+        mcp: None,
     }
 }
 fn rich_text(label: &str) -> (String, String) {

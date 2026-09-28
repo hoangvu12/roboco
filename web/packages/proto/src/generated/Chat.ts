@@ -50,4 +50,12 @@ lastSeenAt?: string | null,
  * this in the same breath as seeding the chat2 checkpoint; every device
  * dials the room the registry names. Per-chat and instantly revertible.
  */
-roomGen?: number | null, };
+roomGen?: number | null, 
+/**
+ * The chat this one hangs off: the conversation a side chat was forked
+ * from, or the chat whose agent spawned this one through the Roboco MCP
+ * server. Children stay out of the main sidebar and list under their
+ * parent instead. Absent for top-level chats; a dangling id (parent
+ * deleted) is tolerated rather than cascaded.
+ */
+parentChatId?: string | null, };

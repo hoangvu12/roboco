@@ -82,6 +82,7 @@ fn start(core: &EngineCore, cwd: &std::path::Path, prompt: String) {
                     auto_approve: true,
                     attachments: vec![],
                     worktree: None,
+                    mcp: None,
                     resume: None,
                 },
             },

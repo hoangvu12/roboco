@@ -66,6 +66,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
                 auto_approve: true,
                 attachments: Vec::new(),
                 worktree: None,
+                mcp: None,
                 resume: None,
             },
         },

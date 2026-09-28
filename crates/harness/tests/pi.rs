@@ -52,6 +52,7 @@ fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
+        mcp: None,
         resume: None,
     }
 }

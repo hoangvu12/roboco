@@ -2707,6 +2707,7 @@ impl DocHost {
             attachments: Vec::new(),
             resume: None,
             worktree: None,
+            mcp: None,
         })
     }
 
@@ -2724,6 +2725,26 @@ impl DocHost {
             }
             Err(err) => {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "snapshot export failed");
+            }
+        }
+    }
+
+    /// A fork must be durable before publishing its discoverable registry row.
+    pub fn persist_fork(&self, handle: &ChatDocHandle) -> Result<(), EngineError> {
+        match &handle.persistence {
+            Some(persistence) => {
+                persistence.flush_sync();
+                Ok(())
+            }
+            None => {
+                let bytes = handle.doc.export_snapshot()?;
+                self.inner
+                    .store
+                    .save_snapshot(&handle.chat_id, &bytes)?;
+                handle
+                    .snapshot_bytes
+                    .store(bytes.len(), Ordering::Relaxed);
+                Ok(())
             }
         }
     }

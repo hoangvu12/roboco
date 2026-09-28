@@ -63,6 +63,7 @@ async fn check_persistence(
         auto_approve: true,
         attachments: vec![],
         worktree: None,
+        mcp: None,
         resume: None,
     };
     core.sessions
