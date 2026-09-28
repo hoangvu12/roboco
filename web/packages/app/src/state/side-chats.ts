@@ -122,6 +122,20 @@ export function isUnsavedSideChat(chatId: string): boolean {
 }
 
 /**
+ * `completion_workspace_params` (composer.rs, upstream #588): an unsaved
+ * side chat has no engine row until its first send mints it, so completion
+ * discovery — file mentions (`SearchFiles`) and the command/skill catalogs
+ * (`ListCommands`/`ListSkills`) — must address the PARENT chat in the
+ * meantime, the row the checkout was inherited from. The inherited cwd and
+ * device still come from the local row. A saved chat, a top-level one, or
+ * the new-chat canvas keeps its own id (the empty string for the canvas).
+ */
+export function completionTargetChatId(chat: Chat): string {
+  const parent = chat.parentChatId ?? null;
+  return chat.id !== "" && parent !== null && isUnsavedSideChat(chat.id) ? parent : chat.id;
+}
+
+/**
  * The unsaved side chat now exists (`side_chat_saved`, state.rs): retire
  * the unsaved flag — a close-with-draft keeps it from here on — and keep
  * the row as a creation seed until the registry frame lands it (the fork

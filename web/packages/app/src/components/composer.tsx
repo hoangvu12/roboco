@@ -98,7 +98,12 @@ import { menuStep } from "../lib/picker-search";
 import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
 import { createChat, waitForChatRow } from "../lib/chat-actions";
 import { mintUnsavedSideChat } from "../lib/side-chat-actions";
-import { isUnsavedSideChat, markSideChatSaved, unsavedSideChat } from "../state/side-chats";
+import {
+  completionTargetChatId,
+  isUnsavedSideChat,
+  markSideChatSaved,
+  unsavedSideChat,
+} from "../state/side-chats";
 import { echoStore } from "../state/transcript-store";
 import { useUiSettings, skillCompletionFor } from "../state/ui-settings";
 import { useIsPhone } from "../state/media";
@@ -1546,7 +1551,10 @@ export function Composer({
     } else {
       const catalogParams: Record<string, unknown> = { harness };
       if (chat.id !== "") {
-        catalogParams.chatId = chat.id;
+        // An unsaved side chat has no engine row yet: the catalogs address
+        // the parent until the first send mints it (completion_workspace_params,
+        // upstream #588).
+        catalogParams.chatId = completionTargetChatId(chat);
         catalogParams.targetDeviceId = chat.deviceId;
         if (chat.cwd !== null) {
           catalogParams.cwd = chat.cwd;
@@ -1743,7 +1751,9 @@ export function Composer({
     }
     const request = mentionRequestRef.current;
     const query = mentionTokenNow.query;
-    const chatId = chat.id;
+    // The same unsaved-side-chat rule as the catalogs: the file search
+    // addresses the parent while no row exists for this chat (upstream #588).
+    const chatId = completionTargetChatId(chat);
     const deviceId = chat.deviceId;
     // A short debounce prevents one full workspace walk per keystroke
     // (composer.rs:5101-5106); the generation check below drops replies
