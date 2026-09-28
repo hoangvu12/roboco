@@ -902,9 +902,14 @@ pub struct AgentLoginStart {
     /// Empty when the sign-in page is only known later (a poll carries it).
     pub url: String,
     pub mode: AgentLoginMode,
-    /// The loopback port the login's OAuth redirect lands on (engine-local:
-    /// the browser on this device finishes the redirect there). `None` when
-    /// the sign-in has no loopback callback.
+    /// The loopback port the login's OAuth redirect lands on, on the device
+    /// running the login. A device whose browser finishes the sign-in for a
+    /// login run elsewhere would forward that same port on its own loopback
+    /// over the P2P callback surface — Roboco keeps that surface local
+    /// (ADR 0004): the engine-to-engine forward that drives it upstream is
+    /// not ported, so the port is engine-local information (tests drive
+    /// loopback logins with it). `None` when the sign-in has no loopback
+    /// callback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callback_port: Option<u16>,
     /// True when the spawned CLI opens the authorization page itself

@@ -19,7 +19,7 @@ installed: boolean,
  */
 canInstall: boolean, 
 /**
- * Whether the listing device offers this harness (Settings → Agents).
+ * Whether the listing device offers this harness (Settings → Providers).
  * `None` — the catalog came from an engine predating the setting — means
  * "unknown": consumers fall back to detection (see [`descriptor_enabled`]).
  */

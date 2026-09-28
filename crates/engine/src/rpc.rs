@@ -531,6 +531,13 @@ struct StartAgentLoginParams {
     /// Hermes): which provider to sign in to; `None` = the agent's default.
     #[serde(default)]
     provider: Option<String>,
+    /// Stamped by the requesting engine when it forwards the start: the
+    /// device whose browser finishes the sign-in. The login's callback port
+    /// is served over P2P to that device alone. Roboco has no engine-to-
+    /// engine forward to stamp it (ADR 0004); the field parses for wire
+    /// compatibility and stays `None` in production.
+    #[serde(default)]
+    requester_device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2561,9 +2568,17 @@ impl RpcService for EngineRpc {
             }
             methods::START_AGENT_LOGIN => {
                 let p: StartAgentLoginParams = parse_params(params)?;
+                // A requester naming this device is no remote login at all:
+                // publishing a callback route for ourselves would be a no-op
+                // at best, so never register one.
+                let own_id = self.doc_host.device_id();
+                let requester = p
+                    .requester_device_id
+                    .as_deref()
+                    .filter(|requester| !requester.is_empty() && *requester != own_id);
                 let start = self
                     .agent_accounts
-                    .start_login_with(p.harness, p.provider.as_deref())
+                    .start_login_for(p.harness, p.provider.as_deref(), requester)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&start)
