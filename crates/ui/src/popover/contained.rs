@@ -10,7 +10,7 @@ use std::time::Instant;
 /// trigger instead of sliding over it when it approaches the dialog edge.
 pub(crate) fn contained_menu(
     id: SharedString,
-    content: gpui::Div,
+    content: impl gpui::IntoElement,
     closing: Option<Instant>,
     trigger_height: f32,
     limits: Bounds<Pixels>,
@@ -21,12 +21,13 @@ pub(crate) fn contained_menu(
     let max_height = ((f32::from(limits.size.height) - trigger_height) / 2.0 - 6.0)
         .max(1.0)
         .min(320.0);
-    let card = content
+    let card = div()
         .id(SharedString::from(format!("{id}-scroll")))
         .debug_selector(|| "contained-menu-scroll".into())
         .max_h(px(max_height))
         .max_w(limits.size.width)
         .overflow_hidden()
+        .child(content.into_any_element())
         .into_any_element();
     let card = super::frosted_menu(exit, card);
     let content = super::menu_motion(

@@ -98,7 +98,7 @@ impl ThreadNamingCard {
 
 impl Render for ThreadNamingCard {
     fn render(&mut self, _: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let follows_session = self
             .settings
             .ready()

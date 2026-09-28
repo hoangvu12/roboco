@@ -903,7 +903,6 @@ impl HarnessesPage {
                 .child(widgets::dropdown_rows(
                     "harnesses-device-rows",
                     rows,
-                    28.0,
                     32.0,
                 ));
             trigger = trigger.child(widgets::dropdown("harnesses-device-menu", menu, None, 28.0));
@@ -912,7 +911,7 @@ impl HarnessesPage {
     }
 
     fn rows(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let Loadable::Ready(list) = &self.harnesses else {
             return Vec::new();
         };
@@ -1020,9 +1019,7 @@ impl HarnessesPage {
                     .flex_none()
                     .size(px(36.0))
                     .rounded(px(10.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(crate::theme::ink(0.03))
+                    .bg(theme.wash(0.06))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1039,7 +1036,7 @@ impl HarnessesPage {
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(180.0))
                             .flex()
                             .flex_col()
                             .child(widgets::row_title(&theme, descriptor.name.clone()))
@@ -1053,7 +1050,7 @@ impl HarnessesPage {
                                 widgets::ghost_action(&theme)
                                     .id(("harness-install", ix))
                                     .when(self.installing.is_none(), |el| {
-                                        el.hover(|s| widgets::ghost_hover(&theme, s)).on_click(
+                                        el.on_click(
                                             cx.listener(move |this, _, _, cx| {
                                                 this.install(harness, cx)
                                             }),
@@ -1067,7 +1064,6 @@ impl HarnessesPage {
                         el.child(
                             widgets::ghost_action(&theme)
                                 .id(("harness-cancel-install", ix))
-                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_install(cx)))
                                 .child("Cancel"),
                         )
@@ -1080,7 +1076,6 @@ impl HarnessesPage {
                             el.child(
                                 widgets::ghost_action(&theme)
                                     .id(("harness-sign-in", ix))
-                                    .hover(|s| widgets::ghost_hover(&theme, s))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.start_sign_in(harness, cx)
                                     }))
@@ -1093,7 +1088,6 @@ impl HarnessesPage {
                         el.child(
                             widgets::ghost_action(&theme)
                                 .id(("harness-cancel-sign-in", ix))
-                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_sign_in(cx);
                                 }))
@@ -1104,7 +1098,6 @@ impl HarnessesPage {
                         el.child(
                             widgets::ghost_action(&theme)
                                 .id(("harness-retry-sign-in", ix))
-                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.start_sign_in(harness, cx);
                                 }))
@@ -1112,7 +1105,7 @@ impl HarnessesPage {
                         )
                     })
                     .child(
-                        widgets::toggle_switch(&theme, enabled)
+                        widgets::toggle_switch(&theme, enabled, format!("harness-toggle-{ix}"))
                             .id(("harness-toggle", ix))
                             .when(!interactive, |el| el.opacity(0.35))
                             .when(interactive, |el| {
@@ -1145,7 +1138,7 @@ impl popover::ScrollRailHost for HarnessesPage {
 
 impl Render for HarnessesPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let body: gpui::AnyElement = match &self.harnesses {
             Loadable::Idle | Loadable::Loading => widgets::section_card(&theme)
                 .p(px(16.0))
@@ -1165,7 +1158,6 @@ impl Render for HarnessesPage {
                         widgets::ghost_action(&theme)
                             .id("harnesses-retry")
                             .mt(px(8.0))
-                            .hover(|s| widgets::ghost_hover(&theme, s))
                             .on_click(cx.listener(|page, _, _, cx| {
                                 page.load(cx);
                                 cx.notify();

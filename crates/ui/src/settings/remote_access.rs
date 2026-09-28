@@ -83,7 +83,7 @@ impl RemoteAccessPage {
 
 impl Render for RemoteAccessPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.global::<Theme>().clone();
+        let theme = cx.global::<Theme>().for_settings_surface();
         let status = self.snapshot.as_ref().map(|snapshot| &snapshot.status);
         let enabled = status.map(|status| status.enabled).unwrap_or(false);
         let error = self
@@ -102,7 +102,6 @@ impl Render for RemoteAccessPage {
                 .child(
                     widgets::ghost_action(&theme)
                         .id("remote-refresh")
-                        .hover(|s| widgets::ghost_hover(&theme, s))
                         .child(crate::icons::icon(crate::icons::REFRESH)
                             .size(px(14.0))
                             .text_color(theme.text_muted))
@@ -111,7 +110,8 @@ impl Render for RemoteAccessPage {
                             page.request(methods::GET_REMOTE_ACCESS, json!({}), cx)
                         })),
                 )
-                .child(widgets::toggle_switch(&theme, enabled).id("remote-access-toggle").cursor_pointer()
+                .child(widgets::toggle_switch(&theme, enabled, "remote-access")
+                    .id("remote-access-toggle").cursor_pointer()
                     .on_click(cx.listener(move |page, _, _, cx| page.request(methods::SET_REMOTE_ACCESS, json!({"enabled":!enabled}), cx))))));
         if let Some(error) = error {
             page = page.child(widgets::error_strip(&theme, error));
@@ -121,7 +121,6 @@ impl Render for RemoteAccessPage {
             let create = enabled.then(|| {
                 widgets::ghost_action(&theme)
                     .id("create-pairing-link")
-                    .hover(|s| widgets::ghost_hover(&theme, s))
                     .child(crate::icons::icon(crate::icons::PLUS)
                         .size(px(14.0))
                         .text_color(theme.text_muted))
@@ -149,7 +148,6 @@ impl Render for RemoteAccessPage {
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("copy-pairing-link")
-                                    .hover(|s| widgets::ghost_hover(&theme, s))
                                     .child(crate::icons::icon(crate::icons::COPY)
                                         .size(px(14.0))
                                         .text_color(theme.text_muted))
@@ -231,7 +229,6 @@ impl Render for RemoteAccessPage {
                         row.child(
                             widgets::ghost_action(&theme)
                                 .id(("revoke-session", index))
-                                .hover(|s| widgets::ghost_hover(&theme, s))
                                 .child(SharedString::from("Revoke"))
                                 .on_click(cx.listener(move |page, _, _, cx| {
                                     page.request(

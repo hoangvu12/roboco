@@ -304,10 +304,11 @@ pub fn classify_key(key: &str, cmd: bool, ctrl: bool) -> MenuKey {
 /// shared by palettes, popovers, dropdowns and menus (upstream #403):
 /// `rounded-xl border border-white/[0.1] p-1` over the frosted glass tint —
 /// the real recipe now that the fork paints backdrop blur: the
-/// [`Theme::glass_overlay`] tint (`oklch(0.33 0 0 / 34%)` on dark) over the
-/// [`crate::frost::MENU_BLUR`] blur from the mount helpers below, plus the
-/// same hairline + baked-in shadow. Opaque platforms keep the near-opaque
-/// tone the reference composites to on the dark panels (~#161616).
+/// [`Theme::composer_sidebar_tint`] on dark frost / [`Theme::glass_overlay`]
+/// tint on light frost, over the [`crate::frost::MENU_BLUR`] blur from the
+/// mount helpers below, plus the same hairline + baked-in shadow. Opaque
+/// platforms keep the near-opaque tone the reference composites to on the
+/// dark panels (~#161616).
 /// Corner radius of every floating card. The frost wrapper masks its backdrop
 /// blur to the same value, so the two must agree.
 pub const CARD_RADIUS: f32 = 12.0;
@@ -322,7 +323,11 @@ pub const PALETTE_ITEM_RADIUS: f32 = 14.0 - CARD_INSET;
 
 pub fn surface_bg(theme: &Theme) -> gpui::Hsla {
     if theme.is_frost() {
-        theme.composer_sidebar_tint()
+        if matches!(theme.appearance, crate::theme::Appearance::Dark) {
+            theme.composer_sidebar_tint()
+        } else {
+            theme.glass_overlay()
+        }
     } else {
         theme.input_glass_bg()
     }
