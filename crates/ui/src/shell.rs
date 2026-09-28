@@ -470,7 +470,7 @@ pub fn apply_keymap(
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsSection {
     Devices,
     RemoteAccess,
@@ -484,6 +484,7 @@ pub enum SettingsSection {
     Notifications,
     Shortcuts,
     /// Composer and conversation behavior plus thread naming.
+    #[default]
     General,
     Appshots,
     Archived,
@@ -510,6 +511,53 @@ impl SettingsSection {
         self != Self::Appshots || crate::appshots::is_desktop()
     }
 
+    /// Where a generic "open Settings" lands for a remembered section: a
+    /// section this build does not show (Appshots off-desktop) falls back to
+    /// General. Legacy alias canonicalization (Accounts → Providers) rides
+    /// the upstream fold that lands it.
+    pub(crate) fn reopenable(self) -> Self {
+        if self.visible_in_nav() {
+            self
+        } else {
+            Self::General
+        }
+    }
+
+    /// Stable name shared by `ui-settings.json` and `ROBOCO_OPEN_ROUTE`.
+    fn slug(self) -> &'static str {
+        match self {
+            SettingsSection::Devices => "devices",
+            SettingsSection::RemoteAccess => "remote-access",
+            SettingsSection::Harnesses => "providers",
+            SettingsSection::Agents => "agents",
+            SettingsSection::Appearance => "appearance",
+            SettingsSection::Files => "files",
+            SettingsSection::Notifications => "notifications",
+            SettingsSection::Shortcuts => "shortcuts",
+            SettingsSection::General => "general",
+            SettingsSection::Appshots => "appshots",
+            SettingsSection::Archived => "archived",
+        }
+    }
+
+    /// Inverse of [`Self::slug`], plus the pages' former names.
+    fn from_slug(slug: &str) -> Option<Self> {
+        Some(match slug {
+            "devices" => SettingsSection::Devices,
+            "remote-access" => SettingsSection::RemoteAccess,
+            "providers" | "harnesses" => SettingsSection::Harnesses,
+            "agents" => SettingsSection::Agents,
+            "appearance" => SettingsSection::Appearance,
+            "files" => SettingsSection::Files,
+            "notifications" => SettingsSection::Notifications,
+            "shortcuts" => SettingsSection::Shortcuts,
+            "general" | "conversations" => SettingsSection::General,
+            "appshots" => SettingsSection::Appshots,
+            "archived" => SettingsSection::Archived,
+            _ => return None,
+        })
+    }
+
     /// Nav groups are separated by spacing alone: preferences, providers and
     /// devices, then workspace data.
     fn starts_nav_group(self) -> bool {
@@ -533,6 +581,32 @@ impl SettingsSection {
             SettingsSection::Archived => "Archived sessions",
         }
     }
+}
+
+/// Persisted as [`crate::settings::UiSettings::settings_section`].
+impl serde::Serialize for SettingsSection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.slug())
+    }
+}
+
+/// Lenient: an unknown or malformed value reads as General instead of
+/// failing — and so defaulting — the whole settings file.
+impl<'de> serde::Deserialize<'de> for SettingsSection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(value.as_str().and_then(Self::from_slug).unwrap_or_default())
+    }
+}
+
+/// The section a `ROBOCO_OPEN_ROUTE` value opens: bare `settings` reopens the
+/// remembered section, `settings/<slug>` names one (and so becomes the
+/// remembered one). `None` for anything else, including unknown slugs.
+fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<SettingsSection> {
+    if route == "settings" {
+        return Some(remembered.reopenable());
+    }
+    route.strip_prefix("settings/").and_then(SettingsSection::from_slug)
 }
 
 /// What the main outlet shows.
@@ -1677,7 +1751,7 @@ impl Shell {
             }
         });
         let data_dir = boot.data_dir.clone();
-        let settings = settings::current(cx);
+        let mut settings = settings::current(cx);
         state.update(cx, |state, cx| {
             state.set_change_requests_visible(settings.sidebar_show_pull_request, cx)
         });
@@ -1687,25 +1761,25 @@ impl Shell {
         apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
         // Dev/testing knob: `ROBOCO_OPEN_ROUTE=settings[/<section>]` boots
         // straight into a settings section — these pages have no deep link and
-        // synthetic input can't reach them on headless compositors.
-        let route = match std::env::var("ROBOCO_OPEN_ROUTE").ok().as_deref() {
-            Some("settings") | Some("settings/devices") => {
-                Route::Settings(SettingsSection::Devices)
+        // synthetic input can't reach them on headless compositors. Bare
+        // `settings` reopens the remembered section; a named one is
+        // remembered like any other link to a section.
+        let open_route = std::env::var("ROBOCO_OPEN_ROUTE").ok();
+        let route = match open_route.as_deref() {
+            Some(route) if route == "settings" || route.starts_with("settings/") => {
+                match settings_open_route(route, settings.settings_section) {
+                    Some(section) => {
+                        if settings.settings_section != section {
+                            settings.settings_section = section;
+                            settings::update(settings::SavePolicy::Debounced, cx, |s| {
+                                s.settings_section = section;
+                            });
+                        }
+                        Route::Settings(section)
+                    }
+                    None => Route::Chat,
+                }
             }
-            // `harnesses` is the Providers page's former name.
-            Some("settings/providers") | Some("settings/harnesses") => {
-                Route::Settings(SettingsSection::Harnesses)
-            }
-            Some("settings/agents") => Route::Settings(SettingsSection::Agents),
-            Some("settings/general") | Some("settings/conversations") => {
-                Route::Settings(SettingsSection::General)
-            }
-            Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
-            Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
-            Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
-            Some("settings/appshots") => Route::Settings(SettingsSection::Appshots),
-            Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            Some("settings/remote-access") => Route::Settings(SettingsSection::RemoteAccess),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
@@ -3783,9 +3857,60 @@ impl Shell {
         // entry or changing the selected conversation: the page stands where
         // the chat sidebar was and the conversation state survives the visit.
         self.route = Route::Settings(section);
+        self.remember_settings_section(section, cx);
         self.close_user_menu(cx);
         self.close_chat_menu(cx);
         cx.notify();
+    }
+
+    /// Generic entry points (⌘, / Ctrl+,, the footer gear, the palette,
+    /// `/settings`) reopen the section last viewed. Links that name a
+    /// section go through [`Self::open_settings`] instead.
+    fn open_last_settings(&mut self, cx: &mut Context<Self>) {
+        self.open_settings(self.settings.settings_section.reopenable(), cx);
+    }
+
+    /// Every section shown is the one to reopen. Written through the shell's
+    /// own settings copy: [`Self::schedule_save`] replaces the whole file
+    /// from it, so a write that bypassed it would be undone by the next save.
+    fn remember_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        if self.settings.settings_section != section {
+            self.settings.settings_section = section;
+            self.schedule_save(cx);
+        }
+    }
+
+    /// Escape bubbling out of the settings page. Focused controls — open
+    /// dropdowns, the shortcut recorder, a dialog's own input — consume it
+    /// before it gets here. What remains open without holding focus closes
+    /// first: the account menu, then the routed page's dialog or login flow.
+    /// Returns whether one did; only then does Settings stay.
+    fn dismiss_settings_escape_surface(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.user_menu.is_open() {
+            self.close_user_menu(cx);
+            return true;
+        }
+        if self.user_menu.get().is_some() {
+            return true;
+        }
+        let Route::Settings(section) = self.route else {
+            return false;
+        };
+        match section {
+            SettingsSection::Devices => self
+                .devices_page
+                .as_ref()
+                .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_on_escape(cx))),
+            SettingsSection::Agents => self
+                .accounts_page
+                .as_ref()
+                .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_on_escape(cx))),
+            SettingsSection::Appearance => self
+                .appearance_page
+                .as_ref()
+                .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_on_escape(cx))),
+            _ => false,
+        }
     }
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
@@ -3799,7 +3924,7 @@ impl Shell {
         if matches!(self.route, Route::Settings(_)) {
             self.close_settings(cx);
         } else {
-            self.open_settings(SettingsSection::General, cx);
+            self.open_last_settings(cx);
         }
     }
 
@@ -3838,6 +3963,7 @@ impl Shell {
                     page.update(cx, |page, cx| page.load_completion_harnesses(cx));
                 }
                 self.route = Route::Settings(section);
+                self.remember_settings_section(section, cx);
             }
         }
         self.close_user_menu(cx);
@@ -5228,7 +5354,9 @@ impl Shell {
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 let key = &event.keystroke.key;
                 if key == "escape" {
-                    this.close_settings(cx);
+                    if !this.dismiss_settings_escape_surface(cx) {
+                        this.close_settings(cx);
+                    }
                     cx.stop_propagation();
                 } else if key == "tab" {
                     move_settings_focus(
@@ -6879,7 +7007,7 @@ impl Shell {
                     popover::menu_row(theme, false, "user-menu-settings")
                         .id("user-menu-settings")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_settings(SettingsSection::General, cx)
+                            this.open_last_settings(cx)
                         }))
                         .child(
                             icon(icons::SETTINGS_MINIMALISTIC)
@@ -9382,7 +9510,7 @@ impl Render for Shell {
                     .update(cx, |c, cx| c.open_model_menu(window, cx)),
                 WorkspaceCommand::New => self.open_new_session(cx),
                 WorkspaceCommand::Resume => self.toggle_command_palette(window, cx),
-                WorkspaceCommand::Settings => self.open_settings(SettingsSection::Devices, cx),
+                WorkspaceCommand::Settings => self.open_last_settings(cx),
                 WorkspaceCommand::Diff if !self.active_chat.is_empty() => {
                     self.add_diff_surface(window, cx)
                 }
@@ -12615,7 +12743,7 @@ mod settings_modal_regressions {
                     assert_eq!(shell.route, Route::Chat);
                     assert!(!shell.settings_focus_pending);
                     shell.toggle_settings(cx);
-                    assert_eq!(shell.route, Route::Settings(SettingsSection::General));
+                    assert_eq!(shell.route, Route::Settings(section.reopenable()));
                 }
                 shell.close_settings(cx);
                 assert_eq!(shell.route, Route::Chat);
@@ -12623,5 +12751,223 @@ mod settings_modal_regressions {
                 assert!(shell.settings_restore_pending);
             })
             .unwrap();
+    }
+
+    fn init_settings_test(
+        saved: settings::UiSettings,
+        dir: &std::path::Path,
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            settings::init(saved, dir, cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+    }
+
+    fn test_shell(dir: &std::path::Path, cx: &mut Context<Shell>) -> Shell {
+        let state = cx.new(|_| AppState::new());
+        Shell::new(
+            state,
+            EngineBootConfig {
+                data_dir: dir.into(),
+                ipc_port: 0,
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+            cx,
+        )
+    }
+
+    #[test]
+    fn remembered_sections_reopen_only_where_the_nav_can_show_them() {
+        assert_eq!(
+            SettingsSection::Shortcuts.reopenable(),
+            SettingsSection::Shortcuts
+        );
+        // Accounts stays its own page until the upstream Providers fold lands;
+        // it reopens on itself, not on Providers (upstream d268830b resolves
+        // the legacy alias through `canonical()`).
+        assert_eq!(SettingsSection::Agents.reopenable(), SettingsSection::Agents);
+        // Appshots is hidden off-desktop, so it cannot be reopened there.
+        assert_eq!(
+            SettingsSection::Appshots.reopenable(),
+            if crate::appshots::is_desktop() {
+                SettingsSection::Appshots
+            } else {
+                SettingsSection::General
+            }
+        );
+        for section in SettingsSection::ALL {
+            assert!(section.reopenable().visible_in_nav(), "{section:?}");
+            assert_eq!(SettingsSection::from_slug(section.slug()), Some(section));
+        }
+    }
+
+    #[test]
+    fn open_route_names_a_section_or_reopens_the_remembered_one() {
+        let remembered = SettingsSection::Notifications;
+        assert_eq!(
+            settings_open_route("settings", remembered),
+            Some(SettingsSection::Notifications)
+        );
+        for (route, section) in [
+            ("settings/devices", SettingsSection::Devices),
+            ("settings/remote-access", SettingsSection::RemoteAccess),
+            ("settings/providers", SettingsSection::Harnesses),
+            ("settings/harnesses", SettingsSection::Harnesses),
+            ("settings/agents", SettingsSection::Agents),
+            ("settings/general", SettingsSection::General),
+            ("settings/conversations", SettingsSection::General),
+            ("settings/files", SettingsSection::Files),
+            ("settings/appshots", SettingsSection::Appshots),
+            ("settings/archived", SettingsSection::Archived),
+        ] {
+            assert_eq!(settings_open_route(route, remembered), Some(section), "{route}");
+        }
+        assert_eq!(settings_open_route("settings/billing", remembered), None);
+        assert_eq!(settings_open_route("new", remembered), None);
+    }
+
+    #[gpui::test]
+    fn settings_reopen_where_they_were_left(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        init_settings_test(settings::UiSettings::default(), dir.path(), cx);
+        let window = cx.add_window(|_, cx| test_shell(dir.path(), cx));
+        window
+            .update(cx, |shell, _, cx| {
+                // Nothing remembered yet: General.
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::General));
+                // Switching sections inside Settings is remembered.
+                shell.open_settings(SettingsSection::Shortcuts, cx);
+                assert_eq!(shell.settings.settings_section, SettingsSection::Shortcuts);
+                assert_eq!(
+                    settings::current(cx).settings_section,
+                    SettingsSection::Shortcuts
+                );
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Chat);
+                // ⌘, / the footer gear reopen it…
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::Shortcuts));
+                shell.close_settings(cx);
+                // …as do the palette and `/settings`.
+                shell.open_last_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::Shortcuts));
+                shell.close_settings(cx);
+
+                // A link naming a section wins, and becomes the one remembered.
+                shell.open_settings(SettingsSection::Appearance, cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::Appearance));
+                shell.close_settings(cx);
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::Appearance));
+                shell.close_settings(cx);
+
+                // Sections keep their own identity until the Providers fold
+                // lands: Accounts is remembered as Accounts.
+                shell.open_settings(SettingsSection::Agents, cx);
+                assert_eq!(shell.settings.settings_section, SettingsSection::Agents);
+                shell.close_settings(cx);
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::Agents));
+                settings::flush(cx);
+            })
+            .unwrap();
+        // It survives a restart.
+        assert_eq!(
+            settings::UiSettings::load(dir.path()).settings_section,
+            SettingsSection::Agents
+        );
+    }
+
+    #[gpui::test]
+    fn unknown_or_hidden_remembered_sections_reopen_general(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            settings::UiSettings::path(dir.path()),
+            r#"{"sidebarWidth": 300, "settingsSection": "billing"}"#,
+        )
+        .unwrap();
+        let saved = settings::UiSettings::load(dir.path());
+        assert_eq!(saved.sidebar_width, 300.0);
+        init_settings_test(saved, dir.path(), cx);
+        let window = cx.add_window(|_, cx| test_shell(dir.path(), cx));
+        window
+            .update(cx, |shell, _, cx| {
+                shell.toggle_settings(cx);
+                assert_eq!(shell.route, Route::Settings(SettingsSection::General));
+                shell.close_settings(cx);
+                // A remembered section this build hides falls back as well.
+                shell.settings.settings_section = SettingsSection::Appshots;
+                shell.toggle_settings(cx);
+                assert_eq!(
+                    shell.route,
+                    Route::Settings(SettingsSection::Appshots.reopenable())
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn escape_closes_what_is_open_inside_settings_before_settings(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        init_settings_test(settings::UiSettings::default(), dir.path(), cx);
+        let (shell, cx) = cx.add_window_view(|_, cx| test_shell(dir.path(), cx));
+        shell.update(cx, |shell, cx| {
+            // No engine in tests: render the workspace, not the boot gate.
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.open_settings(SettingsSection::Devices, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+
+        // A dialog that does not hold focus (the rename input was never
+        // clicked) still closes before Settings does.
+        let devices = shell.read_with(cx, |shell, _| shell.devices_page.clone().unwrap());
+        devices.update(cx, |page, cx| {
+            page.open_rename("device-1".into(), "Studio".into(), cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_keystrokes("escape");
+        assert!(!devices.update(cx, |page, cx| page.dismiss_on_escape(cx)));
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.route, Route::Settings(SettingsSection::Devices));
+        });
+
+        // So does the account menu opened from the settings footer.
+        shell.update(cx, |shell, cx| {
+            shell.user_menu.open(());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_keystrokes("escape");
+        shell.read_with(cx, |shell, _| {
+            assert!(!shell.user_menu.is_open());
+            assert_eq!(shell.route, Route::Settings(SettingsSection::Devices));
+        });
+        // The exit animation's reap runs on wall-clock time; stand in for it.
+        shell.update(cx, |shell, cx| {
+            shell.user_menu = popover::Popup::default();
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear());
+
+        // With nothing left open, Escape leaves Settings.
+        cx.simulate_keystrokes("escape");
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.route, Route::Chat);
+            assert_eq!(shell.settings.settings_section, SettingsSection::Devices);
+        });
     }
 }
