@@ -206,6 +206,12 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ChatConnectivity,
         // agent.rs
         roboco_proto::HarnessId,
+        roboco_proto::HarnessUpdatePolicy,
+        roboco_proto::HarnessInstallSource,
+        roboco_proto::HarnessUpdatePhase,
+        roboco_proto::HarnessUpdateProgress,
+        roboco_proto::HarnessUpdateFailure,
+        roboco_proto::HarnessUpdateStatus,
         roboco_proto::ReasoningLevel,
         roboco_proto::SandboxLevel,
         roboco_proto::SteeringMode,
@@ -320,6 +326,10 @@ fn constants_ts() -> String {
     out.push_str(&format!(
         "export const MESSAGE_QUEUE_EDIT_LEASE_V1 = {:?};\n",
         capabilities::MESSAGE_QUEUE_EDIT_LEASE_V1
+    ));
+    out.push_str(&format!(
+        "export const HARNESS_UPDATES_V1 = {:?};\n",
+        capabilities::HARNESS_UPDATES_V1
     ));
     out.push_str("\n/** Every capability this build of the engine advertises. */\n");
     let current: Vec<String> = capabilities::CURRENT

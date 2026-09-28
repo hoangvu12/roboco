@@ -1,5 +1,18 @@
-import { methods, type EngineClient } from "@roboco/engine-client";
-import type { AgentLoginPoll, HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
+import {
+  methods,
+  type EngineClient,
+  type WatchHandle,
+  type WatchHandlers,
+} from "@roboco/engine-client";
+import type {
+  AgentLoginPoll,
+  HarnessDescriptor,
+  HarnessId,
+  HarnessUpdatePolicy,
+  HarnessUpdateStatus,
+  Model,
+  TitleSettings,
+} from "@roboco/proto";
 import type { EngineSession } from "../state/engine-session";
 import { descriptorEnabled, offeredHarnesses, visibleHarnesses } from "./model-rows";
 
@@ -79,6 +92,78 @@ export function cancelInstall(
 ): Promise<void> {
   return client.call<void>(methods.CANCEL_INSTALL, {
     harness,
+    ...targetParams(targetDeviceId),
+  });
+}
+
+// ── Agent-CLI update lifecycle (engine-local, ADR 0004) ───────────────────
+// The watch and every action ride the optional `targetDeviceId` passthrough
+// exactly like the install RPCs: the client picks the paired engine's own
+// connection and the engine that owns the CLIs runs the lifecycle.
+
+/**
+ * `WatchHarnessUpdates` — the target engine's complete ordered status list,
+ * current value first and then after every transition. Quiet in between: the
+ * initial snapshot answers the subscribe ack, so the default window works.
+ */
+export function watchHarnessUpdates(
+  client: EngineClient,
+  handlers: WatchHandlers<HarnessUpdateStatus[]>,
+  targetDeviceId?: string | null,
+): WatchHandle {
+  return client.watch<HarnessUpdateStatus[]>(
+    methods.WATCH_HARNESS_UPDATES,
+    targetParams(targetDeviceId),
+    handlers,
+  );
+}
+
+/** `CheckHarnessUpdates` — re-probe every provider (or one, with `harness`). */
+export function checkHarnessUpdates(
+  client: EngineClient,
+  harness?: HarnessId | null,
+  targetDeviceId?: string | null,
+): Promise<HarnessUpdateStatus[]> {
+  return client.call<HarnessUpdateStatus[]>(methods.CHECK_HARNESS_UPDATES, {
+    ...(harness == null ? {} : { harness }),
+    ...targetParams(targetDeviceId),
+  });
+}
+
+/** `ApplyHarnessUpdate` — apply one provider's discovered release. */
+export function applyHarnessUpdate(
+  client: EngineClient,
+  harness: HarnessId,
+  targetDeviceId?: string | null,
+): Promise<{ ok: true; version: string }> {
+  return client.call<{ ok: true; version: string }>(methods.APPLY_HARNESS_UPDATE, {
+    harness,
+    ...targetParams(targetDeviceId),
+  });
+}
+
+/** `CancelHarnessUpdate` — cancel one provider's pending update. */
+export function cancelHarnessUpdate(
+  client: EngineClient,
+  harness: HarnessId,
+  targetDeviceId?: string | null,
+): Promise<{ cancelled: boolean }> {
+  return client.call<{ cancelled: boolean }>(methods.CANCEL_HARNESS_UPDATE, {
+    harness,
+    ...targetParams(targetDeviceId),
+  });
+}
+
+/** `SetHarnessUpdatePolicy` — notify / auto-when-idle / off per provider. */
+export function setHarnessUpdatePolicy(
+  client: EngineClient,
+  harness: HarnessId,
+  policy: HarnessUpdatePolicy,
+  targetDeviceId?: string | null,
+): Promise<HarnessUpdateStatus> {
+  return client.call<HarnessUpdateStatus>(methods.SET_HARNESS_UPDATE_POLICY, {
+    harness,
+    policy,
     ...targetParams(targetDeviceId),
   });
 }
@@ -355,5 +440,162 @@ export function titleHarnessLabel(harness: HarnessId, fallback: string): string 
       return "Codex";
     default:
       return fallback;
+  }
+}
+
+// ── Update-lifecycle presentation (settings/harnesses.rs grammar) ─────────
+
+/** The policy menu's short labels and the chosen one's explanation
+ *  (harnesses.rs UPDATE_POLICIES): order is Notify / Auto when idle / Off. */
+export interface UpdatePolicyOption {
+  readonly policy: HarnessUpdatePolicy;
+  readonly label: string;
+  readonly note: string;
+}
+
+const UPDATE_POLICY_OPTIONS: readonly UpdatePolicyOption[] = [
+  {
+    policy: "notify",
+    label: "Notify",
+    note: "Install only when you choose Update.",
+  },
+  {
+    policy: "auto-when-idle",
+    label: "Auto when idle",
+    note: "Install automatically after active runs finish.",
+  },
+  {
+    policy: "off",
+    label: "Off",
+    note: "Don't check for new versions.",
+  },
+];
+
+export function updatePolicyOptions(): readonly UpdatePolicyOption[] {
+  return UPDATE_POLICY_OPTIONS;
+}
+
+/** The one-line update status for the row's meta line
+ *  (harnesses.rs harness_update_label). */
+export function updateLabel(status: HarnessUpdateStatus): string {
+  const installed =
+    status.installedVersion === null || status.installedVersion === undefined
+      ? "Version unavailable"
+      : `v${status.installedVersion}`;
+  switch (status.phase) {
+    case "dormant":
+      return "Update monitoring off";
+    case "checking":
+      return "Checking for updates…";
+    case "current":
+      return `${installed} · Up to date`;
+    case "available": {
+      const available =
+        status.latestVersion == null
+          ? `${installed} · Update available`
+          : `${installed} · v${status.latestVersion} available`;
+      if (status.canApply) {
+        return available;
+      }
+      return status.manualCommand == null
+        ? available
+        : `${available} · ${status.manualCommand}`;
+    }
+    case "waiting-for-idle":
+      return `${installed} · Waiting for agent to be idle`;
+    case "preparing":
+      return `${installed} · Preparing update…`;
+    case "downloading":
+      return `${installed} · Downloading…`;
+    case "installing":
+      return `${installed} · Installing…`;
+    case "verifying":
+      return "Verifying updated CLI…";
+    case "updated":
+      return `${installed} · Updated`;
+    case "manual-action-required":
+      return status.manualCommand == null
+        ? `${installed} · Manual update checks`
+        : `${installed} · ${status.manualCommand}`;
+    case "failed":
+      return status.error == null
+        ? "Update check failed"
+        : `Update check failed · ${status.error.message}`;
+  }
+}
+
+/** The meta-line tone class for a phase (harness_update_label's color). */
+export function updateTone(phase: HarnessUpdateStatus["phase"]): string {
+  switch (phase) {
+    case "available":
+      return "accent";
+    case "updated":
+      return "success";
+    case "failed":
+      return "danger";
+    case "manual-action-required":
+      return "warning";
+    default:
+      return "muted";
+  }
+}
+
+/** The row's one update action (harnesses.rs update_action): Update when an
+ *  available/manual release can be applied, Cancel while the update waits. */
+export function updateRowAction(
+  status: HarnessUpdateStatus,
+): { label: "Update" | "Cancel"; primary: boolean } | null {
+  switch (status.phase) {
+    case "available":
+    case "manual-action-required":
+      return status.canApply ? { label: "Update", primary: true } : null;
+    case "waiting-for-idle":
+    case "preparing":
+    case "downloading":
+      return { label: "Cancel", primary: false };
+    default:
+      return null;
+  }
+}
+
+/** Whether a status row should surface in a notice surface at all
+ *  (proto HarnessUpdateStatus::show_update_notice). */
+export function showsUpdateNotice(status: HarnessUpdateStatus): boolean {
+  return (
+    status.phase === "available" ||
+    status.phase === "waiting-for-idle" ||
+    status.phase === "preparing" ||
+    status.phase === "downloading" ||
+    status.phase === "installing" ||
+    status.phase === "verifying" ||
+    status.phase === "updated" ||
+    status.phase === "failed"
+  );
+}
+
+/** The display name the update surfaces use for one harness
+ *  (shell/harness_updates.rs agent_name). */
+export function agentName(harness: HarnessId): string {
+  switch (harness) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "devin":
+      return "Devin";
+    case "grok":
+      return "Grok";
+    case "hermes":
+      return "Hermes";
+    case "pi":
+      return "Pi";
+    case "opencode":
+      return "OpenCode";
+    case "antigravity":
+      return "Antigravity";
+    case "mock":
+      return "Mock";
   }
 }

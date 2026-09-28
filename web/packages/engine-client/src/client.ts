@@ -7,7 +7,14 @@ import {
   type ClientFrame,
   type ServerFrame,
 } from "./codec";
-import { ENGINE_INFO, LIST_COMMANDS, LIST_MODELS, LIST_SKILLS } from "./methods";
+import {
+  APPLY_HARNESS_UPDATE,
+  CHECK_HARNESS_UPDATES,
+  ENGINE_INFO,
+  LIST_COMMANDS,
+  LIST_MODELS,
+  LIST_SKILLS,
+} from "./methods";
 import { wireParams } from "./request-routing";
 import { RpcError, wireError } from "./rpc-error";
 import { browserWebSocket, type WebSocketFactory, type WsSocket, type SocketClose } from "./socket";
@@ -555,6 +562,17 @@ export class EngineClient {
       // Adapter catalog discovery may cold-boot a CLI for up to ~90s; give it
       // the discovery budget plus shutdown overhead (desktop registry parity).
       return 100_000;
+    }
+    if (method === CHECK_HARNESS_UPDATES) {
+      // A full fleet of enabled providers is checked two at a time; each
+      // provider may need both a CLI probe and a network request (desktop
+      // registry parity: 4 minutes).
+      return 240_000;
+    }
+    if (method === APPLY_HARNESS_UPDATE) {
+      // Headroom beyond the provider's 15-minute mutation timeout for
+      // queueing, verification, and the response itself (desktop parity).
+      return 1_200_000;
     }
     return this.#callTimeoutMs;
   }
