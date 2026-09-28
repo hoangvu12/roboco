@@ -15,7 +15,8 @@ pub enum HarnessId {
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
     Hermes,
-    /// The pi coding agent (pi.dev), driven over ACP via the `pi-acp` adapter.
+    /// The pi coding agent (pi.dev), driven natively over its first-party
+    /// RPC mode (`pi --mode rpc`).
     Pi,
     /// SST's opencode agent, driven natively over its own HTTP/SSE server
     /// protocol (`opencode serve` — the same wire the opencode desktop app

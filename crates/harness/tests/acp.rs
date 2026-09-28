@@ -559,14 +559,18 @@ async fn models_fall_back_to_the_static_catalog_when_the_probe_fails() {
     // after launch, and the static catalog is served instead.
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let broken = dir.path().join("broken-pi-acp");
+    let broken = dir.path().join("broken-hermes-acp");
     std::fs::write(&broken, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let harness = AcpHarness::pi().with_executable(broken);
+    let harness = AcpHarness::hermes().with_executable(broken);
     assert!(harness.installed());
     let models = harness.models().await.expect("static fallback");
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-    assert_eq!(ids, vec!["default"], "{models:?}");
+    assert_eq!(
+        ids,
+        vec!["hermes-4-405b", "hermes-4-70b"],
+        "{models:?}"
+    );
 }
 
 #[tokio::test]
@@ -574,7 +578,7 @@ async fn missing_override_is_not_installed_and_fails_discovery() {
     // An override that points at nothing is not an installed agent: the
     // registry must not offer it, and discovery names the problem instead of
     // quietly serving a catalog for a binary that can never launch.
-    let harness = AcpHarness::pi().with_executable("/nonexistent/never-a-pi-acp");
+    let harness = AcpHarness::hermes().with_executable("/nonexistent/never-a-hermes");
     assert!(!harness.installed());
     let err = harness.models().await.expect_err("missing override");
     assert!(
@@ -613,7 +617,7 @@ async fn hung_handshake_errors_instead_of_spinning_forever() {
     );
 }
 #[test]
-fn hermes_and_pi_descriptor_surfaces_match_registry_expectations() {
+fn hermes_descriptor_surfaces_match_registry_expectations() {
     let devin = AcpHarness::devin();
     assert_eq!(devin.id(), HarnessId::Devin);
     assert_eq!(devin.display_name(), "Devin");
@@ -627,23 +631,6 @@ fn hermes_and_pi_descriptor_surfaces_match_registry_expectations() {
     assert!(hermes.supports_steering());
     assert_eq!(hermes.steering_mode(), SteeringMode::TurnBoundary);
     assert!(hermes.reasoning_levels().is_empty());
-
-    let pi = AcpHarness::pi();
-    assert_eq!(pi.id(), HarnessId::Pi);
-    assert_eq!(pi.display_name(), "Pi");
-    assert!(pi.supports_steering());
-    assert_eq!(pi.steering_mode(), SteeringMode::TurnBoundary);
-    assert_eq!(
-        pi.reasoning_levels(),
-        &[
-            roboco_proto::ReasoningLevel::Minimal,
-            roboco_proto::ReasoningLevel::Low,
-            roboco_proto::ReasoningLevel::Medium,
-            roboco_proto::ReasoningLevel::High,
-            roboco_proto::ReasoningLevel::XHigh,
-            roboco_proto::ReasoningLevel::Max,
-        ]
-    );
 }
 
 fn antigravity_harness() -> AcpHarness {
@@ -1345,196 +1332,14 @@ async fn antigravity_auth_path_subprocess() {
     .expect("configured business sign-in");
 }
 
-fn pi_fixture() -> AcpHarness {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-pi-acp.sh");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
-    }
-    AcpHarness::pi()
-        .with_executable(path)
-        .with_graces(Duration::from_millis(100), Duration::from_millis(150))
-}
 
-#[tokio::test]
-async fn pi_crash_reports_status_and_stderr_once() {
-    for (prompt, status, tail) in [
-        ("crash", "exit code 23", "last stderr context"),
-        ("signal-crash", "signal 9", "signal context"),
-        (
-            "inherited-pipe-crash",
-            "exit code 25",
-            "inherited pipe context",
-        ),
-    ] {
-        let (controls, _steer, _) = controls();
-        let events = run_to_end(&pi_fixture(), request(prompt), controls).await;
-        let done = dones(&events);
-        assert_eq!(done.len(), 1);
-        assert_eq!(done[0].0, DoneStatus::Errored);
-        let error = done[0].1.as_deref().unwrap();
-        assert!(error.contains(status) && error.contains(tail), "{error}");
-    }
-}
 
-#[tokio::test]
-async fn pi_idle_crash_then_load_preserves_session() {
-    let (ctl, _steer, _) = controls();
-    let events = run_to_end(&pi_fixture(), request("idle-crash"), ctl).await;
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-    let session = events
-        .iter()
-        .find_map(|event| match event {
-            AgentEvent::Done { session_id, .. } => session_id.clone(),
-            _ => None,
-        })
-        .unwrap();
-    let (ctl, steer, _) = controls();
-    drop(steer);
-    let mut req = request("resumed");
-    req.resume = Some(session);
-    let events = run_to_end(&pi_fixture(), req, ctl).await;
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-    assert!(events.contains(&AgentEvent::TextDelta {
-        text: "reply:resumed".into()
-    }));
-}
 
-#[tokio::test]
-async fn pi_failed_load_announces_lost_context() {
-    let (ctl, steer, _) = controls();
-    drop(steer);
-    let mut req = request("fresh");
-    req.resume = Some("missing".into());
-    let events = run_to_end(&pi_fixture(), req, ctl).await;
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { message } if message.contains("without the previous context"))));
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-}
 
-#[tokio::test]
-async fn pi_frames_and_model_effort_round_trip() {
-    let (ctl, steer, _) = controls();
-    drop(steer);
-    let mut req = request("frames");
-    req.model = Some("mock/model".into());
-    req.reasoning = Some(ReasoningLevel::Max);
-    let events = run_to_end(&pi_fixture(), req, ctl).await;
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text.len() == 1024 * 1024 + 17))
-    );
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-    assert_eq!(pi_fixture().models().await.unwrap()[0].id, "mock/model");
-}
 
-#[tokio::test]
-async fn pi_error_stop_reason_is_failed() {
-    let (ctl, steer, _) = controls();
-    drop(steer);
-    let events = run_to_end(&pi_fixture(), request("error"), ctl).await;
-    assert_eq!(dones(&events)[0].0, DoneStatus::Errored);
-}
 
-#[tokio::test]
-async fn pi_interrupt_error_and_duplicate_terminal_settle_once() {
-    let (ctl, _steer, token) = controls();
-    let mut stream = pi_fixture()
-        .run(request("interrupt-error"), ctl)
-        .await
-        .unwrap();
-    let events = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut events = Vec::new();
-        while let Some(event) = stream.next().await {
-            let event = event.unwrap();
-            if matches!(&event, AgentEvent::TextDelta { text } if text == "working") {
-                token.cancel();
-            }
-            events.push(event);
-        }
-        events
-    })
-    .await
-    .unwrap();
-    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)]);
-}
 
-#[tokio::test]
-async fn pi_interrupt_kills_tool_process_group() {
-    let (ctl, _steer, token) = controls();
-    let mut stream = pi_fixture().run(request("tree"), ctl).await.unwrap();
-    let mut tree_pids = Vec::new();
-    let events = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut events = Vec::new();
-        while let Some(event) = stream.next().await {
-            let event = event.unwrap();
-            if let AgentEvent::TextDelta { text } = &event
-                && let Some(pid) = text.strip_prefix("tree:")
-            {
-                tree_pids.push(pid.parse::<i32>().unwrap());
-                token.cancel();
-            }
-            events.push(event);
-        }
-        events
-    })
-    .await
-    .unwrap();
-    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)]);
-    assert_eq!(tree_pids.len(), 2);
-    for pid in tree_pids {
-        // A zombie awaiting the host reaper is dead; no tool may remain running.
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        assert!(
-            stat.is_empty() || stat.split_whitespace().nth(2) == Some("Z"),
-            "{stat}"
-        );
-    }
-}
 
-#[tokio::test]
-async fn pi_rejected_model_config_keeps_default_and_runs_prompt() {
-    let (ctl, steer, _) = controls();
-    drop(steer);
-    let mut req = request("config-rejected");
-    req.model = Some("mock/reject".into());
-    let events = run_to_end(&pi_fixture(), req, ctl).await;
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
-    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
-}
-
-#[tokio::test]
-async fn pi_dropping_stream_terminates_tool_tree() {
-    let (ctl, _steer, _) = controls();
-    let mut stream = pi_fixture().run(request("tree"), ctl).await.unwrap();
-    let mut pids = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while pids.len() < 2 {
-            if let AgentEvent::TextDelta { text } = stream.next().await.unwrap().unwrap()
-                && let Some(pid) = text.strip_prefix("tree:")
-            {
-                pids.push(pid.parse::<i32>().unwrap());
-            }
-        }
-    })
-    .await
-    .unwrap();
-    drop(stream);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if pids.iter().all(|pid| {
-                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-                stat.is_empty() || stat.split_whitespace().nth(2) == Some("Z")
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("consumer shutdown must terminate the tool tree");
-}
 
 fn robust_harness() -> AcpHarness {
     AcpHarness::grok().with_executable(
@@ -1654,7 +1459,7 @@ async fn dropping_idle_stream_reaps_warm_adapter() {
 async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
     for adapter in [
         AcpHarness::grok(),
-        AcpHarness::pi(),
+        AcpHarness::hermes(),
         AcpHarness::antigravity(),
     ] {
         let adapter = adapter
@@ -1693,8 +1498,8 @@ async fn cancel_watchdog_ignores_late_settlement_for_all_acp_specs() {
     }
 }
 
-async fn pi_boundary_steer(scenario: &str, trigger_on_done: bool) {
-    let adapter = AcpHarness::pi().with_executable(
+async fn hermes_boundary_steer(scenario: &str, trigger_on_done: bool) {
+    let adapter = AcpHarness::hermes().with_executable(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
     );
     let (ctl, steer, _) = controls();
@@ -1746,13 +1551,13 @@ async fn pi_boundary_steer(scenario: &str, trigger_on_done: bool) {
 }
 
 #[tokio::test]
-async fn pi_without_steering_extension_queues_live_steer_once() {
-    pi_boundary_steer("steer-live", false).await;
+async fn hermes_without_steering_extension_queues_live_steer_once() {
+    hermes_boundary_steer("steer-live", false).await;
 }
 
 #[tokio::test]
-async fn pi_without_steering_extension_dispatches_idle_steer_immediately() {
-    pi_boundary_steer("steer-idle", true).await;
+async fn hermes_without_steering_extension_dispatches_idle_steer_immediately() {
+    hermes_boundary_steer("steer-idle", true).await;
 }
 
 #[tokio::test]
@@ -2032,7 +1837,6 @@ async fn all_acp_harnesses_use_project_scoped_session_command_updates() {
         AcpHarness::devin(),
         AcpHarness::grok(),
         AcpHarness::hermes(),
-        AcpHarness::pi(),
         AcpHarness::antigravity(),
     ] {
         let h = h.with_executable(fixture_path());
@@ -2056,7 +1860,6 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
         AcpHarness::devin(),
         AcpHarness::grok(),
         AcpHarness::hermes(),
-        AcpHarness::pi(),
         AcpHarness::antigravity(),
     ] {
         let h = h.with_executable(fixture_path());
@@ -2064,11 +1867,7 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
         let skill_dir = cwd.path().join(".agents/skills/roboco-fixture-review");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "---\nname: roboco-fixture-review\ndescription: Review changes\n---\nReview the changes.").unwrap();
-        let command_name = if h.id() == HarnessId::Pi {
-            "skill:roboco-fixture-review"
-        } else {
-            "roboco-fixture-review"
-        };
+        let command_name = "roboco-fixture-review";
         std::fs::write(cwd.path().join(".command-fixture"), command_name).unwrap();
         let skills = h
             .skills(&cwd.path().canonicalize().unwrap())
@@ -2079,7 +1878,7 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
             .into_iter()
             .find(|s| s.name == "roboco-fixture-review")
             .unwrap();
-        assert_eq!(skill.command.is_some(), h.id() == HarnessId::Pi);
+        assert_eq!(skill.command, None);
         let invocation = Invocation::Skill {
             name: skill.name,
             path: skill.path,
@@ -2087,11 +1886,7 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
         };
         assert_eq!(
             harness_prompt(&format!("{} inspect tests", invocation.link()), h.id()),
-            if h.id() == HarnessId::Pi {
-                format!("/{command_name} inspect tests")
-            } else {
-                format!("Use the skill {} inspect tests", invocation.prompt_text())
-            }
+            format!("Use the skill {} inspect tests", invocation.prompt_text())
         );
     }
 }

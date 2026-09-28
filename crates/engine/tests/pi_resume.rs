@@ -1,17 +1,20 @@
-//! Pi's native session id survives an idle adapter crash through dispatch.
+//! Pi's native RPC driver keeps durable resume parity: the session file
+//! pointer survives an idle process crash through engine dispatch — the
+//! next run spawns `pi --mode rpc --session <file>` (ticket 21's parity
+//! expectation with the old ACP-path pi_resume test).
 use std::{sync::Arc, time::Duration};
 use roboco_engine::{EngineCore, HarnessRegistry};
-use roboco_harness::AcpHarness;
+use roboco_harness::PiHarness;
 use roboco_proto::{HarnessId, RunRequest, SandboxLevel};
 
 #[tokio::test]
-async fn pi_idle_crash_next_dispatch_loads_stored_session() {
+async fn pi_idle_crash_next_dispatch_resumes_the_stored_session() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../harness/tests/fixtures/fake-pi-acp.sh");
+        .join("../harness/tests/fixtures/fake-pi-rpc.sh");
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(
-        AcpHarness::pi()
+        PiHarness::new()
             .with_executable(fixture)
             .with_graces(Duration::from_millis(50), Duration::from_millis(100)),
     ));
@@ -45,7 +48,7 @@ async fn pi_idle_crash_next_dispatch_loads_stored_session() {
                 )) { break; }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }).await.expect("fixture requires session/load on the next dispatch");
+        }).await.expect("fixture requires --session on the next dispatch");
         // Let the fixture exit and the driver remove its live mailbox.
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

@@ -1,12 +1,16 @@
-//! Real Pi ACP + model regression for #296. Requires an authenticated Pi and
-//! fixtures/pi-slow-model.ts loaded as a Pi extension (35s delay by default).
-//! PI_ACP_EXECUTABLE and PI_ACP_PI_COMMAND can select isolated installations.
+//! Real Pi + model regression for #296, ported to the native RPC driver
+//! (ticket 21): a slow post-tool model request (fixtures/pi-slow-model.ts
+//! loaded as a Pi extension, 35s delay by default) must preserve the prompt
+//! and deliver queued steering through pi's own queue. With the native
+//! driver the two steers land inside ONE run (pi delivers each at a turn
+//! boundary) — one Done whose text carries all three markers in order,
+//! with Steered boundaries between them.
 //! cargo test -p roboco-harness --test real_acp_lifecycle -- --ignored --nocapture
 
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage};
 use roboco_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 async fn live_run(cancel: bool) {
@@ -29,11 +33,12 @@ async fn live_run(cancel: bool) {
         sandbox: SandboxLevel::WorkspaceWrite, auto_approve: true,
         attachments: Vec::new(), worktree: None, resume: None,
     };
-    let mut stream = AcpHarness::pi()
+    let mut stream = PiHarness::new()
         .run(request, controls)
         .await
         .expect("real Pi must start");
     let mut tool_at = None;
+    let mut steered_count = 0;
     let mut done_count = 0;
     let mut text = String::new();
     let mut cancel_sent = false;
@@ -53,12 +58,13 @@ async fn live_run(cancel: bool) {
             match event {
                 AgentEvent::ToolResult { .. } if tool_at.is_none() => {
                     tool_at = Some(tokio::time::Instant::now());
-                    // Both messages must queue until the slow original prompt
-                    // responds. The real adapter rejects overlapping prompts.
+                    // Both messages queue into pi's own steer queue while the
+                    // slow original turn is still in flight.
                     for word in ["SECOND-DONE", "THIRD-DONE"] {
                         steer.send(SteerMessage { prompt: format!("Do not call tools. Reply exactly {word}."), message_id: None }).await.unwrap();
                     }
                 }
+                AgentEvent::Steered { .. } => steered_count += 1,
                 AgentEvent::TextDelta { text: delta } => text.push_str(&delta),
                 AgentEvent::Done { status, error, .. } => {
                     done_count += 1;
@@ -68,15 +74,24 @@ async fn live_run(cancel: bool) {
                         break;
                     }
                     assert_eq!(status, DoneStatus::Completed, "{error:?}");
-                    let expected = ["FIRST-DONE", "SECOND-DONE", "THIRD-DONE"][done_count - 1];
-                    assert!(text.contains(expected), "turn {done_count}: {text:?}");
-                    if done_count == 1 {
-                        let gap = tool_at.expect("model must call a tool").elapsed();
-                        assert!(gap >= Duration::from_secs(35), "delay extension did not run: {gap:?}");
-                        eprintln!("post-tool gap {gap:?}; original prompt settled correctly");
+                    // One run: the steers delivered at pi's turn boundaries.
+                    assert_eq!(done_count, 1);
+                    for expected in ["FIRST-DONE", "SECOND-DONE", "THIRD-DONE"] {
+                        assert!(text.contains(expected), "missing {expected}: {text:?}");
                     }
-                    text.clear();
-                    if done_count == 3 { break; }
+                    let positions: Vec<usize> = ["FIRST-DONE", "SECOND-DONE", "THIRD-DONE"]
+                        .iter()
+                        .map(|marker| text.find(marker).expect(marker))
+                        .collect();
+                    assert!(
+                        positions.windows(2).all(|pair| pair[0] < pair[1]),
+                        "steer replies must stay in order: {text:?}"
+                    );
+                    assert_eq!(steered_count, 2, "{text:?}");
+                    let gap = tool_at.expect("model must call a tool").elapsed();
+                    assert!(gap >= Duration::from_secs(35), "delay extension did not run: {gap:?}");
+                    eprintln!("post-tool gap {gap:?}; queued steers settled in one run");
+                    break;
                 }
                 _ => {}
             }
@@ -92,17 +107,17 @@ async fn live_run(cancel: bool) {
             .await
             .unwrap()
             .is_none(),
-        "unexpected events after final turn"
+        "unexpected events after the final turn"
     );
     eprintln!(
-        "real Pi lifecycle: cancel={cancel}, dones={done_count}, elapsed={:?}",
+        "real Pi lifecycle: cancel={cancel}, dones={done_count}, steered={steered_count}, elapsed={:?}",
         started.elapsed()
     );
 }
 
 #[tokio::test]
 #[ignore = "calls an authenticated real model; requires the slow-model Pi extension"]
-async fn real_pi_slow_model_preserves_prompt_and_queued_followups() {
+async fn real_pi_slow_model_preserves_prompt_and_queued_steers() {
     let runs = std::env::var("ACP_TEST_RUNS")
         .ok()
         .and_then(|v| v.parse().ok())

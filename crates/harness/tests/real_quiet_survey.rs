@@ -3,8 +3,8 @@
 //! silence is never proof that an ACP prompt has completed (#296).
 //!
 //! SURVEY_RUNS=3 cargo test -p roboco-harness --test real_quiet_survey -- --ignored --nocapture
-//! Uninstalled/unauthenticated agents are skipped. For mandatory live Pi
-//! regression coverage with an injected delay, use real_acp_lifecycle.rs.
+//! Uninstalled/unauthenticated agents are skipped. For live Pi regression
+//! coverage, use the native driver tests in tests/pi.rs.
 
 use std::time::Duration;
 
@@ -198,7 +198,6 @@ async fn real_all_harnesses_quiet_survey() {
         ("devin", AcpHarness::devin),
         ("grok", AcpHarness::grok),
         ("hermes", AcpHarness::hermes),
-        ("pi", AcpHarness::pi),
     ];
     let mut failures: Vec<String> = Vec::new();
     for (name, ctor) in agents {
