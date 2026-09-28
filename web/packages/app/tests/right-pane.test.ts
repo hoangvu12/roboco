@@ -405,10 +405,15 @@ describe("tab drag geometry", () => {
 /** The side-chat entity source, faked — the boot injection's test double. */
 class FakeSideChats implements SideChatEntitySource {
   readonly drafts = new Set<string>();
+  readonly unsaved = new Set<string>();
   disposed: string[] = [];
 
   hasDraft(chatId: string): boolean {
     return this.drafts.has(chatId);
+  }
+
+  isUnsaved(chatId: string): boolean {
+    return this.unsaved.has(chatId);
   }
 
   dispose(chatId: string): void {
@@ -519,6 +524,32 @@ describe("side_chat_surfaces (side_chats.rs)", () => {
     expect(store.stateFor("chat-1").tabs).toEqual([{ kind: "sidechat", id: "c2" }]);
   });
 
+  it("an unsaved side chat drops on close, draft or not (upstream #568)", () => {
+    const { store } = fresh();
+    const sideChats = new FakeSideChats();
+    store.setSideChatEntitySource(sideChats);
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    const surface: RightSurface = { kind: "sidechat", id: "c1" };
+    // An unsent draft AND still unsaved — no row could reopen it, so the
+    // draft cannot keep the entity (shell.rs:3535-3542).
+    sideChats.drafts.add("side-a");
+    sideChats.unsaved.add("side-a");
+
+    store.closeSurface("chat-1", surface);
+    expect(store.stateFor("chat-1").tabs).toEqual([]);
+    expect(store.sideChatSurfaceOf("c1")).toBeNull();
+    expect(sideChats.disposed).toEqual(["side-a"]);
+
+    // The first send's mint retires the unsaved flag: from then on the
+    // draft-retention close keeps the entity again.
+    store.addSideChatSurface("chat-1", { chatId: "side-b", title: "B" });
+    const saved: RightSurface = { kind: "sidechat", id: "c2" };
+    sideChats.drafts.add("side-b");
+    store.closeSurface("chat-1", saved);
+    expect(store.sideChatSurfaceOf("c2")).toEqual({ chatId: "side-b", title: "B" });
+    expect(sideChats.disposed).toEqual(["side-a"]);
+  });
+
   it("remove_deleted_side_chats drops deleted chats' tabs everywhere and collapses empty panes", () => {
     const { store } = fresh();
     const sideChats = new FakeSideChats();
@@ -552,6 +583,28 @@ describe("side_chat_surfaces (side_chats.rs)", () => {
     const version = store.getVersion();
     store.pruneSideChats(new Set(["chat-1", "side-b", "chat-2"]));
     expect(store.getVersion()).toBe(version);
+  });
+
+  it("an unsaved side chat is never pruned — its row cannot exist yet (upstream #568)", () => {
+    const { store } = fresh();
+    const sideChats = new FakeSideChats();
+    store.setSideChatEntitySource(sideChats);
+    store.addSideChatSurface("chat-1", { chatId: "side-unsaved", title: "A" });
+    sideChats.unsaved.add("side-unsaved");
+
+    // A registry frame without the row (it cannot have it yet — the first
+    // send has not run) must not read as a deletion.
+    store.pruneSideChats(new Set(["chat-1"]));
+    expect(store.sideChatSurfaceOf("c1")?.chatId).toBe("side-unsaved");
+    expect(store.stateFor("chat-1").tabs).toEqual([{ kind: "sidechat", id: "c1" }]);
+    expect(sideChats.disposed).toEqual([]);
+
+    // The first send's mint retires the flag; from then on the row decides
+    // (and a prune that still lacks it drops it, like any deleted chat).
+    sideChats.unsaved.delete("side-unsaved");
+    store.pruneSideChats(new Set(["chat-1"]));
+    expect(store.sideChatSurfaceOf("c1")).toBeNull();
+    expect(sideChats.disposed).toEqual(["side-unsaved"]);
   });
 
   it("a deleted side chat that was the last tab hands the active pick to the picker and can keep the pane open through the explorer", () => {

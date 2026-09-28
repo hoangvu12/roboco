@@ -77,7 +77,8 @@ export interface SubagentRow {
   readonly docId: string;
   readonly title: string;
   readonly status: "running" | "done" | "failed" | null;
-  /** Epoch-ms of the turn that carried the chip — the subagent's "start". */
+  /** Epoch-ms of the latest turn that spawned (or steered) it — the
+   *  subagent's "last updated". */
   readonly spawnedAt: number;
 }
 
@@ -101,8 +102,9 @@ export function subagentIndicator(row: SubagentRow): ChatIndicator {
 }
 
 /**
- * The active chat's subagents, in spawn order, one row per subagent doc —
- * `subagent_rows` (sections.rs:190-227). A reopened (steered) subagent
+ * The active chat's subagents, most recently updated first (later spawns
+ * lead within one turn), one row per subagent doc — `subagent_rows`
+ * (sections.rs:190-227, upstream #568). A reopened (steered) subagent
  * updates its row in place. The caller passes the ACTIVE chat's transcript
  * entries (the desktop's `state.selected_chat` gate is the host's store
  * choice); only genuine spawn chips with a stamped doc ref qualify.
@@ -131,6 +133,10 @@ export function subagentRows(entries: readonly SessionMessageEntry[]): SubagentR
       }
     }
   }
+  // Stable sort over the reversed spawn order: ties keep the later spawn
+  // on top (sections.rs, upstream #568).
+  rows.reverse();
+  rows.sort((a, b) => b.spawnedAt - a.spawnedAt);
   return rows;
 }
 

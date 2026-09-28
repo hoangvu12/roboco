@@ -96,7 +96,7 @@ function entry(parts: MessagePart[], minutesAgo = 3): SessionMessageEntry {
 }
 
 describe("subagent_rows_list_only_stamped_spawn_chips", () => {
-  it("lists one row per genuine spawn chip, in spawn order, updated in place", () => {
+  it("lists one row per genuine spawn chip, most recently updated first, updated in place", () => {
     const rows = subagentRows([
       entry([
         spawn("t1", "Agent: verify", "main--sub--t1", "running"),
@@ -107,15 +107,15 @@ describe("subagent_rows_list_only_stamped_spawn_chips", () => {
         spawn("t4", "Agent: done", "main--sub--t4", "done"),
       ]),
     ]);
-    expect(rows.map((row) => row.docId)).toEqual(["main--sub--t1", "main--sub--t4"]);
+    expect(rows.map((row) => row.docId)).toEqual(["main--sub--t4", "main--sub--t1"]);
     // The bare task, genus stripped — the same title the tab wears.
-    expect(rows[0]!.title).toBe("verify");
-    expect(subagentFrozen(rows[0]!)).toBe(false);
-    expect(subagentFrozen(rows[1]!)).toBe(true);
-    expect(subagentIndicator(rows[0]!)).toBe("working");
-    expect(subagentIndicator(rows[1]!)).toBe("completed");
+    expect(rows[1]!.title).toBe("verify");
+    expect(subagentFrozen(rows[0]!)).toBe(true);
+    expect(subagentFrozen(rows[1]!)).toBe(false);
+    expect(subagentIndicator(rows[0]!)).toBe("completed");
+    expect(subagentIndicator(rows[1]!)).toBe("working");
     // Spawn time comes from the turn that carried the chip.
-    expect(Date.now() - rows[0]!.spawnedAt).toBeGreaterThanOrEqual(2 * 60_000);
+    expect(Date.now() - rows[1]!.spawnedAt).toBeGreaterThanOrEqual(2 * 60_000);
   });
 
   it("a reopened (steered) subagent updates its row in place", () => {
@@ -126,6 +126,25 @@ describe("subagent_rows_list_only_stamped_spawn_chips", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("running");
     expect(rows[0]!.title).toBe("one again");
+  });
+
+  it("subagent_rows_are_most_recently_updated_first (upstream #568)", () => {
+    // Same-turn spawns tie; the later spawn leads. A steering turn moves
+    // its subagent up (the sections.rs suite's mirror).
+    const rows = subagentRows([
+      entry(
+        [
+          spawn("a", "Agent: a", "main--sub--a", "done"),
+          spawn("b", "Agent: b", "main--sub--b", "done"),
+        ],
+        30,
+      ),
+      entry([spawn("c", "Agent: c", "main--sub--c", "done")], 20),
+      // `a` is steered again: its row moves up with the newer turn.
+      entry([spawn("a2", "Agent: a", "main--sub--a", "running")], 10),
+    ]);
+    expect(rows.map((row) => row.docId)).toEqual(["main--sub--a", "main--sub--c", "main--sub--b"]);
+    expect(rows[0]!.status).toBe("running");
   });
 });
 
