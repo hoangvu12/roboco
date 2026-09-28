@@ -16,6 +16,7 @@ import {
   isMacPlatform,
   matchKeybinding,
   onShortcut,
+  sessionNavFires,
 } from "../state/shortcuts";
 import { overlayOwnsKeyboard, useKeymap, keystrokesIntercepted } from "../state/keymap";
 import { toggleAddSpace } from "../state/add-space";
@@ -338,10 +339,12 @@ export function AppShell() {
         case "next-session":
         case "prev-session":
         case "archive-session":
-          // Chat-scoped, and quiet under an overlay that owns the keyboard
-          // (the add-space palette or a composer picker): an unguarded jump
-          // would switch sessions UNDER the open popover.
-          if (route === "chat" && !overlayOwnsKeyboard()) {
+          // Works from Settings too, landing back in chat like a jump; the
+          // shortcuts recorder intercepts these keys while it records (upstream
+          // 08965a1e). Quiet under an overlay that owns the keyboard (the
+          // add-space palette or a composer picker): an unguarded jump would
+          // switch sessions UNDER the open popover.
+          if (sessionNavFires(route, overlayOwnsKeyboard())) {
             emitShortcut(binding.event);
           }
           return;
