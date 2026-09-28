@@ -11,6 +11,7 @@ import { sidebarNotice } from "../state/notice";
 import { cycleTarget, onShortcut } from "../state/shortcuts";
 import { useJumpHints, visibleJumpOrder } from "../state/jump-hints";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
+import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import {
   chatListRows,
   chatRowHeight,
@@ -1071,6 +1072,11 @@ function ChatListRow({
   const sessions = useEngineSessions();
   const owning = owningSession(sessions, row.chat.id);
   const [hovered, setHovered] = useState(false);
+  // The still-pointer resync (upstream f1ea80d7): while an Archive pill's
+  // click keeps the arm set, this row adopts hover from the recorded point
+  // — the row that slides under the unmoved pointer lights its own pill.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  useStillPointerHover(rowRef, setHovered);
   const word = statusWord(row.status);
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
@@ -1084,6 +1090,11 @@ function ChatListRow({
     // The row's own click is the selector; only the corner archives.
     event.preventDefault();
     event.stopPropagation();
+    // Arm the still-pointer resync before anything else (the desktop sets
+    // `chat_hover_resync` ahead of the mutation): the pointer stays put
+    // through the archive, and the row that slides under it must light its
+    // pill without a mouse jog — even if the mutation itself fails.
+    armStillPointer({ x: event.clientX, y: event.clientY });
     if (owning === null) {
       sidebarNotice.set("Engine not connected");
       return;
@@ -1126,6 +1137,7 @@ function ChatListRow({
   // outlive the menu's unmount.
   const rowElement = menu(
     <div
+      ref={rowRef}
       className={compact ? "chat-row-item chat-row-compact" : "chat-row-item"}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
