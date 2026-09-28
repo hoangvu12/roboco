@@ -65,6 +65,7 @@ mod navigation_focus;
 mod navigation_tests;
 mod project_icon;
 mod command_palette;
+mod harness_updates;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1694,6 +1695,16 @@ pub struct Shell {
     /// 200ms ease-out tween of the cluster start on fullscreen toggles.
     titlebar_tween: Option<WidthTween>,
     titlebar_island: Option<WidthTween>,
+    /// `{harness,latest}` discoveries already delivered as a desktop banner
+    /// during this viewport lifetime.
+    harness_update_seen: std::collections::HashSet<String>,
+    /// Short debounce that aggregates providers finishing the same check at
+    /// slightly different times into one banner.
+    harness_update_banner_task: Option<Task<()>>,
+    harness_update_expanded: bool,
+    harness_update_transition: Option<WidthTween>,
+    harness_update_geometry: [Option<WidthTween>; 2],
+    harness_update_scroll: settings::widgets::PageScroll,
     /// Armed by mouse-down on a titlebar strip; the next mouse-move hands the
     /// drag to the compositor (zed's platform-titlebar pattern).
     titlebar_should_move: bool,
@@ -2020,6 +2031,12 @@ impl Shell {
             attention_sound_gate: Default::default(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            harness_update_seen: std::collections::HashSet::new(),
+            harness_update_banner_task: None,
+            harness_update_expanded: false,
+            harness_update_transition: None,
+            harness_update_geometry: [None; 2],
+            harness_update_scroll: settings::widgets::PageScroll::default(),
             project_crumb_menu: popover::Popup::default(),
             update_flow: UpdateFlow::Idle,
             update_task: None,
@@ -2139,6 +2156,73 @@ impl Shell {
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         self.prune_file_explorers(cx);
+        // Agent release discoveries finish independently (bounded provider
+        // concurrency), so debounce the transition and deliver one aggregate
+        // banner. Versioned releases deduplicate by version. Versionless
+        // availability deduplicates until a confirmed Current/Updated status;
+        // transient checks, disconnections and cancellation do not reset it.
+        let has_unseen_harness_update = {
+            let state = state.read(cx);
+            for status in &state.harness_updates {
+                if matches!(
+                    status.phase,
+                    roboco_proto::HarnessUpdatePhase::Current
+                        | roboco_proto::HarnessUpdatePhase::Updated
+                ) {
+                    self.harness_update_seen.remove(&harness_updates::versionless_notification_key(
+                        status.harness,
+                    ));
+                }
+            }
+            state.harness_updates.iter().any(|status| {
+                harness_updates::notification_key(status)
+                    .is_some_and(|key| !self.harness_update_seen.contains(&key))
+            })
+        };
+        if has_unseen_harness_update && self.harness_update_banner_task.is_none() {
+            self.harness_update_banner_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                this.update(cx, |this, cx| {
+                    this.harness_update_banner_task = None;
+                    let new: Vec<String> = {
+                        let state = this.state.read(cx);
+                        state
+                            .harness_updates
+                            .iter()
+                            .filter_map(|status| harness_updates::notification_key(status))
+                            .filter(|key| !this.harness_update_seen.contains(key))
+                            .collect()
+                    };
+                    if new.is_empty() {
+                        return;
+                    }
+                    let count = new.len();
+                    for key in &new {
+                        this.harness_update_seen.insert(key.clone());
+                    }
+                    let focused = cx.active_window().is_some();
+                    if this.settings.notifications_enabled
+                        && this.settings.agent_update_notifications
+                        && !(this.settings.notifications_background_only && focused)
+                    {
+                        let body = if count == 1 {
+                            "A coding agent update is ready"
+                        } else {
+                            "Coding agent updates are ready"
+                        };
+                        crate::notify::post(
+                            &format!(
+                                "{count} agent update{} available",
+                                if count == 1 { "" } else { "s" }
+                            ),
+                            body,
+                            Some(crate::notify::AGENT_UPDATES_TARGET),
+                        );
+                    }
+                })
+                .ok();
+            }));
+        }
         if state.read(cx).engine().is_none() {
             self.side_chats.clear();
             self.side_chat_creating = false;
@@ -4086,7 +4170,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+    pub(crate) fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.command_palette = None;
         // Recreate per visit: the page's ListHarnesses load re-probes which
         // CLIs are installed, so installing one shows up on the next open.
@@ -4359,6 +4443,7 @@ impl Shell {
                             self.settings.sound_attention_enabled,
                             self.settings.notifications_enabled,
                             self.settings.notifications_background_only,
+                            self.settings.agent_update_notifications,
                             cx,
                         )
                     });
@@ -4373,6 +4458,7 @@ impl Shell {
                                 attention_sound,
                                 desktop,
                                 background_only,
+                                agent_updates,
                             } = *event;
                             this.settings.sound_enabled = sound;
                             this.settings.sound_completion_enabled = completion_sound;
@@ -4380,6 +4466,7 @@ impl Shell {
                             this.settings.sound_attention_enabled = attention_sound;
                             this.settings.notifications_enabled = desktop;
                             this.settings.notifications_background_only = background_only;
+                            this.settings.agent_update_notifications = agent_updates;
                             this.schedule_save(cx);
                             cx.notify();
                         },
@@ -7620,6 +7707,13 @@ impl Shell {
             cx.stop_propagation();
             return;
         }
+        // A collapsed agent-update card folds before any other escape
+        // consumer sees the key.
+        if event.keystroke.key == "escape" && self.harness_update_expanded {
+            self.set_harness_updates_expanded(false, cx);
+            cx.stop_propagation();
+            return;
+        }
         // Escape targets the conversation that owns the focused composer: a
         // side chat's when its composer has focus, the main one otherwise.
         let (state, composer) = self
@@ -8257,6 +8351,23 @@ impl Shell {
             composer.set_available_width(composer_width, cx)
         });
         let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+        // Share the dock's choreography: release the bottom chip early on
+        // departure, reveal it with the Home selectors on return. Absolute
+        // mounting keeps it out of composer measurements and centering.
+        let chip_opacity = if has_selection {
+            1.0 - crate::composer_dock::stage(dock_frame.dissolve(), 0.0, 0.22)
+        } else {
+            dock_frame.selectors()
+        } * self.composer_dock.borrow().opacity();
+        if has_selection {
+            self.set_harness_updates_expanded(false, cx);
+        }
+        let harness_update_card =
+            if chip_opacity > 0.001 && (!has_selection || dock_frame.active) {
+                self.render_harness_update_card(window, main_content_width, cx)
+            } else {
+                None
+            };
         let new_thread_background_layer = (!has_selection || dock_frame.active).then(|| {
             if artwork.is_some() && artwork_opacity < 1.0 {
                 window.request_animation_frame();
@@ -8504,6 +8615,22 @@ impl Shell {
                         ))
                     })
                     .child(self.render_terminal_container(window, cx))
+            })
+            .when_some(harness_update_card, |column, chip| {
+                column.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
+                        .opacity(chip_opacity)
+                        .flex()
+                        .justify_center()
+                        .child(chip)
+                        .when(has_selection, |el| {
+                            el.child(div().absolute().inset_0().occlude())
+                        }),
+                )
             })
             .child(
                 div()
@@ -13048,6 +13175,76 @@ mod right_tab_mouse_regressions {
         let shell = host.read_with(cx, |host, _| host.shell.clone());
         cx.update(|window, cx| window.draw(cx).clear());
         (shell, cx)
+    }
+
+    /// The banner debounce: providers finishing the same check at slightly
+    /// different times coalesce into one desktop banner, versioned releases
+    /// dedupe by version, and versionless availability dedupes until a
+    /// confirmed Current/Updated status ends the episode.
+    #[gpui::test]
+    fn update_banner_fires_during_continuous_state_changes(cx: &mut TestAppContext) {
+        let (shell, cx) = setup(cx);
+        shell.update(cx, |shell, cx| {
+            shell.settings.notifications_enabled = false;
+            shell.state.update(cx, |state, _| {
+                state.harness_updates = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "harness": "codex", "phase": "available", "latestVersion": "2.0.0",
+                        "policy": "notify", "source": "unknown", "canApply": true
+                    }))
+                    .unwrap(),
+                    serde_json::from_value(serde_json::json!({
+                        "harness": "hermes", "phase": "available",
+                        "policy": "notify", "source": "unknown", "canApply": true
+                    }))
+                    .unwrap(),
+                ];
+            });
+        });
+        for _ in 0..12 {
+            shell.update(cx, |shell, cx| {
+                shell.on_state_changed(&shell.state.clone(), cx)
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(100));
+        }
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.harness_update_seen.len(), 2);
+            assert!(shell.harness_update_banner_task.is_none());
+        });
+        // Rechecks and repeated versionless availability remain deduplicated.
+        for phase in [
+            roboco_proto::HarnessUpdatePhase::Checking,
+            roboco_proto::HarnessUpdatePhase::Available,
+        ] {
+            shell.update(cx, |shell, cx| {
+                shell
+                    .state
+                    .update(cx, |state, _| state.harness_updates[1].phase = phase);
+                shell.on_state_changed(&shell.state.clone(), cx);
+                assert!(shell.harness_update_banner_task.is_none());
+            });
+        }
+        // A confirmed current state ends the availability episode, permitting
+        // another commit-only update to notify even if the version is unchanged.
+        shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.harness_updates[1].phase = roboco_proto::HarnessUpdatePhase::Current
+            });
+            shell.on_state_changed(&shell.state.clone(), cx);
+            assert_eq!(shell.harness_update_seen.len(), 1);
+            shell.state.update(cx, |state, _| {
+                state.harness_updates[1].phase = roboco_proto::HarnessUpdatePhase::Available
+            });
+            shell.on_state_changed(&shell.state.clone(), cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.harness_update_seen.len(), 2)
+        });
     }
 
     #[gpui::test]

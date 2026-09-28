@@ -30,14 +30,22 @@ use std::time::Duration;
 use roboco_engine::registry::TitleSettings;
 use roboco_engine::registry::{HarnessDescriptor, descriptor_enabled};
 use roboco_proto::Model;
-use roboco_proto::{AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId};
+use roboco_proto::{
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, HarnessUpdatePhase,
+    HarnessUpdatePolicy, HarnessUpdateStatus,
+};
 use roboco_rpc::methods;
 
 use crate::pickers::visible_harnesses;
 use crate::popover::{self, Loadable};
 use crate::settings::widgets;
+use crate::motion;
 use crate::state::AppState;
 use crate::theme::Theme;
+
+/// Left inset of an expanded provider's details: the header trigger's
+/// padding, brand tile and gap, so the details start on the title's edge.
+const DETAILS_INSET: f32 = 4.0 + 36.0 + 12.0;
 
 /// One-line blurb per agent; the catalog descriptor does not carry one.
 pub fn blurb(harness: HarnessId) -> &'static str {
@@ -75,6 +83,79 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
     }
 }
 
+/// Update policies in menu order: the short label, and the note shown under
+/// the row title for the chosen one.
+const UPDATE_POLICIES: [(HarnessUpdatePolicy, &str, &str); 3] = [
+    (
+        HarnessUpdatePolicy::Notify,
+        "Notify",
+        "Install only when you choose Update.",
+    ),
+    (
+        HarnessUpdatePolicy::AutoWhenIdle,
+        "Auto when idle",
+        "Install automatically after active runs finish.",
+    ),
+    (
+        HarnessUpdatePolicy::Off,
+        "Off",
+        "Don't check for new versions.",
+    ),
+];
+
+/// The one-line update status for the row's meta line (phase-tinted).
+fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedString, gpui::Hsla) {
+    let installed = status
+        .installed_version
+        .as_deref()
+        .map(|version| format!("v{version}"))
+        .unwrap_or_else(|| "Version unavailable".into());
+    let label = match status.phase {
+        HarnessUpdatePhase::Dormant => "Update monitoring off".into(),
+        HarnessUpdatePhase::Checking => "Checking for updates…".into(),
+        HarnessUpdatePhase::Current => format!("{installed} · Up to date"),
+        HarnessUpdatePhase::Available => {
+            let available = match status.latest_version.as_deref() {
+                Some(latest) => format!("{installed} · v{latest} available"),
+                None => format!("{installed} · Update available"),
+            };
+            if status.can_apply {
+                available
+            } else {
+                status
+                    .manual_command
+                    .as_deref()
+                    .map(|instruction| format!("{available} · {instruction}"))
+                    .unwrap_or(available)
+            }
+        }
+        HarnessUpdatePhase::WaitingForIdle => format!("{installed} · Waiting for agent to be idle"),
+        HarnessUpdatePhase::Preparing => format!("{installed} · Preparing update…"),
+        HarnessUpdatePhase::Downloading => format!("{installed} · Downloading…"),
+        HarnessUpdatePhase::Installing => format!("{installed} · Installing…"),
+        HarnessUpdatePhase::Verifying => "Verifying updated CLI…".into(),
+        HarnessUpdatePhase::Updated => format!("{installed} · Updated"),
+        HarnessUpdatePhase::ManualActionRequired => status
+            .manual_command
+            .as_deref()
+            .map(|command| format!("{installed} · {command}"))
+            .unwrap_or_else(|| format!("{installed} · Manual update checks")),
+        HarnessUpdatePhase::Failed => status
+            .error
+            .as_ref()
+            .map(|error| format!("Update check failed · {}", error.message))
+            .unwrap_or_else(|| "Update check failed".into()),
+    };
+    let color = match status.phase {
+        HarnessUpdatePhase::Available => theme.accent,
+        HarnessUpdatePhase::Updated => theme.success,
+        HarnessUpdatePhase::Failed => theme.danger,
+        HarnessUpdatePhase::ManualActionRequired => theme.warning_muted,
+        _ => theme.text_muted.opacity(0.75),
+    };
+    (label.into(), color)
+}
+
 pub struct HarnessesPage {
     title_settings: Loadable<TitleSettings>,
     title_models: Loadable<Vec<Model>>,
@@ -103,6 +184,14 @@ pub struct HarnessesPage {
     sign_in: Option<SignIn>,
     sign_in_failure: Option<SignInFailure>,
     sign_in_task: Option<Task<()>>,
+    /// The provider whose expanded details are open (`None` = all collapsed).
+    expanded_harness: Option<HarnessId>,
+    /// The target device's agent-CLI update lifecycle (standing watch).
+    updates: Loadable<Vec<HarnessUpdateStatus>>,
+    /// Open-menu state per harness's update-policy dropdown.
+    policy_selects: std::collections::HashMap<HarnessId, widgets::SelectState>,
+    update_task: Option<Task<()>>,
+    update_action_task: Option<Task<()>>,
 }
 
 struct SignIn {
@@ -202,6 +291,11 @@ impl HarnessesPage {
             sign_in: None,
             sign_in_failure: None,
             sign_in_task: None,
+            expanded_harness: None,
+            updates: Loadable::Idle,
+            policy_selects: Default::default(),
+            update_task: None,
+            update_action_task: None,
         };
         page.load(cx);
         page
@@ -235,17 +329,25 @@ impl HarnessesPage {
         self.error = None;
         self.sign_in_failure = None;
         self.harnesses = Loadable::Idle;
+        self.expanded_harness = None;
+        self.policy_selects.clear();
+        self.updates = Loadable::Idle;
+        self.update_task = None;
+        self.update_action_task = None;
         self.load(cx);
         cx.notify();
     }
 
     /// `ListHarnesses` against the target device (installed probe + enabled
-    /// set both come from where the CLIs actually live).
+    /// set both come from where the CLIs actually live), plus the standing
+    /// update watch when the target engine advertises `harness-updates-v1`.
     fn load(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+        let Ok(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()) else {
             return;
         };
         let params = self.with_target(serde_json::json!({}));
+        let supports_updates = self.supports_updates(cx);
+        let update_engine = engine.clone();
         self.load_titles(None, cx);
         self.harnesses = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
@@ -262,6 +364,93 @@ impl HarnessesPage {
             })
             .ok();
         }));
+        self.updates = if supports_updates {
+            Loadable::Loading
+        } else {
+            Loadable::Ready(Vec::new())
+        };
+        self.update_task = supports_updates.then(|| {
+            let update_params = self.with_target(serde_json::json!({}));
+            cx.spawn(async move |this, cx| {
+                let mut retry = 1;
+                loop {
+                    match update_engine
+                        .subscribe(methods::WATCH_HARNESS_UPDATES, update_params.clone())
+                        .await
+                    {
+                        Ok(mut stream) => {
+                            while let Some(value) = stream.recv().await {
+                                retry = 1;
+                                let parsed =
+                                    serde_json::from_value::<Vec<HarnessUpdateStatus>>(value)
+                                        .map_err(|error| error.to_string());
+                                if this
+                                    .update(cx, |page, cx| {
+                                        page.updates = match parsed {
+                                            Ok(statuses) => Loadable::Ready(statuses),
+                                            Err(error) => Loadable::Error(error),
+                                        };
+                                        cx.notify();
+                                    })
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            this.update(cx, |page, cx| {
+                                page.updates = Loadable::Error(error.to_string());
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                    }
+                    if this
+                        .update(cx, |page, cx| {
+                            if !matches!(page.updates, Loadable::Error(_)) {
+                                page.updates = Loadable::Error(
+                                    "Connection closed. Reconnecting to device…".into(),
+                                );
+                            }
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(retry))
+                        .await;
+                    retry = (retry * 2).min(15);
+                }
+            })
+        });
+    }
+
+    /// Whether the target engine serves the harness-update lifecycle. The page
+    /// targets one engine at a time (`request_routing::device_target`), so a
+    /// single capability read answers for both the watch and the actions.
+    fn supports_updates(&self, cx: &Context<Self>) -> bool {
+        self.state.read(cx).engine().is_some_and(|engine| {
+            engine
+                .engine_info()
+                .supports(roboco_proto::capabilities::HARNESS_UPDATES_V1)
+        })
+    }
+
+    fn can_control_updates(&self, cx: &Context<Self>) -> bool {
+        self.supports_updates(cx) && matches!(self.updates, Loadable::Ready(_))
+    }
+
+    /// Toggle one provider's expanded details (one row open at a time).
+    fn toggle_agent_details(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        if self.expanded_harness == Some(harness) {
+            self.expanded_harness = None;
+        } else {
+            self.expanded_harness = Some(harness);
+        }
+        cx.notify();
     }
 
     fn load_titles(&mut self, save: Option<TitleSettings>, cx: &mut Context<Self>) {
@@ -643,6 +832,108 @@ impl HarnessesPage {
         cx.notify();
     }
 
+    /// Re-check every provider on the target engine (or one, when the row
+    /// pinned a provider). The watch republishes the result regardless.
+    fn check_updates(&mut self, cx: &mut Context<Self>) {
+        if !self.can_control_updates(cx) {
+            return;
+        }
+        let Ok(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()) else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({}));
+        self.error = None;
+        self.update_action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.call(methods::CHECK_HARNESS_UPDATES, params).await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(value) => match serde_json::from_value::<Vec<HarnessUpdateStatus>>(value) {
+                        Ok(statuses) => page.updates = Loadable::Ready(statuses),
+                        Err(error) => page.error = Some(error.to_string()),
+                    },
+                    Err(error) => page.error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Apply one provider's discovered release on the target engine. The
+    /// engine owns the mutation; progress lands through the watch.
+    fn apply_harness_update(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        if !self.can_control_updates(cx) {
+            return;
+        }
+        let Ok(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()) else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({ "harness": harness }));
+        self.error = None;
+        self.update_action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.call(methods::APPLY_HARNESS_UPDATE, params).await;
+            this.update(cx, |page, cx| {
+                if let Err(error) = result {
+                    page.error = Some(error.to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Cancel one provider's waiting/preparing/downloading update.
+    fn cancel_harness_update(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        if !self.can_control_updates(cx) {
+            return;
+        }
+        let Ok(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()) else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({ "harness": harness }));
+        self.update_action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.call(methods::CANCEL_HARNESS_UPDATE, params).await;
+            this.update(cx, |page, cx| {
+                if let Err(error) = result {
+                    page.error = Some(error.to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Set one provider's update policy (Notify / Auto when idle / Off). The
+    /// engine persists it per-device and replies with the fresh row.
+    fn set_update_policy(
+        &mut self,
+        harness: HarnessId,
+        policy: HarnessUpdatePolicy,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_control_updates(cx) {
+            return;
+        }
+        let Ok(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()) else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({
+            "harness": harness,
+            "policy": policy,
+        }));
+        self.error = None;
+        self.update_action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.call(methods::SET_HARNESS_UPDATE_POLICY, params).await;
+            this.update(cx, |page, cx| {
+                if let Err(error) = result {
+                    page.error = Some(error.to_string());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Run one explicit install ON THE TARGET ENGINE (engine-local routing:
     /// `request_routing::device_target` resolves the paired engine's
     /// connection — upstream's relay forward is deliberately excluded). The
@@ -910,6 +1201,91 @@ impl HarnessesPage {
         trigger.into_any_element()
     }
 
+    /// The expanded provider's details. No box of its own: the details
+    /// continue the provider row on the title's edge (the trigger's padding +
+    /// brand tile + gap).
+    fn render_agent_details(
+        &self,
+        harness: HarnessId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let content = div()
+            .flex()
+            .flex_col()
+            .ml(px(DETAILS_INSET))
+            .pb(px(10.0))
+            .children(self.render_updates_for(harness, theme, cx));
+        Some(
+            motion::menu_in(format!("agent-details-{harness:?}"), content).into_any_element(),
+        )
+    }
+
+    /// The expanded provider's Updates section: the update policy, short
+    /// labels in the menu and the chosen one explained under the title.
+    fn render_updates_for(
+        &self,
+        harness: HarnessId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Loadable::Ready(statuses) = &self.updates else {
+            return None;
+        };
+        let status = statuses.iter().find(|status| status.harness == harness)?;
+        let selected = UPDATE_POLICIES
+            .iter()
+            .position(|(policy, ..)| *policy == status.policy)
+            .unwrap_or(0);
+        let closed = widgets::SelectState::default();
+        let policy_select = widgets::select(
+            format!("harness-update-policy-{harness:?}"),
+            "Update policy",
+            theme,
+            move |page: &mut Self| page.policy_selects.entry(harness).or_default(),
+        )
+        .options(
+            UPDATE_POLICIES
+                .iter()
+                .map(|(_, label, _)| widgets::SelectOption::new(*label)),
+            selected,
+        )
+        // Fits the longest label, so switching never resizes the trigger.
+        .width(136.0)
+        .on_select(move |page, selected, _, cx| {
+            if let Some((policy, ..)) = UPDATE_POLICIES.get(selected) {
+                page.set_update_policy(harness, *policy, cx);
+            }
+        })
+        .render(self.policy_selects.get(&harness).unwrap_or(&closed), cx);
+        let row = div()
+            .min_h(px(52.0))
+            .py(px(10.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(widgets::row_title(theme, "Update policy"))
+                    .child(widgets::meta_line(
+                        theme,
+                        vec![div().child(UPDATE_POLICIES[selected].2).into_any_element()],
+                    )),
+            )
+            .child(policy_select);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .child(widgets::details_label(theme, "Updates"))
+                .child(row)
+                .into_any_element(),
+        )
+    }
+
     fn rows(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
         let theme = Theme::of(cx).for_settings_surface();
         let Loadable::Ready(list) = &self.harnesses else {
@@ -1013,6 +1389,31 @@ impl HarnessesPage {
                             .into_any_element(),
                     );
                 }
+                let update = match &self.updates {
+                    Loadable::Ready(statuses) => {
+                        statuses.iter().find(|status| status.harness == harness)
+                    }
+                    _ => None,
+                };
+                if let Some(status) = update {
+                    let (text, color) = harness_update_label(status, &theme);
+                    meta.push(div().text_color(color).child(text).into_any_element());
+                }
+                match harness {
+                    HarnessId::Cursor => meta.push(
+                        div()
+                            .text_color(theme.text_muted.opacity(0.65))
+                            .child("Cursor SDK · Managed by Roboco")
+                            .into_any_element(),
+                    ),
+                    HarnessId::Pi => meta.push(
+                        div()
+                            .text_color(theme.text_muted.opacity(0.65))
+                            .child("pi RPC bridge · Managed by Roboco")
+                            .into_any_element(),
+                    ),
+                    _ => {}
+                }
                 // widgets::row_tile with the brand tint honored (the Claude
                 // mark keeps its orange, like the picker rail).
                 let tile = div()
@@ -1028,19 +1429,140 @@ impl HarnessesPage {
                             .size(px(16.0))
                             .text_color(tint.unwrap_or(theme.text_muted)),
                     );
-                widgets::card_row(&theme, ix == 0)
+                let expanded = enabled && self.expanded_harness == Some(harness);
+                // The row's one update action sits inside the trigger, before
+                // the chevron, so it appearing never moves the chevron; the
+                // update policy lives in the expanded details.
+                let update_action = update.and_then(|status| {
+                    let (id, label, primary) = match status.phase {
+                        HarnessUpdatePhase::Available
+                        | HarnessUpdatePhase::ManualActionRequired
+                            if status.can_apply =>
+                        {
+                            ("harness-update", "Update", true)
+                        }
+                        HarnessUpdatePhase::WaitingForIdle
+                        | HarnessUpdatePhase::Preparing
+                        | HarnessUpdatePhase::Downloading => {
+                            ("harness-update-cancel", "Cancel", false)
+                        }
+                        _ => return None,
+                    };
+                    Some(
+                        div()
+                            .id((id, ix))
+                            .flex_none()
+                            .px(px(9.0))
+                            .py(px(5.0))
+                            .rounded(px(6.0))
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .cursor_pointer()
+                            .map(|button| {
+                                if primary {
+                                    button
+                                        .bg(theme.accent_wash)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.accent)
+                                        .hover(|style| style.bg(theme.accent.opacity(0.16)))
+                                } else {
+                                    button
+                                        .text_color(theme.text_muted)
+                                        .hover(|style| style.bg(crate::theme::ink(0.05)))
+                                }
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                // Inside the details trigger: act, don't expand.
+                                cx.stop_propagation();
+                                if primary {
+                                    this.apply_harness_update(harness, cx)
+                                } else {
+                                    this.cancel_harness_update(harness, cx)
+                                }
+                            }))
+                            .child(label),
+                    )
+                });
+                let header = widgets::card_row(&theme, ix == 0)
                     .id(("harness-row", ix))
                     .when(!installed, |el| el.opacity(0.55))
                     .when(signing_in.is_some(), |el| el.opacity(0.65))
-                    .child(tile)
                     .child(
                         div()
+                            .id(("harness-details-trigger", ix))
+                            .group(format!("harness-details-{ix}"))
                             .flex_1()
                             .min_w(px(180.0))
+                            .min_h(px(44.0))
+                            .px(px(4.0))
+                            .rounded(px(8.0))
                             .flex()
-                            .flex_col()
-                            .child(widgets::row_title(&theme, descriptor.name.clone()))
-                            .child(widgets::meta_line(&theme, meta)),
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.0))
+                            .when(enabled, |el| {
+                                el.role(gpui::Role::Button)
+                                    .aria_label(format!("{} preferences", descriptor.name))
+                                    .aria_expanded(expanded)
+                                    .tab_index(0)
+                                    .cursor_pointer()
+                                    // No hover slab (it stopped short of the
+                                    // toggle and boxed the row); the chevron
+                                    // lifts instead, like a list disclosure.
+                                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                    .on_click(cx.listener(move |page, _, _, cx| {
+                                        page.toggle_agent_details(harness, cx)
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        move |page, event: &gpui::KeyDownEvent, _, cx| {
+                                            if !event.is_held
+                                                && matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                )
+                                            {
+                                                page.toggle_agent_details(harness, cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                            })
+                            .child(tile)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(widgets::row_title(&theme, descriptor.name.clone()))
+                                    .child(widgets::meta_line(&theme, meta)),
+                            )
+                            .children(update_action)
+                            .when(enabled, |el| {
+                                el.child(
+                                    div()
+                                        .id(("harness-details-chevron", ix))
+                                        // Fixed width either way, so expanding
+                                        // never moves the chevron.
+                                        .w(px(14.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            crate::icons::icon(if expanded {
+                                                crate::icons::ALT_ARROW_DOWN
+                                            } else {
+                                                crate::icons::ALT_ARROW_RIGHT
+                                            })
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted)
+                                            .group_hover(
+                                                format!("harness-details-{ix}"),
+                                                |s| s.text_color(theme.text),
+                                            ),
+                                        ),
+                                )
+                            }),
                     )
                     .when(
                         offers_install(harness, installed, descriptor.can_install)
@@ -1114,7 +1636,15 @@ impl HarnessesPage {
                                         this.toggle(harness, !enabled, cx);
                                     }))
                             }),
-                    )
+                    );
+                let details = expanded
+                    .then(|| self.render_agent_details(harness, &theme, cx))
+                    .flatten();
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .children(details)
                     .into_any_element()
             })
             .collect()
@@ -1177,6 +1707,44 @@ impl Render for HarnessesPage {
             .error
             .clone()
             .map(|message| widgets::error_strip(&theme, message).into_any_element());
+        let update_error = match &self.updates {
+            Loadable::Error(message) => Some(
+                div()
+                    .child(widgets::error_strip(
+                        &theme,
+                        format!("Agent updates: {message}"),
+                    ))
+                    .child(
+                        widgets::ghost_action(&theme)
+                            .id("harness-updates-retry")
+                            .mt(px(8.0))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.load(cx);
+                                cx.notify();
+                            }))
+                            .child("Retry updates"),
+                    )
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
+        let supports_updates = self.supports_updates(cx);
+        let can_control = self.can_control_updates(cx);
+        let check = div()
+            .id("check-harness-updates")
+            .flex_none()
+            .px(px(9.0))
+            .py(px(5.0))
+            .rounded(px(6.0))
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|style| style.bg(crate::theme::ink(0.05)))
+            .opacity(if can_control { 1.0 } else { 0.4 })
+            .when(can_control, |button| {
+                button.on_click(cx.listener(|this, _, _, cx| this.check_updates(cx)))
+            })
+            .child("Check now");
         let switcher = self.render_device_switcher(&theme, cx);
         let titles = self.render_titles(&theme, cx);
         let scrollbar = popover::rail(self, "harnesses-page-scrollbar", &theme, cx);
@@ -1201,7 +1769,14 @@ impl Render for HarnessesPage {
                                     .items_center()
                                     .justify_between()
                                     .child(widgets::page_header(&theme, "Agents", None))
-                                    .child(switcher),
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .when(supports_updates, |el| el.child(check))
+                                            .child(switcher),
+                                    ),
                             )
                             .child(
                                 widgets::page_subtitle(
@@ -1214,6 +1789,7 @@ impl Render for HarnessesPage {
                                 .line_height(px(20.0)),
                             )
                             .children(error)
+                            .children(update_error)
                             .child(body)
                             .child(titles),
                     ),
@@ -1249,6 +1825,133 @@ mod tests {
             SignInPhase::Authenticating.failure_label(),
             "Sign-in failed"
         );
+    }
+
+    fn fixture_status(harness: roboco_proto::HarnessId, phase: roboco_proto::HarnessUpdatePhase) -> roboco_proto::HarnessUpdateStatus {
+        roboco_proto::HarnessUpdateStatus {
+            harness,
+            installed_version: Some("1.0.0".into()),
+            latest_version: Some("2.0.0".into()),
+            channel: None,
+            source: Default::default(),
+            policy: Default::default(),
+            phase,
+            progress: None,
+            checked_at: None,
+            error: None,
+            can_apply: true,
+            manual_command: None,
+        }
+    }
+
+    #[test]
+    fn update_policy_menu_orders_short_labels_with_explanations() {
+        let (first, label, note) = super::UPDATE_POLICIES[0];
+        assert_eq!(first, roboco_proto::HarnessUpdatePolicy::Notify);
+        assert_eq!(label, "Notify");
+        assert!(note.ends_with('.'));
+        assert_eq!(super::UPDATE_POLICIES[1].0, roboco_proto::HarnessUpdatePolicy::AutoWhenIdle);
+        assert_eq!(super::UPDATE_POLICIES[1].1, "Auto when idle");
+        assert_eq!(super::UPDATE_POLICIES[2].0, roboco_proto::HarnessUpdatePolicy::Off);
+        assert_eq!(super::UPDATE_POLICIES[2].1, "Off");
+    }
+
+    #[test]
+    fn update_label_names_versions_and_manual_guidance() {
+        use roboco_proto::HarnessUpdatePhase as Phase;
+        let theme = crate::theme::Theme::default();
+        let status = fixture_status(roboco_proto::HarnessId::Codex, Phase::Available);
+        let (label, _) = super::harness_update_label(&status, &theme);
+        assert_eq!(label.as_ref(), "v1.0.0 · v2.0.0 available");
+        let (label, _) = super::harness_update_label(
+            &fixture_status(roboco_proto::HarnessId::Codex, Phase::Current),
+            &theme,
+        );
+        assert_eq!(label.as_ref(), "v1.0.0 · Up to date");
+        let mut manual = fixture_status(roboco_proto::HarnessId::Codex, Phase::ManualActionRequired);
+        manual.can_apply = false;
+        manual.manual_command = Some("npm install -g @openai/codex".into());
+        let (label, _) = super::harness_update_label(&manual, &theme);
+        assert_eq!(
+            label.as_ref(),
+            "v1.0.0 · npm install -g @openai/codex"
+        );
+    }
+
+    #[gpui::test]
+    fn expanded_agent_preferences_render_inside_the_agent_row(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext;
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::settings::init(Default::default(), dir.path(), cx);
+            gpui_base::init(cx);
+            cx.set_global(crate::theme::Theme::default());
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| crate::state::AppState::new());
+            super::HarnessesPage::new(state, cx)
+        });
+        let descriptor = |id, name: &str| roboco_engine::registry::HarnessDescriptor {
+            id,
+            name: name.into(),
+            supports_steering: false,
+            steering_mode: roboco_proto::SteeringMode::TurnBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: Some(true),
+        };
+        window
+            .update(cx, |page, _, cx| {
+                page.harnesses = super::Loadable::Ready(vec![
+                    descriptor(roboco_proto::HarnessId::ClaudeCode, "Claude Code"),
+                    descriptor(roboco_proto::HarnessId::Codex, "Codex"),
+                ]);
+                // No engine is attached: the watch never starts and the
+                // Updates section stays hidden until statuses arrive.
+                assert!(page.render_updates_for(roboco_proto::HarnessId::ClaudeCode, &crate::theme::Theme::default(), cx).is_none());
+                page.updates = super::Loadable::Ready(vec![fixture_status(
+                    roboco_proto::HarnessId::ClaudeCode,
+                    roboco_proto::HarnessUpdatePhase::Available,
+                )]);
+                page.toggle_agent_details(roboco_proto::HarnessId::ClaudeCode, cx);
+                assert_eq!(
+                    page.expanded_harness,
+                    Some(roboco_proto::HarnessId::ClaudeCode)
+                );
+                assert!(
+                    page.render_updates_for(
+                        roboco_proto::HarnessId::ClaudeCode,
+                        &crate::theme::Theme::default(),
+                        cx
+                    )
+                    .is_some(),
+                    "the expanded provider's details include its Updates section"
+                );
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        // Toggling another provider swaps the expanded row.
+        window
+            .update(cx, |page, _, cx| {
+                page.toggle_agent_details(roboco_proto::HarnessId::Codex, cx);
+                assert_eq!(page.expanded_harness, Some(roboco_proto::HarnessId::Codex));
+                assert!(
+                    page.render_updates_for(
+                        roboco_proto::HarnessId::Codex,
+                        &crate::theme::Theme::default(),
+                        cx
+                    )
+                    .is_none(),
+                    "a provider without a status row renders no Updates section"
+                );
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
     }
 }
 
