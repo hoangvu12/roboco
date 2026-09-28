@@ -1454,7 +1454,7 @@ impl RenderOnce for DropdownRows {
         let list = div()
             .id(format!("{}-list", self.id))
             .debug_selector(|| "settings-dropdown-list".into())
-            .max_h(px(dropdown_list_height(window, self.chrome_height)))
+            .max_h(px(dropdown_list_height(window.viewport_size(), self.chrome_height)))
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .flex()
@@ -1468,8 +1468,8 @@ impl RenderOnce for DropdownRows {
 /// Height available to a settings dropdown's list: half the page pane's
 /// budget minus the trigger and card chrome. Height alone matters here, and
 /// the pane's does not depend on the section column's width.
-pub fn dropdown_list_height(window: &gpui::Window, chrome_height: f32) -> f32 {
-    let limits = pane_bounds(window.viewport_size(), 0.0);
+pub fn dropdown_list_height(viewport: gpui::Size<Pixels>, chrome_height: f32) -> f32 {
+    let limits = pane_bounds(viewport, 0.0);
     let card_height = ((f32::from(limits.size.height) - 16.0 - SELECT_HEIGHT) / 2.0 - 6.0)
         .max(1.0)
         .min(320.0);
