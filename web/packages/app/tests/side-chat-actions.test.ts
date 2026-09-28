@@ -12,6 +12,7 @@ import {
 import {
   beginUnsavedSideChat,
   clearPendingSideChat,
+  completionTargetChatId,
   dropUnsavedSideChat,
   isUnsavedSideChat,
   markSideChatSaved,
@@ -196,6 +197,36 @@ describe("the unsaved side-chat registry (unsaved_side_chat, state.rs)", () => {
     dropUnsavedSideChat("side-dropped");
     expect(isUnsavedSideChat("side-dropped")).toBe(false);
     expect(unsavedSideChat("side-dropped")).toBeNull();
+  });
+});
+
+describe("completionTargetChatId (completion_workspace_params, upstream #588)", () => {
+  it("an unsaved side chat's discovery addresses the parent, then its own row once minted", () => {
+    const row: Chat = { ...parent(), id: "side-completion", parentChatId: "source-1" };
+    beginUnsavedSideChat(row);
+    // No engine row exists for "side-completion" yet: SearchFiles and the
+    // command/skill catalogs must query the parent (the row the checkout
+    // was inherited from), never the unsaved chat itself.
+    expect(completionTargetChatId(row)).toBe("source-1");
+
+    // The first send minted it: subsequent discovery switches to the chat's
+    // own persisted identity.
+    markSideChatSaved("side-completion");
+    expect(completionTargetChatId(row)).toBe("side-completion");
+  });
+
+  it("a top-level chat and the new-chat canvas keep their own id", () => {
+    // No parent link: nothing to redirect discovery to.
+    expect(completionTargetChatId(parent())).toBe("source-1");
+    // An unsaved row without a parent cannot happen (the mint always links
+    // one), but the guard still keeps its own id rather than redirecting.
+    const orphan: Chat = { ...parent(), id: "side-orphan", parentChatId: null };
+    beginUnsavedSideChat(orphan);
+    expect(completionTargetChatId(orphan)).toBe("side-orphan");
+    dropUnsavedSideChat("side-orphan");
+    // The canvas is not a chat at all: the empty id flows through (the
+    // catalog params take the space/device branches instead).
+    expect(completionTargetChatId({ ...parent(), id: "" })).toBe("");
   });
 });
 
