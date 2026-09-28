@@ -250,7 +250,7 @@ export function AppearanceSettingsPage() {
             <RowTile icon="fileImage" />
           )}
           <div className="settings-row-main">
-            <span className="settings-row-title">New thread composer background</span>
+            <span className="settings-row-title">New thread background</span>
             <MetaLine fragments={backgroundMeta} />
           </div>
           <div className="settings-row-actions">
@@ -317,7 +317,6 @@ export function AppearanceSettingsPage() {
           <RowTile icon="folderWithFiles" />
           <div className="settings-row-main">
             <span className="settings-row-title">Theme library</span>
-            <MetaLine fragments={["Import custom themes."]} />
           </div>
           <div className="settings-row-actions">
             <BtnPrimary onClick={() => setImportState({ fileName: null, compilation: null, selected: new Set(), detailsVariant: null, error: null })}>
@@ -325,7 +324,7 @@ export function AppearanceSettingsPage() {
             </BtnPrimary>
           </div>
         </div>
-        {libraryEntries.length > 0 && <div className="library-group-header">IMPORTED</div>}
+        {libraryEntries.length > 0 && <div className="library-group-header">Imported</div>}
         {libraryEntries.map((entry) => (
           <LibraryEntryRow
             key={entry.id}
@@ -341,7 +340,6 @@ export function AppearanceSettingsPage() {
       <MonoFontBlock kind="terminal" settings={settings} />
       <MonoFontBlock kind="code" settings={settings} />
       <ConversationWidthBlock settings={settings} />
-      <CompactModeBlock settings={settings} />
 
       {(libraryError ?? libraryWarning) !== null && (
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
@@ -387,7 +385,6 @@ function ThemeSelectorRow(props: {
       <RowTile icon="tuning" />
       <div className="settings-row-main">
         <span className="settings-row-title">{props.label}</span>
-        <MetaLine fragments={["Used whenever this appearance is active."]} />
       </div>
       <PickerCard
         open={props.open}
@@ -484,9 +481,7 @@ function InterfaceFontBlock(props: {
       <div className="settings-font-row">
         <div className="settings-font-copy">
           <span className="settings-field-label">Interface font</span>
-          <p className="settings-font-description">
-            Menus, sidebars, and conversation text.
-          </p>
+          <p className="settings-font-description">Menus and conversations</p>
         </div>
         <div className="settings-font-controls">
           <FontFamilySelect
@@ -539,9 +534,7 @@ function MonoFontBlock(props: {
             {terminal ? "Terminal font" : "Code & diff font"}
           </span>
           <p className="settings-font-description">
-            {terminal
-              ? "Terminal panes and shell output. Fixed-width families only."
-              : "Code blocks, diffs, and workspace file editors."}
+            {terminal ? "Terminal output · monospace only" : "Code, diffs, and files"}
           </p>
         </div>
         <div className="settings-font-controls">
@@ -656,39 +649,6 @@ function FontSizeSelect(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Compact transcript mode (appearance.rs `Compact mode` row, upstream 94dbfc6d)
-// ---------------------------------------------------------------------------
-
-/**
- * A boolean switch on the conversation column: fold a turn's thinking,
- * tool calls, and narration into one collapsed work row — only the reply
- * shows, and settled turns carry "Worked for Xm Ys".
- */
-function CompactModeBlock(props: {
-  readonly settings: ReturnType<typeof useUiSettings>;
-}) {
-  const enabled = props.settings.transcriptCompactMode;
-  return (
-    <section className="settings-card">
-      <div className="settings-row">
-        <RowTile icon="eyeClosed" />
-        <div className="settings-row-main">
-          <span className="settings-row-title">Compact mode</span>
-          <span className="settings-row-meta">
-            Fold a turn's thinking, tool calls, and narration into one collapsed row — only the reply shows.
-          </span>
-        </div>
-        <RbSwitch
-          checked={enabled}
-          onCheckedChange={() => uiSettings.updateImmediate({ transcriptCompactMode: !enabled })}
-          aria-label="Compact mode"
-        />
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // The conversation-width slider (appearance.rs render_transcript_width,
 // upstream cbf2ad84)
 // ---------------------------------------------------------------------------
@@ -734,7 +694,7 @@ function ConversationWidthBlock(props: {
         <div className="settings-font-copy">
           <span className="settings-field-label">Conversation width</span>
           <p className="settings-font-description">
-            Maximum width of messages. Adapts to smaller windows.
+            Maximum width for messages and the composer.
           </p>
         </div>
         <div

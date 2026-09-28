@@ -69,7 +69,7 @@ import {
 import { useSidebar } from "../state/sidebar";
 import { useNewThreadBackground } from "../state/appearance";
 import { SidebarBody } from "./sidebar-body";
-import { SettingsNavBody } from "./settings-nav";
+import { toggleSettings } from "../lib/settings-close";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
 import { FilesPaneColumn } from "./files/files-pane-column";
@@ -408,10 +408,15 @@ export function AppShell() {
   );
   useEffect(
     () =>
+      // `toggle_settings` (shell.rs:3934-3941), the shared rule the
+      // settings suite pins (lib/settings-close.ts): ⌘/Ctrl+, opens Settings
+      // on the remembered section (the `/settings` index redirect) and
+      // CLOSES it while it is open — the settings dialog's own toggle, the
+      // modal redesign's keyboard contract (ticket 26).
       onShortcut("open-settings", () => {
-        void navigate({ to: "/settings" });
+        toggleSettings(pathname, router);
       }),
-    [navigate],
+    [pathname, router],
   );
   // Mod+K toggles the add-space palette (the New project binding,
   // `ShortcutId::NewProject` — mod-shift-n — resolves through the keymap
@@ -692,21 +697,19 @@ export function AppShell() {
         onToggleExpand={hasPane ? () => rightPaneStore.toggleExpanded(paneChatId) : null}
       />
       {/*
-        `SidebarPane::render`'s route match (shell.rs:993-1008): the sidebar
-        COLUMN persists — width, seam, collapse, titlebar pad all stay — and
-        only its CONTENT swaps, the settings nav replacing the chat sidebar
-        on `/settings/*`. Never keyed by engine: the desktop's tree never
+        The persistent sidebar column (`SidebarPane::render`): the settings
+        dialog floats OVER it now — the modal redesign retired the
+        settings-mode sidebar swap (the nav lives in the dialog's own left
+        column), so the chat sidebar stays mounted and dimmed under the
+        dialog's scrim on `/settings/*`, exactly like the desktop's window
+        under its modal. Never keyed by engine: the desktop's tree never
         is, the sidebar reads the fleet-merged snapshot, and a remount
         would force-close an open add-space palette and reset the
         group-collapse state (ticket 43).
       */}
       <aside className="sidebar">
         <div className="sidebar-inner">
-          {route === "settings" ? (
-            <SettingsNavBody />
-          ) : (
-            <SidebarBody />
-          )}
+          <SidebarBody />
         </div>
       </aside>
       {/*

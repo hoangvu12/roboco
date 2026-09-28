@@ -17,8 +17,8 @@ import {
  * Web parity of the desktop's remembered Settings section (upstream
  * d268830b): the `/settings` index reopens the section last viewed, the
  * section is persisted as `settingsSection` in the ui-settings store, and
- * unknown or malformed values heal to the web default without touching the
- * rest of the file.
+ * unknown or malformed values heal to the General default (the modal
+ * redesign's landing page, ticket 26) without touching the rest of the file.
  */
 
 function memoryStorage(): StorageLike & { dump(): Map<string, string> } {
@@ -43,11 +43,14 @@ afterEach(() => {
 });
 
 describe("settings-section slugs", () => {
-  it("matches the sidebar nav's sections, and nothing else", () => {
+  it("matches the dialog nav's sections, and nothing else", () => {
     for (const slug of SETTINGS_SECTION_SLUGS) {
       expect(isSettingsSectionSlug(slug)).toBe(true);
     }
-    for (const value of ["general", "appshots", "billing", "", null, 42, undefined]) {
+    // Appshots stays desktop-only; the desktop's "providers" slug name for
+    // Harnesses is an alias the web does not carry (its route segment keeps
+    // the historic "harnesses" spelling).
+    for (const value of ["appshots", "providers", "conversations", "billing", "", null, 42, undefined]) {
       expect(isSettingsSectionSlug(value)).toBe(false);
     }
   });
@@ -56,6 +59,7 @@ describe("settings-section slugs", () => {
     expect(settingsSectionFromPath("/settings/devices")).toBe("devices");
     expect(settingsSectionFromPath("/settings/remote-access")).toBe("remote-access");
     expect(settingsSectionFromPath("/settings/appearance/")).toBe("appearance");
+    expect(settingsSectionFromPath("/settings/general")).toBe("general");
     expect(settingsSectionFromPath("/settings/billing")).toBeNull();
     expect(settingsSectionFromPath("/settings")).toBeNull();
     expect(settingsSectionFromPath("/settings/")).toBeNull();
@@ -63,20 +67,20 @@ describe("settings-section slugs", () => {
     expect(settingsSectionFromPath("/")).toBeNull();
   });
 
-  it("reopens the remembered section, healing unknowns to the default", () => {
+  it("reopens the remembered section, healing unknowns to the General default", () => {
     expect(settingsIndexTarget("appearance")).toBe("/settings/appearance");
-    expect(settingsIndexTarget(SETTINGS_SECTION_DEFAULT)).toBe("/settings/devices");
-    // The desktop's General fallback has no web page: unknown sections land
-    // on the historic default redirect.
-    expect(settingsIndexTarget("billing")).toBe("/settings/devices");
-    expect(settingsIndexTarget("general")).toBe("/settings/devices");
+    expect(settingsIndexTarget(SETTINGS_SECTION_DEFAULT)).toBe("/settings/general");
+    // The desktop's lenient read heals unknown sections to General — the
+    // web's General page is the modal redesign's landing page now.
+    expect(settingsIndexTarget("billing")).toBe("/settings/general");
+    expect(settingsIndexTarget("appshots")).toBe("/settings/general");
   });
 });
 
 describe("remembered settings section in the ui-settings store", () => {
-  it("defaults to the index redirect's historic target with no stored data", () => {
+  it("defaults to the desktop's General landing page with no stored data", () => {
     const settings = new UiSettingsStore({ storage: memoryStorage() }).getSnapshot();
-    expect(settings.settingsSection).toBe("devices");
+    expect(settings.settingsSection).toBe("general");
   });
 
   it("round-trips every section and persists it through a debounced write", () => {
@@ -106,13 +110,13 @@ describe("remembered settings section in the ui-settings store", () => {
   });
 
   it("heals unknown, missing, and malformed values without defaulting other fields", () => {
-    for (const raw of ["billing", "general", 42, null, { section: "devices" }]) {
+    for (const raw of ["billing", "appshots", 42, null, { section: "devices" }]) {
       const settings = storedWith({ sidebarWidth: 300, settingsSection: raw }).getSnapshot();
-      expect(settings.settingsSection).toBe("devices");
+      expect(settings.settingsSection).toBe("general");
       expect(settings.sidebarWidth).toBe(300);
     }
     const legacy = storedWith({ sidebarWidth: 300 }).getSnapshot();
-    expect(legacy.settingsSection).toBe("devices");
+    expect(legacy.settingsSection).toBe("general");
     expect(legacy.sidebarWidth).toBe(300);
   });
 });

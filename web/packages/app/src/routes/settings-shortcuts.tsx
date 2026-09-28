@@ -8,7 +8,6 @@ import {
   skillCompletionFor,
   uiSettings,
   useUiSettings,
-  type ComposerSendBehavior,
 } from "../state/ui-settings";
 import { keymapStore } from "../state/keymap";
 import { setKeystrokeIntercept } from "../state/keymap";
@@ -28,7 +27,6 @@ import {
 import {
   conflictNotice,
   conflictOwner,
-  modifierSendLabel,
   recordKey,
   reservedNotice,
   sendComboIsReserved,
@@ -38,8 +36,11 @@ import {
 
 /**
  * The Shortcuts editor (desktop settings/shortcuts.rs parity): the rebind
- * table grouped into cards, the send-behavior segmented control, the
- * escape-behavior toggle, per-row Reset and page-level Restore defaults.
+ * table grouped into cards, per-row Reset and page-level Restore defaults.
+ * The send-behavior segmented control and the escape-behavior toggle moved
+ * to the General page with the desktop's modal redesign (b782d043, ticket
+ * 26) — Restore defaults still resets them, and the composer-completion
+ * section stays here (ticket 10's final state, per decision 18).
  *
  * Recording installs the web's `cx.intercept_keystrokes` equivalent: the
  * keystroke-intercept registry (the shell's binding dispatch declines to
@@ -143,17 +144,11 @@ export function ShortcutsSettingsPage() {
     setRecording(null);
   }
 
-  function setSendBehavior(behavior: ComposerSendBehavior) {
-    if (settings.composerSendBehavior === behavior) {
-      return;
-    }
-    setNotice(null);
-    uiSettings.updateImmediate({ composerSendBehavior: behavior });
-  }
-
   // `self.keymap != KeymapConfig::default()` is a VALUE comparison on the
   // desktop (derived PartialEq); `defaultKeymap()` mints a fresh object per
-  // call, so the web compares the serialized shapes.
+  // call, so the web compares the serialized shapes. The send/Escape
+  // preferences count toward "customized" even though their rows moved to
+  // the General page — Restore defaults still resets them.
   const customized =
     JSON.stringify(keymap) !== JSON.stringify(defaultKeymap(isMac)) ||
     settings.escapeStopsActiveAgent ||
@@ -167,8 +162,7 @@ export function ShortcutsSettingsPage() {
     <div className="settings-page">
       {/* The recorder's focus target — focused while recording so a blur
           anywhere cancels (cx.on_blur's equivalent). */}
-      <span ref={focusRef} tabIndex={-1} className="recorder-focus" onBlur={() => setRecording(null)} />
-      <div className="shortcuts-header">
+      <span ref={focusRef} tabIndex={-1} className="recorder-focus" onBlur={() => setRecording(null)} />      <div className="shortcuts-header">
         <div>
           <h1 className="settings-title">Keyboard shortcuts</h1>
           <p className="settings-subtitle">
@@ -186,58 +180,6 @@ export function ShortcutsSettingsPage() {
           Restore defaults
         </button>
       </div>
-
-      <section className="settings-card shortcuts-card-mt32">
-        <div className="settings-row settings-row-min84">
-          <div className="settings-row-main">
-            <span className="settings-row-title">Send messages with</span>
-            <span className="shortcuts-row-description">
-              Choose whether Enter sends immediately or starts a new paragraph. Cmd/Ctrl+Enter always
-              submits; with an empty composer it sends the most recently queued message. Shift+Enter
-              always inserts a line break.
-            </span>
-          </div>
-          <div className="send-behavior-control">
-            {settings.composerSendBehavior !== "enter" && (
-              <button
-                type="button"
-                className="send-behavior-reset"
-                aria-label="Reset send behavior to Enter"
-                onClick={() => setSendBehavior("enter")}
-              >
-                <Icon name="restart" size={13} />
-              </button>
-            )}
-            <div className="segmented-control" role="radiogroup" aria-label="Send messages with">
-              {(["enter", "modEnter"] as const).map((behavior) => {
-                const selected = settings.composerSendBehavior === behavior;
-                const label = behavior === "enter" ? "Enter" : modifierSendLabel(isMac);
-                return selected ? (
-                  <span
-                    key={behavior}
-                    role="radio"
-                    aria-checked={true}
-                    className="segmented-option segmented-option-selected"
-                  >
-                    {label}
-                  </span>
-                ) : (
-                  <button
-                    key={behavior}
-                    type="button"
-                    role="radio"
-                    aria-checked={false}
-                    className="segmented-option"
-                    onClick={() => setSendBehavior(behavior)}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
 
       <CompletionSection />
 
@@ -266,25 +208,6 @@ export function ShortcutsSettingsPage() {
       </div>
 
       <p className="shortcuts-helper">{helper}</p>
-
-      <section className="settings-card">
-        <div className="settings-row settings-row-min84">
-          <div className="settings-row-main">
-            <span className="settings-row-title">Stop active agent with Escape</span>
-            <span className="shortcuts-row-description">
-              When no dialog, menu, picker, or terminal handles Escape, stop the agent in the active
-              session.
-            </span>
-          </div>
-          <RbSwitch
-            checked={settings.escapeStopsActiveAgent}
-            onCheckedChange={() =>
-              uiSettings.updateImmediate({ escapeStopsActiveAgent: !settings.escapeStopsActiveAgent })
-            }
-            aria-label="Stop active agent with Escape"
-          />
-        </div>
-      </section>
     </div>
   );
 }

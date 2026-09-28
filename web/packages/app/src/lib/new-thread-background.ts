@@ -449,10 +449,11 @@ export function backgroundRowState(
   resolved: ResolvedNewThreadBackground | null,
 ): BackgroundRowState {
   if (resolved !== null) {
+    // The concise b782d043 pass: the meta names the image, nothing more.
     return {
       installed: true,
       available: true,
-      meta: [resolved.name, "Softened automatically on frosted themes."],
+      meta: [resolved.name],
     };
   }
   if (stored !== null) {
@@ -465,7 +466,7 @@ export function backgroundRowState(
   return {
     installed: false,
     available: false,
-    meta: ["Add an image behind the composer on empty new threads."],
+    meta: ["No image selected"],
   };
 }
 

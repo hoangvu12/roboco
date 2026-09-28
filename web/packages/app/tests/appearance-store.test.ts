@@ -212,14 +212,15 @@ describe("variantChoices", () => {
 });
 
 describe("helper copy and swatches", () => {
-  it("mirrors the desktop's accent helper text", () => {
-    expect(accentHelper("themeDefault")).toBe("Theme default · Uses the palette's intended color.");
-    expect(accentHelper("pink")).toBe("Pink · Controls, glyphs, selections, code, and activity.");
+  it("mirrors the desktop's concise accent helper text (b782d043)", () => {
+    // The concise pass names the selection instead of explaining scope.
+    expect(accentHelper("themeDefault")).toBe("Theme default");
+    expect(accentHelper("pink")).toBe("Pink");
   });
 
-  it("mirrors the desktop's surface helper text", () => {
-    expect(surfaceHelper("themeDefault", "opaque")).toBe("Uses this theme's opaque default.");
-    expect(surfaceHelper("opaque", "opaque")).toBe("Solid surfaces for every theme.");
+  it("mirrors the desktop's concise surface helper text (b782d043)", () => {
+    expect(surfaceHelper("themeDefault", "opaque")).toBe("Theme default: opaque");
+    expect(surfaceHelper("opaque", "opaque")).toBe("Solid surfaces");
   });
 
   it("picks the swatch color for the resolved appearance", () => {
@@ -429,7 +430,7 @@ describe("settings-page background row resolution (ticket 48)", () => {
     expect(row.installed).toBe(true);
     // The effect row's gate: the default keeps it open.
     expect(row.available).toBe(true);
-    expect(row.meta).toEqual(["Roboco", "Softened automatically on frosted themes."]);
+    expect(row.meta).toEqual(["Roboco"]);
   });
 
   it("keeps the user row unchanged and Image unavailable distinct", async () => {
@@ -443,10 +444,7 @@ describe("settings-page background row resolution (ticket 48)", () => {
     const resolved = await resolveActiveNewThreadBackground(stored, DEFAULT_NEW_THREAD_BACKGROUND_URL, blobs);
     expect(resolved?.name).toBe("wall.png");
     expect(resolved?.isDefault).toBe(false);
-    expect(backgroundRowState(stored, resolved).meta).toEqual([
-      "wall.png",
-      "Softened automatically on frosted themes.",
-    ]);
+    expect(backgroundRowState(stored, resolved).meta).toEqual(["wall.png"]);
     // Stored but broken: "Image unavailable", the effect gate closed.
     await blobs.delete();
     const broken = await resolveActiveNewThreadBackground(stored, DEFAULT_NEW_THREAD_BACKGROUND_URL, blobs);
@@ -461,6 +459,6 @@ describe("settings-page background row resolution (ticket 48)", () => {
     const row = backgroundRowState(null, null);
     expect(row.installed).toBe(false);
     expect(row.available).toBe(false);
-    expect(row.meta).toEqual(["Add an image behind the composer on empty new threads."]);
+    expect(row.meta).toEqual(["No image selected"]);
   });
 });

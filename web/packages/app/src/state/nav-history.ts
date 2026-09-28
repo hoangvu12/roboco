@@ -44,6 +44,12 @@ export class NavHistory {
     this.#entries = [initial];
   }
 
+  /** Test-only: one entry, cursor at it (the store's `resetForTest`). */
+  reset(initial: NavEntry): void {
+    this.#entries = [initial];
+    this.#index = 0;
+  }
+
   current(): NavEntry {
     return this.#entries[this.#index]!;
   }
@@ -128,6 +134,13 @@ export class NavHistoryStore {
   constructor(initial: NavEntry = NAV_BOOT_ENTRY) {
     this.#history = new NavHistory(initial);
     this.#snapshot = this.#take();
+  }
+
+  /** Test-only: drop the singleton's stack back to the untouched boot
+   *  canvas so mounted suites start from a known nav-history state. */
+  resetForTest(): void {
+    this.#history.reset(NAV_BOOT_ENTRY);
+    this.#commit();
   }
 
   getSnapshot(): NavSnapshot {
