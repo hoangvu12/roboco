@@ -965,6 +965,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
+        mcp: None,
         resume: None,
     };
     core.sessions
@@ -1010,6 +1011,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
+        mcp: None,
         resume: None,
     };
     core.sessions

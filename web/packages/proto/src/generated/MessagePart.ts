@@ -61,4 +61,10 @@ subagentStatus?: SubagentStatus | null,
  * One-line live tail of the subagent's latest output, folded from
  * its tagged text deltas (capped; display-only).
  */
-subagentTail?: string | null, } | { "kind": "input", id: string, requestId: string, questions: Array<UserInputQuestion>, resolved: boolean, } | { "kind": "error", id: string, message: string, };
+subagentTail?: string | null, } | { "kind": "input", id: string, requestId: string, questions: Array<UserInputQuestion>, resolved: boolean, } | { "kind": "error", id: string, message: string, } | { "kind": "fork", id: string, sourceChatId: string, 
+/**
+ * The source's title as of the fork — the transcript reads it
+ * without a registry lookup, and a later rename or delete of the
+ * source does not rewrite history.
+ */
+sourceTitle: string, };

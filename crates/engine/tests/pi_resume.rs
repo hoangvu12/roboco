@@ -34,6 +34,7 @@ async fn pi_idle_crash_next_dispatch_resumes_the_stored_session() {
             auto_approve: true,
             attachments: Vec::new(),
             worktree: None,
+            mcp: None,
             resume: None,
         };
         core.sessions

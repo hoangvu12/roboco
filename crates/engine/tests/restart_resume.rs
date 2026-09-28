@@ -47,6 +47,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
+        mcp: None,
         resume: None,
     }
 }
@@ -853,6 +854,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         auto_approve: false,
         attachments: Vec::new(),
         worktree: None,
+        mcp: None,
         resume: None,
     };
     let assemble_real = || {

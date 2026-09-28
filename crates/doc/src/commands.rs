@@ -360,6 +360,7 @@ mod tests {
             auto_approve: false,
             attachments: Vec::new(),
             worktree: None,
+            mcp: None,
             resume: None,
         }
     }

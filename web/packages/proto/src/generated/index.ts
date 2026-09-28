@@ -55,6 +55,7 @@ export * from "./HarnessId";
 export * from "./InstallHarnessRequest";
 export * from "./Invocation";
 export * from "./ListWorkspaceDirectoryRequest";
+export * from "./McpServer";
 export * from "./MessagePart";
 export * from "./MessageRole";
 export * from "./MessageStatus";

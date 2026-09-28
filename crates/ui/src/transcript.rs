@@ -1567,6 +1567,10 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    // The fork seam's labeled divider ("This chat was forked
+                    // from <title>") lands with the side-chat UI port; until
+                    // then the persisted part renders no row.
+                    MessagePart::Fork { .. } => {}
                     // Generated-image rendering is not ported yet (engine
                     // intake landed first): the part persists in the doc and
                     // simply renders no row here until the UI port lands.

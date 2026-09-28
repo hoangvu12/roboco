@@ -10385,6 +10385,7 @@ mod tests {
             space_id: None,
             last_seen_at: None,
             room_gen: None,
+            parent_chat_id: None,
         }
     }
 

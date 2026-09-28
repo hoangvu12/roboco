@@ -65,6 +65,10 @@ pub mod methods {
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`; IPC-only.
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
+    /// Fork a chat into a side chat: copies the source's completed history,
+    /// appends the `fork` seam, and lists the copy under its parent.
+    /// Params `{chatId, sourceChatId, parentChatId?}` → `Chat`.
+    pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
     /// device sees the same queue. `{ chatId }` → `{ items: QueuedMessage[] }`.

@@ -213,6 +213,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ModelOption,
         roboco_proto::ModelOptionChoice,
         roboco_proto::RunRequest,
+        roboco_proto::McpServer,
         roboco_proto::WorktreeSpec,
         roboco_proto::ToolCall,
         roboco_proto::TodoItem,
