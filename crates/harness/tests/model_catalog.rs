@@ -7,7 +7,9 @@ fn harnesses(binary: &Path) -> Vec<Arc<dyn Harness>> {
         Arc::new(CodexHarness::new().with_executable(binary)),
         Arc::new(AcpHarness::grok().with_executable(binary)),
         Arc::new(AcpHarness::hermes().with_executable(binary)),
-        Arc::new(AcpHarness::pi().with_executable(binary)),
+        // pi left the ACP family with the native RPC driver (wave2/21): its
+        // catalog-failure coverage now lives in tests/pi.rs against the
+        // fake-pi-rpc fixture, not this ACP fixture.
         Arc::new(AcpHarness::antigravity().with_executable(binary)),
         Arc::new(AcpHarness::devin().with_executable(binary)),
     ]
