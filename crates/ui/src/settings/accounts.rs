@@ -1527,7 +1527,7 @@ impl popover::ScrollRailHost for AccountsPage {
 
 impl Render for AccountsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
         let dialog = self.render_login_dialog(window.viewport_size(), cx);
         let refreshing = matches!(self.snapshot, Loadable::Loading);
@@ -1723,7 +1723,6 @@ impl Render for AccountsPage {
                                             let label = add_option_label(option, empty);
                                             widgets::ghost_action(&theme)
                                                 .id((add_id.clone(), ix))
-                                                .hover(|s| widgets::ghost_hover(&theme, s))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.start_login(harness, option.provider, cx);
                                                 }))
@@ -1787,7 +1786,6 @@ impl Render for AccountsPage {
                                             .id("accounts-refresh")
                                             .flex_none()
                                             .text_size(crate::typography::ui_rems(12.5))
-                                            .hover(|s| widgets::ghost_hover(&theme, s))
                                             .when(refreshing, |el| el.opacity(0.5))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.load(

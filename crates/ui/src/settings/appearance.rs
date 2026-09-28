@@ -3002,14 +3002,23 @@ impl Render for AppearancePage {
         // preserves the "Image unavailable" distinction (ticket 48).
         let current_background = crate::settings::active_new_thread_background(cx);
         let current_background_effect = ui_settings.new_thread_background_effect;
+        let reduced_motion = crate::motion::reduced_motion(cx);
         let cards = AppearanceMode::ALL
             .into_iter()
             .map(|mode| {
+                let selected = mode == current_mode;
+                let selection_t = widgets::tab_selection_t(
+                    window,
+                    format!("appearance-mode-{}-selection", mode.label()),
+                    selected,
+                    reduced_motion,
+                );
                 widgets::option_card(
                     &theme,
                     mode.icon(),
                     mode.label(),
-                    mode == current_mode,
+                    selected,
+                    selection_t,
                     preview(mode, &current_themes, current_accent, current_surface),
                 )
                 .id(SharedString::from(format!("appearance-{}", mode.label())))

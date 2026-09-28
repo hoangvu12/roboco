@@ -99,10 +99,16 @@ impl ShortcutsPage {
                         .child("Restore defaults"),
                 )
             });
-        let mut section = div().mt(px(28.0)).flex().flex_col().gap(px(12.0))
-            .child(div().flex().flex_col().gap(px(4.0)).child(header)
-                .child(widgets::page_subtitle(theme, "For active agents on this device. Completion preferences apply across your devices.")
-                    .mt(px(0.0)).line_height(px(20.0))));
+        let mut section = div()
+            .mt(px(28.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(header)
+            .child(widgets::section_label(
+                theme,
+                "For active agents on this device. Preferences apply across your devices.",
+            ));
         match &self.completion_harnesses {
             Loadable::Idle | Loadable::Loading => {
                 section = section.child(widgets::page_subtitle(theme, "Loading active agents…"));
@@ -156,10 +162,10 @@ impl ShortcutsPage {
                 for (harness, name) in agents {
                     let preferences = current.skill_completion(harness);
                     let (logo, tint) = crate::pickers::harness_brand_icon(harness);
-                    let mut card = widgets::section_card(theme).mt(px(0.0)).child(
+                    let mut card = widgets::section_card(theme).mt(px(8.0)).child(
                         div()
-                            .px(px(20.0))
-                            .pt(px(16.0))
+                            .mx(px(16.0))
+                            .pt(px(12.0))
                             .pb(px(4.0))
                             .flex()
                             .items_center()
@@ -170,26 +176,27 @@ impl ShortcutsPage {
                                     .flex_none()
                                     .text_color(tint.unwrap_or(theme.text)),
                             )
-                            .child(widgets::row_title(theme, name)),
+                            .child(widgets::details_label(theme, name)),
                     );
-                    for (dollar, label, description, enabled) in [
+                    for (ix, (dollar, label, description, enabled)) in [
                         (
                             true,
                             "Use $ for skills",
-                            "Type $ to find and insert a skill.",
+                            "Type $ in the composer to pick a skill.",
                             preferences.dollar,
                         ),
                         (
                             false,
                             "Separate / commands",
-                            "Keep skills out of the / command menu.",
+                            "Keep skills out of the / menu.",
                             preferences.separate_from_slash,
                         ),
                     ]
                     .into_iter()
+                    .enumerate()
                     {
                         card = card.child(
-                            widgets::card_row(theme, true)
+                            widgets::card_row(theme, ix == 0)
                                 .id(SharedString::from(format!(
                                     "completion-{harness:?}-{dollar}"
                                 )))
@@ -222,17 +229,17 @@ impl ShortcutsPage {
                                 .child(
                                     div()
                                         .flex_1()
-                                        .min_w_0()
+                                        .min_w(px(160.0))
                                         .flex()
                                         .flex_col()
-                                        .gap(px(4.0))
+                                        .gap(px(2.0))
                                         .child(widgets::row_title(theme, label))
                                         .child(
                                             div()
                                                 .text_size(crate::typography::ui_rems(
                                                     widgets::ROW_DESCRIPTION_SIZE,
                                                 ))
-                                                .line_height(px(18.0))
+                                                .line_height(crate::typography::ui_rems(16.0))
                                                 .text_color(theme.text_muted)
                                                 .child(description),
                                         ),
@@ -241,7 +248,7 @@ impl ShortcutsPage {
                                     theme,
                                     enabled,
                                     format!("completion-{harness:?}-{dollar}"),
-                                ).flex_none()),
+                                )),
                         );
                     }
                     section = section.child(card);

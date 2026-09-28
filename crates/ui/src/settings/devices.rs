@@ -9,7 +9,7 @@ use gpui::{
 };
 use std::time::Duration;
 
-use roboco_proto::WorkspaceScope;
+use roboco_proto::{Device, WorkspaceScope};
 use roboco_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -74,9 +74,9 @@ pub fn format_last_seen(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
 /// workspace and must not imply that account device metadata is already live.
 pub fn devices_subtitle(scope: Option<WorkspaceScope>) -> &'static str {
     match scope {
-        Some(WorkspaceScope::Local) => "Manage device details stored in this local workspace.",
-        Some(WorkspaceScope::Synced) => "Manage device names and inspect synced device metadata.",
-        Some(WorkspaceScope::Development) | None => "Manage device names for this workspace.",
+        Some(WorkspaceScope::Local) => "Devices in this local workspace.",
+        Some(WorkspaceScope::Synced) => "Devices synced to this workspace.",
+        Some(WorkspaceScope::Development) | None => "Devices in this workspace.",
     }
 }
 
@@ -253,6 +253,16 @@ impl DevicesPage {
         let dialog = self.rename.as_ref()?;
         let input = dialog.input.clone();
         let card = popover::dialog_card(&theme)
+            .id("rename-device-card")
+            .role(gpui::Role::Dialog)
+            .aria_label("Rename device")
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.rename = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
             .child(popover::dialog_title(&theme, "Rename device"))
             .child(
                 div()
@@ -267,16 +277,22 @@ impl DevicesPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(&theme, "Cancel", "rename-cancel")
+                        widgets::text_action(&theme, widgets::ActionTone::Quiet, "Cancel")
                             .id("rename-cancel")
+                            .tab_index(0)
+                            .role(gpui::Role::Button)
+                            .focus_visible(|s| s.border_2().border_color(theme.accent).opacity(1.0))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.rename = None;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        popover::btn_primary(&theme, "Rename")
+                        widgets::text_action(&theme, widgets::ActionTone::Solid, "Rename")
                             .id("rename-save")
+                            .tab_index(0)
+                            .role(gpui::Role::Button)
+                            .focus_visible(|s| s.border_2().border_color(theme.accent).opacity(1.0))
                             .on_click(cx.listener(|this, _, _, cx| this.submit_rename(cx))),
                     ),
             )
@@ -325,7 +341,7 @@ pub fn short_id(id: &str) -> String {
 
 impl Render for DevicesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
         let (devices, local_id, workspace_scope) = {
             let state = self.state.read(cx);
@@ -337,215 +353,200 @@ impl Render for DevicesPage {
         };
         let copied = self.copied.clone();
         let dialog = self.render_rename_dialog(window.viewport_size(), cx);
-        let emerald = theme.success; // emerald-400
-        let count = devices.len();
-
-        let rows: Vec<AnyElement> = devices
+        // Split into this device and the rest; each renders as rows in one
+        // block, like every other settings page.
+        let (local, others): (Vec<_>, Vec<_>) = devices
             .into_iter()
             .enumerate()
-            .map(|(ix, device)| {
-                let online = self.state.read(cx).device_online(&device.id, now);
-                let engine_key = ScopedId::parse(&device.id).ok().map(|id| id.engine);
-                let connection = engine_key
-                    .as_ref()
-                    .and_then(|key| {
-                        self.state
-                            .read(cx)
-                            .registry_snapshot
-                            .engines
-                            .iter()
-                            .find(|e| &e.key == key)
-                    })
-                    .map(|e| e.state.clone());
-                let forget_key = engine_key.filter(|key| !key.is_local());
-                let is_local = local_id.as_deref() == Some(device.id.as_str());
-                let id_copied = copied.as_deref() == Some(device.id.as_str());
-                let copy_id = device.id.clone();
-                let rename_id = device.id.clone();
-                let rename_name = device.name.clone();
-                let platform_icon = match device.platform.as_str() {
-                    "macos" | "darwin" => crate::icons::LAPTOP,
-                    "web" => crate::icons::GLOBAL,
-                    "ios" | "android" => crate::icons::SMARTPHONE,
-                    _ => crate::icons::MONITOR,
-                };
-                // Presence lives ON the identity tile: a corner dot ringed by
-                // the card tone so it "cuts" the tile. Engine-backed rows
-                // report the owning engine's connection (emerald glow when
-                // connected, amber while reconnecting, faint ink when off);
-                // other rows keep the last-seen window — roboco
-                // settings.devices.tsx `border-2 border-[var(--card)]` +
-                // `shadow-[0_0_6px_rgba(52,211,153,0.55)]`.
-                let dot = presence_dot(connection.as_ref(), online);
-                let tile = widgets::row_tile(&theme, platform_icon).relative().child({
-                    let el = div()
-                        .absolute()
-                        .bottom(px(-3.0))
-                        .right(px(-3.0))
-                        .size(px(9.0))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(theme.surface);
-                    match dot {
-                        PresenceDot::Connected => el.bg(emerald).shadow(vec![gpui::BoxShadow {
-                            color: emerald.opacity(0.55),
-                            offset: gpui::point(px(0.0), px(0.0)),
-                            blur_radius: px(6.0),
-                            spread_radius: px(0.0),
-                            inset: false,
-                        }]),
-                        PresenceDot::Reconnecting => el.bg(theme.warning),
-                        PresenceDot::Off => el.bg(crate::theme::ink(0.22)),
-                    }
-                });
-                // One quiet meta line: platform · version · (offline: last
-                // seen) · id chip.
-                let mut meta: Vec<AnyElement> = vec![
+            .partition(|(_, device)| local_id.as_deref() == Some(device.id.as_str()));
+        let device_row = |ix: usize, device: Device, first: bool, cx: &mut Context<Self>| {
+            let online = self.state.read(cx).device_online(&device.id, now);
+            let engine_key = ScopedId::parse(&device.id).ok().map(|id| id.engine);
+            let connection = engine_key
+                .as_ref()
+                .and_then(|key| {
+                    self.state
+                        .read(cx)
+                        .registry_snapshot
+                        .engines
+                        .iter()
+                        .find(|e| &e.key == key)
+                })
+                .map(|e| e.state.clone());
+            let forget_key = engine_key.filter(|key| !key.is_local());
+            let is_local = local_id.as_deref() == Some(device.id.as_str());
+            let id_copied = copied.as_deref() == Some(device.id.as_str());
+            let copy_id = device.id.clone();
+            let rename_id = device.id.clone();
+            let rename_name = device.name.clone();
+            let mut meta: Vec<AnyElement> = vec![
+                div()
+                    .child(SharedString::from(
+                        platform_label(&device.platform).to_string(),
+                    ))
+                    .into_any_element(),
+            ];
+            if let Some(version) = device.version.as_deref().filter(|v| !v.is_empty()) {
+                meta.push(
                     div()
-                        .child(SharedString::from(
-                            platform_label(&device.platform).to_string(),
-                        ))
+                        .child(SharedString::from(format!("v{version}")))
                         .into_any_element(),
-                ];
-                if let Some(version) = device.version.as_deref().filter(|v| !v.is_empty()) {
-                    meta.push(
-                        div()
-                            .child(SharedString::from(format!("v{version}")))
-                            .into_any_element(),
-                    );
-                }
+                );
+            }
+            // Presence only says something about other devices; engine-backed
+            // rows report the owning engine's connection instead.
+            if is_local {
                 if let Some(connection) = connection {
                     meta.push(
                         div()
-                            .child(match connection {
+                            .child(SharedString::from(match connection {
                                 EngineConnectionState::Connected => "Connected",
                                 EngineConnectionState::Reconnecting => "Reconnecting",
                                 EngineConnectionState::Off => "Off",
-                            })
+                            }))
                             .into_any_element(),
                     );
                 }
-                if !online {
-                    meta.push(
-                        div()
-                            .child(SharedString::from(format!(
-                                "Last seen {}",
-                                format_last_seen(device.last_seen_at, now)
-                            )))
-                            .into_any_element(),
-                    );
-                }
-                // "Added {time ago}" — always present (roboco settings.devices.tsx).
-                if let Some(created) = device.created_at {
-                    meta.push(
-                        div()
-                            .child(SharedString::from(format!(
-                                "Added {}",
-                                format_last_seen(Some(created), now)
-                            )))
-                            .into_any_element(),
-                    );
-                }
+            } else if let Some(connection) = connection {
                 meta.push(
                     div()
-                        .id(("device-id", ix))
-                        .font_family(theme.font_mono.clone())
-                        .text_size(crate::typography::ui_rems(10.5))
-                        .text_color(if id_copied {
-                            theme.success_muted.opacity(0.9)
+                        .text_color(if connection == EngineConnectionState::Connected {
+                            theme.success_muted
                         } else {
-                            theme.text_muted.opacity(0.5)
+                            theme.text_muted
                         })
-                        .cursor_pointer()
-                        .hover(|s| s.text_color(theme.text_muted))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy_id(copy_id.clone(), cx);
-                        }))
-                        .child(SharedString::from(if id_copied {
-                            "Copied".to_string()
-                        } else {
-                            short_id(
-                                &ScopedId::parse(&device.id)
-                                    .map(|id| id.raw_id)
-                                    .unwrap_or_else(|_| device.id.clone()),
-                            )
+                        .child(SharedString::from(match connection {
+                            EngineConnectionState::Connected => "Online",
+                            EngineConnectionState::Reconnecting => "Reconnecting",
+                            EngineConnectionState::Off => "Off",
                         }))
                         .into_any_element(),
                 );
-
-                widgets::card_row(&theme, ix == 0)
-                    .child(tile)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(widgets::row_title(&theme, device.name.clone()))
-                            .child(widgets::meta_line(&theme, meta)),
-                    )
-                    .when(is_local, |el| {
-                        el.child(widgets::badge(
-                            &theme,
-                            if workspace_scope == Some(WorkspaceScope::Local)
-                                && self.state.read(cx).registry().is_none()
-                            {
-                                "Local only"
-                            } else {
-                                "This device"
-                            },
-                        ))
-                    })
-                    .when_some(forget_key, |el, key| {
-                        el.child(
-                            widgets::ghost_action(&theme)
+            } else if online {
+                meta.push(
+                    div()
+                        .text_color(theme.success_muted)
+                        .child(SharedString::from("Online"))
+                        .into_any_element(),
+                );
+            } else {
+                meta.push(
+                    div()
+                        .child(SharedString::from(format!(
+                            "Last seen {}",
+                            format_last_seen(device.last_seen_at, now)
+                        )))
+                        .into_any_element(),
+                );
+            }
+            // "Added {time ago}" — always present (roboco settings.devices.tsx).
+            if let Some(created) = device.created_at {
+                meta.push(
+                    div()
+                        .child(SharedString::from(format!(
+                            "Added {}",
+                            format_last_seen(Some(created), now)
+                        )))
+                        .into_any_element(),
+                );
+            }
+            widgets::card_row(&theme, first)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(160.0))
+                        .child(widgets::row_title(&theme, device.name.clone()))
+                        .child(widgets::meta_line(&theme, meta)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            widgets::text_action(
+                                &theme,
+                                widgets::ActionTone::Quiet,
+                                if id_copied { "Copied" } else { "Copy ID" },
+                            )
+                            .id(("device-id", ix))
+                            .tab_index(0)
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Copy device ID {}", device.id))
+                            .focus_visible(|s| s.border_2().border_color(theme.accent))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy_id(copy_id.clone(), cx);
+                            })),
+                        )
+                        .when_some(forget_key, |actions, key| {
+                            actions.child(
+                                widgets::text_action(
+                                    &theme,
+                                    widgets::ActionTone::Quiet,
+                                    "Forget",
+                                )
                                 .id(("engine-forget", ix))
-                                .child("Forget")
+                                .text_color(theme.danger)
+                                .tab_index(0)
+                                .role(gpui::Role::Button)
+                                .focus_visible(|s| s.border_2().border_color(theme.accent))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.forget(key.clone(), cx)),
                                 ),
-                        )
-                    })
-                    .child(
-                        // `opacity-70 hover:opacity-100` (roboco: also rises on
-                        // row hover — gpui has no group-hover, so the button's
-                        // own hover carries the reveal).
-                        widgets::ghost_action(&theme)
-                            .id(("device-rename", ix))
-                            .opacity(0.7)
-                            .hover(|s| {
-                                s.opacity(1.0)
-                                    .bg(crate::theme::ink(0.06))
-                                    .text_color(theme.text)
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_rename(rename_id.clone(), rename_name.clone(), cx);
-                            }))
-                            .child(
-                                crate::icons::icon(crate::icons::PEN)
-                                    .size(px(14.0))
-                                    .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from("Rename")),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        let card = widgets::section_card(&theme);
-        let card = if rows.is_empty() {
-            card.child(
-                div()
-                    .px(px(16.0))
-                    .py(px(40.0))
-                    .text_center()
-                    .text_size(crate::typography::ui_rems(14.0))
-                    .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from("No devices registered")),
+                        })
+                        .child(
+                            widgets::text_action(&theme, widgets::ActionTone::Filled, "Rename")
+                                .id(("device-rename", ix))
+                                .tab_index(0)
+                                .role(gpui::Role::Button)
+                                .aria_label(format!("Rename {}", device.name))
+                                .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_rename(rename_id.clone(), rename_name.clone(), cx);
+                                })),
+                        ),
+                )
+                .into_any_element()
+        };
+        let local_block = (!local.is_empty()).then(|| {
+            let mut block = widgets::section_card(&theme).mt(px(8.0));
+            for (n, (ix, device)) in local.into_iter().enumerate() {
+                block = block.child(device_row(ix, device, n == 0, cx));
+            }
+            block
+        });
+        let others_block = if others.is_empty() {
+            widgets::section_card(&theme).mt(px(8.0)).child(
+                widgets::card_row(&theme, true).child(
+                    div()
+                        .text_size(crate::typography::ui_rems(13.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(
+                            "Pair another device to see it here.",
+                        )),
+                ),
             )
         } else {
-            card.children(rows)
+            let mut block = widgets::section_card(&theme).mt(px(8.0));
+            for (n, (ix, device)) in others.into_iter().enumerate() {
+                block = block.child(device_row(ix, device, n == 0, cx));
+            }
+            block
         };
+        let card = div()
+            .flex()
+            .flex_col()
+            .when_some(local_block, |el, block| {
+                el.child(widgets::section_label(&theme, "This device").mt(px(28.0)))
+                    .child(block)
+            })
+            // A local-only workspace never has other devices to list.
+            .when(workspace_scope != Some(WorkspaceScope::Local), |el| {
+                el.child(widgets::section_label(&theme, "Other devices").mt(px(28.0)))
+                    .child(others_block)
+            });
 
         let scrollbar = popover::rail(self, "devices-page-scrollbar", &theme, cx);
         div()
@@ -554,50 +555,58 @@ impl Render for DevicesPage {
             .size_full()
             .on_hover(cx.listener(Self::on_scroll_hovered))
             .child(
-                div()
-                    .id("devices-page")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll.scroll)
-                    .child(
-                        widgets::page_column()
-                            .child(widgets::page_header(
-                                &theme,
-                                "Devices",
-                                (count > 0).then_some(count),
-                            ))
-                            .child(widgets::page_subtitle(
-                                &theme,
-                                if self.state.read(cx).registry().is_some() {
-                                    "Connect and manage engines."
-                                } else {
-                                    devices_subtitle(workspace_scope)
-                                },
-                            ))
-                            .when_some(
-                                self.error.clone().or_else(|| {
-                                    self.state
-                                        .read(cx)
-                                        .registry_snapshot
-                                        .configuration_error
-                                        .clone()
-                                        .map(Into::into)
-                                }),
-                                |el, message| {
-                                    el.child(
-                                        widgets::error_strip(&theme, message)
-                                            .id("devices-error")
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.error = None;
-                                                cx.notify();
-                                            })),
-                                    )
-                                },
-                            )
-                            .child(
-                                widgets::section_card(&theme).child(
-                                    div()
+                crate::edge_fade::edge_faded(
+                    16.0,
+                    true,
+                    true,
+                    div()
+                        .id("devices-page")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll.scroll)
+                        .child(
+                            widgets::page_column()
+                                .child(widgets::page_header(&theme, "Devices", None))
+                                .child(widgets::page_subtitle(
+                                    &theme,
+                                    if self.state.read(cx).registry().is_some() {
+                                        "Connect and manage engines."
+                                    } else {
+                                        devices_subtitle(workspace_scope)
+                                    },
+                                ))
+                                .when_some(
+                                    self.error.clone().or_else(|| {
+                                        self.state
+                                            .read(cx)
+                                            .registry_snapshot
+                                            .configuration_error
+                                            .clone()
+                                            .map(Into::into)
+                                    }),
+                                    |el, message| {
+                                        el.child(
+                                            widgets::error_strip(&theme, message)
+                                                .id("devices-error")
+                                                .cursor_pointer()
+                                                .tab_index(0)
+                                                .role(gpui::Role::Button)
+                                                .focus_visible(|s| {
+                                                    s.border_2().border_color(theme.accent).opacity(1.0)
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.error = None;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    },
+                                )
+                                .child(
+                                    widgets::section(
+                                        &theme,
+                                        "Engines",
+                                        widgets::section_card(&theme).mt_0().child(
+                                        div()
                                         .px(px(16.0))
                                         .py(px(10.0))
                                         .flex()
@@ -617,8 +626,9 @@ impl Render for DevicesPage {
                                                         )),
                                                 )
                                                 .child(
-                                                    popover::btn_primary(
+                                                    widgets::text_action(
                                                         &theme,
+                                                        widgets::ActionTone::Solid,
                                                         if self.pairing_busy {
                                                             "Connecting…"
                                                         } else {
@@ -626,6 +636,11 @@ impl Render for DevicesPage {
                                                         },
                                                     )
                                                     .id("pair-engine")
+                                                    .tab_index(0)
+                                                    .role(gpui::Role::Button)
+                                                    .focus_visible(|s| {
+                                                        s.border_2().border_color(theme.accent).opacity(1.0)
+                                                    })
                                                     .on_click(cx.listener(
                                                         |this, _, _, cx| this.pair(cx),
                                                     )),
@@ -635,15 +650,19 @@ impl Render for DevicesPage {
                                             div()
                                                 .mt(px(6.0))
                                                 .text_size(crate::typography::ui_rems(11.0))
-                                                .text_color(theme.text_muted.opacity(0.65))
+                                                .text_color(theme.text_muted)
                                                 .child(SharedString::from(
                                                     "Create a pairing link in the engine's Remote access settings, then paste it here.",
                                                 )),
                                         ),
-                                ),
-                            )
-                            .child(card),
-                    ),
+                                        ),
+                                    )
+                                    .mt(px(28.0)),
+                                )
+                                .child(card),
+                        ),
+                )
+                .fade_overflow_y(&self.scroll.scroll),
             )
             .children(scrollbar)
             .when_some(dialog, |el, dialog| el.child(dialog))
