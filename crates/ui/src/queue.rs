@@ -225,7 +225,9 @@ fn queue_panel_surface(theme: &Theme) -> gpui::Div {
     div()
         .occlude()
         .rounded_t(px(PANEL_RADIUS))
-        .bg(crate::popover::surface_bg(theme))
+        // The tray shares the composer's fill: the compensated dark tint on
+        // dark frost, the input glass otherwise.
+        .bg(theme.composer_surface_bg())
         .border_1()
         .border_color(theme.border)
         .when(!theme.is_frost(), |el| el.shadow_lg())
