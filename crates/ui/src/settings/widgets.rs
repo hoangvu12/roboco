@@ -951,3 +951,23 @@ pub fn text_tooltip(
     let text: SharedString = text.into();
     move |_, cx| cx.new(|_| TextTooltip(text.clone())).into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropdowns_stay_in_the_settings_content_pane() {
+        for (width, sidebar) in [(600.0, 224.0), (1200.0, 256.0), (1200.0, 400.0)] {
+            let viewport = gpui::size(px(width), px(700.0));
+            let pane = pane_bounds(viewport, sidebar);
+            let limits = dropdown_limits(viewport, sidebar);
+            assert_eq!(pane.left(), px(sidebar));
+            assert_eq!(pane.right(), px(width));
+            assert!(limits.left() >= pane.left());
+            assert!(limits.right() <= pane.right());
+            assert!(limits.top() >= px(Theme::TITLEBAR_HEIGHT));
+            assert!(limits.bottom() <= pane.bottom());
+        }
+    }
+}

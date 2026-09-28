@@ -1775,6 +1775,7 @@ impl AppearancePage {
         theme: &Theme,
         availability: &FontAvailability,
         fixed: SharedString,
+        viewport: gpui::Size<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let slug = kind.slug();
@@ -1853,14 +1854,17 @@ impl AppearancePage {
                         cx.notify();
                     }
                 }))
-                .child(
+                .child(popover::faded_menu_list(
+                    &scroll,
                     popover::menu_scroll_list(list_id, &scroll)
-                        .max_h(px(280.0))
+                        // The list follows the same placement budget the
+                        // contained card is constrained to.
+                        .max_h(px(widgets::dropdown_list_height(viewport, 36.0, 52.0)))
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
                         .children(rows),
-                )
+                ))
                 .children(rail)
                 .into_any_element()
         };
@@ -1883,8 +1887,7 @@ impl AppearancePage {
                 theme,
                 self.font_search.clone().into_any_element(),
             ))
-            .child(list)
-            .into_any_element();
+            .child(list);
 
         let open = self.font_menu(kind).is_open();
         let closing = self.font_menu(kind).closing_since();
@@ -1933,10 +1936,11 @@ impl AppearancePage {
                     .text_color(theme.text_muted),
             )
             .when_some(self.font_menu(kind).get(), |trigger, _| {
-                trigger.child(popover::anchored_menu_below(
+                trigger.child(widgets::dropdown(
                     SharedString::from(format!("{slug}-font-menu")),
                     menu,
                     closing,
+                    36.0,
                 ))
             })
             .into_any_element()
@@ -1989,9 +1993,14 @@ impl AppearancePage {
             .on_mouse_down_out(cx.listener(move |this, _, _, cx| this.dismiss_size_menu(kind, cx)))
             .flex()
             .flex_col()
-            .gap(px(2.0))
-            .children(rows)
-            .into_any_element();
+            // Contained like the family picker; the short ladder still
+            // scrolls when the pane's lower half is too short for it.
+            .child(widgets::dropdown_rows(
+                format!("{slug}-font-size-rows"),
+                rows,
+                36.0,
+                8.0,
+            ));
 
         let open = self.size_menu(kind).is_open();
         let closing = self.size_menu(kind).closing_since();
@@ -2030,10 +2039,11 @@ impl AppearancePage {
                     .text_color(theme.text_muted),
             )
             .when_some(self.size_menu(kind).get(), |trigger, _| {
-                trigger.child(popover::anchored_menu_below(
+                trigger.child(widgets::dropdown(
                     SharedString::from(format!("{slug}-font-size-menu")),
                     menu,
                     closing,
+                    36.0,
                 ))
             })
             .into_any_element()
@@ -2139,6 +2149,46 @@ impl AppearancePage {
             } else {
                 "Dark themes"
             };
+            let rows: Vec<AnyElement> = registry
+                .variants_for(model_appearance(appearance_kind))
+                .enumerate()
+                .map(|(index, variant)| {
+                    let id = variant.id.clone();
+                    let name = variant.name.clone();
+                    let active = id == selected_id;
+                    let sample = Theme::for_selection(
+                        appearance_kind,
+                        &id,
+                        AccentSelection::ThemeDefault,
+                        theme.surface_preference,
+                    );
+                    popover::menu_row(
+                        theme,
+                        active,
+                        SharedString::from(format!(
+                            "appearance-theme-menu-{appearance_kind:?}-{index}"
+                        )),
+                    )
+                    .id(SharedString::from(format!(
+                        "appearance-theme-row-{appearance_kind:?}-{index}"
+                    )))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        appearance::set_theme(appearance_kind, id.clone(), cx);
+                        this.close_theme_menu(appearance_kind, cx);
+                        cx.notify();
+                    }))
+                    .child(palette_preview(&sample))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+                    .when(active, |row| {
+                        row.child(
+                            icons::icon(icons::CHECK)
+                                .size(px(14.0))
+                                .text_color(theme.accent),
+                        )
+                    })
+                    .into_any_element()
+                })
+                .collect();
             let menu = popover::popover_card(theme)
                 .w(px(260.0))
                 .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
@@ -2147,50 +2197,23 @@ impl AppearancePage {
                 }))
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
                 .child(popover::menu_heading(theme, heading))
-                .children(
-                    registry
-                        .variants_for(model_appearance(appearance_kind))
-                        .enumerate()
-                        .map(|(index, variant)| {
-                            let id = variant.id.clone();
-                            let name = variant.name.clone();
-                            let active = id == selected_id;
-                            let sample = Theme::for_selection(
-                                appearance_kind,
-                                &id,
-                                AccentSelection::ThemeDefault,
-                                theme.surface_preference,
-                            );
-                            popover::menu_row(
-                                theme,
-                                active,
-                                SharedString::from(format!(
-                                    "appearance-theme-menu-{appearance_kind:?}-{index}"
-                                )),
-                            )
-                            .id(SharedString::from(format!(
-                                "appearance-theme-row-{appearance_kind:?}-{index}"
-                            )))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                appearance::set_theme(appearance_kind, id.clone(), cx);
-                                this.close_theme_menu(appearance_kind, cx);
-                                cx.notify();
-                            }))
-                            .child(palette_preview(&sample))
-                            .child(div().flex_1().min_w_0().truncate().child(name))
-                            .when(active, |row| {
-                                row.child(
-                                    icons::icon(icons::CHECK)
-                                        .size(px(14.0))
-                                        .text_color(theme.accent),
-                                )
-                            })
-                        }),
-                )
-                .into_any_element();
-            trigger = trigger.child(popover::anchored_menu_below(
+                // Long theme lists scroll inside the same placement budget
+                // the card is contained to (upstream's dropdown_rows).
+                .child(widgets::dropdown_rows(
+                    format!(
+                        "appearance-{}-theme-rows",
+                        if appearance_kind.is_light() {
+                            "light"
+                        } else {
+                            "dark"
+                        }
+                    ),
+                    rows,
+                    34.0,
+                    32.0,
+                ));
+            trigger = trigger.child(widgets::dropdown(
                 SharedString::from(format!(
                     "appearance-{}-theme-menu",
                     if appearance_kind.is_light() {
@@ -2201,6 +2224,7 @@ impl AppearancePage {
                 )),
                 menu,
                 closing,
+                34.0,
             ));
         }
 
@@ -3280,12 +3304,30 @@ impl Render for AppearancePage {
             .render_import_dialog(window.viewport_size(), &theme, window, cx)
             .or_else(|| self.render_review_dialog(window.viewport_size(), &theme, cx));
 
-        let ui_picker =
-            self.render_font_picker(FontKind::Ui, &theme, &availability, fixed.clone(), cx);
-        let terminal_picker =
-            self.render_font_picker(FontKind::Terminal, &theme, &availability, fixed.clone(), cx);
-        let code_picker =
-            self.render_font_picker(FontKind::Code, &theme, &availability, fixed.clone(), cx);
+        let ui_picker = self.render_font_picker(
+            FontKind::Ui,
+            &theme,
+            &availability,
+            fixed.clone(),
+            window.viewport_size(),
+            cx,
+        );
+        let terminal_picker = self.render_font_picker(
+            FontKind::Terminal,
+            &theme,
+            &availability,
+            fixed.clone(),
+            window.viewport_size(),
+            cx,
+        );
+        let code_picker = self.render_font_picker(
+            FontKind::Code,
+            &theme,
+            &availability,
+            fixed.clone(),
+            window.viewport_size(),
+            cx,
+        );
         let ui_size = self.render_size_picker(FontKind::Ui, &theme, fixed.clone(), cx);
         let terminal_size = self.render_size_picker(FontKind::Terminal, &theme, fixed.clone(), cx);
         let code_size = self.render_size_picker(FontKind::Code, &theme, fixed.clone(), cx);

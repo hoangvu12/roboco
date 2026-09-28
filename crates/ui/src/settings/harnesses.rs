@@ -782,6 +782,7 @@ impl HarnessesPage {
         let mut trigger =
             div()
                 .id("harnesses-device-switcher")
+                .relative()
                 .flex_none()
                 .h(px(28.0))
                 .px(px(8.0))
@@ -841,17 +842,10 @@ impl HarnessesPage {
 
         if open {
             let theme = &theme.for_popup();
-            let menu = popover::popover_card(theme)
-                .w(px(220.0))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.device_menu_open = false;
-                    cx.notify();
-                }))
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(popover::menu_heading(theme, "Devices"))
-                .children(devices.into_iter().enumerate().map(|(ix, d)| {
+            let rows: Vec<AnyElement> = devices
+                .into_iter()
+                .enumerate()
+                .map(|(ix, d)| {
                     let is_active = Some(d.id.as_str()) == effective.as_deref();
                     let is_local = local_id.as_deref() == Some(d.id.as_str());
                     let glyph = platform_glyph(&d.platform);
@@ -892,9 +886,27 @@ impl HarnessesPage {
                                     crate::theme::ink(0.2)
                                 }),
                         )
+                        .into_any_element()
+                })
+                .collect();
+            let menu = popover::popover_card(theme)
+                .w(px(220.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.device_menu_open = false;
+                    cx.notify();
                 }))
-                .into_any_element();
-            trigger = trigger.child(popover::anchored_menu("harnesses-device-menu", menu, None));
+                .flex()
+                .flex_col()
+                .child(popover::menu_heading(theme, "Devices"))
+                // Contained to the settings page pane like the Accounts
+                // device switcher: flip-above placement, scrolling rows.
+                .child(widgets::dropdown_rows(
+                    "harnesses-device-rows",
+                    rows,
+                    28.0,
+                    32.0,
+                ));
+            trigger = trigger.child(widgets::dropdown("harnesses-device-menu", menu, None, 28.0));
         }
         trigger.into_any_element()
     }

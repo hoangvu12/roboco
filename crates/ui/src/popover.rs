@@ -13,8 +13,8 @@
 
 mod contained;
 mod hover_intent;
-pub use hover_intent::{HoverAction, HoverIntent};
 pub(crate) use contained::contained_menu;
+pub use hover_intent::{HoverAction, HoverIntent};
 
 use gpui::{
     Anchor, AnyElement, Context, Div, ElementId, IntoElement, MouseButton, MouseDownEvent,

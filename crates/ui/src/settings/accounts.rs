@@ -577,6 +577,7 @@ impl AccountsPage {
         let mut trigger =
             div()
                 .id("accounts-device-switcher")
+                .relative()
                 .flex_none()
                 .h(px(28.0))
                 .px(px(8.0))
@@ -637,16 +638,10 @@ impl AccountsPage {
 
         if self.device_menu.get().is_some() {
             let closing = self.device_menu.closing_since();
-            let menu = popover::popover_card(theme)
-                .w(px(220.0))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.close_device_menu(cx);
-                }))
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(popover::menu_heading(theme, "Devices"))
-                .children(devices.into_iter().enumerate().map(|(ix, d)| {
+            let rows: Vec<AnyElement> = devices
+                .into_iter()
+                .enumerate()
+                .map(|(ix, d)| {
                     let is_active = Some(d.id.as_str()) == effective.as_deref();
                     let is_local = local_id.as_deref() == Some(d.id.as_str());
                     let glyph = platform_glyph(&d.platform);
@@ -687,12 +682,31 @@ impl AccountsPage {
                                     crate::theme::ink(0.2)
                                 }),
                         )
+                        .into_any_element()
+                })
+                .collect();
+            let menu = popover::popover_card(theme)
+                .w(px(220.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.close_device_menu(cx);
                 }))
-                .into_any_element();
-            trigger = trigger.child(popover::anchored_menu(
+                .flex()
+                .flex_col()
+                .child(popover::menu_heading(theme, "Devices"))
+                // Contained to the settings page pane, flipping above the
+                // trigger when the lower half is too short; long device
+                // lists scroll inside the same budget.
+                .child(widgets::dropdown_rows(
+                    "accounts-device-rows",
+                    rows,
+                    28.0,
+                    32.0,
+                ));
+            trigger = trigger.child(widgets::dropdown(
                 "accounts-device-menu",
                 menu,
                 closing,
+                28.0,
             ));
         }
         trigger.into_any_element()
