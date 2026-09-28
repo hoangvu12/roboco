@@ -1894,3 +1894,39 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
         );
     }
 }
+
+#[tokio::test]
+async fn mcp_injection_all_acp_harnesses_new_resume_and_fallback() {
+    for harness in [
+        AcpHarness::grok(),
+        AcpHarness::devin(),
+        AcpHarness::hermes(),
+        AcpHarness::antigravity(),
+    ] {
+        let harness = harness.with_executable(fixture_path());
+        for resume in [None, Some("mcp-loaded"), Some("load-fail")] {
+            let mut req = request("scenario:mcp");
+            req.model = None;
+            req.resume = resume.map(str::to_owned);
+            req.mcp = Some(roboco_proto::McpServer {
+                name: "roboco".into(),
+                command: "/path with spaces/roboco".into(),
+                args: vec!["mcp".into()],
+                env: [
+                    ("ROBOCO_CHAT_ID".into(), "origin-chat".into()),
+                    ("ROBOCO_IPC_PORT".into(), "27699".into()),
+                ]
+                .into(),
+            });
+            let (controls, _steer, _token) = controls();
+            let events = run_to_end(&harness, req, controls).await;
+            assert!(
+                events.contains(&AgentEvent::TextDelta {
+                    text: "mcp configured".into()
+                }),
+                "{:?} {resume:?}: {events:?}",
+                harness.id()
+            );
+        }
+    }
+}

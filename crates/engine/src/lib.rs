@@ -550,6 +550,9 @@ impl Engine {
             stop_tx,
         });
         let server = serve_engine_ipc(config.ipc_port, service, &config.data_dir).await?;
+        // Only a port this process actually serves goes to agents: the
+        // injected MCP server must dial back into THIS engine.
+        runtime.core().sessions.set_ipc_port(config.ipc_port);
         if runtime.core().remote_access.snapshot().await?["status"]["enabled"] == true {
             match runtime.core().remote_access.create_link().await {
                 Ok(link) => println!("Pairing URL: {}", link["url"].as_str().unwrap_or_default()),

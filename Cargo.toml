@@ -9,6 +9,7 @@ members = [
     "crates/harness",
     "crates/engine",
     "crates/rpc",
+    "crates/roboco-mcp",
     "crates/update",
     "crates/ui",
     "crates/syntax",
@@ -30,6 +31,7 @@ roboco-sync = { path = "crates/sync" }
 roboco-harness = { path = "crates/harness" }
 roboco-engine = { path = "crates/engine" }
 roboco-rpc = { path = "crates/rpc" }
+roboco-mcp = { path = "crates/roboco-mcp" }
 roboco-update = { path = "crates/update" }
 roboco-ui = { path = "crates/ui" }
 roboco-syntax = { path = "crates/syntax" }

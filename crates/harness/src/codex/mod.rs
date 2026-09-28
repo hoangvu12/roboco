@@ -83,6 +83,17 @@ fn resolve_codex_executable() -> Option<PathBuf> {
     crate::executable::find_on_paths("codex", extra)
 }
 
+/// Dotted `thread/start` config overrides that add an injected MCP server
+/// to the user's `mcp_servers` table.
+fn codex_mcp_overrides(mcp: &roboco_proto::McpServer) -> Vec<(String, Value)> {
+    let key = |field: &str| format!("mcp_servers.{}.{field}", mcp.name);
+    vec![
+        (key("command"), mcp.command.clone().into()),
+        (key("args"), json!(mcp.args)),
+        (key("env"), json!(mcp.env)),
+    ]
+}
+
 /// A ready-to-spawn `codex login` command for the engine's account flow.
 ///
 /// Shares the harness's full resolution (`CODEX_EXECUTABLE`, PATH, login-shell
@@ -646,6 +657,7 @@ impl Harness for CodexHarness {
         request.resume = None;
         request.worktree = None;
         request.attachments.clear();
+        request.mcp = None;
         request.model_options.clear();
         request.auto_approve = false;
         self.run_with_mode(request, controls, true).await
@@ -994,6 +1006,17 @@ async fn run_session(session: Session) {
             );
         }
         p.insert("cwd".into(), Value::String(request.cwd.clone()));
+        if let Some(mcp) = request.mcp.as_ref().filter(|_| !title_only) {
+            // Roboco's own MCP server as dotted config overrides on top of the
+            // user's `mcp_servers` table (the same layer the title run uses
+            // to switch servers off).
+            let overrides = p
+                .entry("config")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("thread/start config overrides are an object");
+            overrides.extend(codex_mcp_overrides(mcp));
+        }
         p.insert("approvalPolicy".into(), approval_policy.into());
         p.insert("sandbox".into(), sandbox_mode(request.sandbox).into());
         if let Some(model) = &request.model {
@@ -2111,5 +2134,33 @@ mod skill_discovery_tests {
         assert_eq!(skills.len(), 2);
         assert_ne!(skills[0].path, skills[1].path);
         assert!(!skills[1].enabled);
+    }
+}
+
+#[cfg(test)]
+mod mcp_injection_tests {
+    use super::*;
+
+    #[test]
+    fn codex_mcp_overrides_use_the_dotted_mcp_servers_keys() {
+        let mcp = roboco_proto::McpServer {
+            name: "roboco".into(),
+            command: "/opt/roboco/roboco".into(),
+            args: vec!["mcp".into()],
+            env: [("ROBOCO_CHAT_ID".to_owned(), "chat-1".to_owned())]
+                .into_iter()
+                .collect(),
+        };
+        let overrides: serde_json::Map<String, Value> =
+            codex_mcp_overrides(&mcp).into_iter().collect();
+        assert_eq!(
+            overrides["mcp_servers.roboco.command"],
+            "/opt/roboco/roboco"
+        );
+        assert_eq!(overrides["mcp_servers.roboco.args"], json!(["mcp"]));
+        assert_eq!(
+            overrides["mcp_servers.roboco.env"],
+            json!({ "ROBOCO_CHAT_ID": "chat-1" })
+        );
     }
 }

@@ -76,6 +76,21 @@ fn resolve_claude_executable() -> Option<PathBuf> {
     crate::executable::find_on_paths("claude", extra)
 }
 
+/// The inline `--mcp-config` JSON for an injected server (the CLI accepts a
+/// JSON string as well as a file path).
+fn mcp_config_arg(mcp: &roboco_proto::McpServer) -> String {
+    serde_json::json!({
+        "mcpServers": {
+            &mcp.name: {
+                "command": mcp.command,
+                "args": mcp.args,
+                "env": mcp.env,
+            }
+        }
+    })
+    .to_string()
+}
+
 fn option_is_on(options: &serde_json::Map<String, Value>, key: &str) -> bool {
     match options.get(key) {
         Some(Value::Bool(b)) => *b,
@@ -491,6 +506,7 @@ impl Harness for ClaudeHarness {
         request.resume = None;
         request.worktree = None;
         request.attachments.clear();
+        request.mcp = None;
         request.model_options.clear();
         request.auto_approve = false;
         self.run_with_mode(request, controls, true).await
@@ -518,6 +534,11 @@ impl ClaudeHarness {
                 "--setting-sources",
                 "",
             ]);
+        } else if let Some(mcp) = &request.mcp {
+            // Roboco's own server rides beside the user's configured servers
+            // (no `--strict-mcp-config`): the CLI merges an inline JSON
+            // config with settings-sourced ones.
+            cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
         }
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1017,5 +1038,35 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+}
+
+#[cfg(test)]
+mod mcp_injection_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_config_arg_spells_the_server_the_way_the_cli_reads_it() {
+        let mcp = roboco_proto::McpServer {
+            name: "roboco".into(),
+            command: "/opt/roboco/roboco".into(),
+            args: vec!["mcp".into()],
+            env: [("ROBOCO_CHAT_ID".to_owned(), "chat-1".to_owned())]
+                .into_iter()
+                .collect(),
+        };
+        let parsed: Value = serde_json::from_str(&mcp_config_arg(&mcp)).unwrap();
+        assert_eq!(
+            parsed["mcpServers"]["roboco"]["command"],
+            "/opt/roboco/roboco"
+        );
+        assert_eq!(
+            parsed["mcpServers"]["roboco"]["args"],
+            serde_json::json!(["mcp"])
+        );
+        assert_eq!(
+            parsed["mcpServers"]["roboco"]["env"]["ROBOCO_CHAT_ID"],
+            "chat-1"
+        );
     }
 }
