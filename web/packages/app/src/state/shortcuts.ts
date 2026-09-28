@@ -798,6 +798,33 @@ export function cycleTarget(
 }
 
 // ---------------------------------------------------------------------------
+// Session-nav dispatch (shell.rs's overlay_owns_keyboard, 08965a1e)
+// ---------------------------------------------------------------------------
+
+/**
+ * The session-nav dispatch guard: next/prev session, archive and the jump
+ * slots fire from the Settings route too — each leaves the page and lands
+ * on its target, as from chat (upstream 08965a1e; Settings stopped counting
+ * as a keyboard-owning surface). Only an overlay that owns the keyboard
+ * (the add-space palette, a composer picker) keeps them quiet, so an
+ * unguarded jump cannot switch sessions UNDER the open popover. The
+ * shortcuts recorder's keystroke interception runs before dispatch,
+ * upstream of this rule.
+ */
+export function sessionNavFires(
+  route: "chat" | "settings",
+  overlayOwnsKeyboard: boolean,
+): boolean {
+  switch (route) {
+    case "chat":
+    case "settings":
+      // Every route the shell renders dispatches session navigation; a new
+      // route must decide for itself rather than silently inherit the guard.
+      return !overlayOwnsKeyboard;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The shortcut bus
 // ---------------------------------------------------------------------------
 

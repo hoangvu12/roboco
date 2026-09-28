@@ -23,6 +23,7 @@ import {
   modifierSendHintVisible,
   onShortcut,
   platformCombo,
+  sessionNavFires,
   shortcutAvailable,
   shortcutGroup,
   shortcutLabel,
@@ -612,6 +613,44 @@ describe("cycleTarget", () => {
   it("an_empty_list_has_nothing_to_select", () => {
     expect(cycleTarget([], null, true)).toBeNull();
     expect(cycleTarget([], "a", true)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session-nav dispatch from Settings (upstream 08965a1e)
+// ---------------------------------------------------------------------------
+
+describe("sessionNavFires (08965a1e)", () => {
+  it("fires on every route the shell renders, settings included", () => {
+    // The fix: Settings stopped counting as a keyboard-owning surface, so
+    // next/prev (and archive) leave the page and land on their target, as
+    // from chat — the chat-page route guard is gone.
+    expect(sessionNavFires("chat", false)).toBe(true);
+    expect(sessionNavFires("settings", false)).toBe(true);
+  });
+
+  it("stays quiet under an overlay that owns the keyboard, on any route", () => {
+    // The add-space palette or a composer picker: an unguarded jump would
+    // switch sessions UNDER the open popover.
+    expect(sessionNavFires("chat", true)).toBe(false);
+    expect(sessionNavFires("settings", true)).toBe(false);
+  });
+
+  it("a next-session keypress from the settings route navigates to the next row", () => {
+    // The pure chain the AppShell listener runs, walked from the settings
+    // route: match the keystroke against the table, admit it through the
+    // session-nav guard, then let the execution half (chat-list's cycleTo)
+    // pick the row from the drawn order — the same walk the desktop test
+    // drives with simulate_keystrokes
+    // (shell.rs's navigation_shortcuts_work_from_settings).
+    const table = applyKeymap(defaultKeymap(false), false);
+    const order = ["newer", "older"];
+    const binding = matchKeybinding(fakeEvent({ key: "Tab", ctrlKey: true }), table);
+    expect(binding?.event).toBe("next-session");
+    expect(sessionNavFires("settings", overlayOwnsKeyboard())).toBe(true);
+    expect(cycleTarget(order, "newer", true)).toBe("older");
+    // And the reverse step wraps back, as from chat.
+    expect(cycleTarget(order, "older", false)).toBe("newer");
   });
 });
 
