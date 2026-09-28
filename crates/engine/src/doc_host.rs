@@ -1718,6 +1718,11 @@ impl DocHost {
                 .await?
             {
                 SteerOutcome::Accepted => return Ok(()),
+                SteerOutcome::DeferredByUpdate => {
+                    return Err(EngineError::Other(
+                        "agent update pending; the message remains queued".into(),
+                    ));
+                }
                 // The run died under us between the status read and the send;
                 // fall through and start a fresh turn with it.
                 SteerOutcome::NotSteerable => {}
@@ -2489,18 +2494,28 @@ impl DocHost {
                 Some("held until the turn ends".into()),
             ));
         }
-        if let Some(message_id) = message_id.as_deref()
+        // The transcript shows the send while mailbox backpressure holds it.
+        // A pending agent update instead holds it in the queue below, where a
+        // transcript copy would duplicate it until the update finishes.
+        if !sessions.live_run_update_pending(chat_id)
+            && let Some(message_id) = message_id.as_deref()
             && let Err(err) =
                 handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
         {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
-        match sessions.steer(chat_id, &prompt, message_id.clone()).await? {
+        match sessions
+            .steer_at(chat_id, &prompt, message_id.clone(), issued_at)
+            .await?
+        {
             SteerOutcome::Accepted => {
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
             SteerOutcome::NotSteerable => {
+                if let Some(message_id) = message_id.as_deref() {
+                    handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;
+                }
                 let request = sessions
                     .last_request(chat_id)
                     .or_else(|| self.request_from_chat_row(chat_id, &prompt));
@@ -2522,6 +2537,17 @@ impl DocHost {
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("queued as new turn".into()),
+                ))
+            }
+            SteerOutcome::DeferredByUpdate => {
+                let id = message_id.unwrap_or_else(new_id);
+                self.hold_until_update_ends(handle, &id, &prompt, issued_at)?;
+                // The completed turn's status publication normally re-drains
+                // this queue. Also cover completion racing the enqueue itself.
+                self.drain_queue(handle).await;
+                Ok((
+                    SessionCommandStatus::Applied,
+                    Some("held until the agent update finishes".into()),
                 ))
             }
         }
@@ -2578,6 +2604,31 @@ impl DocHost {
         })?;
         handle.publish_queue();
         Ok(true)
+    }
+
+    /// Hold a prompt behind an accepted agent update: the queue row stays the
+    /// single durable copy (no transcript echo — the row is editable and the
+    /// turn-end watcher flushes it once the update finishes, exactly like the
+    /// turn-boundary hold). The forcing variant of [`Self::held_until_turn_end`].
+    fn hold_until_update_ends(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        id: &str,
+        prompt: &str,
+        issued_at: i64,
+    ) -> Result<(), EngineError> {
+        handle.doc.push_queued(&QueuedMessage {
+            id: id.to_string(),
+            text: prompt.to_string(),
+            attachments: Vec::new(),
+            hold_for_turn_end: false,
+            issued_by: self.inner.config.device_id.clone(),
+            issued_at,
+            edited_at: None,
+            delivery_gate: None,
+        })?;
+        handle.publish_queue();
+        Ok(())
     }
 
     async fn capture_source_context(&self, cwd: &str) -> Option<ConversationSourceContext> {

@@ -1746,6 +1746,24 @@ impl Harness for AcpHarness {
         find_on_paths(self.spec.cli_executable, (self.spec.cli_extra_paths)()).is_some()
     }
 
+    fn executable_path(&self) -> Option<PathBuf> {
+        // Grok, Hermes, Devin, and Antigravity spawn the same binary the CLI
+        // check names (`spec.executable == spec.cli_executable`), so the
+        // resolved adapter path is also the version-check/update target; env
+        // overrides follow the same resolution. When a transport differs from
+        // the CLI (an adapter that wraps the CLI), update monitoring must
+        // target the plain CLI lookup instead of the adapter override.
+        if self.spec.executable == self.spec.cli_executable {
+            if let Some(path) = &self.executable {
+                return Some(path.clone());
+            }
+            if let Some(path) = std::env::var_os(self.spec.env_override).filter(|p| !p.is_empty()) {
+                return Some(PathBuf::from(path));
+            }
+        }
+        find_on_paths(self.spec.cli_executable, (self.spec.cli_extra_paths)())
+    }
+
     /// Devin refreshes through its native catalog command on each request.
     /// Other ACP agents use a fresh session probe, with the spec's static
     /// catalog as fallback when they advertise nothing or probing fails.
@@ -2913,6 +2931,7 @@ async fn run_session(session: Session) {
         stderr_tail,
     } = session;
     let RunControls {
+        execution_lease: _execution_lease,
         request_input,
         mut steering,
         interrupt,
@@ -4100,6 +4119,59 @@ async fn run_session(session: Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_update_path_uses_the_resolved_adapter_when_cli_and_transport_match() {
+        // Grok's spawned transport and its CLI are the same binary, so an
+        // explicit override is also the version-check/update target.
+        let adapter = PathBuf::from("/test/custom-grok");
+        let grok = AcpHarness::grok().with_executable(&adapter);
+        assert_eq!(grok.executable_path(), Some(adapter.clone()));
+        let hermes = AcpHarness::hermes().with_executable(&adapter);
+        assert_eq!(hermes.executable_path(), Some(adapter));
+    }
+
+    #[test]
+    fn cli_update_path_follows_the_environment_override() {
+        const ADAPTER: &str = "/test/environment-grok";
+        if std::env::var("GROK_EXECUTABLE").as_deref() != Ok(ADAPTER) {
+            // Run with a private environment; do not mutate process-global
+            // variables while other harness tests are running.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "acp::tests::cli_update_path_follows_the_environment_override",
+                    "--nocapture",
+                ])
+                .env("GROK_EXECUTABLE", ADAPTER)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
+        let grok = AcpHarness::grok();
+        assert_eq!(
+            grok.executable_path(),
+            Some(PathBuf::from(ADAPTER))
+        );
+    }
+
+    #[test]
+    fn antigravity_update_target_is_the_managed_server_binary() {
+        // Antigravity's CLI is the ACP server itself: the spawned transport
+        // and the update target are the same binary, so an explicit server
+        // override is also the version-check target (Roboco manages the
+        // pinned archive install; there is no separate vendor CLI).
+        let adapter = PathBuf::from("/test/managed-agy-server");
+        let antigravity = AcpHarness::antigravity();
+        assert_eq!(antigravity.spec.cli_executable, "agy_acp_server");
+        assert_eq!(
+            AcpHarness::antigravity()
+                .with_executable(&adapter)
+                .executable_path(),
+            Some(adapter)
+        );
+    }
 
     #[test]
     fn antigravity_discovery_budget_covers_cold_start_without_changing_handshake() {

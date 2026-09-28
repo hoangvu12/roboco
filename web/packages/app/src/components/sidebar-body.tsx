@@ -7,6 +7,7 @@ import { SidebarNotice } from "./sidebar-notice";
 import { StarBanner } from "./star-banner";
 import { AccountRow } from "./account-row";
 import { ConnectionPill } from "./connection-pill";
+import { AgentUpdateStrip } from "./agent-update-strip";
 import { UpdateStrip } from "./update-strip";
 import { AddSpacePalette } from "./add-space-palette";
 import { CommandPalette } from "./command-palette";
@@ -55,6 +56,7 @@ export function SidebarBody() {
           (upstream d92d56a2); the web keeps its notice-above-strip order and
           mounts the banner directly above the strip. */}
       <StarBanner />
+      <AgentUpdateStrip />
       <UpdateStrip />
       <AccountRow />
       <AddSpacePalette />

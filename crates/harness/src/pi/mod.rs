@@ -210,6 +210,9 @@ impl Harness for PiHarness {
     fn installed(&self) -> bool {
         self.resolve_executable().is_ok()
     }
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        self.resolve_executable().ok()
+    }
     /// `agent_settled` ends every turn shape — user-prompted and
     /// agent-initiated (extension runs) — with a deterministic `Done`.
     fn deterministic_turn_end(&self) -> bool {
@@ -435,6 +438,7 @@ async fn run_session(session: Session) {
         stderr_tail,
     } = session;
     let RunControls {
+        execution_lease: _execution_lease,
         request_input,
         mut steering,
         interrupt,

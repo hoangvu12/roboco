@@ -137,6 +137,24 @@ export const WRITE_TERMINAL = "WriteTerminal";
 export const RESIZE_TERMINAL = "ResizeTerminal";
 export const CLOSE_TERMINAL = "CloseTerminal";
 
+// Device-local agent-CLI update lifecycle (engine-local: the engine that
+// owns the CLIs runs checks, updates, leases and notifications; nothing
+// forwards). The stream emits the complete ordered status list initially
+// and after every transition; actions are addressed to the engine that
+// owns the CLIs (`targetDeviceId?` selects its connection client-side and
+// is stripped at the socket, exactly like the install RPCs).
+export const WATCH_HARNESS_UPDATES = "WatchHarnessUpdates";
+/** Re-check every provider, or one when `{harness}` names it. */
+export const CHECK_HARNESS_UPDATES = "CheckHarnessUpdates";
+/** Apply one provider's discovered release (engine-owned mutation). */
+export const APPLY_HARNESS_UPDATE = "ApplyHarnessUpdate";
+/** Cancel one provider's waiting/preparing/downloading update. */
+export const CANCEL_HARNESS_UPDATE = "CancelHarnessUpdate";
+/** Dismiss one discovered version (engine-side state; no UI control). */
+export const DISMISS_HARNESS_UPDATE = "DismissHarnessUpdate";
+/** Set one provider's update policy (notify / auto-when-idle / off). */
+export const SET_HARNESS_UPDATE_POLICY = "SetHarnessUpdatePolicy";
+
 /** Per-checkout working-tree diffs (DataRpc, relay-forwardable). */
 export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
 

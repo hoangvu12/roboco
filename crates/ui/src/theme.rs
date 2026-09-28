@@ -1930,6 +1930,18 @@ fn painted_contrast(foreground: Hsla, background: Hsla) -> f32 {
     contrast_ratio(flatten(foreground, background), background)
 }
 
+/// Shared silver/slate edge for the composer and its companion surfaces.
+pub fn composer_surface_border(theme: &Theme) -> Hsla {
+    if theme.is_frost() {
+        match theme.appearance {
+            Appearance::Dark => hsla(210.0 / 360.0, 0.18, 0.78, 0.09),
+            Appearance::Light => hsla(210.0 / 360.0, 0.18, 0.32, 0.10),
+        }
+    } else {
+        theme.border
+    }
+}
+
 /// Composite `fg` (which may be translucent) over an opaque `bg`, returning the
 /// opaque result — the color the eye actually receives.
 pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {

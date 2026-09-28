@@ -15,6 +15,9 @@ pub mod capabilities {
     pub const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1: &str =
         "message-queue-clean-attachment-text-v1";
     pub const MESSAGE_QUEUE_EDIT_LEASE_V1: &str = "message-queue-edit-lease-v1";
+    /// The engine serves the device-local agent-CLI update lifecycle
+    /// (harness-updates watch/check/apply/cancel/policy RPCs).
+    pub const HARNESS_UPDATES_V1: &str = "harness-updates-v1";
     /// The engine serves the browser web client (ADR 0006): embedded pages at
     /// the remote listener root, CORS-open pairing redeem, and first-frame
     /// `Auth` WebSocket authentication.
@@ -27,6 +30,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_ATTACHMENTS_V1,
         MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
         MESSAGE_QUEUE_EDIT_LEASE_V1,
+        HARNESS_UPDATES_V1,
         WEB_CLIENT,
     ];
 
@@ -107,6 +111,7 @@ mod tests {
                     "message-queue-attachments-v1",
                     "message-queue-clean-attachment-text-v1",
                     "message-queue-edit-lease-v1",
+                    "harness-updates-v1",
                     "web-client"
                 ],
             })

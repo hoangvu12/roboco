@@ -51,6 +51,9 @@ pub struct JournaledEvent {
 pub enum SteerOutcome {
     /// Delivered into the live run's steering mailbox.
     Accepted,
+    /// A live run owns the turn, but an accepted CLI update prevents accepting
+    /// another prompt: it stays queued until the update finishes.
+    DeferredByUpdate,
     /// No live steerable run — the caller should dispatch the prompt as a new turn.
     NotSteerable,
 }
@@ -315,6 +318,15 @@ impl SessionsEngine {
             .is_some_and(|h| h.steerable)
     }
 
+    /// Whether an accepted agent-CLI update gates the chat's live run, so a
+    /// new prompt waits in the queue rather than joining that run's transcript.
+    pub fn live_run_update_pending(&self, chat_id: &str) -> bool {
+        let harness = lock(&self.inner.runs)
+            .get(chat_id)
+            .map(|h| h.runtime_config.harness_id);
+        harness.is_some_and(|harness| self.inner.registry.update_pending(harness))
+    }
+
     /// The last request dispatched for a chat (steer→new-turn fallback).
     pub fn last_request(&self, chat_id: &str) -> Option<RunRequest> {
         lock(&self.inner.last_requests).get(chat_id).cloned()
@@ -393,8 +405,6 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         roboco_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
-        // Every dispatched prompt is a turn — routed steer or fresh run alike.
-        self.note_turn_start(chat_id, &request.cwd);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.run_id.clone(),
@@ -414,7 +424,6 @@ impl SessionsEngine {
                 let delivered = bootstrap.as_deref().unwrap_or(&request.prompt);
                 // Warm dispatch uses the same mailbox as explicit steering.
                 // Register acceptance before a fast boundary can retire it.
-                let mut pending = lock(&ledger);
                 let message = SteerMessage {
                     // OpenCode must see the canonical selection before it
                     // decodes the provider command: a project-scoped command
@@ -426,22 +435,33 @@ impl SessionsEngine {
                     },
                     message_id: Some(user_id.clone()),
                 };
-                if steer_tx.try_send(message).is_ok() {
-                    pending.push_back(RoutedSteer {
-                        prompt: request.prompt.clone(),
-                        message_id: user_id.clone(),
-                        fork_history: bootstrap.is_some(),
-                    });
-                    true
-                } else {
-                    false
-                }
+                // Commit the mailbox slot atomically with the update marker.
+                // An accepted update releases the slot instead, and the prompt
+                // takes the fresh-run path behind the update's execution gate.
+                self.inner
+                    .registry
+                    .while_update_clear(harness_id, || {
+                        let mut pending = lock(&ledger);
+                        if steer_tx.try_send(message).is_err() {
+                            return false;
+                        }
+                        pending.push_back(RoutedSteer {
+                            prompt: request.prompt.clone(),
+                            message_id: user_id.clone(),
+                            fork_history: bootstrap.is_some(),
+                        });
+                        true
+                    })
+                    .unwrap_or(false)
             } else {
                 false
             };
             if accepted {
                 let handle = self.doc_handle(chat_id)?;
                 handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                // A turn counts from acceptance — a prompt deferred behind an
+                // update must not snapshot a turn that has not started.
+                self.note_turn_start(chat_id, &request.cwd);
                 if self.is_live(chat_id, &run_id) {
                     if bootstrap.is_some() {
                         history_sent.store(true, std::sync::atomic::Ordering::Release);
@@ -528,6 +548,7 @@ impl SessionsEngine {
         let interrupt_token = CancellationToken::new();
         let fork_history_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let controls = RunControls {
+            execution_lease: None,
             request_input,
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
@@ -619,6 +640,18 @@ impl SessionsEngine {
         prompt: &str,
         message_id: Option<String>,
     ) -> Result<SteerOutcome, EngineError> {
+        self.steer_at(chat_id, prompt, message_id, now_ms()).await
+    }
+
+    /// [`Self::steer`] with the prompt's issue time: a queued row promoted
+    /// into a live run keeps its original send time on the transcript.
+    pub(crate) async fn steer_at(
+        &self,
+        chat_id: &str,
+        prompt: &str,
+        message_id: Option<String>,
+        issued_at: i64,
+    ) -> Result<SteerOutcome, EngineError> {
         let target = lock(&self.inner.runs)
             .get(chat_id)
             .filter(|h| h.steerable)
@@ -647,21 +680,32 @@ impl SessionsEngine {
             },
             message_id: Some(user_id.clone()),
         };
-        {
-            // Serialize mailbox acceptance with confirmation and Done-time
-            // inspection: a fast consumer must never outrun its ledger entry.
+        // Serialize mailbox acceptance with confirmation and Done-time
+        // inspection: a fast consumer must never outrun its ledger entry. The
+        // update marker is checked in the same critical section, so an
+        // accepted CLI update releases the mailbox slot instead: `None`
+        // (deferred) stays distinct from `Some(false)` (mailbox closed).
+        let accepted = self.inner.registry.while_update_clear(harness_id, || {
             let mut pending = lock(&ledger);
-            if steer_tx.try_send(message).is_err() {
-                return Ok(SteerOutcome::NotSteerable);
+            let sent = steer_tx.try_send(message).is_ok();
+            if sent {
+                pending.push_back(RoutedSteer {
+                    prompt: prompt.to_string(),
+                    message_id: user_id.clone(),
+                    fork_history: bootstrap.is_some(),
+                });
             }
-            pending.push_back(RoutedSteer {
-                prompt: prompt.to_string(),
-                message_id: user_id.clone(),
-                fork_history: bootstrap.is_some(),
+            sent
+        });
+        let Some(true) = accepted else {
+            // `None` = deferred behind an update; `Some(false)` = mailbox closed.
+            return Ok(match accepted {
+                Some(false) => SteerOutcome::NotSteerable,
+                _ => SteerOutcome::DeferredByUpdate,
             });
-        }
+        };
         let handle = self.doc_handle(chat_id)?;
-        handle.write_user_message(&user_id, prompt, now_ms())?;
+        handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
         // A routed steer is a turn too. Fired here (not only on the confirmed
         // path) — a reclaim falls back to dispatch, which just re-snapshots.
         if let Some(request) = self.last_request(chat_id) {
@@ -1700,7 +1744,7 @@ async fn drive_run(
     harness: Arc<dyn Harness>,
     mut request: RunRequest,
     doc: Arc<SessionDoc>,
-    controls: RunControls,
+    mut controls: RunControls,
     mut engine_rx: mpsc::UnboundedReceiver<AgentEvent>,
     mut cancel_rx: watch::Receiver<bool>,
     resume_state: RunResumeState,
@@ -1763,15 +1807,42 @@ async fn drive_run(
     };
     let started = match prepared {
         Ok(()) => {
-            let mut wire_request = request;
-            // Cursor's bridge converted every message before JSON encoding
-            // (rewriting the encoded envelope can double-convert); OpenCode
-            // converts the canonical selection itself, at the provider.
-            if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
-                wire_request.prompt =
-                    roboco_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+            // Waiting here keeps dispatch and the shared queue-flush watcher
+            // responsive; the pending-update marker still orders new
+            // subprocesses after installation. The lease is shared with the
+            // adapter so child cleanup outlives this event loop, and an
+            // interrupt that lands while waiting never starts the subprocess.
+            let lease = tokio::select! {
+                biased;
+                _ = controls.interrupt.cancelled() => None,
+                lease = inner.registry.execution_lease(harness_id) => Some(Arc::new(lease)),
+            };
+            match lease {
+                Some(lease) => {
+                    controls.execution_lease = Some(lease);
+                    if let Some(listener) = inner.turn_listener.get() {
+                        listener(&chat_id, &request.cwd);
+                    }
+                    let mut wire_request = request;
+                    // Cursor's bridge converted every message before JSON encoding
+                    // (rewriting the encoded envelope can double-convert); OpenCode
+                    // converts the canonical selection itself, at the provider.
+                    if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
+                        wire_request.prompt =
+                            roboco_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+                    }
+                    harness.run(wire_request, controls).await
+                }
+                None => Ok(futures::stream::once(async {
+                    Ok(AgentEvent::Done {
+                        status: DoneStatus::Interrupted,
+                        result: None,
+                        error: None,
+                        session_id: None,
+                    })
+                })
+                .boxed()),
             }
-            harness.run(wire_request, controls).await
         },
         Err(error) => Err(error),
     };
@@ -1941,6 +2012,22 @@ async fn drive_run(
                 _ = live_heartbeat.tick() => {
                     inner.touch_session(&chat_id);
                     continue;
+                }
+                // An accepted update must not wait behind a warm between-turn
+                // child for the full idle-reaper window. The completed turn is
+                // already durable, so retire the parked process cleanly and let
+                // the queued exclusive lease proceed.
+                _ = tokio::time::sleep_until(tokio::time::Instant::now()),
+                    if idle_since.is_some() && inner.registry.update_pending(harness_id) =>
+                {
+                    if let Some(token) = lock(&inner.runs)
+                        .get(&chat_id)
+                        .filter(|h| h.run_id == run_id)
+                        .map(|h| h.interrupt_token.clone())
+                    {
+                        token.cancel();
+                    }
+                    break SessionStatus::Idle;
                 }
                 // Idle reaper (roboco SESSION_IDLE_MS): a parked persistent session
                 // nobody returned to in 30 minutes releases its child. The turn
@@ -2616,7 +2703,11 @@ async fn drive_run(
             // PERSISTENT SESSION: a cleanly completed turn on a steerable
             // harness PARKS instead of ending — child + mailbox stay warm for
             // the next routed dispatch; per-turn state resets for it.
-            if *status == DoneStatus::Completed && steerable && !interrupted {
+            if *status == DoneStatus::Completed
+                && steerable
+                && !interrupted
+                && !inner.registry.update_pending(harness_id)
+            {
                 folded.clear();
                 dirty = false;
                 entry_id = new_id();

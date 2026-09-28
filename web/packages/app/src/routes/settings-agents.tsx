@@ -1,15 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
-import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
+import { HARNESS_UPDATES_V1 } from "@roboco/proto";
+import type { EngineClient } from "@roboco/engine-client";
+import type {
+  HarnessDescriptor,
+  HarnessId,
+  HarnessUpdatePolicy,
+  HarnessUpdateStatus,
+  Model,
+  TitleSettings,
+} from "@roboco/proto";
 import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
+import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
 import { useWatchSnapshot } from "../state/hooks";
 import { TitlePickerRow } from "../components/settings-widgets";
+import {
+  applyHarnessUpdate,
+  cancelHarnessUpdate,
+  checkHarnessUpdates,
+  setHarnessUpdatePolicy,
+  updateLabel,
+  updatePolicyOptions,
+  updateRowAction,
+  updateTone,
+  watchHarnessUpdates,
+} from "../lib/harnesses";
 import {
   blurb,
   bumpHarnessCatalog,
@@ -96,10 +117,21 @@ export function AgentsSettingsPage() {
     setInstalling(next);
   }, []);
 
+  /** The target engine's agent-CLI update lifecycle (standing watch). */
+  const [updates, setUpdates] = useState<Loadable<readonly HarnessUpdateStatus[]>>({ kind: "loading" });
+  /** The provider whose expanded details are open (null = collapsed). */
+  const [expanded, setExpanded] = useState<HarnessId | null>(null);
+  /** Which harness's policy dropdown is open. */
+  const [policyMenu, setPolicyMenu] = useState<HarnessId | null>(null);
+  /** Invalidates stale update-action replies on retarget. */
+  const updateSeq = useRef(0);
+
   const devices = (snapshot?.devices.rows ?? [])
     .slice()
     .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
   const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  const supportsUpdates =
+    client !== null && (client.engineInfo?.capabilities ?? []).includes(HARNESS_UPDATES_V1);
 
   const loadTitles = useCallback(
     async (save: TitleSettings | null) => {
@@ -170,8 +202,98 @@ export function AgentsSettingsPage() {
     return () => {
       signInSeq.current += 1;
       installSeq.current += 1;
+      updateSeq.current += 1;
     };
   }, []);
+
+  // The standing update watch (harnesses.rs update_task): current snapshot
+  // first, then every transition. The client re-subscribes after reconnects
+  // on its own; a retarget tears it down and the new target's effect starts
+  // a fresh one.
+  useEffect(() => {
+    if (client === null || !supportsUpdates) {
+      setUpdates({ kind: supportsUpdates ? "loading" : "ready", value: [] });
+      return;
+    }
+    setUpdates({ kind: "loading" });
+    const handle = watchHarnessUpdates(
+      client,
+      {
+        onItem: (statuses) => {
+          setUpdates({ kind: "ready", value: statuses });
+        },
+        onEnd: (error) => {
+          if (error !== undefined) {
+            setUpdates({ kind: "error", message: error.message });
+          } else {
+            setUpdates((current) =>
+              current.kind === "error"
+                ? current
+                : { kind: "error", message: "Connection closed. Reconnecting to device…" },
+            );
+          }
+        },
+      },
+      target,
+    );
+    return () => {
+      handle.cancel();
+    };
+  }, [client, supportsUpdates, target]);
+
+  /**
+   * One update-lifecycle action on the selected engine (harnesses.rs
+   * check_updates/apply_harness_update/cancel_harness_update/
+   * set_update_policy): replies and failures land in the page's error strip;
+   * progress arrives through the watch.
+   */
+  function runUpdateAction(
+    harness: HarnessId,
+    run: (client: EngineClient) => Promise<unknown>,
+  ) {
+    if (client === null || updates.kind !== "ready") {
+      return;
+    }
+    setError(null);
+    const seq = updateSeq.current;
+    void (async () => {
+      try {
+        await run(client);
+      } catch (cause) {
+        if (updateSeq.current !== seq) {
+          return;
+        }
+        setError(describe(cause));
+      }
+    })();
+  }
+
+  function checkUpdatesNow() {
+    if (client === null || updates.kind !== "ready") {
+      return;
+    }
+    void (async () => {
+      setError(null);
+      try {
+        const statuses = await checkHarnessUpdates(client, null, target);
+        setUpdates({ kind: "ready", value: statuses });
+      } catch (cause) {
+        setError(describe(cause));
+      }
+    })();
+  }
+
+  function applyUpdate(harness: HarnessId) {
+    runUpdateAction(harness, (client) => applyHarnessUpdate(client, harness, target));
+  }
+
+  function cancelUpdate(harness: HarnessId) {
+    runUpdateAction(harness, (client) => cancelHarnessUpdate(client, harness, target));
+  }
+
+  function choosePolicy(harness: HarnessId, policy: HarnessUpdatePolicy) {
+    runUpdateAction(harness, (client) => setHarnessUpdatePolicy(client, harness, policy, target));
+  }
 
   function toggle(harness: HarnessId, enabled: boolean) {
     if (client === null) {
@@ -390,9 +512,13 @@ export function AgentsSettingsPage() {
     // running on the device it belongs to; the stale reply is just dropped).
     signInSeq.current += 1;
     installSeq.current += 1;
+    updateSeq.current += 1;
     setSignIn(null);
     updateInstalling(null);
     setSignInFailure(null);
+    setExpanded(null);
+    setPolicyMenu(null);
+    setUpdates({ kind: "loading" });
     setTarget(next);
     setTitleMenu(null);
     setTitleSaving(false);
@@ -403,12 +529,24 @@ export function AgentsSettingsPage() {
     <div className="settings-page">
       <div className="settings-title-row">
         <h1 className="settings-title">Agents</h1>
-        <DeviceSwitcher
-          devices={devices}
-          localDeviceId={localDeviceId}
-          target={target}
-          onTargetChange={setTargetDevice}
-        />
+        <div className="harnesses-header-actions">
+          {supportsUpdates && (
+            <button
+              type="button"
+              className="btn btn-ghost harnesses-check-now"
+              disabled={updates.kind !== "ready"}
+              onClick={checkUpdatesNow}
+            >
+              Check now
+            </button>
+          )}
+          <DeviceSwitcher
+            devices={devices}
+            localDeviceId={localDeviceId}
+            target={target}
+            onTargetChange={setTargetDevice}
+          />
+        </div>
       </div>
       <p className="settings-subtitle">
         Install coding agents and choose which ones the composer offers. Installations and settings apply
@@ -421,6 +559,19 @@ export function AgentsSettingsPage() {
           {error}
         </p>
       )}
+
+      {updates.kind === "error" && (
+        <div className="settings-error-retry">
+          <p className="error-strip" role="alert">
+            Agent updates: {updates.message}
+          </p>
+          <button type="button" className="btn btn-ghost" onClick={() => void load()}>
+            Retry updates
+          </button>
+        </div>
+      )}
+
+
 
       {harnesses.kind === "loading" ? (
         <section className="settings-card harnesses-skeleton">
@@ -439,6 +590,16 @@ export function AgentsSettingsPage() {
         <section className="settings-card">
           <HarnessRows
             list={harnesses.value}
+            updates={updates.kind === "ready" ? updates.value : null}
+            expanded={expanded}
+            policyMenu={policyMenu}
+            supportsUpdates={supportsUpdates}
+            canControlUpdates={supportsUpdates && updates.kind === "ready"}
+            onToggleDetails={setExpanded}
+            onSetPolicyMenu={setPolicyMenu}
+            onApplyUpdate={applyUpdate}
+            onCancelUpdate={cancelUpdate}
+            onChoosePolicy={choosePolicy}
             onToggle={toggle}
             signIn={signIn}
             signInFailure={signInFailure}
@@ -464,8 +625,115 @@ export function AgentsSettingsPage() {
   );
 }
 
+/**
+ * One provider row's update action (harnesses.rs update_action): the single
+ * Update/Cancel control sits INSIDE the details trigger, before the chevron,
+ * so its appearance never moves the (fixed-width) chevron.
+ */
+function UpdateActionButton(props: {
+  readonly status: HarnessUpdateStatus;
+  readonly onApply: () => void;
+  readonly onCancel: () => void;
+}) {
+  const status = props.status;
+  const action = updateRowAction(status);
+  if (action === null) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className={`btn harness-update-action ${action.primary ? "harness-update-primary" : ""}`}
+      onClick={(event) => {
+        // Inside the details trigger: act, don't expand.
+        event.stopPropagation();
+        if (action.primary) {
+          props.onApply();
+        } else {
+          props.onCancel();
+        }
+      }}
+    >
+      {action.label}
+    </button>
+  );
+}
+
+/** The expanded provider's Updates section (harnesses.rs render_updates_for):
+ *  the policy dropdown with short labels and the chosen one explained. */
+function UpdatesSection(props: {
+  readonly status: HarnessUpdateStatus;
+  readonly policyMenu: HarnessId | null;
+  readonly onSetPolicyMenu: (harness: HarnessId | null) => void;
+  readonly onChoosePolicy: (harness: HarnessId, policy: HarnessUpdatePolicy) => void;
+}) {
+  const status = props.status;
+  const options = updatePolicyOptions();
+  const selected = Math.max(
+    0,
+    options.findIndex((option) => option.policy === status.policy),
+  );
+  const current = options[selected] ?? options[0] ?? null;
+  if (current === null) {
+    return null;
+  }
+  const open = props.policyMenu === status.harness;
+  return (
+    <div className="harness-details">
+      <span className="settings-details-label">Updates</span>
+      <div className="settings-row harness-update-policy-row">
+        <div className="settings-row-main">
+          <span className="settings-row-title">Update policy</span>
+          <span className="settings-meta-line">{current.note}</span>
+        </div>
+        <PickerCard
+          open={open}
+          onOpenChange={(next) => {
+            props.onSetPolicyMenu(next ? status.harness : null);
+          }}
+          placement="anchorBelow"
+          cardClassName="popover-card title-picker-menu harness-update-policy-menu"
+          role="menu"
+          ariaLabel="Update policy"
+          width={220}
+          initialFocus={false}
+          trigger={
+            <button type="button" className="btn btn-ghost title-picker-trigger">
+              {current.label}
+            </button>
+          }
+        >
+          {options.map((option, ix) => (
+            <MenuRow
+              key={option.policy}
+              fadeKey={option.policy}
+              selected={option === current}
+              onClick={() => {
+                props.onSetPolicyMenu(null);
+                props.onChoosePolicy(status.harness, option.policy);
+              }}
+            >
+              {option.label}
+            </MenuRow>
+          ))}
+        </PickerCard>
+      </div>
+    </div>
+  );
+}
+
 function HarnessRows(props: {
   readonly list: readonly HarnessDescriptor[];
+  readonly updates: readonly HarnessUpdateStatus[] | null;
+  readonly expanded: HarnessId | null;
+  readonly policyMenu: HarnessId | null;
+  readonly supportsUpdates: boolean;
+  readonly canControlUpdates: boolean;
+  readonly onToggleDetails: (harness: HarnessId | null) => void;
+  readonly onSetPolicyMenu: (harness: HarnessId | null) => void;
+  readonly onApplyUpdate: (harness: HarnessId) => void;
+  readonly onCancelUpdate: (harness: HarnessId) => void;
+  readonly onChoosePolicy: (harness: HarnessId, policy: HarnessUpdatePolicy) => void;
   readonly onToggle: (harness: HarnessId, enabled: boolean) => void;
   readonly signIn: SignInState | null;
   readonly signInFailure: SignInFailure | null;
@@ -498,57 +766,98 @@ function HarnessRows(props: {
         const interactive =
           signingIn === null && signInFailure === null && !lastEnabled && (enabled || installed);
         const brand = harnessBrandIcon(descriptor.id);
+        const update = props.updates?.find((status) => status.harness === descriptor.id) ?? null;
+        const expanded = props.expanded === descriptor.id && enabled;
         return (
-          <div
-            key={descriptor.id}
-            className={`settings-row harness-row ${!installed ? "harness-row-uninstalled" : ""} ${
-              signingIn !== null ? "harness-row-signing-in" : ""
-            }`}
-          >
-            <div className="row-tile harness-tile" aria-hidden="true">
-              <Icon
-                name={brand.name}
-                size={16}
-                className="row-tile-icon"
-                style={brand.tint === null ? undefined : { color: brand.tint }}
-              />
-            </div>
-            <div className="settings-row-main">
-              <span className="settings-row-title">{descriptor.name}</span>
-              <span className="settings-meta-line">
-                {blurb(descriptor.id)}
-                {signingIn !== null && (
-                  <>
-                    <span className="settings-meta-dot" aria-hidden="true">·</span>
-                    <span className="harness-sign-in-status">
-                      {signingIn.message ?? signInPendingLabel(signingIn.phase)}
-                    </span>
-                  </>
+          <div key={descriptor.id} className="harness-row-group">
+            <div
+              className={`settings-row harness-row ${!installed ? "harness-row-uninstalled" : ""} ${
+                signingIn !== null ? "harness-row-signing-in" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="harness-details-trigger"
+                disabled={!enabled}
+                aria-expanded={expanded}
+                aria-label={`${descriptor.name} preferences`}
+                onClick={() => props.onToggleDetails(expanded ? null : descriptor.id)}
+              >
+                <span className="row-tile harness-tile" aria-hidden="true">
+                  <Icon
+                    name={brand.name}
+                    size={16}
+                    className="row-tile-icon"
+                    style={brand.tint === null ? undefined : { color: brand.tint }}
+                  />
+                </span>
+                <span className="settings-row-main">
+                  <span className="settings-row-title">{descriptor.name}</span>
+                  <span className="settings-meta-line">
+                    {blurb(descriptor.id)}
+                    {signingIn !== null && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className="harness-sign-in-status">
+                          {signingIn.message ?? signInPendingLabel(signingIn.phase)}
+                        </span>
+                      </>
+                    )}
+                    {signInFailure !== null && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className="harness-sign-in-failure">
+                          {signInFailureLabel(signInFailure.phase)} — {signInFailure.message}
+                        </span>
+                      </>
+                    )}
+                    {installing && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className="harness-install-status">{installLabel(descriptor.name)}</span>
+                      </>
+                    )}
+                    {!installed && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className="harness-hint">
+                          {installHint(descriptor.id, enabled, descriptor.canInstall)}
+                        </span>
+                      </>
+                    )}
+                    {update !== null && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className={`harness-update-meta harness-update-meta-${updateTone(update.phase)}`}>
+                          {updateLabel(update)}
+                        </span>
+                      </>
+                    )}
+                    {(descriptor.id === "cursor" || descriptor.id === "pi") && (
+                      <>
+                        <span className="settings-meta-dot" aria-hidden="true">·</span>
+                        <span className="harness-managed-note">
+                          {descriptor.id === "cursor"
+                            ? "Cursor SDK · Managed by Roboco"
+                            : "pi RPC bridge · Managed by Roboco"}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                </span>
+                {props.canControlUpdates && update !== null && (
+                  <UpdateActionButton
+                    status={update}
+                    onApply={() => props.onApplyUpdate(descriptor.id)}
+                    onCancel={() => props.onCancelUpdate(descriptor.id)}
+                  />
                 )}
-                {signInFailure !== null && (
-                  <>
-                    <span className="settings-meta-dot" aria-hidden="true">·</span>
-                    <span className="harness-sign-in-failure">
-                      {signInFailureLabel(signInFailure.phase)} — {signInFailure.message}
-                    </span>
-                  </>
+                {enabled && (
+                  <span className="harness-details-chevron" aria-hidden="true">
+                    <Icon name={expanded ? "altArrowDown" : "altArrowRight"} size={14} />
+                  </span>
                 )}
-                {installing && (
-                  <>
-                    <span className="settings-meta-dot" aria-hidden="true">·</span>
-                    <span className="harness-install-status">{installLabel(descriptor.name)}</span>
-                  </>
-                )}
-                {!installed && (
-                  <>
-                    <span className="settings-meta-dot" aria-hidden="true">·</span>
-                    <span className="harness-hint">
-                      {installHint(descriptor.id, enabled, descriptor.canInstall)}
-                    </span>
-                  </>
-                )}
-              </span>
-            </div>
+              </button>
             {installing ? (
               <button
                 type="button"
@@ -594,6 +903,15 @@ function HarnessRows(props: {
               />
             ) : (
               <InertSwitch on={enabled} label={descriptor.name} />
+            )}
+            </div>
+            {expanded && update !== null && (
+              <UpdatesSection
+                status={update}
+                policyMenu={props.policyMenu}
+                onSetPolicyMenu={props.onSetPolicyMenu}
+                onChoosePolicy={props.onChoosePolicy}
+              />
             )}
           </div>
         );

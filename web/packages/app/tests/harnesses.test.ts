@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
-import type { AgentLoginPoll, HarnessDescriptor, Model, TitleSettings } from "@roboco/proto";
+import type {
+  AgentLoginPoll,
+  HarnessDescriptor,
+  HarnessUpdateStatus,
+  Model,
+  TitleSettings,
+} from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
 import { SKILL_COMPLETION_HARNESSES } from "../src/state/ui-settings";
 import {
   activeCompletionAgents,
+  agentName,
+  applyHarnessUpdate,
   blurb,
+  cancelHarnessUpdate,
   cancelInstall,
+  checkHarnessUpdates,
   cliName,
   descriptorEnabled,
   getTitleSettings,
@@ -21,13 +31,19 @@ import {
   offeredHarnesses,
   offersInstall,
   setHarnessEnabled,
+  setHarnessUpdatePolicy,
   setTitleSettings,
+  showsUpdateNotice,
   signInFailureLabel,
   signInPendingLabel,
   signsInOnEnable,
   supportsTitles,
   titleHarnessLabel,
+  updateLabel,
+  updatePolicyOptions,
+  updateRowAction,
   visibleHarnesses,
+  watchHarnessUpdates,
 } from "../src/lib/harnesses";
 
 function descriptor(fields: Partial<HarnessDescriptor>): HarnessDescriptor {
@@ -290,6 +306,22 @@ function fakeClient(replies: Record<string, unknown>) {
 }
 
 const CATALOG: HarnessDescriptor[] = [descriptor({})];
+const STATUSES: HarnessUpdateStatus[] = [
+  {
+    harness: "codex",
+    installedVersion: "1.0.0",
+    latestVersion: "2.0.0",
+    channel: null,
+    source: "unknown",
+    policy: "notify",
+    phase: "available",
+    progress: null,
+    checkedAt: null,
+    error: null,
+    canApply: true,
+    manualCommand: null,
+  },
+];
 const TITLES: TitleSettings = { harness: "claude-code", model: "opus" };
 const MODELS: Model[] = [
   { id: "opus", label: "Opus", reasoningLevels: [], options: [] },
@@ -351,5 +383,169 @@ describe("harnesses RPC wrappers", () => {
       { method: "CancelInstall", params: { harness: "pi", targetDeviceId: "dev-2" } },
     ]);
     expect(methods.CANCEL_INSTALL).toBe("CancelInstall");
+  });
+});
+
+describe("agent-CLI update lifecycle (upstream 35a9139a)", () => {
+  it("wires the watch and every action with the targetDeviceId passthrough", async () => {
+    const watches: { method: string; params: unknown }[] = [];
+    const calls: { method: string; params: unknown }[] = [];
+    const client = {
+      async call(method: string, params: unknown): Promise<unknown> {
+        calls.push({ method, params });
+        const reply = {
+          [methods.CHECK_HARNESS_UPDATES]: STATUSES,
+          [methods.APPLY_HARNESS_UPDATE]: { ok: true, version: "2.0.0" },
+          [methods.CANCEL_HARNESS_UPDATE]: { cancelled: true },
+          [methods.SET_HARNESS_UPDATE_POLICY]: STATUSES[0],
+        }[method];
+        if (reply === undefined) {
+          throw new Error(`unknown method: ${method}`);
+        }
+        return reply;
+      },
+      watch(method: string, params: unknown, handlers: { onItem: (item: unknown) => void }): unknown {
+        watches.push({ method, params });
+        handlers.onItem(STATUSES);
+        return { method, cancel: () => undefined };
+      },
+    } as unknown as EngineClient;
+
+    const handle = watchHarnessUpdates(client, {
+      onItem: () => {},
+      onEnd: () => {},
+    });
+    expect(handle.method).toBe("WatchHarnessUpdates");
+    expect(watches).toEqual([{ method: "WatchHarnessUpdates", params: {} }]);
+
+    const handleRemote = watchHarnessUpdates(
+      client,
+      { onItem: () => {}, onEnd: () => {} },
+      "dev-2",
+    );
+    expect(handleRemote.method).toBe("WatchHarnessUpdates");
+    expect(watches[1]).toEqual({ method: "WatchHarnessUpdates", params: { targetDeviceId: "dev-2" } });
+
+    await checkHarnessUpdates(client, null, null);
+    await checkHarnessUpdates(client, "codex", "dev-2");
+    await applyHarnessUpdate(client, "claude-code", "dev-2");
+    await cancelHarnessUpdate(client, "codex");
+    await setHarnessUpdatePolicy(client, "pi", "auto-when-idle", "dev-2");
+    expect(calls).toEqual([
+      { method: "CheckHarnessUpdates", params: {} },
+      { method: "CheckHarnessUpdates", params: { harness: "codex", targetDeviceId: "dev-2" } },
+      { method: "ApplyHarnessUpdate", params: { harness: "claude-code", targetDeviceId: "dev-2" } },
+      { method: "CancelHarnessUpdate", params: { harness: "codex" } },
+      {
+        method: "SetHarnessUpdatePolicy",
+        params: { harness: "pi", policy: "auto-when-idle", targetDeviceId: "dev-2" },
+      },
+    ]);
+    expect(methods.WATCH_HARNESS_UPDATES).toBe("WatchHarnessUpdates");
+    expect(methods.CHECK_HARNESS_UPDATES).toBe("CheckHarnessUpdates");
+    expect(methods.APPLY_HARNESS_UPDATE).toBe("ApplyHarnessUpdate");
+    expect(methods.CANCEL_HARNESS_UPDATE).toBe("CancelHarnessUpdate");
+    expect(methods.DISMISS_HARNESS_UPDATE).toBe("DismissHarnessUpdate");
+    expect(methods.SET_HARNESS_UPDATE_POLICY).toBe("SetHarnessUpdatePolicy");
+  });
+
+  it("updateLabel mirrors harness_update_label, manual guidance included", () => {
+    const base: HarnessUpdateStatus = {
+      harness: "codex",
+      installedVersion: "1.0.0",
+      latestVersion: "2.0.0",
+      channel: null,
+      source: "unknown",
+      policy: "notify",
+      phase: "available",
+      progress: null,
+      checkedAt: null,
+      error: null,
+      canApply: true,
+      manualCommand: null,
+    };
+    expect(updateLabel(base)).toBe("v1.0.0 · v2.0.0 available");
+    expect(updateLabel({ ...base, phase: "current", latestVersion: null })).toBe(
+      "v1.0.0 · Up to date",
+    );
+    expect(
+      updateLabel({
+        ...base,
+        phase: "manual-action-required",
+        canApply: false,
+        manualCommand: "npm install -g @openai/codex",
+      }),
+    ).toBe("v1.0.0 · npm install -g @openai/codex");
+    expect(updateLabel({ ...base, phase: "checking", installedVersion: null })).toBe(
+      "Checking for updates…",
+    );
+    expect(
+      updateLabel({ ...base, phase: "failed", error: { message: "probe timed out", retryable: true } }),
+    ).toBe("Update check failed · probe timed out");
+  });
+
+  it("updateRowAction offers Update only when the engine can apply it", () => {
+    const base: HarnessUpdateStatus = {
+      harness: "codex",
+      installedVersion: "1.0.0",
+      latestVersion: "2.0.0",
+      channel: null,
+      source: "unknown",
+      policy: "notify",
+      phase: "available",
+      progress: null,
+      checkedAt: null,
+      error: null,
+      canApply: true,
+      manualCommand: null,
+    };
+    expect(updateRowAction(base)).toEqual({ label: "Update", primary: true });
+    expect(updateRowAction({ ...base, canApply: false })).toBeNull();
+    expect(updateRowAction({ ...base, phase: "manual-action-required", canApply: false })).toBeNull();
+    expect(
+      updateRowAction({ ...base, phase: "waiting-for-idle" }),
+    ).toEqual({ label: "Cancel", primary: false });
+    expect(updateRowAction({ ...base, phase: "installing" })).toBeNull();
+  });
+
+  it("updatePolicyOptions keeps the short labels and explanations (9d3cc8b2)", () => {
+    const options = updatePolicyOptions();
+    expect(options.map((option) => option.policy)).toEqual([
+      "notify",
+      "auto-when-idle",
+      "off",
+    ]);
+    expect(options.map((option) => option.label)).toEqual(["Notify", "Auto when idle", "Off"]);
+    for (const option of options) {
+      expect(option.note.endsWith(".")).toBe(true);
+    }
+  });
+
+  it("showsUpdateNotice matches the proto contract", () => {
+    const base: HarnessUpdateStatus = {
+      harness: "codex",
+      installedVersion: "1.0.0",
+      latestVersion: "2.0.0",
+      channel: null,
+      source: "unknown",
+      policy: "notify",
+      phase: "available",
+      progress: null,
+      checkedAt: null,
+      error: null,
+      canApply: true,
+      manualCommand: null,
+    };
+    expect(showsUpdateNotice(base)).toBe(true);
+    expect(showsUpdateNotice({ ...base, phase: "current" })).toBe(false);
+    expect(showsUpdateNotice({ ...base, phase: "checking" })).toBe(false);
+    expect(showsUpdateNotice({ ...base, phase: "manual-action-required" })).toBe(false);
+    expect(showsUpdateNotice({ ...base, phase: "installing" })).toBe(true);
+  });
+
+  it("agentName covers every harness id", () => {
+    expect(agentName("claude-code")).toBe("Claude Code");
+    expect(agentName("opencode")).toBe("OpenCode");
+    expect(agentName("antigravity")).toBe("Antigravity");
   });
 });

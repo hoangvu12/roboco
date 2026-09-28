@@ -49,6 +49,11 @@ pub struct SteerMessage {
 
 /// Host-side controls handed to a run: input-request bridge + steering mailbox.
 pub struct RunControls {
+    /// Shared execution gate held until the harness has shut down and reaped
+    /// its subprocess, including when the host drops the event stream. Each
+    /// detached session task must retain this lease through its cleanup.
+    /// Standalone callers without an update coordinator can leave it unset.
+    pub execution_lease: Option<std::sync::Arc<tokio::sync::OwnedRwLockReadGuard<()>>>,
     /// The run sends questions and awaits answers (blocks the agent, mirrors roboco).
     pub request_input: Box<
         dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync,
@@ -87,6 +92,12 @@ pub trait Harness: Send + Sync {
     /// Defaults to true for harnesses without a CLI to check (mock).
     fn installed(&self) -> bool {
         true
+    }
+    /// Absolute path to the independently-installed agent CLI. This is a
+    /// filesystem-only lookup: update monitoring calls it away from the fast
+    /// `ListHarnesses` catalog and launches the returned program directly.
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        None
     }
     /// Whether every turn shape — user-prompted AND agent-initiated
     /// (background-subagent wakes) — ends with a deterministic `Done` from
@@ -193,7 +204,7 @@ pub fn compose_login_shell_path(cmd: &mut tokio::process::Command) {
 /// are `#!/usr/bin/env node` scripts whose `node` lives beside them in the
 /// version manager's bin dir, and the CLIs themselves shell out to tools
 /// (git, rg, node) that a GUI/service launch's own PATH may lack.
-pub(crate) fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
+pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
     compose_path(
         cmd.as_std_mut(),
         exe.parent().filter(|d| !d.as_os_str().is_empty()),

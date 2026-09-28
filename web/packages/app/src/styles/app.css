@@ -17193,3 +17193,164 @@ button.segmented-option:hover {
   flex: none;
   border-left: 1px solid color-mix(in srgb, var(--rb-border, #888) 55%, transparent);
 }
+
+/* ── Agent-CLI updates (upstream 35a9139a + 9d3cc8b2, settings/harnesses.rs
+     update grammar) ─────────────────────────────────────────────────── */
+
+/* The header row's trailing cluster: "Check now" sits before the device
+   switcher (harnesses.rs render's check + switcher group). */
+.harnesses-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.harnesses-check-now {
+  flex: none;
+}
+
+/* One provider row becomes a row group: the card row (whose trigger is the
+   row body) plus, when expanded, the details that continue the row on the
+   title's edge (DETAILS_INSET: the trigger's padding + tile + gap). */
+.harness-row-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.harness-row-group + .harness-row-group > .settings-row {
+  border-top: 1px solid var(--rb-border);
+}
+
+/* The details trigger (harnesses.rs harness-details-trigger): the tile,
+   title/meta block, the one update action, and the chevron — flex_1 with
+   the 8px radius, no hover slab (the chevron lifts instead). */
+.harness-details-trigger {
+  flex: 1;
+  min-width: 180px;
+  min-height: 44px;
+  padding: 4px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.harness-details-trigger:disabled {
+  cursor: default;
+}
+
+.harness-details-trigger:focus-visible {
+  outline: 2px solid var(--rb-accent);
+}
+
+.harness-details-trigger:hover .harness-details-chevron {
+  color: var(--rb-text);
+}
+
+/* A STABLE FIXED-WIDTH chevron: both glyphs are 14px, the box never
+   resizes, so the row's update action appearing never moves it. */
+.harness-details-chevron {
+  width: 14px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+}
+
+/* The row's one update action (update_action): the primary Update chip
+   rides the accent wash; Cancel stays a quiet ghost. */
+.harness-update-action {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--rb-text-muted);
+  background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 9px;
+}
+
+.harness-update-action:hover {
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+}
+
+.harness-update-action.harness-update-primary {
+  background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  color: var(--rb-accent);
+  font-weight: 500;
+}
+
+.harness-update-action.harness-update-primary:hover {
+  background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+}
+
+/* The update status meta line (harness_update_label's phase colors). */
+.harness-update-meta-muted {
+  color: color-mix(in srgb, var(--rb-text-muted) 75%, transparent);
+}
+
+.harness-update-meta-accent {
+  color: var(--rb-accent);
+}
+
+.harness-update-meta-success {
+  color: var(--rb-success);
+}
+
+.harness-update-meta-danger {
+  color: var(--rb-danger);
+}
+
+.harness-update-meta-warning {
+  color: color-mix(in srgb, var(--rb-warning-muted) 90%, transparent);
+}
+
+/* The "Managed by Roboco" notes under managed transports. */
+.harness-managed-note {
+  color: color-mix(in srgb, var(--rb-text-muted) 65%, transparent);
+}
+
+/* The expanded provider's details (render_agent_details): no box of its
+   own — inset to the title's edge, riding the row's rhythm. */
+.harness-details {
+  display: flex;
+  flex-direction: column;
+  margin-left: 52px;
+  padding-bottom: 10px;
+}
+
+.settings-details-label {
+  display: block;
+  margin: 6px 0 2px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rb-text-faint);
+}
+
+/* The Updates section's policy row: row_title + explanation under it, the
+   contained dropdown to the right (the wave-2 settings grammar). */
+.harness-update-policy-row {
+  min-height: 52px;
+  padding: 10px 0 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+
+.harness-update-policy-row .title-picker-trigger {
+  margin-top: 0;
+}
+
+.harness-update-policy-menu {
+  width: 220px;
+}

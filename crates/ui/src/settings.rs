@@ -788,6 +788,9 @@ pub struct UiSettings {
     /// Suppress the banner while a Roboco window is focused (the chime covers
     /// the foreground case).
     pub notifications_background_only: bool,
+    /// Desktop banners for newly discovered agent CLI releases. In-app chips
+    /// remain enabled independently of this preference.
+    pub agent_update_notifications: bool,
     pub files_panel_width: f32,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
@@ -907,6 +910,7 @@ impl Default for UiSettings {
             sound_attention_enabled: true,
             notifications_enabled: true,
             notifications_background_only: true,
+            agent_update_notifications: true,
             files_panel_width: FILES_PANEL_DEFAULT,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
@@ -2398,6 +2402,7 @@ mod tests {
             sound_attention_enabled: false,
             notifications_enabled: false,
             notifications_background_only: false,
+            agent_update_notifications: false,
             files_panel_width: 310.0,
             right_pane_width: 700.0,
             right_pane_open: true,
