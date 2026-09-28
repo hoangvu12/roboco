@@ -1,7 +1,8 @@
-import { useCallback, useRef, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link, useRouter } from "@tanstack/react-router";
 import { Icon, type IconName } from "@roboco/icons";
 import { RbDialogGlass } from "./base/dialog";
+import { ContainedBoundsContext } from "./base/contained";
 import { SETTINGS_SECTION_SLUGS, type SettingsSectionSlug } from "../state/settings-section";
 
 /**
@@ -86,8 +87,13 @@ export interface SettingsDialogProps {
 /** The settings dialog: glass card, contained nav + page columns. */
 export function SettingsDialog(props: SettingsDialogProps) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // The containment boundary needs the LIVE element (the dropdowns read it
+  // whenever they open), so the card node is state, not just a ref — the
+  // provider re-renders with the element the frame it mounts.
+  const [cardEl, setCardEl] = useState<HTMLDivElement | null>(null);
   const setCard = useCallback((node: HTMLDivElement | null) => {
     cardRef.current = node;
+    setCardEl(node);
   }, []);
   // The nav rows' elements — the roving arrow keys focus and navigate them.
   const rowRefs = useRef<(HTMLAnchorElement | null)[]>([]);
@@ -148,6 +154,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       // never a specific first control — Tab is the explicit way in.
       initialFocus={() => cardRef.current}
     >
+      <ContainedBoundsContext.Provider value={cardEl}>
         <div className="settings-dialog-card" ref={setCard} tabIndex={-1}>
           <nav
             className="settings-dialog-nav"
@@ -180,6 +187,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </nav>
           <div className="settings-dialog-page">{props.children}</div>
         </div>
+      </ContainedBoundsContext.Provider>
     </RbDialogGlass>
   );
 }

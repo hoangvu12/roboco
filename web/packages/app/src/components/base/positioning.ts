@@ -63,7 +63,9 @@ export interface NoFlipPositionerProps {
   readonly align: RbAlign;
   readonly sideOffset: number;
   readonly alignOffset: number | undefined;
-  readonly collisionAvoidance: typeof NO_FLIP_COLLISION_AVOIDANCE;
+  readonly collisionAvoidance:
+    | typeof NO_FLIP_COLLISION_AVOIDANCE
+    | typeof CONTAINED_COLLISION_AVOIDANCE;
   readonly collisionPadding: number;
   readonly positionMethod: "fixed";
 }
@@ -84,6 +86,42 @@ export function noFlipPositionerProps(placement: AnchorPlacement): NoFlipPositio
     collisionAvoidance: NO_FLIP_COLLISION_AVOIDANCE,
     collisionPadding: SNAP_MARGIN,
     positionMethod: "fixed",
+  };
+}
+
+/**
+ * `popover/contained.rs`'s flip semantics (ticket 24): inside a containing
+ * dialog card, a menu that does not fit on its preferred side flips to the
+ * roomier side (`menu_origin`'s below-else-above) instead of shifting over
+ * its trigger; the align axis still only shifts. No perpendicular fallback,
+ * same as the no-flip preset — the contained card is too small for a
+ * perpendicular menu to make sense.
+ */
+export const CONTAINED_COLLISION_AVOIDANCE = {
+  side: "flip",
+  align: "shift",
+  fallbackAxisSide: "none",
+} as const;
+
+/** The containment card's own edge margin — `contained_menu`'s clamp slack. */
+export const CONTAINED_SNAP_MARGIN = 4;
+
+/**
+ * The contained preset: the collision boundary becomes the host card (the
+ * `contained_menu` `limits`), the side flips when short on room, and the
+ * margin is the card's inset instead of the window's 8px gutter. Everything
+ * else (fixed positioning, the placement's side/align/offset) rides the
+ * caller's placement exactly as the no-flip preset does.
+ */
+export function containedPositionerProps(
+  placement: AnchorPlacement,
+  boundary: HTMLElement,
+): NoFlipPositionerProps & { collisionBoundary: HTMLElement } {
+  return {
+    ...noFlipPositionerProps(placement),
+    collisionAvoidance: CONTAINED_COLLISION_AVOIDANCE,
+    collisionPadding: CONTAINED_SNAP_MARGIN,
+    collisionBoundary: boundary,
   };
 }
 

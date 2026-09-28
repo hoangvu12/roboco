@@ -52,6 +52,7 @@ import {
 } from "@base-ui/react/popover";
 import {
   anchorHelperPlacement,
+  containedPositionerProps,
   escapeFinalFocusTarget,
   exitMotionMs,
   nestedMenuPlacement,
@@ -64,6 +65,7 @@ import {
   type VirtualAnchor,
 } from "./positioning";
 import { useOverlayKeyboardSource } from "./overlay";
+import { useContainedBounds } from "./contained";
 
 export { anchorHelperPlacement, nestedMenuPlacement, noFlipPositionerProps, shouldVetoDismissal, virtualAnchorAt };
 export type { AnchorHelperId, AnchorPlacement, NestedMenuSide, VirtualAnchor };
@@ -152,12 +154,20 @@ export interface RbPopoverProps {
 export function RbPopover(props: RbPopoverProps) {
   const lastReasonRef = useRef<string | null>(null);
   useOverlayKeyboardSource(props.overlaySource, props.open);
+  // Ticket 24's containment: inside a host that provides a boundary (the
+  // settings dialog), the card is constrained to that boundary and flips to
+  // the roomier side — `popover/contained.rs`'s contract. Outside a host,
+  // the window-clamped never-flip preset stands.
+  const bounds = useContainedBounds();
 
   const placement: AnchorPlacement =
     props.placement === undefined || typeof props.placement === "string"
       ? anchorHelperPlacement((props.placement ?? "anchorBelow") as AnchorHelperId, props.gap)
       : props.placement;
-  const positionerProps = noFlipPositionerProps(placement);
+  const positionerProps =
+    bounds === null
+      ? noFlipPositionerProps(placement)
+      : containedPositionerProps(placement, bounds);
 
   const motionStyle =
     props.motionSpeed === undefined
