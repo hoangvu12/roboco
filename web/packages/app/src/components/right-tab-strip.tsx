@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@roboco/icons";
 import {
+  focusInRightPane,
   resolvedActive,
   rightPaneStore,
   surfaceEqual,
@@ -219,7 +220,25 @@ export function RightTabStrip({ chatId, pane }: { chatId: string; pane: ChatPane
               rightPaneStore.setActive(chatId, surface);
             }
           }}
-          onClose={() => rightPaneStore.closeSurface(chatId, surface)}
+          onClose={() => {
+            // `restore_right_focus_after_close` (upstream a1ccea18): closing
+            // the ACTIVE tab while the right zone holds focus keeps focus
+            // there — the pane container while tabs remain (the chip that
+            // held focus unmounts with its surface), the composer when the
+            // last tab took the pane with it. An inactive tab never moved
+            // focus, so it needs no recovery.
+            const wasActive = surfaceEqual(resolved, surface);
+            const heldFocus = focusInRightPane(document.activeElement);
+            rightPaneStore.closeSurface(chatId, surface);
+            if (!wasActive || !heldFocus) {
+              return;
+            }
+            if (rightPaneStore.stateFor(chatId).open) {
+              document.querySelector<HTMLElement>(".right-pane")?.focus();
+            } else {
+              document.querySelector<HTMLTextAreaElement>(".composer-input")?.focus();
+            }
+          }}
           onDragStart={(event) => startDrag(event, index, facts.title)}
         />
       ))}

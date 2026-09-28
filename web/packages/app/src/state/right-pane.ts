@@ -108,6 +108,50 @@ export function workspaceFileTitle(path: string): string {
 }
 
 /**
+ * `cycle_navigation`'s right-pane branch (upstream a1ccea18,
+ * shell/tabs.rs): the surface one step from `active` in the pane's LIVE
+ * tab order (what the strip draws, drag-reorder included), wrapping at both
+ * ends. A pane with zero or one tab has nothing to cycle — `null`, the
+ * desktop's `rows.len() <= 1` early return — and an active surface that is
+ * not in the list (the empty picker, a stale pick) enters at the end it
+ * would have wrapped to, exactly like `cycle_target` for sessions. Pure.
+ */
+export function cycleRightTabTarget(
+  surfaces: readonly RightSurface[],
+  active: RightSurface,
+  forward: boolean,
+): RightSurface | null {
+  if (surfaces.length <= 1) {
+    return null;
+  }
+  const at = surfaces.findIndex((surface) => surfaceEqual(surface, active));
+  let next: number;
+  if (at >= 0 && forward) {
+    next = (at + 1) % surfaces.length;
+  } else if (at >= 0) {
+    next = (at + surfaces.length - 1) % surfaces.length;
+  } else {
+    next = forward ? 0 : surfaces.length - 1;
+  }
+  return surfaces[next] ?? null;
+}
+
+/**
+ * `navigation_focus.in_right` (upstream a1ccea18, shell/navigation_focus.rs),
+ * web-shaped: whether the element holding DOM focus belongs to the right
+ * pane — its content OR the titlebar tab strip, which is a sibling of the
+ * pane, not a descendant (the desktop's separate `tabs` focus handle). The
+ * phone drawer mounts its strip INSIDE the pane, so the one selector pair
+ * covers both layouts. Pure: takes the focused element, touches nothing.
+ */
+export function focusInRightPane(active: Element | null): boolean {
+  return (
+    active !== null &&
+    active.closest(".right-pane, .right-tab-strip") !== null
+  );
+}
+
+/**
  * `shell.rs::panel_key`: per-chat flags key. The new-chat canvas keys per
  * space (`space-canvas:{space}`) so a canvas toggle can never read as global
  * state across unrelated spaces.

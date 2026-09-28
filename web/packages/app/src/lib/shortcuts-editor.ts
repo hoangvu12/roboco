@@ -142,9 +142,9 @@ export function shortcutDescription(id: ShortcutId): string {
     case "openModelPicker":
       return "Open the model picker for the current session.";
     case "nextSession":
-      return "Select the next session in the sidebar, wrapping at the end.";
+      return "Navigate within the focused pane: the next session, or the next right-pane tab.";
     case "prevSession":
-      return "Select the previous session in the sidebar, wrapping at the start.";
+      return "Navigate within the focused pane: the previous session, or the previous right-pane tab.";
     case "archiveSession":
       return "Move the current session to the archived shelf.";
   }

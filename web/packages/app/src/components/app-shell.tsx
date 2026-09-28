@@ -12,6 +12,7 @@ import { useEngineSession } from "../state/session-provider";
 import { useEngineStatus } from "../state/hooks";
 import {
   applyKeymap,
+  cycleNavigationKind,
   emitShortcut,
   isMacPlatform,
   matchKeybinding,
@@ -61,6 +62,8 @@ import { sidebarNotice } from "../state/notice";
 import { uiSettings, FILES_PANEL_MAX, FILES_PANEL_MIN, FILES_PANEL_DEFAULT } from "../state/ui-settings";
 import {
   RIGHT_PANE_MIN,
+  cycleRightTabTarget,
+  focusInRightPane,
   panelKey,
   resolvePaneWidth,
   resolvedActive,
@@ -359,7 +362,42 @@ export function AppShell() {
           // add-space palette or a composer picker): an unguarded jump would
           // switch sessions UNDER the open popover.
           if (sessionNavFires(route, overlayOwnsKeyboard())) {
-            emitShortcut(binding.event);
+            // Focus-following (upstream a1ccea18): with the right pane open
+            // and holding focus (its content or the titlebar strip), the next/
+            // prev binding cycles the pane's live surface tabs instead — the
+            // desktop's `cycle_navigation`. A pane with zero or one tab
+            // consumes the key without switching (cycleRightTabTarget's
+            // null); archive keeps its session semantics.
+            const paneChat = paneChatId;
+            const cycling =
+              binding.event !== "archive-session" &&
+              paneChat !== null &&
+              cycleNavigationKind(route, pane.open, focusInRightPane(document.activeElement)) ===
+                "right-tabs";
+            if (cycling && paneChat !== null) {
+              const surfaces = rightPaneStore.surfaceRows(paneChat).map((row) => row.surface);
+              const active = resolvedActive(rightPaneStore.stateFor(paneChat));
+              const target = cycleRightTabTarget(
+                surfaces,
+                active,
+                binding.event === "next-session",
+              );
+              if (target !== null) {
+                rightPaneStore.setActive(paneChat, target);
+                // `activate_right_surface`'s scope focus: the surface that held
+                // focus is about to unmount, so pin focus on the pane's own
+                // container (tabIndex -1) — the strip stays mounted and keeps
+                // its own focus. Inputs in the destination surface claim
+                // focus on mount, exactly as on the desktop.
+                const stripHoldsFocus =
+                  document.activeElement?.closest(".right-tab-strip") != null;
+                if (!stripHoldsFocus) {
+                  document.querySelector<HTMLElement>(".right-pane")?.focus();
+                }
+              }
+            } else {
+              emitShortcut(binding.event);
+            }
           }
           return;
         case "open-model-picker":

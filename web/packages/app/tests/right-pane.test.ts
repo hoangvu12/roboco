@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   RightPaneStore,
+  cycleRightTabTarget,
   panelKey,
   pushUniqueRightSurface,
   resolvedActive,
@@ -565,5 +566,68 @@ describe("side_chat_surfaces (side_chats.rs)", () => {
     expect(pane.open).toBe(true);
     expect(pane.filesOpen).toBe(true);
     expect(resolvedActive(pane)).toEqual({ kind: "picker" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus-following right-tab cycling (upstream a1ccea18, shell/tabs.rs)
+// ---------------------------------------------------------------------------
+
+describe("cycleRightTabTarget (a1ccea18)", () => {
+  const d1: RightSurface = { kind: "diff", id: "d1" };
+  const s1: RightSurface = { kind: "subagent", id: "s1" };
+  const c1: RightSurface = { kind: "sidechat", id: "c1" };
+
+  it("steps through the strip order and wraps at both ends", () => {
+    const rows = [d1, s1, c1];
+    expect(cycleRightTabTarget(rows, d1, true)).toEqual(s1);
+    expect(cycleRightTabTarget(rows, s1, true)).toEqual(c1);
+    // The strip's displayed order — a drag reorder changes the walk.
+    expect(cycleRightTabTarget(rows, c1, true)).toEqual(d1);
+    expect(cycleRightTabTarget(rows, d1, false)).toEqual(c1);
+    expect(cycleRightTabTarget(rows, c1, false)).toEqual(s1);
+  });
+
+  it("a pane with zero or one tab has nothing to cycle", () => {
+    // The desktop's rows.len() <= 1 early return: the binding is consumed
+    // without leaving the pane.
+    expect(cycleRightTabTarget([], { kind: "picker" }, true)).toBeNull();
+    expect(cycleRightTabTarget([d1], d1, true)).toBeNull();
+    expect(cycleRightTabTarget([d1], d1, false)).toBeNull();
+  });
+
+  it("an active pick that is not in the list enters at the matching end", () => {
+    // The empty picker (or a stale pick) is treated like session cycling's
+    // missing selection: forward enters at the first tab, backward at the
+    // last, rather than dead-ending.
+    expect(cycleRightTabTarget([d1, s1, c1], { kind: "picker" }, true)).toEqual(d1);
+    expect(cycleRightTabTarget([d1, s1, c1], { kind: "picker" }, false)).toEqual(c1);
+    // Value equality, not identity: a structurally-equal pick from a fresh
+    // render (resolvedActive's stored active) finds its slot.
+    expect(cycleRightTabTarget([d1, s1, c1], { kind: "subagent", id: "s1" }, true)).toEqual(c1);
+  });
+
+  it("the store walk: live rows only, the resolved active as the anchor", () => {
+    // The composition the AppShell listener runs — right_surface_rows
+    // (stale ids dropped) feeding the cycle with resolved_active's pick.
+    const { store } = fresh();
+    store.addDiffSurface("chat-1", "diff");
+    store.addDiffSurface("chat-1", "diff", "second");
+    const first: RightSurface = { kind: "diff", id: "d1" };
+    const second: RightSurface = { kind: "diff", id: "d2" };
+    store.setActive("chat-1", first);
+    store.closeSurface("chat-1", second);
+    const surfaces = store.surfaceRows("chat-1").map((row) => row.surface);
+    expect(surfaces).toEqual([first]);
+    // One live tab left: nothing to cycle, focus stays in the pane.
+    expect(cycleRightTabTarget(surfaces, resolvedActive(store.stateFor("chat-1")), true)).toBeNull();
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    // Anchor the walk at the diff tab (the add activated the side chat).
+    store.setActive("chat-1", first);
+    const live = store.surfaceRows("chat-1").map((row) => row.surface);
+    expect(cycleRightTabTarget(live, resolvedActive(store.stateFor("chat-1")), true)).toEqual({
+      kind: "sidechat",
+      id: "c1",
+    });
   });
 });

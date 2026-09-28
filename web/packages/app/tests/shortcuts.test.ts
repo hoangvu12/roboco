@@ -11,6 +11,7 @@ import {
   browserReservedCaveat,
   comboFromKeystrokeOn,
   comboModifiers,
+  cycleNavigationKind,
   cycleTarget,
   defaultComboOn,
   displayCombo,
@@ -32,6 +33,7 @@ import {
 } from "../src/state/shortcuts";
 import { defaultKeymap, type KeymapConfig } from "../src/state/ui-settings";
 import { keymapStore, overlayKeyboard, overlayOwnsKeyboard } from "../src/state/keymap";
+import { cycleRightTabTarget } from "../src/state/right-pane";
 import { jumpHintStore } from "../src/state/jump-hints";
 
 /**
@@ -153,8 +155,8 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutLabel("newSession")).toBe("New session");
     expect(shortcutLabel("newProject")).toBe("New project");
     expect(shortcutLabel("openModelPicker")).toBe("Open model picker");
-    expect(shortcutLabel("nextSession")).toBe("Next session");
-    expect(shortcutLabel("prevSession")).toBe("Previous session");
+    expect(shortcutLabel("nextSession")).toBe("Next session or right pane tab");
+    expect(shortcutLabel("prevSession")).toBe("Previous session or right pane tab");
     expect(shortcutLabel("archiveSession")).toBe("Archive session");
     expect(shortcutLabel({ jumpSession: 0 })).toBe("Jump to session 1");
     expect(shortcutLabel({ jumpSession: 8 })).toBe("Jump to session 9");
@@ -651,6 +653,62 @@ describe("sessionNavFires (08965a1e)", () => {
     expect(cycleTarget(order, "newer", true)).toBe("older");
     // And the reverse step wraps back, as from chat.
     expect(cycleTarget(order, "older", false)).toBe("newer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus-following cycling (upstream a1ccea18, shell/tabs.rs)
+// ---------------------------------------------------------------------------
+
+describe("cycleNavigationKind (a1ccea18)", () => {
+  it("the right pane takes the binding when it is open and holds focus", () => {
+    expect(cycleNavigationKind("chat", true, true)).toBe("right-tabs");
+  });
+
+  it("everything else cycles sessions — the desktop's else branch", () => {
+    // The pane closed (hidden with its tabs kept, or never opened).
+    expect(cycleNavigationKind("chat", false, true)).toBe("sessions");
+    // Focus in the main chat / composer / explorer / bottom terminal.
+    expect(cycleNavigationKind("chat", true, false)).toBe("sessions");
+    // Settings still cycles sessions: the pane does not render there.
+    expect(cycleNavigationKind("settings", true, true)).toBe("sessions");
+    expect(cycleNavigationKind("settings", false, false)).toBe("sessions");
+  });
+
+  it("the walk the AppShell listener runs from pane focus: right tabs, not sessions", () => {
+    // The pure chain behind `cycle_navigation`: match the keystroke, admit
+    // it through the session-nav guard, pick the pane from focus, then pick
+    // the surface from the pane's live strip order. Same shape as the
+    // settings dispatch test above — the desktop drives the same walk with
+    // simulate_keystrokes (shell/navigation_tests).
+    const table = applyKeymap(defaultKeymap(false), false);
+    const binding = matchKeybinding(fakeEvent({ key: "Tab", ctrlKey: true }), table);
+    expect(binding?.event).toBe("next-session");
+    expect(sessionNavFires("chat", overlayOwnsKeyboard())).toBe(true);
+    expect(cycleNavigationKind("chat", true, true)).toBe("right-tabs");
+    expect(
+      cycleRightTabTarget(
+        [
+          { kind: "diff", id: "d1" },
+          { kind: "subagent", id: "s1" },
+          { kind: "sidechat", id: "c1" },
+        ],
+        { kind: "sidechat", id: "c1" },
+        true,
+      ),
+    ).toEqual({ kind: "diff", id: "d1" });
+    // Backward wraps the other way.
+    expect(
+      cycleRightTabTarget(
+        [
+          { kind: "diff", id: "d1" },
+          { kind: "subagent", id: "s1" },
+          { kind: "sidechat", id: "c1" },
+        ],
+        { kind: "diff", id: "d1" },
+        false,
+      ),
+    ).toEqual({ kind: "sidechat", id: "c1" });
   });
 });
 
