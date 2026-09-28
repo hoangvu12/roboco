@@ -275,6 +275,12 @@ export interface UiSettings {
   readonly sidebarShowHarness: boolean;
   readonly sidebarShowBranch: boolean;
   readonly sidebarShowPullRequest: boolean;
+  /**
+   * The sidebar's "Star on GitHub" banner was dismissed (its close button
+   * or following the link). Device-local; never shown again once set
+   * (`github_star_banner_dismissed`, settings.rs — upstream d92d56a2).
+   */
+  readonly githubStarBannerDismissed: boolean;
   readonly lastSpaceId: string | null;
   /**
    * Last successfully launched Action per space in this viewport
@@ -424,6 +430,7 @@ export function defaultUiSettings(): UiSettings {
     sidebarShowHarness: true,
     sidebarShowBranch: true,
     sidebarShowPullRequest: true,
+    githubStarBannerDismissed: false,
     lastSpaceId: null,
     lastProjectActionBySpaceId: {},
     spaceFilter: null,
@@ -774,6 +781,7 @@ export function healUiSettings(value: unknown): UiSettings {
     sidebarShowHarness: bool(raw.sidebarShowHarness, true),
     sidebarShowBranch: bool(raw.sidebarShowBranch, true),
     sidebarShowPullRequest: bool(raw.sidebarShowPullRequest, true),
+    githubStarBannerDismissed: bool(raw.githubStarBannerDismissed, false),
     lastSpaceId: nullableString(raw.lastSpaceId),
     lastProjectActionBySpaceId: healStringMap(raw.lastProjectActionBySpaceId),
     spaceFilter: nullableString(raw.spaceFilter),
