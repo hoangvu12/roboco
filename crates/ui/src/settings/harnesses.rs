@@ -428,15 +428,18 @@ impl HarnessesPage {
         });
     }
 
-    /// Whether the target engine serves the harness-update lifecycle. The page
-    /// targets one engine at a time (`request_routing::device_target`), so a
-    /// single capability read answers for both the watch and the actions.
+    /// Whether the target engine serves the harness-update lifecycle. The
+    /// page retargets through `request_routing::device_target`, so the
+    /// capability read comes from the TARGET engine's info — exactly like the
+    /// calls themselves.
     fn supports_updates(&self, cx: &Context<Self>) -> bool {
-        self.state.read(cx).engine().is_some_and(|engine| {
-            engine
-                .engine_info()
-                .supports(roboco_proto::capabilities::HARNESS_UPDATES_V1)
-        })
+        crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref())
+            .map(|target| {
+                target
+                    .engine_info()
+                    .supports(roboco_proto::capabilities::HARNESS_UPDATES_V1)
+            })
+            .unwrap_or(false)
     }
 
     fn can_control_updates(&self, cx: &Context<Self>) -> bool {
