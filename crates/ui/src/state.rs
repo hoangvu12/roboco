@@ -604,6 +604,10 @@ pub struct AppState {
     pub spaces: Vec<Space>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
+    /// A fork RPC may arrive ahead of its registry row: the side chat it
+    /// opened is carried here until the row lands (or its deletion is
+    /// observed).
+    pending_side_chat: Option<Chat>,
     pub sessions: Vec<Session>,
     session_presentation: Option<Vec<Session>>,
     /// The project the new-session canvas mints into. Healed by
@@ -726,6 +730,7 @@ impl AppState {
             connectivity_observed: false,
             spaces: Vec::new(),
             chats: Vec::new(),
+            pending_side_chat: None,
             sessions: Vec::new(),
             session_presentation: None,
             selected_space: None,
@@ -931,6 +936,13 @@ impl AppState {
     // ---- reducers (pure) ----
 
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) {
+        if let Some(pending) = &self.pending_side_chat {
+            if chats.iter().any(|chat| chat.id == pending.id) {
+                self.pending_side_chat = None;
+            } else {
+                chats.push(pending.clone());
+            }
+        }
         sort_chats(&mut chats);
         self.chats = chats;
         self.chats_synced = true;
@@ -1500,6 +1512,28 @@ impl AppState {
         }
     }
 
+    /// A send the host held for the next turn shows as its queue row, not
+    /// as an echo: drop echoes (and the pending-send overlay) for queued ids.
+    pub fn apply_queue(&mut self, items: Vec<roboco_doc::QueuedMessage>) {
+        if let Some(chat_id) = self.selected_chat.as_deref() {
+            if let Some(echoes) = self.echoes.get_mut(chat_id) {
+                let before = echoes.len();
+                echoes.retain(|echo| !items.iter().any(|q| q.id == echo.id));
+                if echoes.len() != before {
+                    self.transcript_revision = self.transcript_revision.wrapping_add(1);
+                }
+            }
+            if self
+                .pending_sends
+                .get(chat_id)
+                .is_some_and(|p| items.iter().any(|q| q.id == p.message_id))
+            {
+                self.pending_sends.remove(chat_id);
+            }
+        }
+        self.queue = items;
+    }
+
     /// Unconfirmed echoes for the selected chat, in send order.
     pub fn pending_echoes(&self) -> &[SessionMessageEntry] {
         self.selected_chat
@@ -1513,7 +1547,9 @@ impl AppState {
 
     /// Non-archived chats in sidebar order.
     pub fn visible_chats(&self) -> impl Iterator<Item = &Chat> {
-        self.chats.iter().filter(|c| !c.archived)
+        self.chats
+            .iter()
+            .filter(|c| !c.archived && c.parent_chat_id.is_none())
     }
 
     pub(crate) fn restore_composer_target(
@@ -1787,6 +1823,7 @@ impl AppState {
         self.session_presence_presentation.clear();
         self.spaces.clear();
         self.chats.clear();
+        self.pending_side_chat = None;
         self.sessions.clear();
         self.session_presentation = None;
         self.selected_space = None;
@@ -1813,6 +1850,33 @@ impl AppState {
     }
 
     // ---- gpui glue ----
+
+    /// Independent selection and transcript subscriptions over the same engine:
+    /// a side chat's own view of the registry, seeded with its own row (the
+    /// registry frame may not carry it yet).
+    pub(crate) fn side_chat_state(
+        parent: &Entity<Self>,
+        chat: Chat,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let source = parent.read(cx);
+        let engine = source.engine.clone();
+        let mut state = Self::new();
+        state.chats = source.chats.clone();
+        if !state.chats.iter().any(|c| c.id == chat.id) {
+            state.chats.push(chat.clone());
+        }
+        state.spaces = source.spaces.clone();
+        state.devices = source.devices.clone();
+        state.data_dir = source.data_dir.clone();
+        state.auto_selected = true;
+        state.pending_side_chat = Some(chat.clone());
+        if let Some(engine) = engine {
+            state.attach_engine(engine, cx);
+        }
+        state.select_chat(Some(chat.id), cx);
+        state
+    }
 
     /// Kick off (or retry) the engine bootstrap: probe → connect-or-embed on
     /// tokio, then attach subscriptions. Safe to call again after `Failed`.
@@ -2702,7 +2766,7 @@ fn spawn_queue_watch(
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                        state.queue = frame.items;
+                        state.apply_queue(frame.items);
                         cx.notify();
                     }
                 });
@@ -3999,6 +4063,52 @@ mod tests {
     }
 
     #[test]
+    fn visible_chats_hide_spawned_children() {
+        let mut state = AppState::new();
+        let mut child = chat("child", 0, Some(1));
+        child.parent_chat_id = Some("parent".into());
+        state.apply_chats(vec![child, chat("parent", 1, Some(2))]);
+        let visible: Vec<&str> = state.visible_chats().map(|c| c.id.as_str()).collect();
+        assert_eq!(visible, ["parent"]);
+    }
+
+    #[test]
+    fn side_chats_remain_addressable_but_do_not_appear_in_sidebar() {
+        let mut state = AppState::new();
+        let main = chat("main", 0, None);
+        let mut side = chat("side", 1, Some(2));
+        side.parent_chat_id = Some(main.id.clone());
+        state.apply_chats(vec![main, side]);
+        assert_eq!(
+            state
+                .visible_chats()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["main"]
+        );
+        state.selected_chat = Some("side".into());
+        assert_eq!(
+            state.selected_chat_row().unwrap().parent_chat_id.as_deref(),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn pending_side_chat_waits_for_registry_then_observes_deletion() {
+        let mut state = AppState::new();
+        let mut side = chat("side", 1, None);
+        side.parent_chat_id = Some("main".into());
+        state.selected_chat = Some(side.id.clone());
+        state.pending_side_chat = Some(side.clone());
+        state.apply_chats(vec![]);
+        assert_eq!(state.selected_chat.as_deref(), Some("side"));
+        state.apply_chats(vec![side]);
+        assert!(state.pending_side_chat.is_none());
+        state.apply_chats(vec![]);
+        assert_eq!(state.selected_chat, None);
+    }
+
+    #[test]
     fn apply_chat_config_stamps_the_row() {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
@@ -4095,6 +4205,44 @@ mod tests {
         // An already archived chat stays put — the shortcut never unarchives.
         state.selected_chat = Some("a".into());
         assert_eq!(state.archivable_selected_chat(), None);
+    }
+
+    #[test]
+    fn a_send_held_in_the_queue_drops_its_echo_and_pending_overlay() {
+        let mut state = AppState::new();
+        state.selected_chat = Some("c1".into());
+        let echo = |id: &str| SessionMessageEntry {
+            id: id.into(),
+            role: roboco_doc::MessageRole::User,
+            parts: vec![],
+            created_at: 0,
+            device_id: "local".into(),
+            status: None,
+            continuation_of: None,
+            duration_ms: None,
+        };
+        let row = |id: &str| roboco_doc::QueuedMessage {
+            id: id.into(),
+            text: "held".into(),
+            attachments: vec![],
+            hold_for_turn_end: false,
+            issued_by: "local".into(),
+            issued_at: 0,
+            edited_at: None,
+            delivery_gate: None,
+        };
+        state.push_echo("c1", echo("held"));
+        state.push_echo("c1", echo("sent"));
+        state.begin_pending_send("c1", "held", Utc::now());
+        state.apply_queue(vec![row("held")]);
+        let ids: Vec<_> = state
+            .pending_echoes()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["sent"]);
+        assert!(!state.pending_sends.contains_key("c1"));
+        assert_eq!(state.queue.len(), 1);
     }
 
     #[test]
