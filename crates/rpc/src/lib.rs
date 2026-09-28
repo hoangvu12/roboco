@@ -210,6 +210,16 @@ pub mod methods {
     /// Download + apply the newest release on the target device (symlink-managed
     /// installs; the service restart is scheduled after the reply flushes).
     pub const APPLY_UPDATE: &str = "ApplyUpdate";
+    /// Device-local agent CLI update lifecycle (engine-local: the engine that
+    /// owns the CLIs runs the whole lifecycle; nothing forwards). The stream
+    /// emits the complete ordered status list initially and after every
+    /// transition.
+    pub const WATCH_HARNESS_UPDATES: &str = "WatchHarnessUpdates";
+    pub const CHECK_HARNESS_UPDATES: &str = "CheckHarnessUpdates";
+    pub const APPLY_HARNESS_UPDATE: &str = "ApplyHarnessUpdate";
+    pub const CANCEL_HARNESS_UPDATE: &str = "CancelHarnessUpdate";
+    pub const DISMISS_HARNESS_UPDATE: &str = "DismissHarnessUpdate";
+    pub const SET_HARNESS_UPDATE_POLICY: &str = "SetHarnessUpdatePolicy";
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -321,7 +331,10 @@ mod tests {
             method: &str,
             _params: serde_json::Value,
         ) -> Result<RpcReply, RpcError> {
-            if method != methods::WATCH_CHECKOUT_CHANGE_REQUEST {
+            if !matches!(
+                method,
+                methods::WATCH_CHECKOUT_CHANGE_REQUEST | methods::WATCH_HARNESS_UPDATES
+            ) {
                 return Err(RpcError::UnknownMethod(method.into()));
             }
             let guard = DropSignal(self.dropped.lock().unwrap().take());
@@ -330,6 +343,16 @@ mod tests {
                 drop(guard);
                 item
             });
+            if method == methods::WATCH_HARNESS_UPDATES {
+                // Update watches send an initial status snapshot, then may
+                // stay quiet indefinitely. That first item is the checked
+                // subscription's readiness signal.
+                return Ok(RpcReply::Stream(
+                    futures::stream::once(async { serde_json::json!([]) })
+                        .chain(stream)
+                        .boxed(),
+                ));
+            }
             Ok(RpcReply::Stream(stream.boxed()))
         }
     }
@@ -431,6 +454,50 @@ mod tests {
             .await
             .expect("server stream cancelled")
             .expect("drop signal");
+    }
+
+    /// Quiet update watches: the initial snapshot answers the checked
+    /// subscription, then nothing arrives until a provider changes state.
+    /// Dropping one engine's watch must cancel only that engine's stream.
+    #[tokio::test]
+    async fn dropping_one_quiet_harness_update_watch_preserves_the_other() {
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let (second_tx, mut second_rx) = tokio::sync::oneshot::channel();
+        let first = memory_client(Arc::new(CancelAwareService {
+            dropped: Mutex::new(Some(first_tx)),
+        }));
+        let second = memory_client(Arc::new(CancelAwareService {
+            dropped: Mutex::new(Some(second_tx)),
+        }));
+        let first_watch = first
+            .subscribe_checked(methods::WATCH_HARNESS_UPDATES, serde_json::Value::Null)
+            .await
+            .unwrap();
+        let second_watch = second
+            .subscribe_checked(methods::WATCH_HARNESS_UPDATES, serde_json::Value::Null)
+            .await
+            .unwrap();
+        // Both watches resolve their readiness on the initial snapshot.
+        let mut first_items = first_watch;
+        let mut second_items = second_watch;
+        assert_eq!(first_items.recv().await, Some(serde_json::json!([])));
+        assert_eq!(second_items.recv().await, Some(serde_json::json!([])));
+
+        drop(first_items);
+        tokio::time::timeout(std::time::Duration::from_secs(1), first_rx)
+            .await
+            .expect("first engine's quiet stream cancelled")
+            .expect("first drop signal");
+        assert!(matches!(
+            second_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        drop(second_items);
+        tokio::time::timeout(std::time::Duration::from_secs(1), second_rx)
+            .await
+            .expect("second engine's quiet stream cancelled")
+            .expect("second drop signal");
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ pub mod change_requests;
 mod chat_persistence;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod harness_updates;
 mod http_error;
 pub mod instance_lock;
 pub mod listener;
@@ -134,6 +135,7 @@ pub struct EngineCore {
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
+    pub harness_updates: harness_updates::HarnessUpdateCoordinator,
     pub device_id: String,
     workspace_scope: WorkspaceScope,
     /// Release checker (attached by [`Engine::assemble_runtime`]) — the
@@ -263,6 +265,9 @@ impl EngineCore {
         // login between engines, so no route is registered in production.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        let harness_updates =
+            harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
+        harness_updates.start();
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -292,6 +297,7 @@ impl EngineCore {
             spaces_sync,
             uploads,
             agent_accounts,
+            harness_updates,
             device_id,
             workspace_scope: profile.scope(),
             updater: std::sync::Mutex::new(None),
@@ -335,7 +341,8 @@ impl EngineCore {
             self.workspace_scope,
         )
         .with_previews(self.previews.clone())
-        .with_remote_access(Arc::downgrade(&self.remote_access));
+        .with_remote_access(Arc::downgrade(&self.remote_access))
+        .with_harness_updates(self.harness_updates.clone());
         if let Some(updater) = self.updater() {
             rpc = rpc.with_updater(updater);
         }
@@ -348,6 +355,7 @@ impl EngineCore {
     pub async fn shutdown(&self) {
         self.remote_access.shutdown().await;
         self.previews.shutdown().await;
+        self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
         // releases the next queued row. Freeze first so quitting never starts
         // recovered work while the engine is being torn down.

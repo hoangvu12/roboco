@@ -580,6 +580,9 @@ impl Harness for CodexHarness {
     fn installed(&self) -> bool {
         self.resolve_executable().is_ok()
     }
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        self.resolve_executable().ok()
+    }
     /// Done is the CLI's own terminal frame, for wake turns too.
     fn deterministic_turn_end(&self) -> bool {
         true
@@ -952,6 +955,7 @@ async fn run_session(session: Session) {
         stderr_tail,
     } = session;
     let RunControls {
+        execution_lease: _execution_lease,
         request_input,
         mut steering,
         interrupt,

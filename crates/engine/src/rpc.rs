@@ -70,8 +70,8 @@ use tokio::sync::watch;
 
 use roboco_doc::{MessagePart, SessionCommandPayload};
 use roboco_proto::{
-    ChatConfig, EngineInfo, HarnessId, ProjectActionDraft, SidebarSection, Space, ToolCall,
-    WorkspaceScope,
+    ChatConfig, EngineInfo, HarnessId, HarnessUpdatePolicy, ProjectActionDraft, SidebarSection,
+    Space, ToolCall, WorkspaceScope,
 };
 use roboco_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
@@ -110,6 +110,28 @@ struct ListModelsParams {
 struct SetHarnessEnabledParams {
     harness: HarnessId,
     enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HarnessUpdateParams {
+    #[serde(default)]
+    harness: Option<HarnessId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissHarnessUpdateParams {
+    harness: HarnessId,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetHarnessUpdatePolicyParams {
+    harness: HarnessId,
+    policy: HarnessUpdatePolicy,
 }
 
 async fn update_harness_enabled(
@@ -715,6 +737,7 @@ pub struct EngineRpc {
     uploads: Uploads,
     agent_accounts: AgentAccounts,
     updater: Option<roboco_update::Updater>,
+    harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
     engine_info: EngineInfo,
 }
 
@@ -759,6 +782,7 @@ impl EngineRpc {
             uploads,
             agent_accounts,
             updater: None,
+            harness_updates: None,
             engine_info,
         }
     }
@@ -779,10 +803,27 @@ impl EngineRpc {
         self
     }
 
+    /// Attach the device-local agent-CLI update lifecycle.
+    pub fn with_harness_updates(
+        mut self,
+        coordinator: crate::harness_updates::HarnessUpdateCoordinator,
+    ) -> Self {
+        self.harness_updates = Some(coordinator);
+        self
+    }
+
     fn updater(&self) -> Result<&roboco_update::Updater, RpcError> {
         self.updater
             .as_ref()
             .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
+    }
+
+    fn harness_updates(
+        &self,
+    ) -> Result<&crate::harness_updates::HarnessUpdateCoordinator, RpcError> {
+        self.harness_updates
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("agent updates unavailable".into()))
     }
 
     fn local_project_action_space(&self, space_id: &str) -> Result<Space, RpcError> {
@@ -1262,19 +1303,32 @@ impl RpcService for EngineRpc {
             methods::SET_HARNESS_ENABLED => {
                 let p: SetHarnessEnabledParams = parse_params(params)?;
                 update_harness_enabled(&self.registry, p.harness, p.enabled).await?;
+                if let Some(coordinator) = &self.harness_updates {
+                    coordinator.refresh_enabled();
+                }
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
+                // The shared execution lease orders model discovery behind an
+                // accepted CLI update; the probe task retains it even when this
+                // RPC is dropped, so a late update can never replace a binary
+                // under a live catalog request.
+                let lease = std::sync::Arc::new(self.registry.execution_lease(p.harness).await);
                 let harness = self
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let models = crate::model_catalogs::list(self.repos.data_dir(), harness, p.force)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let models = crate::model_catalogs::list_with_lease(
+                    self.repos.data_dir(),
+                    harness,
+                    p.force,
+                    Some(lease),
+                )
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&models)
             }
             methods::LIST_SKILLS => {
@@ -1298,12 +1352,9 @@ impl RpcService for EngineRpc {
                         path: p.path,
                     })
                     .await?;
-                let harness = self
+                let skills = self
                     .registry
-                    .resolve(p.harness)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let skills = harness
-                    .skills(&root)
+                    .discover_skills(p.harness, &root)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&skills)
@@ -1329,12 +1380,9 @@ impl RpcService for EngineRpc {
                         path: p.path,
                     })
                     .await?;
-                let harness = self
+                let commands = self
                     .registry
-                    .resolve(p.harness)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let commands = harness
-                    .commands_for(&root)
+                    .discover_commands(p.harness, &root)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&commands)
@@ -1749,6 +1797,60 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(format!("{e:#}")))?;
                 RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
+            }
+            methods::WATCH_HARNESS_UPDATES => Ok(RpcReply::Stream(watch_stream(
+                self.harness_updates()?.watch(),
+            ))),
+            methods::CHECK_HARNESS_UPDATES => {
+                let p: HarnessUpdateParams = parse_params(params)?;
+                let coordinator = self.harness_updates()?.clone();
+                // Provider checks are engine-owned once accepted. If a
+                // Settings view closes, the request future may disappear;
+                // detaching the work prevents a permanent `Checking` status
+                // and still publishes the result by watch.
+                let statuses = tokio::spawn(async move {
+                    if let Some(harness) = p.harness {
+                        coordinator.check_one(harness).await?;
+                    } else {
+                        coordinator.check_all().await;
+                    }
+                    Ok::<_, String>(coordinator.snapshot())
+                })
+                .await
+                .map_err(|error| {
+                    RpcError::Failed(format!("agent update check task failed: {error}"))
+                })?
+                .map_err(RpcError::Failed)?;
+                RpcReply::value(&statuses)
+            }
+            methods::APPLY_HARNESS_UPDATE => {
+                let p: HarnessUpdateParams = parse_params(params)?;
+                let harness = p
+                    .harness
+                    .ok_or_else(|| RpcError::BadParams("harness is required".into()))?;
+                let version = self
+                    .harness_updates()?
+                    .apply(harness)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
+            }
+            methods::CANCEL_HARNESS_UPDATE => {
+                let p: HarnessUpdateParams = parse_params(params)?;
+                let harness = p
+                    .harness
+                    .ok_or_else(|| RpcError::BadParams("harness is required".into()))?;
+                RpcReply::value(&serde_json::json!({
+                    "cancelled": self.harness_updates()?.cancel(harness),
+                }))
+            }
+            methods::DISMISS_HARNESS_UPDATE => {
+                let p: DismissHarnessUpdateParams = parse_params(params)?;
+                RpcReply::value(&self.harness_updates()?.dismiss(p.harness, p.version))
+            }
+            methods::SET_HARNESS_UPDATE_POLICY => {
+                let p: SetHarnessUpdatePolicyParams = parse_params(params)?;
+                RpcReply::value(&self.harness_updates()?.set_policy(p.harness, p.policy))
             }
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
