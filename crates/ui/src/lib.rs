@@ -12,6 +12,7 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — roboco pulse loader, gradient spinner, boot splash.
 
+mod account_usage;
 pub mod app_menus;
 pub mod appearance;
 pub mod appshots;
@@ -24,6 +25,7 @@ mod comment_ui;
 pub mod comments;
 pub mod composer;
 mod composer_dock;
+mod composer_markdown;
 mod context_usage;
 pub mod edge_fade;
 pub mod engine_cache;

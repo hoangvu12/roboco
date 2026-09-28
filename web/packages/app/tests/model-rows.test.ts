@@ -19,6 +19,7 @@ function descriptor(id: HarnessId, name: string, extra: Partial<HarnessDescripto
     steeringMode: "step-boundary",
     reasoningLevels: [],
     installed: true,
+    canInstall: false,
     enabled: null,
     ...extra,
   };
@@ -146,7 +147,7 @@ describe("normalize_model_rows", () => {
       bareModel("claude-nova-1", "Nova 1"),
     ]);
     expect(models.map((model) => model.label)).toEqual([
-      "Opus 5",
+      "Opus 5.5",
       "Fable 5",
       "Sonnet 5",
       "Haiku 4.5",

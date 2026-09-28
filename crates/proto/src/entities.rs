@@ -794,6 +794,27 @@ pub struct CheckoutFileDiffText {
     pub stale: bool,
 }
 
+/// `DiscardWorkingTree` request — the chat-owned checkout is restored to its
+/// current HEAD only after the engine re-verifies the snapshot the user
+/// confirmed (`expected_checksum`). Destructive; there is no dry-run form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardWorkingTreeRequest {
+    pub chat_id: String,
+    pub checkout_id: String,
+    pub expected_checksum: String,
+}
+
+/// The discard outcome — `ok` is true only when the whole working tree came
+/// back clean; `checksum` is the post-discard snapshot's, for staleness checks
+/// against a re-opened confirmation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardWorkingTreeOutcome {
+    pub ok: bool,
+    pub checksum: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAccount {
@@ -804,6 +825,16 @@ pub struct AgentAccount {
     pub active: bool,
     #[serde(default)]
     pub usage_windows: Vec<AgentUsageWindow>,
+    /// Epoch millis the `usage_windows` were fetched. The engine serves the
+    /// last good probe (persisted across restarts) while a refresh runs, so
+    /// windows may be minutes old; `None` = never fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_fetched_at: Option<i64>,
+    /// Why the last usage probe failed ("Rate limited — retrying in 2m",
+    /// "Sign in again", …), shown instead of a bare "Usage unavailable" — or
+    /// beside stale windows. `None` when the last probe succeeded or none ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -812,12 +843,22 @@ pub struct AgentAccount {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_kind: Option<AgentAuthKind>,
     /// False for a live login whose credentials we could not read (e.g. macOS
-    /// Keychain denied) — shown, but not re-activatable.
+    /// Keychain denied) or whose account couldn't be identified — shown, but
+    /// not re-activatable. Always false for Hermes: Hermes owns its
+    /// credential pool (it picks and rotates entries itself), so roboco lists
+    /// it read-only — no switch, no remove; accounts are added through
+    /// `hermes auth add`.
     #[serde(default)]
     pub switchable: bool,
     /// Epoch millis of the slot's last snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_at: Option<i64>,
+    /// The upstream login this row belongs to inside an agent that keeps one
+    /// login PER model provider (OpenCode's `openai`, Pi's `anthropic`,
+    /// Hermes' `nous`). Rows sharing it form one single-choice group — at
+    /// most one of them is in use. `None` for single-login agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -835,6 +876,15 @@ pub struct AgentAccountsSnapshot {
     pub warnings: Vec<AgentAccountWarning>,
 }
 
+/// `InstallHarness` / `CancelInstall` request — the explicit, user-requested
+/// install (or its cancellation) for one harness on the engine this call
+/// reaches. Catalog probes never install; only this request does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallHarnessRequest {
+    pub harness: HarnessId,
+}
+
 /// A per-harness detection warning (e.g. Keychain denied reading the live login).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -849,8 +899,19 @@ pub struct AgentAccountWarning {
 #[serde(rename_all = "camelCase")]
 pub struct AgentLoginStart {
     pub login_id: String,
+    /// Empty when the sign-in page is only known later (a poll carries it).
     pub url: String,
     pub mode: AgentLoginMode,
+    /// The loopback port the login's OAuth redirect lands on, on the device
+    /// running the login. A device whose browser finishes the sign-in for a
+    /// login run elsewhere would forward that same port on its own loopback
+    /// over the P2P callback surface — Roboco keeps that surface local
+    /// (ADR 0004): the engine-to-engine forward that drives it upstream is
+    /// not ported, so the port is engine-local information (tests drive
+    /// loopback logins with it). `None` when the sign-in has no loopback
+    /// callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_port: Option<u16>,
     /// True when the spawned CLI opens the authorization page itself
     /// (the engine could not suppress it) — clients must not open it too.
     #[serde(default)]
@@ -860,9 +921,11 @@ pub struct AgentLoginStart {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentLoginMode {
-    /// Claude: the user pastes the OAuth code back into the app.
+    /// Claude's fallback when no loopback port could be bound: the user
+    /// pastes the OAuth code back into the app.
     PasteCode,
-    /// Codex: the CLI's loopback callback completes in the browser; poll until done.
+    /// A loopback callback completes the sign-in in the browser (every
+    /// provider's default); poll until done.
     Browser,
 }
 
@@ -876,6 +939,10 @@ pub struct AgentLoginPoll {
     /// agent had to install first); the app opens it once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// [`AgentLoginStart::callback_port`] for a page that arrived with this
+    /// poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1145,6 +1212,53 @@ mod tests {
         assert_eq!(value["commitSha"], "deadbeef");
         assert_eq!(
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn discard_working_tree_contract_is_camel_case() {
+        let request = DiscardWorkingTreeRequest {
+            chat_id: "chat-1".into(),
+            checkout_id: "checkout".into(),
+            expected_checksum: "abc".into(),
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["chatId"], "chat-1");
+        assert_eq!(value["checkoutId"], "checkout");
+        assert_eq!(value["expectedChecksum"], "abc");
+        assert_eq!(
+            serde_json::from_value::<DiscardWorkingTreeRequest>(value).unwrap(),
+            request
+        );
+        let outcome = DiscardWorkingTreeOutcome {
+            ok: true,
+            checksum: "def".into(),
+        };
+        let value = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["checksum"], "def");
+        assert_eq!(
+            serde_json::from_value::<DiscardWorkingTreeOutcome>(value).unwrap(),
+            outcome
+        );
+    }
+
+    #[test]
+    fn install_harness_request_contract_is_camel_case() {
+        let request = InstallHarnessRequest {
+            harness: HarnessId::Pi,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["harness"], "pi");
+        assert_eq!(
+            serde_json::from_value::<InstallHarnessRequest>(value).unwrap(),
+            request
+        );
+        // A client's routing passthrough must not break the parse.
+        let forwarded = serde_json::json!({ "harness": "pi", "targetDeviceId": "dev-2" });
+        assert_eq!(
+            serde_json::from_value::<InstallHarnessRequest>(forwarded).unwrap(),
             request
         );
     }

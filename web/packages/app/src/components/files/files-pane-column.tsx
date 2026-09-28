@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useEngineSession } from "../../state/session-provider";
+import { useFleetSnapshot } from "../../state/fleet";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { FileTreeModel } from "../../lib/file-tree";
 import { FileTreePanel } from "./file-tree-panel";
@@ -54,11 +55,33 @@ export function FilesPaneColumn({
   // Consume a pending reveal on the docked tree.
   useSyncExternalStoreConsume(chatId, model);
 
+  // The desktop's projectless root label (files/mod.rs, 03b67beb): a chat
+  // with no space roots its tree at the chat's own directory, called out so
+  // the browsing boundary is visible.
+  const snapshot = useFleetSnapshot();
+  const projectlessRoot = useMemo(() => {
+    if (!snapshot.chats.loaded) {
+      return null;
+    }
+    const chat = snapshot.chats.rows.find((row) => row.id === chatId);
+    if (chat === undefined || chat.spaceId != null) {
+      return null;
+    }
+    const device =
+      snapshot.devices.rows.find((row) => row.id === chat.deviceId)?.name ?? chat.deviceId;
+    return `Files in ${chat.cwd ?? "~"} · ${device}`;
+  }, [snapshot, chatId]);
+
   if (!pane.filesOpen) {
     return null;
   }
   return (
     <aside className="files-pane-column" aria-label="Files">
+      {projectlessRoot !== null && (
+        <div className="files-projectless-root" title={projectlessRoot}>
+          {projectlessRoot}
+        </div>
+      )}
       {model !== null && client !== null && session !== null ? (
         <FileTreePanel
           model={model}

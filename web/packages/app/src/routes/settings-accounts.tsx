@@ -18,42 +18,50 @@ import {
   accountInitial,
   accountLabel,
   activateAgentAccount,
+  addOptionLabel,
   cancelAgentLogin,
   completeAgentLogin,
   forceUsageFor,
   forgetAgentAccount,
   formatReset,
+  keepsOneLogin,
   listAgentAccounts,
+  loginCopy,
+  loginOptions,
   loginTitle,
   pollAgentLogin,
   providerAccounts,
   providerEmptyCopy,
+  providerNote,
   PROVIDERS,
   startAgentLogin,
   usageColorVar,
   usageFallback,
   usageLevel,
   type LoadTrigger,
+  type LoginOption,
   type ProviderDescriptor,
 } from "../lib/accounts";
 
 /**
  * Harness accounts settings (desktop settings/accounts.rs parity): one
- * provider section per harness CLI (Claude Code, Codex, Cursor) with its
- * account rows — email, plan and Active badges, usage meters, Switch and
- * Forget on inactive rows — plus the add-account login flows (paste-code
- * and browser-poll) and the page-header device switcher that retargets
- * every call at another paired device via `targetDeviceId`. The visit's
- * first list forces a usage probe; post-action lists ride the still-warm
- * cache. All RPC failures render inline.
+ * provider section per harness CLI (Claude Code, Codex, Cursor, Grok, Devin,
+ * OpenCode, Pi, Hermes) with its account rows — email, plan and Active
+ * badges, usage meters, Switch and Forget on inactive rows — plus the
+ * add-account login flows (paste-code and browser-poll, one per model
+ * provider for the per-provider agents) and the page-header device
+ * switcher that retargets every call at another paired device via
+ * `targetDeviceId`. The visit's first list forces a usage probe;
+ * post-action lists ride the still-warm cache. All RPC failures render
+ * inline.
  */
 
 type Loadable = { kind: "loading" } | { kind: "ready"; snapshot: AgentAccountsSnapshot } | { kind: "error"; message: string };
 
 type LoginFlow =
-  | { kind: "starting"; harness: HarnessId }
-  | { kind: "paste-code"; harness: HarnessId; start: AgentLoginStart; submitting: boolean; error: string | null }
-  | { kind: "browser"; harness: HarnessId; start: AgentLoginStart; message: string | null; error: string | null };
+  | { kind: "starting"; harness: HarnessId; provider: string | null }
+  | { kind: "paste-code"; harness: HarnessId; provider: string | null; start: AgentLoginStart; submitting: boolean; error: string | null }
+  | { kind: "browser"; harness: HarnessId; provider: string | null; start: AgentLoginStart; message: string | null; error: string | null };
 
 export function AccountsSettingsPage() {
   const session = useEngineSession();
@@ -145,7 +153,7 @@ export function AccountsSettingsPage() {
     })();
   }
 
-  function addAccount(harness: HarnessId) {
+  function addAccount(harness: HarnessId, provider: string | null) {
     if (client === null || login !== null) {
       return;
     }
@@ -155,10 +163,10 @@ export function AccountsSettingsPage() {
     // once the start reply lands (the opener is severed right after).
     const tab = window.open("about:blank", "_blank");
     setActionError(null);
-    setLogin({ kind: "starting", harness });
+    setLogin({ kind: "starting", harness, provider });
     void (async () => {
       try {
-        const start = await startAgentLogin(client, harness, target);
+        const start = await startAgentLogin(client, harness, target, provider);
         if (start.cliOpensBrowser) {
           // The engine machine's CLI already opened the page — one tab total.
           tab?.close();
@@ -171,8 +179,8 @@ export function AccountsSettingsPage() {
         }
         setLogin(
           start.mode === "paste-code"
-            ? { kind: "paste-code", harness, start, submitting: false, error: null }
-            : { kind: "browser", harness, start, message: null, error: null },
+            ? { kind: "paste-code", harness, provider, start, submitting: false, error: null }
+            : { kind: "browser", harness, provider, start, message: null, error: null },
         );
       } catch (cause) {
         tab?.close();
@@ -262,8 +270,8 @@ export function AccountsSettingsPage() {
         </div>
       </div>
       <p className="settings-subtitle">
-        The Claude Code, Codex, and Cursor logins on this device. Roboco detects the live session, keeps each account
-        backed up, and can swap between them.
+        The agent logins on this device — Claude Code, Codex, Cursor, Grok, Devin, OpenCode, Pi, and Hermes. Roboco
+        detects the live session, keeps each account backed up, and can swap between them.
         <SettingsEngineIndicator />
       </p>
 
@@ -286,7 +294,7 @@ export function AccountsSettingsPage() {
             loadable={snapshotState}
             busyAccount={busyAccount}
             now={now}
-            onAdd={() => addAccount(provider.harness)}
+            onAdd={(option) => addAccount(provider.harness, option.provider)}
             onSwitch={(account) => accountAction("activate", account)}
             onForget={(account) => accountAction("forget", account)}
           />
@@ -318,28 +326,35 @@ function ProviderSection({
   readonly loadable: Loadable;
   readonly busyAccount: string | null;
   readonly now: number;
-  readonly onAdd: () => void;
+  /** One per [`LoginOption`] — per-provider agents offer each model provider. */
+  readonly onAdd: (option: LoginOption) => void;
   readonly onSwitch: (account: AgentAccount) => void;
   readonly onForget: (account: AgentAccount) => void;
 }) {
   const loading = loadable.kind === "loading";
   const accounts = loadable.kind === "ready" ? providerAccounts(loadable.snapshot, provider.harness) : [];
   const warnings = loadable.kind === "ready" ? loadable.snapshot.warnings.filter((w) => w.harness === provider.harness) : [];
+  const note = providerNote(provider.harness);
   return (
     <section className="settings-provider">
       <div className="settings-section-header">
         <h2>{provider.name}</h2>
-        {!loading && (
-          <button type="button" className="btn btn-ghost" onClick={onAdd}>
-            Add account
-          </button>
-        )}
+        {/* A one-login provider (Antigravity) that is connected offers
+            nothing to add — signing in again only re-confirms it. */}
+        {!loading &&
+          (accounts.length === 0 || !keepsOneLogin(provider.harness)) &&
+          loginOptions(provider.harness).map((option) => (
+            <button type="button" className="btn btn-ghost" key={option.label} onClick={() => onAdd(option)}>
+              {addOptionLabel(option, accounts.length === 0)}
+            </button>
+          ))}
       </div>
       {warnings.map((warning, index) => (
         <p className="warning-strip" role="status" key={index}>
           {warning.message}
         </p>
       ))}
+      {note !== null && <p className="settings-footnote settings-provider-note">{note}</p>}
       <div className="settings-card">
         {loading ? (
           <>
@@ -354,6 +369,7 @@ function ProviderSection({
               key={account.id}
               account={account}
               busy={busyAccount === account.id}
+              refreshing={loading}
               now={now}
               onSwitch={() => onSwitch(account)}
               onForget={() => onForget(account)}
@@ -368,12 +384,14 @@ function ProviderSection({
 function AccountRow({
   account,
   busy,
+  refreshing,
   now,
   onSwitch,
   onForget,
 }: {
   readonly account: AgentAccount;
   readonly busy: boolean;
+  readonly refreshing: boolean;
   readonly now: number;
   readonly onSwitch: () => void;
   readonly onForget: () => void;
@@ -386,7 +404,7 @@ function AccountRow({
       <div className="settings-row-main">
         <span className="settings-row-title">{accountLabel(account)}</span>
         {account.usageWindows.length === 0 ? (
-          <span className="account-usage-fallback">{usageFallback(account)}</span>
+          <span className="account-usage-fallback">{usageFallback(account, refreshing)}</span>
         ) : (
           <span className="usage-list">
             {account.usageWindows.map((window, index) => (
@@ -499,9 +517,9 @@ export function LoginDialog({
   // the old web hand-roll cancelled on backdrop clicks; Cancel/Escape
   // close now) and Escape cancels, matching `popover::modal`'s contract.
   return (
-    <Dialog ariaLabel={loginTitle(flow.harness)} onClose={onCancel} initialFocus={inputRef}>
+    <Dialog ariaLabel={loginTitle(flow.harness, flow.provider)} onClose={onCancel} initialFocus={inputRef}>
       <DialogCard>
-        <DialogTitle>{loginTitle(flow.harness)}</DialogTitle>
+        <DialogTitle>{loginTitle(flow.harness, flow.provider)}</DialogTitle>
         {flow.kind === "starting" && <DialogBody>Starting the login flow…</DialogBody>}
         {flow.kind === "paste-code" && (
           <>
@@ -546,11 +564,7 @@ export function LoginDialog({
         )}
         {flow.kind === "browser" && (
           <>
-            <DialogBody>
-              {flow.harness === "cursor"
-                ? "Finish signing in to Cursor in your browser. This mints a roboco-named API key you can revoke any time from Cursor's dashboard — it is separate from `cursor-agent login`."
-                : "Finish signing in to OpenAI in your browser. The new login is captured in an isolated profile — your current session is untouched until you switch."}
-            </DialogBody>
+            <DialogBody>{loginCopy(flow.harness, flow.provider)}</DialogBody>
             <a className="login-dialog-link" href={flow.start.url} target="_blank" rel="noopener noreferrer">
               Reopen the sign-in page
             </a>

@@ -595,6 +595,13 @@ export class ToolGroupMotionStore {
   readonly #blobOrder = new Map<string, number>();
   readonly #counts = new Map<string, number>();
   /**
+   * Compact-mode work groups: `performance.now()` when the "Worked for Xm Ys"
+   * label first appeared on that row this session — the crossfade animates
+   * once, then stays (no replay on later paints or remounts; the desktop's
+   * `compact_worked_fade_at`).
+   */
+  readonly #workedFadeAt = new Map<string, number>();
+  /**
    * Ticket 71 B — the rendered card height per expandable chip key, as the
    * renderer reported it: the animated thought-close tween's `from`. A chip
    * that never rendered open has no entry, so its completion snaps (an
@@ -653,6 +660,21 @@ export class ToolGroupMotionStore {
 
   groupFold(rowId: string): FoldState | null {
     return this.#folds.get(rowId) ?? null;
+  }
+
+  /** When the compact work group's "Worked for" label first faded in. */
+  workedFadeAt(rowId: string): number | null {
+    return this.#workedFadeAt.get(rowId) ?? null;
+  }
+
+  /**
+   * Stamp the "Worked for" crossfade's start once — the first time the
+   * label lands on that row (the desktop's fade-in, no replay later).
+   */
+  noteWorkedFor(rowId: string): void {
+    if (!this.#workedFadeAt.has(rowId)) {
+      this.#workedFadeAt.set(rowId, performance.now());
+    }
   }
 
   detailFold(key: string): FoldState | null {
@@ -768,6 +790,9 @@ export class ToolGroupMotionStore {
       // to.
       this.#thoughtSeenResolved.clear();
       this.#detailCardHeights.clear();
+      // The "Worked for" crossfade timestamps are per-session paint
+      // bookkeeping: a replayed frame must not re-run them.
+      this.#workedFadeAt.clear();
       // Retain explicit user pins, but never resume an old arrival or
       // closing animation when revisiting the retained transcript.
       for (const [key, fold] of this.#folds) {
@@ -801,7 +826,7 @@ export class ToolGroupMotionStore {
         if (tool.detail !== null || tool.invocation !== null) {
           liveDetailKeys.add(key);
         }
-        if (!tool.isThought) {
+        if (tool.kind === "call") {
           continue;
         }
         const previouslyResolved = this.#thoughtSeenResolved.get(key) ?? null;

@@ -68,10 +68,12 @@ export function startAgentLogin(
   client: EngineClient,
   harness: HarnessId,
   targetDeviceId?: string | null,
+  provider?: string | null,
 ): Promise<AgentLoginStart> {
   return client.call<AgentLoginStart>(methods.START_AGENT_LOGIN, {
     harness,
     ...targetParams(targetDeviceId),
+    ...(provider != null ? { provider } : {}),
   });
 }
 
@@ -198,12 +200,162 @@ export interface ProviderDescriptor {
   readonly cli: string;
 }
 
-/** The provider cards, in display order (accounts.rs PROVIDERS). */
+/** The provider cards, in display order (accounts.rs PROVIDERS). Every
+ * agent with a login of its own is here; what each one supports is
+ * documented engine-side. Antigravity's command never prints in the copy —
+ * it has no CLI login (see `providerEmptyCopy`). */
 export const PROVIDERS: readonly ProviderDescriptor[] = [
   { harness: "claude-code", name: "Claude Code", cli: "claude" },
   { harness: "codex", name: "Codex", cli: "codex" },
   { harness: "cursor", name: "Cursor", cli: "cursor-agent" },
+  { harness: "antigravity", name: "Antigravity", cli: "Antigravity" },
+  { harness: "grok", name: "Grok", cli: "grok login" },
+  { harness: "devin", name: "Devin", cli: "devin auth login" },
+  { harness: "opencode", name: "OpenCode", cli: "opencode auth login" },
+  { harness: "pi", name: "Pi", cli: "pi" },
+  { harness: "hermes", name: "Hermes", cli: "hermes auth add" },
 ];
+
+/** Display name of one agent (`provider_name`) — the fallback
+ * [`LoginOption`] label for single-login agents. */
+export function providerName(harness: HarnessId): string {
+  switch (harness) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "antigravity":
+      return "Antigravity";
+    case "grok":
+      return "Grok";
+    case "devin":
+      return "Devin";
+    case "opencode":
+      return "OpenCode";
+    case "pi":
+      return "Pi";
+    case "hermes":
+      return "Hermes";
+    default:
+      return "Agent";
+  }
+}
+
+/** Whether Roboco switches this agent's logins. Hermes rotates through
+ * its own credential pool (listed, never reordered); Antigravity keeps one. */
+export function switchesAccounts(harness: HarnessId): boolean {
+  return harness !== "hermes" && harness !== "antigravity";
+}
+
+/** Whether `harness` has an Accounts section (and sign-in flow). Pure. */
+export function signsIn(harness: HarnessId): boolean {
+  return PROVIDERS.some((provider) => provider.harness === harness);
+}
+
+/** Whether the provider reports plan usage. One that doesn't shows no meters
+ * and no "usage unavailable" note — there is nothing missing. Pure. */
+export function reportsUsage(harness: HarnessId): boolean {
+  return harness !== "antigravity";
+}
+
+/** Providers whose agent holds exactly ONE login (Antigravity): once it is
+ * connected there is nothing to add — signing in again only re-confirms it. */
+export function keepsOneLogin(harness: HarnessId): boolean {
+  return harness === "antigravity";
+}
+
+/** A standing note under a provider's card, for an agent whose accounts
+ * work differently. Hermes owns its credential pool: Roboco lists it and
+ * adds to it through Hermes' own CLI, but never switches or removes its
+ * entries. */
+export function providerNote(harness: HarnessId): string | null {
+  if (harness === "hermes") {
+    return "Hermes manages its own credential pool and rotates through it. Accounts added here go through `hermes auth add`; remove one with `hermes auth remove`.";
+  }
+  return null;
+}
+
+/** One way to add an account: agents that keep a login PER model provider
+ * (OpenCode, Pi, Hermes) sign in to a named provider; the rest have one. */
+export interface LoginOption {
+  /** The engine's `provider` param (`null` = the agent's only login). */
+  readonly provider: string | null;
+  /** Who the user signs in to. */
+  readonly label: string;
+}
+
+/** The sign-ins Roboco offers for `harness`, in button order. */
+export function loginOptions(harness: HarnessId): readonly LoginOption[] {
+  switch (harness) {
+    case "opencode":
+      return [
+        { provider: "openai", label: "ChatGPT" },
+        { provider: "github-copilot", label: "GitHub Copilot" },
+      ];
+    case "pi":
+      return [{ provider: "openai-codex", label: "ChatGPT" }];
+    case "hermes":
+      return [
+        { provider: "openai-codex", label: "ChatGPT" },
+        { provider: "nous", label: "Nous Portal" },
+      ];
+    default:
+      return [{ provider: null, label: providerName(harness) }];
+  }
+}
+
+/** The add-account button's label for one [`LoginOption`]: a per-provider
+ * sign-in names its provider ("Connect ChatGPT", "Add GitHub Copilot
+ * account"); single-login agents keep the plain label. */
+export function addOptionLabel(option: LoginOption, empty: boolean): string {
+  if (option.provider === null) {
+    return "Add account";
+  }
+  return empty ? `Connect ${option.label}` : `Add ${option.label} account`;
+}
+
+/** The sign-in dialog's browser-wait copy — one sentence per provider, same
+ * shape (accounts.rs `login_copy`). */
+export function loginCopy(harness: HarnessId, provider: string | null): string {
+  switch (harness) {
+    case "claude-code":
+      return "Finish signing in to Claude in your browser. The new login is saved next to your current one — nothing changes until you switch.";
+    case "codex":
+      return "Finish signing in to ChatGPT in your browser. The new login is saved next to your current one — nothing changes until you switch.";
+    case "cursor":
+      return "Finish signing in to Cursor in your browser. This mints a roboco-named API key you can revoke any time from Cursor's dashboard — it is separate from `cursor-agent login`.";
+    case "grok":
+      return "Finish signing in to Grok in your browser — approve the code shown below. The new login is saved next to your current one — nothing changes until you switch.";
+    case "devin":
+      return "Finish signing in to Devin in your browser. The new login is saved next to your current one — nothing changes until you switch.";
+    case "opencode":
+      if (provider === "github-copilot") {
+        return "Finish signing in to GitHub in your browser — enter the code shown below. The new login is saved next to your current one — nothing changes until you switch.";
+      }
+      return "Finish signing in to ChatGPT in your browser. The agent gets its own login, saved next to any current one — nothing changes until you switch.";
+    case "pi":
+      return "Finish signing in to ChatGPT in your browser. The agent gets its own login, saved next to any current one — nothing changes until you switch.";
+    case "hermes":
+      return "Finish signing in in your browser — enter the code shown below. Hermes adds the login to its own credential pool and rotates through it itself.";
+    case "antigravity":
+      return "Finish signing in to Google in your browser. Antigravity keeps one login on this device; if it is already signed in, this just confirms it.";
+    default:
+      return "Finish signing in in your browser.";
+  }
+}
+
+/** The optimistic half of a switch: `account` becomes the live login of its
+ * group — its agent, or for agents that keep a login per model provider,
+ * that provider — and every other group keeps its own. */
+export function markSwitched(snapshot: AgentAccountsSnapshot, account: AgentAccount): void {
+  for (const row of snapshot.accounts) {
+    if (row.harness === account.harness && row.provider === account.provider) {
+      row.active = row.id === account.id;
+    }
+  }
+}
 
 /**
  * Accounts of one provider, in the engine's order — no active-first
@@ -213,11 +365,34 @@ export function providerAccounts(snapshot: AgentAccountsSnapshot, harness: Harne
   return snapshot.accounts.filter((account) => account.harness === harness);
 }
 
+/**
+ * The binding limit: the most-used window of the account
+ * (`used_fraction`). Pure.
+ */
+export function usedFraction(account: AgentAccount): number | null {
+  let max: number | null = null;
+  for (const window of account.usageWindows) {
+    const fraction = Math.min(Math.max(window.usedFraction, 0), 1);
+    max = max === null ? fraction : Math.max(max, fraction);
+  }
+  return max;
+}
+
+/** The harness's live account (`active_account`). Pure. */
+export function activeAccount(
+  snapshot: AgentAccountsSnapshot,
+  harness: HarnessId,
+): AgentAccount | null {
+  return snapshot.accounts.find((account) => account.harness === harness && account.active) ?? null;
+}
+
 /** The empty-card copy under a provider with no accounts. */
 export function providerEmptyCopy(provider: ProviderDescriptor): string {
-  if (provider.harness === "cursor") {
-    // Cursor's app login is separate from `cursor-agent login`.
-    return `${provider.name} isn't connected on this device — connect it to run Cursor sessions.`;
+  if (provider.harness === "cursor" || provider.harness === "antigravity") {
+    // Cursor's app login is separate from `cursor-agent login` — pointing at
+    // the CLI would send users to a sign-in that does not light this up.
+    // Antigravity has no CLI login at all.
+    return `${provider.name} isn't connected on this device — connect it to run ${provider.name} sessions.`;
   }
   return `No ${provider.name} login detected on this device — sign in with “${provider.cli}” or add an account.`;
 }
@@ -234,21 +409,35 @@ export function accountInitial(account: AgentAccount): string {
 }
 
 /** Fallback line when a row has no usage windows (meters XOR this line). */
-export function usageFallback(account: AgentAccount): string {
-  return account.switchable ? "Usage unavailable" : "Credentials unavailable";
+export function usageFallback(account: AgentAccount, refreshing = false): string {
+  if (!account.switchable && switchesAccounts(account.harness)) {
+    return account.harness === "claude-code" ? "Credentials unavailable" : "Couldn't identify this login";
+  }
+  if (account.usageError != null) {
+    return account.usageError;
+  }
+  return refreshing ? "Checking usage…" : "Usage unavailable";
 }
 
 // ── Add-account login flows ─────────────────────────────────────────────
 
-/** Dialog title for a login flow (LoginFlow::title). */
-export function loginTitle(harness: HarnessId): string {
+/** Dialog title for a login flow (LoginFlow::title); a per-provider
+ * sign-in names who it is for ("Sign in to ChatGPT for OpenCode"). */
+export function loginTitle(harness: HarnessId, provider?: string | null): string {
+  const option = loginOptions(harness).find((option) => option.provider === (provider ?? null));
+  if (option != null && option.provider !== null) {
+    return `Sign in to ${option.label} for ${providerName(harness)}`;
+  }
   switch (harness) {
     case "codex":
       return "Add Codex account";
     case "cursor":
       return "Connect Cursor";
-    default:
+    case "claude-code":
+      // The long-standing dialog title (roboco's grammar).
       return "Add Claude account";
+    default:
+      return `Add ${providerName(harness)} account`;
   }
 }
 

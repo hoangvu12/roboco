@@ -4,10 +4,13 @@ import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./routes/chat-page";
 import { PairPage } from "./routes/pair-page";
 import { SettingsLayout } from "./components/settings-layout";
+import { settingsIndexTarget } from "./state/settings-section";
+import { uiSettings } from "./state/ui-settings";
 import { RemoteAccessSettingsPage } from "./routes/settings-remote-access";
 import { AccountsSettingsPage } from "./routes/settings-accounts";
 import { AppearanceSettingsPage } from "./routes/settings-appearance";
 import { DevicesSettingsPage } from "./routes/settings-devices";
+import { GeneralSettingsPage } from "./routes/settings-general";
 import { AgentsSettingsPage } from "./routes/settings-agents";
 import { FilesSettingsPage } from "./routes/settings-files";
 import { NotificationsSettingsPage } from "./routes/settings-notifications";
@@ -37,11 +40,20 @@ const settingsIndexRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/",
   beforeLoad: () => {
-    // The desktop's `OpenSettings`/user-menu always lands on Devices
-    // (SettingsSection::ALL's first row, shell.rs:3268/5294/7792).
-    throw redirect({ to: "/settings/devices" });
+    // The desktop's generic ways into Settings (⌘,, the footer gear, the
+    // palette) reopen the section last viewed (upstream d268830b); the web's
+    // equivalent entry points all land here. A remembered section this build
+    // does not know heals to the default (the desktop's General landing —
+    // the conversation page) inside the helper.
+    throw redirect({ href: settingsIndexTarget(uiSettings.getSnapshot().settingsSection) });
   },
 });
+/*
+ * The conversation page — the modal redesign's new General section
+ * (upstream b782d043, ticket 26): send key, compact mode, Escape behavior,
+ * thread naming. Deep link: /settings/general.
+ */
+const generalRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/general", component: GeneralSettingsPage });
 const remoteAccessRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/remote-access",
@@ -58,7 +70,9 @@ const appearanceRoute = createRoute({
   component: AppearanceSettingsPage,
 });
 // Ticket 29's sections — the harnesses path keeps its route segment (the
-// desktop enum variant) while the nav and page carry the "Agents" label.
+// desktop enum variant; upstream's slug for it is "providers", accepted as
+// an alias) while the nav and page carry the "Providers" label (the modal
+// redesign's rename, ticket 22).
 const devicesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/devices", component: DevicesSettingsPage });
 const harnessesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/harnesses", component: AgentsSettingsPage });
 const filesRoute = createRoute({ getParentRoute: () => settingsRoute, path: "/files", component: FilesSettingsPage });
@@ -77,6 +91,7 @@ const routeTree = rootRoute.addChildren([
     chatRoute,
     settingsRoute.addChildren([
       settingsIndexRoute,
+      generalRoute,
       remoteAccessRoute,
       accountsRoute,
       appearanceRoute,
@@ -97,6 +112,7 @@ export {
   chatRoute,
   devicesRoute,
   filesRoute,
+  generalRoute,
   harnessesRoute,
   indexRoute,
   notificationsRoute,

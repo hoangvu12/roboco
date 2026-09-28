@@ -8,4 +8,9 @@ export type AgentLoginPoll = { status: AgentLoginStatus, message?: string | null
  * a sign-in page that only became known after the start reply (the
  * agent had to install first); the app opens it once.
  */
-url?: string | null, };
+url?: string | null, 
+/**
+ * [`AgentLoginStart::callback_port`] for a page that arrived with this
+ * poll.
+ */
+callbackPort?: number | null, };

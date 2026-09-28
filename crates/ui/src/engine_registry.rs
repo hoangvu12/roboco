@@ -292,14 +292,9 @@ impl EngineTarget {
             .runtime
             .clone();
         let method = method.to_owned();
+        let timeout = call_deadline(&method);
         runtime
             .spawn(async move {
-                let timeout =
-                    Duration::from_secs(if method.contains("Clone") || method.contains("Fetch") {
-                        900
-                    } else {
-                        30
-                    });
                 tokio::time::timeout(timeout, client.call(&method, params))
                     .await
                     .map_err(|_| RpcError::Transport("Engine request timed out".into()))?
@@ -333,6 +328,37 @@ impl EngineTarget {
         self.live()?.subscribe_checked(method, params).await
     }
 }
+
+/// Reply deadline for a unary engine call. Adapter catalog discovery
+/// (ListModels/ListCommands) may cold-boot a CLI for up to ~90s, so it gets
+/// the adapter discovery budget plus shutdown overhead; network-bound git
+/// and update methods get a long leash; everything else is interactive and
+/// must fail fast. Mirrors the tiered forward deadlines the engine-side
+/// relay forwarder uses upstream — Roboco is engine-local, so this client
+/// deadline is the only one that can cut remote discovery off.
+fn call_deadline(method: &str) -> Duration {
+    if method.contains("Clone") || method.contains("Fetch") {
+        return Duration::from_secs(900);
+    }
+    if method == methods::INSTALL_HARNESS {
+        // An explicit CLI install may download and extract for many minutes
+        // (the installer's own deadline is 15 minutes; matches upstream's
+        // forward deadline for the relay route we do not have — here the
+        // client leash is the only cut-off).
+        return Duration::from_secs(900);
+    }
+    if method == methods::LIST_MODELS || method == methods::LIST_COMMANDS {
+        return Duration::from_secs(100);
+    }
+    if method == methods::DISCARD_WORKING_TREE {
+        // A discard batches several git invocations per step on big working
+        // trees; unlike a read, a timeout here would misreport an in-flight
+        // destructive task that the engine always runs to completion.
+        return Duration::from_secs(900);
+    }
+    Duration::from_secs(30)
+}
+
 fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value.lock().unwrap_or_else(|e| e.into_inner())
 }

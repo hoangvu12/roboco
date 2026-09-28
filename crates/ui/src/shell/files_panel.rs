@@ -135,7 +135,8 @@ impl Shell {
         let live = state
             .chats
             .iter()
-            .filter(|chat| !chat.archived)
+            // Archived chats keep their explorer: it is pruned only when the
+            // chat row is actually deleted.
             .map(|chat| chat.id.as_str())
             .collect::<std::collections::HashSet<_>>();
         for key in self.files.keys().filter(|key| !live.contains(key.as_str())) {

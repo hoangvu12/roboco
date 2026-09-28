@@ -269,7 +269,7 @@ export function toolGroupGeometry(input: ToolGroupGeometryInput): ToolGroupGeome
     invocations.push(invocation);
     affordances.push(effectiveToolAffordance(tool, state));
     detailFolds.push(dfold);
-    detailOpens.push((detail !== null || invocation !== null) && (dfold?.open ?? (tool.isThought && !tool.resolved)));
+    detailOpens.push((detail !== null || invocation !== null) && (dfold?.open ?? (tool.kind !== "call" && !tool.resolved)));
   }
 
   // ── The chips' heights (analytic — :6000-6042) ──────────────────────────
@@ -394,7 +394,7 @@ export function toolGroupMeasurementKey(
     const detail = effectiveToolDetail(tool, state);
     const invocation = tool.invocation;
     const dfold = state.detailFold(`${rowId}#d${ix}`);
-    const detailOpen = (detail !== null || invocation !== null) && (dfold?.open ?? (tool.isThought && !tool.resolved));
+    const detailOpen = (detail !== null || invocation !== null) && (dfold?.open ?? (tool.kind !== "call" && !tool.resolved));
     const affordance = effectiveToolAffordance(tool, state);
     parts.push(
       detailOpen ? 1 : 0,

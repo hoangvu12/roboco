@@ -225,7 +225,9 @@ fn queue_panel_surface(theme: &Theme) -> gpui::Div {
     div()
         .occlude()
         .rounded_t(px(PANEL_RADIUS))
-        .bg(crate::popover::surface_bg(theme))
+        // The tray shares the composer's fill: the compensated dark tint on
+        // dark frost, the input glass otherwise.
+        .bg(theme.composer_surface_bg())
         .border_1()
         .border_color(theme.border)
         .when(!theme.is_frost(), |el| el.shadow_lg())
@@ -1432,8 +1434,11 @@ impl Composer {
         if self.editing_queued.is_none() {
             return false;
         }
-        let text = self.input.read(cx).text().trim().to_string();
-        if text.is_empty() && self.staged().is_empty() && self.staged_appshots().is_empty() {
+        let text = self.input.read(cx).text().to_string();
+        if !self.check_reference_delivery(&text, cx) {
+            return true;
+        }
+        if text.trim().is_empty() && self.staged().is_empty() && self.staged_appshots().is_empty() {
             self.finish_queue_edit("discard", None, cx);
         } else {
             self.finish_queue_edit("commit", Some(text), cx);

@@ -22,11 +22,13 @@ import {
   fileBadgeName,
   isAgentTool,
   isSpawnLink,
+  noteChipDetail,
   subagentModel,
   subagentTabTitle,
   toolChipContent,
   toolGroupTitle,
   toolIconName,
+  workedForLabel,
   type ToolDetail,
   type ToolItem,
 } from "../lib/transcript";
@@ -35,6 +37,7 @@ import { toolGroupGeometry } from "../lib/tool-group-geometry";
 import {
   FOLD_TWEEN_WINDOW_MS,
   ACTIVITY_TEXT_GAP,
+  TOOL_FOLD_MS,
   toolConnectorContinuation,
   toolConnectorParts,
   toolDisclosureProgress,
@@ -100,6 +103,15 @@ export interface ToolGroupRowProps {
    * follow/hold (retaining any live reservation), and arm the compensation.
    */
   readonly onFoldNav?: (nav: ToolFoldNav) => void;
+  /** Compact-mode settled duration for this turn, in seconds. */
+  readonly workedSecs?: number | null;
+  /** Compact-mode work header: the ONE collapsed work accordion per turn. */
+  readonly compactShell?: boolean;
+  /**
+   * The compact fold's current body height budget (sibling rows' clip
+   * target) — the transcript computes it from the rows' measured heights.
+   */
+  readonly compactBodyHeight?: number;
 }
 
 /** One explicit fold click's navigation payload (ticket 71 A). */
@@ -117,13 +129,47 @@ const prefersReducedMotion = (): boolean =>
 // The group row (render_tool_group :5837)
 // ---------------------------------------------------------------------------
 
-export function ToolGroupRow({ rowId, tools, autoOpen, chatId, motion, client, onOpenSubagent, onFoldNav }: ToolGroupRowProps) {
+export function ToolGroupRow({
+  rowId,
+  tools,
+  autoOpen,
+  chatId,
+  motion,
+  client,
+  onOpenSubagent,
+  onFoldNav,
+  workedSecs = null,
+  compactShell = false,
+  compactBodyHeight,
+}: ToolGroupRowProps) {
   // Folds/fetches/reveals live in the surface's store: a virtualized row
   // scrolling back into view is a remount and must find its fold.
   useSyncExternalStore(motion.subscribe, motion.getVersion);
   const reduced = prefersReducedMotion();
   const [now, setNow] = useState(() => performance.now());
   const diffLine = scaledDiffLineHeight(useUiSettings().codeFontSize);
+
+  // The compact work shell: the header alone — the body is the sibling
+  // transcript rows tagged `compactFold`, clipped by the transcript's own
+  // TOOL_FOLD budget. The summary shimmer reads "working" while any chip
+  // is unresolved; once the turn settles and a measured `durationMs` lands,
+  // the title crossfades into "Worked for Xm Ys".
+  if (compactShell) {
+    return (
+      <div className="tool-group">
+        <CompactWorkGroupHeader
+          rowId={rowId}
+          summary={toolGroupTitle(tools)}
+          workedSecs={workedSecs}
+          working={tools.some((tool) => !tool.resolved)}
+          motion={motion}
+          onFoldNav={onFoldNav}
+          compactBodyHeight={compactBodyHeight}
+          reduced={reduced}
+        />
+      </div>
+    );
+  }
 
   // The SHARED geometry contract (ticket 70): the scroller's estimator calls
   // the same pure resolver with the same inputs — including the code-size-
@@ -308,6 +354,108 @@ function ToolGroupHeader({
 }
 
 // ---------------------------------------------------------------------------
+// The compact work fold's header (transcript.rs compact_shell :7505-7560)
+// ---------------------------------------------------------------------------
+
+/**
+ * The compact work fold's header: the turn's ONE accordion row. The title
+ * shimmers "working" while any chip is unresolved, then crossfades into
+ * "Worked for Xm Ys" (from the doc's measured `durationMs`) once the turn
+ * settles — the fade runs once per session, never replaying on later
+ * paints or remounts. The body is the SIBLING transcript rows tagged
+ * `compactFold`, so the header renders no chips here.
+ */
+function CompactWorkGroupHeader(props: {
+  readonly rowId: string;
+  readonly summary: string;
+  readonly workedSecs: number | null;
+  /** Any unresolved chip keeps the summary's working shimmer. */
+  readonly working: boolean;
+  readonly motion: ToolGroupMotionStore;
+  readonly onFoldNav?: (nav: ToolFoldNav) => void;
+  /** The fold's current body-height budget (the toggle's `from` when closing). */
+  readonly compactBodyHeight?: number;
+  readonly reduced: boolean;
+}) {
+  const { rowId, summary, workedSecs, working, motion, onFoldNav, compactBodyHeight, reduced } = props;
+  const [now, setNow] = useState(() => performance.now());
+  const fold = motion.groupFold(rowId);
+  const open = fold?.open ?? false;
+
+  // Stamp the crossfade's start the first time the label lands on this row.
+  const fadeAt = motion.workedFadeAt(rowId);
+  useEffect(() => {
+    if (workedSecs !== null) {
+      motion.noteWorkedFor(rowId);
+    }
+  }, [workedSecs, motion, rowId]);
+
+  /** `motion::FADE_IN` — 500ms, cubic-bezier(0.16,1,0.3,1). */
+  const WORKED_FADE_MS = 500;
+  const stamped = fadeAt ?? null;
+  const t =
+    workedSecs !== null && stamped !== null && !reduced
+      ? Math.min((now - stamped) / WORKED_FADE_MS, 1)
+      : workedSecs !== null
+        ? 1
+        : 0;
+
+  // Keep frames pumping while the crossfade or the disclosure tween runs.
+  const disclosureActive = !reduced && fold?.disclosureAt !== null && now - (fold?.disclosureAt ?? now) < TOOL_FOLD_MS;
+  const fadeActive = !reduced && t > 0 && t < 1;
+  useEffect(() => {
+    if (!disclosureActive && !fadeActive) {
+      return;
+    }
+    return toolRevealClock.subscribe(setNow);
+  }, [disclosureActive, fadeActive]);
+
+  const disclosure = reduced ? (open ? 1 : 0) : toolDisclosureProgress(open, fold, now);
+  const rotation = -90 * (1 - disclosure);
+  const onToggle = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+    onFoldNav?.({ rowId, header: event.currentTarget as HTMLElement });
+    motion.toggleGroupFold(rowId, compactBodyHeight ?? 0, false);
+  };
+
+  const shimmer = working && !reduced;
+  return (
+    <button
+      type="button"
+      id={`${rowId}-hdr`}
+      className="tool-group-header"
+      aria-expanded={open}
+      onClick={onToggle}
+    >
+      <span className="tool-group-chevron" aria-hidden>
+        <Icon name="altArrowDown" size={14} style={{ transform: `rotate(${rotation}deg)` }} />
+      </span>
+      {workedSecs === null ? (
+        <span className={`tool-group-title ${shimmer ? "tool-shimmer" : ""}`}>{summary}</span>
+      ) : (
+        /* The crossfade (transcript.rs compact_work_title): the summary fades
+           out and sinks 4px while "Worked for Xm Ys" fades in, both clipped
+           to the 18px title line. */
+        <span className="compact-work-title">
+          <span
+            className={`tool-group-title compact-work-summary ${shimmer ? "tool-shimmer" : ""}`}
+            style={{ opacity: 1 - t, transform: `translateY(${4 * (1 - t)}px)` }}
+          >
+            {summary}
+          </span>
+          <span
+            className="tool-group-title compact-work-for"
+            style={{ opacity: t, transform: `translateY(${4 * t - 4}px)` }}
+          >
+            {workedForLabel(workedSecs)}
+          </span>
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // One chip row — plain rail chip, expandable card, or spawn link
 // ---------------------------------------------------------------------------
 
@@ -390,7 +538,7 @@ function ToolChipRow(props: ToolChipRowProps) {
     props.detailFold.toggledAt !== null &&
     props.now - props.detailFold.toggledAt < FOLD_TWEEN_WINDOW_MS;
   const cardHeight = rowHeight - props.baseRowHeight + CHIP_CARD_HEIGHT;
-  const defaultOpen = tool.isThought && !tool.resolved;
+  const defaultOpen = tool.kind !== "call" && !tool.resolved;
   const onToggle = (event: React.MouseEvent): void => {
     event.stopPropagation();
     // The click owns the viewport FIRST (ticket 71 A): measure the chip
@@ -484,9 +632,12 @@ function ChipHeaderRow({
 }) {
   const appearance = useResolvedAppearance();
   const activity = !isAgentTool(tool);
-  const { label, detail } = tool.isThought
-    ? { label: "Thought process", detail: "" }
-    : toolChipContent(tool.call);
+  const { label, detail } =
+    tool.kind === "thought"
+      ? { label: "Thought process", detail: "" }
+      : tool.kind === "note"
+        ? { label: "Wrote", detail: noteChipDetail(tool) }
+        : toolChipContent(tool.call);
   const filePath =
     tool.call.kind === "readFile" || tool.call.kind === "writeFile" || tool.call.kind === "editFile"
       ? tool.call.path
@@ -522,7 +673,10 @@ function ChipHeaderRow({
     >
       {!activity && (
         <span className="tool-chip-icon-tile" aria-hidden>
-          <Icon name={tool.isThought ? "chatRoundLine" : toolIconName(tool.call)} size={12} />
+          <Icon
+            name={tool.kind === "thought" ? "chatRoundLine" : tool.kind === "note" ? "pen" : toolIconName(tool.call)}
+            size={12}
+          />
         </span>
       )}
       <span className="tool-chip-label">{label}</span>

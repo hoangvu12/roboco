@@ -174,21 +174,39 @@ export function toolGroupSummary(tools: readonly { call: ToolCall; isError: bool
 }
 
 /**
- * The group header line (transcript.rs `tool_group_summary`): thought chips
- * are UI-synthesized, so the shared summary never sees them — name them on
- * the collapsed line instead ("Thought · Ran 2 commands").
+ * The group header line (transcript.rs `tool_group_summary`): thought and
+ * note chips are UI-synthesized, so the shared summary never sees them —
+ * name them on the collapsed line instead
+ * ("Thought · wrote 2 notes · Ran 2 commands").
  */
 export function toolGroupTitle(tools: readonly ToolItem[]): string {
-  const pairs = tools.filter((tool) => !tool.isThought);
-  const thoughts = tools.length - pairs.length;
+  const pairs = tools.filter((tool) => tool.kind === "call");
+  const thoughts = tools.filter((tool) => tool.kind === "thought").length;
+  const notes = tools.filter((tool) => tool.kind === "note").length;
+  // The shared summary answers "used 0 tools" for an empty set — a
+  // thought-only group must not inherit that.
   const base = pairs.length === 0 ? "" : toolGroupSummary(pairs);
-  if (thoughts === 0) {
-    return base;
+  const segments: string[] = [];
+  if (thoughts === 1) {
+    segments.push("thought process");
+  } else if (thoughts > 1) {
+    segments.push(`thought ${thoughts} times`);
   }
-  if (base.length === 0) {
-    return thoughts === 1 ? "Thought process" : `Thought ${thoughts} times`;
+  if (notes === 1) {
+    segments.push("wrote a note");
+  } else if (notes > 1) {
+    segments.push(`wrote ${notes} notes`);
   }
-  return thoughts === 1 ? `Thought · ${base}` : `Thought ${thoughts} times · ${base}`;
+  if (base.length > 0) {
+    segments.push(base);
+  }
+  // Same capitalization rule as the shared summary — only the leading
+  // letter lifts.
+  let summary = segments.join(" · ");
+  if (summary.length > 0) {
+    summary = summary[0]!.toUpperCase() + summary.slice(1);
+  }
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +395,13 @@ export interface ToolItem {
   readonly subagentStatus: "running" | "done" | "failed" | null;
   /** One-line live tail — LEGACY docs only; fingerprinted, never rendered. */
   readonly subagentTail: string | null;
-  /** A reasoning part riding the tool group as a chip. */
-  readonly isThought: boolean;
+  /**
+   * The chip's genus (`ToolItemKind` on the desktop): `"call"` is a real doc
+   * tool invocation; `"thought"` (a reasoning part riding the tool group)
+   * and `"note"` (compact mode's folded narration text) are synthesized in
+   * `rowsForEntry`, never from a doc tool part.
+   */
+  readonly kind: "call" | "thought" | "note";
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,7 +1504,19 @@ export type TranscriptRowKind =
   | { readonly kind: "markdown"; readonly tree: BlockTree; readonly blockIx: number }
   /** One top-level block of a STREAMING message (same split as settled rows). */
   | { readonly kind: "liveMarkdown"; readonly tree: BlockTree; readonly blockIx: number }
-  | { readonly kind: "toolGroup"; readonly tools: readonly ToolItem[]; readonly autoOpen: boolean }
+  | {
+      readonly kind: "toolGroup";
+      readonly tools: readonly ToolItem[];
+      /** Set at row build time: streaming && this group is the entry's LAST part. */
+      readonly autoOpen: boolean;
+      /** Compact-mode settled duration for this turn, in seconds. */
+      readonly workedSecs: number | null;
+      /**
+       * Compact-mode work header: the turn's ONE collapsed work accordion.
+       * Expanded content is sibling rows tagged `Row.compactFold`, not chips.
+       */
+      readonly compactShell: boolean;
+    }
   | { readonly kind: "inputChip"; readonly header: string; readonly resolved: boolean }
   | { readonly kind: "errorChip"; readonly message: string };
 
@@ -1498,6 +1533,8 @@ export interface TranscriptRow {
   readonly timestamp: number | null;
   /** Text copied by the entry-level hover action (settled last row only). */
   readonly copyText: string | null;
+  /** Hidden while the named compact-work fold is closed. */
+  readonly compactFold: string | null;
 }
 
 export interface RowsOptions {
@@ -1505,6 +1542,13 @@ export interface RowsOptions {
   readonly pending?: boolean;
   /** Maps `(partKey, text, live)` to a block tree (a MarkdownCache parse). */
   readonly parse: (key: string, text: string, live: boolean) => BlockTree;
+  /**
+   * Compact mode (`UiSettings.transcriptCompactMode`): every working step
+   * of the turn — tool calls, thoughts, and the narration text between them —
+   * folds into ONE collapsed work accordion, so only the reply text (the
+   * trailing run of text parts) stays a visible row.
+   */
+  readonly compact?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1599,17 +1643,35 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         // User rows always carry the strip (the optimistic echo included).
         timestamp: entry.createdAt,
         copyText,
+        compactFold: null,
       },
     ];
   }
 
   // Assistant/system: split parts into block rows, folding consecutive
   // ordinary tools. Agent/spawn chips flush into their own group so they
-  // never share a collapse with Reads/Runs.
+  // never share a collapse with Reads/Runs. In compact mode every working
+  // step of the turn instead folds into ONE collapsed work accordion.
+  const compact = options.compact ?? false;
   const lastPartIx = entry.parts.length - 1;
   let groupIx = 0;
   let pendingGroup: ToolItem[] = [];
   let groupLastPartIx = 0;
+  // Compact mode's reply boundary: the index where the turn's TRAILING run
+  // of non-empty text parts begins. Every text part before it is narration
+  // that folds into the single work group; the run itself stays visible
+  // rows. While the turn still STREAMS there is no reply yet — a "tail"
+  // text would only fold back in once work resumes, so it rides the group
+  // too and nothing visible expands by default. `null` means the turn ends
+  // on work (or is mid-flight) — only the accordion renders.
+  const replyStart: number | null =
+    compact && !streaming
+      ? trailingTextRunStart(entry.parts)
+      : null;
+  // Compact mode: the row index the single work group lands at — the
+  // position of the FIRST foldable part, so Input/Error chips ahead of it
+  // keep their doc order.
+  let compactGroupPos: number | null = null;
 
   const flushGroup = (): void => {
     if (pendingGroup.length === 0) {
@@ -1622,10 +1684,11 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       id: `${entry.id}#g${groupIx}`,
       version: toolFingerprint(tools, autoOpen),
       turnStart: false,
-      rowKind: { kind: "toolGroup", tools, autoOpen },
+      rowKind: { kind: "toolGroup", tools, autoOpen, workedSecs: null, compactShell: false },
       entryId: entry.id,
       timestamp: null,
       copyText: null,
+      compactFold: null,
     });
     groupIx++;
   };
@@ -1644,13 +1707,19 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         subagentRef: part.subagentRef ?? null,
         subagentStatus: part.subagentStatus ?? null,
         subagentTail: part.subagentTail ?? null,
-        isThought: false,
+        kind: "call",
       };
-      // Agent chips don't share a fold with ordinary tools: flush whenever
-      // the genus flips so each group is uniform.
-      const head = pendingGroup[0];
-      if (head !== undefined && isAgentTool(head) !== isAgentTool(item)) {
-        flushGroup();
+      if (compact) {
+        // Compact mode keeps ONE group for the whole turn — agent chips
+        // fold in with everything else, so the genus split never runs.
+        compactGroupPos ??= rows.length;
+      } else {
+        // Agent chips don't share a fold with ordinary tools: flush whenever
+        // the genus flips so each group is uniform.
+        const head = pendingGroup[0];
+        if (head !== undefined && isAgentTool(head) !== isAgentTool(item)) {
+          flushGroup();
+        }
       }
       pendingGroup.push(item);
       groupLastPartIx = partIx;
@@ -1675,10 +1744,12 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         subagentRef: null,
         subagentStatus: null,
         subagentTail: null,
-        isThought: true,
+        kind: "thought",
       };
-      // Thoughts join ordinary tool groups; agent groups stay pure.
-      if (pendingGroup[0] !== undefined && isAgentTool(pendingGroup[0])) {
+      if (compact) {
+        compactGroupPos ??= rows.length;
+      } else if (pendingGroup[0] !== undefined && isAgentTool(pendingGroup[0])) {
+        // Thoughts join ordinary tool groups; agent groups stay pure.
         flushGroup();
       }
       pendingGroup.push(item);
@@ -1686,7 +1757,24 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       return;
     }
 
-    flushGroup();
+    // Compact mode: narration text folds into the single group as a "Wrote"
+    // chip — only the reply (the trailing text run) stays a row.
+    if (
+      compact &&
+      part.kind === "text" &&
+      part.text.trim().length > 0 &&
+      (replyStart === null || partIx < replyStart)
+    ) {
+      compactGroupPos ??= rows.length;
+      const live = streaming && partIx === lastPartIx;
+      pendingGroup.push(noteItem(part.text, live));
+      groupLastPartIx = partIx;
+      return;
+    }
+
+    if (!compact) {
+      flushGroup();
+    }
     if (part.kind === "text") {
       if (part.text.trim().length === 0) {
         return;
@@ -1708,6 +1796,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
           rowKind: streaming
             ? { kind: "liveMarkdown", tree, blockIx }
             : { kind: "markdown", tree, blockIx },
+          compactFold: null,
         });
       }
       return;
@@ -1722,6 +1811,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         entryId: entry.id,
         timestamp: null,
         copyText: null,
+        compactFold: null,
       });
       return;
     }
@@ -1735,10 +1825,61 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         entryId: entry.id,
         timestamp: null,
         copyText: null,
+        compactFold: null,
       });
     }
   });
-  flushGroup();
+  if (compact) {
+    // Collapsed: one work header. Expanded: the same rows compact-off would
+    // emit for the work parts, tagged so the fold can hide them.
+    if (pendingGroup.length > 0) {
+      const tools = pendingGroup;
+      pendingGroup = [];
+      const workId = `${entry.id}#work`;
+      const workParts = entry.parts.filter((part, ix) => isCompactWorkPart(ix, part, replyStart));
+      let inner: TranscriptRow[] = [];
+      if (workParts.length > 0) {
+        const workEntry: SessionMessageEntry = {
+          ...entry,
+          parts: workParts,
+          durationMs: null,
+          continuationOf: null,
+        };
+        inner = rowsForEntry(workEntry, { ...options, compact: false });
+      }
+      inner = inner.map((row) => ({
+        ...row,
+        turnStart: false,
+        timestamp: null,
+        copyText: null,
+        compactFold: workId,
+      }));
+      const workedSecs =
+        !streaming && entry.durationMs !== null && entry.durationMs !== undefined && entry.durationMs > 0
+          ? Math.max(Math.floor(entry.durationMs / 1000), 1)
+          : null;
+      const header: TranscriptRow = {
+        id: workId,
+        version: toolFingerprint(tools, false),
+        turnStart: false,
+        rowKind: {
+          kind: "toolGroup",
+          tools,
+          autoOpen: false,
+          workedSecs,
+          compactShell: true,
+        },
+        entryId: entry.id,
+        timestamp: null,
+        copyText: null,
+        compactFold: null,
+      };
+      const pos = compactGroupPos ?? rows.length;
+      rows.splice(pos, 0, header, ...inner);
+    }
+  } else {
+    flushGroup();
+  }
 
   if (rows.length > 0) {
     rows[0] = { ...rows[0]!, turnStart: true };
@@ -1755,6 +1896,87 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
     };
   }
   return rows;
+}
+
+/**
+ * Compact mode's reply boundary: the index where the turn's TRAILING run of
+ * non-empty text parts begins (`rows_for_entry`, transcript.rs:1319). Null
+ * when the turn ends on work (no trailing text run).
+ */
+function trailingTextRunStart(parts: readonly MessagePart[]): number | null {
+  const isText = (part: MessagePart): boolean => part.kind === "text" && part.text.trim().length > 0;
+  let start = -1;
+  for (let ix = parts.length - 1; ix >= 0; ix--) {
+    if (!isText(parts[ix]!)) {
+      break;
+    }
+    start = ix;
+  }
+  return start >= 0 ? start : null;
+}
+
+/**
+ * The parts compact mode folds into the work accordion (transcript.rs
+ * `is_compact_work_part`): tools, non-empty reasoning, and narration text
+ * before the reply boundary. Input/Error chips stay visible.
+ */
+function isCompactWorkPart(ix: number, part: MessagePart, replyStart: number | null): boolean {
+  if (part.kind === "tool") {
+    return true;
+  }
+  if (part.kind === "reasoning") {
+    return part.text.trim().length > 0;
+  }
+  if (part.kind === "text") {
+    return part.text.trim().length > 0 && (replyStart === null || ix < replyStart);
+  }
+  return false;
+}
+
+/**
+ * A folded assistant TEXT part as a tool-group chip (compact mode): the
+ * narration between work steps collapses into the turn's single accordion
+ * as a "Wrote" chip whose detail is the text's markdown flattened exactly
+ * like a thought's. `live` = the part is the streaming tail — unresolved,
+ * so the collapsed header keeps its working shimmer until the reply lands.
+ */
+function noteItem(text: string, live: boolean): ToolItem {
+  return {
+    call: { kind: "unknown", name: "Note" },
+    isError: false,
+    resolved: !live,
+    detail: thoughtDetail(text, live),
+    invocation: null,
+    outputRef: null,
+    outputBytes: null,
+    diffRef: null,
+    subagentRef: null,
+    subagentStatus: null,
+    subagentTail: null,
+    kind: "note",
+  };
+}
+
+/**
+ * A note chip's one-line detail (transcript.rs `note_chip_detail`): the
+ * first non-empty flattened line of the folded text.
+ */
+export function noteChipDetail(tool: ToolItem): string {
+  if (tool.detail?.kind !== "thought") {
+    return "";
+  }
+  for (const line of tool.detail.lines) {
+    const text = singleLine(line.map((run) => run.text).join("").trim());
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  return "";
+}
+
+/** Compact-mode settled header label (transcript.rs `worked_for_label`). */
+export function workedForLabel(secs: number): string {
+  return `Worked for ${formatElapsed(secs)}`;
 }
 
 /**
@@ -1778,6 +2000,9 @@ function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number 
     acc += label;
     acc += String(detail.length);
     acc += String(Number(tool.isError) | (Number(tool.resolved) << 1));
+    // Thought/note chips share `ToolCall::Unknown` — the kind is the
+    // label/icon discriminator, so a flip must re-splice.
+    acc += tool.kind;
     if (tool.detail === null) {
       acc += "0";
     } else if (tool.detail.kind === "output") {

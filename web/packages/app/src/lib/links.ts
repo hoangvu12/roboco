@@ -415,16 +415,28 @@ function safeRelativePath(path: string): string | null {
   return parts.length > 0 ? parts.join("/") : null;
 }
 
-/** `split_line_fragment` — a `#L123` fragment (1-based, positive). */
+/** `split_line_fragment` — a `#L123` fragment (1-based, positive); GitHub-style
+ * ranges (`#L10-L20`) open at their first line. */
 function splitLineFragment(target: string): { path: string; line: number | null } {
   const hash = target.lastIndexOf("#");
   if (hash < 0) {
     return { path: target, line: null };
   }
   const fragment = target.slice(hash + 1);
-  const match = /^L(\d+)$/.exec(fragment);
-  const line = match === null ? 0 : Number.parseInt(match[1]!, 10);
-  if (match !== null && line > 0) {
+  if (!fragment.startsWith("L")) {
+    return { path: target, line: null };
+  }
+  const lines = fragment.slice(1);
+  const dash = lines.indexOf("-");
+  // `split_once('-').unwrap_or((lines, "1"))`: a bare `#L10` validates as the
+  // range `10..1`; a range validates both ends and opens at its first line.
+  const start = dash < 0 ? lines : lines.slice(0, dash);
+  const end = dash < 0 ? "1" : lines.slice(dash + 1).replace(/^L/, "");
+  if (positiveNumber(end) === null) {
+    return { path: target, line: null };
+  }
+  const line = positiveNumber(start);
+  if (line !== null) {
     return { path: target.slice(0, hash), line };
   }
   return { path: target, line: null };
@@ -458,8 +470,10 @@ function positiveNumber(value: string): number | null {
   if (!/^\d+$/.test(value)) {
     return null;
   }
+  // `u32::parse` + positive filter (workspace_links.rs `positive_number`):
+  // overflow rejects the fragment rather than pinning a line beyond the file.
   const number = Number.parseInt(value, 10);
-  return number > 0 ? number : null;
+  return number > 0 && number <= 4294967295 ? number : null;
 }
 
 function percentDecodePath(encoded: string): string | null {

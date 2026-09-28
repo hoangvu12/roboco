@@ -382,6 +382,9 @@ function mapUpdate(u, parent) {
       break;
     default:
       // step-*/summary-*/token-delta/partial-tool-call/…: no consumer.
+      // tool-requests-listed (added in 1.0.32, no emitter yet — schema-only
+      // vocabulary) carries only a callCount: nothing actionable without a
+      // per-request payload and an answer channel, so it stays ignored.
       break;
   }
 }

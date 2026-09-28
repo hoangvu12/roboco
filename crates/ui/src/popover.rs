@@ -11,7 +11,9 @@
 //! classification) lives in free functions with unit tests; the elements only
 //! feed them measurements/events.
 
+mod contained;
 mod hover_intent;
+pub(crate) use contained::contained_menu;
 pub use hover_intent::{HoverAction, HoverIntent};
 
 use gpui::{
@@ -302,10 +304,11 @@ pub fn classify_key(key: &str, cmd: bool, ctrl: bool) -> MenuKey {
 /// shared by palettes, popovers, dropdowns and menus (upstream #403):
 /// `rounded-xl border border-white/[0.1] p-1` over the frosted glass tint —
 /// the real recipe now that the fork paints backdrop blur: the
-/// [`Theme::glass_overlay`] tint (`oklch(0.33 0 0 / 34%)` on dark) over the
-/// [`crate::frost::MENU_BLUR`] blur from the mount helpers below, plus the
-/// same hairline + baked-in shadow. Opaque platforms keep the near-opaque
-/// tone the reference composites to on the dark panels (~#161616).
+/// [`Theme::composer_sidebar_tint`] on dark frost / [`Theme::glass_overlay`]
+/// tint on light frost, over the [`crate::frost::MENU_BLUR`] blur from the
+/// mount helpers below, plus the same hairline + baked-in shadow. Opaque
+/// platforms keep the near-opaque tone the reference composites to on the
+/// dark panels (~#161616).
 /// Corner radius of every floating card. The frost wrapper masks its backdrop
 /// blur to the same value, so the two must agree.
 pub const CARD_RADIUS: f32 = 12.0;
@@ -314,13 +317,17 @@ pub const MENU_GAP: f32 = 2.0;
 /// The four-pixel inset of [`popover_card`] that [`menu_scroll_host`] /
 /// [`menu_scroll_list`] cancel for card-bleeding scroll hosts.
 pub const CARD_INSET: f32 = 4.0;
-/// Concentric corners: the row radius follows the card's inset curve.
-pub const MENU_ITEM_RADIUS: f32 = CARD_RADIUS - CARD_INSET;
+/// Concentric corners: rows sit inside both the card's 1px border and padding.
+pub const MENU_ITEM_RADIUS: f32 = CARD_RADIUS - 1.0 - CARD_INSET;
 pub const PALETTE_ITEM_RADIUS: f32 = 14.0 - CARD_INSET;
 
 pub fn surface_bg(theme: &Theme) -> gpui::Hsla {
     if theme.is_frost() {
-        theme.composer_sidebar_tint()
+        if matches!(theme.appearance, crate::theme::Appearance::Dark) {
+            theme.composer_sidebar_tint()
+        } else {
+            theme.glass_overlay()
+        }
     } else {
         theme.input_glass_bg()
     }
@@ -366,6 +373,79 @@ pub fn menu_scroll_list(id: &'static str, scroll: &ScrollHandle) -> Stateful<Div
         .px(px(CARD_INSET))
         .overflow_y_scroll()
         .track_scroll(scroll)
+}
+
+/// Completion surfaces share the picker card, inset and scroll fade. Keep
+/// rails outside this wrapper so fading text never fades the scrollbar.
+pub fn completion_card(theme: &Theme) -> Div {
+    popover_card(theme).w_full().max_h(px(320.0))
+}
+
+pub fn completion_list(
+    id: &'static str,
+    scroll: &ScrollHandle,
+    rows: impl IntoIterator<Item = AnyElement>,
+) -> crate::edge_fade::EdgeFaded {
+    faded_menu_list(
+        scroll,
+        menu_scroll_list(id, scroll)
+            .max_h(px(310.0))
+            .flex()
+            .flex_col()
+            .gap(px(MENU_GAP))
+            .children(rows),
+    )
+}
+
+/// All picker lists use the same paint-time, overflow-dependent edge fades.
+pub fn faded_menu_list(
+    scroll: &ScrollHandle,
+    list: impl IntoElement,
+) -> crate::edge_fade::EdgeFaded {
+    crate::edge_fade::edge_faded(12.0, true, true, list).fade_overflow_y(scroll)
+}
+
+/// Shared completion-row typography and shrink rules. Long skill names and
+/// paths must truncate inside the card rather than push the detail offscreen.
+pub fn completion_row_content(
+    theme: &Theme,
+    icon: AnyElement,
+    label: SharedString,
+    detail: SharedString,
+) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(div().size(px(16.0)).flex_none().child(icon))
+        .child(
+            div()
+                .flex_none()
+                .when(detail.is_empty(), |label| label.flex_1().min_w_0())
+                .when(!detail.is_empty(), |label| {
+                    label.max_w(gpui::relative(0.55))
+                })
+                .overflow_hidden()
+                .truncate()
+                .text_size(crate::typography::ui_rems(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(label),
+        )
+        .when(!detail.is_empty(), |row| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .overflow_hidden()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .text_color(theme.text_muted)
+                    .child(detail),
+            )
+        })
 }
 
 /// Pin a floating layer's origin to the trigger's top-left. The anchored
@@ -557,6 +637,18 @@ pub fn anchored_menu_below_gap(
     closing: Option<std::time::Instant>,
     gap: f32,
 ) -> AnyElement {
+    anchored_menu_below_layer(id, content, closing, gap, 1)
+}
+
+/// [`anchored_menu_below_gap`] on an explicit deferred layer. Menus opened
+/// from inside a palette (itself a priority-2 layer) must paint above it.
+pub fn anchored_menu_below_layer(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+    gap: f32,
+    priority: usize,
+) -> AnyElement {
     let exit = closing.map(exit_progress);
     let content = frosted_menu(exit, content);
     div()
@@ -575,7 +667,7 @@ pub fn anchored_menu_below_gap(
                         div().occlude().pt(px(gap)).child(content),
                     )),
             )
-            .priority(1)
+            .priority(priority)
             .into_any_element(),
         )
         .into_any_element()
@@ -783,6 +875,10 @@ fn modal_with(
             .child(
                 div()
                     .occlude()
+                    // Scrolling inside the dialog stays there: the scrim
+                    // swallows unconsumed wheel events so content behind the
+                    // modal never scrolls underneath it.
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .w(viewport.width)
                     .h(viewport.height)
                     .bg(scrim_alpha(scrim))
@@ -1061,7 +1157,7 @@ pub fn search_input_frame(_theme: &Theme, input: AnyElement) -> gpui::Div {
         .mb(px(4.0))
         .px(px(10.0))
         .py(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(MENU_ITEM_RADIUS))
         .bg(ink(0.04))
         .text_size(crate::typography::ui_rems(13.0))
         .child(input)
@@ -2396,5 +2492,46 @@ mod search_highlight_tests {
             vec![0..2, 10..15]
         );
         assert_eq!(search_match_ranges("🚀 CAFÉ", "café"), vec![5..10]);
+    }
+}
+
+/// Available vertical space at a measured trigger, including the menu's gap
+/// and window margin. Prefer above; flip only when it cannot fit useful chrome.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuGeometry {
+    pub height: f32,
+    pub below: bool,
+}
+
+pub fn menu_geometry(top: f32, bottom: f32, viewport_height: f32) -> MenuGeometry {
+    let above = (top - 14.0).max(0.0);
+    let below = (viewport_height - bottom - 14.0).max(0.0);
+    let flip = above < 180.0 && below > above;
+    MenuGeometry {
+        height: (if flip { below } else { above }).min(640.0),
+        below: flip,
+    }
+}
+
+#[cfg(test)]
+mod adaptive_menu_tests {
+    use super::*;
+    #[test]
+    fn budget_tracks_trigger_and_flips_when_needed() {
+        assert_eq!(
+            menu_geometry(300.0, 320.0, 500.0),
+            MenuGeometry {
+                height: 286.0,
+                below: false
+            }
+        );
+        assert_eq!(
+            menu_geometry(80.0, 100.0, 500.0),
+            MenuGeometry {
+                height: 386.0,
+                below: true
+            }
+        );
+        assert_eq!(menu_geometry(900.0, 920.0, 1000.0).height, 640.0);
     }
 }

@@ -23,6 +23,7 @@ pub mod doc_host;
 mod http_error;
 pub mod instance_lock;
 pub mod listener;
+mod model_catalogs;
 pub mod pairing;
 pub mod remote_access;
 pub mod profile;
@@ -48,8 +49,8 @@ pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
     CheckoutDiffSync, DiffFileTextPair, DiffSnapshot, TurnSnapshot, capture_commit_diff,
-    capture_diff, capture_diff_against, capture_turn_diff, merge_base, read_diff_file_text,
-    snapshot_tree, working_diff_base,
+    capture_diff, capture_diff_against, capture_turn_diff, discard_working_tree, merge_base,
+    read_diff_file_text, snapshot_tree, working_diff_base,
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig};
 pub use instance_lock::InstanceLock;
@@ -197,7 +198,7 @@ impl EngineCore {
         std::fs::create_dir_all(data_dir)?;
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
-        // This device's harness enablement (Settings → Agents) rides the
+        // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);
         let store = Arc::new(DocsStore::open(profile.store_root())?);
@@ -256,7 +257,12 @@ impl EngineCore {
             uploads.clone(),
             agent_accounts_config.codex_home.join("generated_images"),
         );
-        let agent_accounts = AgentAccounts::new(agent_accounts_config);
+        // Logins started for another device publish their callback port to
+        // the P2P service, which serves it to that device alone. Roboco keeps
+        // the publish surface engine-local (ADR 0004): nothing forwards a
+        // login between engines, so no route is registered in production.
+        let agent_accounts =
+            AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),

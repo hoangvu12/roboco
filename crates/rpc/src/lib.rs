@@ -35,12 +35,23 @@ pub mod methods {
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
-    /// Flip a harness's enablement on the target device (Settings → Agents);
+    /// Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES
+    /// (engine-local: the client picks the paired engine's connection; the
+    /// engine owns the install and never forwards it). Replies with the
+    /// device's fresh `ListHarnesses` catalog.
+    pub const INSTALL_HARNESS: &str = "InstallHarness";
+    /// InstallHarness / CancelInstall — the explicit install flow for one
+    /// harness ON THE ENGINE THE CALL REACHES. The client picks the paired
+    /// engine's connection (engine-local routing); this engine owns the
+    /// install, guards against duplicate installs, and never forwards.
+    pub const CANCEL_INSTALL: &str = "CancelInstall";
+    /// Flip a harness's enablement on the target device (Settings → Providers);
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
+    pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     /// Peer-to-peer delivery fallback: the SENDER's engine forwards a queued
@@ -168,8 +179,13 @@ pub mod methods {
     /// Current pull request for one checkout, resolved on the checkout's host device.
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
+    /// Permanently restore one chat-owned checkout to its current HEAD and
+    /// remove only its untracked, non-ignored paths.
+    pub const DISCARD_WORKING_TREE: &str = "DiscardWorkingTree";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
+    // Legacy wire naming (ADR 0005): the canonical term is "harness account" —
+    // see CONTEXT.md; the wire names stay frozen.
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
     pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";

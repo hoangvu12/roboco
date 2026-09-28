@@ -1,12 +1,15 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import type { Device, RepoRef, Space } from "@roboco/proto";
 import { encodeScopedId } from "@roboco/engine-client";
+import { Icon } from "@roboco/icons";
 import { useEngineSession } from "../../state/session-provider";
 import { useNow } from "../../state/hooks";
 import { useFleetSnapshot } from "../../state/fleet";
 import { composerDefaults } from "../../lib/composer-draft";
 import { spacesSorted } from "../../lib/view";
 import { useSidebar } from "../../state/sidebar";
+import { drawerTerminalStore } from "../../terminal/store";
+import { canvasTerminalKey, terminalOpenCwd } from "../../terminal/session";
 import { CheckoutChip, DeviceChip, ProjectChip, RefChip, type CheckoutKind } from "../composer-footer";
 
 /**
@@ -36,6 +39,12 @@ export interface NewThreadTarget {
   readonly ownDeviceId: string | null;
   /** The picked space row, or null ("no project" / nothing remembered). */
   readonly space: Space | null;
+  /**
+   * The picked project's id — `selected_space` in the desktop's state: set
+   * even while the row has not landed, so per-space chrome (the terminal
+   * canvas key) keeps its bucket. Null = project-less.
+   */
+  readonly projectId: string | null;
   /** The device that runs the agents for this target. */
   readonly effectiveDevice: Device | null;
   readonly effectiveDeviceId: string | null;
@@ -81,7 +90,16 @@ export function useNewThreadTarget(): NewThreadTarget {
     const effectiveDevice = devices.find((device) => device.id === effectiveDeviceId) ?? null;
     const targetDeviceId =
       space !== null && own !== null && space.deviceId !== own ? space.deviceId : null;
-    return { devices, spaces, ownDeviceId: own, space, effectiveDevice, effectiveDeviceId, targetDeviceId };
+    return {
+      devices,
+      spaces,
+      ownDeviceId: own,
+      space,
+      projectId,
+      effectiveDevice,
+      effectiveDeviceId,
+      targetDeviceId,
+    };
     // `defaults` is a cached snapshot object; the memo keys on its identity,
     // which changes only when a pick lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,7 +143,46 @@ export function NewThreadTargetSelectors() {
         currentSpaceId={target.space?.id ?? null}
         fallbackLabel="No project"
       />
+      <NewThreadTerminalAction
+        projectId={target.projectId}
+        spacePath={target.space?.path ?? null}
+      />
     </div>
+  );
+}
+
+/**
+ * The new-chat canvas's terminal action (upstream 23e258ff, #474): opens the
+ * managed terminal drawer keyed per space — `space-canvas:{spaceId}` — with
+ * the project's folder as the PTY cwd (`~` project-less). The desktop's
+ * affordance is the drawer itself; on the canvas this target-selector row is
+ * the natural action spot, so the chip drives the same store entry the
+ * Mod+J bridge and the chat-page drawer mount use.
+ */
+function NewThreadTerminalAction({
+  projectId,
+  spacePath,
+}: {
+  readonly projectId: string | null;
+  readonly spacePath: string | null;
+}) {
+  const key = canvasTerminalKey(projectId);
+  const cwd = terminalOpenCwd(key, spacePath);
+  useSyncExternalStore(drawerTerminalStore.subscribe, drawerTerminalStore.getVersion, drawerTerminalStore.getVersion);
+  const open = drawerTerminalStore.stateFor(key)?.open ?? false;
+  return (
+    <button
+      type="button"
+      id="new-thread-terminal-action"
+      className={`footer-menu-chip new-thread-terminal-action ${open ? "footer-menu-chip-open" : ""}`}
+      title={open ? "Hide terminal" : "Open terminal"}
+      aria-pressed={open}
+      onClick={() => {
+        drawerTerminalStore.toggle(key, cwd);
+      }}
+    >
+      <Icon name="terminal" size={12} className="footer-menu-chip-icon" />
+    </button>
   );
 }
 

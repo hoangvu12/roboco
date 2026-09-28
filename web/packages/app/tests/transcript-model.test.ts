@@ -26,8 +26,10 @@ import {
   thoughtLines,
   toolChipContent,
   toolDetail,
+  noteChipDetail,
   toolGroupSummary,
   toolGroupTitle,
+  workedForLabel,
   topGapFor,
   userMessageNeedsCollapse,
   visibleRowWindow,
@@ -231,7 +233,7 @@ describe("rowsForEntry", () => {
     expect(group.rowKind.kind).toBe("toolGroup");
     if (group.rowKind.kind === "toolGroup") {
       expect(group.rowKind.tools.length).toBe(2);
-      expect(group.rowKind.tools[1]!.isThought).toBe(true);
+      expect(group.rowKind.tools[1]!.kind).toBe("thought");
       expect(group.rowKind.tools[1]!.resolved).toBe(true);
     }
   });
@@ -245,7 +247,7 @@ describe("rowsForEntry", () => {
       throw new Error("expected a tool group");
     }
     const thought = group.rowKind.tools[0]!;
-    expect(thought.isThought).toBe(true);
+    expect(thought.kind).toBe("thought");
     expect(thought.resolved).toBe(false);
     expect(thought.detail).not.toBeNull();
     if (thought.detail !== null && thought.detail.kind === "thought") {
@@ -273,13 +275,209 @@ describe("rowsForEntry", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Compact transcript mode (ticket 11 — transcript.rs compact tests)
+// ---------------------------------------------------------------------------
+
+describe("rowsForEntry compact mode", () => {
+  const compactVisible = (rows: readonly TranscriptRow[]): readonly TranscriptRow[] =>
+    rows.filter((row) => row.compactFold === null);
+  const reasoningPart = (id: string, text: string): MessagePart => ({ kind: "reasoning", id, text });
+  const errorPart = (id: string, message: string): MessagePart => ({ kind: "error", id, message });
+
+  it("folds the whole turn into one collapsed work group", () => {
+    // Collapsed: work header + reply. Expanded: header + the compact-off
+    // layout for work parts (thoughts/tools as groups, narration as
+    // markdown) + reply.
+    const e = entry("a1", [
+      reasoningPart("r0", "thinking about it"),
+      toolPart("t1", exec("ls")),
+      textPart("n1", "checking the layout now"),
+      toolPart("t2", exec("pwd")),
+      textPart("r1", "All done — here is the answer."),
+    ]);
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const visible = compactVisible(rows);
+    expect(visible.length).toBe(2); // collapsed: work header + the reply
+    const group = visible[0]!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(group.id).toBe("a1#work");
+    expect(group.rowKind.compactShell).toBe(true);
+    expect(group.rowKind.autoOpen).toBe(false); // the work group never opens itself
+    expect(group.rowKind.tools.length).toBe(4);
+    expect(group.rowKind.tools[0]!.kind).toBe("thought");
+    expect(group.rowKind.tools[1]!.kind).toBe("call");
+    expect(group.rowKind.tools[2]!.kind).toBe("note");
+    expect(group.rowKind.tools[3]!.kind).toBe("call");
+    expect(visible[1]!.rowKind.kind).toBe("markdown");
+    const summary = toolGroupTitle(group.rowKind.tools);
+    expect(summary).toContain("wrote a note");
+    expect(summary).toContain("Ran 2 commands");
+    expect(summary).toContain("Thought process");
+    // The body rows exist and carry the normal layout, tagged with the fold.
+    expect(rows.some((row) => row.compactFold === "a1#work" && row.rowKind.kind === "markdown")).toBe(true);
+    expect(
+      rows.some(
+        (row) => row.compactFold === "a1#work" && row.rowKind.kind === "toolGroup" && row.rowKind.compactShell === false,
+      ),
+    ).toBe(true);
+    expect(group.rowKind.workedSecs).toBeNull(); // no duration stamped on the fixture
+    // The shell sits at the FIRST foldable part's position.
+    expect(rows[0]!.compactFold).toBeNull();
+    expect(rows.indexOf(group)).toBe(0);
+  });
+
+  it("carries the Worked-for duration on the work group", () => {
+    const e = entry("a1", [toolPart("t0", exec("ls")), textPart("r0", "done")], {
+      durationMs: 310_000,
+    });
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const group = rows[0]!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(group.rowKind.workedSecs).toBe(310);
+    expect(workedForLabel(310)).toBe("Worked for 5m 10s");
+    expect(workedForLabel(95)).toBe("Worked for 1m 35s");
+
+    // Live compact groups keep the working trailer, not a settled duration.
+    const streaming = entry("a1", [toolPart("t0", exec("ls"))], {
+      status: "streaming",
+      durationMs: 310_000,
+    });
+    const streamingRows = rowsForEntry(streaming, { parse, compact: true });
+    const streamingGroup = streamingRows[0]!;
+    if (streamingGroup.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(streamingGroup.rowKind.workedSecs).toBeNull();
+
+    // A zero stamp is a real finish, not a missing field to guess from.
+    const zero = entry("a1", [toolPart("t0", exec("ls")), textPart("r0", "done")], { durationMs: 0 });
+    const zeroRows = rowsForEntry(zero, { parse, compact: true });
+    const zeroGroup = zeroRows[0]!;
+    if (zeroGroup.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(zeroGroup.rowKind.workedSecs).toBeNull();
+
+    // Pre-durationMs history keeps the tool summary.
+    const missing = entry("a1", [toolPart("t0", exec("ls")), textPart("r0", "done")]);
+    const missingRows = rowsForEntry(missing, { parse, compact: true });
+    const missingGroup = missingRows[0]!;
+    if (missingGroup.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(missingGroup.rowKind.workedSecs).toBeNull();
+  });
+
+  it("keeps reply rows and skips empty groups", () => {
+    // A reply-only turn renders exactly like the ordinary split — no empty
+    // accordion.
+    const replyOnly = entry("a1", [textPart("t0", "just an answer")]);
+    expect(rowsForEntry(replyOnly, { parse, compact: true }).length).toBe(1);
+    expect(rowsForEntry(replyOnly, { parse, compact: true })[0]!.rowKind.kind).toBe("markdown");
+
+    // Consecutive trailing texts all stay visible — only earlier narration
+    // folds.
+    const e = entry("a2", [toolPart("t0", exec("ls")), textPart("r0", "first half"), textPart("r1", "second half")]);
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const visible = compactVisible(rows);
+    expect(visible.length).toBe(3); // work header + two reply parts
+    expect(visible[0]!.rowKind.kind).toBe("toolGroup");
+    expect(visible[1]!.rowKind.kind).toBe("markdown");
+    expect(visible[2]!.rowKind.kind).toBe("markdown");
+    expect(
+      rows.some(
+        (row) => row.compactFold === "a2#work" && row.rowKind.kind === "toolGroup" && row.rowKind.compactShell === false,
+      ),
+    ).toBe(true); // expanded work restores the ordinary tool group
+  });
+
+  it("stays collapsed while streaming", () => {
+    // Streaming surfaces nothing under compact mode — in-progress text is
+    // narration until the turn settles, so it folds with the rest and the
+    // whole turn is one closed accordion.
+    const e = entry("a1", [reasoningPart("r0", "thinking"), toolPart("t1", exec("ls")), textPart("r1", "streaming the answer")], {
+      status: "streaming",
+    });
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const visible = compactVisible(rows);
+    expect(visible.length).toBe(1); // the streaming text tail folds too
+    const group = visible[0]!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(group.rowKind.autoOpen).toBe(false);
+    expect(group.rowKind.tools.length).toBe(3);
+    expect(group.rowKind.tools[2]!.kind).toBe("note");
+    expect(
+      rows.some(
+        (row) => row.compactFold === "a1#work" && (row.rowKind.kind === "liveMarkdown" || row.rowKind.kind === "markdown"),
+      ),
+    ).toBe(true);
+
+    // On settle the same parts surface the reply as its own row.
+    const done = entry("a1", e.parts);
+    const settled = rowsForEntry(done, { parse, compact: true });
+    const settledVisible = compactVisible(settled);
+    expect(settledVisible.length).toBe(2);
+    expect(settledVisible[0]!.rowKind.kind).toBe("toolGroup");
+    expect(settledVisible[1]!.rowKind.kind).toBe("markdown");
+  });
+
+  it("keeps input and error chips visible", () => {
+    // Interactive/error rows are not work steps — they stay outside the
+    // fold so a blocking question or a failure still surfaces.
+    const e = entry("a1", [
+      toolPart("t0", exec("ls")),
+      errorPart("e1", "boom"),
+      toolPart("t1", exec("pwd")),
+      textPart("r0", "the answer"),
+    ]);
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const visible = compactVisible(rows);
+    expect(visible.length).toBe(3);
+    expect(visible[0]!.rowKind.kind).toBe("toolGroup");
+    expect(visible[1]!.rowKind.kind).toBe("errorChip");
+    expect(visible[2]!.rowKind.kind).toBe("markdown");
+    expect(visible[1]!.compactFold).toBeNull();
+    const group = visible[0]!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    expect(group.rowKind.tools.length).toBe(2); // the error didn't split the work group
+  });
+
+  it("note chips flatten to their first line for the detail", () => {
+    const e = entry("a1", [
+      toolPart("t0", exec("ls")),
+      textPart("n1", "narration before the reply"),
+      toolPart("t1", exec("pwd")),
+      textPart("r0", "the reply"),
+    ]);
+    const rows = rowsForEntry(e, { parse, compact: true });
+    const group = rows[0]!;
+    if (group.rowKind.kind !== "toolGroup") {
+      throw new Error("expected a tool group");
+    }
+    const note = group.rowKind.tools.find((tool) => tool.kind === "note");
+    if (note === undefined) {
+      throw new Error("expected a note chip");
+    }
+    expect(noteChipDetail(note)).toBe("narration before the reply");
+  });
+});
+
 describe("topGapFor / diffRows", () => {
   const row = (id: string, kind: TranscriptRow["rowKind"]["kind"], turnStart = false): TranscriptRow => {
     const rowKind: TranscriptRow["rowKind"] =
       kind === "markdown" || kind === "liveMarkdown"
         ? { kind, tree: { blocks: [] }, blockIx: 0 }
         : kind === "toolGroup"
-          ? { kind, tools: [], autoOpen: false }
+          ? { kind, tools: [], autoOpen: false, workedSecs: null, compactShell: false }
           : kind === "user"
             ? { kind, text: "", mentions: [], badges: [], pending: false, attachments: [] }
             : kind === "inputChip"
@@ -293,6 +491,7 @@ describe("topGapFor / diffRows", () => {
       entryId: id,
       timestamp: null,
       copyText: null,
+      compactFold: null,
     };
   };
 
@@ -400,13 +599,18 @@ describe("toolGroupSummary", () => {
   });
 
   it("names thought chips on the collapsed line", () => {
-    const thought = { isThought: true } as never;
-    const tool = { isThought: false, call: exec("ls"), isError: false } as never;
+    const thought = { kind: "thought" } as never;
+    const tool = { kind: "call", call: exec("ls"), isError: false } as never;
     expect(toolGroupTitle([thought])).toBe("Thought process");
     expect(toolGroupTitle([thought, thought])).toBe("Thought 2 times");
-    expect(toolGroupTitle([thought, tool])).toBe("Thought · Ran 1 command");
+    expect(toolGroupTitle([thought, tool])).toBe("Thought process · Ran 1 command");
     expect(toolGroupTitle([thought, thought, tool])).toBe("Thought 2 times · Ran 1 command");
     expect(toolGroupTitle([tool])).toBe("Ran 1 command");
+    // Notes (compact mode's folded narration) name on the same line.
+    const note = { kind: "note" } as never;
+    expect(toolGroupTitle([note])).toBe("Wrote a note");
+    expect(toolGroupTitle([note, note, tool])).toBe("Wrote 2 notes · Ran 1 command");
+    expect(toolGroupTitle([thought, note])).toBe("Thought process · wrote a note");
   });
 });
 
@@ -992,6 +1196,7 @@ describe("diffRows (transcript.rs:1651)", () => {
     entryId: "e",
     timestamp: null,
     copyText: null,
+  compactFold: null,
   });
 
   it("diff_rows_appends_and_middle_edits", () => {
@@ -1130,10 +1335,10 @@ describe("parseForRow (transcript.rs:1557-1650)", () => {
 
 describe("ViewportAnchor resolve (transcript.rs:2349-2395)", () => {
   const rows: Row18[] = [
-    { id: "a#0", entryId: "a", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
-    { id: "a#1", entryId: "a", turnStart: false, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
-    { id: "b#0", entryId: "b", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
-    { id: "c#0", entryId: "c", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null },
+    { id: "a#0", entryId: "a", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null, compactFold: null },
+    { id: "a#1", entryId: "a", turnStart: false, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null, compactFold: null },
+    { id: "b#0", entryId: "b", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null, compactFold: null },
+    { id: "c#0", entryId: "c", turnStart: true, rowKind: { kind: "errorChip", message: "" }, version: 0, timestamp: null, copyText: null, compactFold: null },
   ];
 
   it("captures the first row crossing the viewport top, then resolves exactly", () => {
@@ -1195,6 +1400,7 @@ describe("PendingQueuedTurns (transcript.rs:2307)", () => {
     entryId,
     timestamp: null,
     copyText: null,
+  compactFold: null,
   });
 
   it("registers inert and consumes the newest materialized row", () => {
@@ -1442,7 +1648,7 @@ function toolItem(fields: Partial<ToolItem> = {}): ToolItem {
     subagentRef: null,
     subagentStatus: null,
     subagentTail: null,
-    isThought: false,
+    kind: "call",
     ...fields,
   };
 }
@@ -1457,10 +1663,11 @@ function toolGroupRowFrom(id: string, tools: readonly ToolItem[], autoOpen: bool
     id,
     version: 1,
     turnStart: false,
-    rowKind: { kind: "toolGroup", tools, autoOpen },
+    rowKind: { kind: "toolGroup", tools, autoOpen, workedSecs: null, compactShell: false },
     entryId: id,
     timestamp: null,
     copyText: null,
+    compactFold: null,
   };
 }
 
@@ -1536,7 +1743,7 @@ describe("open-group height estimate (tickets 40 + 70 — transcript.rs:96-136, 
       throw new Error("expected toolGroup");
     }
     const thought = group.rowKind.tools[1]!;
-    expect(thought.isThought).toBe(true);
+    expect(thought.kind).toBe("thought");
     expect(thought.resolved).toBe(false);
     expect(thought.detail).not.toBeNull();
     // A live thought opens its detail by default; the rail rows are 32px.
@@ -1590,7 +1797,7 @@ describe("tool-group shared geometry (ticket 70)", () => {
 
     // Unresolved thought: detail open by default; a pinned-closed detail
     // fold overrides the default (the 2-line thought detail adds 49).
-    const thought = [toolItem({ isThought: true, resolved: false, detail: outputDetail(["a", "b"]) })];
+    const thought = [toolItem({ kind: "thought", resolved: false, detail: outputDetail(["a", "b"]) })];
     const thoughtOpen = toolGroupGeometry({ rowId: "g", tools: thought, autoOpen: false, state: pinnedGroupState(true), now: 0, reduced: false });
     expect(thoughtOpen.detailOpens).toEqual([true]);
     expect(thoughtOpen.totalHeight).toBe(26 + 2 + 32 + 49);
@@ -1749,6 +1956,7 @@ describe("tool-group shared geometry (ticket 70)", () => {
         entryId: "m",
         timestamp: null,
         copyText: null,
+      compactFold: null,
       };
       const rows = [rowA, rowB, mdRow];
 

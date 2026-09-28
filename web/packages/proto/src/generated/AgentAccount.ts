@@ -5,17 +5,40 @@ import type { AgentAuthKind } from "./AgentAuthKind";
 import type { AgentUsageWindow } from "./AgentUsageWindow";
 import type { HarnessId } from "./HarnessId";
 
-export type AgentAccount = { id: string, harness: HarnessId, email: string | null, planLabel: string | null, active: boolean, usageWindows: Array<AgentUsageWindow>, displayName?: string | null, organization?: string | null, 
+export type AgentAccount = { id: string, harness: HarnessId, email: string | null, planLabel: string | null, active: boolean, usageWindows: Array<AgentUsageWindow>, 
+/**
+ * Epoch millis the `usage_windows` were fetched. The engine serves the
+ * last good probe (persisted across restarts) while a refresh runs, so
+ * windows may be minutes old; `None` = never fetched.
+ */
+usageFetchedAt?: number | null, 
+/**
+ * Why the last usage probe failed ("Rate limited — retrying in 2m",
+ * "Sign in again", …), shown instead of a bare "Usage unavailable" — or
+ * beside stale windows. `None` when the last probe succeeded or none ran.
+ */
+usageError?: string | null, displayName?: string | null, organization?: string | null, 
 /**
  * How the CLI is signed in (`oauth` account vs raw `api-key`).
  */
 authKind?: AgentAuthKind | null, 
 /**
  * False for a live login whose credentials we could not read (e.g. macOS
- * Keychain denied) — shown, but not re-activatable.
+ * Keychain denied) or whose account couldn't be identified — shown, but
+ * not re-activatable. Always false for Hermes: Hermes owns its
+ * credential pool (it picks and rotates entries itself), so roboco lists
+ * it read-only — no switch, no remove; accounts are added through
+ * `hermes auth add`.
  */
 switchable: boolean, 
 /**
  * Epoch millis of the slot's last snapshot.
  */
-savedAt?: number | null, };
+savedAt?: number | null, 
+/**
+ * The upstream login this row belongs to inside an agent that keeps one
+ * login PER model provider (OpenCode's `openai`, Pi's `anthropic`,
+ * Hermes' `nous`). Rows sharing it form one single-choice group — at
+ * most one of them is in use. `None` for single-login agents.
+ */
+provider?: string | null, };

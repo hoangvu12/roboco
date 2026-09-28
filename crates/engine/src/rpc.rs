@@ -3,6 +3,11 @@
 //!
 //! Methods (feature-inventory §2):
 //! - `ListHarnesses` → `[HarnessDescriptor]`
+//! - `InstallHarness {harness}` → `[HarnessDescriptor]` — explicit,
+//!   user-requested CLI install ON THIS ENGINE (never a probe side effect;
+//!   never forwarded — the client picked this engine's connection)
+//! - `CancelInstall {harness}` → `{}` — cancels the running explicit install
+//!   on this engine (one per harness; duplicates are refused)
 //! - `ListModels {harness}` → `[Model]`
 //! - `QueueCommand {chatId, command}` → `{commandId}` (durable doc command)
 //! - `WatchDocMessages {chatId}` → stream of joined `SessionMessageEntry[]`,
@@ -36,7 +41,7 @@
 //!   custom sections live. Engine-local per ADR 0004 — never synced.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
 //!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
-//! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
+//! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows, cwd?}` → `TerminalSession`,
 //!   `SubscribeTerminal {terminalId, afterSeq?}` → stream of `TerminalEvent`
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
 //!   `CloseTerminal`. Paired clients have the full engine capability surface.
@@ -76,7 +81,7 @@ use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::project_actions::ProjectActionsStore;
 use crate::registry::HarnessRegistry;
-use crate::repos::{Repos, home_dir};
+use crate::repos::Repos;
 use crate::sessions::SessionsEngine;
 use crate::sidebar_state::SidebarStateStore;
 use crate::terminals::Terminals;
@@ -96,6 +101,8 @@ struct ChatParams {
 #[serde(rename_all = "camelCase")]
 struct ListModelsParams {
     harness: HarnessId,
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,32 +112,100 @@ struct SetHarnessEnabledParams {
     enabled: bool,
 }
 
-async fn update_harness_enabled<F>(
+async fn update_harness_enabled(
     registry: &HarnessRegistry,
     harness: HarnessId,
     enabled: bool,
-    sign_out: F,
-) -> Result<(), RpcError>
-where
-    F: std::future::Future<Output = Result<(), roboco_harness::HarnessError>>,
-{
-    let enabled_harnesses = registry.enabled_set();
-    let was_enabled = enabled_harnesses.contains(&harness);
-    if was_enabled && !enabled && harness == HarnessId::Antigravity {
-        if enabled_harnesses.len() == 1 {
-            return Err(RpcError::Failed(
-                "cannot disable the last enabled harness".into(),
-            ));
-        }
-        sign_out.await.map_err(|error| {
-            RpcError::Failed(format!(
-                "Antigravity sign-out failed; it remains enabled so you can retry: {error}"
-            ))
-        })?;
-    }
+) -> Result<(), RpcError> {
     registry
         .set_enabled(harness, enabled)
         .map_err(RpcError::Failed)
+}
+
+/// Run one explicit, user-requested harness install and reply with the fresh
+/// catalog. The install happens ON THIS ENGINE — the device whose connection
+/// the call arrived on (engine-local: the client picked it; this engine owns
+/// the install and never forwards it anywhere).
+///
+/// In-flight installs are guarded per harness: a second request for the same
+/// harness is refused while one runs, and `CancelInstall` cancels the running
+/// one (killing its owned process group). The guard cancels on drop too, so a
+/// dropped request never leaves an unowned installer behind.
+#[derive(Default)]
+pub(crate) struct Installations(
+    std::sync::Mutex<std::collections::HashMap<HarnessId, roboco_harness::CancellationToken>>,
+);
+
+struct Installing<'a> {
+    installs: &'a Installations,
+    harness: HarnessId,
+    cancel: roboco_harness::CancellationToken,
+}
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.installs
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.harness);
+    }
+}
+impl Installations {
+    fn begin(&self, harness: HarnessId) -> Result<Installing<'_>, RpcError> {
+        let mut installs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if installs.contains_key(&harness) {
+            return Err(RpcError::Failed("already installing".into()));
+        }
+        let cancel = roboco_harness::CancellationToken::new();
+        installs.insert(harness, cancel.clone());
+        Ok(Installing {
+            installs: self,
+            harness,
+            cancel,
+        })
+    }
+    fn cancel(&self, harness: HarnessId) {
+        if let Some(cancel) = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&harness)
+        {
+            cancel.cancel();
+        }
+    }
+}
+
+async fn run_requested_install(
+    harness: HarnessId,
+    cancel: roboco_harness::CancellationToken,
+) -> Result<(), roboco_harness::HarnessError> {
+    #[cfg(test)]
+    if let Ok(script) = std::env::var(format!("ROBOCO_INSTALLER_COMMAND_{harness:?}").to_uppercase()) {
+        return roboco_harness::install::install_with_command(harness, &script, cancel).await;
+    }
+    roboco_harness::install::install_harness(harness, cancel).await
+}
+
+async fn install_harness_with<F, Fut>(
+    registry: &HarnessRegistry,
+    harness: HarnessId,
+    install: F,
+) -> Result<Vec<crate::registry::HarnessDescriptor>, RpcError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), roboco_harness::HarnessError>>,
+{
+    if !roboco_harness::install::can_install(harness) {
+        return Err(RpcError::Failed(
+            "No supported installer or required tools available on this device".into(),
+        ));
+    }
+    install()
+        .await
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+    Ok(registry.descriptors())
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,6 +437,46 @@ struct OpenTerminalParams {
     chat_id: String,
     cols: u16,
     rows: u16,
+    /// Explicit working directory (new-chat canvas: the selected project
+    /// folder, or `~`). When omitted, the chat row's cwd is used, then the
+    /// space named by a `space-canvas:{spaceId}` chat id.
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+/// Matches the UI canvas panel key (`AppState::panel_session_key`).
+const CANVAS_TERMINAL_PREFIX: &str = "space-canvas:";
+
+/// A cwd the user (or a project-less chat) meant as "host home", not a folder.
+fn meaningful_cwd(cwd: Option<String>) -> Option<String> {
+    cwd.filter(|cwd| {
+        let trimmed = cwd.trim();
+        !trimmed.is_empty() && trimmed != "~"
+    })
+}
+
+/// Space id encoded in a new-chat canvas terminal key, if any.
+fn canvas_space_id(chat_id: &str) -> Option<&str> {
+    chat_id
+        .strip_prefix(CANVAS_TERMINAL_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// Resolve the PTY cwd: a real explicit path wins, then the chat row, then
+/// the project folder named by `space-canvas:{spaceId}`, then `~`.
+/// The portable `~` marker is a fallback, not an override — otherwise a
+/// canvas OpenTerminal that still says `~` (spaces watch not landed in the
+/// UI) would ignore the selected project encoded in `chatId`.
+fn resolve_open_terminal_cwd(
+    explicit: Option<String>,
+    chat_cwd: Option<String>,
+    space_cwd: Option<String>,
+) -> Result<String, &'static str> {
+    let raw = meaningful_cwd(explicit)
+        .or_else(|| meaningful_cwd(chat_cwd))
+        .or_else(|| meaningful_cwd(space_cwd))
+        .unwrap_or_else(|| "~".to_string());
+    crate::repos::expand_home(&raw)
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,6 +527,17 @@ struct AgentAccountParams {
 #[serde(rename_all = "camelCase")]
 struct StartAgentLoginParams {
     harness: HarnessId,
+    /// For agents that keep a login per model provider (OpenCode, Pi,
+    /// Hermes): which provider to sign in to; `None` = the agent's default.
+    #[serde(default)]
+    provider: Option<String>,
+    /// Stamped by the requesting engine when it forwards the start: the
+    /// device whose browser finishes the sign-in. The login's callback port
+    /// is served over P2P to that device alone. Roboco has no engine-to-
+    /// engine forward to stamp it (ADR 0004); the field parses for wire
+    /// compatibility and stays `None` in production.
+    #[serde(default)]
+    requester_device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -680,6 +806,36 @@ impl EngineRpc {
             .await
             .map(|workspace| workspace.root)
             .map_err(Into::into)
+    }
+
+    /// Catalogs also serve projectless sessions, which have no workspace space.
+    /// Keep workspace validation for project targets and use only a known local
+    /// chat's persisted cwd (or home) for a projectless conversation.
+    async fn catalog_root(&self, p: &FileSearchParams) -> Result<std::path::PathBuf, RpcError> {
+        if p.space_id.is_none() && p.path.is_none() {
+            let Some(chat_id) = &p.chat_id else {
+                return Ok(crate::repos::home_dir());
+            };
+            let chat = self
+                .workspace
+                .chat(chat_id)
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .ok_or_else(|| RpcError::BadParams("chat not found".into()))?;
+            if chat.device_id != self.doc_host.device_id() {
+                return Err(RpcError::BadParams("chat belongs to another device".into()));
+            }
+            if chat.space_id.is_none() {
+                return Ok(chat
+                    .cwd
+                    .map(|cwd| {
+                        crate::repos::expand_home(&cwd)
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| crate::repos::home_dir())
+                    })
+                    .unwrap_or_else(crate::repos::home_dir));
+            }
+        }
+        self.file_search_root(p).await
     }
 
     /// Accept only a checkout already named by a local chat or contained in a
@@ -1072,6 +1228,20 @@ impl RpcService for EngineRpc {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
+            methods::INSTALL_HARNESS => {
+                let p: roboco_proto::InstallHarnessRequest = parse_params(params)?;
+                let installing = self.registry.installs.begin(p.harness)?;
+                let descriptors = install_harness_with(&self.registry, p.harness, || {
+                    run_requested_install(p.harness, installing.cancel.clone())
+                })
+                .await?;
+                RpcReply::value(&descriptors)
+            }
+            methods::CANCEL_INSTALL => {
+                let p: roboco_proto::InstallHarnessRequest = parse_params(params)?;
+                self.registry.installs.cancel(p.harness);
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.registry.title_settings()),
             methods::SET_TITLE_SETTINGS => {
                 let p: crate::registry::TitleSettings = parse_params(params)?;
@@ -1082,13 +1252,7 @@ impl RpcService for EngineRpc {
             }
             methods::SET_HARNESS_ENABLED => {
                 let p: SetHarnessEnabledParams = parse_params(params)?;
-                update_harness_enabled(
-                    &self.registry,
-                    p.harness,
-                    p.enabled,
-                    roboco_harness::AcpHarness::antigravity().sign_out(),
-                )
-                .await?;
+                update_harness_enabled(&self.registry, p.harness, p.enabled).await?;
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
@@ -1099,26 +1263,69 @@ impl RpcService for EngineRpc {
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let models = harness
-                    .models()
+                let models = crate::model_catalogs::list(self.repos.data_dir(), harness, p.force)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&models)
             }
+            methods::LIST_SKILLS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    harness: HarnessId,
+                    #[serde(default)]
+                    chat_id: Option<String>,
+                    #[serde(default)]
+                    space_id: Option<String>,
+                    #[serde(default)]
+                    path: Option<String>,
+                }
+                let p: Params = parse_params(params)?;
+                let root = self
+                    .catalog_root(&FileSearchParams {
+                        query: String::new(),
+                        chat_id: p.chat_id,
+                        space_id: p.space_id,
+                        path: p.path,
+                    })
+                    .await?;
+                let harness = self
+                    .registry
+                    .resolve(p.harness)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let skills = harness
+                    .skills(&root)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&skills)
+            }
             methods::LIST_COMMANDS => {
-                // Same shape as ListModels: forces a lazy resolve, then the
-                // harness's own (cached) discovery — ACP agents advertise
-                // availableCommands, claude answers the initialize control
-                // request, codex lists skills; only harnesses whose wire has
-                // no listing (cursor, mock) fall through to the trait's
-                // empty default.
-                let p: ListModelsParams = parse_params(params)?;
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    harness: HarnessId,
+                    #[serde(default)]
+                    chat_id: Option<String>,
+                    #[serde(default)]
+                    space_id: Option<String>,
+                    #[serde(default)]
+                    path: Option<String>,
+                }
+                let p: Params = parse_params(params)?;
+                let root = self
+                    .catalog_root(&FileSearchParams {
+                        query: String::new(),
+                        chat_id: p.chat_id,
+                        space_id: p.space_id,
+                        path: p.path,
+                    })
+                    .await?;
                 let harness = self
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let commands = harness
-                    .commands()
+                    .commands_for(&root)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&commands)
@@ -1540,6 +1747,90 @@ impl RpcService for EngineRpc {
                         truncated: snapshot.truncated,
                         checksum: snapshot.checksum,
                         updated_at: chrono::Utc::now(),
+                    })
+                })
+                .await
+            }
+            // The Changes pane's trash action: an explicit, verified,
+            // all-or-nothing revert of a chat-owned working tree. Refuses
+            // before mutating whenever the confirmed snapshot went stale, the
+            // checkout moved, or an agent is live in the tree.
+            methods::DISCARD_WORKING_TREE => {
+                // This destructive branch performs several nested filesystem
+                // futures. Box it so unrelated RPC calls do not inherit that
+                // state in the already-large dispatcher stack frame.
+                Box::pin(async move {
+                    let p: roboco_proto::DiscardWorkingTreeRequest = parse_params(params)?;
+                    let chat = self
+                        .workspace
+                        .chat(&p.chat_id)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
+                    if chat.device_id != self.doc_host.device_id() {
+                        return Err(RpcError::Failed("chat is not hosted by this device".into()));
+                    }
+                    let cwd = chat
+                        .cwd
+                        .as_deref()
+                        .ok_or_else(|| RpcError::Failed("chat has no checkout".into()))?;
+                    let identity = self
+                        .repos
+                        .checkout_identity(std::path::Path::new(cwd))
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if identity.id != p.checkout_id {
+                        return Err(RpcError::Failed(
+                            "chat checkout changed since the confirmation was opened".into(),
+                        ));
+                    }
+
+                    // Refuse the mutation when any local chat on this exact
+                    // checkout has a live run. We never interrupt an agent as a
+                    // side effect of discarding files.
+                    let chats = self.workspace.watch_chats().borrow().clone();
+                    for candidate in chats {
+                        if candidate.device_id != self.doc_host.device_id() {
+                            continue;
+                        }
+                        let same_checkout =
+                            if candidate.checkout_id.as_deref() == Some(identity.id.as_str()) {
+                                true
+                            } else if let Some(candidate_cwd) = candidate.cwd.as_deref() {
+                                self.repos
+                                    .checkout_identity(std::path::Path::new(candidate_cwd))
+                                    .await
+                                    .is_ok_and(|candidate_identity| {
+                                        candidate_identity.id == identity.id
+                                    })
+                            } else {
+                                false
+                            };
+                        if same_checkout
+                            && self
+                                .sessions
+                                .session_status(&candidate.id)
+                                .is_some_and(|session| {
+                                    matches!(
+                                        session.status,
+                                        roboco_proto::SessionStatus::Working
+                                            | roboco_proto::SessionStatus::AwaitingInput
+                                    )
+                                })
+                        {
+                            return Err(RpcError::Failed(
+                                "an agent is active in this working tree".into(),
+                            ));
+                        }
+                    }
+
+                    let snapshot = self
+                        .diff_sync
+                        .discard_working_tree(&identity.id, &p.expected_checksum)
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    RpcReply::value(&roboco_proto::DiscardWorkingTreeOutcome {
+                        ok: true,
+                        checksum: snapshot.checksum,
                     })
                 })
                 .await
@@ -2188,15 +2479,26 @@ impl RpcService for EngineRpc {
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
-                // The terminal runs in the chat's checkout; a chat with no cwd (or
-                // no row yet) gets the home directory.
-                let cwd = self
+// Prefer an explicit real path (new-chat canvas has no row yet);
+                // `space-canvas:{spaceId}` names the selected project so a
+                // missing/tilde cwd still lands in that folder. Project-less
+                // chats store cwd `~`, expanded here on the host, and a
+                // missing home is an error rather than a silent `/`.
+                let chat_cwd = self
                     .workspace
                     .chat(&p.chat_id)
                     .ok()
                     .flatten()
-                    .and_then(|chat| chat.cwd)
-                    .unwrap_or_else(|| home_dir().to_string_lossy().to_string());
+                    .and_then(|chat| chat.cwd);
+                let space_cwd = canvas_space_id(&p.chat_id).and_then(|space_id| {
+                    self.workspace
+                        .space(space_id)
+                        .ok()
+                        .flatten()
+                        .map(|space| space.path)
+                });
+                let cwd = resolve_open_terminal_cwd(p.cwd, chat_cwd, space_cwd)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
                 let session = self
                     .terminals
                     .open(&cwd, p.cols, p.rows)
@@ -2266,9 +2568,17 @@ impl RpcService for EngineRpc {
             }
             methods::START_AGENT_LOGIN => {
                 let p: StartAgentLoginParams = parse_params(params)?;
+                // A requester naming this device is no remote login at all:
+                // publishing a callback route for ourselves would be a no-op
+                // at best, so never register one.
+                let own_id = self.doc_host.device_id();
+                let requester = p
+                    .requester_device_id
+                    .as_deref()
+                    .filter(|requester| !requester.is_empty() && *requester != own_id);
                 let start = self
                     .agent_accounts
-                    .start_login(p.harness)
+                    .start_login_for(p.harness, p.provider.as_deref(), requester)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&start)
@@ -2349,6 +2659,263 @@ impl RpcService for EngineRpc {
 mod tests {
     use super::*;
 
+    // Each subprocess has private HOME/PATH/overrides, avoiding process-global test races.
+    #[cfg(unix)]
+    async fn installer_rpc_fixture(mode: &str) {
+        use std::{os::unix::fs::PermissionsExt, sync::Arc};
+        if std::env::var_os("ROBOCO_INSTALL_FIXTURE_CHILD").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let script = match mode {
+                "success" => {
+                    "test -z \"$ROBOCO_INSTALL_FIXTURE_CHILD\" && test -z \"$CLAUDECODE\" && printf '#!/bin/sh\\necho 99.0.0\\n' > \"$CODEX_EXECUTABLE\" && /bin/chmod +x \"$CODEX_EXECUTABLE\""
+                }
+                "failure" => "echo 'fixture failure api_key=private' >&2; exit 7",
+                "missing" => "exit 0",
+                "cancel" => "echo ready > \"$READY_FILE\"; sleep 60",
+                "npm" => "npm install -g @openai/codex",
+                _ => unreachable!(),
+            };
+            let test = format!("rpc::tests::installer_rpc_{mode}");
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test, "--nocapture", "--include-ignored"])
+                .env("ROBOCO_INSTALL_FIXTURE_CHILD", root.path())
+                .env("ROBOCO_INSTALLER_COMMAND_CODEX", script)
+                .env("ROBOCO_NO_LOGIN_SHELL", "1")
+                .env("HOME", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("CODEX_EXECUTABLE", bin.join("codex"))
+                .env("CLAUDECODE", "nested-test")
+                .env("READY_FILE", root.path().join("ready"))
+                .env("npm_config_prefix", root.path())
+                .env("npm_config_cache", root.path().join("npm-cache"))
+                .env(
+                    "PATH",
+                    std::env::join_paths(
+                        std::iter::once(bin)
+                            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+                    )
+                    .unwrap(),
+                )
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            println!("{}", String::from_utf8_lossy(&output.stdout));
+            return;
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("ROBOCO_INSTALL_FIXTURE_CHILD").unwrap());
+        let registry = Arc::new(HarnessRegistry::new());
+        registry.register(Arc::new(roboco_harness::CodexHarness::new()));
+        let core = crate::EngineCore::assemble(
+            &root.join("engine"),
+            registry.clone(),
+            HarnessId::Codex,
+        )
+        .unwrap();
+        let rpc = core.rpc_service();
+        let params = serde_json::json!({"harness": "codex"});
+        assert!(!registry.descriptors()[0].installed);
+        assert_eq!(registry.descriptors()[0].enabled, Some(false));
+        let result = if mode == "cancel" {
+            let rpc = rpc.clone();
+            let task = tokio::spawn(async move {
+                rpc.handle(
+                    methods::INSTALL_HARNESS,
+                    serde_json::json!({"harness": "codex"}),
+                )
+                .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !root.join("ready").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // A second service for the same device must share the in-flight guard.
+            let other = core.rpc_service();
+            assert!(
+                matches!(other.handle(methods::INSTALL_HARNESS, params.clone()).await, Err(RpcError::Failed(e)) if e == "already installing")
+            );
+            other.handle(methods::CANCEL_INSTALL, params).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            rpc.handle(methods::INSTALL_HARNESS, params).await
+        };
+        match mode {
+            "success" | "npm" => {
+                let RpcReply::Value(value) = result.unwrap() else {
+                    panic!("expected descriptors");
+                };
+                let list: Vec<crate::registry::HarnessDescriptor> =
+                    serde_json::from_value(value).unwrap();
+                assert!(list[0].installed);
+                assert_eq!(list[0].enabled, Some(true));
+                assert!(list[0].can_install);
+                let path = root.join("bin/codex");
+                assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
+                println!(
+                    "InstallHarness ({mode}): installed=false/enabled=false -> installed=true/enabled=true; {}",
+                    path.display()
+                );
+            }
+            "failure" => assert!(
+                matches!(result, Err(RpcError::Failed(e)) if e.contains("fixture failure") && e.contains("[REDACTED]") && !e.contains("private"))
+            ),
+            "missing" => assert!(
+                matches!(result, Err(RpcError::Failed(e)) if e.contains("installer finished but `codex` was not found on PATH"))
+            ),
+            "cancel" => {
+                assert!(matches!(result, Err(RpcError::Failed(e)) if e.contains("cancelled")));
+                assert!(registry.installs.begin(HarnessId::Codex).is_ok());
+            }
+            _ => unreachable!(),
+        }
+        core.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_success() {
+        installer_rpc_fixture("success").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_failure() {
+        installer_rpc_fixture("failure").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_missing() {
+        installer_rpc_fixture("missing").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installer_rpc_cancel() {
+        installer_rpc_fixture("cancel").await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "downloads the official npm package into an isolated temporary prefix"]
+    async fn installer_rpc_npm() {
+        installer_rpc_fixture("npm").await;
+    }
+
+    #[tokio::test]
+    async fn explicit_install_rpc_verifies_archive_and_refreshes_descriptors() {
+        use sha2::{Digest, Sha512};
+        use std::io::Write;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use roboco_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
+        if std::env::var_os("ROBOCO_INSTALL_RPC_TEST").is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "rpc::tests::explicit_install_rpc_verifies_archive_and_refreshes_descriptors",
+                    "--nocapture",
+                ])
+                .env("ROBOCO_INSTALL_RPC_TEST", "1")
+                .env("ROBOCO_ADAPTERS_DIR", root.path())
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if !roboco_harness::acp::can_install(HarnessId::Antigravity) {
+            return;
+        }
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("server", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        let digest = Box::leak(format!("{:x}", Sha512::digest(&bytes)).into_boxed_str());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Box::leak(
+            format!("http://{}/archive.zip", listener.local_addr().unwrap()).into_boxed_str(),
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            socket.read(&mut buf).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        bytes.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&bytes).await.unwrap();
+        });
+        let pin = ArchivePin {
+            name: "explicit-install-test",
+            version: "1",
+            url,
+            entry: "server",
+            sha512: digest,
+        };
+        let registry = HarnessRegistry::new();
+        let descriptor = serde_json::from_value(serde_json::json!({
+            "id": "antigravity", "name": "Antigravity", "supportsSteering": true,
+            "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false
+        }))
+        .unwrap();
+        registry.register_lazy(
+            descriptor,
+            Box::new(move || installed_entry(&pin).is_some()),
+            Box::new(|| panic!("installation must not spawn the harness")),
+        );
+        assert!(!registry.descriptors()[0].installed);
+        let result = install_harness_with(&registry, HarnessId::Antigravity, || async {
+            ensure_installed(pin, "Test adapter").await.map(|_| ())
+        })
+        .await
+        .unwrap();
+        assert!(result[0].installed);
+        // Enablement follows detection (ticket 06's port of upstream
+        // 3f8f159b removed the opt-in rule): the fresh catalog flips
+        // installed, and a non-mock harness is on unless opted out.
+        assert_eq!(result[0].enabled, Some(true));
+        assert!(result[0].can_install);
+        assert!(installed_entry(&pin).unwrap().is_file());
+        server.await.unwrap();
+        // The verified marker makes another explicit install idempotent, even
+        // after the archive server has stopped.
+        install_harness_with(&registry, HarnessId::Antigravity, || async {
+            ensure_installed(pin, "Test adapter").await.map(|_| ())
+        })
+        .await
+        .unwrap();
+        assert!(
+            install_harness_with(&registry, HarnessId::Mock, || async {
+                panic!("unsupported harness must not invoke an installer")
+            })
+            .await
+            .is_err()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn local_opening_tail_arrives_before_full_mirror_and_keeps_all_history() {
         use crate::doc_host::{DocHost, DocHostConfig};
@@ -2379,6 +2946,7 @@ mod tests {
                 device_id: "host".into(),
                 status: None,
                 continuation_of: None,
+                duration_ms: None,
             })
             .unwrap();
         // Hold publication blocked: the opening must not await the full mirror.
@@ -2432,7 +3000,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn antigravity_sign_out_failure_stays_enabled_and_can_be_retried() {
+    async fn antigravity_disable_does_not_launch_the_server() {
         let registry = HarnessRegistry::new();
         let executable = std::env::current_exe().unwrap();
         registry.register(std::sync::Arc::new(
@@ -2443,29 +3011,24 @@ mod tests {
         ));
         registry.set_enabled(HarnessId::Antigravity, true).unwrap();
 
-        let error = update_harness_enabled(&registry, HarnessId::Antigravity, false, async {
-            Err(roboco_harness::HarnessError::Protocol(
-                "logout rejected".into(),
-            ))
-        })
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(error, RpcError::Failed(ref message) if message.contains("remains enabled")),
-            "{error}"
-        );
-        assert!(registry.enabled_set().contains(&HarnessId::Antigravity));
-
-        update_harness_enabled(&registry, HarnessId::Antigravity, false, async {
-            Ok::<(), roboco_harness::HarnessError>(())
-        })
-        .await
-        .unwrap();
+        update_harness_enabled(&registry, HarnessId::Antigravity, false)
+            .await
+            .unwrap();
         assert!(!registry.enabled_set().contains(&HarnessId::Antigravity));
     }
 
     /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
     /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.
+    #[test]
+    fn list_models_force_is_optional_and_backward_compatible() {
+        let old: ListModelsParams =
+            serde_json::from_value(serde_json::json!({"harness":"codex"})).unwrap();
+        assert!(!old.force);
+        let forced: ListModelsParams =
+            serde_json::from_value(serde_json::json!({"harness":"codex","force":true})).unwrap();
+        assert!(forced.force);
+    }
+
     #[test]
     fn agent_account_params_accept_ui_shape() {
         let p: AgentAccountParams = parse_params(serde_json::json!({
@@ -2477,6 +3040,44 @@ mod tests {
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
         assert_eq!(p.harness, HarnessId::ClaudeCode);
+    }
+
+    #[test]
+    fn open_terminal_cwd_prefers_explicit_then_chat_then_space_then_home() {
+        let home = crate::repos::home_dir().to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_open_terminal_cwd(
+                Some("/proj".into()),
+                Some("/chat".into()),
+                Some("/space".into())
+            ).unwrap(),
+            "/proj"
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(None, Some("/chat".into()), Some("/space".into())).unwrap(),
+            "/chat"
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(Some("~".into()), None, Some("/space".into())).unwrap(),
+            "/space",
+            "tilde is a fallback, not an override of the selected project"
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(None, None, Some("/space".into())).unwrap(),
+            "/space"
+        );
+        assert_eq!(resolve_open_terminal_cwd(None, None, None).unwrap(), home);
+        assert_eq!(
+            resolve_open_terminal_cwd(Some("~".into()), Some("/chat".into()), None).unwrap(),
+            "/chat"
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(Some("  ".into()), Some("/chat".into()), None).unwrap(),
+            "/chat"
+        );
+        assert_eq!(canvas_space_id("space-canvas:s1"), Some("s1"));
+        assert_eq!(canvas_space_id("space-canvas:"), None);
+        assert_eq!(canvas_space_id("chat-1"), None);
     }
 
     #[test]
@@ -2540,6 +3141,7 @@ mod context_usage_tests {
                     device_id: "writer".into(),
                     status: Some(roboco_doc::MessageStatus::Streaming),
                     continuation_of: None,
+                    duration_ms: None,
                 })
                 .unwrap()
         };
@@ -2672,6 +3274,7 @@ mod context_usage_tests {
             device_id: "host".into(),
             status: Some(roboco_doc::MessageStatus::Streaming),
             continuation_of: None,
+            duration_ms: None,
         };
         handle.doc().push_message(&entry("local-before")).unwrap();
         source.update_context_usage(Some(10), Some(100)).unwrap();

@@ -116,12 +116,58 @@ pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Opt
 }
 
 /// The provider cards, in display order: (harness, name, CLI command — named
-/// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`).
-pub const PROVIDERS: [(HarnessId, &str, &str); 3] = [
+/// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`). Every
+/// agent with a login of its own is here; what each one supports is
+/// documented engine-side (`agent_accounts` module docs). Antigravity's
+/// command never prints in the copy — it has no CLI login (see the
+/// empty-state arm).
+pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
     (HarnessId::ClaudeCode, "Claude Code", "claude"),
     (HarnessId::Codex, "Codex", "codex"),
     (HarnessId::Cursor, "Cursor", "cursor-agent"),
+    (HarnessId::Antigravity, "Antigravity", "Antigravity"),
+    (HarnessId::Grok, "Grok", "grok login"),
+    (HarnessId::Devin, "Devin", "devin auth login"),
+    (HarnessId::Opencode, "OpenCode", "opencode auth login"),
+    (HarnessId::Pi, "Pi", "pi"),
+    (HarnessId::Hermes, "Hermes", "hermes auth add"),
 ];
+
+/// Whether `harness` has an Accounts section (and sign-in flow). Pure.
+pub fn signs_in(harness: HarnessId) -> bool {
+    PROVIDERS
+        .iter()
+        .any(|(provider, _, _)| *provider == harness)
+}
+
+/// Whether the provider reports plan usage. One that doesn't shows no meters
+/// and no "usage unavailable" note — there is nothing missing. Pure.
+pub fn reports_usage(harness: HarnessId) -> bool {
+    harness != HarnessId::Antigravity
+}
+
+/// Providers whose agent holds exactly ONE login (Antigravity): once it is
+/// connected there is nothing to add — signing in again only re-confirms it.
+pub fn keeps_one_login(harness: HarnessId) -> bool {
+    harness == HarnessId::Antigravity
+}
+
+/// Display name of one agent (upstream `provider_name`) — the fallback
+/// [`LoginOption`] label for single-login agents. Pure.
+pub(crate) fn provider_name(harness: HarnessId) -> &'static str {
+    match harness {
+        HarnessId::ClaudeCode => "Claude Code",
+        HarnessId::Codex => "Codex",
+        HarnessId::Cursor => "Cursor",
+        HarnessId::Antigravity => "Antigravity",
+        HarnessId::Grok => "Grok",
+        HarnessId::Devin => "Devin",
+        HarnessId::Opencode => "OpenCode",
+        HarnessId::Pi => "Pi",
+        HarnessId::Hermes => "Hermes",
+        _ => "Agent",
+    }
+}
 
 /// Accounts of one provider, in the engine's order (slot creation). No
 /// active-first re-sort: switching accounts must not move the switched-to
@@ -138,16 +184,222 @@ pub fn provider_accounts(
         .collect()
 }
 
+/// Whether roboco switches this agent's logins. Hermes rotates through its
+/// own credential pool (listed, never reordered); Antigravity keeps one.
+pub fn switches_accounts(harness: HarnessId) -> bool {
+    !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity)
+}
+
+/// A standing note under a provider's card, for an agent whose accounts work
+/// differently. Hermes owns its credential pool: roboco lists it and adds to
+/// it through Hermes' own CLI, but never switches or removes its entries.
+/// Pure.
+pub fn provider_note(harness: HarnessId) -> Option<&'static str> {
+    match harness {
+        HarnessId::Hermes => Some(
+            "Hermes manages its own credential pool and rotates through it. Accounts added \
+             here go through `hermes auth add`; remove one with `hermes auth remove`.",
+        ),
+        _ => None,
+    }
+}
+
+/// One way to add an account: agents that keep a login PER model provider
+/// (OpenCode, Pi, Hermes) sign in to a named provider; the rest have one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginOption {
+    /// The engine's `provider` param (`None` = the agent's only login).
+    pub provider: Option<&'static str>,
+    /// Who the user signs in to.
+    pub label: &'static str,
+}
+
+/// The sign-ins roboco offers for `harness`, in button order. Pure.
+pub fn login_options(harness: HarnessId) -> Vec<LoginOption> {
+    let option = |provider, label| LoginOption {
+        provider: Some(provider),
+        label,
+    };
+    match harness {
+        HarnessId::Opencode => vec![
+            option("openai", "ChatGPT"),
+            option("github-copilot", "GitHub Copilot"),
+        ],
+        HarnessId::Pi => vec![option("openai-codex", "ChatGPT")],
+        HarnessId::Hermes => vec![
+            option("openai-codex", "ChatGPT"),
+            option("nous", "Nous Portal"),
+        ],
+        _ => vec![LoginOption {
+            provider: None,
+            label: provider_name(harness),
+        }],
+    }
+}
+
+/// The add-account button's label for one [`LoginOption`]: a per-provider
+/// sign-in names its provider ("Connect ChatGPT", "Add GitHub Copilot
+/// account"); single-login agents keep the plain label. Pure.
+pub fn add_option_label(option: LoginOption, empty: bool) -> String {
+    match option.provider {
+        None => "Add account".to_string(),
+        Some(_) if empty => format!("Connect {}", option.label),
+        Some(_) => format!("Add {} account", option.label),
+    }
+}
+
+/// The optimistic half of a switch: `account` becomes the live login of its
+/// group — its agent, or for agents that keep a login per model provider,
+/// that provider — and every other group keeps its own. Pure.
+pub fn mark_switched(snapshot: &mut AgentAccountsSnapshot, account: &AgentAccount) {
+    for row in snapshot.accounts.iter_mut() {
+        if row.harness == account.harness && row.provider == account.provider {
+            row.active = row.id == account.id;
+        }
+    }
+}
+
+/// Usage meter columns (upstream accounts.rs): window label, a short bar,
+/// percent — the compact one-line meter the footer's account-usage card
+/// renders (the page's rows keep the pre-redesign meter until ticket 18).
+const USAGE_LABEL_WIDTH: f32 = 52.0;
+const USAGE_BAR_WIDTH: f32 = 88.0;
+const USAGE_PERCENT_WIDTH: f32 = 34.0;
+
+/// One mini meter line of the usage column: label, a short bar, percent.
+/// The reset moment rides the row's tooltip instead of taking a column.
+pub(crate) fn render_usage_meter(
+    window: &roboco_proto::AgentUsageWindow,
+    theme: &Theme,
+) -> AnyElement {
+    let fraction = window.used_fraction.clamp(0.0, 1.0);
+    let level = usage_level(fraction);
+    let fill = usage_color(level, theme).opacity(match level {
+        UsageLevel::Normal => 0.8,
+        _ => 0.9,
+    });
+    div()
+        .h(px(16.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .text_size(crate::typography::ui_rems(11.5))
+        .child(
+            div()
+                .w(px(USAGE_LABEL_WIDTH))
+                .flex_none()
+                .truncate()
+                .text_color(theme.text_muted)
+                .child(SharedString::from(window.label.clone())),
+        )
+        .child(
+            div()
+                .w(px(USAGE_BAR_WIDTH))
+                .flex_none()
+                .h(px(4.0))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(theme.wash(0.08))
+                .when(fraction > 0.0, |el| {
+                    el.child(
+                        div()
+                            .h_full()
+                            // A 1.5% floor keeps tiny non-zero usage
+                            // visible (upstream zeron: `max(used, 1.5)%`).
+                            .w(gpui::relative(fraction.max(0.015)))
+                            .rounded_full()
+                            .bg(fill),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .w(px(USAGE_PERCENT_WIDTH))
+                .flex_none()
+                .text_right()
+                .text_color(match level {
+                    UsageLevel::Normal => theme.text_muted,
+                    _ => usage_color(level, theme),
+                })
+                .child(SharedString::from(format!(
+                    "{}%",
+                    (fraction * 100.0).round() as u32
+                ))),
+        )
+        .into_any_element()
+}
+
+/// The sign-in dialog's browser-wait copy — one sentence per provider, same
+/// shape. Pure.
+fn login_copy(harness: HarnessId, provider: Option<&str>) -> &'static str {
+    match (harness, provider) {
+        (HarnessId::ClaudeCode, _) => {
+            "Finish signing in to Claude in your browser. The new login is saved next to \
+             your current one — nothing changes until you switch."
+        }
+        (HarnessId::Codex, _) => {
+            "Finish signing in to ChatGPT in your browser. The new login is saved next to \
+             your current one — nothing changes until you switch."
+        }
+        (HarnessId::Cursor, _) => {
+            "Finish signing in to Cursor in your browser. This mints a roboco-named API key \
+             you can revoke any time from Cursor's dashboard — it is separate from \
+             `cursor-agent login`."
+        }
+        (HarnessId::Grok, _) => {
+            "Finish signing in to Grok in your browser — approve the code shown below. The \
+             new login is saved next to your current one — nothing changes until you switch."
+        }
+        (HarnessId::Devin, _) => {
+            "Finish signing in to Devin in your browser. The new login is saved next to your \
+             current one — nothing changes until you switch."
+        }
+        (HarnessId::Opencode, Some("github-copilot")) => {
+            "Finish signing in to GitHub in your browser — enter the code shown below. The \
+             new login is saved next to your current one — nothing changes until you switch."
+        }
+        (HarnessId::Opencode | HarnessId::Pi, _) => {
+            "Finish signing in to ChatGPT in your browser. The agent gets its own login, saved \
+             next to any current one — nothing changes until you switch."
+        }
+        (HarnessId::Hermes, _) => {
+            "Finish signing in in your browser — enter the code shown below. Hermes adds the \
+             login to its own credential pool and rotates through it itself."
+        }
+        (HarnessId::Antigravity, _) => {
+            "Finish signing in to Google in your browser. Antigravity keeps one login on \
+             this device; if it is already signed in, this just confirms it."
+        }
+        _ => "Finish signing in in your browser.",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entity
 // ---------------------------------------------------------------------------
 
+/// The last accounts list per target device (`None` = this device), shared
+/// by every accounts view (the page and the composer footer's usage ring)
+/// so a switch in either shows up in the other.
+#[derive(Default)]
+pub(crate) struct AccountsSnapshotCache(
+    pub(crate) std::collections::HashMap<Option<String>, AgentAccountsSnapshot>,
+);
+
+impl gpui::Global for AccountsSnapshotCache {}
+
 enum LoginFlow {
     /// StartAgentLogin in flight.
-    Starting { harness: HarnessId },
+    Starting {
+        harness: HarnessId,
+        /// The model provider signed in to, for per-provider agents.
+        provider: Option<&'static str>,
+    },
     /// Claude-style: open the URL, paste the code back.
     PasteCode {
         harness: HarnessId,
+        provider: Option<&'static str>,
         start: AgentLoginStart,
         submitting: bool,
         error: Option<SharedString>,
@@ -155,6 +407,7 @@ enum LoginFlow {
     /// Codex-style: open the URL, poll until the browser flow lands.
     Browser {
         harness: HarnessId,
+        provider: Option<&'static str>,
         start: AgentLoginStart,
         message: Option<SharedString>,
         error: Option<SharedString>,
@@ -162,17 +415,38 @@ enum LoginFlow {
 }
 
 impl LoginFlow {
-    /// Dialog title (roboco: "Add Claude account" / "Add Codex account").
-    fn title(&self) -> &'static str {
-        let harness = match self {
-            LoginFlow::Starting { harness }
-            | LoginFlow::PasteCode { harness, .. }
-            | LoginFlow::Browser { harness, .. } => *harness,
-        };
-        match harness {
-            HarnessId::Codex => "Add Codex account",
-            HarnessId::Cursor => "Connect Cursor",
-            _ => "Add Claude account",
+    fn parts(&self) -> (HarnessId, Option<&'static str>) {
+        match self {
+            LoginFlow::Starting { harness, provider }
+            | LoginFlow::PasteCode {
+                harness, provider, ..
+            }
+            | LoginFlow::Browser {
+                harness, provider, ..
+            } => (*harness, *provider),
+        }
+    }
+
+    /// Dialog title (roboco: "Add Claude account" / "Add Codex account"); a
+    /// per-provider sign-in names who it is for ("Sign in to ChatGPT for
+    /// OpenCode").
+    fn title(&self) -> String {
+        let (harness, provider) = self.parts();
+        let option = login_options(harness)
+            .into_iter()
+            .find(|option| option.provider == provider);
+        match option {
+            Some(LoginOption {
+                provider: Some(_),
+                label,
+            }) => format!("Sign in to {label} for {}", provider_name(harness)),
+            _ => match harness {
+                HarnessId::Codex => "Add Codex account".into(),
+                HarnessId::Cursor => "Connect Cursor".into(),
+                // The long-standing dialog title (roboco's grammar).
+                HarnessId::ClaudeCode => "Add Claude account".into(),
+                other => format!("Add {} account", provider_name(other)),
+            },
         }
     }
 }
@@ -315,6 +589,7 @@ impl AccountsPage {
         let mut trigger =
             div()
                 .id("accounts-device-switcher")
+                .relative()
                 .flex_none()
                 .h(px(28.0))
                 .px(px(8.0))
@@ -375,16 +650,10 @@ impl AccountsPage {
 
         if self.device_menu.get().is_some() {
             let closing = self.device_menu.closing_since();
-            let menu = popover::popover_card(theme)
-                .w(px(220.0))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.close_device_menu(cx);
-                }))
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(popover::menu_heading(theme, "Devices"))
-                .children(devices.into_iter().enumerate().map(|(ix, d)| {
+            let rows: Vec<AnyElement> = devices
+                .into_iter()
+                .enumerate()
+                .map(|(ix, d)| {
                     let is_active = Some(d.id.as_str()) == effective.as_deref();
                     let is_local = local_id.as_deref() == Some(d.id.as_str());
                     let glyph = platform_glyph(&d.platform);
@@ -425,32 +694,69 @@ impl AccountsPage {
                                     crate::theme::ink(0.2)
                                 }),
                         )
+                        .into_any_element()
+                })
+                .collect();
+            let menu = popover::popover_card(theme)
+                .w(px(220.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.close_device_menu(cx);
                 }))
-                .into_any_element();
-            trigger = trigger.child(popover::anchored_menu(
+                .flex()
+                .flex_col()
+                .child(popover::menu_heading(theme, "Devices"))
+                // Contained to the settings page pane, flipping above the
+                // trigger when the lower half is too short; long device
+                // lists scroll inside the same budget.
+                .child(widgets::dropdown_rows(
+                    "accounts-device-rows",
+                    rows,
+                    32.0,
+                ));
+            trigger = trigger.child(widgets::dropdown(
                 "accounts-device-menu",
                 menu,
                 closing,
+                28.0,
             ));
         }
         trigger.into_any_element()
     }
 
     fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+        let Some(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        )
+        .ok() else {
             self.snapshot = Loadable::Error("Engine not connected".into());
             return;
         };
-        self.snapshot = Loadable::Loading;
+        // Stale-while-revalidate: a painted snapshot stays on screen while
+        // the list runs (the footer's usage ring shares the same cache, so
+        // a switch there shows up here on the next reload).
+        let key = self.target_device.clone();
+        if !matches!(self.snapshot, Loadable::Ready(_)) {
+            self.snapshot = match cx
+                .try_global::<AccountsSnapshotCache>()
+                .and_then(|cache| cache.0.get(&key))
+            {
+                Some(cached) => Loadable::Ready(cached.clone()),
+                None => Loadable::Loading,
+            };
+        }
         let params = self.params(serde_json::json!({ "forceUsage": force_usage }));
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .call(methods::LIST_AGENT_ACCOUNTS, params)
-                .await;
+            let result = engine.call(methods::LIST_AGENT_ACCOUNTS, params).await;
             this.update(cx, |page, cx| {
                 page.snapshot = match result {
                     Ok(value) => match serde_json::from_value::<AgentAccountsSnapshot>(value) {
-                        Ok(snapshot) => Loadable::Ready(snapshot),
+                        Ok(snapshot) => {
+                            cx.default_global::<AccountsSnapshotCache>()
+                                .0
+                                .insert(key, snapshot.clone());
+                            Loadable::Ready(snapshot)
+                        }
                         Err(err) => Loadable::Error(err.to_string()),
                     },
                     Err(err) => Loadable::Error(err.to_string()),
@@ -469,7 +775,11 @@ impl AccountsPage {
         account: &AgentAccount,
         cx: &mut Context<Self>,
     ) {
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+        let Some(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        )
+        .ok() else {
             return;
         };
         self.busy_account = Some(account.id.clone());
@@ -497,17 +807,28 @@ impl AccountsPage {
 
     // ---- add-account flows ----
 
-    fn start_login(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+    fn start_login(
+        &mut self,
+        harness: HarnessId,
+        provider: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        )
+        .ok() else {
             return;
         };
-        self.login = Some(LoginFlow::Starting { harness });
+        self.login = Some(LoginFlow::Starting { harness, provider });
         self.error = None;
-        let params = self.params(serde_json::json!({ "harness": harness }));
+        let mut params = serde_json::json!({ "harness": harness });
+        if let (Some(provider), Some(object)) = (provider, params.as_object_mut()) {
+            object.insert("provider".into(), serde_json::json!(provider));
+        }
+        let params = self.params(params);
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .call(methods::START_AGENT_LOGIN, params)
-                .await;
+            let result = engine.call(methods::START_AGENT_LOGIN, params).await;
             this.update(cx, |page, cx| {
                 match result.and_then(|value| {
                     serde_json::from_value::<AgentLoginStart>(value)
@@ -523,6 +844,7 @@ impl AccountsPage {
                                     .update(cx, |input, cx| input.set_text("", cx));
                                 page.login = Some(LoginFlow::PasteCode {
                                     harness,
+                                    provider,
                                     start,
                                     submitting: false,
                                     error: None,
@@ -531,6 +853,7 @@ impl AccountsPage {
                             AgentLoginMode::Browser => {
                                 page.login = Some(LoginFlow::Browser {
                                     harness,
+                                    provider,
                                     start,
                                     message: None,
                                     error: None,
@@ -567,14 +890,16 @@ impl AccountsPage {
         }
         let login_id = start.login_id.clone();
         *submitting = true;
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+        let Some(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        )
+        .ok() else {
             return;
         };
         let params = self.params(serde_json::json!({ "loginId": login_id, "code": code }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .call(methods::COMPLETE_AGENT_LOGIN, params)
-                .await;
+            let result = engine.call(methods::COMPLETE_AGENT_LOGIN, params).await;
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
@@ -604,7 +929,11 @@ impl AccountsPage {
             return;
         };
         let login_id = start.login_id.clone();
-        let Some(engine) = crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok() else {
+        let Some(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        )
+        .ok() else {
             return;
         };
         let params = self.params(serde_json::json!({ "loginId": login_id }));
@@ -613,9 +942,7 @@ impl AccountsPage {
                 cx.background_executor()
                     .timer(Duration::from_millis(1500))
                     .await;
-                let result = engine
-                    .call(methods::POLL_AGENT_LOGIN, params.clone())
-                    .await;
+                let result = engine.call(methods::POLL_AGENT_LOGIN, params.clone()).await;
                 let outcome = this.update(cx, |page, cx| {
                     let Some(LoginFlow::Browser { message, error, .. }) = &mut page.login else {
                         return true; // dialog dismissed — stop polling
@@ -675,18 +1002,32 @@ impl AccountsPage {
         };
         self.login = None;
         self.poll_task = None;
-        if let (Some(login_id), Some(engine)) = (login_id, crate::request_routing::device_target(self.state.read(cx), self.target_device.as_deref()).ok()) {
+        if let (Some(login_id), Some(engine)) = (
+            login_id,
+            crate::request_routing::device_target(
+                self.state.read(cx),
+                self.target_device.as_deref(),
+            )
+            .ok(),
+        ) {
             let params = self.params(serde_json::json!({ "loginId": login_id }));
             self.action_task = Some(cx.spawn(async move |_, _| {
-                if let Err(err) = engine
-                    .call(methods::CANCEL_AGENT_LOGIN, params)
-                    .await
-                {
+                if let Err(err) = engine.call(methods::CANCEL_AGENT_LOGIN, params).await {
                     tracing::debug!(error = %err, "CancelAgentLogin failed (best-effort)");
                 }
             }));
         }
         cx.notify();
+    }
+
+    /// Escape that reached Settings unclaimed cancels an open login first,
+    /// so it never closes Settings under the dialog. Returns whether it did.
+    pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.login.is_none() {
+            return false;
+        }
+        self.cancel_login(cx);
+        true
     }
 
     // ---- render pieces ----
@@ -777,6 +1118,7 @@ impl AccountsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let is_busy = self.busy_account.as_deref() == Some(account.id.as_str());
+        let refreshing = matches!(self.snapshot, Loadable::Loading);
         let email: SharedString = account
             .email
             .clone()
@@ -891,18 +1233,33 @@ impl AccountsPage {
                     .map(|el| {
                         // Meters XOR the quiet fallback line — never both
                         // (roboco: `usage ? meters : "Usage unavailable"…`).
+                        // The engine's probe reason replaces the bare shrug;
+                        // an unidentified login says so.
                         if account.usage_windows.is_empty() {
+                            let note = if !account.switchable && switches_accounts(account.harness)
+                            {
+                                match account.harness {
+                                    // Keychain denied: the login is there, its secret isn't.
+                                    HarnessId::ClaudeCode => "Credentials unavailable",
+                                    // An opaque token whose account couldn't be looked up.
+                                    _ => "Couldn't identify this login",
+                                }
+                            } else if let Some(reason) = &account.usage_error {
+                                // "Rate limited by Anthropic — retrying in 2m",
+                                // "Signed out — sign in again".
+                                reason.as_str()
+                            } else if refreshing {
+                                "Checking usage…"
+                            } else {
+                                "Usage unavailable"
+                            };
                             el.child(
                                 div()
                                     .mt(px(6.0))
                                     .truncate()
                                     .text_size(crate::typography::ui_rems(11.5))
                                     .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from(if account.switchable {
-                                        "Usage unavailable"
-                                    } else {
-                                        "Credentials unavailable"
-                                    })),
+                                    .child(SharedString::from(note)),
                             )
                         } else {
                             el.child(
@@ -1036,23 +1393,13 @@ impl AccountsPage {
             }
             LoginFlow::Browser {
                 harness,
+                provider,
                 start,
                 message,
                 error,
             } => {
                 let has_error = error.is_some();
-                let body = match harness {
-                    HarnessId::Cursor => {
-                        "Finish signing in to Cursor in your browser. This mints a \
-                         roboco-named API key you can revoke any time from Cursor's \
-                         dashboard — it is separate from `cursor-agent login`."
-                    }
-                    _ => {
-                        "Finish signing in to OpenAI in your browser. The new login is \
-                         captured in an isolated profile — your current session is untouched \
-                         until you switch."
-                    }
-                };
+                let body = login_copy(*harness, *provider);
                 div()
                     .flex()
                     .flex_col()
@@ -1112,7 +1459,7 @@ impl AccountsPage {
             }
         };
         let card = popover::dialog_card(&theme)
-            .child(popover::dialog_title(&theme, title))
+            .child(popover::dialog_title(&theme, &title))
             .child(body)
             .into_any_element();
         Some(popover::modal("add-account-dialog", viewport, card))
@@ -1215,7 +1562,7 @@ impl popover::ScrollRailHost for AccountsPage {
 
 impl Render for AccountsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
         let dialog = self.render_login_dialog(window.viewport_size(), cx);
         let refreshing = matches!(self.snapshot, Loadable::Loading);
@@ -1265,6 +1612,12 @@ impl Render for AccountsPage {
                     let skeleton_id = match harness {
                         HarnessId::Codex => "accounts-skeleton-codex",
                         HarnessId::Cursor => "accounts-skeleton-cursor",
+                        HarnessId::Grok => "accounts-skeleton-grok",
+                        HarnessId::Devin => "accounts-skeleton-devin",
+                        HarnessId::Opencode => "accounts-skeleton-opencode",
+                        HarnessId::Pi => "accounts-skeleton-pi",
+                        HarnessId::Hermes => "accounts-skeleton-hermes",
+                        HarnessId::Antigravity => "accounts-skeleton-antigravity",
                         _ => "accounts-skeleton-claude",
                     };
                     div()
@@ -1350,14 +1703,19 @@ impl Render for AccountsPage {
                             })
                             .collect();
                         let add_id: SharedString = format!("add-account-{name}").into();
+                        let empty = rows.is_empty();
+                        // Antigravity keeps one login: once connected there is
+                        // nothing to add — signing in again only re-confirms it.
+                        let can_add = empty || !keeps_one_login(harness);
                         let card = widgets::section_card(&theme).mt(px(8.0));
                         let empty_copy = match harness {
                             // Cursor's app login is SEPARATE from `cursor-agent
                             // login` — pointing at the CLI would send users to a
-                            // sign-in that does not light this up.
-                            HarnessId::Cursor => format!(
+                            // sign-in that does not light this up. Antigravity
+                            // has no CLI login at all.
+                            HarnessId::Cursor | HarnessId::Antigravity => format!(
                                 "{name} isn't connected on this device — connect it to run \
-                                 Cursor sessions."
+                                 {name} sessions."
                             ),
                             _ => format!(
                                 "No {name} login detected on this device — sign in \
@@ -1396,26 +1754,57 @@ impl Render for AccountsPage {
                                             .child(SharedString::from(name)),
                                     )
                                     .child(div().flex_1())
-                                    .child(
-                                        widgets::ghost_action(&theme)
-                                            .id(add_id)
-                                            .hover(|s| widgets::ghost_hover(&theme, s))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.start_login(harness, cx);
-                                            }))
-                                            .child(
-                                                crate::icons::icon(crate::icons::ADD_CIRCLE)
-                                                    .size(px(16.0))
-                                                    .text_color(theme.text_muted),
-                                            )
-                                            .child(SharedString::from("Add account")),
-                                    ),
+                                    // One add button per way to sign in:
+                                    // per-provider agents (OpenCode, Pi,
+                                    // Hermes) offer each model provider
+                                    // separately. A one-login provider that is
+                                    // connected offers nothing (it can only
+                                    // re-confirm the login it has).
+                                    .when(can_add, |el| {
+                                        el.children(
+                                            login_options(harness).into_iter().enumerate().map(
+                                                |(ix, option)| {
+                                                    let label = add_option_label(option, empty);
+                                                    widgets::ghost_action(&theme)
+                                                        .id((add_id.clone(), ix))
+                                                        // 23's action-button grammar bakes the
+                                                        // ghost hover in; no explicit .hover here.
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.start_login(
+                                                                    harness,
+                                                                    option.provider,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                        .child(
+                                                            crate::icons::icon(
+                                                                crate::icons::ADD_CIRCLE,
+                                                            )
+                                                            .size(px(16.0))
+                                                            .text_color(theme.text_muted),
+                                                        )
+                                                        .child(SharedString::from(label))
+                                                },
+                                            ),
+                                        )
+                                    }),
                             )
                             .children(
                                 warnings
                                     .into_iter()
                                     .map(|warning| widgets::warning_strip(&theme, warning)),
                             )
+                            .when_some(provider_note(harness), |el, note| {
+                                el.child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .text_size(crate::typography::ui_rems(12.0))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(note)),
+                                )
+                            })
                             .child(card)
                             .into_any_element()
                     })
@@ -1453,7 +1842,6 @@ impl Render for AccountsPage {
                                             .id("accounts-refresh")
                                             .flex_none()
                                             .text_size(crate::typography::ui_rems(12.5))
-                                            .hover(|s| widgets::ghost_hover(&theme, s))
                                             .when(refreshing, |el| el.opacity(0.5))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.load(
@@ -1472,9 +1860,10 @@ impl Render for AccountsPage {
                             )
                             .child(widgets::page_subtitle(
                                 &theme,
-                                "The Claude Code, Codex, and Cursor logins on this device. Roboco \
-                                 detects the live session, keeps each account backed up, and can \
-                                 swap between them.",
+                                "The agent logins on this device — Claude Code, Codex, \
+                                 Cursor, Grok, Devin, OpenCode, Pi, and Hermes. Roboco \
+                                 detects the live session, keeps each account backed up, and \
+                                 can swap between them.",
                             ))
                             .when_some(self.error.clone(), |el, message| {
                                 el.child(
@@ -1514,6 +1903,78 @@ impl Render for AccountsPage {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+
+    /// A per-provider agent's section renders its rows (a live login, a
+    /// saved one, an unidentified one) and one add button per provider, and
+    /// a device-code sign-in's dialog carries the code line.
+    #[gpui::test]
+    fn per_provider_accounts_render_with_one_add_button_per_provider(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let window = cx.add_window(|window, cx| {
+            let state = cx.new(|_| AppState::new());
+            AccountsPage::new(state, cx)
+        });
+        let row = |id: &str, email: &str, active, switchable| AgentAccount {
+            id: id.into(),
+            harness: HarnessId::Opencode,
+            email: Some(email.into()),
+            plan_label: Some("ChatGPT Plus".into()),
+            active,
+            usage_windows: vec![roboco_proto::AgentUsageWindow {
+                label: "Session".into(),
+                used_fraction: 0.4,
+                resets_at: None,
+            }],
+            usage_fetched_at: None,
+            usage_error: None,
+            display_name: None,
+            organization: None,
+            auth_kind: None,
+            switchable,
+            saved_at: None,
+            provider: Some("openai".into()),
+        };
+        window
+            .update(cx, |page, _, cx| {
+                page.snapshot = Loadable::Ready(AgentAccountsSnapshot {
+                    accounts: vec![
+                        row("a", "a@example.com", true, true),
+                        row("b", "b@example.com", false, true),
+                        AgentAccount {
+                            usage_windows: vec![],
+                            provider: Some("github-copilot".into()),
+                            ..row("c", "GitHub account", true, false)
+                        },
+                    ],
+                    warnings: vec![],
+                });
+                page.login = Some(LoginFlow::Browser {
+                    harness: HarnessId::Opencode,
+                    provider: Some("github-copilot"),
+                    start: AgentLoginStart {
+                        login_id: "login-1".into(),
+                        url: "https://github.com/login/device".into(),
+                        mode: AgentLoginMode::Browser,
+                        callback_port: None,
+                        cli_opens_browser: false,
+                    },
+                    message: Some("Enter the code ABCD-1234 on GitHub.".into()),
+                    error: None,
+                });
+                assert_eq!(
+                    page.login.as_ref().unwrap().title(),
+                    "Sign in to GitHub Copilot for OpenCode"
+                );
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+    }
 
     #[test]
     fn first_load_of_a_visit_forces_the_usage_probe() {
@@ -1592,11 +2053,14 @@ mod tests {
             plan_label: None,
             active,
             usage_windows: vec![],
+            usage_fetched_at: None,
+            usage_error: None,
             display_name: None,
             organization: None,
             auth_kind: None,
             switchable: true,
             saved_at: None,
+            provider: None,
         };
         let snapshot = AgentAccountsSnapshot {
             accounts: vec![
@@ -1615,5 +2079,141 @@ mod tests {
         );
         assert_eq!(provider_accounts(&snapshot, HarnessId::Codex).len(), 1);
         assert!(provider_accounts(&snapshot, HarnessId::Cursor).is_empty());
+    }
+
+    #[test]
+    fn every_provider_with_a_login_offers_one_default_sign_in() {
+        for harness in [
+            HarnessId::ClaudeCode,
+            HarnessId::Codex,
+            HarnessId::Cursor,
+            HarnessId::Grok,
+            HarnessId::Devin,
+        ] {
+            // One login per agent: one add button, no provider param.
+            let options = login_options(harness);
+            assert_eq!(options.len(), 1, "{harness:?}");
+            assert_eq!(options[0].provider, None);
+            assert_eq!(add_option_label(options[0], false), "Add account");
+            assert!(
+                login_copy(harness, None).starts_with("Finish signing in to "),
+                "{harness:?}"
+            );
+            assert!(switches_accounts(harness), "{harness:?} is switchable");
+            assert!(provider_note(harness).is_none());
+        }
+    }
+
+    #[test]
+    fn antigravity_keeps_one_login_with_no_usage_view() {
+        // The engine lists Antigravity rows; the page offers the section's
+        // connect flow, but once connected there is nothing to add, and the
+        // sign-in re-confirms the one login it has.
+        assert!(signs_in(HarnessId::Antigravity));
+        assert!(
+            PROVIDERS
+                .iter()
+                .any(|(h, _, _)| *h == HarnessId::Antigravity)
+        );
+        assert!(keeps_one_login(HarnessId::Antigravity) && !keeps_one_login(HarnessId::Cursor));
+        assert!(!reports_usage(HarnessId::Antigravity) && reports_usage(HarnessId::Codex));
+        assert!(!switches_accounts(HarnessId::Antigravity));
+        assert!(login_copy(HarnessId::Antigravity, None).contains("Google"));
+        assert!(login_copy(HarnessId::Antigravity, None).contains("one login"));
+    }
+
+    #[test]
+    fn per_provider_agents_offer_one_sign_in_per_provider() {
+        let opencode = login_options(HarnessId::Opencode);
+        let labels: Vec<_> = opencode.iter().map(|o| o.label).collect();
+        assert_eq!(labels, ["ChatGPT", "GitHub Copilot"]);
+        assert_eq!(add_option_label(opencode[0], true), "Connect ChatGPT");
+        assert_eq!(
+            add_option_label(opencode[1], false),
+            "Add GitHub Copilot account"
+        );
+        let providers: Vec<_> = login_options(HarnessId::Hermes)
+            .iter()
+            .map(|o| o.provider.unwrap())
+            .collect();
+        assert_eq!(providers, ["openai-codex", "nous"]);
+        for harness in [HarnessId::Opencode, HarnessId::Pi, HarnessId::Hermes] {
+            for option in login_options(harness) {
+                assert!(option.provider.is_some(), "{harness:?} names its provider");
+                assert!(login_copy(harness, option.provider).starts_with("Finish signing in"));
+            }
+        }
+        // Hermes rotates its own pool; roboco never switches it, and says so.
+        assert!(!switches_accounts(HarnessId::Hermes) && switches_accounts(HarnessId::Grok));
+        assert!(provider_note(HarnessId::Hermes).is_some_and(|n| n.contains("hermes auth add")));
+        assert!(provider_note(HarnessId::Grok).is_none());
+    }
+
+    #[test]
+    fn a_switch_only_moves_the_live_login_within_its_provider_group() {
+        let row = |id: &str, harness, provider: Option<&str>, active| AgentAccount {
+            id: id.into(),
+            harness,
+            email: None,
+            plan_label: None,
+            active,
+            usage_windows: vec![],
+            usage_fetched_at: None,
+            usage_error: None,
+            display_name: None,
+            organization: None,
+            auth_kind: None,
+            switchable: true,
+            saved_at: None,
+            provider: provider.map(str::to_string),
+        };
+        let mut snapshot = AgentAccountsSnapshot {
+            accounts: vec![
+                row("gpt-a", HarnessId::Opencode, Some("openai"), true),
+                row("gpt-b", HarnessId::Opencode, Some("openai"), false),
+                row("copilot", HarnessId::Opencode, Some("github-copilot"), true),
+                row("grok-a", HarnessId::Grok, None, true),
+            ],
+            warnings: vec![],
+        };
+        let target = snapshot.accounts[1].clone();
+        mark_switched(&mut snapshot, &target);
+        let live: Vec<&str> = snapshot
+            .accounts
+            .iter()
+            .filter(|a| a.active)
+            .map(|a| a.id.as_str())
+            .collect();
+        assert_eq!(live, ["gpt-b", "copilot", "grok-a"]);
+    }
+
+    #[test]
+    fn login_flow_titles_name_the_provider_when_one_is_signed_in_to() {
+        let per_provider = per_provider_with_harness(HarnessId::Pi, "openai-codex");
+        assert_eq!(per_provider.title(), "Sign in to ChatGPT for Pi");
+        let copilot = per_provider_with_harness(HarnessId::Opencode, "github-copilot");
+        assert_eq!(copilot.title(), "Sign in to GitHub Copilot for OpenCode");
+        let grok = LoginFlow::Starting {
+            harness: HarnessId::Grok,
+            provider: None,
+        };
+        assert_eq!(grok.title(), "Add Grok account");
+    }
+
+    /// A [`LoginFlow::Browser`] with the given harness and provider.
+    fn per_provider_with_harness(harness: HarnessId, provider: &'static str) -> LoginFlow {
+        LoginFlow::Browser {
+            harness,
+            provider: Some(provider),
+            start: AgentLoginStart {
+                login_id: "login-1".into(),
+                url: String::new(),
+                mode: AgentLoginMode::Browser,
+                callback_port: None,
+                cli_opens_browser: false,
+            },
+            message: None,
+            error: None,
+        }
     }
 }

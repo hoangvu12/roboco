@@ -315,6 +315,43 @@ describe("file_editors_are_distinct_surface_tabs_with_stable_titles", () => {
   });
 });
 
+describe("chat_file_links_carry_their_line (d1010657 add_file_surface_at)", () => {
+  it("a located open records a pending line navigation for the tab it lands on", () => {
+    const { store } = fresh();
+    // A fresh open mints the tab and the pending navigation targets it.
+    store.addFileSurface("chat-1", "src/lib.rs", "chat-1", { line: 42, column: 7 });
+    const pane = store.stateFor("chat-1");
+    const tab = pane.tabs[0] as { kind: "file"; id: string };
+    expect(resolvedActive(pane)).toEqual(tab);
+    expect(store.pendingFileLine()).toEqual({ surfaceId: tab.id, line: 42, column: 7, seq: 1 });
+
+    // The consuming surface clears it.
+    store.clearFileLine();
+    expect(store.pendingFileLine()).toBeNull();
+
+    // A located re-open of the SAME path re-targets the existing tab —
+    // no duplicate tab, and the navigation bumps its seq so a repeat jump
+    // to the same line re-runs.
+    store.addFileSurface("chat-1", "src/lib.rs", "chat-1", { line: 42, column: null });
+    expect(store.stateFor("chat-1").tabs).toHaveLength(1);
+    expect(store.pendingFileLine()).toEqual({ surfaceId: tab.id, line: 42, column: null, seq: 2 });
+
+    // A plain (lineless) open never records a navigation.
+    store.clearFileLine();
+    store.addFileSurface("chat-1", "src/lib.rs");
+    expect(store.pendingFileLine()).toBeNull();
+  });
+
+  it("closing a tab drops a pending navigation that targets it", () => {
+    const { store } = fresh();
+    store.addFileSurface("chat-1", "src/lib.rs", "chat-1", { line: 10, column: null });
+    const tab = store.stateFor("chat-1").tabs[0] as { kind: "file"; id: string };
+    expect(store.pendingFileLine()?.surfaceId).toBe(tab.id);
+    store.closeSurface("chat-1", tab);
+    expect(store.pendingFileLine()).toBeNull();
+  });
+});
+
 describe("surface keys and value equality", () => {
   it("compares surfaces by kind + id", () => {
     expect(surfaceKey({ kind: "picker" })).toBe("picker");

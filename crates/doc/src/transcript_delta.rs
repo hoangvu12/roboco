@@ -361,6 +361,7 @@ mod tests {
             device_id: "dev".into(),
             status: None,
             continuation_of: None,
+            duration_ms: None,
         }
     }
 
@@ -544,6 +545,7 @@ mod context_update_tests {
             device_id: "host".into(),
             status: Some(crate::MessageStatus::Streaming),
             continuation_of: None,
+            duration_ms: None,
         };
         let baseline = TranscriptBaseline::capture(&[entry.clone()]);
         assert!(baseline.covers(&entry));

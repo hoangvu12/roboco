@@ -9,14 +9,8 @@ import { Icon } from "@roboco/icons";
 import { PickerCard } from "../components/ui/PickerCard";
 import { MenuHeading, MenuRow } from "../components/ui/MenuRows";
 import { Dialog, BtnPrimary } from "../components/ui/Dialog";
-import {
-  RbSelect,
-  RbSelectItem,
-  RbSelectPopup,
-  RbSelectPortal,
-  RbSelectPositioner,
-  RbSelectTrigger,
-} from "../components/base/select";
+import { RbSelect, RbSelectItem, RbSelectPopup, RbSelectPortal, RbSelectPositioner, RbSelectTrigger } from "../components/base/select";
+import { RbSwitch } from "../components/base/switch";
 import { PalettePreview, ThemeMiniature, ThemeModePreview } from "../components/theme-preview";
 import { CompactAction, CompactActionDanger, MetaLine, RowTile } from "../components/settings-widgets";
 import { appearanceStore, useAppearance, useSystemAppearance } from "../state/appearance";
@@ -256,7 +250,7 @@ export function AppearanceSettingsPage() {
             <RowTile icon="fileImage" />
           )}
           <div className="settings-row-main">
-            <span className="settings-row-title">New thread composer background</span>
+            <span className="settings-row-title">New thread background</span>
             <MetaLine fragments={backgroundMeta} />
           </div>
           <div className="settings-row-actions">
@@ -323,7 +317,6 @@ export function AppearanceSettingsPage() {
           <RowTile icon="folderWithFiles" />
           <div className="settings-row-main">
             <span className="settings-row-title">Theme library</span>
-            <MetaLine fragments={["Import custom themes."]} />
           </div>
           <div className="settings-row-actions">
             <BtnPrimary onClick={() => setImportState({ fileName: null, compilation: null, selected: new Set(), detailsVariant: null, error: null })}>
@@ -331,7 +324,7 @@ export function AppearanceSettingsPage() {
             </BtnPrimary>
           </div>
         </div>
-        {libraryEntries.length > 0 && <div className="library-group-header">IMPORTED</div>}
+        {libraryEntries.length > 0 && <div className="library-group-header">Imported</div>}
         {libraryEntries.map((entry) => (
           <LibraryEntryRow
             key={entry.id}
@@ -392,7 +385,6 @@ function ThemeSelectorRow(props: {
       <RowTile icon="tuning" />
       <div className="settings-row-main">
         <span className="settings-row-title">{props.label}</span>
-        <MetaLine fragments={["Used whenever this appearance is active."]} />
       </div>
       <PickerCard
         open={props.open}
@@ -489,9 +481,7 @@ function InterfaceFontBlock(props: {
       <div className="settings-font-row">
         <div className="settings-font-copy">
           <span className="settings-field-label">Interface font</span>
-          <p className="settings-font-description">
-            Menus, sidebars, and conversation text.
-          </p>
+          <p className="settings-font-description">Menus and conversations</p>
         </div>
         <div className="settings-font-controls">
           <FontFamilySelect
@@ -544,9 +534,7 @@ function MonoFontBlock(props: {
             {terminal ? "Terminal font" : "Code & diff font"}
           </span>
           <p className="settings-font-description">
-            {terminal
-              ? "Terminal panes and shell output. Fixed-width families only."
-              : "Code blocks, diffs, and workspace file editors."}
+            {terminal ? "Terminal output · monospace only" : "Code, diffs, and files"}
           </p>
         </div>
         <div className="settings-font-controls">
@@ -706,7 +694,7 @@ function ConversationWidthBlock(props: {
         <div className="settings-font-copy">
           <span className="settings-field-label">Conversation width</span>
           <p className="settings-font-description">
-            Maximum width of messages. Adapts to smaller windows.
+            Maximum width for messages and the composer.
           </p>
         </div>
         <div

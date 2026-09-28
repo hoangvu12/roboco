@@ -61,6 +61,7 @@ import { availableQueuePrimaryAction } from "../lib/queue-row-logic";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
+import { canvasTerminalKey } from "../terminal/session";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
 
@@ -304,6 +305,26 @@ export function ConversationPage() {
   // key `""` (the desktop's `current_key` for the new-thread canvas), so
   // the canvas draft survives every round trip.
   const target = useNewThreadTarget();
+  // The terminal drawer's panel session key (`panel_session_key`): the
+  // chat's id, or the per-space `space-canvas:{spaceId}` canvas key — the
+  // canvas drawer, its tabs, and its open flag belong to the project, so
+  // two projects never share one drawer and a chat's drawer never leaks
+  // onto the canvas (the key embeds the SCOPED space id; the terminal
+  // controller decodes it back to the engine's raw id on the wire).
+  const terminalSessionKey = hasSelection
+    ? chatId
+    : canvasTerminalKey(target.projectId);
+  // Entering the new-chat canvas always lands with the drawer hidden (the
+  // appshot exception, shell.rs): a previously opened canvas drawer must
+  // not pop open on a fresh canvas, and the source chat's flag stays put —
+  // returning restores it.
+  useEffect(() => {
+    if (!hasSelection) {
+      drawerTerminalStore.hideDrawerEntry(canvasTerminalKey(target.projectId));
+    }
+    // Entry effect: only the chat↔canvas flip, not every target refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasSelection]);
   const stubChat = useMemo<Chat>(
     () => ({
       id: chatId,
@@ -327,12 +348,19 @@ export function ConversationPage() {
 
   // The markdown host hooks (transcript.rs:5341-5349 `workspace_root` +
   // `LinkOutcome::Internal`): the chat's cwd resolves agent-authored file
-  // links, and an internal click opens the file's right-pane tab.
+  // links, and an internal click opens the file's right-pane tab — carrying
+  // the link's line/column so the viewer jumps to the referenced line
+  // (d1010657's `add_file_surface_at`).
   const markdownSurface = useMemo<MarkdownSurface>(
     () => ({
       workspaceRoot: cwd,
-      openWorkspaceFile: (path) => {
-        rightPaneStore.addFileSurface(chatId, path);
+      openWorkspaceFile: (path, line, column) => {
+        rightPaneStore.addFileSurface(
+          chatId,
+          path,
+          chatId,
+          line !== null ? { line, column } : null,
+        );
         if (!rightPaneStore.stateFor(chatId).open) {
           rightPaneStore.toggle(chatId);
         }
@@ -1353,13 +1381,18 @@ export function ConversationPage() {
                   ) : null
                 }
                 footerSlot={
-                  <ComposerFooter chat={effectiveChat} crSummary={crSummary} contextUsage={contextUsage} />
+                  <ComposerFooter
+                    chat={effectiveChat}
+                    crSummary={crSummary}
+                    contextUsage={contextUsage}
+                    harness={chat?.config?.harness ?? null}
+                  />
                 }
               />
               {hasSelection && <JumpPillAnchor state={jumpState} />}
             </div>
           )}
-          <TerminalDock store={drawerTerminalStore} chatId={chatId} />
+          <TerminalDock store={drawerTerminalStore} chatId={terminalSessionKey} />
         </div>
       </div>
     </div>

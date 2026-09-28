@@ -100,6 +100,7 @@ describe("page copy (shortcuts.rs:407-464)", () => {
       "browserReload",
       "toggleSidebar",
       "toggleChanges",
+      "toggleFiles",
       "toggleTerminal",
       "newSession",
       "openModelPicker",
@@ -113,6 +114,9 @@ describe("page copy (shortcuts.rs:407-464)", () => {
     }
     expect(shortcutDescription("openModelPicker")).toBe(
       "Open the model picker for the current session.",
+    );
+    expect(shortcutDescription("toggleFiles")).toBe(
+      "Show or hide the files panel for the current session.",
     );
     expect(shortcutDescription({ jumpSession: 3 })).toBe("Open the session at this place in the sidebar list.");
   });

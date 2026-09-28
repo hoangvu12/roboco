@@ -49,6 +49,15 @@ export const LIST_DRIVES = "ListDrives";
 export const PREPARE_SPACE_PATH = "PrepareSpacePath";
 /** Harness catalog for the pickers (one row per harness). */
 export const LIST_HARNESSES = "ListHarnesses";
+/** Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES
+ *  (engine-local: the client picks the paired engine's connection; the
+ *  engine owns the install and never forwards it). Replies with the
+ *  device's fresh `ListHarnesses` catalog. */
+export const INSTALL_HARNESS = "InstallHarness";
+/** The explicit install flow's cancel, addressed to the engine the install
+ *  went to (engine-local routing): the engine owns the install, guards
+ *  against duplicates, and never forwards. Params match `InstallHarness`. */
+export const CANCEL_INSTALL = "CancelInstall";
 /** Settings → Agents: flip one harness's enablement; the reply is the
  *  device's fresh `ListHarnesses` catalog (a raced toggle self-corrects). */
 export const SET_HARNESS_ENABLED = "SetHarnessEnabled";
@@ -59,9 +68,13 @@ export const SET_TITLE_SETTINGS = "SetTitleSettings";
 /** Model catalog for the picked harness (filter input drives refetch on focus). */
 export const LIST_MODELS = "ListModels";
 /** The composer's `/` discovery (crates/rpc/src/lib.rs:42): harness-advertised
- *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Cached
- *  once per harness per composer lifetime, filtered locally per keystroke. */
+ *  slash commands; `{harness, targetDeviceId?}` → `SlashCommand[]`. Catalogs
+ *  re-probe on each fresh open (warm caches show their rows meanwhile). */
 export const LIST_COMMANDS = "ListCommands";
+/** The composer's `$` skill discovery (crates/rpc/src/lib.rs:44):
+ *  `{harness, chatId? | spaceId?, path?}` → `Skill[] | null` — `null` when
+ *  the provider does not advertise skills at all. */
+export const LIST_SKILLS = "ListSkills";
 /** The composer's `@` file-mention search (crates/rpc/src/lib.rs:131):
  *  `{query, chatId? | spaceId?, path?, targetDeviceId?}` → `FileSearchMatch[]`.
  *  Debounced 80ms client-side; one retry after 250ms on transport failure. */
@@ -147,6 +160,12 @@ export const WATCH_SIDEBAR_STATE = "WatchSidebarState";
 export const WATCH_WORKSPACE_GIT_STATUS = "WatchWorkspaceGitStatus";
 /** One-shot scoped capture (`mode` = workingTree | branch | turn). */
 export const GET_CHECKOUT_DIFF = "GetCheckoutDiff";
+/**
+ * Permanently restore one chat-owned checkout to its current HEAD and
+ * remove only its untracked, non-ignored paths. Destructive; the engine
+ * re-verifies the confirmed snapshot (`expectedChecksum`) first.
+ */
+export const DISCARD_WORKING_TREE = "DiscardWorkingTree";
 /** Full text of one side of a file in a diff (used for non-truncated text view). */
 export const GET_CHECKOUT_FILE_DIFF_TEXT = "GetCheckoutFileDiffText";
 /** Branches for a checkout (one-shot). Default branch first. */

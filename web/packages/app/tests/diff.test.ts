@@ -7,6 +7,7 @@ import {
   cleanMessage,
   defaultBaseRef,
   diffPhase,
+  discardWorkingTreeTarget,
   DIFF_SCOPE_CHIPS,
   fileCounts,
   fileNotices,
@@ -217,6 +218,55 @@ describe("phases", () => {
     expect(diffPhase({ patch: "diff --git a/x b/x\n", files: [] })).toBe("list");
     // Engine may report files without patch text (truncation edge).
     expect(diffPhase({ patch: "", files: [{ path: "x" }] })).toBe("list");
+  });
+});
+
+describe("discardWorkingTreeTarget (ticket 12, upstream a456eb09)", () => {
+  const diff = (fields: Partial<{
+    truncated: boolean;
+    files: readonly unknown[];
+    patch: string;
+    checkoutId: string;
+    checksum: string;
+  }> = {}): {
+    truncated: boolean;
+    files: readonly unknown[];
+    patch: string;
+    checkoutId: string;
+    checksum: string;
+  } => ({
+    truncated: false,
+    files: [{ path: "a" }, { path: "b" }],
+    patch: "diff --git a/a b/a\n",
+    checkoutId: "co-1",
+    checksum: "sum-1",
+    ...fields,
+  });
+  const chat = { id: "chat-1" };
+
+  it("arms only for a full non-empty working-tree snapshot with a chat", () => {
+    expect(discardWorkingTreeTarget("workingTree", diff(), chat)).toEqual({
+      chatId: "chat-1",
+      checkoutId: "co-1",
+      checksum: "sum-1",
+      fileCount: 2,
+    });
+  });
+
+  it("disarms for other scopes, no diff, or no chat", () => {
+    expect(discardWorkingTreeTarget("branch", diff(), chat)).toBeNull();
+    expect(discardWorkingTreeTarget("turn", diff(), chat)).toBeNull();
+    expect(discardWorkingTreeTarget("workingTree", null, chat)).toBeNull();
+    expect(discardWorkingTreeTarget("workingTree", diff(), null)).toBeNull();
+  });
+
+  it("disarms for truncated and for empty snapshots", () => {
+    expect(discardWorkingTreeTarget("workingTree", diff({ truncated: true }), chat)).toBeNull();
+    expect(discardWorkingTreeTarget("workingTree", diff({ files: [], patch: "" }), chat)).toBeNull();
+    expect(discardWorkingTreeTarget("workingTree", diff({ files: [], patch: "   \n" }), chat)).toBeNull();
+    // Files without patch text still count as discardable (engine may
+    // report files alone).
+    expect(discardWorkingTreeTarget("workingTree", diff({ files: [{ path: "x" }], patch: "" }), chat)).not.toBeNull();
   });
 });
 

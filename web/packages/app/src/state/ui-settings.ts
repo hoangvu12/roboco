@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from "react";
 import type { AccentPresetId } from "@roboco/theme";
+import type { HarnessId } from "@roboco/proto";
 import type { StorageLike } from "../lib/engine-store";
+import {
+  SETTINGS_SECTION_DEFAULT,
+  isSettingsSectionSlug,
+  type SettingsSectionSlug,
+} from "./settings-section";
 
 /**
  * Every device-local preference, in one store — the web peer of the desktop's
@@ -146,6 +152,7 @@ export interface KeymapConfig {
   readonly browserReload: string;
   readonly toggleSidebar: string;
   readonly toggleChanges: string;
+  readonly toggleFiles: string;
   readonly toggleTerminal: string;
   readonly newSession: string;
   readonly newProject: string;
@@ -199,8 +206,57 @@ export interface SidebarSection {
   readonly collapsed: boolean;
 }
 
+/** Trigger preferences belong to each harness, not the currently selected
+ *  model (`SkillCompletionSettings`, settings.rs:676). */
+export interface SkillCompletionPreferences {
+  readonly dollar: boolean;
+  readonly separateFromSlash: boolean;
+}
+
+/** `SkillCompletionSettings::for_harness` (settings.rs:682): `$` triggers
+ *  only where the provider speaks it natively (Codex); separated slash menus
+ *  likewise. */
+export function defaultSkillCompletion(harness: HarnessId): SkillCompletionPreferences {
+  const nativeDollar = harness === "codex";
+  return { dollar: nativeDollar, separateFromSlash: nativeDollar };
+}
+
+/** `UiSettings::skill_completion` (settings.rs:1425): the per-harness
+ *  override wins; the legacy global `skillsInSlashMenu` opt-in only fills
+ *  the default (it un-separates the menu, never forces a separation). */
+export function skillCompletionFor(
+  settings: UiSettings,
+  harness: HarnessId,
+): SkillCompletionPreferences {
+  const override = settings.skillCompletionByHarness[harness];
+  if (override !== undefined) {
+    return override;
+  }
+  const defaults = defaultSkillCompletion(harness);
+  return settings.skillsInSlashMenu
+    ? { ...defaults, separateFromSlash: false }
+    : defaults;
+}
+
+/** `SKILL_COMPLETION_HARNESSES` (settings.rs:692): the settings-page order
+ *  — every harness that can appear in the completion preferences. */
+export const SKILL_COMPLETION_HARNESSES: readonly (readonly [HarnessId, string])[] = [
+  ["antigravity", "Antigravity"],
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"],
+  ["cursor", "Cursor"],
+  ["devin", "Devin"],
+  ["grok", "Grok"],
+  ["hermes", "Hermes"],
+  ["pi", "Pi"],
+  ["opencode", "OpenCode"],
+];
+
 export interface UiSettings {
   readonly composerSendBehavior: ComposerSendBehavior;
+  /** Legacy global opt-in; per-harness preferences take precedence. */
+  readonly skillsInSlashMenu: boolean;
+  readonly skillCompletionByHarness: Readonly<Record<string, SkillCompletionPreferences>>;
   readonly sidebarWidth: number;
   readonly sidebarCollapsed: boolean;
   /** Legacy on the desktop: persisted, never read. Kept for round-tripping. */
@@ -252,6 +308,12 @@ export interface UiSettings {
   readonly keymap: KeymapConfig;
   readonly escapeStopsActiveAgent: boolean;
   /**
+   * The Settings section last viewed (`settingsSection`): the `/settings`
+   * index reopens it; visiting a section becomes the remembered one. Unknown
+   * or missing values heal to the web default (see `settings-section.ts`).
+   */
+  readonly settingsSection: SettingsSectionSlug;
+  /**
    * The update version the user dismissed from the sidebar's update strip
    * (`update_dismissed` on the desktop). Null while nothing is dismissed.
    */
@@ -272,6 +334,13 @@ export interface UiSettings {
    * the composer's width is independent. Snapped to the 16px ladder.
    */
   readonly transcriptWidth: number;
+  /**
+   * Compact transcript mode (`transcript_compact_mode`, default off): every
+   * working step of a turn folds into one collapsed work accordion with the
+   * reply text left visible, and settled turns carry "Worked for Xm Ys"
+   * from the doc's measured `durationMs`.
+   */
+  readonly transcriptCompactMode: boolean;
   readonly filesAutosaveEnabled: boolean;
   readonly filesAutosaveDelayMs: number;
   readonly filesWordWrap: boolean;
@@ -326,6 +395,7 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
     browserReload: "mod-shift-r",
     toggleSidebar: "mod-b",
     toggleChanges: "mod-r",
+    toggleFiles: "mod-e",
     toggleTerminal: "mod-j",
     newSession: "mod-n",
     newProject: "mod-shift-n",
@@ -341,6 +411,8 @@ export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
 export function defaultUiSettings(): UiSettings {
   return {
     composerSendBehavior: "enter",
+    skillsInSlashMenu: false,
+    skillCompletionByHarness: {},
     sidebarWidth: SIDEBAR_DEFAULT,
     sidebarCollapsed: false,
     sidebarGrouped: false,
@@ -368,6 +440,7 @@ export function defaultUiSettings(): UiSettings {
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
     keymap: defaultKeymap(),
     escapeStopsActiveAgent: false,
+    settingsSection: SETTINGS_SECTION_DEFAULT,
     dismissedUpdateVersion: null,
     appearance: "system",
     gitHistoryColumns: { author: true, date: true, sha: true },
@@ -381,6 +454,7 @@ export function defaultUiSettings(): UiSettings {
     diffWrap: false,
     codeFencesFitContent: false,
     transcriptWidth: TRANSCRIPT_WIDTH_DEFAULT,
+    transcriptCompactMode: false,
     filesAutosaveEnabled: false,
     filesAutosaveDelayMs: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
     filesWordWrap: false,
@@ -569,6 +643,19 @@ function healStringMap(value: unknown): Record<string, string> {
   return out;
 }
 
+/** `skill_completion_by_harness`: keep only harness keys whose entry carries
+ *  both booleans; anything else heals to the per-harness defaults. */
+function healSkillCompletion(value: unknown): Record<string, SkillCompletionPreferences> {
+  const out: Record<string, SkillCompletionPreferences> = {};
+  for (const [harness, entry] of Object.entries(record(value))) {
+    const raw = record(entry);
+    if (typeof raw.dollar === "boolean" && typeof raw.separateFromSlash === "boolean") {
+      out[harness] = { dollar: raw.dollar, separateFromSlash: raw.separateFromSlash };
+    }
+  }
+  return out;
+}
+
 function healUiFontFamily(value: unknown, fallback: UiFontFamily = "geist"): UiFontFamily {
   if (value === "geist" || value === "geistMono" || value === "system") {
     return value;
@@ -607,6 +694,25 @@ function healBackground(value: unknown): NewThreadComposerBackground | null {
 export function healKeymap(value: unknown): KeymapConfig {
   const raw = record(value);
   const defaults = defaultKeymap();
+  // A shortcut added after the file was written takes its default only when
+  // that combo is free: a user who had already bound the same chord elsewhere
+  // keeps their binding and the new row arrives unbound rather than
+  // double-bound (the desktop's load-time `toggleFiles` upgrade, b9b35665).
+  for (const field of ["toggleFiles"] as const) {
+    if (raw[field] !== undefined) {
+      continue;
+    }
+    const primary = isMacPlatform() ? "cmd" : "ctrl";
+    const defaultCombo = defaults[field].split("-").map((part) => (part === "mod" ? primary : part)).join("-");
+    const taken = Object.values(raw).some(
+      (existing) =>
+        typeof existing === "string" &&
+        existing.split("-").map((part) => (part === "mod" ? primary : part)).join("-") === defaultCombo,
+    );
+    if (taken) {
+      raw[field] = "";
+    }
+  }
   const storedJumps = Array.isArray(raw.jumpSession) ? raw.jumpSession : [];
   const jumpSession = JUMP_DEFAULTS.map((fallback, slot) => {
     const stored: unknown = storedJumps[slot];
@@ -623,6 +729,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     browserReload: combo("browserReload"),
     toggleSidebar: combo("toggleSidebar"),
     toggleChanges: combo("toggleChanges"),
+    toggleFiles: combo("toggleFiles"),
     toggleTerminal: combo("toggleTerminal"),
     newSession: combo("newSession"),
     newProject: combo("newProject"),
@@ -652,6 +759,8 @@ export function healUiSettings(value: unknown): UiSettings {
   );
   return {
     composerSendBehavior: oneOf(raw.composerSendBehavior, ["enter", "modEnter"], "enter"),
+    skillsInSlashMenu: bool(raw.skillsInSlashMenu, false),
+    skillCompletionByHarness: healSkillCompletion(raw.skillCompletionByHarness),
     sidebarWidth: clampOr(raw.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT),
     sidebarCollapsed: bool(raw.sidebarCollapsed, false),
     sidebarGrouped: bool(raw.sidebarGrouped, false),
@@ -693,6 +802,9 @@ export function healUiSettings(value: unknown): UiSettings {
     ),
     keymap: healKeymap(raw.keymap),
     escapeStopsActiveAgent: bool(raw.escapeStopsActiveAgent, false),
+    settingsSection: isSettingsSectionSlug(raw.settingsSection)
+      ? raw.settingsSection
+      : SETTINGS_SECTION_DEFAULT,
     dismissedUpdateVersion: nullableString(raw.dismissedUpdateVersion),
     appearance: oneOf(raw.appearance, ["system", "light", "dark"], "system"),
     gitHistoryColumns: {
@@ -717,6 +829,7 @@ export function healUiSettings(value: unknown): UiSettings {
     diffWrap: bool(raw.diffWrap, false),
     codeFencesFitContent: bool(raw.codeFencesFitContent, false),
     transcriptWidth: normalizeTranscriptWidth(raw.transcriptWidth),
+    transcriptCompactMode: bool(raw.transcriptCompactMode, false),
     filesAutosaveEnabled: bool(raw.filesAutosaveEnabled, false),
     filesAutosaveDelayMs: clampOr(
       raw.filesAutosaveDelayMs,

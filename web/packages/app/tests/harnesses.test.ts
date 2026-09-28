@@ -2,16 +2,24 @@ import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
 import type { AgentLoginPoll, HarnessDescriptor, Model, TitleSettings } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
+import { SKILL_COMPLETION_HARNESSES } from "../src/state/ui-settings";
 import {
+  activeCompletionAgents,
   blurb,
+  cancelInstall,
   cliName,
   descriptorEnabled,
   getTitleSettings,
+  installHarness,
+  installHint,
+  installLabel,
   listHarnesses,
   listModels,
+  manualCommand,
   nextSignInPhase,
   notInstalledHint,
   offeredHarnesses,
+  offersInstall,
   setHarnessEnabled,
   setTitleSettings,
   signInFailureLabel,
@@ -30,6 +38,7 @@ function descriptor(fields: Partial<HarnessDescriptor>): HarnessDescriptor {
     steeringMode: "step-boundary",
     reasoningLevels: [],
     installed: true,
+    canInstall: false,
     ...fields,
   };
 }
@@ -79,6 +88,35 @@ describe("visible/offered harnesses (pickers.rs:4031-4069)", () => {
   });
 });
 
+describe("activeCompletionAgents (settings/completion.rs, upstream 13cb6d7c)", () => {
+  it("lists only installed-and-enabled agents in settings order", () => {
+    // The desktop's `completion_only_lists_installed_enabled_agents_in_
+    // settings_order` fixture: enabled-with-null (an engine predating the
+    // flag) still counts as offered for every non-opt-in harness.
+    const list = [
+      descriptor({ id: "opencode", name: "OpenCode", enabled: true }),
+      descriptor({ id: "cursor", name: "Cursor", enabled: false }),
+      descriptor({ id: "devin", name: "Devin", enabled: true, installed: false }),
+      descriptor({ id: "codex", name: "Codex", enabled: true }),
+      descriptor({ id: "claude-code", name: "Claude Code", enabled: null }),
+      descriptor({ id: "grok", name: "Grok", enabled: null, installed: false }),
+      descriptor({ id: "mock", name: "Mock", enabled: true }),
+    ];
+    expect(activeCompletionAgents(list, SKILL_COMPLETION_HARNESSES)).toEqual([
+      "claude-code",
+      "codex",
+      "opencode",
+    ]);
+    expect(activeCompletionAgents([], SKILL_COMPLETION_HARNESSES)).toEqual([]);
+    expect(
+      activeCompletionAgents(
+        [descriptor({ id: "codex", name: "Codex", enabled: false })],
+        SKILL_COMPLETION_HARNESSES,
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe("page copy tables (harnesses.rs:41-68)", () => {
   it("blurbs and CLI names cover every harness", () => {
     for (const id of [
@@ -104,6 +142,80 @@ describe("page copy tables (harnesses.rs:41-68)", () => {
   it("notInstalledHint swaps wording for the stale-catalog row", () => {
     expect(notInstalledHint("codex", false)).toBe("Install the codex CLI to enable");
     expect(notInstalledHint("codex", true)).toBe("codex CLI not installed — turn it off or install it");
+  });
+
+  it("installHint keeps the state copy and appends the manual command", () => {
+    // When the engine can't install, the audited manual command follows the
+    // state copy instead of replacing it (harnesses.rs install_hint).
+    expect(installHint("codex", false, false)).toBe(
+      "Install the codex CLI to enable. Install with `npm install -g @openai/codex`",
+    );
+    expect(installHint("codex", true, false)).toBe(
+      "codex CLI not installed — turn it off or install it. Install with `npm install -g @openai/codex`",
+    );
+    // Can install: the state copy alone — the Install button is the route.
+    expect(installHint("codex", false, true)).toBe("Install the codex CLI to enable");
+    expect(installHint("codex", true, true)).toBe(
+      "codex CLI not installed — turn it off or install it",
+    );
+    // Antigravity keeps its own copy either way (archive install, env override).
+    expect(installHint("antigravity", false, true)).toBe("Install Antigravity to enable");
+    expect(installHint("antigravity", false, false)).toBe(
+      "Set ANTIGRAVITY_ACP_EXECUTABLE to enable Antigravity",
+    );
+    // Mock has no manual command (install.rs manual_command).
+    expect(installHint("mock", false, false)).toBe("Install the mock CLI to enable");
+  });
+
+  it("manualCommand mirrors install.rs (OpenCode 2.x from @opencode/cli)", () => {
+    for (const id of [
+      "claude-code",
+      "codex",
+      "cursor",
+      "devin",
+      "grok",
+      "hermes",
+      "pi",
+      "opencode",
+    ] as const) {
+      expect(manualCommand(id)).not.toBeNull();
+    }
+    expect(manualCommand("antigravity")).toBeNull();
+    expect(manualCommand("mock")).toBeNull();
+    expect(manualCommand("opencode")).toBe("npm install -g @opencode/cli");
+    expect(manualCommand("pi")).toBe("npm install -g --ignore-scripts @earendil-works/pi-coding-agent");
+  });
+
+  it("installLabel names the agent being installed", () => {
+    expect(installLabel("Claude Code")).toBe("Installing Claude Code…");
+    expect(installLabel("Pi")).toBe("Installing Pi…");
+  });
+
+  it("offersInstall covers every real uninstalled harness that can install", () => {
+    // offers_install (harnesses.rs): every non-Mock harness offers Install
+    // when uninstalled and the target device's prerequisites resolve.
+    for (const id of [
+      "claude-code",
+      "codex",
+      "cursor",
+      "devin",
+      "grok",
+      "hermes",
+      "pi",
+      "opencode",
+      "antigravity",
+    ] as const) {
+      for (const installed of [false, true]) {
+        for (const canInstall of [false, true]) {
+          expect(offersInstall(id, installed, canInstall)).toBe(!installed && canInstall);
+        }
+      }
+    }
+    for (const installed of [false, true]) {
+      for (const canInstall of [false, true]) {
+        expect(offersInstall("mock", installed, canInstall)).toBe(false);
+      }
+    }
   });
 
   it("supportsTitles matches harness lib.rs (codex, claude-code, mock)", () => {
@@ -217,5 +329,27 @@ describe("harnesses RPC wrappers", () => {
     const { client, calls } = fakeClient({ ListModels: MODELS });
     expect(await listModels(client, "claude-code", "dev-2")).toEqual(MODELS);
     expect(calls).toEqual([{ method: "ListModels", params: { harness: "claude-code", targetDeviceId: "dev-2" } }]);
+  });
+
+  it("installs through InstallHarness on the selected engine, reply is the fresh catalog", async () => {
+    const { client, calls } = fakeClient({ InstallHarness: CATALOG });
+    expect(await installHarness(client, "codex")).toEqual(CATALOG);
+    expect(await installHarness(client, "pi", "dev-2")).toEqual(CATALOG);
+    expect(calls).toEqual([
+      { method: "InstallHarness", params: { harness: "codex" } },
+      { method: "InstallHarness", params: { harness: "pi", targetDeviceId: "dev-2" } },
+    ]);
+    expect(methods.INSTALL_HARNESS).toBe("InstallHarness");
+  });
+
+  it("cancels through CancelInstall with the install's own params", async () => {
+    const { client, calls } = fakeClient({ CancelInstall: {} });
+    await cancelInstall(client, "codex");
+    await cancelInstall(client, "pi", "dev-2");
+    expect(calls).toEqual([
+      { method: "CancelInstall", params: { harness: "codex" } },
+      { method: "CancelInstall", params: { harness: "pi", targetDeviceId: "dev-2" } },
+    ]);
+    expect(methods.CANCEL_INSTALL).toBe("CancelInstall");
   });
 });

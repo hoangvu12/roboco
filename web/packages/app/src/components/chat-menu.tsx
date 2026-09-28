@@ -10,6 +10,7 @@ import { sidebarStore, useSidebar } from "../state/sidebar";
 import { useFleetRegistry } from "../state/fleet";
 import { sidebarPinProfileKey } from "../lib/sidebar-pins";
 import { reviewCommentStore } from "../state/review-comments";
+import { chatCopyPath } from "../lib/chat-copy-path";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { singleLine } from "../lib/view";
 import {
@@ -161,6 +162,9 @@ function ChatMenuPages({
     typeof chat.harnessSessionId === "string" && chat.harnessSessionId.trim().length > 0
       ? chat.harnessSessionId
       : null;
+  // `chat_copy_path`: the host-spelled working directory, when the chat has
+  // an absolute one (upstream cfe91887 — the Copy page's first row).
+  const copyPath = chatCopyPath(chat);
 
   async function copyToClipboard(text: string): Promise<void> {
     try {
@@ -242,6 +246,12 @@ function ChatMenuPages({
         <span className="menu-row-label">Back</span>
       </MenuRow>
       <MenuSeparator />
+      {copyPath !== null && (
+        <MenuRow fadeKey="path" onClick={() => void copyText(copyPath, "Path copied")}>
+          <Icon name="copy" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">Path</span>
+        </MenuRow>
+      )}
       <MenuRow fadeKey="roboco-link" onClick={() => void copyConversationLink()}>
         <Icon name="copy" size={16} className="chat-menu-row-icon" />
         <span className="menu-row-label">Roboco conversation link</span>

@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactElement, ReactNode } from "react";
+import type { ReactElement } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import type { HarnessDescriptor, HarnessId, Model, TitleSettings } from "@roboco/proto";
 import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
-import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
 import { useWatchSnapshot } from "../state/hooks";
+import { TitlePickerRow } from "../components/settings-widgets";
 import {
   blurb,
   bumpHarnessCatalog,
+  cancelInstall as cancelInstallRpc,
   descriptorEnabled,
   getTitleSettings,
+  installHint,
+  installHarness,
+  installLabel,
   listHarnesses,
   listModels,
   nextSignInPhase,
-  notInstalledHint,
+  offersInstall,
   setHarnessEnabled,
   setTitleSettings as saveTitleSettings,
   signInFailureLabel,
@@ -81,6 +85,16 @@ export function AgentsSettingsPage() {
   const [signInFailure, setSignInFailure] = useState<SignInFailure | null>(null);
   /** Invalidates the poll loop of a cancelled/superseded sign-in. */
   const signInSeq = useRef(0);
+  /** An explicit install in flight (harnesses.rs `installing`). */
+  const [installing, setInstalling] = useState<HarnessId | null>(null);
+  /** The live `installing` for async guards, plus the reply-invalidation
+   *  counter (a retarget or supersede drops a stale install reply). */
+  const installingRef = useRef<HarnessId | null>(null);
+  const installSeq = useRef(0);
+  const updateInstalling = useCallback((next: HarnessId | null) => {
+    installingRef.current = next;
+    setInstalling(next);
+  }, []);
 
   const devices = (snapshot?.devices.rows ?? [])
     .slice()
@@ -149,11 +163,13 @@ export function AgentsSettingsPage() {
     void load();
   }, [load]);
 
-  // Unmount drops any in-flight sign-in poll loop (the cancel itself is
-  // best-effort and only logged; harnesses.rs drop semantics).
+  // Unmount drops any in-flight sign-in poll loop and install reply (the
+  // cancel itself is best-effort and only logged; harnesses.rs drop
+  // semantics — the engine-side install guard owns the process cleanup).
   useEffect(() => {
     return () => {
       signInSeq.current += 1;
+      installSeq.current += 1;
     };
   }, []);
 
@@ -310,13 +326,72 @@ export function AgentsSettingsPage() {
     }
   }
 
+  /**
+   * An explicit install on the selected engine (harnesses.rs `install`):
+   * one at a time, and the reply — success or failure — only lands if the
+   * page still targets the device the install went to. The fresh catalog
+   * repaints the rows in one round trip, then the composer-catalog bump
+   * re-fetches the pickers' harness list.
+   */
+  function install(harness: HarnessId) {
+    if (client === null || installingRef.current !== null) {
+      return;
+    }
+    setError(null);
+    updateInstalling(harness);
+    const seq = installSeq.current + 1;
+    installSeq.current = seq;
+    void (async () => {
+      try {
+        const fresh = await installHarness(client, harness, target);
+        if (installSeq.current !== seq) {
+          return;
+        }
+        updateInstalling(null);
+        setHarnesses({ kind: "ready", value: fresh });
+        bumpHarnessCatalog(session);
+      } catch (cause) {
+        if (installSeq.current !== seq) {
+          return;
+        }
+        updateInstalling(null);
+        setError(`Installation failed — ${describe(cause)}`);
+      }
+    })();
+  }
+
+  /**
+   * Cancel the running install (harnesses.rs `cancel_install`): addressed to
+   * the same engine the install went to, same params. The install request
+   * itself resolves next — as the cancelled failure the page reports — so
+   * `installing` is not cleared here; only a failed cancellation shows an
+   * error, and only while that install is still the page's in-flight one.
+   */
+  function cancelInstall() {
+    const current = installingRef.current;
+    if (current === null || client === null) {
+      return;
+    }
+    const seq = installSeq.current;
+    void cancelInstallRpc(client, current, target).catch((cause: unknown) => {
+      if (installSeq.current === seq && installingRef.current === current) {
+        setError(`Cancellation failed — ${describe(cause)}`);
+      }
+    });
+  }
+
   function setTargetDevice(next: string | null) {
     if (next === target) {
       return;
     }
-    // A retarget drops any in-flight sign-in (set_target_device cancels).
+    // A retarget drops any in-flight sign-in (set_target_device cancels) and
+    // forgets the install reply's destination (0b48258b: switching devices
+    // does NOT cancel an install the user explicitly requested — it keeps
+    // running on the device it belongs to; the stale reply is just dropped).
     signInSeq.current += 1;
+    installSeq.current += 1;
     setSignIn(null);
+    updateInstalling(null);
     setSignInFailure(null);
     setTarget(next);
     setTitleMenu(null);
@@ -336,8 +411,8 @@ export function AgentsSettingsPage() {
         />
       </div>
       <p className="settings-subtitle">
-        Choose which coding agents the composer offers. The setting is per device — switch devices in the
-        header. Agents whose CLI isn't installed on a device can't be enabled there.
+        Install coding agents and choose which ones the composer offers. Installations and settings apply
+        to the selected device. Downloads start only when you choose Install.
         <SettingsEngineIndicator />
       </p>
 
@@ -369,6 +444,9 @@ export function AgentsSettingsPage() {
             signInFailure={signInFailure}
             onCancelSignIn={cancelSignIn}
             onRetrySignIn={startSignIn}
+            installing={installing}
+            onInstall={install}
+            onCancelInstall={cancelInstall}
           />
         </section>
       )}
@@ -393,6 +471,9 @@ function HarnessRows(props: {
   readonly signInFailure: SignInFailure | null;
   readonly onCancelSignIn: () => void;
   readonly onRetrySignIn: (harness: HarnessId) => void;
+  readonly installing: HarnessId | null;
+  readonly onInstall: (harness: HarnessId) => void;
+  readonly onCancelInstall: () => void;
 }) {
   const descriptors = visibleHarnesses(props.list);
   const enabledCount = descriptors.filter((descriptor) => descriptorEnabled(descriptor)).length;
@@ -401,6 +482,7 @@ function HarnessRows(props: {
       {descriptors.map((descriptor, ix) => {
         const enabled = descriptorEnabled(descriptor);
         const installed = descriptor.installed;
+        const installing = props.installing === descriptor.id;
         const signingIn =
           props.signIn !== null && props.signIn.harness === descriptor.id ? props.signIn : null;
         const signInFailure =
@@ -451,14 +533,41 @@ function HarnessRows(props: {
                     </span>
                   </>
                 )}
+                {installing && (
+                  <>
+                    <span className="settings-meta-dot" aria-hidden="true">·</span>
+                    <span className="harness-install-status">{installLabel(descriptor.name)}</span>
+                  </>
+                )}
                 {!installed && (
                   <>
                     <span className="settings-meta-dot" aria-hidden="true">·</span>
-                    <span className="harness-hint">{notInstalledHint(descriptor.id, enabled)}</span>
+                    <span className="harness-hint">
+                      {installHint(descriptor.id, enabled, descriptor.canInstall)}
+                    </span>
                   </>
                 )}
               </span>
             </div>
+            {installing ? (
+              <button
+                type="button"
+                className="btn btn-ghost harness-cancel-install"
+                onClick={props.onCancelInstall}
+              >
+                Cancel
+              </button>
+            ) : (
+              offersInstall(descriptor.id, descriptor.installed, descriptor.canInstall) && (
+                <button
+                  type="button"
+                  className="btn btn-ghost harness-install"
+                  onClick={() => props.onInstall(descriptor.id)}
+                >
+                  Install
+                </button>
+              )
+            )}
             {signInCancellable && (
               <button
                 type="button"
@@ -609,49 +718,6 @@ function TitleSettingsCard(props: {
         </p>
       )}
     </section>
-  );
-}
-
-/** One picker row (harnesses.rs:286-316) — exported for the mounted test. */
-export function TitlePickerRow(props: {
-  readonly label: string;
-  readonly display: string;
-  readonly interactive: boolean;
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly children: ReactNode;
-}) {
-  // Ticket 18: the choices ride `PickerCard` — the settings-appearance
-  // pattern (the theme variant picker) instead of the old inline
-  // `.title-picker-options` expander. Desktop: the portaled card below the
-  // trigger; phone: the shared bottom sheet (where the old inline expander
-  // stacked full-width rows). `initialFocus: false` keeps focus put, the
-  // shared contract for pickers driven from a settings row.
-  return (
-    <div className={`settings-row title-picker-row ${props.interactive ? "" : "title-picker-inert"}`}>
-      <span className="settings-row-title title-picker-label">{props.label}</span>
-      <PickerCard
-        open={props.open}
-        onOpenChange={props.onOpenChange}
-        placement="anchorBelow"
-        cardClassName="popover-card title-picker-menu"
-        role="menu"
-        ariaLabel={props.label}
-        width={260}
-        initialFocus={false}
-        trigger={
-          <button
-            type="button"
-            className="btn btn-ghost title-picker-trigger"
-            disabled={!props.interactive}
-          >
-            {props.display}
-          </button>
-        }
-      >
-        {props.children}
-      </PickerCard>
-    </div>
   );
 }
 

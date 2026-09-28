@@ -109,7 +109,7 @@ function mountLogin(): { handle: MountedDialog; calls: string[] } {
   act(() => {
     root.render(
       createElement(LoginDialog, {
-        flow: { kind: "paste-code", harness: "claude-code", start, submitting: false, error: null },
+        flow: { kind: "paste-code", harness: "claude-code", provider: null, start, submitting: false, error: null },
         onCancel: () => calls.push("cancel"),
         onSubmitCode: (code: string) => calls.push(`code:${code}`),
       }),
@@ -238,6 +238,44 @@ describe("LoginDialog on the shared ui/Dialog family (ticket 18)", () => {
     expect(sheet!.querySelector(".dialog-card .dialog-card-title")?.textContent).toBe("Add Claude account");
     expect(document.querySelector(".rb-dialog-card")).toBeNull();
     expect(handle.container.contains(sheet!)).toBe(false);
+  });
+
+  it("a per-provider sign-in names its provider in the title and its wait copy", () => {
+    // Ticket 16 — OpenCode's GitHub Copilot device flow: the browser arm
+    // names who is being signed in to (title) and says to enter the code.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        createElement(LoginDialog, {
+          flow: {
+            kind: "browser",
+            harness: "opencode",
+            provider: "github-copilot",
+            start: { ...start, mode: "browser", url: "https://github.com/login/device" },
+            message: "Enter the code ABCD-1234 on GitHub.",
+            error: null,
+          },
+          onCancel: () => {},
+          onSubmitCode: () => {},
+        }),
+      );
+    });
+    mounted.push({
+      container,
+      unmount() {
+        act(() => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    });
+    const card = document.querySelector<HTMLElement>('.rb-dialog-card[aria-label="Sign in to GitHub Copilot for OpenCode"]');
+    expect(card).not.toBeNull();
+    expect(card!.querySelector(".dialog-card .dialog-card-title")?.textContent).toBe("Sign in to GitHub Copilot for OpenCode");
+    expect(card!.querySelector(".dialog-card-body")?.textContent).toContain("enter the code shown below");
+    expect(card!.querySelector(".login-dialog-poll")?.textContent).toContain("Enter the code ABCD-1234");
   });
 });
 

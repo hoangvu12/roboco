@@ -30,8 +30,11 @@ async fn quiet_acp_prompt_stays_working_until_response() {
     let registry = HarnessRegistry::new();
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../harness/tests/fixtures/acp-lifecycle.py");
-    registry.register(Arc::new(AcpHarness::pi().with_executable(fixture)));
-    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Pi).unwrap();
+    // The ACP vehicle for this regression is hermes since the pi-acp path
+    // was retired (ticket 21: pi runs its native RPC driver now, whose
+    // agent_settled wire makes the quiesce watchdog unnecessary for it).
+    registry.register(Arc::new(AcpHarness::hermes().with_executable(fixture)));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Hermes).unwrap();
     let chat = "acp-quiet-regression";
     let handle = core.doc_host.open(chat).unwrap();
     let doc = handle.doc();

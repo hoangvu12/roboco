@@ -30,8 +30,9 @@
 
 import { createContext, useContext, useState, type ComponentProps, type ReactNode } from "react";
 import { Select, type SelectRootChangeEventDetails, type SelectRootProps } from "@base-ui/react/select";
-import { noFlipPositionerProps } from "./positioning";
+import { containedPositionerProps, noFlipPositionerProps } from "./positioning";
 import { useOverlayKeyboardSource } from "./overlay";
+import { useContainedBounds } from "./contained";
 import { drawerOnOpenChange, RbDrawerSheet } from "./responsive-surface";
 import { useIsPhone } from "../../state/media";
 
@@ -118,6 +119,15 @@ export function RbSelectPositioner(
 ) {
   const isPhone = useIsPhone();
   const phone = useContext(RbSelectPhoneContext);
+  // Ticket 24's containment: inside a host that provides a boundary (the
+  // settings dialog), the list is constrained to that boundary and flips to
+  // the roomier side — `popover/contained.rs`'s contract. Outside a host,
+  // the window-clamped never-flip preset stands.
+  const bounds = useContainedBounds();
+  const positionerProps =
+    bounds === null
+      ? noFlipPositionerProps({ side: "bottom", align: "start" })
+      : containedPositionerProps({ side: "bottom", align: "start" }, bounds);
   if (isPhone && phone !== null) {
     const { style, ...rest } = props;
     return (
@@ -126,7 +136,7 @@ export function RbSelectPositioner(
         onOpenChange={drawerOnOpenChange(phone.change)}
       >
         <Select.Positioner
-          {...noFlipPositionerProps({ side: "bottom", align: "start" })}
+          {...positionerProps}
           alignItemWithTrigger={false}
           {...rest}
           style={{ position: "static", top: "auto", right: "auto", bottom: "auto", left: "auto", ...style }}
@@ -136,7 +146,7 @@ export function RbSelectPositioner(
   }
   return (
     <Select.Positioner
-      {...noFlipPositionerProps({ side: "bottom", align: "start" })}
+      {...positionerProps}
       alignItemWithTrigger={false}
       {...props}
     />

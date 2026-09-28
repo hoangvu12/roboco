@@ -249,8 +249,12 @@ a:focus-visible,
   --rb-titlebar-control-gap: 2px;
   --rb-titlebar-edge-inset: 6px;
   /* `PANEL_TOGGLE_SLOTS` (tabs.rs:48): the Files toggle + the pane toggle,
-     two 28px `header_icon_button`s that keep their slots while shut. */
-  --rb-titlebar-toggle-slots: 56px;
+     two 28px `header_icon_button`s plus the 4px `PANEL_TOGGLE_GAP` between
+     them (b9b35665) — they keep their slots while shut. */
+  --rb-titlebar-toggle-slots: 60px;
+  /* `PANEL_TOGGLE_GAP` (tabs.rs): the 4px gap between the two fixed trailing
+     anchors, the surface strip's own control rhythm. */
+  --rb-titlebar-toggle-gap: 4px;
   /*
    * The stacking ladder — the web's mapping of gpui's `deferred` priorities
    * (menus 1, modals 2; popover.rs:629-637, 688-704). Nothing may invent a
@@ -692,6 +696,17 @@ a:focus-visible,
   /* The row's own padding now lands the edge inset; this holds the group at
      the right edge on rows with no identity to push it there. */
   margin-left: auto;
+}
+
+/*
+ * `PANEL_TOGGLE_GAP` (tabs.rs, b9b35665): the 4px rhythm the surface strip
+ * keeps between its controls, applied between the two fixed right-edge
+ * anchors so the explorer toggle and the pane toggle never render as one
+ * fused block. The Files toggle itself gets no left margin — the pane band
+ * ahead of it already ends in its own 4px stable pad.
+ */
+.titlebar-trailing .header-icon-button + .header-icon-button {
+  margin-left: var(--rb-titlebar-toggle-gap);
 }
 
 /*
@@ -4322,7 +4337,8 @@ a:focus-visible,
 
 /* Slash rows (composer.rs:5596-5624): command glyph, `/{name}` at
    12.5/500, the description at 12 truncated. */
-.slash-row-command {
+.slash-row-command,
+.slash-row-widget {
   color: var(--rb-text-muted);
 }
 
@@ -8616,6 +8632,169 @@ button.files-save-pill:hover {
 }
 
 /*
+ * `account_usage.rs`: the plan-usage ring — the context ring's geometry,
+ * its arc on the theme accent (amber at 80%, red at 95%) so the two read
+ * apart. The label stays muted below the thresholds (the desktop's
+ * `text_muted` at Normal); the wash holds while its popover is up.
+ */
+.account-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding-inline: 6px;
+  border-radius: var(--rb-radius-control);
+  font-size: 11px;
+  color: var(--rb-text-muted);
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.account-usage:hover,
+.account-usage[data-open] {
+  background: rgb(var(--rb-ink) / 0.05);
+}
+
+.account-usage[data-tone="warning"] {
+  color: var(--rb-warning);
+}
+
+.account-usage[data-tone="danger"] {
+  color: var(--rb-danger);
+}
+
+.account-usage-track {
+  stroke: color-mix(in srgb, var(--rb-text-faint) 25%, transparent);
+}
+
+.account-usage-arc {
+  stroke: var(--rb-accent);
+}
+
+.account-usage[data-tone="warning"] .account-usage-arc {
+  stroke: var(--rb-warning);
+}
+
+.account-usage[data-tone="danger"] .account-usage-arc {
+  stroke: var(--rb-danger);
+}
+
+/*
+ * The accounts card (account_usage.rs `accounts_card`): a menu heading
+ * (`.menu-heading`) over one row per account — label + meta line left, the
+ * compact usage meters below, `In use` accented. The row is the standard
+ * `.menu-row`; non-switchable rows go static (no pointer, no wash).
+ */
+.account-usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.account-usage-card .menu-row-static {
+  cursor: default;
+}
+
+.account-usage-card .menu-row-static:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.account-usage-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-usage-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.account-usage-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.account-usage-row-plan,
+.account-usage-row-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-usage-row-in-use {
+  color: var(--rb-accent);
+}
+
+/*
+ * One compact meter line (`render_usage_meter`): 52px label, an 88px bar,
+ * 34px right-aligned percent. The bar's fill keeps the level color at the
+ * desktop's opacity (accent 0.8, warning/danger 0.9) with a 1.5% floor so
+ * tiny non-zero usage stays visible.
+ */
+.account-usage-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-usage-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.account-usage-meter-label {
+  width: 52px;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-usage-meter-track {
+  width: 88px;
+  flex: none;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgb(var(--rb-wash) / 0.08);
+}
+
+.account-usage-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.account-usage-meter-percent {
+  width: 34px;
+  flex: none;
+  text-align: right;
+  color: var(--rb-text-muted);
+}
+
+.account-usage-meter-percent-warn {
+  color: var(--rb-warning);
+}
+
+.account-usage-meter-percent-critical {
+  color: var(--rb-danger);
+}
+
+/*
  * `render_jump_to_bottom` + `jump_pill` (shell.rs:6161-6254). The anchor
  * floats 36px ABOVE the composer, centred across the composer's width less
  * its 10px right inset; it paints outside the transcript's fade. The anchor
@@ -9650,6 +9829,24 @@ button.files-save-pill:hover {
 }
 
 /*
+ * The compact work fold's crossfade (transcript.rs compact_work_title): the
+ * summary line fades out and sinks 4px while "Worked for Xm Ys" rises from
+ * below, both clipped to the 18px title line — opacity/transform driven
+ * inline per frame, never a CSS transition (the tween clock is shared).
+ */
+.compact-work-title {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+}
+
+.compact-work-title .tool-group-title {
+  position: absolute;
+  inset: 0;
+}
+
+/*
  * BoardUI's measured recipe (transcript.rs:2233): a 300%-wide repeating
  * gradient moves from 200% to −100%; its 38→50→62% highlight maps to a
  * 36%-of-title shoulder around each peak, adjacent copies three
@@ -10547,36 +10744,102 @@ button.files-save-pill:hover {
 /* ── Settings (ticket 16) ───────────────────────────────────────────── */
 
 /*
- * The settings page body: the sidebar column owns the nav now (the desktop
- * swaps `render_settings_nav` INTO the sidebar pane, shell.rs:993-1008), so
- * the route shell is just the scrolling outlet.
+ * The settings dialog (ticket 26, the modal redesign's web surface): the
+ * `/settings/*` routes render the settings DIALOG — one `RbDialogGlass`
+ * overlay in the command-palette material, floating over the dimmed app.
+ * The route shell (settings-layout.tsx) provides a neutral underlay in the
+ * conversation column; the card carries the two columns the desktop's
+ * modal does — the nav column (Back above the grouped sections) and the
+ * scrolling page column (the routed section page, its `.settings-page`
+ * classes unchanged but rescoped here).
  */
-.settings-scroll {
+
+/* The underlay: the conversation column's neutral ground while the dialog
+   owns the route — the conversation is not mounted under Settings (the
+   desktop's modal replaces the window too; Back returns to it). */
+.settings-underlay {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+}
+
+/* The frost wrapper: the desktop arm carries the palette's 16px radius
+   (scoped off `.rb-dialog-card` so the phone sheet keeps its own
+   top-only rounding); the mount-while-open pattern unmounts on close (no
+   exit window), so the `[data-closed]` rule only guards a hypothetical
+   host that adds one. */
+.rb-dialog-card.settings-dialog-frost {
+  border-radius: 16px;
+}
+
+.settings-dialog-frost[data-closed] {
+  pointer-events: none;
+  animation: rb-add-space-exit var(--rb-motion-menu-out) var(--rb-ease-ease) forwards;
 }
 
 /*
- * The settings sidebar — `render_settings_nav` (shell.rs:4309-4429) rendered
- * inside the persistent `.sidebar-inner` column, so it inherits the dragged
- * width and the titlebar pad and owns no width/border of its own. Structure:
- * a section region (caption + rows) that fills the column, and the Back row
- * pinned to the bottom (shell.rs:4333-4335 / 4401-4427).
+ * The card body: the dialog's own column frame. Command-palette material
+ * (the same 1px hairline border, overlay plate, and popover shadow), wide
+ * enough for the desktop's page column (760px) beside the nav column, and
+ * capped by `.rb-dialog-card`'s viewport clamp so a short window scrolls
+ * INSIDE the page column rather than growing the card.
  */
-.settings-nav {
-  flex: 1;
-  min-height: 0;
+.settings-dialog-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  overflow: hidden;
+  width: min(940px, calc(100vw - 2 * var(--rb-space-lg)));
+  height: min(640px, calc(100dvh - 2 * var(--rb-space-lg)));
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  border-radius: 16px;
+  background: var(--rb-overlay);
+  box-shadow: var(--rb-shadow-popover);
+  color: var(--rb-text);
+}
+
+/*
+ * The nav column — the desktop's settings-page sidebar column
+ * (render_settings_page): the Back row pinned above the section rows,
+ * grouped by spacing alone (preferences, providers and devices, then
+ * workspace data — the group-start margin IS the grouping).
+ */
+.settings-dialog-nav {
+  flex: none;
+  width: 232px;
   display: flex;
   flex-direction: column;
+  border-right: 1px solid var(--rb-border);
   padding: var(--rb-space-sm);
 }
 
-/* The sections region — not a scroll region on the desktop (the rows fit);
-   the clip is a web-only safety for very short windows. */
-.settings-nav-sections {
+/* The Back row (shell.rs:5383-5411): the chevron is deliberately NOT the
+   history-back arrow — Back returns to the active chat unconditionally. */
+.settings-dialog-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--rb-text-muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-dialog-back:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.settings-dialog-sections {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -10586,12 +10849,110 @@ button.files-save-pill:hover {
   gap: 2px;
 }
 
-/* The caption (shell.rs:4343-4350): 11px Medium at text_muted 60%. */
-.settings-nav-title {
-  padding: 12px 8px 4px;
-  font-size: 11px;
+/*
+ * A section row (shell.rs:4362-4374): flex, 8px gap, rounded 8, px 8 / py 6,
+ * 13px. Selected uses the SAME neutral translucent wash the chat sidebar's
+ * session rows use — "the two sidebars must feel alike" (shell.rs:4375-4387)
+ * — plus weight Medium; the 16px icon is ALWAYS text_muted, selected or not
+ * (shell.rs:4392-4394).
+ */
+.settings-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--rb-text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
+}
+
+.settings-nav-link:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.settings-nav-active,
+.settings-nav-active:hover {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  color: var(--rb-text);
   font-weight: 500;
-  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* The group starts (starts_nav_group, shell.rs:574-577): Harnesses opens
+   "providers and devices" (SPACE_LG above), Files opens "workspace data". */
+.settings-nav-group-start {
+  margin-top: var(--rb-space-lg);
+}
+
+.settings-nav-icon {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The page column: the routed section page scrolls inside the card. The
+ * pages keep their `.settings-page` classes; scoped here they sit at the
+ * desktop's `page_column` metrics (max 760px, tighter pads — no titlebar
+ * clearance to carry, the card carries its own).
+ */
+.settings-dialog-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-dialog-page .settings-page {
+  max-width: 760px;
+  padding: 24px 28px 48px;
+}
+
+/* Phones: the sheet replaces placement, and the two columns stack — the
+   nav becomes a horizontal section strip above the page (the sheet is too
+   narrow for the column pair). */
+@media (max-width: 768px) {
+  .settings-dialog-card {
+    width: 100%;
+    height: auto;
+    max-height: inherit;
+    flex-direction: column;
+  }
+
+  .settings-dialog-nav {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--rb-border);
+    padding: 8px;
+  }
+
+  .settings-dialog-sections {
+    flex: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-direction: row;
+    gap: 4px;
+    padding-bottom: 2px;
+  }
+
+  .settings-nav-link {
+    flex: none;
+    padding: 6px 10px;
+  }
+
+  .settings-nav-group-start {
+    margin-top: 0;
+    margin-left: var(--rb-space-lg);
+  }
+
+  .settings-dialog-back {
+    margin-bottom: 6px;
+    width: auto;
+    align-self: flex-start;
+  }
 }
 
 /*
@@ -10629,36 +10990,6 @@ button.files-save-pill:hover {
 .settings-nav-icon {
   flex: none;
   color: var(--rb-text-muted);
-}
-
-/*
- * The Back row, pinned to the column's bottom (shell.rs:4401-4427): the
- * chevron — deliberately NOT the history-back arrow — 16px text_muted, gap 6.
- */
-.settings-back {
-  flex: none;
-  margin-top: 12px;
-  padding: 0 0 12px;
-}
-
-.settings-back-inner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 8px;
-  background: none;
-  color: var(--rb-text-muted);
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.settings-back-inner:hover {
-  background: var(--rb-hover);
-  color: var(--rb-text);
 }
 
 .settings-page {
@@ -10868,6 +11199,12 @@ button.files-save-pill:hover {
   font-size: 12px;
   line-height: 19px;
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+/* A standing note under a provider's section header (accounts.rs
+ * `provider_note`): the footnote copy at header spacing, not page spacing. */
+.settings-provider-note {
+  margin-top: 4px;
 }
 
 /* Toggle switch — the desktop's 32×18 toggle_switch. */
@@ -12702,6 +13039,21 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
 }
 
+/*
+ * An explicit install in flight (harnesses.rs install_label meta row): the
+ * "Installing <agent>…" status line reads text_muted like the sign-in one
+ * (the desktop pairs it with the mono spinner); Install and Cancel take the
+ * ghost-action slot beside it, flex-locked like the sign-in cancel.
+ */
+.harness-install-status {
+  color: var(--rb-text-muted);
+}
+
+.harness-install,
+.harness-cancel-install {
+  flex: none;
+}
+
 .harness-sign-in-cancel,
 .harness-sign-in-retry {
   flex: none;
@@ -12961,6 +13313,53 @@ button.segmented-option:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ── Composer completion (settings/completion.rs, upstream 13cb6d7c) ── */
+
+/* The section (completion.rs:83-95): mt 28, column, 12px apart — the header
+   label + "Restore defaults", the subtitle, then one card per active agent. */
+.completion-section {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.completion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.completion-subtitle {
+  margin-top: 0;
+}
+
+.completion-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* The agent cards' rows sit tight behind their dividers (the group card's
+   28px gap is for multi-card groups; one agent = one tight card). */
+.completion-section .settings-card {
+  gap: 0;
+  margin-top: 0;
+}
+
+/* The card's identity row (completion.rs:130-146): brand tile + name,
+   16px top / 4px bottom, no divider to the first toggle row. */
+.completion-agent-head {
+  padding: 16px 20px 4px;
+}
+
+.completion-agent-head + .settings-row {
+  border-top: none;
 }
 
 /* One shortcut row (shortcuts.rs:275-303): min-h 72, px 20, gap 20. */
@@ -13491,6 +13890,36 @@ button.segmented-option:hover {
   color: var(--rb-text-muted);
 }
 
+/*
+ * Ticket 12 (upstream a456eb09): the working-tree trash button — a quiet
+ * 24×22 icon slot at the banner's end. Dim while the snapshot can't be
+ * safely discarded (partial, empty, another scope); a click on the armed
+ * button opens the confirmation dialog, never the mutation itself.
+ */
+.changes-banner-discard {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.changes-banner-discard:hover:not(:disabled) {
+  color: var(--rb-text);
+}
+
+.changes-banner-discard-off,
+.changes-banner-discard:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .changes-banner-warn {
   flex: none;
   font-size: 10px;
@@ -13616,6 +14045,29 @@ button.segmented-option:hover {
   background:
     linear-gradient(rgb(var(--rb-ink) / 0.05), rgb(var(--rb-ink) / 0.05)),
     var(--rb-bg);
+}
+
+/*
+ * Ticket 12 (upstream c2230f07): the header's open-in-file-browser button —
+ * a quiet 24×22 icon slot beside the +N/−N counters, never inside the fold
+ * toggle; text_muted, brightening on header hover like the chevron.
+ */
+.diff-file-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.diff-file-open:hover {
+  color: var(--rb-text);
 }
 
 .diff-file-button {
@@ -14935,8 +15387,8 @@ button.segmented-option:hover {
  */
 .transcript,
 .sidebar-list,
-.settings-scroll,
-.settings-nav-sections,
+.settings-dialog-sections,
+.settings-dialog-page,
 .files-tree,
 .files-search-results,
 .files-code-scroll,
@@ -14954,8 +15406,8 @@ button.segmented-option:hover {
 
 .transcript::-webkit-scrollbar,
 .sidebar-list::-webkit-scrollbar,
-.settings-scroll::-webkit-scrollbar,
-.settings-nav-sections::-webkit-scrollbar,
+.settings-dialog-sections::-webkit-scrollbar,
+.settings-dialog-page::-webkit-scrollbar,
 .files-tree::-webkit-scrollbar,
 .files-search-results::-webkit-scrollbar,
 .files-code-scroll::-webkit-scrollbar,
@@ -16233,6 +16685,21 @@ button.segmented-option:hover {
   flex-direction: column;
   padding-top: var(--rb-titlebar-height, 38px);
   transition: width var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * The projectless root label (files/mod.rs, 03b67beb): "Files in <cwd> ·
+ * <device>" under the explorer toolbar — 10px/5px padding, 10px faint text,
+ * truncated to one line, mirroring the desktop's header strip.
+ */
+.files-projectless-root {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: var(--rb-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pane-seam-files {

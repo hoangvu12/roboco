@@ -73,6 +73,13 @@ export interface ChatTerminals {
   tabs: TerminalTabRecord[];
   active: number;
   nextKey: number;
+  /**
+   * The panel session key's resolved `OpenTerminal` cwd (canvas keys only,
+   * `terminal_open_cwd_for`): the space's folder while the row is landed,
+   * `~` project-less, null while the row is still missing. Chat keys stay
+   * null — the engine reads the chat row.
+   */
+  cwd: string | null;
 }
 
 export type TerminalStoreListener = () => void;
@@ -212,15 +219,32 @@ export class TerminalStore {
     return this.#chats.get(chatId);
   }
 
-  /** mod-j / header button: toggle the dock; opening an empty chat spawns
-   *  its first tab (desktop `ensure_tab`). Drawer mode only. */
-  toggle(chatId: string): void {
-    const chat = this.#chat(chatId);
+  /**
+   * mod-j / header button: toggle the dock; opening an empty chat spawns
+   * its first tab (desktop `ensure_tab`). Drawer mode only. `cwd` is the
+   * canvas key's resolved project folder (`terminal_open_cwd_for`) — a
+   * fresh resolution overrides the stored one so a landed space row wins
+   * over the last open's null.
+   */
+  toggle(chatId: string, cwd?: string | null): void {
+    const chat = this.#chat(chatId, cwd);
     chat.open = !chat.open;
     if (chat.open && chat.tabs.length === 0) {
       this.#addTab(chatId, chat);
     }
     this.#bump();
+  }
+
+  /** Hide the drawer for a session key without touching its tabs — the
+   *  canvas-entry reset (the desktop's "a new chat always starts with the
+   *  terminal hidden"): the source chat's flag stays put, so returning
+   *  restores it. */
+  hideDrawerEntry(chatId: string): void {
+    const chat = this.#chats.get(chatId);
+    if (chat !== undefined && chat.open) {
+      chat.open = false;
+      this.#bump();
+    }
   }
 
   setHeight(chatId: string, height: number, viewportH: number): void {
@@ -245,8 +269,8 @@ export class TerminalStore {
   }
 
   /** The "+" button. The PTY opens when the dock mounts the tab's host. */
-  addTab(chatId: string): void {
-    const chat = this.#chat(chatId);
+  addTab(chatId: string, cwd?: string | null): void {
+    const chat = this.#chat(chatId, cwd);
     this.#addTab(chatId, chat);
     this.#bump();
   }
@@ -441,7 +465,7 @@ export class TerminalStore {
     }
   }
 
-  #chat(chatId: string): ChatTerminals {
+  #chat(chatId: string, cwd?: string | null): ChatTerminals {
     let chat = this.#chats.get(chatId);
     if (chat === undefined) {
       chat = {
@@ -452,8 +476,11 @@ export class TerminalStore {
         tabs: [],
         active: 0,
         nextKey: 1,
+        cwd: cwd ?? null,
       };
       this.#chats.set(chatId, chat);
+    } else if (cwd !== undefined && cwd !== chat.cwd) {
+      chat.cwd = cwd;
     }
     return chat;
   }
@@ -490,6 +517,7 @@ export class TerminalStore {
       controller: new TerminalSessionController({
         client,
         chatId,
+        cwd: chat.cwd,
         sink: {
           write: (bytes) => term.write(bytes),
           exited: () => {

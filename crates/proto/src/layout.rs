@@ -85,12 +85,14 @@ pub const GLASS_ALPHA_LIGHT: f32 = if cfg!(any(target_os = "macos", target_os = 
 /// Base coverage of the floating-card tint (`Theme::glass_overlay`) in dark
 /// mode, before the contrast check raises it.
 pub const GLASS_OVERLAY_ALPHA_DARK: f32 = 0.50;
-/// Base coverage of the floating-card tint in light mode — heavier, because
-/// dark text is more vulnerable to unpredictable content behind a popover.
-pub const GLASS_OVERLAY_ALPHA_LIGHT: f32 = 0.85;
-/// Base coverage of the composer/queue/input tint (`Theme::input_glass_bg`)
-/// in light mode; dark mode keeps the theme's authored input alpha.
-pub const INPUT_GLASS_ALPHA_LIGHT: f32 = 0.30;
+/// Base coverage of the floating-card tint in light mode — fixed, thin, and
+/// below any contrast check: light frost must keep the blurred scene visible
+/// (readability is carried by the foreground, `Theme::for_popup`).
+pub const GLASS_OVERLAY_ALPHA_LIGHT: f32 = 0.45;
+/// Fixed coverage of the composer/queue/input tint (`Theme::input_glass_bg`)
+/// in light mode — translucent, so content stays visible through the blur;
+/// dark mode keeps the theme's authored, contrast-checked input alpha.
+pub const INPUT_GLASS_ALPHA_LIGHT: f32 = 0.35;
 /// Base coverage of the section-card tint (`Theme::card_glass_bg`) — glass
 /// thins the opaque card tone to a translucent tint.
 pub const CARD_GLASS_ALPHA: f32 = 0.40;

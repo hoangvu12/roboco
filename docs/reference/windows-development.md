@@ -1,13 +1,18 @@
 # Windows development
 
-Windows supports native x64 source builds and portable release ZIPs. Release
-packages offer in-app updates through GitHub; keep `roboco-update.json` beside
-`roboco.exe`. Installers and background services are not supported yet.
+Windows supports native x64 and ARM64 source builds and portable release ZIPs.
+Release packages offer in-app updates through GitHub; keep `roboco-update.json`
+beside `roboco.exe`. Artifact names use Rust's architecture token (`x86_64` or
+`aarch64`) so the updater can find the matching executable; published
+releases include both. Installers and background services are not supported
+yet.
 
 ## Build and run
 
 Install stable MSVC Rust, Visual Studio C++ build tools, Windows SDK, CMake,
-and Git for Windows, then run:
+and Git for Windows. On ARM64 also install LLVM so `clang` is on PATH —
+`ring` compiles its crypto with Clang on `aarch64-pc-windows-msvc`, and MSVC
+alone is not enough. Then run:
 
 ```powershell
 cargo run --locked -p roboco
@@ -45,7 +50,7 @@ ACP, Claude, Codex, and opencode search PATH and known native installation
 directories. Discovery is PATHEXT-aware: npm's `.cmd` shims (and any `.bat`)
 resolve like `cmd.exe` would — per directory, extensions in PATHEXT order —
 and spawn through `cmd.exe /e:ON /v:OFF /d /c` inside the same Job Object, so npm-
-installed agents (`codex`, `opencode`, `pi-acp`, a bare `npm i -g grok`)
+installed agents (`codex`, `opencode`, `pi`, a bare `npm i -g grok`)
 work without following `node_modules` payloads. Batch arguments containing
 CR/LF and batch executable paths containing percent expansion syntax are rejected.
 GUI launches additionally

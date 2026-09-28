@@ -50,6 +50,8 @@ macro_rules! icon_assets {
 icon_assets![
     (PROJECT_DEFAULT, "project-default"),
     (REMOTE_SERVER, "remote-server"),
+    // Service-tier bolt, drawn in the toolbar family's linear weight.
+    (FAST_TIER, "fast-tier"),
     // Solar Icons (Linear), CC BY 4.0 — 480 Design.
     (MONITOR, "monitor"),
     (SUN, "sun"),
@@ -143,6 +145,7 @@ icon_assets![
     (ARCHIVE_MINIMALISTIC, "archive-minimalistic"),
     (TRASH_BIN_MINIMALISTIC, "trash-bin-minimalistic"),
     // Shared settings glyph: user-supplied horizontal sliders.
+    (SETTINGS, "settings"),
     (SETTINGS_MINIMALISTIC, "settings-minimalistic"),
     (LOGOUT_2, "logout-2"),
     (MAGNIFER, "magnifer"),
@@ -160,6 +163,7 @@ icon_assets![
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
+    (MAGIC_STICK_3, "magic-stick-3"),
     (WIFI_OFF, "wifi-off"),
     (CLOSE_CIRCLE, "close-circle"),
     // Hand-drawn info glyph in the Solar Linear style (like the terminal/

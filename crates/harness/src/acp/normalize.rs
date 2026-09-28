@@ -8,8 +8,8 @@
 //! tagged `sessionUpdate`/snake_case; structs are camelCase; tool kinds and
 //! statuses are snake_case).
 
-use serde_json::Value;
 use roboco_proto::{AgentEvent, SlashCommand, TodoItem, ToolCall, ToolDiff};
+use serde_json::Value;
 
 /// Byte cap applied to tool output text at the harness boundary. The doc-side
 /// fold applies its own (smaller) cap before anything persists; this one only
@@ -926,4 +926,16 @@ mod tests {
             ] if name == "Agent: Viz probe"
         ));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn empty_assistant_delta_does_not_open_a_segment() {
+    assert!(
+        map_update(&serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": ""},
+        }))
+        .is_empty()
+    );
 }

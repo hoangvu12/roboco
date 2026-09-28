@@ -194,12 +194,12 @@ function minDefined(a: number | null, b: number | null): number | null {
  * `roboco_harness::claude::catalog::static_models` (`catalog.rs:152-207`) —
  * the curated Claude catalog, flagship-first. Only the ids and labels matter
  * here: `normalizeModelRows` borrows them so the version number always shows
- * ("Opus 5", not the wire's terse "Opus" alias).
+ * ("Opus 5.5", not the wire's terse "Opus" alias).
  */
 const CLAUDE_CATALOG: readonly { id: string; label: string }[] = [
   { id: "claude-fable-5-1", label: "Fable 5.1" },
   { id: "claude-fable-5", label: "Fable 5" },
-  { id: "claude-opus-5", label: "Opus 5" },
+  { id: "claude-opus-5-5", label: "Opus 5.5" },
   { id: "claude-opus-4-8", label: "Opus 4.8" },
   { id: "claude-opus-4-7", label: "Opus 4.7" },
   { id: "claude-sonnet-5", label: "Sonnet 5" },
