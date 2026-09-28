@@ -16,9 +16,16 @@ import { isScopedId, parseScopedId } from "./scoped-id";
  * text, paths, model options, tools, and user JSON stay byte-for-byte.
  */
 
-/** The envelope fields that carry engine-scoped identities. */
+/**
+ * The envelope fields that carry engine-scoped identities. The web scopes
+ * EVERY id uniformly (unlike the desktop, whose local engine keeps raw
+ * ids), so the list must cover every identity field the wire protocol
+ * spells — including `sourceChatId` (ForkSideChat), which the desktop's
+ * local-engine side chats never send scoped.
+ */
 const IDENTITY_FIELDS = [
   "chatId",
+  "sourceChatId",
   "spaceId",
   "deviceId",
   "checkoutId",

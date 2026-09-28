@@ -42,6 +42,13 @@ export interface CreateChatOptions extends CreateChatTarget {
    * `RunRequest`, where the engine expands it host-side.
    */
   readonly cwd?: string;
+  /**
+   * The chat this one hangs off (`create_chat_with_parent`, 731697b6): a
+   * side chat forked from it, or the chat whose agent spawned this one
+   * through the Roboco MCP server. Children list under their parent in
+   * the explorer instead of the main sidebar. Inserted only when present.
+   */
+  readonly parentChatId?: string;
 }
 
 /**
@@ -60,6 +67,7 @@ export async function createChat(caller: MutateCaller, options: CreateChatOption
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.branch !== undefined ? { branch: options.branch } : {}),
     ...(options.config !== undefined ? { config: options.config } : {}),
+    ...(options.parentChatId !== undefined ? { parentChatId: options.parentChatId } : {}),
   });
   return chatId;
 }

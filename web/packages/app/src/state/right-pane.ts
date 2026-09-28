@@ -57,7 +57,8 @@ export type RightSurface =
   | { kind: "file"; id: string }
   | { kind: "diff"; id: string }
   | { kind: "terminal"; id: string }
-  | { kind: "subagent"; id: string };
+  | { kind: "subagent"; id: string }
+  | { kind: "sidechat"; id: string };
 
 /** Surfaces compare by value (kind + id); the key makes that one string. */
 export function surfaceKey(surface: RightSurface): string {
@@ -113,6 +114,20 @@ export function workspaceFileTitle(path: string): string {
  */
 export function panelKey(chatId: string | null, space: string): string {
   return chatId === null ? `space-canvas:${space}` : chatId;
+}
+
+/**
+ * The per-side-chat entity services the pane store needs — injected at boot
+ * by the surface registry (the `setTerminalSource` pattern, so this module
+ * stays free of the composer-draft and review-comment wiring). Mirrors the
+ * desktop's `side_chats` map fields the TAB lifecycle consults:
+ * `has_draft` (close retention) and the entity drop when a chat is deleted.
+ */
+export interface SideChatEntitySource {
+  /** `composer.has_draft` — text, staged attachments, staged comments. */
+  hasDraft(chatId: string): boolean;
+  /** Drop the entity's backing draft — the chat row is gone for good. */
+  dispose(chatId: string): void;
 }
 
 /** What the tab strip and pane need to know about a live surface. */
@@ -228,6 +243,7 @@ export class RightPaneStore {
   #diffSeq = 0;
   #terminalSeq = 0;
   #subagentSeq = 0;
+  #sideChatSeq = 0;
   /** `file_surfaces` — id → workspace path plus the panel that opened it. */
   readonly #files = new Map<string, { path: string; panel: string }>();
   /** `file_surface_keys` — `${panel}\u{0}${path}` → id (one tab per path). */
@@ -245,6 +261,15 @@ export class RightPaneStore {
   readonly #diffMeta = new Map<string, DiffMeta>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
   readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean }>();
+  /**
+   * `side_chats` (side_chats.rs) — surface id → { chatId, title }. One
+   * entity per side-chat chat id: reopening re-attaches the kept entity
+   * instead of minting a second tab, and a close with a draft KEEPS it
+   * (detached) so the reopen restores the draft.
+   */
+  readonly #sideChats = new Map<string, { chatId: string; title: string }>();
+  /** The side-chat entity source (draft retention + disposal), boot-injected. */
+  #sideChatEntities: SideChatEntitySource | null = null;
 
   constructor(terminals: PaneTerminalSource | null = null) {
     this.#terminals = terminals;
@@ -253,6 +278,11 @@ export class RightPaneStore {
   /** Boot wiring: hand the pane its embedded terminal host. */
   setTerminalSource(terminals: PaneTerminalSource): void {
     this.#terminals = terminals;
+  }
+
+  /** Boot wiring: hand the pane the side-chat entity source. */
+  setSideChatEntitySource(source: SideChatEntitySource): void {
+    this.#sideChatEntities = source;
   }
 
   getVersion = (): number => this.#version;
@@ -568,6 +598,104 @@ export class RightPaneStore {
   }
 
   /**
+   * `open_side_chat` (side_chats.rs:160-246): one entity per side-chat chat
+   * id, re-attached rather than duplicated — a tab that was closed with a
+   * draft finds its KEPT entity here and re-mounts with the draft intact.
+   * A fresh id mints the entity, appends the tab, and activates it (which
+   * opens the pane's surface host, `set_right_active`).
+   */
+  addSideChatSurface(chatId: string, spawn: { chatId: string; title: string }): void {
+    for (const [id, meta] of this.#sideChats) {
+      if (meta.chatId === spawn.chatId) {
+        this.#update(chatId, (pane) =>
+          pane.tabs.some((tab) => tab.kind === "sidechat" && tab.id === id)
+            ? pane
+            : { ...pane, tabs: [...pane.tabs, { kind: "sidechat", id }] },
+        );
+        this.setActive(chatId, { kind: "sidechat", id });
+        return;
+      }
+    }
+    this.#sideChatSeq += 1;
+    const id = `c${this.#sideChatSeq}`;
+    this.#sideChats.set(id, { chatId: spawn.chatId, title: spawn.title });
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "sidechat", id }] }));
+    this.setActive(chatId, { kind: "sidechat", id });
+  }
+
+  /** The side-chat tab's instance (`{chatId, title}`). */
+  sideChatSurfaceOf(surfaceId: string): { chatId: string; title: string } | null {
+    const meta = this.#sideChats.get(surfaceId);
+    if (meta === undefined) {
+      return null;
+    }
+    return { ...meta };
+  }
+
+  /**
+   * The tab title follows the chat row — a side chat titles itself on its
+   * first turn (`child_chat_title`); the surface refreshes it as the row
+   * changes.
+   */
+  updateSideChatTitle(surfaceId: string, title: string): void {
+    const meta = this.#sideChats.get(surfaceId);
+    if (meta === undefined || meta.title === title) {
+      return;
+    }
+    this.#sideChats.set(surfaceId, { ...meta, title });
+    this.#notify();
+  }
+
+  /**
+   * The side-chat chat ids known to the pane (tabs and kept-for-draft
+   * entities) — the prune input, and the rows' membership test.
+   */
+  sideChatChatIds(): Set<string> {
+    return new Set([...this.#sideChats.values()].map((meta) => meta.chatId));
+  }
+
+  /**
+   * `remove_deleted_side_chats` (side_chats.rs:295-333): drop every entity
+   * whose chat row is gone, pull its tabs from every pane, hand the active
+   * pick to the first remaining tab (else the picker), and collapse panes
+   * left empty. The caller feeds the live chat ids — the fleet registry's
+   * rows — on each registry change.
+   */
+  pruneSideChats(liveChatIds: ReadonlySet<string>): void {
+    const removed: string[] = [];
+    for (const [surfaceId, meta] of this.#sideChats) {
+      if (!liveChatIds.has(meta.chatId)) {
+        removed.push(surfaceId);
+      }
+    }
+    if (removed.length === 0) {
+      return;
+    }
+    for (const surfaceId of removed) {
+      const meta = this.#sideChats.get(surfaceId);
+      this.#sideChats.delete(surfaceId);
+      if (meta !== undefined) {
+        this.#sideChatEntities?.dispose(meta.chatId);
+      }
+      const surface: RightSurface = { kind: "sidechat", id: surfaceId };
+      for (const [paneKey, pane] of this.#byChat) {
+        if (!pane.tabs.some((tab) => surfaceEqual(tab, surface))) {
+          continue;
+        }
+        const tabs = pane.tabs.filter((tab) => !surfaceEqual(tab, surface));
+        const nextActive: RightSurface = surfaceEqual(pane.active, surface)
+          ? (tabs[0] ?? { kind: "picker" })
+          : pane.active;
+        this.#byChat.set(
+          paneKey,
+          collapseSurfacesIfEmpty({ ...pane, tabs, active: nextActive }),
+        );
+      }
+    }
+    this.#notify();
+  }
+
+  /**
    * `close_right_surface` (shell.rs:2788): the ✕ — removes THAT tab, not
    * the pane. A File surface with a live document consults `prepare_close`
    * first: "allow" (or no document) completes immediately; "pending" /
@@ -590,6 +718,27 @@ export class RightPaneStore {
         surfaceEqual(current.active, surface) ? current : { ...current, open: true, active: surface },
       );
       this.#closeRequests.add(surfaceKey(surface));
+      this.#notify();
+      return;
+    }
+    if (surface.kind === "sidechat") {
+      // `close_right_surface`'s SideChat arm (shell.rs:3535-3542): an unsent
+      // draft outlives the tab — the entity stays loaded, detached, and
+      // reopening it restores the draft. Without a draft it drops with the
+      // tab (its backing draft store entry goes with it).
+      const meta = this.#sideChats.get(surface.id);
+      const keep = meta !== undefined && (this.#sideChatEntities?.hasDraft(meta.chatId) ?? false);
+      if (meta !== undefined && !keep) {
+        this.#sideChats.delete(surface.id);
+        this.#sideChatEntities?.dispose(meta.chatId);
+      }
+      this.#update(chatId, (current) => {
+        const tabs = current.tabs.filter((tab) => !surfaceEqual(tab, surface));
+        const nextActive: RightSurface = surfaceEqual(current.active, surface)
+          ? { kind: "picker" }
+          : current.active;
+        return collapseSurfacesIfEmpty({ ...current, tabs, active: nextActive });
+      });
       this.#notify();
       return;
     }
@@ -757,6 +906,13 @@ export class RightPaneStore {
       }
       case "subagent": {
         const meta = this.#subagentMeta.get(surface.id);
+        if (meta === undefined) {
+          return null;
+        }
+        return { title: meta.title, detail: null, isHistory: false, isDirty: false };
+      }
+      case "sidechat": {
+        const meta = this.#sideChats.get(surface.id);
         if (meta === undefined) {
           return null;
         }

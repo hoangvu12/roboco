@@ -8,6 +8,7 @@ import {
   workspaceFileTitle,
   type PaneTerminalSource,
   type RightSurface,
+  type SideChatEntitySource,
 } from "../src/state/right-pane";
 import { dropIndex, slideOffset } from "../src/components/right-tab-strip";
 import { uiSettings } from "../src/state/ui-settings";
@@ -397,5 +398,172 @@ describe("tab drag geometry", () => {
 
     expect(slideOffset(null, 1)).toBe(0);
     expect(slideOffset({ from: 1, over: 1 }, 1)).toBe(0);
+  });
+});
+
+/** The side-chat entity source, faked — the boot injection's test double. */
+class FakeSideChats implements SideChatEntitySource {
+  readonly drafts = new Set<string>();
+  disposed: string[] = [];
+
+  hasDraft(chatId: string): boolean {
+    return this.drafts.has(chatId);
+  }
+
+  dispose(chatId: string): void {
+    this.drafts.delete(chatId);
+    this.disposed.push(chatId);
+  }
+}
+
+/**
+ * Side-chat surfaces (ticket 10) — the web port of `open_side_chat` /
+ * `close_right_surface`'s SideChat arm / `remove_deleted_side_chats`
+ * (crates/ui/src/shell/side_chats.rs, 731697b6). One entity per chat id;
+ * a close with a draft keeps it detached; the prune drops deleted chats'
+ * entities and tabs everywhere.
+ */
+describe("side_chat_surfaces (side_chats.rs)", () => {
+  it("mints a tab per chat id, activates it, and titles from the entity", () => {
+    const { store } = fresh();
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "Investigate caching" });
+    let pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([{ kind: "sidechat", id: "c1" }]);
+    expect(pane.open).toBe(true);
+    expect(resolvedActive(pane)).toEqual({ kind: "sidechat", id: "c1" });
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.title).toBe(
+      "Investigate caching",
+    );
+    // The strip's icon comes from the registry, but the facts' shape must
+    // be plain like every other kind's.
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")).toMatchObject({
+      detail: null,
+      isHistory: false,
+      isDirty: false,
+    });
+    // The chat ids the pane knows (the prune input's superset).
+    expect(store.sideChatChatIds()).toEqual(new Set(["side-a"]));
+
+    // A second chat mints a second entity and appends its tab.
+    store.addSideChatSurface("chat-1", { chatId: "side-b", title: "New side chat" });
+    pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([
+      { kind: "sidechat", id: "c1" },
+      { kind: "sidechat", id: "c2" },
+    ]);
+    expect(resolvedActive(pane)).toEqual({ kind: "sidechat", id: "c2" });
+    expect(store.sideChatChatIds()).toEqual(new Set(["side-a", "side-b"]));
+  });
+
+  it("re-attaches the kept entity by chat id — never a duplicate tab", () => {
+    const { store } = fresh();
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    // Reopening the same chat id finds the entity and re-activates it.
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A (retitled)" });
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([{ kind: "sidechat", id: "c1" }]);
+    expect(resolvedActive(pane)).toEqual({ kind: "sidechat", id: "c1" });
+    // The entity's title is whatever it was opened with (the surface
+    // refreshes it as the row changes — `updateSideChatTitle`).
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.title).toBe("A");
+    store.updateSideChatTitle("c1", "A (retitled)");
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.title).toBe(
+      "A (retitled)",
+    );
+    // A no-op title write never bumps the version.
+    const version = store.getVersion();
+    store.updateSideChatTitle("c1", "A (retitled)");
+    expect(store.getVersion()).toBe(version);
+  });
+
+  it("a close with a draft keeps the entity; a reopen restores the same tab", () => {
+    const { store } = fresh();
+    const sideChats = new FakeSideChats();
+    store.setSideChatEntitySource(sideChats);
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    const surface: RightSurface = { kind: "sidechat", id: "c1" };
+    sideChats.drafts.add("side-a");
+
+    store.closeSurface("chat-1", surface);
+    // The tab is gone (the pane collapsed — nothing else keeps it open),
+    // but the entity stays for the reopen.
+    expect(store.stateFor("chat-1").tabs).toEqual([]);
+    expect(store.stateFor("chat-1").open).toBe(false);
+    expect(store.sideChatSurfaceOf("c1")).toEqual({ chatId: "side-a", title: "A" });
+
+    // Reopening re-attaches the KEPT entity — the same surface id.
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([surface]);
+    expect(resolvedActive(pane)).toEqual(surface);
+    expect(sideChats.disposed).toEqual([]);
+  });
+
+  it("a close without a draft drops the entity with the tab", () => {
+    const { store } = fresh();
+    const sideChats = new FakeSideChats();
+    store.setSideChatEntitySource(sideChats);
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    const surface: RightSurface = { kind: "sidechat", id: "c1" };
+
+    store.closeSurface("chat-1", surface);
+    expect(store.stateFor("chat-1").tabs).toEqual([]);
+    expect(store.sideChatSurfaceOf("c1")).toBeNull();
+    expect(store.describe(surface, "chat-1")).toBeNull();
+    // The backing draft store entry went with it (the dispose hook).
+    expect(sideChats.disposed).toEqual(["side-a"]);
+
+    // A later open mints a FRESH entity for the same chat.
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    expect(store.stateFor("chat-1").tabs).toEqual([{ kind: "sidechat", id: "c2" }]);
+  });
+
+  it("remove_deleted_side_chats drops deleted chats' tabs everywhere and collapses empty panes", () => {
+    const { store } = fresh();
+    const sideChats = new FakeSideChats();
+    store.setSideChatEntitySource(sideChats);
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    // The same entity attached under a second pane (open_side_chat on
+    // another panel key — the entity is global, the tabs are per pane).
+    store.addSideChatSurface("chat-2", { chatId: "side-a", title: "A" });
+    store.addSideChatSurface("chat-1", { chatId: "side-b", title: "B" });
+
+    // chat-1's pane stays open through the prune (side-b remains); the
+    // active pick lands on the first remaining tab.
+    store.setActive("chat-1", { kind: "sidechat", id: "c1" });
+    store.pruneSideChats(new Set(["chat-1", "side-b", "chat-2"]));
+    expect(store.sideChatSurfaceOf("c1")).toBeNull();
+    expect(store.sideChatChatIds()).toEqual(new Set(["side-b"]));
+    expect(store.sideChatSurfaceOf("c2")?.chatId).toBe("side-b");
+    const pane1 = store.stateFor("chat-1");
+    expect(pane1.tabs).toEqual([{ kind: "sidechat", id: "c2" }]);
+    expect(resolvedActive(pane1)).toEqual({ kind: "sidechat", id: "c2" });
+    expect(pane1.open).toBe(true);
+    // chat-2's pane collapsed with its only tab gone; the disposed chat's
+    // draft went with it.
+    const pane2 = store.stateFor("chat-2");
+    expect(pane2.tabs).toEqual([]);
+    expect(pane2.open).toBe(false);
+    expect(resolvedActive(pane2)).toEqual({ kind: "picker" });
+    expect(sideChats.disposed).toEqual(["side-a"]);
+
+    // A prune with nothing to do changes nothing.
+    const version = store.getVersion();
+    store.pruneSideChats(new Set(["chat-1", "side-b", "chat-2"]));
+    expect(store.getVersion()).toBe(version);
+  });
+
+  it("a deleted side chat that was the last tab hands the active pick to the picker and can keep the pane open through the explorer", () => {
+    const { store } = fresh();
+    store.setSideChatEntitySource(new FakeSideChats());
+    store.addSideChatSurface("chat-1", { chatId: "side-a", title: "A" });
+    // The docked explorer keeps the pane alive (collapse_surfaces_if_empty).
+    store.openFilesPanel("chat-1");
+    store.pruneSideChats(new Set(["chat-1"]));
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([]);
+    expect(pane.open).toBe(true);
+    expect(pane.filesOpen).toBe(true);
+    expect(resolvedActive(pane)).toEqual({ kind: "picker" });
   });
 });

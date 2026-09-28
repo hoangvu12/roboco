@@ -3,7 +3,7 @@ import type { CSSProperties, DragEvent } from "react";
 import { motion } from "@roboco/theme";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { useFleet, useFleetRegistry } from "../state/fleet";
+import { useFleet, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
 // Ticket 11's engine-side sidebar state bridge: importing the module wires
 // the registry-driven sync (pins + custom sections mirror engine-side;
 // `localStorage` stays the offline cache).
@@ -124,6 +124,10 @@ const TAKEOVER_GLIDE_MS =
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const fleet = useFleet();
+  // Ticket 10: the merged fleet rows — the shell's side-chat prune input
+  // (`remove_deleted_side_chats` runs off the registry's state observer on
+  // the desktop; the shell is the web's always-mounted observer).
+  const fleetSnapshot = useFleetSnapshot();
   const session = useEngineSession();
   const status = useEngineStatus(session);
   const state = useConnectionState(status);
@@ -226,6 +230,16 @@ export function AppShell() {
   const sidebarState = useSidebar();
   const canvasSpace = sidebarState.spaceFilter ?? sidebarState.lastSpaceId ?? "";
   const pane = useRightPane(panelKey(paneChatId, canvasSpace));
+  // A side chat whose row vanished (deleted elsewhere) drops its tab and
+  // its kept-for-draft entity — the desktop's `remove_deleted_side_chats`
+  // observer, driven here off the merged chat rows.
+  useEffect(() => {
+    if (fleetSnapshot.chats.loaded) {
+      rightPaneStore.pruneSideChats(
+        new Set(fleetSnapshot.chats.rows.map((row) => row.id)),
+      );
+    }
+  }, [fleetSnapshot]);
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
   // Keeping the two apart is what lets the column animate between them: the
   // content keeps the open width while the column itself glides to zero.

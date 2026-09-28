@@ -10466,6 +10466,57 @@ button.files-save-pill:hover {
   width: 100%;
 }
 
+/*
+ * The fork seam — `fork_marker` (transcript.rs:8036-8062): py 14, the
+ * "Forked from" label centered between two hairline rules (10px gaps),
+ * then the source's title on its own constrained, truncated, centered
+ * line (13px medium, text_muted) so a long title can never widen a narrow
+ * side-chat pane. No message metadata lane.
+ */
+.fork-marker {
+  padding-block: 14px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fork-marker-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.fork-marker-rule {
+  flex: 1;
+  min-width: 0;
+  height: 1px;
+  background: var(--rb-border-strong, var(--rb-border));
+}
+
+.fork-marker-label {
+  flex: none;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.fork-marker-title {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
 /* ── Transcript responsive + reduced motion ─────────────────────────── */
 
 @media (max-width: 768px) {
@@ -16791,6 +16842,319 @@ button.segmented-option:hover {
   right: 0;
   transform: translateX(calc((var(--rb-files-now, 0px) - 10px) * -1));
   transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * ── The explorer's footer sections (ticket 10, files/sections.rs) ──────
+ *
+ * Two collapsible sections docked under the tree, sharing the footer's
+ * height budget (FOOTER_HEIGHT 510, chrome = pad 4+6 + two 28px headers):
+ * each body rests at its budget share and its rows scroll inside. Rows
+ * borrow the sidebar's compact session row — 29px, 8px radius, the glass
+ * hover wash, 13px title on a 17px line, 11px trailing time — minus the
+ * harness/project/device icons.
+ */
+.files-sections {
+  flex: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-inline: 6px;
+  padding-block: 4px 6px;
+  min-height: 0;
+}
+
+.files-section {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The header: 28px, 6px radius, the chevron in a 20px slot, the 12px
+ * medium label (faded to 50%), and the Chats header's actions which stay
+ * hidden until the header is hovered (the desktop's group-hover). */
+.files-section-header {
+  flex: none;
+  height: 28px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 8px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+  min-width: 0;
+}
+
+.files-section-header:focus-visible {
+  outline: 1px solid var(--rb-border-strong);
+  outline-offset: -1px;
+}
+
+.files-section-chevron {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+.files-section-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: start;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+.files-section-header:hover .files-section-label {
+  color: var(--rb-text-muted);
+}
+
+/* The Chats header's "+" and fork (sections.rs:456-505): 20px icon
+ * buttons, 5px radius, revealed on header hover, dimmed while a creation
+ * is in flight. */
+.files-section-actions {
+  flex: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--rb-motion-menu-in, 140ms) var(--rb-ease-ease-out);
+}
+
+.files-section-header:hover .files-section-actions,
+.files-section-actions:focus-within {
+  opacity: 1;
+}
+
+.files-section-action {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text-muted) 85%, transparent);
+  cursor: pointer;
+}
+
+.files-section-action:not(:disabled):hover {
+  background: rgb(var(--rb-wash) / 0.09);
+  color: var(--rb-text-muted);
+}
+
+.files-section-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The disclosure body: its height rides the shared sidebar disclosure
+ * tween (inline), the rows scroll inside. */
+.files-section-body {
+  width: 100%;
+  flex: none;
+  overflow: hidden;
+  position: relative;
+}
+
+.files-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+  height: 100%;
+  margin: 0;
+  padding-inline: 0;
+  padding-bottom: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/*
+ * The section list's edge fades (`faded_list` → LIST_FADE_BAND 16, the
+ * sidebar's treatment scaled to the shorter lists): rows dissolve at an
+ * edge while there is more to scroll to, plain when everything fits. A
+ * `mask-image` (glass-safe, unlike a painted overlay) like the tab strip's.
+ */
+.files-section-list[data-fade-top="1"][data-fade-bottom="1"] {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 16px,
+    black calc(100% - 16px),
+    transparent 100%
+  );
+}
+
+.files-section-list:not([data-fade-top="1"])[data-fade-bottom="1"] {
+  mask-image: linear-gradient(to bottom, black 0, black calc(100% - 16px), transparent 100%);
+}
+
+.files-section-list[data-fade-top="1"]:not([data-fade-bottom="1"]) {
+  mask-image: linear-gradient(to bottom, transparent 0, black 16px, black 100%);
+}
+
+/* The compact row: 29px, 8px radius, 13px/17 title, the status dot, the
+ * 11px trailing time. */
+.files-section-row {
+  flex: none;
+  height: 29px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 80%, transparent);
+  cursor: pointer;
+  width: 100%;
+  min-width: 0;
+  text-align: start;
+}
+
+.files-section-row:hover {
+  background: rgb(var(--rb-wash) / 0.06);
+  color: var(--rb-text);
+}
+
+.files-section-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 17px;
+}
+
+.files-section-row-time {
+  flex: none;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/* The "Show N more" row: same slot, fainter, the hover wash. */
+.files-section-more {
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+  font-size: 12px;
+}
+
+.files-section-more:hover {
+  color: var(--rb-text-muted);
+}
+
+/* The empty states (sections.rs:862-901): the copy where the first row
+ * would sit (two 16px lines so it can wrap in a narrow explorer), and for
+ * Chats a row of pill actions — left-aligned like the rows it stands in
+ * for. */
+.files-section-empty {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 8px 10px;
+  min-width: 0;
+}
+
+.files-section-empty > p {
+  min-height: 36px;
+  max-height: 36px;
+  overflow: hidden;
+  margin: 0;
+  padding-block: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+.files-section-empty-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+}
+
+/* The empty state's pill buttons (sections.rs:705-734): 26px, 10px/7px
+ * padding, hairline border, 11.5px text, the hover wash. */
+.files-section-pill {
+  flex: none;
+  height: 26px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  padding-inline: 10px;
+  border: 1px solid var(--rb-border);
+  border-radius: 7px;
+  background: rgb(var(--rb-wash) / 0.04);
+  color: var(--rb-text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.files-section-pill:hover {
+  background: rgb(var(--rb-wash) / 0.09);
+}
+
+/*
+ * ── The side-chat surface (ticket 10, render_side_chat) ─────────────────
+ *
+ * A full-height column: the transcript outlet over the composer, with the
+ * jump pill floating above the composer. The transcript scrolls under the
+ * titlebar band like every pane surface (`.right-pane-body` pads below
+ * it).
+ */
+.side-chat-surface {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.side-chat-transcript {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-chat-composer {
+  flex: none;
+  padding-block: 4px 0;
+}
+
+/* The jump pill floats above the composer (render_side_chat's pill:
+ * 12px from the transcript's bottom, centered). */
+.side-chat-jump-anchor {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.side-chat-jump-anchor .jump-pill {
+  pointer-events: auto;
 }
 
 /* Git status entry colors (files/git_status.rs decorations, theme tokens):

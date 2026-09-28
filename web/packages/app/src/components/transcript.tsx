@@ -1982,6 +1982,11 @@ export function estimateRowHeight(
     case "inputChip":
     case "errorChip":
       return 42;
+    case "forkMarker":
+      // `fork_marker` (transcript.rs:8036-8062): py(14) + the rule/label row
+      // + gap(6) + the 13px title line — an estimate the measurement
+      // corrects on mount.
+      return 67;
   }
 }
 
@@ -2159,6 +2164,7 @@ function RowContent({
       )}
       {kind.kind === "inputChip" && <InputChipRow header={kind.header} resolved={kind.resolved} />}
       {kind.kind === "errorChip" && <ErrorChipRow message={kind.message} />}
+      {kind.kind === "forkMarker" && <ForkMarkerRow sourceTitle={kind.sourceTitle} />}
       {row.timestamp !== null && <RowMeta row={row} visible={hovered} isUserRow={kind.kind === "user"} />}
     </>
   );
@@ -2644,6 +2650,27 @@ function ErrorChipRow({ message }: { message: string }) {
   return (
     <div className="error-chip-row">
       <NoticeChip tone="danger" variant="tile" label="Error" message={message} role="alert" />
+    </div>
+  );
+}
+
+/**
+ * A quiet fork seam — `fork_marker` (transcript.rs:8036-8062): the "Forked
+ * from" label between two hairline rules, then the source's title centered
+ * and truncated below (its own constrained line so a long title cannot
+ * widen a narrow side-chat pane). No message metadata lane.
+ */
+function ForkMarkerRow({ sourceTitle }: { sourceTitle: string }) {
+  return (
+    <div className="fork-marker" role="separator" aria-label="Forked from">
+      <div className="fork-marker-rule-row">
+        <span className="fork-marker-rule" aria-hidden />
+        <span className="fork-marker-label">Forked from</span>
+        <span className="fork-marker-rule" aria-hidden />
+      </div>
+      <span className="fork-marker-title" title={sourceTitle}>
+        {sourceTitle}
+      </span>
     </div>
   );
 }
