@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { parseScopedId } from "@roboco/engine-client";
@@ -10,6 +10,7 @@ import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
+import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import { healedSpaceFilter, archivedChatRows, sidebarRowHeight, type ChatRow } from "../lib/view";
 import { useChatMenu } from "./chat-menu";
 import { ProjectIconMark } from "./project-monogram";
@@ -172,8 +173,12 @@ function ArchivedRow({
   const brand = harness === null ? null : harnessBrandIcon(harness);
   const { menu, element } = useChatMenu(row.chat);
   // Per-row hover state — the web equivalent of the desktop's row-hover
-  // listener, never a sidebar-store concern.
+  // listener, never a sidebar-store concern. The still-pointer resync
+  // (upstream f1ea80d7) shares it: an Unarchive click leaves the pointer
+  // put, and the shelf row that slides under it lights its own pill.
   const [hovered, setHovered] = useState(false);
+  const rowRef = useRef<HTMLLIElement | null>(null);
+  useStillPointerHover(rowRef, setHovered);
   const device = row.deviceName ?? "Unknown device";
   const projectName = row.projectPath === null ? "Home" : row.project;
   const projectSeed = row.projectPath ?? "home";
@@ -182,6 +187,9 @@ function ArchivedRow({
     // The row's own click opens the chat; only the pill restores.
     event.preventDefault();
     event.stopPropagation();
+    // Arm the still-pointer resync ahead of the mutation (the desktop's
+    // pill click sets `chat_hover_resync` first, whatever the RPC does).
+    armStillPointer({ x: event.clientX, y: event.clientY });
     if (session === null) {
       sidebarNotice.set("Engine not connected");
       return;
@@ -199,7 +207,7 @@ function ArchivedRow({
   // wraps the Link so a right-click opens the SAME chat context menu the
   // active rows use, at the pointer.
   return (
-    <li className="arch-row-item">
+    <li ref={rowRef} className="arch-row-item">
       {menu(
         <Link
           to="/chat/$chatId"
