@@ -33,6 +33,17 @@ case "$first" in
   exit 3
   ;;
 
+*scenario:mcp*)
+  case "$first" in
+    *'"mcp":{"args":["mcp"],"command":"/path with spaces/roboco","env":{"ROBOCO_CHAT_ID":"origin-chat"},"name":"roboco"}'*) ;;
+    *) exit 1 ;;
+  esac
+  emit '{"ev":"ready","agentId":"agent-1","model":"auto"}'
+  emit '{"ev":"text","text":"mcp configured"}'
+  emit '{"ev":"turn","status":"finished"}'
+  read -r next || exit 0
+  ;;
+
 *scenario:happy*)
   emit '{"ev":"ready","agentId":"agent-1","model":"composer-2.5"}'
   emit '{"ev":"thinking","text":"planning"}'

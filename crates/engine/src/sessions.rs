@@ -139,6 +139,9 @@ struct RoutedSteer {
 
 struct Inner {
     device_id: String,
+    /// Loopback IPC port this engine serves, once known (0 = not serving):
+    /// what the injected `roboco mcp` server dials back into.
+    ipc_port: std::sync::atomic::AtomicU16,
     journal: Arc<RunJournal>,
     registry: Arc<HarnessRegistry>,
     /// Set-once (first wins), cleared on runtime retirement: sessions and
@@ -190,6 +193,7 @@ impl SessionsEngine {
         Self {
             inner: Arc::new(Inner {
                 device_id,
+                ipc_port: std::sync::atomic::AtomicU16::new(0),
                 journal,
                 registry,
                 doc_host: Mutex::new(None),
@@ -204,6 +208,15 @@ impl SessionsEngine {
                 turn_listener: OnceLock::new(),
             }),
         }
+    }
+
+    /// Record the loopback IPC port this engine serves. Runs started after
+    /// this carry Roboco's MCP server (see [`Inner::roboco_mcp`]); until then —
+    /// or with 0 — agents get no Roboco tools rather than a dead server.
+    pub fn set_ipc_port(&self, port: u16) {
+        self.inner
+            .ipc_port
+            .store(port, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Wire the doc host (called once at engine assembly; the two services are mutually
@@ -1104,6 +1117,30 @@ impl Inner {
         lock(&self.doc_host).clone()
     }
 
+    /// Roboco's own MCP server for a run of `chat_id`: this binary's `roboco
+    /// mcp` subcommand, dialing the engine's IPC port and stamped with the
+    /// originating chat + device so the agent's side chats link back here.
+    /// None when the engine serves no port or its executable is unknown.
+    fn roboco_mcp(&self, chat_id: &str) -> Option<roboco_proto::McpServer> {
+        let port = self.ipc_port.load(std::sync::atomic::Ordering::Relaxed);
+        if port == 0 {
+            return None;
+        }
+        let command = std::env::current_exe().ok()?.to_str()?.to_owned();
+        Some(roboco_proto::McpServer {
+            name: "roboco".into(),
+            command,
+            args: vec!["mcp".into()],
+            env: [
+                ("ROBOCO_IPC_PORT".to_owned(), port.to_string()),
+                ("ROBOCO_CHAT_ID".to_owned(), chat_id.to_owned()),
+                ("ROBOCO_DEVICE_ID".to_owned(), self.device_id.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        })
+    }
+
     fn workspace(&self) -> Option<crate::workspace_host::WorkspaceHost> {
         self.doc_host().and_then(|host| host.workspace().cloned())
     }
@@ -1675,6 +1712,11 @@ async fn drive_run(
     let run_cwd = request.cwd.clone();
     if request.resume.is_none() {
         let _ = doc.clear_context_usage();
+    }
+    // The host stamps its own MCP server onto every run it drives, so the
+    // agent can spawn and talk to side chats through the engine it runs in.
+    if request.mcp.is_none() {
+        request.mcp = inner.roboco_mcp(&chat_id);
     }
     // Kept whole for the startup-crash retry (same user entry; dispatch
     // re-injects the stored resume id). Option so the retry branch (inside

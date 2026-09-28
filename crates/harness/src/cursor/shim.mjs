@@ -11,7 +11,7 @@
 //
 // Protocol: JSONL, one frame per line.
 //   stdin  (engine → shim):
-//     {"op":"run","prompt","cwd","model"?,"modelOptions"?,"resume"?}   start / first turn
+//     {"op":"run","prompt","cwd","model"?,"modelOptions"?,"resume"?,"mcp"?}   start / first turn
 //     {"op":"user","prompt"}                            next turn (parked)
 //     {"op":"interrupt"}                                cancel the live run
 //   stdout (shim → engine):
@@ -490,6 +490,9 @@ async function start(msg) {
   }
   const options = {
     model,
+    ...(msg.mcp ? { mcpServers: { [msg.mcp.name]: {
+      type: "stdio", command: msg.mcp.command, args: msg.mcp.args, env: msg.mcp.env,
+    } } } : {}),
     // askQuestion has no public answer channel in this SDK (SDKRequestMessage
     // carries only a request id) — a question would block the run forever.
     // generateImage has nowhere to land in a roboco session (ACP parity).

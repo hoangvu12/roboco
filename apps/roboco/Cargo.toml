@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 roboco-engine.workspace = true
 roboco-rpc.workspace = true
+roboco-mcp.workspace = true
 roboco-ui.workspace = true
 roboco-update.workspace = true
 tokio.workspace = true

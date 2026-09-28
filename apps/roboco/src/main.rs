@@ -48,6 +48,10 @@ enum Command {
     },
     /// Show the local engine status.
     Status,
+    /// Serve the Roboco MCP (Model Context Protocol) server on stdin/stdout,
+    /// proxying to the running engine's IPC. Agents use it to create, read,
+    /// and message chats. Logs go to stderr; stdout is the protocol.
+    Mcp,
     #[cfg(target_os = "linux")]
     /// Trigger an Appshot in the running headed instance (desktop shortcut fallback).
     Appshot,
@@ -130,18 +134,31 @@ fn main() -> anyhow::Result<()> {
     {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
-        let registry = tracing_subscriber::registry()
-            .with(filter)
-            .with(tracing_subscriber::fmt::layer());
-        match log_file {
-            Some(file) => registry
+        // `roboco mcp` owns stdout for the protocol: a single log line on it
+        // would corrupt the JSON-RPC stream, so its diagnostics go to stderr.
+        if matches!(&cli.command, Some(Command::Mcp)) {
+            tracing_subscriber::registry()
+                .with(filter)
                 .with(
                     tracing_subscriber::fmt::layer()
                         .with_ansi(false)
-                        .with_writer(std::sync::Arc::new(file)),
+                        .with_writer(std::io::stderr),
                 )
-                .init(),
-            None => registry.init(),
+                .init();
+        } else {
+            let registry = tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer());
+            match log_file {
+                Some(file) => registry
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_ansi(false)
+                            .with_writer(std::sync::Arc::new(file)),
+                    )
+                    .init(),
+                None => registry.init(),
+            }
         }
     }
 
@@ -175,6 +192,10 @@ fn main() -> anyhow::Result<()> {
                 None => println!("Engine: not running"),
             }
             Ok(())
+        }
+        Some(Command::Mcp) => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(roboco_mcp::run(roboco_mcp::McpConfig::from_env()))
         }
         #[cfg(target_os = "linux")]
         Some(Command::Appshot) => {

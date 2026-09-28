@@ -170,6 +170,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     );
     client.call(methods::FORK_SIDE_CHAT, params).await.unwrap();
     assert_eq!(target.doc().read_entries().unwrap().len(), 3);
+    core.sessions.set_ipc_port(27699);
     core.sessions
         .dispatch(
             "side",
@@ -201,10 +202,17 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     .unwrap();
     let request = requests.lock().unwrap()[0].clone();
     assert_eq!(request.resume, None);
-    // The engine never stamps the MCP server here: RunRequest.mcp injection
-    // (the `roboco mcp` server identified as the originating chat) is a
-    // separate port; this engine leaves the additive field unset.
-    assert_eq!(request.mcp, None);
+    // The host stamps its MCP server onto the run: this binary's `roboco
+    // mcp`, dialing the served port, identified as the side chat.
+    let mcp = request
+        .mcp
+        .clone()
+        .expect("run carries the roboco MCP server");
+    assert_eq!(mcp.name, "roboco");
+    assert_eq!(mcp.args, ["mcp"]);
+    assert_eq!(mcp.env["ROBOCO_IPC_PORT"], "27699");
+    assert_eq!(mcp.env["ROBOCO_CHAT_ID"], "side");
+    assert_eq!(mcp.env["ROBOCO_DEVICE_ID"], core.device_id);
     assert!(request.prompt.contains("PINEAPPLE"));
     assert!(!request.prompt.contains("unfinished turn"));
     assert_eq!(source.doc().read_entries().unwrap().len(), 4);

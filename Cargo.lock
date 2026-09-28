@@ -7450,6 +7450,7 @@ dependencies = [
  "mimalloc",
  "reqwest",
  "roboco-engine",
+ "roboco-mcp",
  "roboco-rpc",
  "roboco-ui",
  "roboco-update",
@@ -7548,6 +7549,24 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "roboco-mcp"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "roboco-doc",
+ "roboco-proto",
+ "roboco-rpc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
