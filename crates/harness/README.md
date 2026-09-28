@@ -1,6 +1,6 @@
 # Explicit agent installation
 
-Settings → Agents → **Install** runs on the selected paired engine (the device
+Settings → Providers → **Install** runs on the selected paired engine (the device
 being driven), as its user. Merely listing or detecting agents never invokes
 these CLI installers. The table below was checked with `curl -fsSL` against the
 linked vendor documentation on 2026-09-21. Commands download the vendor's current

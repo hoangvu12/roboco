@@ -119,11 +119,13 @@ pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Opt
 /// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`). Every
 /// agent with a login of its own is here; what each one supports is
 /// documented engine-side (`agent_accounts` module docs). Antigravity's
-/// section arrives with the settings/providers polish wave.
-pub const PROVIDERS: [(HarnessId, &str, &str); 8] = [
+/// command never prints in the copy — it has no CLI login (see the
+/// empty-state arm).
+pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
     (HarnessId::ClaudeCode, "Claude Code", "claude"),
     (HarnessId::Codex, "Codex", "codex"),
     (HarnessId::Cursor, "Cursor", "cursor-agent"),
+    (HarnessId::Antigravity, "Antigravity", "Antigravity"),
     (HarnessId::Grok, "Grok", "grok login"),
     (HarnessId::Devin, "Devin", "devin auth login"),
     (HarnessId::Opencode, "OpenCode", "opencode auth login"),
@@ -142,6 +144,12 @@ pub fn signs_in(harness: HarnessId) -> bool {
 /// and no "usage unavailable" note — there is nothing missing. Pure.
 pub fn reports_usage(harness: HarnessId) -> bool {
     harness != HarnessId::Antigravity
+}
+
+/// Providers whose agent holds exactly ONE login (Antigravity): once it is
+/// connected there is nothing to add — signing in again only re-confirms it.
+pub fn keeps_one_login(harness: HarnessId) -> bool {
+    harness == HarnessId::Antigravity
 }
 
 /// Display name of one agent (upstream `provider_name`) — the fallback
@@ -358,6 +366,10 @@ fn login_copy(harness: HarnessId, provider: Option<&str>) -> &'static str {
         (HarnessId::Hermes, _) => {
             "Finish signing in in your browser — enter the code shown below. Hermes adds the \
              login to its own credential pool and rotates through it itself."
+        }
+        (HarnessId::Antigravity, _) => {
+            "Finish signing in to Google in your browser. Antigravity keeps one login on \
+             this device; if it is already signed in, this just confirms it."
         }
         _ => "Finish signing in in your browser.",
     }
@@ -1605,6 +1617,7 @@ impl Render for AccountsPage {
                         HarnessId::Opencode => "accounts-skeleton-opencode",
                         HarnessId::Pi => "accounts-skeleton-pi",
                         HarnessId::Hermes => "accounts-skeleton-hermes",
+                        HarnessId::Antigravity => "accounts-skeleton-antigravity",
                         _ => "accounts-skeleton-claude",
                     };
                     div()
@@ -1691,14 +1704,18 @@ impl Render for AccountsPage {
                             .collect();
                         let add_id: SharedString = format!("add-account-{name}").into();
                         let empty = rows.is_empty();
+                        // Antigravity keeps one login: once connected there is
+                        // nothing to add — signing in again only re-confirms it.
+                        let can_add = empty || !keeps_one_login(harness);
                         let card = widgets::section_card(&theme).mt(px(8.0));
                         let empty_copy = match harness {
                             // Cursor's app login is SEPARATE from `cursor-agent
                             // login` — pointing at the CLI would send users to a
-                            // sign-in that does not light this up.
-                            HarnessId::Cursor => format!(
+                            // sign-in that does not light this up. Antigravity
+                            // has no CLI login at all.
+                            HarnessId::Cursor | HarnessId::Antigravity => format!(
                                 "{name} isn't connected on this device — connect it to run \
-                                 Cursor sessions."
+                                 {name} sessions."
                             ),
                             _ => format!(
                                 "No {name} login detected on this device — sign in \
@@ -1740,23 +1757,39 @@ impl Render for AccountsPage {
                                     // One add button per way to sign in:
                                     // per-provider agents (OpenCode, Pi,
                                     // Hermes) offer each model provider
-                                    // separately.
-                                    .children(login_options(harness).into_iter().enumerate().map(
-                                        |(ix, option)| {
-                                            let label = add_option_label(option, empty);
-                                            widgets::ghost_action(&theme)
-                                                .id((add_id.clone(), ix))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.start_login(harness, option.provider, cx);
-                                                }))
-                                                .child(
-                                                    crate::icons::icon(crate::icons::ADD_CIRCLE)
-                                                        .size(px(16.0))
-                                                        .text_color(theme.text_muted),
-                                                )
-                                                .child(SharedString::from(label))
-                                        },
-                                    )),
+                                    // separately. A one-login provider that is
+                                    // connected offers nothing (it can only
+                                    // re-confirm the login it has).
+                                    .when(can_add, |el| {
+                                        el.children(
+                                            login_options(harness).into_iter().enumerate().map(
+                                                |(ix, option)| {
+                                                    let label = add_option_label(option, empty);
+                                                    widgets::ghost_action(&theme)
+                                                        .id((add_id.clone(), ix))
+                                                        // 23's action-button grammar bakes the
+                                                        // ghost hover in; no explicit .hover here.
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.start_login(
+                                                                    harness,
+                                                                    option.provider,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                        .child(
+                                                            crate::icons::icon(
+                                                                crate::icons::ADD_CIRCLE,
+                                                            )
+                                                            .size(px(16.0))
+                                                            .text_color(theme.text_muted),
+                                                        )
+                                                        .child(SharedString::from(label))
+                                                },
+                                            ),
+                                        )
+                                    }),
                             )
                             .children(
                                 warnings
@@ -2069,6 +2102,24 @@ mod tests {
             assert!(switches_accounts(harness), "{harness:?} is switchable");
             assert!(provider_note(harness).is_none());
         }
+    }
+
+    #[test]
+    fn antigravity_keeps_one_login_with_no_usage_view() {
+        // The engine lists Antigravity rows; the page offers the section's
+        // connect flow, but once connected there is nothing to add, and the
+        // sign-in re-confirms the one login it has.
+        assert!(signs_in(HarnessId::Antigravity));
+        assert!(
+            PROVIDERS
+                .iter()
+                .any(|(h, _, _)| *h == HarnessId::Antigravity)
+        );
+        assert!(keeps_one_login(HarnessId::Antigravity) && !keeps_one_login(HarnessId::Cursor));
+        assert!(!reports_usage(HarnessId::Antigravity) && reports_usage(HarnessId::Codex));
+        assert!(!switches_accounts(HarnessId::Antigravity));
+        assert!(login_copy(HarnessId::Antigravity, None).contains("Google"));
+        assert!(login_copy(HarnessId::Antigravity, None).contains("one login"));
     }
 
     #[test]

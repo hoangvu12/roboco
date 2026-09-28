@@ -2,6 +2,7 @@
 //! The engine discovers and proxies local previews without a cloud coordinator.
 pub mod catalog;
 pub mod discovery;
+pub mod login;
 pub mod mux;
 pub mod peer;
 pub mod proxy;

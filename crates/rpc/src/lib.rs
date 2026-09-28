@@ -45,7 +45,7 @@ pub mod methods {
     /// engine's connection (engine-local routing); this engine owns the
     /// install, guards against duplicate installs, and never forwards.
     pub const CANCEL_INSTALL: &str = "CancelInstall";
-    /// Flip a harness's enablement on the target device (Settings → Agents);
+    /// Flip a harness's enablement on the target device (Settings → Providers);
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";

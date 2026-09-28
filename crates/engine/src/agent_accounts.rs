@@ -58,8 +58,11 @@
 //!    Codex spawns `codex login` against a throwaway `CODEX_HOME` and polls
 //!    until its loopback callback lands; Antigravity runs its server's
 //!    `authenticate`. The reply reports the loopback port the OAuth redirect
-//!    lands on (engine-local: remote-device logins and their port forwarding
-//!    are not part of Roboco's engine-local accounts surface).
+//!    lands on, and a login started on behalf of another device (`requester`)
+//!    publishes that port to [`roboco_preview::login`], which serves it to
+//!    that device alone over the authenticated P2P mux for as long as the
+//!    login runs (Roboco keeps this engine-local: the engine-to-engine relay
+//!    forward that upstream uses to drive remote logins is not ported — ADR 0004).
 //!
 //! Usage probes: all three providers expose the rate-limit view their own CLIs render
 //! (`/usage` in Claude Code, `/status` in Codex; Cursor's key has no quota view,
@@ -453,6 +456,9 @@ struct TaskLoginState {
     url: Option<String>,
     message: Option<String>,
     outcome: Option<Result<(), String>>,
+    /// The device a login run for a remote requester publishes its callback
+    /// port for (upstream `requester`); `None` for a local login.
+    requester: Option<String>,
 }
 
 impl LoginFlow {
@@ -732,6 +738,9 @@ struct Inner {
     identities: Mutex<HashMap<String, IdentityLookup>>,
     /// Test seam: fixed CLI binaries per agent instead of PATH resolution.
     cli_overrides: Mutex<HashMap<HarnessId, PathBuf>>,
+    /// Callback ports logins run for a remote requester publish, served to
+    /// that device alone over the P2P mux (`roboco_preview::login`).
+    callback_routes: roboco_preview::login::CallbackRoutes,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -766,11 +775,24 @@ impl AgentAccounts {
         Self::with_endpoints(config, ProbeEndpoints::default())
     }
 
+    /// [`Self::new`], publishing remote logins' callback ports to `routes`
+    /// (the engine's P2P service, which serves them to the requester).
+    pub fn with_callback_routes(
+        config: AgentAccountsConfig,
+        routes: roboco_preview::login::CallbackRoutes,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self::with_parts(config, ProbeEndpoints::default(), routes, http)
+    }
+
     /// [`Self::new`] with a fixed HTTP client — a test seam for injecting a
     /// failing (DNS-offline) transport without standing up a mock server.
     #[cfg(test)]
     pub(crate) fn with_http_client(config: AgentAccountsConfig, http: reqwest::Client) -> Self {
-        Self::with_parts(config, ProbeEndpoints::default(), http)
+        Self::with_parts(config, ProbeEndpoints::default(), Default::default(), http)
     }
 
     fn with_endpoints(config: AgentAccountsConfig, endpoints: ProbeEndpoints) -> Self {
@@ -778,12 +800,13 @@ impl AgentAccounts {
             .timeout(HTTP_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        Self::with_parts(config, endpoints, http)
+        Self::with_parts(config, endpoints, Default::default(), http)
     }
 
     fn with_parts(
         config: AgentAccountsConfig,
         endpoints: ProbeEndpoints,
+        callback_routes: roboco_preview::login::CallbackRoutes,
         http: reqwest::Client,
     ) -> Self {
         // Startup sweep: a previous process that crashed mid-login leaves
@@ -824,6 +847,7 @@ impl AgentAccounts {
                 claude_credentials: Mutex::new(None),
                 identities: Mutex::new(HashMap::new()),
                 cli_overrides: Mutex::new(HashMap::new()),
+                callback_routes,
             }),
         }
     }
@@ -1392,11 +1416,27 @@ impl AgentAccounts {
     /// [`Self::start_login`] for one model provider of an agent that
     /// keeps a login per provider (`provider`: OpenCode's `openai` /
     /// `github-copilot`, Pi's `openai-codex`, Hermes' `openai-codex` /
-    /// `nous`); `None` picks the agent's default.
+    /// `nous`); `None` picks the agent's default. A login started on behalf
+    /// of the LOCAL client — no remote requester.
     pub async fn start_login_with(
         &self,
         harness: HarnessId,
         provider: Option<&str>,
+    ) -> Result<AgentLoginStart, EngineError> {
+        self.start_login_for(harness, provider, None).await
+    }
+
+    /// [`Self::start_login_with`] on behalf of `requester` — another device,
+    /// whose browser finishes the sign-in. The login's loopback callback
+    /// port is published for that device alone, for as long as the login
+    /// runs. Roboco never names a requester in production (the engine-to-
+    /// engine forward that stamps it upstream is not ported); the surface
+    /// stays for a local transport (ADR 0004).
+    pub async fn start_login_for(
+        &self,
+        harness: HarnessId,
+        provider: Option<&str>,
+        requester: Option<&str>,
     ) -> Result<AgentLoginStart, EngineError> {
         self.sweep_flows();
         let provider = provider.filter(|p| !p.is_empty());
@@ -1409,7 +1449,7 @@ impl AgentAccounts {
             }
             HarnessId::Codex => self.start_codex_login().await?,
             HarnessId::Cursor => self.start_cursor_login().await?,
-            HarnessId::Antigravity => self.start_antigravity_login(),
+            HarnessId::Antigravity => self.start_antigravity_login(requester),
             HarnessId::Grok => self.start_grok_login().await?,
             HarnessId::Devin => self.start_devin_login()?,
             HarnessId::Opencode => match provider.unwrap_or("openai") {
@@ -1442,6 +1482,11 @@ impl AgentAccounts {
         };
         if start.callback_port.is_none() {
             start.callback_port = loopback_port(&start.url);
+        }
+        if let (Some(requester), Some(port)) = (requester, start.callback_port) {
+            self.inner
+                .callback_routes
+                .register(&start.login_id, port, requester, FLOW_TTL);
         }
         Ok(start)
     }
@@ -1747,10 +1792,13 @@ impl AgentAccounts {
     /// the browser url once the server prints it. A server that already holds
     /// a valid token answers `authenticate` without any browser at all, which
     /// is success: the poll reports done and the list shows the login.
-    fn start_antigravity_login(&self) -> AgentLoginStart {
+    fn start_antigravity_login(&self, requester: Option<&str>) -> AgentLoginStart {
         self.reap_spawned_flows(HarnessId::Antigravity);
         let login_id = new_id();
-        let state = Arc::new(Mutex::new(TaskLoginState::default()));
+        let state = Arc::new(Mutex::new(TaskLoginState {
+            requester: requester.map(str::to_string),
+            ..Default::default()
+        }));
         #[cfg(unix)]
         let browser = {
             self.inner
@@ -2156,8 +2204,8 @@ impl AgentAccounts {
     }
 
     /// Poll an engine-driven sign-in; `None` when `login_id` isn't one. A
-    /// page first learned here (Antigravity's) reports its callback port
-    /// with the url.
+    /// page first learned here (Antigravity's) publishes its callback port
+    /// for a remote requester before the poll hands the url out.
     fn poll_task_login(&self, login_id: &str) -> Option<AgentLoginPoll> {
         let state = match lock(&self.inner.flows).get(login_id) {
             Some(LoginFlow::Task { state, .. }) => state.clone(),
@@ -2168,6 +2216,13 @@ impl AgentAccounts {
             match &state.outcome {
                 None => {
                     let callback_port = state.url.as_deref().and_then(loopback_port);
+                    if let (Some(requester), Some(port)) = (&state.requester, callback_port)
+                        && !self.inner.callback_routes.is_registered(login_id)
+                    {
+                        self.inner
+                            .callback_routes
+                            .register(login_id, port, requester, FLOW_TTL);
+                    }
                     return Some(AgentLoginPoll {
                         status: AgentLoginStatus::Pending,
                         message: state.message.clone(),
@@ -2195,6 +2250,7 @@ impl AgentAccounts {
 
     /// Drop a flow's bookkeeping.
     fn remove_flow(&self, login_id: &str) -> Option<LoginFlow> {
+        self.inner.callback_routes.remove(login_id);
         lock(&self.inner.flows).remove(login_id)
     }
 
@@ -3931,6 +3987,23 @@ pub(crate) fn loopback_port(url: &str) -> Option<u16> {
         .flatten()
 }
 
+/// Whether a remote login's reported callback `port` may be forwarded on this
+/// device: never a privileged port, and only the one its authorize `url`
+/// actually redirects to — a buggy or hostile peer can't make us bind (and
+/// receive local traffic on) an arbitrary loopback port.
+///
+/// Roboco: the requester-side guard for [`roboco_preview::login`]'s tunnel
+/// surface. Its upstream caller — the engine-to-engine relay forward that
+/// binds the port on the requesting device — is not ported (ADR 0004), so no
+/// in-tree production caller remains; kept with its tests so the invariant
+/// is documented and enforced when a local transport drives the tunnel.
+pub fn tunnel_port_allowed(port: u16, url: Option<&str>) -> bool {
+    port >= 1024
+        && url
+            .and_then(loopback_port)
+            .is_some_and(|redirect| redirect == port)
+}
+
 /// Serve Claude's loopback redirect until a `/callback` request carries our
 /// `state`: its `code`, or why the provider refused. Strays — a favicon, a
 /// request with anyone else's state — are answered and ignored, so a stray
@@ -4695,6 +4768,40 @@ mod login_tests {
     fn write(path: &Path, contents: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn remote_login_tunnels_only_forward_the_redirect_port() {
+        let url = "https://auth.openai.com/oauth/authorize?client_id=x\
+                   &redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback";
+        assert!(tunnel_port_allowed(1455, Some(url)));
+        // A port the authorize url doesn't redirect to, a privileged port,
+        // or no url at all: refused.
+        assert!(!tunnel_port_allowed(22, Some(url)));
+        assert!(!tunnel_port_allowed(8080, Some(url)));
+        assert!(!tunnel_port_allowed(1455, None));
+        let privileged = "https://x/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcb";
+        assert!(!tunnel_port_allowed(80, Some(privileged)));
+    }
+
+    #[tokio::test]
+    async fn a_login_for_another_device_publishes_its_callback_until_it_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let routes = roboco_preview::login::CallbackRoutes::default();
+        let accounts = AgentAccounts::with_callback_routes(config(tmp.path()), routes.clone());
+        // A local login publishes nothing.
+        let local = accounts.start_login(HarnessId::ClaudeCode).await.unwrap();
+        assert!(!routes.is_registered(&local.login_id));
+        accounts.cancel_login(&local.login_id);
+        // A login started for device-a serves its port to device-a only.
+        let remote = accounts
+            .start_login_for(HarnessId::ClaudeCode, None, Some("device-a"))
+            .await
+            .unwrap();
+        assert!(remote.callback_port.is_some());
+        assert!(routes.is_registered(&remote.login_id));
+        accounts.cancel_login(&remote.login_id);
+        assert!(!routes.is_registered(&remote.login_id));
     }
 
     #[test]
