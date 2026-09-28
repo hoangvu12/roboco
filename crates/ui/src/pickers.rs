@@ -1012,6 +1012,21 @@ impl Pickers {
             .is_some_and(|list| self.offered(list).is_empty())
     }
 
+    /// Whether the session's harness consumes a steer mid-turn (its mailbox
+    /// feeds the live turn) or only between turns — the queue row's primary
+    /// action wording depends on it.
+    pub(crate) fn steers_mid_turn(&self, cx: &App) -> bool {
+        self.harnesses
+            .ready()
+            .and_then(|list| {
+                let selected = self.effective_harness(cx)?;
+                list.iter().find(|h| h.id == selected)
+            })
+            .is_some_and(|h| {
+                h.supports_steering && h.steering_mode == roboco_proto::SteeringMode::StepBoundary
+            })
+    }
+
     /// The fully-resolved config the composer threads into the Run request and
     /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
     /// loaded (no "engine picks a default" passthrough).
@@ -2652,13 +2667,17 @@ impl Pickers {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let id: &'static str = match kind {
+        let base = match kind {
             PickerKind::Branch => "picker-branch",
             PickerKind::Checkout => "picker-checkout",
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Space => "picker-space",
             PickerKind::Device => "picker-device",
         };
+        // Hover state is keyed globally: two composers on screen (main +
+        // side chat) must not light each other's chips, so the key carries
+        // this picker's entity.
+        let id: SharedString = format!("{base}-{}", cx.entity_id()).into();
         let open = self.open_kind() == Some(kind);
         // Ghost pill (roboco composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
         // gap-1.5 text-[12px] font-medium text-muted-foreground`, icons size-4,
@@ -2666,7 +2685,7 @@ impl Pickers {
         div()
             .relative()
             .child(self.measure_trigger(kind, cx))
-            .id(id)
+            .id(id.clone())
             .h(px(32.0))
             .max_w(px(248.0))
             .when(
@@ -2694,7 +2713,7 @@ impl Pickers {
             // roboco composer/styles.tsx `pill`: `transition-colors` — the wash
             // and text brighten fade over 150ms.
             .text_color(motion::hover_blend(
-                id,
+                &id,
                 if set {
                     theme.text.opacity(0.9)
                 } else {
@@ -2705,9 +2724,9 @@ impl Pickers {
             .bg(if open {
                 theme.element_hover
             } else {
-                motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
+                motion::hover_blend(&id, gpui::transparent_black(), theme.element_hover)
             })
-            .on_hover(motion::hover_listener(id))
+            .on_hover(motion::hover_listener(id.clone()))
             .cursor_pointer()
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -2771,10 +2790,12 @@ impl Pickers {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let open = self.open_kind() == Some(kind);
+        // Per-picker hover key, like the trigger chips.
+        let id: SharedString = format!("{id}-{}", cx.entity_id()).into();
         div()
             .relative()
             .child(self.measure_trigger(kind, cx))
-            .id(id)
+            .id(id.clone())
             .h(px(20.0))
             .max_w(px(280.0))
             .flex()
@@ -2786,16 +2807,16 @@ impl Pickers {
             .text_size(crate::typography::ui_rems(12.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(motion::hover_blend(
-                id,
+                &id,
                 theme.text_muted.opacity(0.7),
                 theme.text.opacity(0.8),
             ))
             .bg(if open {
                 theme.element_hover
             } else {
-                motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
+                motion::hover_blend(&id, gpui::transparent_black(), theme.element_hover)
             })
-            .on_hover(motion::hover_listener(id))
+            .on_hover(motion::hover_listener(id.clone()))
             .cursor_pointer()
             .on_mouse_down(
                 gpui::MouseButton::Left,
