@@ -47,6 +47,10 @@ jobs:
         run: |
           cargo test --locked -p roboco-harness --lib opencode::
           cargo test --locked -p roboco-harness --test opencode
+      - name: Pi native driver integration tests
+        run: |
+          cargo test --locked -p roboco-harness --test pi
+          cargo test --locked -p roboco-engine --test pi_resume
       - name: Engine-local storage and recovery
         run: |
           cargo test --locked -p roboco-sync --lib

@@ -59,17 +59,36 @@ def read_command():
 
 # --- session identity ------------------------------------------------------
 argv = sys.argv[1:]
+if "--version" in argv:
+    # model_context() probes the binary version; answer it cleanly.
+    print("0.87.0-fixture")
+    sys.exit(0)
 assert "--mode" in argv and argv[argv.index("--mode") + 1] == "rpc", argv
 resumed_session = None
 if "--session" in argv:
     resumed_session = argv[argv.index("--session") + 1]
     assert os.path.isfile(resumed_session), f"resume target missing: {resumed_session}"
 
-session_file = os.path.join(os.getcwd(), ".pi-fixture-session.jsonl")
-with open(session_file, "a") as handle:  # exists so the driver resume check passes
-    handle.write("fixture\n")
+title_mode = "--no-tools" in argv
+if title_mode:
+    # The title sandbox: isolated one-shot spawn (never resumes, never
+    # writes a session), tools off, shared title instructions as the
+    # system prompt. Extensions stay enabled (provider configs can be
+    # extension-registered; --no-extensions would break model resolution).
+    assert "--no-session" in argv, argv
+    assert "--no-skills" in argv and "--no-prompt-templates" in argv, argv
+    assert "--no-context-files" in argv and "--no-themes" in argv, argv
+    assert "--system-prompt" in argv, argv
+    assert "--no-extensions" not in argv, argv
+    assert "--session" not in argv, argv
+
+session_file = None if "--no-session" in argv else os.path.join(os.getcwd(), ".pi-fixture-session.jsonl")
+if session_file is not None:
+    with open(session_file, "a") as handle:  # exists so the driver resume check passes
+        handle.write("fixture\n")
 session_id = "pi-fixture-session"
 thinking_level_seen = None
+set_model_seen = None
 steering_queue = []
 
 def state_data():
@@ -134,6 +153,11 @@ def run_prompt(req):
     text = req["message"]
     if text == "require-resume":
         assert resumed_session == session_file, f"engine did not resume: {resumed_session}"
+    if text.startswith("You generate session titles"):
+        assert title_mode, "title instructions must only run in the title sandbox"
+        user_message(text)
+        turn_and_settle("Fix Login Flow")
+        return
     if text == "reject":
         reject(req, "A prompt is already running (busy)")
         return
@@ -314,6 +338,28 @@ while True:
     kind = command["type"]
     if kind == "get_state":
         response(command, state_data())
+    elif kind == "get_available_models":
+        # The live catalog: provider-scoped entries plus edge cases (a
+        # provider-less row and a name-less row must be skipped or fall
+        # back to the id; the bare-model entry backs legacy id resolution).
+        response(command, {"models": [
+            {"id": "flash-model", "name": "Flash Model", "provider": "mock", "reasoning": False},
+            {"id": "reasoning-model", "name": "Reasoning Model", "provider": "mock", "reasoning": True},
+            {"id": "nested/gateway/model", "name": "Nested Model", "provider": "mock", "reasoning": False},
+            {"id": "no-provider-model", "name": "No Provider", "provider": "", "reasoning": False},
+            {"id": "no-name-model", "provider": "mock", "reasoning": False},
+            {"id": "bare-model", "name": "Bare Model", "provider": "mock", "reasoning": False},
+        ]})
+    elif kind == "set_model":
+        assert command["provider"] and command["modelId"], command
+        set_model_seen = command["provider"] + "|" + command["modelId"]
+        if command["modelId"] == "reject-model":
+            reject(command, "Model not found: " + command["provider"] + "/reject-model")
+        else:
+            if session_file is not None:
+                with open(session_file, "a") as handle:
+                    handle.write("model:" + set_model_seen + "\n")
+            response(command, {"provider": command["provider"], "id": command["modelId"]})
     elif kind == "set_thinking_level":
         thinking_level_seen = command["level"]
         # Record the applied level in the session file so tests can prove

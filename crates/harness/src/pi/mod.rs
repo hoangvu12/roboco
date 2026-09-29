@@ -37,9 +37,18 @@
 //! - **Extension UI**: blocking dialogs (`select`/`confirm`/`input`/`editor`)
 //!   map to roboco's question flow and are answered with
 //!   `extension_ui_response`; fire-and-forget methods are tolerated.
-//! - **Models**: pass-through — pi keeps whatever `~/.pi` provider config
-//!   selects (the picker's "pi default" row); `set_thinking_level` applies
-//!   the run's reasoning (pi clamps to the model's ladder itself).
+//! - **Models**: the live catalog comes from `get_available_models`
+//!   (provider-scoped rows, composite `<provider>/<modelId>` ids — the
+//!   pi-acp spelling pre-native chats saved). A requested model is applied
+//!   with `set_model` at startup (best-effort, pi-acp parity); a bare
+//!   `default`/unset id passes through to pi's own `~/.pi` selection.
+//!   `set_thinking_level` applies the run's reasoning (pi clamps to the
+//!   model's ladder itself).
+//! - **Titles**: `run_title` spawns an isolated one-shot (`--no-session`,
+//!   `--no-tools`, pi's other discovery-off flags, `--system-prompt` = the
+//!   shared title instructions). `--no-extensions` is deliberately NOT
+//!   passed: provider configs can be extension-registered, and the model
+//!   must still resolve.
 //! - **Interrupt**: `abort`, then SIGTERM → SIGKILL escalation; the stream
 //!   always ends with `Done { status: Interrupted }`.
 
@@ -73,10 +82,10 @@ use normalize::{
 };
 use wire::{PiClient, PiIncoming};
 
-/// The pass-through picker row: pi decides the model from its own
-/// `~/.pi` provider config, so roboco advertises one entry and never
-/// switches models underneath the user (today's `pi_spec().models`
-/// behavior, kept deliberately).
+/// The pass-through picker row, used as the fallback catalog when live
+/// discovery fails cold (offline, no provider configured): pi decides the
+/// model from its own `~/.pi` provider config, so roboco advertises one
+/// entry and never switches models underneath the user.
 fn pass_through_models() -> Vec<Model> {
     vec![Model {
         id: "default".into(),
@@ -128,6 +137,87 @@ fn resolve_pi_executable() -> Option<PathBuf> {
     crate::executable::find_on_paths("pi", pi_install_paths())
 }
 
+/// Map pi's `get_available_models` payload onto picker rows. Every entry is
+/// scoped by the provider config that serves it (`provider` + `id` — the id
+/// may itself contain slashes); the row id is the composite
+/// `<provider>/<id>`: the spelling `set_model` splits back into its two
+/// fields, the `--model` CLI flag accepts, and pre-native chats saved under
+/// the pi-acp adapter. Entries without a provider or id are skipped; a
+/// missing name falls back to the id. Reasoning models carry
+/// pi's own ladder; non-reasoning models get none (the agent default runs —
+/// `set_thinking_level` clamps against the model's ladder on pi's side).
+fn available_models(value: &Value) -> Vec<Model> {
+    value
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let provider = entry
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|p| !p.is_empty())?;
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?;
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
+            Some(Model {
+                id: format!("{provider}/{id}"),
+                label: format!("{provider}/{name}"),
+                description: None,
+                reasoning_levels: entry
+                    .get("reasoning")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .then(|| REASONING_LEVELS.to_vec())
+                    .unwrap_or_default(),
+                options: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// Resolve + apply a requested model id through pi's `set_model`. Composite
+/// ids split on the FIRST slash (provider, then pi's own model id); a bare
+/// id is a legacy spelling, recovered by looking the model up in the live
+/// catalog for its provider (exactly the pi-acp fork's `setSessionModel`).
+async fn apply_model(client: &PiClient, model: &str) -> Result<(), HarnessError> {
+    let (provider, model_id) = match model.split_once('/') {
+        Some((provider, id)) => (provider.to_owned(), id.to_owned()),
+        None => {
+            let available = client.request("get_available_models", json!({})).await?;
+            let entry = available
+                .get("models")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(model))
+                .ok_or_else(|| HarnessError::Protocol(format!("unknown model: {model}")))?;
+            let provider = entry
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .ok_or_else(|| {
+                    HarnessError::Protocol(format!("model {model} has no provider"))
+                })?;
+            (provider.to_owned(), model.to_owned())
+        }
+    };
+    client
+        .request("set_model", json!({ "provider": provider, "modelId": model_id }))
+        .await
+        .map(|_| ())
+}
+
 /// The pi harness. Construct with [`PiHarness::new`]; tests point it at a
 /// fixture RPC process with [`PiHarness::with_executable`].
 pub struct PiHarness {
@@ -140,6 +230,8 @@ pub struct PiHarness {
     /// load, background catalog refresh) must finish inside it or the run
     /// errors instead of spinning "Working" forever.
     startup_timeout: Duration,
+    /// Provider-scoped successful catalog, with bounded refresh and backoff.
+    models_cache: crate::catalog::Catalog,
 }
 
 impl Default for PiHarness {
@@ -149,6 +241,7 @@ impl Default for PiHarness {
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
             startup_timeout: Duration::from_secs(60),
+            models_cache: crate::catalog::Catalog::default(),
         }
     }
 }
@@ -186,64 +279,61 @@ impl PiHarness {
         }
         resolve_pi_executable().ok_or_else(|| HarnessError::NotInstalled(INSTALL_HINT.into()))
     }
-}
 
-#[async_trait]
-impl Harness for PiHarness {
-    fn id(&self) -> HarnessId {
-        HarnessId::Pi
-    }
-    fn display_name(&self) -> &str {
-        "Pi"
-    }
-    fn supports_steering(&self) -> bool {
-        true
-    }
-    /// pi's `steer` queue delivers after the current assistant turn's tool
-    /// calls — turn boundaries, matching the registry descriptor.
-    fn steering_mode(&self) -> SteeringMode {
-        SteeringMode::TurnBoundary
-    }
-    fn reasoning_levels(&self) -> &[ReasoningLevel] {
-        &REASONING_LEVELS
-    }
-    fn installed(&self) -> bool {
-        self.resolve_executable().is_ok()
-    }
-    fn executable_path(&self) -> Option<std::path::PathBuf> {
-        self.resolve_executable().ok()
-    }
-    /// `agent_settled` ends every turn shape — user-prompted and
-    /// agent-initiated (extension runs) — with a deterministic `Done`.
-    fn deterministic_turn_end(&self) -> bool {
-        true
-    }
-
-    /// Pass-through: pi owns the model from its `~/.pi` provider config; the
-    /// catalog entry is stable per binary/auth state (the engine persists it
-    /// keyed by that context).
-    fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
-        crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
-    }
-    fn fallback_models(&self) -> Vec<Model> {
-        pass_through_models()
-    }
-    async fn model_catalog(&self, _force: bool) -> Result<crate::ModelCatalog, HarnessError> {
-        self.resolve_executable()?;
-        Ok(crate::ModelCatalog {
-            models: pass_through_models(),
-            source: "static",
-        })
-    }
-    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-        self.resolve_executable()?;
-        Ok(pass_through_models())
+    /// Spawn the probe `pi --mode rpc` and read `get_available_models`.
+    /// Ephemeral (`--no-session`): discovery never litters pi's session
+    /// history. Runs with extensions ENABLED — provider configs can be
+    /// extension-registered (a custom gateway), and the catalog must mirror
+    /// what a real run would see. Events (notify noise) are drained so a
+    /// chatty extension can never stall the reader.
+    async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
+        let exe = self.resolve_executable()?;
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--mode").arg("rpc").arg("--no-session");
+        cmd.current_dir(crate::executable::home_or_current_dir());
+        child::configure(&mut cmd);
+        crate::compose_child_path(&mut cmd, &exe);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
+            } else {
+                HarnessError::Io(e)
+            }
+        })?;
+        let mut child = child::Child::new(child);
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HarnessError::Protocol("pi child has no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| HarnessError::Protocol("pi child has no stdout".into()))?;
+        let (client, mut incoming) = PiClient::new(stdin, stdout);
+        tokio::spawn(async move {
+            while incoming.recv().await.is_some() {}
+        });
+        let probe = client.request("get_available_models", json!({}));
+        let models = tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .map_err(|_| HarnessError::Protocol("pi model discovery timed out".into()))??;
+        child.shutdown(self.kill_grace).await;
+        Ok(available_models(&models))
     }
 
-    async fn run(
+    /// The shared run body: `run` passes `title_only = false`;
+    /// [`Harness::run_title`] sanitizes the request and passes `true`,
+    /// which restricts the spawn (see the title-sandbox comment in the
+    /// command construction below).
+    async fn run_with_mode(
         &self,
         request: RunRequest,
         controls: RunControls,
+        title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
         // The resume pointer is the FULL session file path pi reported
@@ -260,6 +350,23 @@ impl Harness for PiHarness {
 
         let mut cmd = Command::new(&exe);
         cmd.arg("--mode").arg("rpc");
+        if title_only {
+            // The title sandbox: no session file, no tools (pi's --no-tools
+            // covers built-in AND extension tools), no skills / prompt
+            // templates / context files / themes — and the shared title
+            // instructions replace pi's coding system prompt. Extensions
+            // stay ON: provider configs can be extension-registered, and
+            // the model must still resolve (verified against a real CLI:
+            // --no-extensions leaves get_state reporting `model: unknown`).
+            cmd.arg("--no-session")
+                .arg("--no-tools")
+                .arg("--no-skills")
+                .arg("--no-prompt-templates")
+                .arg("--no-context-files")
+                .arg("--no-themes")
+                .arg("--system-prompt")
+                .arg(crate::TITLE_INSTRUCTIONS);
+        }
         if let Some(resume) = &resume_path {
             cmd.arg("--session").arg(resume);
         }
@@ -323,6 +430,98 @@ impl Harness for PiHarness {
             rx.recv().await.map(|ev| (ev, rx))
         })
         .boxed())
+    }
+}
+
+#[async_trait]
+impl Harness for PiHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Pi
+    }
+    fn display_name(&self) -> &str {
+        "Pi"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    /// pi's `steer` queue delivers after the current assistant turn's tool
+    /// calls — turn boundaries, matching the registry descriptor.
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &REASONING_LEVELS
+    }
+    fn installed(&self) -> bool {
+        self.resolve_executable().is_ok()
+    }
+    fn executable_path(&self) -> Option<std::path::PathBuf> {
+        self.resolve_executable().ok()
+    }
+    /// `agent_settled` ends every turn shape — user-prompted and
+    /// agent-initiated (extension runs) — with a deterministic `Done`.
+    fn deterministic_turn_end(&self) -> bool {
+        true
+    }
+
+    /// Credential context (auth.json + binary identity). The provider
+    /// catalog (`models-store.json`, what `pi update` refreshes) deliberately
+    /// does NOT ride the hash: pi rewrites it on every RPC-mode startup
+    /// (background catalog refresh), so hashing it makes each probe
+    /// invalidate its own context. Store changes surface through the
+    /// harness catalog's bounded refresh (60s window) and the engine's
+    /// background re-probe instead.
+    fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
+        crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+    }
+    fn fallback_models(&self) -> Vec<Model> {
+        pass_through_models()
+    }
+    /// Live catalog via `get_available_models` — provider-scoped rows with
+    /// composite `<provider>/<modelId>` ids (what `set_model` accepts and
+    /// pre-native chats saved). A cold failure surfaces the error; the
+    /// engine serves the pass-through fallback row when nothing is known.
+    async fn model_catalog(&self, force: bool) -> Result<crate::ModelCatalog, HarnessError> {
+        self.model_context()?.expect("pi context is always present").log();
+        self.models_cache
+            .get_with(
+                force,
+                || {
+                    self.model_context()
+                        .map(|context| context.expect("pi context is always present").key())
+                },
+                || self.discover_models(),
+            )
+            .await
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        self.model_catalog(false).await.map(|catalog| catalog.models)
+    }
+
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.run_with_mode(request, controls, false).await
+    }
+
+    /// One-shot title runs: sanitized request, isolated spawn. The engine
+    /// already builds a bare request; clearing the interaction surfaces
+    /// here too means a future caller cannot smuggle a resume, worktree or
+    /// attachment into a titling subprocess.
+    async fn run_title(
+        &self,
+        mut request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        request.resume = None;
+        request.worktree = None;
+        request.attachments.clear();
+        request.mcp = None;
+        request.model_options.clear();
+        request.auto_approve = false;
+        self.run_with_mode(request, controls, true).await
     }
 }
 
@@ -448,6 +647,23 @@ async fn run_session(session: Session) {
     // ---- startup: get_state (interruptible, bounded) ----------------------
     let setup = async {
         let state = client.request("get_state", json!({})).await?;
+        // Apply the run's model before anything else: rows are composite
+        // `<provider>/<modelId>` (or the bare `default`, which means "pi's
+        // own configured model" and switches nothing). Best-effort — a
+        // rejected switch logs and the agent default runs, pi-acp parity;
+        // the picker pins unknown ids as "absent from the current list".
+        if let Some(model) = request
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty() && *model != "default")
+        {
+            if let Err(e) = apply_model(&client, model).await {
+                tracing::warn!(
+                    target: "roboco_harness::pi",
+                    "set_model {model} rejected (pi default runs): {e}"
+                );
+            }
+        }
         // Apply the run's thinking level (pi clamps to the model's own
         // ladder; a rejected level leaves the agent default). Best-effort:
         // an unavailable level is not a failed run.

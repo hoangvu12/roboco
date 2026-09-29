@@ -234,18 +234,20 @@ describe("page copy tables (harnesses.rs:41-68)", () => {
     }
   });
 
-  it("supportsTitles matches harness lib.rs (codex, claude-code, mock)", () => {
+  it("supportsTitles matches harness lib.rs (codex, claude-code, pi, mock)", () => {
     expect(supportsTitles("codex")).toBe(true);
     expect(supportsTitles("claude-code")).toBe(true);
+    expect(supportsTitles("pi")).toBe(true);
     expect(supportsTitles("mock")).toBe(true);
     expect(supportsTitles("cursor")).toBe(false);
     expect(supportsTitles("opencode")).toBe(false);
     expect(supportsTitles("antigravity")).toBe(false);
   });
 
-  it("titleHarnessLabel names the two supported real agents", () => {
+  it("titleHarnessLabel names the three supported real agents", () => {
     expect(titleHarnessLabel("claude-code", "whatever")).toBe("Claude Code");
     expect(titleHarnessLabel("codex", "whatever")).toBe("Codex");
+    expect(titleHarnessLabel("pi", "whatever")).toBe("Pi");
     expect(titleHarnessLabel("grok", "Grok")).toBe("Grok");
   });
 });

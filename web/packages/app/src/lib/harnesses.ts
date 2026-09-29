@@ -338,12 +338,12 @@ export function nextSignInPhase(poll: AgentLoginPoll): SignInPhase | null {
 }
 
 /**
- * `roboco_harness::supports_titles` (harness/src/lib.rs:306-311): the drivers
- * with a restricted title-generation path — Codex, Claude Code, and the dev
- * rig's Mock.
+ * `roboco_harness::supports_titles` (harness/src/lib.rs): the drivers
+ * with a restricted title-generation path — Codex, Claude Code, Pi, and the
+ * dev rig's Mock.
  */
 export function supportsTitles(harness: HarnessId): boolean {
-  return harness === "codex" || harness === "claude-code" || harness === "mock";
+  return harness === "codex" || harness === "claude-code" || harness === "pi" || harness === "mock";
 }
 
 /**
@@ -438,6 +438,8 @@ export function titleHarnessLabel(harness: HarnessId, fallback: string): string 
       return "Claude Code";
     case "codex":
       return "Codex";
+    case "pi":
+      return "Pi";
     default:
       return fallback;
   }

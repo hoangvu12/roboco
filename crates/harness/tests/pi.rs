@@ -157,12 +157,34 @@ fn pi_surfaces_match_registry_expectations() {
 }
 
 #[tokio::test]
-async fn models_are_the_pass_through_entry() {
+async fn models_list_the_live_provider_scoped_catalog() {
     let models = harness().models().await.unwrap();
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].id, "default");
-    assert_eq!(models[0].label, "pi default");
-    assert_eq!(models[0].reasoning_levels.len(), 6);
+    // Provider-scoped composite ids (what `set_model` splits back into its
+    // two fields); provider-less and name-less entries are skipped / fall
+    // back to the id; reasoning models carry pi's ladder.
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "mock/flash-model",
+            "mock/reasoning-model",
+            "mock/nested/gateway/model",
+            "mock/no-name-model",
+            "mock/bare-model",
+        ],
+        "{models:?}"
+    );
+    assert_eq!(models[0].label, "mock/Flash Model");
+    assert_eq!(models[1].label, "mock/Reasoning Model");
+    // A name-less entry labels with the composite id itself.
+    assert_eq!(models[3].label, "mock/no-name-model");
+    assert!(models[1].reasoning_levels.contains(&ReasoningLevel::Max));
+    assert!(models[0].reasoning_levels.is_empty());
+    // A repeated call on the same harness instance serves the cached
+    // catalog without a second probe.
+    let pi = harness();
+    assert_eq!(pi.models().await.unwrap().len(), 5);
+    assert_eq!(pi.models().await.unwrap().len(), 5);
 }
 
 #[tokio::test]
@@ -326,6 +348,109 @@ async fn thinking_level_is_applied_at_startup() {
     )
     .unwrap();
     assert!(recorded.contains("thinking:xhigh"), "{recorded}");
+}
+
+// ---------------------------------------------------------------------------
+// Requested models are applied through `set_model`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_composite_model_id_switches_the_model_before_the_first_prompt() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("hello", &cwd.path().display().to_string());
+    req.model = Some("mock/nested/gateway/model".into());
+    let events = run_to_end(&harness(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    // Composite ids split on the FIRST slash: provider "mock", model id
+    // "nested/gateway/model" (pi model ids may themselves contain slashes).
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("model:mock|nested/gateway/model"), "{recorded}");
+}
+
+#[tokio::test]
+async fn a_bare_legacy_model_id_resolves_its_provider_through_the_catalog() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("hello", &cwd.path().display().to_string());
+    req.model = Some("bare-model".into());
+    let events = run_to_end(&harness(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("model:mock|bare-model"), "{recorded}");
+}
+
+#[tokio::test]
+async fn the_pass_through_default_never_switches_the_model() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("hello", &cwd.path().display().to_string());
+    req.model = Some("default".into());
+    let events = run_to_end(&harness(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("model:"), "{recorded}");
+}
+
+#[tokio::test]
+async fn a_rejected_model_switch_is_best_effort_and_the_run_proceeds() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("hello", &cwd.path().display().to_string());
+    // The fixture rejects this id: pi-acp parity — log and run the default.
+    req.model = Some("mock/reject-model".into());
+    let events = run_to_end(&harness(), req, ctl).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert_eq!(text_of(&events), "reply:hello", "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("model:"), "{recorded}");
+}
+
+// ---------------------------------------------------------------------------
+// Title runs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (ctl, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd(
+        "You generate session titles. Session request (JSON string): \"fix the login flow\"",
+        &scratch.path().display().to_string(),
+    );
+    // A hostile caller smuggles interaction surfaces; run_title must clear
+    // every one of them before spawning.
+    req.resume = Some("some-old-session".into());
+    req.attachments = vec!["/etc/passwd".into()];
+    req.auto_approve = true;
+    let mut stream = harness().run_title(req, ctl).await.unwrap();
+    let mut events = Vec::new();
+    while let Some(event) =
+        tokio::time::timeout(Duration::from_secs(15), stream.next()).await.expect("progress")
+    {
+        let event = event.expect("stream event");
+        let done = matches!(event, AgentEvent::Done { .. });
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert_eq!(text_of(&events), "Fix Login Flow", "{events:?}");
+    // No session file in the scratch dir: the title sandbox is ephemeral
+    // and never resumes. (The fixture asserts the spawn flags itself.)
+    assert!(!scratch.path().join(".pi-fixture-session.jsonl").exists());
+    // pi participates in device-local title generation.
+    assert!(roboco_harness::supports_titles(HarnessId::Pi));
 }
 
 // ---------------------------------------------------------------------------
