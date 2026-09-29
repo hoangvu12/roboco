@@ -1,11 +1,24 @@
 # Windows development
 
-Windows supports native x64 and ARM64 source builds and portable release ZIPs.
-Release packages offer in-app updates through GitHub; keep `roboco-update.json`
-beside `roboco.exe`. Artifact names use Rust's architecture token (`x86_64` or
-`aarch64`) so the updater can find the matching executable; published
-releases include both. Installers and background services are not supported
-yet.
+Windows supports native x64 and ARM64 source builds, a per-user installer,
+and portable release ZIPs. The installer (`dist/windows/roboco.iss`, Inno
+Setup 6) installs into `%LOCALAPPDATA%\Programs\Roboco` without elevation,
+registers the Start menu entry, the `roboco://` link handler, and the
+Settings → Apps uninstall entry. Both release packages carry
+`roboco-update.json` beside `roboco.exe`, which lets the app replace its
+executable in place from GitHub releases; keep it there for portable copies.
+Artifact names use Rust's architecture token (`x86_64` or `aarch64`) so the
+updater can find the matching executable; published releases include both.
+Background services are not supported yet.
+
+`scripts/package-windows.ps1` builds the portable ZIP, the updater payload
+`.exe`, and `roboco-<version>-windows-<arch>-setup.exe` (Inno Setup 6
+required: `winget install JRSoftware.InnoSetup`).
+`scripts/test-windows-installer.ps1` installs, inspects, and uninstalls the
+setup silently; it touches the current user's registration, so it only runs
+in CI or with `-Force`. `install.ps1` (`scripts/install-windows.ps1`)
+remains the one-liner installer for the same layout, without the uninstall
+entry and link registration.
 
 ## Build and run
 

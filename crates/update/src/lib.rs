@@ -17,8 +17,8 @@
 //!   performs, natively.
 //! - **MacApp** (running out of an app bundle): download the app tarball, swap
 //!   the bundle directory, relaunch. Driven by the UI.
-//! - **WindowsPortable** (the Windows portable zip): swap the executable in
-//!   place. Driven by the UI.
+//! - **WindowsPortable** (the Windows installer or portable zip — both carry
+//!   `roboco-update.json`): swap the executable in place. Driven by the UI.
 //! - **Unmanaged** (source builds, hand-copied binaries): report only — the
 //!   UI's advisory strip links to [`RELEASES_PAGE`].
 //!
@@ -296,7 +296,8 @@ pub enum InstallKind {
     Managed { app_root: PathBuf },
     /// Running out of a macOS `.app` bundle.
     MacApp { bundle: PathBuf },
-    /// Windows portable package with an explicit update-feed configuration.
+    /// Windows installer or portable package with an explicit update-feed
+    /// configuration.
     #[cfg(windows)]
     WindowsPortable { directory: PathBuf },
     /// Source build or hand-copied binary — updates are report-only.

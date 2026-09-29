@@ -62,3 +62,23 @@ installed builds can update into Roboco. CI runs this on tags
    xcrun stapler staple Roboco.app
    ```
 5. Ship as a `.dmg` (`hdiutil create -volname Roboco -srcfolder Roboco.app -ov -format UDZO Roboco.dmg`).
+
+## Windows
+
+```powershell
+./scripts/package-windows.ps1 -ReleasesUrl https://github.com/hoangvu12/roboco/releases/latest/download
+```
+
+Produces, under `target/package/`:
+
+- `roboco-<version>-windows-<arch>-setup.exe` — the per-user installer built
+  from `dist/windows/roboco.iss` with Inno Setup 6
+- `roboco-<version>-windows-<arch>.zip` — the portable package
+- `roboco-<version>-windows-<arch>.exe` — the bare executable the in-app
+  updater downloads
+
+The installer and the zip both carry `roboco-update.json`, the marker that lets
+the app update itself in place. The GitHub Release also ships `install.ps1`
+(`scripts/install-windows.ps1`, the one-liner installer) for the same layout,
+without the uninstall entry and `roboco://` registration. CI runs
+`scripts/test-windows-installer.ps1` against the setup on every Windows build.
