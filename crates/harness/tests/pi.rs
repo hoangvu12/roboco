@@ -453,6 +453,32 @@ async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
     assert!(roboco_harness::supports_titles(HarnessId::Pi));
 }
 
+#[tokio::test]
+async fn mcp_injection_installs_the_extension_bridge() {
+    let (controls, _steer, _token) = controls();
+    let mut req = request("hello");
+    req.mcp = Some(roboco_proto::McpServer {
+        name: "roboco".into(),
+        // Never spawned by the fixture: the bridge extension is the thing
+        // that would launch this command inside a real pi, and the fixture
+        // asserts the wiring (flag + env + written file) at startup.
+        command: "/nonexistent/roboco".into(),
+        args: vec!["mcp".into()],
+        env: [
+            ("ROBOCO_IPC_PORT".to_owned(), "27654".to_owned()),
+            ("ROBOCO_CHAT_ID".to_owned(), "chat-1234".to_owned()),
+            ("ROBOCO_DEVICE_ID".to_owned(), "dev-5678".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    // The fixture asserts --extension + ROBOCO_MCP_SERVER + the file at
+    // spawn; the run itself must complete normally with the bridge along.
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:hello");
+}
+
 // ---------------------------------------------------------------------------
 // Turn errors reject the prompt
 // ---------------------------------------------------------------------------

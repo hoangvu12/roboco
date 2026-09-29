@@ -82,6 +82,22 @@ if title_mode:
     assert "--no-extensions" not in argv, argv
     assert "--session" not in argv, argv
 
+if os.environ.get("ROBOCO_MCP_SERVER"):
+    # The Roboco MCP bridge: pi runs with the bridge extension on the
+    # command line and the server spec in the environment when (and only
+    # when) the engine injected its MCP server into this run.
+    assert "--extension" in argv, argv
+    bridge_path = argv[argv.index("--extension") + 1]
+    assert os.path.isfile(bridge_path), "bridge extension missing: " + bridge_path
+    with open(bridge_path) as handle:
+        bridge = handle.read()
+    assert "registerTool" in bridge and "tools/call" in bridge, "not the roboco bridge"
+    spec = json.loads(os.environ["ROBOCO_MCP_SERVER"])
+    assert spec["name"] == "roboco", spec
+    assert isinstance(spec["args"], list), spec
+else:
+    assert "--extension" not in argv, argv
+
 session_file = None if "--no-session" in argv else os.path.join(os.getcwd(), ".pi-fixture-session.jsonl")
 if session_file is not None:
     with open(session_file, "a") as handle:  # exists so the driver resume check passes

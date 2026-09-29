@@ -93,8 +93,10 @@ fn arg_str(args: &Value, key: &str) -> Option<String> {
 /// `dist/core/tools/*.d.ts`: read `{path}`, edit
 /// `{path, edits:[{oldText,newText}]}`, write `{path, content}`, find
 /// `{pattern, path?}`, grep `{pattern, path?, glob?}`, ls `{path?}`,
-/// bash/powershell `{command}`). Unknown/extension tools stay `Unknown`
-/// with their raw input so the chip can still name them.
+/// bash/powershell `{command}`). MCP bridge tools arrive as
+/// `mcp__<server>__<tool>` (the Roboco extension names them that way) and
+/// decode into the shared MCP chip; anything else stays `Unknown` with its
+/// raw input so the chip can still name it.
 pub(crate) fn typed_call(tool_name: &str, args: &Value) -> ToolCall {
     match tool_name {
         "bash" | "powershell" => ToolCall::Exec {
@@ -132,9 +134,22 @@ pub(crate) fn typed_call(tool_name: &str, args: &Value) -> ToolCall {
         "find" => ToolCall::Glob {
             pattern: arg_str(args, "pattern").unwrap_or_default(),
         },
-        "ls" | _ => ToolCall::Unknown {
-            name: tool_name.to_owned(),
-            input: (!args.is_null()).then(|| args.clone()),
+        // MCP bridge tools: `mcp__<server>__<tool>` (the Roboco extension
+        // registers its MCP tools under that prefix so they render like
+        // every other harness's MCP calls).
+        "ls" | _ => match tool_name
+            .strip_prefix("mcp__")
+            .and_then(|rest| rest.split_once("__"))
+        {
+            Some((server, tool)) => ToolCall::Mcp {
+                server: server.to_owned(),
+                tool: tool.to_owned(),
+                input: (!args.is_null()).then(|| args.clone()),
+            },
+            None => ToolCall::Unknown {
+                name: tool_name.to_owned(),
+                input: (!args.is_null()).then(|| args.clone()),
+            },
         },
     }
 }
@@ -598,6 +613,37 @@ mod tests {
             ToolCall::Unknown {
                 name: "ls".into(),
                 input: None,
+            }
+        );
+    }
+
+    /// The Roboco MCP bridge registers its tools as `mcp__roboco__<tool>`;
+    /// those decode into the shared MCP chip (server + tool + raw input)
+    /// exactly like Claude's `mcp__<server>__<tool>` calls, and a stray
+    /// `mcp__`-prefixed name that is not server-qualified stays `Unknown`.
+    #[test]
+    fn mcp_bridge_tools_decode_to_mcp_chips() {
+        assert_eq!(
+            typed_call("mcp__roboco__create_chat", &json!({"project": "/repo"})),
+            ToolCall::Mcp {
+                server: "roboco".into(),
+                tool: "create_chat".into(),
+                input: Some(json!({"project": "/repo"})),
+            }
+        );
+        assert_eq!(
+            typed_call("mcp__roboco__whoami", &Value::Null),
+            ToolCall::Mcp {
+                server: "roboco".into(),
+                tool: "whoami".into(),
+                input: None,
+            }
+        );
+        assert_eq!(
+            typed_call("mcp__unqualified", &json!({"x": 1})),
+            ToolCall::Unknown {
+                name: "mcp__unqualified".into(),
+                input: Some(json!({"x": 1})),
             }
         );
     }

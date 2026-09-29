@@ -49,9 +49,14 @@
 //!   shared title instructions). `--no-extensions` is deliberately NOT
 //!   passed: provider configs can be extension-registered, and the model
 //!   must still resolve.
+//! - **MCP bridge**: pi's RPC has no MCP surface (no flag, no settings key,
+//!   no runtime command), so the engine-injected `roboco mcp` server rides
+//!   a `--extension` bridge that re-exposes its tools as `mcp__roboco__*`
+//!   through `pi.registerTool` — see [`mcp`] (docs/mcp.md, Injection).
 //! - **Interrupt**: `abort`, then SIGTERM → SIGKILL escalation; the stream
 //!   always ends with `Done { status: Interrupted }`.
 
+mod mcp;
 mod normalize;
 mod wire;
 
@@ -370,6 +375,26 @@ impl PiHarness {
         if let Some(resume) = &resume_path {
             cmd.arg("--session").arg(resume);
         }
+        // Roboco's MCP server rides the extension bridge (see [`mcp`]):
+        // pi's RPC protocol has no MCP surface, but `--extension` loads the
+        // bridge that dials `roboco mcp` and re-exposes its tools. Degraded,
+        // not failed, when the bridge cannot be written: the run proceeds
+        // without Roboco tools, the same policy as a run with no served IPC
+        // port. Title runs never reach here (`run_title` clears the field).
+        let mcp_scratch = request
+            .mcp
+            .as_ref()
+            .and_then(|mcp| match mcp::install(&mut cmd, mcp) {
+                Ok(dir) => Some(dir),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "roboco_harness::pi",
+                        %error,
+                        "could not install the roboco mcp bridge"
+                    );
+                    None
+                }
+            });
         // pi takes the working directory as the child process cwd (there is
         // no --cwd flag; the reference client does the same).
         if !request.cwd.is_empty() {
@@ -420,6 +445,7 @@ impl PiHarness {
             controls,
             request,
             resume_path,
+            mcp_scratch,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             startup_timeout: self.startup_timeout,
@@ -538,6 +564,9 @@ struct Session {
     request: RunRequest,
     /// The resume file actually passed as `--session` (None = fresh session).
     resume_path: Option<String>,
+    /// The scratch dir holding the MCP bridge file for exactly this run
+    /// (dropped after the pi child shuts down, when the file is closed).
+    mcp_scratch: Option<crate::scratch::ScratchDir>,
     interrupt_grace: Duration,
     kill_grace: Duration,
     startup_timeout: Duration,
@@ -631,6 +660,9 @@ async fn run_session(session: Session) {
         controls,
         request,
         resume_path,
+        // Held for the whole run: dropping it removes the bridge file, so it
+        // must outlive the pi child (shut down before this function ends).
+        mcp_scratch: _mcp_scratch,
         interrupt_grace,
         kill_grace,
         startup_timeout,

@@ -64,6 +64,7 @@ dialect and leaves the user's configured servers alone:
 | OpenCode | Child-only `OPENCODE_CONFIG_CONTENT`: `mcp.roboco` on 1.x, `mcp.servers.roboco` on 2.x |
 | Codex   | `thread/start` config overrides `mcp_servers.roboco.{command,args,env}` |
 | Cursor  | SDK `Agent.create` / `Agent.resume` → inline `mcpServers.roboco` |
+| Pi      | `--extension <bridge>` + the server spec in `ROBOCO_MCP_SERVER` |
 
 OpenCode preserves inherited inline configuration and other servers. Its config
 shape follows the installed binary's major version. Cursor uses the SDK's
@@ -71,11 +72,25 @@ shape follows the installed binary's major version. Cursor uses the SDK's
 [1.x config layer](https://opencode.ai/docs/config/) and
 [2.x MCP format](https://opencode.ai/v2/docs/mcp-servers) differ.
 
-Pi has no injection: Roboco's native Pi harness speaks pi's first-party JSONL
-RPC, which has no MCP server surface. (Upstream zeron bridges through a
-pi-acp `--extension` shim because its Pi harness rides the community pi-acp
-adapter, which ignores `mcpServers`; Roboco retired that adapter, and nothing
-about it returns with this port.)
+Pi is the odd one out: its first-party JSONL RPC has no MCP surface — no
+`--mcp-config`-style flag, no `mcpServers` settings key, and no runtime
+command that attaches a server. The one spawn-time door pi opens is
+`--extension`, so the driver writes a small bridge (a plain-JS extension
+embedded in the harness crate, `crates/harness/src/pi/mcp_extension.js`)
+into a per-run scratch dir and hands pi its path plus the whole server
+spec in `ROBOCO_MCP_SERVER`. The bridge spawns `roboco mcp` on stdio,
+speaks the five-method MCP subset, and re-exposes every tool through
+`pi.registerTool` as `mcp__roboco__<tool>` — the same name shape Claude
+uses, so the transcript renders Roboco tool calls as MCP chips for pi
+chats too. Registration happens at pi's `session_start` (never in the
+factory, and pi startup never blocks on the engine: `roboco mcp` answers
+`initialize`/`tools/list` before dialing), tool calls run in pi's
+parallel execution mode (`wait_for_turn` may block for minutes), and the
+bridge degrades silently — no Roboco tools, run unaffected — if the
+scratch file cannot be written or the server never handshakes. Upstream
+zeron bridges through a pi-acp `--extension` shim because its Pi harness
+rides the community pi-acp adapter; Roboco kept the shim idea but rebased
+it onto the native RPC driver that replaced that adapter.
 
 Title runs never carry it. A run with no served port (embedded engine that
 lost the bind) gets no Roboco tools rather than a dead server.
