@@ -4,7 +4,16 @@ import { Icon } from "@roboco/icons";
 import { useEngineSessions } from "../state/session-provider";
 import { useFleet } from "../state/fleet";
 import { useWatchSnapshot } from "../state/hooks";
+import { checkUpdate } from "./update-strip";
 import { PickerCard } from "./ui/PickerCard";
+
+/** The check-for-updates row's live state (see `runCheck`). */
+type CheckOutcome =
+  | { kind: "idle" }
+  | { kind: "busy" }
+  | { kind: "current" }
+  | { kind: "available"; version: string | null }
+  | { kind: "failed" };
 
 /**
  * The sidebar's bottom identity control — the desktop's `render_user_menu`.
@@ -26,11 +35,12 @@ import { PickerCard } from "./ui/PickerCard";
  * listeners are gone), and the trigger's press toggles with the
  * `trigger-press` reason exactly like every other anchored menu.
  *
- * The menu carries exactly two things — desktop parity (`shell.rs`): the
- * muted "Stored on this device" identity line, then the single "Settings"
- * row, which lands on the Devices section (`SettingsSection::Devices`),
- * the desktop's landing row. Engine management lives in Settings →
- * Devices (ticket 45 folded the old web-only Engines drawer there).
+ * The menu carries the desktop's rows (`shell.rs`): the muted "Stored on
+ * this device" identity line, the "Settings" row (which lands on the
+ * Devices section, the desktop's landing row), and "Check for updates"
+ * (upstream #595 — the desktop's account-menu row; its dialog collapses
+ * onto the row here). Engine management lives in Settings → Devices
+ * (ticket 45 folded the old web-only Engines drawer there).
  */
 export function AccountRow() {
   // The ACTIVE engine's session carries this row's identity — the desktop's
@@ -44,6 +54,11 @@ export function AccountRow() {
   // Controlled by the trigger's press — every dismissal (outside press,
   // Escape, the Settings row's navigation) lands here as `false`.
   const [open, setOpen] = useState(false);
+  // The check-for-updates row's live state — the desktop's account-menu row
+  // with its result dialog collapsed onto the row (the sidebar strip mirrors
+  // the "update available" outcome through the engine's UpdateStatus
+  // stream, which the engine refreshes as part of the check).
+  const [check, setCheck] = useState<CheckOutcome>({ kind: "idle" });
 
   // The connected engine's own device is the identity this row carries — the
   // desktop's user line is the local device, not the transport. Falls back to
@@ -64,6 +79,37 @@ export function AccountRow() {
     void navigate({ to: "/settings" });
   }
 
+  /** "Check for updates" — one awaited engine check; the row reports it. */
+  async function runCheck(): Promise<void> {
+    if (session === null || check.kind === "busy") {
+      return;
+    }
+    setCheck({ kind: "busy" });
+    try {
+      // The reply is the fresh status; the strip refreshes through the
+      // engine's UpdateStatus stream, which the check republishes.
+      const status = await checkUpdate(session.client);
+      setCheck(
+        status.updateAvailable
+          ? { kind: "available", version: status.latestVersion ?? null }
+          : { kind: "current" },
+      );
+    } catch {
+      // Older engines answer UnknownMethod; offline checks fail — both read
+      // as "couldn't check" on the row.
+      setCheck({ kind: "failed" });
+    }
+  }
+
+  function handleOpenChange(next: boolean): void {
+    // Each opening starts the check row fresh: a verdict from the last visit
+    // must not masquerade as one from this one.
+    if (next) {
+      setCheck({ kind: "idle" });
+    }
+    setOpen(next);
+  }
+
   return (
     <div className="user-menu">
       {/* The frame is the shared `.popover-card` glass; `.user-menu-body`
@@ -72,7 +118,7 @@ export function AccountRow() {
           `anchored_menu_right` placement, portaled by `PickerCard`. */}
       <PickerCard
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={handleOpenChange}
         placement="anchorRight"
         cardClassName="popover-card user-menu-body"
         role="menu"
@@ -95,6 +141,29 @@ export function AccountRow() {
         <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
           <Icon name="settingsMinimalistic" size={16} />
           Settings
+        </button>
+        {/* The desktop's account-menu "Check for updates" row (upstream
+            #595): macOS keeps it in the app menu under About, so the web —
+            which has no app menu either — follows the non-macOS placement.
+            Busy while the engine checks, then the verdict on the row; the
+            sidebar strip surfaces an available release (through the stream
+            the check republishes). */}
+        <button
+          type="button"
+          className="menu-item"
+          role="menuitem"
+          id="user-menu-check-updates"
+          disabled={check.kind === "busy"}
+          onClick={() => void runCheck()}
+        >
+          <Icon name="refresh" size={16} />
+          {check.kind === "idle" ? "Check for updates" : null}
+          {check.kind === "busy" ? "Checking…" : null}
+          {check.kind === "current" ? "Roboco is up to date" : null}
+          {check.kind === "available"
+            ? `Update available — v${check.version ?? "?"}`
+            : null}
+          {check.kind === "failed" ? "Couldn't check for updates" : null}
         </button>
       </PickerCard>
     </div>

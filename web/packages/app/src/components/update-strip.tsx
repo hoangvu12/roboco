@@ -1,11 +1,11 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { UpdateStatus } from "@roboco/proto";
-import type { EngineClient } from "@roboco/engine-client";
+import { methods, type EngineClient } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { uiSettings } from "../state/ui-settings";
 
 /**
- * The update strip — the desktop's `render_update_strip` (`shell.rs:5035`).
+ * The update strip — the desktop's `render_update_strip`.
  *
  * The web build is never a desktop install, so only the ADVISORY branch
  * exists: ``Update available — v{latest} · run `roboco update` ``. Clicking
@@ -14,8 +14,10 @@ import { uiSettings } from "../state/ui-settings";
  * the type so they can be added later without reshaping the component.
  */
 
-/** `roboco_rpc::UPDATE_STATUS` — the engine's update-facts stream. */
-const UPDATE_STATUS = "UpdateStatus";
+/**
+ * `roboco_rpc::UPDATE_STATUS` — the engine's update-facts stream.
+ */
+const UPDATE_STATUS = methods.UPDATE_STATUS;
 
 /**
  * The update lifecycle a DESKTOP install drives. The web only ever renders
@@ -101,6 +103,17 @@ class UpdateStatusStore {
 }
 
 export const updateStatusStore = new UpdateStatusStore();
+
+/**
+ * `CheckUpdate` — one awaited release check on the engine the client reaches
+ * (the desktop's "Check for updates" action; the engine re-fetches the feed,
+ * publishes into its `UpdateStatus` stream, and returns the result — the
+ * store above refreshes through the stream either way). Older engines answer
+ * `UnknownMethod`; callers degrade to a failure message.
+ */
+export function checkUpdate(client: EngineClient): Promise<UpdateStatus> {
+  return client.call<UpdateStatus>(methods.CHECK_UPDATE, {});
+}
 
 /** The strip's read of the engine's status, as one value. */
 function useUpdateStatus(): UpdateStatus | null {

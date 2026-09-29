@@ -158,6 +158,17 @@ export const SET_HARNESS_UPDATE_POLICY = "SetHarnessUpdatePolicy";
 /** Per-checkout working-tree diffs (DataRpc, relay-forwardable). */
 export const WATCH_CHECKOUT_DIFFS = "WatchCheckoutDiffs";
 
+// App-binary updates (engine-local): the engine that owns this binary checks
+// and applies its own release. `UpdateStatus` is the standing stream;
+// `CheckUpdate` is the awaited one-shot the account menu drives (upstream
+// #595's user-requested check — publish + reply).
+/** The engine's update-facts stream: current `UpdateStatus`, then every change. */
+export const UPDATE_STATUS = "UpdateStatus";
+/** One awaited release check on the engine the client reaches. */
+export const CHECK_UPDATE = "CheckUpdate";
+/** Download + apply the newest release (managed installs). */
+export const APPLY_UPDATE = "ApplyUpdate";
+
 // Project Actions (crates/engine/src/project_actions.rs): private state on
 // the engine owning the space row. Clients call the owning engine's own
 // connection (targetDeviceId selects it client-side and is stripped at the
