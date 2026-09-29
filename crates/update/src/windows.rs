@@ -1,4 +1,6 @@
-//! Updates for portable Windows packages. Source builds remain unmanaged.
+//! Updates for Windows installs — the per-user installer
+//! (`dist/windows/roboco.iss`) and the portable zip. Both place
+//! `roboco-update.json` beside `roboco.exe`; source builds remain unmanaged.
 use std::io::Read;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
@@ -19,6 +21,10 @@ const BACKUP: &str = "roboco.exe.old";
 /// Deterministic name for the copy that becomes the next installation; a
 /// crash between the two renames leaves at most this file behind.
 const INCOMING: &str = ".roboco-update-incoming.exe";
+/// The installer's uninstall entry (`AppId` in `dist/windows/roboco.iss`, plus
+/// Inno Setup's `_is1` suffix). Settings → Apps reads `DisplayVersion` here.
+/// The GUID is Roboco's own — upstream zeron's AppId must not be carried over.
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{22BA167B-E6D5-45C5-BA8B-7569B44F6065}_is1";
 
 #[derive(serde::Deserialize)]
 struct Config {
@@ -75,6 +81,7 @@ pub async fn stage(
     let staged = temporary.path().join("roboco.exe");
     super::download_release_file(edge_url, manifest, &file, &staged).await?;
     std::fs::write(temporary.path().join("sha256"), expected)?;
+    std::fs::write(temporary.path().join("version"), &manifest.version)?;
     verify(&staged)?;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -138,6 +145,9 @@ pub fn apply(staged: &Path, directory: &Path, relaunch: bool) -> anyhow::Result<
     verify(staged)?;
     recover_from_backup(&installed)?;
     swap_into_place(staged, &installed)?;
+    if let Ok(version) = std::fs::read_to_string(staged.with_file_name("version")) {
+        refresh_installer_version(version.trim());
+    }
     if relaunch {
         std::process::Command::new(&installed)
             .args(["--wait-for-exit", &std::process::id().to_string()])
@@ -150,6 +160,7 @@ pub fn apply(staged: &Path, directory: &Path, relaunch: bool) -> anyhow::Result<
     }
     let _ = std::fs::remove_file(staged);
     let _ = std::fs::remove_file(staged.with_file_name("sha256"));
+    let _ = std::fs::remove_file(staged.with_file_name("version"));
     if let Some(parent) = staged.parent() {
         let _ = std::fs::remove_dir(parent);
     }
@@ -250,6 +261,41 @@ pub fn cleanup_previous_image() {
     }
 }
 
+/// Keep the installer's uninstall entry truthful after an in-app update. A
+/// portable install has no entry, and the open simply fails.
+fn refresh_installer_version(version: &str) {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegOpenKeyExW, RegSetValueExW,
+    };
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let path = wide(UNINSTALL_KEY);
+    let mut key: HKEY = std::ptr::null_mut();
+    let opened =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_SET_VALUE, &mut key) };
+    if opened != ERROR_SUCCESS {
+        return;
+    }
+    let name = wide("DisplayVersion");
+    let data = wide(version);
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            name.as_ptr(),
+            0,
+            REG_SZ,
+            data.as_ptr().cast(),
+            (data.len() * std::mem::size_of::<u16>()) as u32,
+        )
+    };
+    unsafe { RegCloseKey(key) };
+    if status != ERROR_SUCCESS {
+        tracing::warn!(status, "could not update the installer's DisplayVersion");
+    }
+}
+
 fn remove_own_backup() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let Some(directory) = exe.parent() else {
@@ -318,6 +364,30 @@ mod tests {
         std::fs::write(dir.path().join(CONFIG), "{}").unwrap();
         assert!(is_managed(&exe));
         assert!(!is_managed(&dir.path().join("another.exe")));
+    }
+
+    #[test]
+    fn uninstall_key_matches_the_installer_app_id() {
+        // The AppId GUID is the contract between dist/windows/roboco.iss and
+        // refresh_installer_version: drift silently disables the uninstall
+        // entry's version refresh after in-app updates.
+        let script = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/windows/roboco.iss"),
+        )
+        .expect("reading dist/windows/roboco.iss");
+        let app_id = script
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("AppId={{")
+                    .and_then(|rest| rest.strip_suffix('}'))
+            })
+            .expect("AppId line in roboco.iss");
+        assert_eq!(
+            UNINSTALL_KEY,
+            format!(
+                r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{app_id}_is1"
+            )
+        );
     }
 
     #[test]

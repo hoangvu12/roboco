@@ -3,7 +3,8 @@ name: release
 # Build release artifacts for Roboco's platforms (Windows + Linux) and
 # publish them to a GitHub Release:
 #   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
-#   - Windows portable zips (x86_64 + aarch64) via scripts/package-windows.ps1
+#   - Windows per-user setup exes, portable zips, and updater exes (x86_64 +
+#     aarch64) via scripts/package-windows.ps1
 #   - scripts/install-windows.ps1, published as `install.ps1` (the Windows
 #     one-liner: irm .../releases/latest/download/install.ps1 | iex)
 # The in-app updater reads back from this repo's GitHub Releases.
@@ -111,6 +112,17 @@ jobs:
           if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
+      - name: Ensure Inno Setup 6 (ARM64 image)
+        # The x64 runner images ship Inno Setup 6; the ARM64 image may not.
+        # ISCC.exe is an x86 binary and cross-builds the arm64-targeting
+        # installer (dist/windows/roboco.iss) under emulation.
+        if: runner.arch == 'ARM64'
+        run: |
+          $iscc = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe")) {
+            winget install --id JRSoftware.InnoSetup --exact --silent `
+              --accept-package-agreements --accept-source-agreements
+          }
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -122,7 +134,7 @@ jobs:
       - name: build web bundle (engine embeds it at compile time)
         working-directory: web
         run: pnpm --filter "@roboco/app" run build
-      - name: package portable app
+      - name: package installer and portable app
         run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - uses: actions/upload-artifact@v4
         with:
@@ -153,8 +165,8 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           ls dist/
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
-              windows-x86_64.zip windows-x86_64.exe \
-              windows-aarch64.zip windows-aarch64.exe; do
+              windows-x86_64.zip windows-x86_64.exe windows-x86_64-setup.exe \
+              windows-aarch64.zip windows-aarch64.exe windows-aarch64-setup.exe; do
             test -f "dist/roboco-$ver-$platform" \
               || { echo "missing artifact for tag v$ver: $platform — check builds and Cargo.toml version"; exit 1; }
           done
