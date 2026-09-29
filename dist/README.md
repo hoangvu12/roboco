@@ -12,7 +12,9 @@ Produces `target/package/roboco-<version>-linux-<arch>.tar.gz` containing:
 - `roboco` — the binary (headed by default; `roboco headless` runs the engine alone)
 - `roboco.desktop` — XDG desktop entry
 - `roboco.png` — 1024×1024 Roboco app icon
-- `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
+- `install.sh` — installs into `~/.roboco/app/<version>` behind a `current`
+  symlink (the layout the in-app updater manages) and links `~/.local/bin/roboco`,
+  the desktop entry, and the icon to it
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 `strip = "symbols"` for distribution builds.

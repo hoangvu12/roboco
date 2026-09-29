@@ -48,7 +48,34 @@ const h = vi.hoisted(() => {
     phone: false,
   };
 
-  return { engines, session, snapshot, navigateCalls, cells };
+  /** The `checkUpdate` double's state: verdicts, recorded clients, valve. */
+  const check = {
+    calls: [] as Array<unknown>,
+    verdict: {
+      kind: "resolve",
+      status: { updateAvailable: false },
+    } as
+      | { kind: "resolve"; status: { updateAvailable: boolean; latestVersion?: string | null } }
+      | { kind: "reject"; error: Error },
+    /** The pending check's release valve — `null` until one runs. */
+    release: null as null | (() => void),
+  };
+
+  return {
+    engines,
+    session,
+    snapshot,
+    navigateCalls,
+    cells,
+    check,
+    /** Resolves the in-flight check; fails the test if none is pending. */
+    settle: (): void => {
+      if (h.check.release === null) {
+        throw new Error("no check in flight");
+      }
+      h.check.release();
+    },
+  };
 });
 
 vi.mock("../src/state/fleet", () => ({
@@ -74,6 +101,28 @@ vi.mock("@tanstack/react-router", () => ({
     h.navigateCalls.push({ to: options.to });
     return Promise.resolve();
   },
+}));
+
+vi.mock("../src/components/update-strip", () => ({
+  // The account row's check rides this wrapper (update-strip.tsx); the
+  // strip/store itself stays unmounted in these suites. The promise parks
+  // until the test releases it, so "Checking…" is observable.
+  checkUpdate: (client: unknown): Promise<{
+    updateAvailable: boolean;
+    latestVersion?: string | null;
+  }> =>
+    new Promise((resolve, reject) => {
+      h.check.calls.push(client);
+      h.check.release = () => {
+        h.check.release = null;
+        const verdict = h.check.verdict;
+        if (verdict.kind === "reject") {
+          reject(verdict.error);
+        } else {
+          resolve(verdict.status);
+        }
+      };
+    }),
 }));
 
 // ── jsdom gaps the mounted cards hit (composer-reasoning.test.ts's set) ──────
@@ -131,6 +180,9 @@ afterEach(() => {
   document.body.replaceChildren();
   h.cells.phone = false;
   h.navigateCalls.length = 0;
+  h.check.calls.length = 0;
+  h.check.release = null;
+  h.check.verdict = { kind: "resolve", status: { updateAvailable: false } };
 });
 
 function mountAccountRow(): MountedAccountRow {
@@ -295,5 +347,127 @@ describe("AccountRow — phone arm", () => {
     });
 
     expect(h.navigateCalls).toEqual([{ to: "/settings" }]);
+  });
+});
+
+// ── "Check for updates" (upstream #595's account-menu row, web parity) ──────
+
+describe("AccountRow — the check-for-updates row", () => {
+  /** The row under test: the card's second menu item, by its stable id. */
+  function checkRow(handle: ReturnType<typeof mountAccountRow>): HTMLButtonElement {
+    const row = handle
+      .card()
+      ?.querySelector<HTMLButtonElement>("#user-menu-check-updates");
+    if (row == null) {
+      throw new Error("the check-for-updates row did not render");
+    }
+    return row;
+  }
+
+  it("checks the engine on demand and reports the verdict on the row", async () => {
+    h.check.verdict = {
+      kind: "resolve",
+      status: { updateAvailable: false },
+    };
+    const handle = mountAccountRow();
+    press(handle.trigger());
+    const row = checkRow(handle);
+    expect(row.textContent).toBe("Check for updates");
+
+    await act(async () => {
+      row.click();
+    });
+
+    // The check targets the ACTIVE engine's client, exactly one call.
+    expect(h.check.calls).toEqual([h.session.client]);
+    expect(h.check.calls).toHaveLength(1);
+    // Parked while the engine answers…
+    expect(checkRow(handle).textContent).toBe("Checking…");
+    expect(checkRow(handle).disabled).toBe(true);
+
+    await act(async () => {
+      h.settle();
+    });
+
+    expect(checkRow(handle).textContent).toBe("Roboco is up to date");
+    // The menu stays open — the row IS the dialog here.
+    expect(handle.card()).not.toBeNull();
+  });
+
+  it("reports an available release with its version", async () => {
+    h.check.verdict = {
+      kind: "resolve",
+      status: { updateAvailable: true, latestVersion: "9.9.9" },
+    };
+    const handle = mountAccountRow();
+    press(handle.trigger());
+
+    await act(async () => {
+      checkRow(handle).click();
+    });
+    await act(async () => {
+      h.settle();
+    });
+
+    expect(checkRow(handle).textContent).toBe("Update available — v9.9.9");
+  });
+
+  it("a failed or unsupported check reads as a failure, not a verdict", async () => {
+    h.check.verdict = {
+      kind: "reject",
+      error: new Error("UnknownMethod: CheckUpdate"),
+    };
+    const handle = mountAccountRow();
+    press(handle.trigger());
+
+    await act(async () => {
+      checkRow(handle).click();
+    });
+    await act(async () => {
+      h.settle();
+    });
+
+    expect(checkRow(handle).textContent).toBe("Couldn't check for updates");
+  });
+
+  it("reopening the menu starts the row fresh", async () => {
+    h.check.verdict = {
+      kind: "resolve",
+      status: { updateAvailable: false },
+    };
+    const handle = mountAccountRow();
+    press(handle.trigger());
+    await act(async () => {
+      checkRow(handle).click();
+    });
+    await act(async () => {
+      h.settle();
+    });
+    expect(checkRow(handle).textContent).toBe("Roboco is up to date");
+
+    pressEscape();
+    press(handle.trigger());
+
+    // A verdict from the last visit must not masquerade as one from this one.
+    expect(checkRow(handle).textContent).toBe("Check for updates");
+  });
+
+  it("ignores presses while a check is in flight", async () => {
+    const handle = mountAccountRow();
+    press(handle.trigger());
+    await act(async () => {
+      checkRow(handle).click();
+    });
+    expect(h.check.calls).toHaveLength(1);
+
+    await act(async () => {
+      checkRow(handle).click();
+    });
+    expect(h.check.calls).toHaveLength(1);
+
+    // Settle so the afterEach teardown leaves no pending state.
+    await act(async () => {
+      h.settle();
+    });
   });
 });
