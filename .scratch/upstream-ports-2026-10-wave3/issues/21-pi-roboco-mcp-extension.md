@@ -39,3 +39,16 @@ live probes); `wiregen --check` untouched-fresh (no wire changes).
 - [ ] Provider-failure surfacing kept
 - [ ] Ported tests green (fixtures only)
 - [ ] Port commit records upstream SHA + the pi-acp wrapper exclusion
+
+## Comments
+
+**DEFERRED (user decision, 2026-09-29):** wait for upstream to retire the
+community pi-acp adapter for their own native pi driver ("pi via the
+community `pi-acp` adapter until a native driver exists" — their
+harness lib.rs). When upstream lands it, their pi MCP wiring will ride the
+native seam and port cleanly (like the other adapters in ticket 08); the
+.pi_mcp.mjs bridge + pi-acp argv shim would be throwaway work in between.
+An implementer session was started and aborted before any code landed
+(worktree/branch removed clean). Revisit at the next upstream survey: the
+signal is pi disappearing from upstream's acp/ directory / a native pi
+driver in their harness. Until then Pi has no roboco MCP tools by design.
