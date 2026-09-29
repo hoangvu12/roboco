@@ -378,8 +378,10 @@ mod tests {
         let app_id = script
             .lines()
             .find_map(|line| {
-                line.strip_prefix("AppId={{")
-                    .and_then(|rest| rest.strip_suffix('}'))
+                // `AppId={{<guid>}` — Inno escapes a literal `{` as `{{`; the AppId
+                // VALUE (and the uninstall key Inno creates from it, plus `_is1`)
+                // keeps the braces: `...\Uninstall\{<guid>}_is1`.
+                line.strip_prefix("AppId={{").map(|rest| format!("{{{rest}"))
             })
             .expect("AppId line in roboco.iss");
         assert_eq!(
