@@ -7364,7 +7364,7 @@ impl Shell {
         if !self.prepare_exit(PendingExit::InstallUpdate(staged.clone()), cx) {
             return;
         }
-        match self.install.apply_desktop(&staged) {
+        match self.install.apply_desktop(&staged, true) {
             Ok(()) => {
                 crate::app_menus::quit_after_save(cx);
             }

@@ -238,6 +238,18 @@ fn wait_for_exit_impl(pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Startup cleanup for a normal launch: the image an earlier update renamed
+/// aside can be deleted once no process runs it. Best-effort — a previous
+/// instance still exiting keeps it until the next launch.
+pub fn cleanup_previous_image() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if is_managed(&exe) {
+        let _ = remove_own_backup();
+    }
+}
+
 fn remove_own_backup() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let Some(directory) = exe.parent() else {
