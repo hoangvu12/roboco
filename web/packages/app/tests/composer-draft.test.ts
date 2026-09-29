@@ -134,16 +134,27 @@ describe("draftFromChat", () => {
 });
 
 describe("isHarnessLocked", () => {
+  const config: ChatConfig = {
+    harness: "claude-code",
+    model: null,
+    reasoning: null,
+    modelOptions: {},
+    sandbox: "workspace-write",
+  };
+
   it("locks the harness when the chat row carries a ChatConfig", () => {
-    expect(isHarnessLocked(chat({ config: { harness: "claude-code", model: null, reasoning: null, modelOptions: {}, sandbox: "workspace-write" } }))).toBe(true);
+    expect(isHarnessLocked(config)).toBe(true);
   });
 
   it("unlocks the harness for a fresh chat (no ChatConfig yet)", () => {
-    expect(isHarnessLocked(chat({ config: null }))).toBe(false);
+    expect(isHarnessLocked(null)).toBe(false);
   });
 
-  it("treats a null chat as unlocked (the engine is unavailable)", () => {
-    expect(isHarnessLocked(null)).toBe(false);
+  it("stays unlocked on a new side chat whose first send has not minted it (upstream #590)", () => {
+    // The unsaved side chat's row carries the inherited config, but the
+    // harness stays pickable until the send snapshots it — the desktop's
+    // `side_chat_harness_editable` (state.rs).
+    expect(isHarnessLocked(config, true)).toBe(false);
   });
 });
 

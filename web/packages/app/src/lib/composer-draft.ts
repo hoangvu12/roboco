@@ -1,4 +1,4 @@
-import type { Chat, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
+import type { Chat, ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import type { DraftConfig, DraftConfigUpdate } from "./composer-actions";
 import { buildChatConfig } from "./composer-actions";
 import type { StorageLike } from "./engine-store";
@@ -77,9 +77,19 @@ export function draftFromChat(
   };
 }
 
-/** True when a chat has a persisted ChatConfig (locks the harness picker). */
-export function isHarnessLocked(chat: Chat | null): boolean {
-  return chat !== null && chat.config !== null;
+/**
+ * The desktop's `harness_locked` (pickers.rs): a persisted config locks
+ * the harness facet once the chat exists (feature-inventory A1.7) — EXCEPT
+ * a new side chat whose first send has not minted it yet
+ * (`side_chat_harness_editable`, state.rs, upstream #590): its inherited
+ * config must not pin the picked harness while the draft is still the
+ * only config carrier.
+ */
+export function isHarnessLocked(
+  chatConfig: ChatConfig | null,
+  sideChatHarnessEditable = false,
+): boolean {
+  return chatConfig !== null && !sideChatHarnessEditable;
 }
 
 /** Two drafts differ when any user-facing field changed. */

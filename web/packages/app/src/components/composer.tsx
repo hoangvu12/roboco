@@ -3425,6 +3425,7 @@ export function Composer({
                       catalog={catalog}
                       draft={draft}
                       chatConfig={chat.config}
+                      sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
                       newChat={newChat}
                       onDraft={applyDraft}
                       onPersist={persistDraft}
