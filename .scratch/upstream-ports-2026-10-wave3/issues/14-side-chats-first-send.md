@@ -24,3 +24,9 @@ nextest (side-chat first-send + sections ordering); web side-chat vitest.
 - [ ] Subagents newest-first
 - [ ] Tests green
 - [ ] Port commit records upstream SHA
+
+## Comments
+
+**Branch:** `wave3/14-first-send` → merged into main `Merge wave3/14`. Commits `69e97ec9` (desktop +364/−63: open_side_chat_tab unsaved model, unsaved_side_chat_create + side_chat_saved + start_chat_watches, first-send Mutate createChat 30s-bounded before the run, close drops unsent, subagent_rows Reverse(spawned_at)) + `40cb54ee` (web +399/−116: unsaved registry + mintUnsavedSideChat + markSideChatSaved, prune spares unsaved, newest-first, dead createChildChat removed). Post-merge re-verified: ui 1322/1322 (-P ci), web 137 files/2068.
+
+**Judgment calls:** Roboco-only seam start_chat_watches via registry target_for_id + unsaved guard in spawn_registry_watch heal branch; web mint-before-snapshot (failed create preserves draft — web's own placement); unsaved registry is module state with subscribe seam. For 15: seam state.side_chat_unsaved() + selected_chat_row().parent_chat_id; upstream rewrites the ported first-send test — port 15 on top. For 16: apply_chat_config pending-copy stamping + web draft-only config flow.

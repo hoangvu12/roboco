@@ -15,3 +15,9 @@ side-chat tests.
 
 - [ ] Composer width fixed
 - [ ] Port commit records upstream SHA
+
+## Comments
+
+**Branch:** `wave3/13-composer-width` → merged into main `Merge wave3/13`. Commit `e94b16d8` (side_chats.rs 6+/4-): side-chat composer routes through composer_target_width(right_visible_width, transcript_width, true) — docked cap shared with the main composer. Straight 1:1 carry (pre-change state byte-identical). Post-merge re-verified within the wave-C boundary run.
+
+**Note:** web side-chat surface feeds live-measured pane width with no docked cap — desktop-only fix matches upstream; web parity of the cap would be a separate ticket.

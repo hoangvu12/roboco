@@ -10,7 +10,7 @@ Settings material. Per-device semantics only: upstream's cross-device
 propagation maps onto Roboco's existing per-engine routing; nothing
 forwards.
 
-**Blocked by:** 09 (touches side-chat-adjacent shell code; run after 14).
+**Blocked by:** 09 (touches side-chat-adjacent shell code; run after 14). Also folds in ticket 03 (upstream `9d3cb2b2` — see its Comments).
 
 **Status:** ready-for-agent
 
@@ -37,8 +37,14 @@ a full implementer session.
 
 - [ ] Engine harness_updates lifecycle (checks, leases, install) ported
 - [ ] RPC + proto + wiregen regen
-- [ ] UI update card + settings controls (wave-2 grammar)
+- [ ] UI update card + settings controls (wave-2 grammar), landing `9d3cb2b2`'s end-state: expandable provider rows with a stable fixed-width chevron, Updates section in expanded details (short menu labels, chosen policy explanation under the row title), update/cancel actions before the chevron, no "Ignore version" (Off covers it; DismissHarnessUpdate stays engine-side) + web parity
 - [ ] Web parity (settings-agents card)
 - [ ] Workflow file skipped + recorded
 - [ ] Tests green
 - [ ] Port commit records upstream SHA + exclusions
+
+## Comments
+
+**Branch:** `wave3/18-agent-updates` → merged into main `Merge wave3/18` (folds ticket 03). Commits `7811c20f` (engine: harness_updates.rs 3060 lines — provider check table, latest-version lookups, update leases/cancellation, Codex standalone download/verify/atomic-activate, prefs, quiet watch, periodic worker; registry execution gates; sessions DeferredByUpdate; 6 RPCs + harness-updates-v1 capability; RunControls.execution_lease + Harness::executable_path) + `24ea8e23` (ui: shell/harness_updates.rs Home card + settings grammar with 9d3cb2b2 end-state — stable chevron, Updates section, update/cancel before chevron, no Ignore version; notifications pref; standing watch; call deadlines) + `d77f5793` (web parity: wiregen regen, methods + deadlines, lib/harnesses wrappers, settings-agents card, agent-update-strip.tsx) + `bd40a022` (supports_updates reads target engine's info). Post-merge re-verified: 4-crate check clean, ui 1329/1329, engine targeted 58/58, wiregen fresh, web 138 files/2080.
+
+**Adaptations recorded:** per-device → per-engine only (cross-device propagation/per-host bookkeeping/relay dropped, ADR 0004); Codex standalone update path ported intact; compose_child_path pub; pi via native harness resolver; workflow + ConPTY-infra + iOS hunks excluded. Live vendor probes untested by design (fixtures only).

@@ -17,3 +17,9 @@ nextest for tab close/restore; web right-pane vitest.
 - [ ] Most-recently-visited tab restored on close (desktop + web)
 - [ ] Tests green
 - [ ] Port commit records upstream SHA
+
+## Comments
+
+**Branch:** `wave3/11-right-tab-restore` → merged into main `Merge wave3/11`. Commit `52c81dfb` (2 files, +239/−25): right_tab_history per panel (unique visits, non-Picker), forget_right_surface + right_surface_fallback (newest-first vs live tabs, first tab as never-visited fallback, empty→Picker), wired into resolved_right_active/close_right_surface/complete_file_close/remove_deleted_side_chats. 4 ported tests (2 unit verbatim, 2 gpui adapted: EngineBootConfig engine-local, settings::init in harness). Post-merge re-verified: full ui 1303/1303.
+
+**Judgment calls:** delete_chat keeps no-forget (upstream parity, stale history inert); draft-bearing tab close keeps detach semantics. Web restore stack deferred (no web host for session-header controls; noted for a follow-up parity ticket) — desktop-only acceptance recorded.

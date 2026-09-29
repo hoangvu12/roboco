@@ -47,3 +47,9 @@ attribution tests from #498's `tests/side_chats.rs`; `wiregen --check` +
 - [ ] docs/mcp.md adapted
 - [ ] Tests green; wiregen fresh
 - [ ] Port commit records upstream SHAs + pi decision + exclusions
+
+## Comments
+
+**Branch:** `wave3/08-roboco-mcp` (based on local main after the user's integration; see topology note) → merged into main `Merge wave3/08`. Commit `20fbbab5` (28 files): crates/roboco-mcp (jsonrpc/tools/transcript/roboco, zero new deps), `roboco mcp` subcommand (stderr logging), engine stamping (Inner.roboco_mcp + set_ipc_port, stamp before retry_request, title runs bypass via run_title + explicit mcp=None in claude/codex title builders), harness injection (claude inline --mcp-config JSON, ACP session/new mcpServers, codex mcp_servers.roboco.*, cursor shim mcpServers, opencode OPENCODE_CONFIG_CONTENT v1/v2), roboco-rpc subscribe_scoped (e7ddbbe7 engine-local half), docs/mcp.md, restored real mcp attribution assertions in side_chats test 1. Post-merge re-verified: check clean, side_chats 6/6, harness mcp 8/8.
+
+**Judgment calls:** Pi skipped (native PiHarness has no MCP seam; recorded in docs/mcp.md); ACP spawn_agent mcp param not ported (only use was the pi bridge); upstream interleaved steering work excluded per 07's precedent; live loopback smoke documented in docs/mcp.md §Smoke (no dev servers on box).

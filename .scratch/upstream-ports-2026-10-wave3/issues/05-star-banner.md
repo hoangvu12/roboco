@@ -20,3 +20,9 @@ nextest for the banner + dismissal; web vitest for the new banner suite.
 - [ ] Rebranded to hoangvu12/roboco
 - [ ] Web banner + persistence test
 - [ ] Port commit records upstream SHA + rebrand note
+
+## Comments
+
+**Branch:** `wave3/05-star-banner` → merged `Merge wave3/05`. Commits `4598f640` (desktop: GITHUB_REPO_URL=hoangvu12/roboco, render_github_star_banner upstream styling, UiSettings flag persisted via schedule_save, rebrand guard test) + `7491a826` (web: star-banner.tsx per sidebar-notice pattern, ui-settings immediate-write policy, 4 tests + ui-settings extension). Post-merge re-verified: 131/131; full web suite 2014 at batch boundary.
+
+**Judgment calls:** web sibling button (not nested in anchor — invalid HTML), stacking via CSS `.star-banner + .update-strip`; web immediate vs desktop debounced persistence (documented).

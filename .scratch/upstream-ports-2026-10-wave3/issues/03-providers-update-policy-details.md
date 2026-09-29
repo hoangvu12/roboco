@@ -24,3 +24,7 @@ nextest for harnesses settings; `pnpm --filter @roboco/app exec tsc
 - [ ] Stable chevron
 - [ ] UI + web tests green
 - [ ] Port commit records upstream SHA
+
+## Comments
+
+**RESEQUENCED (blocked on #389, not independent):** implementer 03 stopped pre-code per the ticket's stop rule — upstream 9d3cb2b2 is a pure rearrangement of UI that 35a9139a (ticket 18) introduced six hours earlier (verified: 35a9139a is 9d3cb2b2's only harnesses.rs predecessor in the window; Roboco lacks the whole subsystem: proto HarnessUpdatePolicy/Status, WATCH/CHECK/APPLY/CANCEL/DISMISS/SET_POLICY RPCs, engine harness_updates.rs, expandable rows). **Folded into ticket 18** — its checklist now lands 9d3cb2b2's end-state. No code, no commit. Worktree removed.

@@ -24,3 +24,9 @@ navigation/copy tests; web: check existing markdown selection tests.
 - [ ] Web gap check recorded
 - [ ] Tests green
 - [ ] Port commit records upstream SHA
+
+## Comments
+
+**Branch:** `wave3/17-copy-selections` → merged into main `Merge wave3/17`. Commit `7bd37bdb` (byte-identical carry: shell.rs dropzone on_key_down ×2, navigation_focus.rs copy_transcript_selection +19, 4 tests +87). Post-merge re-verified within boundary run: ui 1322/1322, web 137 files/2068.
+
+**Web findings (no change needed):** no web analog of the bug (no mod-c binding, native copy handles DOM selection; terminal Ctrl+C policy already correct); virtualization limits cross-row native selection (pre-existing; porting the app-level selection model to web = separate future feature, recorded).

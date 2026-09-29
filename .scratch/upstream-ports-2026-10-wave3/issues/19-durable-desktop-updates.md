@@ -45,3 +45,11 @@ this box).
 - [ ] Linux self-updating layout (install.sh)
 - [ ] Engine RPC/wire kept additive; wiregen fresh
 - [ ] Tests green; port commit records upstream SHA + exclusions
+
+## Comments
+
+**Branch:** `wave3/19-durable-updates` → merged into main `Merge wave3/19`. Commits `19207618` (update core: hourly wall-clock + 1m→5m→15m→30m backoff, SystemTime deadlines re-read 60s, --version gates for headless+mac staging, desktop_update_blocker probe, cleanup_previous_image) + `297aa3d4` (app_update.rs controller: this-binary checks, background download, install-on-quit in on_app_quit, Check-for-updates account-menu + live result dialog, ROBOCO_AUTO_UPDATE=0 report-only; shell UpdateFlow retired; X11 close fix via save_window_geometry(query_display: false); CheckUpdate engine RPC — upstream had none) + `2fdc71a0` (linux install.sh → ~/.roboco/app/<ver> + current symlink + ~/.local/bin link, XDG kept; exercised in fake HOME) + `5a62f2cb` (web: account-menu Check for updates row, UnknownMethod degrade). Post-merge re-verified: 4-crate check, ui+update 1350/1350, wiregen fresh, web 138 files/2089.
+
+**Cadence split (the COORDINATE item):** embedded engine → controller ADOPTS the engine's checker via EngineHandle::updater() (one scheduler per process; publishes into engine's UpdateStatus stream); foreign engine (ROBOCO_IPC_PORT daemon) → own report-only checker; no engine → boot checker. restart_when_superseded wired only in Engine::run().
+
+**Excluded:** Inno set + uninstall-registry + version sidecar → ticket 20 (handoff note committed in its .scratch file); macOS blockers (UpdateBlocker = NotWritable only); README wholesale; R2 size caps (never had); workflows. Engine previews test failure pre-existing on main (triaged separately — third sighting).
