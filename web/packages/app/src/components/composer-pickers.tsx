@@ -6,9 +6,11 @@ import { catalogLoading, modelsLoading, openForceRefire, shouldReload } from "..
 import {
   applyDraftUpdate,
   composerDefaults,
+  isHarnessLocked,
   isModelFavorite,
   rememberedLabelFor,
   rememberedModelFor,
+  rememberedModelOptions,
   rememberHarness,
   rememberModel,
   rememberModelOption,
@@ -74,6 +76,17 @@ export interface ComposerPickersProps {
   readonly draft: DraftConfig;
   /** The chat's persisted config — locks the harness facet once non-null. */
   readonly chatConfig: ChatConfig | null;
+  /**
+   * True while a NEW side chat's harness is still editable (the desktop's
+   * `side_chat_harness_editable`, state.rs, upstream #590): the chat row
+   * exists with its inherited config, but the first send that mints it has
+   * not left yet (and none is in flight). While true the inherited config
+   * does NOT lock the harness facet — the rail offers every harness, picks
+   * flow into the draft only (the draft is the one config carrier until
+   * the send's createChat), and the lock re-engages the moment the send
+   * dispatches or the row lands.
+   */
+  readonly sideChatHarnessEditable?: boolean;
   /** Apply the next draft (clamped + offered-filtered by `applyDraftUpdate`). */
   readonly onDraft: (next: DraftConfig) => void;
   /** Persist the next config on an existing chat (`Mutate setChatConfig`). */
@@ -100,7 +113,7 @@ export interface ComposerPickersProps {
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false } = props;
+  const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false } = props;
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
     (next: boolean) => {
@@ -166,7 +179,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
     useCallback(() => composerDefaults.getSnapshot(), []),
   );
 
-  const locked = chatConfig !== null;
+  const locked = isHarnessLocked(chatConfig, sideChatHarnessEditable);
   const effectiveHarness = draft.harness;
   const offered = useMemo(() => offeredHarnesses(harnesses.rows), [harnesses.rows]);
   // `rail_descriptors`: offered harnesses, the committed one force-inserted
@@ -238,6 +251,24 @@ export function ComposerPickers(props: ComposerPickersProps) {
       return;
     }
     if (draft.harness === harness) {
+      return;
+    }
+    if (sideChatHarnessEditable) {
+      // A side-chat draft already has a selected row. Replace its inherited
+      // provider settings so both the picker and the first createChat use
+      // the new harness, even when its model catalog has not loaded yet
+      // (pickers.rs pick_harness, upstream #590). Nothing persists: an
+      // unsaved side chat has no row to write — the draft carries the
+      // picked config until the send mints it (persistDraft skips it).
+      const remembered = rememberedModelFor(harness);
+      commit({
+        harness,
+        model: remembered?.id ?? null,
+        reasoning: composerDefaults.getSnapshot().reasoning,
+        modelOptions:
+          remembered === null ? {} : rememberedModelOptions(harness, remembered.id),
+      });
+      rememberHarness(harness);
       return;
     }
     rememberHarness(harness);

@@ -32,6 +32,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { ChatConfig, HarnessDescriptor, Model } from "@roboco/proto";
 import type { DraftConfig } from "../src/lib/composer-actions";
 import { ComposerPickers } from "../src/components/composer-pickers";
+import { composerDefaults } from "../src/lib/composer-draft";
 import { useDraftModelReconciliation } from "../src/lib/composer-reconciliation";
 import { PickerCatalog } from "../src/state/picker-catalog";
 import { emitShortcut } from "../src/state/shortcuts";
@@ -193,6 +194,8 @@ function mountPicker(options: {
   client: FakeClient;
   initial: DraftConfig;
   chatConfig?: ChatConfig | null;
+  /** The unsaved-side-chat harness window (upstream #590); default false. */
+  sideChatHarnessEditable?: boolean;
   /** Mount under the phone arm (≤768px) — the drawer sheet + drill-downs. */
   phone?: boolean;
 }): MountedPicker {
@@ -208,6 +211,7 @@ function mountPicker(options: {
       catalog,
       draft: current,
       chatConfig: options.chatConfig ?? null,
+      sideChatHarnessEditable: options.sideChatHarnessEditable ?? false,
       onDraft: (next: DraftConfig) => {
         drafts.push(next);
         setCurrent(next);
@@ -450,6 +454,170 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     expect(handle.observed.current.reasoning).toBe("high");
     await openSetting("reasoning");
     expect(reasoningRow("high")?.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+// ── Harness facet on new side chats (upstream #590) ─────────────────────────
+
+/** The parent-model row: the side chat's inherited claude-code catalog. */
+const PARENT: Model = {
+  id: "parent-model",
+  label: "Parent model",
+  description: null,
+  reasoningLevels: ["low", "medium", "high"],
+  options: [],
+};
+
+/** An inherited side-chat config (the local row's, before any pick). */
+const INHERITED: ChatConfig = {
+  harness: "claude-code",
+  model: "parent-model",
+  reasoning: "high",
+  modelOptions: { context: "1m" },
+  sandbox: "read-only",
+};
+
+/** Reset the sticky picks the side-chat pick reads (deterministic mounts). */
+function resetDefaults(): void {
+  composerDefaults.update({
+    harness: null,
+    modelByHarness: {},
+    reasoning: null,
+    modelOptionsByModel: {},
+    favorites: [],
+  });
+}
+
+/** A harness rail tab by index (0 = claude, 1 = codex; favorites excluded). */
+function harnessTab(ix: number): HTMLElement | null {
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>(".model-tab")).filter(
+    (el) => el.id !== "model-tab-favorites",
+  );
+  return tabs[ix] ?? null;
+}
+
+function mountSideChatPicker(sideChatHarnessEditable: boolean): MountedPicker {
+  const client = new FakeClient();
+  client.harnesses = [CLAUDE, BARE];
+  client.modelsByHarness.set("claude-code", [PARENT]);
+  // Codex's list is deliberately NOT seeded: the fake resolves it empty,
+  // the pre-catalog window the desktop's pick must survive.
+  return mountPicker({
+    client,
+    initial: draft({
+      harness: "claude-code",
+      model: "parent-model",
+      reasoning: "high",
+      modelOptions: { context: "1m" },
+      sandbox: "read-only",
+    }),
+    chatConfig: INHERITED,
+    sideChatHarnessEditable,
+  });
+}
+
+describe("ComposerPickers harness facet on new side chats (upstream #590)", () => {
+  it("an unsaved side chat can pick another harness before its catalog loads — only the draft moves", async () => {
+    resetDefaults();
+    const handle = mountSideChatPicker(true);
+    await flush();
+    await openCard(handle);
+
+    // The rail offers every harness (rail_descriptors, pickers.rs): the
+    // codex tab is present and NOT locked.
+    const codexTab = harnessTab(1);
+    expect(codexTab).not.toBeNull();
+    expect(codexTab!.classList.contains("model-tab-locked")).toBe(false);
+
+    await act(async () => {
+      codexTab!.click();
+    });
+    expect(handle.drafts).toHaveLength(1);
+    const picked = handle.drafts[0]!;
+    // Only the harness swapped in name: the inherited provider settings are
+    // replaced with the new harness's remembered picks — none remembered,
+    // so model/reasoning null and options empty — while the inherited
+    // sandbox is preserved (the desktop's `update_chat_config` copy).
+    expect(picked.harness).toBe("codex");
+    expect(picked.model).toBeNull();
+    expect(picked.reasoning).toBeNull();
+    expect(picked.modelOptions).toEqual({});
+    expect(picked.sandbox).toBe("read-only");
+    // The pickers hand the picked config to the persist path (the
+    // established-chat contract — `chatConfig` is non-null on the inherited
+    // row); the composer's `persistDraft` is what drops it while unsaved —
+    // the desktop's "until then all choices stay local" early return.
+    expect(handle.persists).toHaveLength(1);
+    expect(handle.persists[0]!.harness).toBe("codex");
+    expect(handle.observed.current.harness).toBe("codex");
+  });
+
+  it("seeds the remembered model, level and option picks for the new harness", async () => {
+    resetDefaults();
+    composerDefaults.update({
+      modelByHarness: { codex: { id: "codex-model", label: "Codex model" } },
+      reasoning: "low",
+      modelOptionsByModel: { "codex/codex-model": { serviceTier: "fast" } },
+    });
+    const handle = mountSideChatPicker(true);
+    await flush();
+    await openCard(handle);
+
+    await act(async () => {
+      harnessTab(1)!.click();
+    });
+    const picked = handle.drafts[0]!;
+    expect(picked.harness).toBe("codex");
+    // The remembered model rides even though the codex catalog is still
+    // empty (the desktop stamps `defaults.model_for(harness)` — "still send
+    // the id we know"), with its remembered options and level.
+    expect(picked.model).toBe("codex-model");
+    expect(picked.reasoning).toBe("low");
+    expect(picked.modelOptions).toEqual({ serviceTier: "fast" });
+  });
+
+  it("re-picking the inherited harness is a no-op; the lock re-engages once saved or in flight", async () => {
+    resetDefaults();
+    const handle = mountSideChatPicker(true);
+    await flush();
+    await openCard(handle);
+
+    // The inherited harness is already effective — the desktop's
+    // `effective_harness != Some(harness)` guard makes this a no-op.
+    await act(async () => {
+      harnessTab(0)!.click();
+    });
+    expect(handle.drafts).toHaveLength(0);
+    expect(handle.observed.current.harness).toBe("claude-code");
+    // One picker at a time: the portaled card's tabs would otherwise answer
+    // the next mount's `harnessTab` queries.
+    handle.unmount();
+
+    // Saved (or the first send in flight): the inherited config locks the
+    // facet again — the desktop's `side_chat_harness_editable` is false for
+    // forks and pending sends alike.
+    const locked = mountSideChatPicker(false);
+    await flush();
+    await openCard(locked);
+    const lockedTab = harnessTab(1);
+    expect(lockedTab).not.toBeNull();
+    expect(lockedTab!.classList.contains("model-tab-locked")).toBe(true);
+    await act(async () => {
+      lockedTab!.click();
+    });
+    expect(locked.drafts).toHaveLength(0);
+    expect(locked.observed.current.harness).toBe("claude-code");
+  });
+
+  it("composer.tsx wires the unsaved side-chat window into the pickers", () => {
+    // The wiring pin (the reconciliation suite's idiom): the editable flag
+    // is the desktop's `side_chat_harness_editable` — unsaved, and dark
+    // while the first send (uploads included) is in flight — and
+    // `persistDraft` keeps dropping setChatConfig while the chat is unsaved
+    // (the desktop's update_chat_config early return, upstream #590).
+    const source = readFileSync(join(process.cwd(), "src/components/composer.tsx"), "utf8");
+    expect(source).toContain("sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}");
+    expect(source).toContain('if (chat.id !== "" && isUnsavedSideChat(chat.id)) {');
   });
 });
 
