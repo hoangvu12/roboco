@@ -2,7 +2,7 @@
 ;
 ; Built by scripts/package-windows.ps1, which passes the version, the package
 ; architecture, and the staged portable directory:
-;   ISCC.exe /DAppVersion=0.2.97 /DArch=x86_64 /DPackageDir=<stage> /DOutputDir=<out> roboco.iss
+;   ISCC.exe /DAppVersion=<version> /DArch=x86_64 /DPackageDir=<stage> /DOutputDir=<out> roboco.iss
 ;
 ; Installs into %LOCALAPPDATA%\Programs\Roboco without elevation, like VS
 ; Code's user setup: the directory stays writable by its user, so the in-app
