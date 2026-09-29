@@ -23,7 +23,11 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    match roboco_update::detect_install() {
+    let install = roboco_update::detect_install();
+    if let Some(blocker) = install.desktop_update_blocker() {
+        bail!("{blocker}");
+    }
+    match install {
         InstallKind::Managed { app_root } => {
             println!(
                 "downloading {}…",
@@ -68,9 +72,10 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
         InstallKind::Unmanaged => {
             bail!(
                 "this binary is not update-managed (source build or hand-copied).\n\
-                 Linux: download a Roboco release from https://github.com/hoangvu12/roboco/releases or rebuild from source.\n\
+                 Linux: download a Roboco release from {} (or run its install.sh), or rebuild from source.\n\
                  macOS: download the new Roboco.app dmg, or rebuild from source.\n\
-                 Windows: install the portable package from https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1, or rebuild from source."
+                 Windows: install the portable package from https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1, or rebuild from source.",
+                roboco_update::LATEST_RELEASE_PAGE
             )
         }
     }

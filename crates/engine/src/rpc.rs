@@ -1790,6 +1790,14 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
             }
             methods::UPDATE_STATUS => Ok(RpcReply::Stream(watch_stream(self.updater()?.watch()))),
+            methods::CHECK_UPDATE => {
+                let status = self
+                    .updater()?
+                    .check()
+                    .await
+                    .map_err(|e| RpcError::Failed(format!("{e:#}")))?;
+                RpcReply::value(&status)
+            }
             methods::APPLY_UPDATE => {
                 let version = self
                     .updater()?

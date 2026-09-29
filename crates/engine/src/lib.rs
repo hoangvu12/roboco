@@ -513,7 +513,7 @@ impl Engine {
                 .collect()
         });
         core.previews.start(projects).await;
-        // Release checker: polls the release feed on a 6h cadence; headless
+        // Release checker: polls the release feed hourly on a wall clock; headless
         // installs with ROBOCO_AUTO_UPDATE=1 apply + restart themselves — gated
         // on quiescence so a restart never lands under a live run or open PTY.
         // Every install checks: application updates must not depend on
@@ -548,6 +548,11 @@ impl Engine {
         std::fs::create_dir_all(&config.data_dir)?;
         let profile = Self::resolve_profile(&config)?;
         let runtime = Self::assemble_runtime_inner(&config, profile, None, self.network).await?;
+        // The desktop app or `roboco update` may install a newer binary under
+        // a running service; restart into it once no run or terminal is live.
+        if let Some(updater) = runtime.core().updater() {
+            updater.restart_when_superseded();
+        }
 
         // A daemon exists to serve this port, so a bind failure is fatal here —
         // unlike the headed app, which can still work over its in-process

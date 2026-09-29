@@ -118,6 +118,10 @@ pub enum EngineMode {
 trait EngineBackend: Send + Sync {
     fn client(&self) -> &Arc<RpcClient>;
     fn mode(&self) -> EngineMode;
+    /// The engine's release-checker handle — only an in-process engine can
+    /// hand it out (a remote engine's checker is its own, describing ITS
+    /// binary; the UI runs its own report-only checker then).
+    async fn updater(&self) -> Option<roboco_update::Updater>;
     /// Graceful teardown (drains runs / flushes docs for the in-process engine).
     async fn shutdown(&self);
 }
@@ -139,6 +143,13 @@ impl EngineBackend for InProcessEngine {
     }
     fn mode(&self) -> EngineMode {
         EngineMode::InProcess
+    }
+    async fn updater(&self) -> Option<roboco_update::Updater> {
+        self.runtime
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|runtime| runtime.core().updater())
     }
     async fn shutdown(&self) {
         self.boot_task.abort();
@@ -239,6 +250,11 @@ impl EngineBackend for RemoteEngine {
         EngineMode::Remote {
             url: self.url.clone(),
         }
+    }
+    async fn updater(&self) -> Option<roboco_update::Updater> {
+        // A remote engine's checker describes that engine's binary, not this
+        // app's — the app-level controller runs its own (app_update.rs).
+        None
     }
     async fn shutdown(&self) {
         // The daemon outlives this viewport; only stop our readiness probe.
@@ -466,6 +482,12 @@ impl EngineHandle {
         self.inner.mode()
     }
 
+    /// The engine's release-checker handle — `Some` only for an in-process
+    /// engine (see [`EngineBackend::updater`]).
+    pub async fn updater(&self) -> Option<roboco_update::Updater> {
+        self.inner.updater().await
+    }
+
     pub fn engine_info(&self) -> &EngineInfo {
         &self.engine_info
     }
@@ -675,8 +697,6 @@ pub struct AppState {
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
-    /// Latest `UpdateStatus` frame — drives the sidebar update strip.
-    pub update: Option<roboco_update::UpdateStatus>,
     /// Device-local agent CLI update lifecycle (this engine). Unlike
     /// `ListHarnesses`, this standing stream may be backed by subprocess and
     /// network probes.
@@ -760,7 +780,6 @@ impl AppState {
             review_comments: HashMap::new(),
             review_comment_flushes: HashMap::new(),
             local_device_id: None,
-            update: None,
             harness_updates: Vec::new(),
             data_dir: None,
             engine: None,
@@ -1184,10 +1203,6 @@ impl AppState {
             .and_then(|d| sorted.iter().find(|s| s.device_id == d).copied())
             .or_else(|| sorted.first().copied())
             .map(|s| s.id.clone())
-    }
-
-    pub fn apply_update(&mut self, status: roboco_update::UpdateStatus) {
-        self.update = Some(status);
     }
 
     pub fn apply_harness_updates(&mut self, statuses: Vec<roboco_proto::HarnessUpdateStatus>) {
@@ -1867,7 +1882,6 @@ impl AppState {
         self.upload_progress = None;
         self.transfers.clear();
         self.local_device_id = None;
-        self.update = None;
         cx.notify();
     }
 
@@ -2018,6 +2032,10 @@ impl AppState {
             self.harness_updates.clear();
         }
         self.engine = Some(handle.clone());
+        // The app-level update controller coordinates with whoever owns the
+        // engine: an embedded engine shares its checker; a remote one leaves
+        // the app's own report-only checker in charge (app_update.rs).
+        crate::app_update::on_engine_attached(&handle, cx);
         let mut watch_tasks = Vec::with_capacity(8);
         if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
             watch_tasks.push(task);
@@ -2043,15 +2061,6 @@ impl AppState {
                 methods::WATCH_TRANSFERS,
                 |state, value| {
                     state.apply_transfers(value);
-                    true
-                },
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::UPDATE_STATUS,
-                |state, value| {
-                    state.apply_update(value);
                     true
                 },
             ),
