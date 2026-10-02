@@ -2,6 +2,16 @@
 
 Status: ready-for-agent
 
+**Drift addendum (2026-10-02 23:54 UTC):** the window closed at
+`9782693b`; a post-window drift review (`git fetch upstream` → `69e64ef5`,
+mirror refreshed) found 11 non-merge commits: 6 CI-only (excluded) and 5
+port-worthy. Folded: #744/#745/#749 ride ticket 23 (same picker surfaces,
+desktop-only); #706 (`01832f2c`, MCP standalone sessions) became ticket 31
+on the misc lane — it postdated the closing fetch by ~4h, nothing was
+skipped. Deferred to wave-5: #707 (Todo panel, ~1.7k lines across
+proto/harness/doc/UI/web). Full triage:
+`.scratch/upstream-drift/2026-10-02.md`.
+
 ## Problem Statement
 
 Roboco main carries the wave-3 ports (`ports/2026-10-wave3`, fully merged) and
@@ -57,7 +67,7 @@ A ticketed port program under ADR 0003 and `docs/reference/upstream-ports.md`
 carrying the intent of the 37 selected commits across the rebrand, excluding
 iOS, landing, edge (the `edge/src/install.sh` curl-installer hunks inside
 #617/#627/#591), macOS packaging bits, and upstream CI workflows. Tickets
-live in `issues/` (01–30). Decisions resolved up front:
+live in `issues/` (01–31). Decisions resolved up front:
 
 - **#630 is a review, not a port (ticket 30).** Our native driver already
   ships. The review compares upstream's implementation against ours and
@@ -225,7 +235,7 @@ live in `issues/` (01–30). Decisions resolved up front:
   | `wave4/composer` | 23 → 24 |
   | `wave4/appearance` | 26 → 27 |
   | `wave4/ui` | 11 → 19 → 14 → 12 → 21 → 10 → 15 → 16 → 17 → 18 → 20 |
-  | `wave4/misc` | 30 (read-only) → 28 → 29 |
+  | `wave4/misc` | 30 (read-only) → 31 → 28 → 29 |
   | `wave4/tooltips` | 22 — LAST, after the engine/ui/composer lanes merge |
 
   Setup per lane: `git worktree add ../roboco-w4-<lane> -b wave4/<lane>
