@@ -12,12 +12,15 @@ failed ones follow, most recently updated first as before.
 
 **Upstream SHAs:** `f843f1ce` (#638) — 1 file,
 `crates/ui/src/files/sections.rs` (Subagents section, ported in wave 3).
+**Web parity (deliverable):** `web/packages/app/src/lib/explorer-sections.ts`
+builds the same Subagents/Chats sections — port the running-first,
+longest-running-top ordering there.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
-sections tests.
+sections tests; web `pnpm -r build`.
 
 - [ ] Running subagents first, longest-running top; settled ordering
-      unchanged
+      unchanged (desktop + web)
 - [ ] Tests green
 - [ ] Port commit records upstream SHA
 

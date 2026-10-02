@@ -22,10 +22,12 @@ ladder and model context exist on both desktop and web.)
 + per-pixel ramps, icons, haptics, popover, settings/composer.rs,
 shell/tabs.rs, state.rs, plus screenshot docs (skip the
 `docs/screenshots/compact-picker/` artifacts). `ae4181f5` (#721) —
-`pickers.rs`, `pickers/compact.rs`, `shell.rs`. Web parity:
-`web/packages/app/src/components/composer-pickers.tsx` already renders
-model + reasoning ladder — port the compact layout and effort memory
-where the surface supports it; record the gap otherwise.
+`pickers.rs`, `pickers/compact.rs`, `shell.rs`. **Web parity
+(deliverable):** `web/packages/app/src/components/composer-pickers.tsx`
++ `lib/model-rows.ts` + `lib/picker-search.ts` — port the compact layout
+(effort slider + fast toggle on the picker surface, per-model effort
+memory persisted through `state/ui-settings.ts`, starred-first provider
+page). Page-scoped shortcuts map onto the web keymap.
 
 **Zui pin caveat:** upstream's message cites `zui 667d0aa` for the
 per-edge/per-pixel fades. Our pin is `c2d273dc`. Read the `edge_fade.rs`
@@ -42,7 +44,8 @@ pickers/compact + composer tests; `pnpm -r build` for web parity.
 - [ ] Panel and chip agree on the model name (#721)
 - [ ] Settings-survive-navigation regression test
 - [ ] Edge fades follow the picked approach (zui check recorded)
-- [ ] Tests green; web parity recorded
+- [ ] Tests green
+- [ ] Web: compact picker layout + effort memory + starred-first page
 - [ ] Port commit records upstream SHAs
 
 ## Comments

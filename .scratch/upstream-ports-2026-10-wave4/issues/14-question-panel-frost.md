@@ -18,7 +18,10 @@ Our frost module is `crates/ui/src/frost.rs` (upstream names it
 them, do not create a second glass module).
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; existing
-question-panel/composer tests.
+question-panel/composer tests. Web: the question wizard
+(`web/packages/app/src/lib/wizard.ts` + its panel styling) — verify the
+panel is opaque/frosted against the transcript and fix the styling only
+if it actually bleeds.
 
 - [ ] Question panel frosted, matching the pill on all materials
 - [ ] Token cleanup (no orphaned solid-input token)

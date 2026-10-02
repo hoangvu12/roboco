@@ -119,7 +119,11 @@ live in `issues/` (01–30). Decisions resolved up front:
     the OS, and animations paused while backgrounded.
 20. As a Linux user, I want the launcher entry and icon installed with
     absolute paths that survive in-app updates.
-21. As a contributor, I want each port commit to record its upstream SHA
+21. As a web client user, I want every ported surface that exists on web
+    mirrored there in the same ticket — labels, tabs, palette, queue rows,
+    pickers, file tree, appearance — with wire types regenerated for any
+    RPC surface change.
+22. As a contributor, I want each port commit to record its upstream SHA
     and any deliberately excluded behavior.
 
 ## Implementation Decisions
@@ -141,12 +145,21 @@ live in `issues/` (01–30). Decisions resolved up front:
 - Wire surface changes regenerate wire types: tickets 13 (outsideWorkspace
   read-only reason) and 25 (workspace mutation contracts) run `wiregen` and
   `pnpm -r build` before landing (web-codegen gate parity).
-- Web parity only where the surface exists: right-pane tabs (11), command
-  palette (19), queue rows (10/15), composer pickers (23), file tree
-  (16/25), settings appearance (26). Web has no GPUI drag-selection
-  machinery (12 is desktop-only; verify native selection still covers the
-  gap) and no dictation surface (24 is desktop-only; web parity recorded
-  out of scope).
+- **Web parity is a deliverable, not a gap check.** Every ticket whose
+  surface exists in `web/packages/app` implements the web side in the same
+  ticket: right-tab strip (11), queue rows (10, 15), transcript file links
+  (13), file tree (16, 25), explorer sections (17), chat list/jump hints
+  (18), command palette (19), composer pickers (23), settings appearance +
+  new-thread background lib (26, 27). Each ticket names its web files.
+  Wire-surface changes regenerate wire types FIRST (tickets 13, 25: run
+  `wiregen`, then build the web side on the fresh types; `pnpm -r build` +
+  engine-client vitest where the RPC surface moves). Desktop-only by
+  design: 12 (web renders transcripts through native DOM selection — no
+  registry machinery to port; the outcome already holds) and 24 (no
+  browser dictation surface — MediaRecorder → server-side parakeet would
+  be a fresh design, not a port; recorded out of scope). 14/20/21/22 port
+  the desktop mechanics and verify the web outcome, fixing only an actual
+  visual/behavioral gap.
 - Windows-first where upstream landed it incidentally: ticket 25's Windows
   drag handles and canonical-path comparisons are core (Roboco is
   Windows-native), not an afterthought; ticket 09's noop-browser fallback

@@ -12,15 +12,17 @@ value becomes a floor in default-size rems, not fixed pixels).
 **Status:** ready-for-agent
 
 **Upstream SHAs:** `546ecb68` (#641) — 1 file, `crates/ui/src/shell.rs`
-(sidebar row rendering). Web: sidebar rows render in
-`web/packages/app/src/components/chat-list.tsx` — check hint wrapping,
-extend only if a gap exists.
+(sidebar row rendering). **Web parity (deliverable):**
+`web/packages/app/src/components/chat-list.tsx` + `state/jump-hints.ts` —
+keep web hint chips on one line (no wrap) with a slot wide enough for
+"Ctrl+9", scaled with the font.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
-sidebar/chat-list tests.
+sidebar/chat-list tests; web `pnpm -r build`.
 
 - [ ] Hints stay on one line; rows aligned; slot scales with font
-- [ ] Tests green; web gap check recorded
+      (desktop + web)
+- [ ] Tests green
 - [ ] Port commit records upstream SHA
 
 ## Comments

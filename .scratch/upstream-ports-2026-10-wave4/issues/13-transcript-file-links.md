@@ -35,8 +35,14 @@ image_preview,markdown_preview,mod}.rs`, `markdown/{link_interaction,
 link_presentation,render,mod}.rs`, `workspace_links.rs`, `transcript.rs`,
 `shell.rs`, `state.rs`, `engine/src/workspace_files.rs` +
 `engine/tests/workspace_files.rs`, `proto/src/entities.rs`) exist here 1:1.
-The proto `outsideWorkspace` reason is a wire change: run `wiregen` and
-typecheck `web/` (web-codegen gate).
+The proto `outsideWorkspace` reason is a wire change: run `wiregen` FIRST,
+then build the web side on the fresh types (web-codegen gate).
+**Web parity (deliverable):** `web/packages/app/src/lib/links.ts` already
+carries the workspace-link resolution with percent decode/encode — extend
+it for out-of-folder host-file reads (absolute breadcrumb, read-only
+presentation) against the regenerated wire types, and label unlabeled
+links by file name in `components/markdown.tsx` + `lib/markdown.ts`
+(full path on title/copy), matching the desktop renderer.
 
 **Verification budget:** `cargo check -p roboco-engine -p roboco-ui -j 3`;
 targeted nextest workspace_files + ui link tests; `pnpm -r build` after
@@ -49,6 +55,8 @@ targeted nextest workspace_files + ui link tests; `pnpm -r build` after
 - [ ] Unlabeled links show file names; same-name disambiguation; labels
       unchanged for authored links
 - [ ] Wire types regenerated; engine + ui tests green
+- [ ] Web: out-of-folder links open read-only; unlabeled links show file
+      names with full path on title/copy
 - [ ] Port commit records upstream SHAs
 
 ## Comments

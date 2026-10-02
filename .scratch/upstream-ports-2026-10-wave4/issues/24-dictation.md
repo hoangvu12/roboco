@@ -38,7 +38,10 @@ prompt path works headless; note any gap.
 **Verification budget:** `cargo check -p roboco-voice -p roboco-ui -j 3`;
 nextest `-p roboco-voice` (session tests run with a fixture model
 offline — follow upstream's example/verify harness; do not download in
-CI), ui composer_dictation tests; no visual verification.
+CI), ui composer_dictation tests; no visual verification. **Web: out of
+scope by design** — no browser surface for on-device parakeet inference
+(MediaRecorder → server-side transcription would be a fresh design, not
+a port; see spec).
 
 - [ ] `crates/voice` crate: capture/decode/resample/model lifecycle with
       session tests, no runtime download in tests

@@ -10,14 +10,15 @@ edge.
 **Status:** ready-for-agent
 
 **Upstream SHAs:** `4aceec16` (#665) — 1 file,
-`crates/ui/src/files/tree.rs`. Web parity: `files/file-tree-panel.tsx`
-uses the shared edge-fade logic — verify and extend only if a gap exists.
+`crates/ui/src/files/tree.rs`. **Web parity (deliverable):**
+`web/packages/app/src/components/files/file-tree-panel.tsx` — apply the
+same scroll-position-conditional edge fades to the web tree panel.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
-files/tree tests.
+files/tree tests; web `pnpm -r build`.
 
-- [ ] Edge fades conditional on scroll position
-- [ ] Tests green; web gap check recorded
+- [ ] Edge fades conditional on scroll position (desktop + web)
+- [ ] Tests green
 - [ ] Port commit records upstream SHA
 
 ## Comments

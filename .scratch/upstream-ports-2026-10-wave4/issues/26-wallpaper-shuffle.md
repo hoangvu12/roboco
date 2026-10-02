@@ -26,10 +26,13 @@ coverage.
 `shell.rs`, `theme.rs`, `examples/new-project-fixture.rs`.
 `626bccc8` (#660) — 8 files: same surfaces +
 `new_thread_background_mask.rs`, with the managed-path preload key and
-warm-switch test. Web parity: `settings-appearance.tsx` + the
-new-thread-background lib — port shuffle/positioning settings state where
-the surface supports it; record gaps otherwise (no web wallpaper engine
-beyond the existing background image).
+warm-switch test. **Web parity (deliverable):**
+`web/packages/app/src/routes/settings-appearance.tsx` +
+`lib/new-thread-background.ts` +
+`lib/new-thread-background-effects.ts` + `components/new-thread-background.tsx`
+— port the shuffle setting (with preloading through the existing effects
+worker/IndexedDB blob store), adaptive colour derivation, and the
+positioning/zoom setting applied to the web background renderer.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 appearance/wallpaper/background tests (decode-once, orphan retirement,
@@ -40,7 +43,9 @@ warm switch on framing change); `pnpm -r build` if web touched.
 - [ ] Positioning + zoom; preload queue keyed on managed path (warm
       switch test)
 - [ ] Appearance strings + shortcut wiring; fixture coverage
-- [ ] Tests green; web parity recorded
+- [ ] Tests green
+- [ ] Web: shuffle + preloading + positioning/zoom in settings-appearance
+      and the background renderer
 - [ ] Port commit records upstream SHAs
 
 ## Comments

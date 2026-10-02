@@ -24,8 +24,12 @@ settings,shell,transcript}.rs`, `settings/appearance.rs`, `ui/Cargo.toml`
 (portal dep on Linux). Our `motion.rs` already honors
 `cx.reduce_motion()` — the port adds the setter paths + settings section.
 Windows "Animation effects" is read via the OS SPI; Linux via the
-freedesktop portal setting. Web: CSS `prefers-reduced-motion` already
-covers the web client — record the check, no forced parity.
+freedesktop portal setting. **Web parity (deliverable):** the web client
+already snaps to CSS `prefers-reduced-motion` (system-follow is native);
+port the explicit pin — a Motion row in
+`web/packages/app/src/routes/settings-appearance.tsx` persisted via
+`lib/appearance-store.ts` that overrides the media query when pinned
+On/Off.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 motion + settings + transcript veil tests (deterministic scheduler must
@@ -36,6 +40,8 @@ stay clean — the portal read is app-only).
 - [ ] Pause-in-background toggle (off by default)
 - [ ] Streaming veil baseline under reduced motion
 - [ ] Tests green (no D-Bus wake in shell tests)
+- [ ] Web: Motion pin row in settings-appearance overriding
+      prefers-reduced-motion when pinned
 - [ ] Port commit records upstream SHA
 
 ## Comments

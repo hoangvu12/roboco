@@ -36,9 +36,13 @@ Windows is first-class here (Roboco is Windows-native): keep the Windows
 drag handles + canonical path hunks intact.
 
 **Wire surface:** the mutation contracts are proto changes — run
-`wiregen`, typecheck `web/` (web-codegen gate), and check web
-file-tree-panel parity for rename/delete/copy-path actions; extend web
-where the surface exists, record gaps otherwise.
+`wiregen` FIRST, then build the web side on the fresh types.
+**Web parity (deliverable):**
+`web/packages/app/src/components/files/file-tree-panel.tsx` +
+`lib/file-tree.ts` + `lib/files-client.ts` — port the context actions
+(rename inline, delete confirm, copy path, add to chat) as web menus, and
+the moves via native HTML5 drag-and-drop against the mutation RPCs; web
+editor/preview tabs refresh on mutation revisions the same way.
 
 **Verification budget:** `cargo check -p roboco-engine -p roboco-ui -j 3`;
 nextest engine workspace_files + device_routing, ui files mutation/drag
@@ -51,7 +55,8 @@ suites; `pnpm -r build` after wiregen.
 - [ ] DnD with scoped drop targets + origin checks; shared chat dropzone
       covers main + side chats; stale payloads attach nowhere
 - [ ] Editor/preview/syntax refresh after rename; revisions after saves
-- [ ] Wire types regenerated; web parity recorded
+- [ ] Wire types regenerated; web file tree gains actions + DnD moves
+      against the fresh types; engine-client vitest extended
 - [ ] Tests green
 - [ ] Port commit records upstream SHAs
 

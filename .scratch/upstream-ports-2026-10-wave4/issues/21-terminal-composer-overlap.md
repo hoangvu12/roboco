@@ -14,7 +14,9 @@ composer grows/shrinks or a notice appears.
 test module dir), `shell.rs`, `terminal/dock.rs` (upstream splits this
 out here — our terminal is `{emulator, mod, panel, view}`; carry the
 dock-region logic into `terminal/mod.rs` or create `terminal/dock.rs` to
-match, implementer's call by intent), `terminal/mod.rs`.
+match, implementer's call by intent), `terminal/mod.rs`. Web: the dock is
+CSS-flex (`lib/composer-dock.ts`, `dock-glide.ts`, update strips) —
+verify the composer/notice z-order and spacing and fix only a real gap.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 composer_dock/terminal tests (new).

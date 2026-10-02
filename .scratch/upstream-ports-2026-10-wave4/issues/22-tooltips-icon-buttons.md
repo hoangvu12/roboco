@@ -23,7 +23,10 @@ they will perform.
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 on the touched surfaces (window controls, history, files header, changes
 header); tooltips are string-parameter changes — behavior verified by
-compile + existing tests.
+compile + existing tests. Web: web buttons already carry `title`/
+aria-labels — sweep the same icon-only buttons
+(`web/packages/app/src/components/`) and add the missing titles/aria
+where the sweep finds a real gap.
 
 - [ ] Every icon-only button covered; shared helpers take a label
 - [ ] Toggle buttons label the pending action

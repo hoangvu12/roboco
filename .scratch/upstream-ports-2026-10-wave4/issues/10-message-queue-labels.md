@@ -11,15 +11,16 @@ skill and file rows).
 **Status:** ready-for-agent
 
 **Upstream SHAs:** `b3d7f48b` (#682) — 1 file, `crates/ui/src/queue.rs`.
-Web parity: `web/packages/app/src/lib/queue-actions.ts` renders queue rows
-— verify label parity there and extend only if a gap exists.
+**Web parity (deliverable):** `web/packages/app/src/lib/queue-row-logic.ts`
+mirrors `queue_visible_text` — port the command/skill label projection
+there so desktop and web rows agree (its header already tracks upstream
+`queue.rs` line ranges; keep the note current).
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
-`test(queue_row)`; web `pnpm -r build` if touched.
+`test(queue_row)`; web `pnpm -r build` + queue row-logic vitest.
 
-- [ ] Command/skill/file queue rows labeled correctly
-- [ ] `queue_row_text` unit tests green
-- [ ] Web gap check recorded
+- [ ] Command/skill/file queue rows labeled correctly (desktop + web)
+- [ ] `queue_row_text` unit tests green; web row-logic tests updated
 - [ ] Port commit records upstream SHA
 
 ## Comments

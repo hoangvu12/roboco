@@ -11,15 +11,17 @@ corners).
 **Status:** ready-for-agent
 
 **Upstream SHAs:** `66226055` (#650) — 1 file, `crates/ui/src/queue.rs`.
-Web parity: queue row rendering in `web/packages/app/src/` — verify
-thumbnail tooltip/naming and extend only if a gap exists.
+**Web parity (deliverable):** `web/packages/app/src/lib/queue-row-logic.ts`
+(`queueAttachmentSummary`) + `components/queue-panel.tsx` — drop the
+filename text from web rows, carry names as `title`/aria on thumbnails
+and the +N chip, keep the rounded-corner hover inset intact.
 
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
-queue tests; web `pnpm -r build` if touched.
+queue tests; web `pnpm -r build` + row-logic vitest.
 
-- [ ] Filenames hidden; tooltips/a11y carry names
-- [ ] Hover backgrounds clipped to rounded corners
-- [ ] Tests green; web gap check recorded
+- [ ] Filenames hidden; tooltips/a11y carry names (desktop + web)
+- [ ] Hover backgrounds clipped to rounded corners (both)
+- [ ] Tests green; web row-logic tests updated
 - [ ] Port commit records upstream SHA
 
 ## Comments
