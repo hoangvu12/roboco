@@ -65,12 +65,12 @@ live in `issues/` (01–30). Decisions resolved up front:
   startup budget (ours defaults 60s), the dropped-input-resolver→error
   semantics for harness questions, and `pi/PROTOCOL.md` as an internal
   reference. Output is a decision record; no structural convergence.
-- **Branch base: `main`.** Wave 3 is fully merged; no stacking. Ticket
-  branches are `wave4/NN-slug`. Driven by `/implement-feature`, the
-  orchestrator's integration branch is the source of truth between waves
-  and fast-forwards `main` at the end; a manual run may merge tickets
-  into `main` as they complete. Either way: never push ticket branches,
-  never merge the mirror.
+- **Branch base: `main`, execution via `/implement`.** Wave 3 is fully
+  merged; no stacking. `/implement` commits to the current branch, so each
+  lane runs in its own worktree on its own branch (`wave4/<lane>`), one
+  commit per ticket, and the lane branch merges into `main` when its
+  tickets are done — rerere eats cross-lane conflicts; merge in ticket
+  order. Never push lane branches; never merge the mirror.
 - The mirror `zeron/main` was refreshed to `upstream/main` (`9782693b`)
   after the ancestry check passed.
 
@@ -162,17 +162,15 @@ live in `issues/` (01–30). Decisions resolved up front:
     (the filters); this spec defines WHEN (once per bundle, all filters
     in one build). The full suite runs once, at the skill's finish
     step.
-  - **Ticket bundling is the default.** A worker claims a BUNDLE of
-    2–6 consecutive frontier tickets in the same file domain — one
-    worktree, one branch, one commit per ticket, one shared
-    verification pass at the end — instead of one-worker-per-ticket.
-    This amortizes the test-binary build, worktree spin-up, and
-    sccache/target warm-up, and is the single biggest wall-clock lever
-    on this box. Tickets still advance one at a time in the tracker
-    (Status + Comments per ticket, commits reference the upstream SHA).
+  - **Verification batches at lane checkpoints.** `cargo check` per edit
+    iteration (seconds warm); `nextest` once per 2–4 tickets (one build
+    runs all the bundle's filters), not once per ticket — the tickets'
+    "Verification budget" lines define WHAT to run (the filters), this
+    spec defines WHEN (batched at lane checkpoints). The full suite runs
+    once, at the skill's final step.
   - Wave-1 pre-warm: one background `cargo nextest run --workspace
-    --no-run` under the worker env before the first wave spawns, so
-    every worker starts warm.
+    --no-run` under the worker env before the first lane starts, so
+    every lane begins warm.
 - Renames: `ZERON_SESSION_IDLE_MS` → `ROBOCO_SESSION_IDLE_MS` (ticket 02
   introduces the override; our reaper currently hardcodes 30min),
   `~/.zeron/app/current` → `~/.roboco/app/current`, "Open in Zeron" →
@@ -214,27 +212,40 @@ live in `issues/` (01–30). Decisions resolved up front:
 - Upstream version bumps (v0.2.98…v0.2.102) are skipped; Roboco versions
   independently (currently v0.6.0). `docs/research/` and zeronsh org-link
   boundaries untouched.
-- **Orchestration capacity (this box: 3 cores, 22GB, warm shared
-  target).** Cap build-active workers at 4 plus the orchestrator's own
-  slot; concurrent `cargo` invocations serialize on the target-dir lock
-  through the worktree target symlink, which is acceptable because
-  edit/read time dominates builds. Ticket 30 is read-only and costs no
-  build slot. The per-candidate review phase should stay proportionate
-  to the diff — a one-file port does not get the same review depth as
-  tickets 23–25.
-- **Dependency edges encode file-overlap lanes.** The tickets' `Blocked
-  by:` lines carry the shared-file chains (`02→03→01` sessions.rs,
-  `09→08` harness_updates.rs, `14→12` composer.rs, `23→24` composer.rs,
-  `13→25` workspace_files+proto+files, `26→27` settings/appearance.rs) and
-  gate `22` behind the composer/terminal rewrites (`12, 14, 21, 23, 24`)
-  so the tooltip sweep covers the final button surfaces. Everything else
-  is unblocked — coexistence within a wave is the orchestrator's call
-  (smaller wave when uncertain; rerere eats the residual conflicts).
-- Wave order: F (30, read-only, can start immediately) → A (01–05) →
-  B (06–10) → C (11–22) → D (23–27) → E (28–29), refined by the blocked
-  edges above. The big feature tickets (13, 23, 24, 25) start in the
-  first waves, not the last — they are the wall-clock critical path.
-  ~4 concurrent implementers max on this box.
+- **Lanes are the parallelism.** One `/implement` invocation per lane,
+  pointed at the spec plus that lane's ticket list, run in a dedicated
+  worktree; lanes are file-domain partitions so parallel runs rarely
+  conflict and in-lane order is fixed:
+
+  | Lane branch | Tickets (in order) |
+  |---|---|
+  | `wave4/engine` | 02 → 03 → 01 → 04 → 05 |
+  | `wave4/harness` | 09 → 08 → 07 → 06 |
+  | `wave4/files` | 13 → 25 (the long one: proto + engine + ui + web) |
+  | `wave4/composer` | 23 → 24 |
+  | `wave4/appearance` | 26 → 27 |
+  | `wave4/ui` | 11 → 19 → 14 → 12 → 21 → 10 → 15 → 16 → 17 → 18 → 20 |
+  | `wave4/misc` | 30 (read-only) → 28 → 29 |
+  | `wave4/tooltips` | 22 — LAST, after the engine/ui/composer lanes merge |
+
+  Setup per lane: `git worktree add ../roboco-w4-<lane> -b wave4/<lane>
+  main` + `ln -s ~/roboco-dev/target ../roboco-w4-<lane>/target`.
+  Stage them: `files` + `composer` + `engine` + `harness` first (the
+  critical path), then `appearance` + `ui` + `misc` as slots free up,
+  `tooltips` as the wrap-up. A single sequential `/implement` run over
+  the whole spec also works — follow the same lane order inside it.
+- **Capacity (this box: 3 cores, 22GB, one shared warm target).** 3–4
+  concurrent lanes is the sweet spot: agents sit idle during
+  read/think/write time, and concurrent cargo invocations merely queue
+  on the shared target-dir lock (through the worktree target symlink).
+  Ticket 30 is read-only and costs no build slot. The skill's final
+  `/code-review` stays proportionate to diff size — a one-file port does
+  not get tickets 23–25's depth.
+- **Dependency edges encode the same lanes.** The tickets' `Blocked by:`
+  lines carry the in-lane chains (`02→03→01`, `09→08`, `14→12`,
+  `23→24`, `13→25`, `26→27`) and gate `22` behind `12, 14, 21, 23, 24`
+  so the tooltip sweep covers the final button surfaces. A lane worker
+  respects its list order; cross-lane, merge order resolves the rest.
 
 ## Out of scope (recorded)
 
