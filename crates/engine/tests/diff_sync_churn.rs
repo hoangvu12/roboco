@@ -282,3 +282,71 @@ async fn deleted_checkout_is_evicted_after_grace() {
     );
     core.shutdown().await;
 }
+
+/// Access events (opens/closes) must not re-kick captures: notify reports
+/// reads as `EventKind::Access`, and the sync's own git runs open files under
+/// the watched roots, so pre-filter each read kicked another capture whose
+/// git reads kicked the next (upstream #605 — idle checkouts re-ran git
+/// status + three diffs every couple of seconds). The read half is pinned at
+/// the watcher level (diff_sync.rs `watch_budget_tests`); this e2e half pins
+/// the other direction — the filter must not swallow a REAL change: a write
+/// still re-kicks, re-captures, and republishes a new diff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reads_stay_quiet_and_writes_still_rekick() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = tmp.path().join("repo");
+    init_dirty_repo(&repo_dir).await;
+
+    let core = assemble(&tmp.path().join("data"));
+    core.workspace
+        .create_space(
+            "space-1",
+            &core.device_id,
+            &repo_dir.to_string_lossy(),
+            None,
+            true,
+        )
+        .expect("space row");
+    core.workspace
+        .create_chat("chat-1", Some("space-1"), None, None, None)
+        .expect("chat row");
+    wait_chat_state(&core, "chat-1", true).await;
+    core.diff_sync.reconcile_now().await;
+    let before = wait_for_diff(&core.diff_sync).await;
+
+    // A burst of reads (access events) on watched files: quiet.
+    for _ in 0..5 {
+        let _ = std::fs::read(repo_dir.join("a.txt")).expect("read a.txt");
+        let _ = std::fs::read_dir(&repo_dir).expect("read dir");
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let after_reads = current_diffs(&core.diff_sync);
+    assert_eq!(after_reads.len(), 1, "read burst must not touch the entry");
+    assert_eq!(
+        after_reads[0].checksum, before.checksum,
+        "a read must not re-publish the diff"
+    );
+
+    // A real change still flows: write → kick → capture → new diff.
+    std::fs::write(repo_dir.join("a.txt"), "one\ntwo\nedited again\n").expect("write a.txt");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let diffs = current_diffs(&core.diff_sync);
+        if diffs.len() == 1
+            && diffs[0].checkout_id == before.checkout_id
+            && diffs[0].checksum != before.checksum
+        {
+            assert!(
+                diffs[0].updated_at > before.updated_at,
+                "a write must re-capture and re-publish"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "write must re-kick the capture (diff still {diffs:?})"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    core.shutdown().await;
+}
