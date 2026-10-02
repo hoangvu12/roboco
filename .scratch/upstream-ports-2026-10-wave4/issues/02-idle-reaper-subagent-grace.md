@@ -13,7 +13,7 @@ introduced for testability: `ZERON_SESSION_IDLE_MS` →
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `aaeede8b` (#637) — `crates/engine/src/sessions.rs`
 (+33), `crates/engine/tests/subagent_idle_reap.rs` (+311, new). Our
@@ -23,10 +23,28 @@ introduced for testability: `ZERON_SESSION_IDLE_MS` →
 nextest `-p roboco-engine subagent_idle_reap` (new) + existing
 idle/session tests.
 
-- [ ] Live subagent sink bounds (not disarms) the reaper, clocked from last
+- [x] Live subagent sink bounds (not disarms) the reaper, clocked from last
       subagent event; lost subagent stamped failed
-- [ ] `ROBOCO_SESSION_IDLE_MS` overrides the window
-- [ ] New test file green alongside existing reaper tests
-- [ ] Port commit records upstream SHA
+- [x] `ROBOCO_SESSION_IDLE_MS` overrides the window
+- [x] New test file green alongside existing reaper tests
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `aaeede8b` (#637) by intent into `crates/engine/src/sessions.rs`:
+  `SESSION_IDLE` const replaced by the env-driven `session_idle` +
+  `subagent_silence = 8x` pair; reaper window now
+  `max(parked_at, last_subagent_activity) + (live sink ? silence : idle)`;
+  reaper log gains `live_subagents`; tagged `AgentEvent::Subagent` traffic
+  stamps `last_subagent_activity` right after `publish`. The existing
+  run-end cleanup already stamps open sinks `failed`, so the reap of a
+  silent subagent marks its chip failed with no extra code — the
+  `reaper_still_ends_a_session_whose_subagent_went_silent` test proves it.
+- Test ported as `crates/engine/tests/subagent_idle_reap.rs` (rebrand:
+  `roboco_*` crates, `ROBOCO_SESSION_IDLE_MS`; our `EngineCore::assemble`
+  takes 3 args — upstream's 4th dropped).
+- Exclusions: none — the upstream diff is engine-only.
+- Verification: `cargo check -p roboco-engine --tests -j 3` clean; nextest
+  `-p roboco-engine -E 'binary(subagent_idle_reap) or binary(turn_quiesce)
+  or binary(self_continued_quiesce)'` → 8/8 pass (2 new + 6 existing
+  park/quiesce regressions).
