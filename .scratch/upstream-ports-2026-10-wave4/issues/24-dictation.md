@@ -17,7 +17,8 @@ icon. Follow-up #740: the composer mic and attach hover fades are keyed
 per instance (`composer-dictation-<entity-id>`) so the main and side-chat
 composers don't light each other's buttons.
 
-**Blocked by:** None.
+**Blocked by:** 23 — both rewrite `composer.rs` heavily; #740's
+per-instance hover keys build on the picker's entity-id key pattern.
 
 **Status:** ready-for-agent
 

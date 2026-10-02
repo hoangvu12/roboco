@@ -15,7 +15,8 @@ dissolving in when motion resumes. Only the app installs motion state —
 windows without it skip the OS read (shell tests activate windows and the
 portal D-Bus thread otherwise wakes deterministic test schedulers).
 
-**Blocked by:** None.
+**Blocked by:** 26 — both rewrite `settings/appearance.rs` (shuffle
+surfaces first, Motion section on top).
 
 **Status:** ready-for-agent
 

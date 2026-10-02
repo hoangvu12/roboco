@@ -14,7 +14,8 @@ wizard-borrowed message composer by marking that input explicitly instead
 of gating on key context; (3) drag selection across markdown table columns
 selects the full logical column span.
 
-**Blocked by:** None.
+**Blocked by:** 14 — both touch `composer.rs` (14 is the small one;
+question-panel pill lands before the selection gating).
 
 **Status:** ready-for-agent
 

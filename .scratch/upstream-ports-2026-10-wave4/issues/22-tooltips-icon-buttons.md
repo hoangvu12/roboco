@@ -9,7 +9,10 @@ label becomes a parameter so every caller gets one. Toggle-style buttons
 (expand/collapse, files panel, fold all) show the label for the action
 they will perform.
 
-**Blocked by:** None.
+**Blocked by:** 12, 14, 21, 23, 24 — the tooltip sweep runs LAST,
+after the tickets that rewrite the button surfaces it parameterizes
+(`composer.rs`, `shell.rs`, terminal, tabs), so the helper-label sweep
+covers the final button set including 24's new mic button.
 
 **Status:** ready-for-agent
 

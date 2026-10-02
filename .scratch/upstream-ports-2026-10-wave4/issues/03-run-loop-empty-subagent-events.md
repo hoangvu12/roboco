@@ -11,7 +11,8 @@ per window, and keep the flush-tick test counter thread-local (a
 process-global counter picks up ticks from other lib tests running in
 parallel).
 
-**Blocked by:** None.
+**Blocked by:** 02 — both rewrite `crates/engine/src/sessions.rs` (reaper
+first, run-loop second; upstream order too).
 
 **Status:** ready-for-agent
 

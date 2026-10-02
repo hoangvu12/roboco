@@ -10,7 +10,8 @@ release is newer than Homebrew's, the row names the brew command (Update
 still runs it; idle auto-update waits for Homebrew). npm globals under
 Homebrew's Node keep their own updaters. Detection is macOS/Linux only.
 
-**Blocked by:** None.
+**Blocked by:** 09 — both touch `harness_updates.rs`; #617's
+registry/release machinery lands before #661's brew policy rows.
 
 **Status:** ready-for-agent
 

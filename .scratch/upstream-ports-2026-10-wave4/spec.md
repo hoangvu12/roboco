@@ -65,8 +65,12 @@ live in `issues/` (01–30). Decisions resolved up front:
   startup budget (ours defaults 60s), the dropped-input-resolver→error
   semantics for harness questions, and `pi/PROTOCOL.md` as an internal
   reference. Output is a decision record; no structural convergence.
-- **Branch base: `main`.** Wave 3 is fully merged; no stacking. Tickets run
-  in `wave4/NN-slug` branches off `main` and merge as they complete.
+- **Branch base: `main`.** Wave 3 is fully merged; no stacking. Ticket
+  branches are `wave4/NN-slug`. Driven by `/implement-feature`, the
+  orchestrator's integration branch is the source of truth between waves
+  and fast-forwards `main` at the end; a manual run may merge tickets
+  into `main` as they complete. Either way: never push ticket branches,
+  never merge the mirror.
 - The mirror `zeron/main` was refreshed to `upstream/main` (`9782693b`)
   after the ancestry check passed.
 
@@ -178,10 +182,27 @@ live in `issues/` (01–30). Decisions resolved up front:
 - Upstream version bumps (v0.2.98…v0.2.102) are skipped; Roboco versions
   independently (currently v0.6.0). `docs/research/` and zeronsh org-link
   boundaries untouched.
+- **Orchestration capacity (this box: 3 cores, 22GB, warm shared
+  target).** Cap build-active workers at 4 plus the orchestrator's own
+  slot; concurrent `cargo` invocations serialize on the target-dir lock
+  through the worktree target symlink, which is acceptable because
+  edit/read time dominates builds. Ticket 30 is read-only and costs no
+  build slot. The per-candidate review phase should stay proportionate
+  to the diff — a one-file port does not get the same review depth as
+  tickets 23–25.
+- **Dependency edges encode file-overlap lanes.** The tickets' `Blocked
+  by:` lines carry the shared-file chains (`02→03→01` sessions.rs,
+  `09→08` harness_updates.rs, `14→12` composer.rs, `23→24` composer.rs,
+  `13→25` workspace_files+proto+files, `26→27` settings/appearance.rs) and
+  gate `22` behind the composer/terminal rewrites (`12, 14, 21, 23, 24`)
+  so the tooltip sweep covers the final button surfaces. Everything else
+  is unblocked — coexistence within a wave is the orchestrator's call
+  (smaller wave when uncertain; rerere eats the residual conflicts).
 - Wave order: F (30, read-only, can start immediately) → A (01–05) →
-  B (06–10) → C (11–22) → D (23–27) → E (28–29). Within C, tickets are
-  independent. Within D, no cross-ticket deps (each stack is contained in
-  one ticket). ~3 concurrent implementers max.
+  B (06–10) → C (11–22) → D (23–27) → E (28–29), refined by the blocked
+  edges above. The big feature tickets (13, 23, 24, 25) start in the
+  first waves, not the last — they are the wall-clock critical path.
+  ~4 concurrent implementers max on this box.
 
 ## Out of scope (recorded)
 

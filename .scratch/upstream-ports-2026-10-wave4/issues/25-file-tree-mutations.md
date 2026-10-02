@@ -16,8 +16,10 @@ workspace payloads attach to the target composer, origin-less (stale)
 payloads attach nowhere. Follow-up #612 (folded in): side chats accept
 file drag-and-drop through the same shared dropzone.
 
-**Blocked by:** None. (Wave 3 shipped the file tree, side chats and
-explorer sections this builds on.)
+**Blocked by:** 13 — both touch `engine/workspace_files*` + proto +
+`ui/src/files/`; the read-path extension lands before the mutation
+contracts. (Wave 3 shipped the file tree, side chats and explorer
+sections this builds on.)
 
 **Status:** ready-for-agent
 

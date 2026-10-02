@@ -8,7 +8,8 @@ name a spawn or its agent, stop on read errors, and ignore a subagent's own
 nested spawns (long transcripts reach 100+ MB; parsing every line as JSON
 on a tokio worker stalled resumes).
 
-**Blocked by:** None.
+**Blocked by:** 03 — sessions.rs/doc_host state; upstream #676 lands after
+#637/#604 as well.
 
 **Status:** ready-for-agent
 
