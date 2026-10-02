@@ -531,16 +531,37 @@ impl SessionsEngine {
 
         // Input bridge: the harness asks questions; we mint the request id, park the
         // resolver for `respond_input`, and surface the event through the run pipeline.
+        // The parked resolver and the receiver the harness awaits are separate
+        // channels: only an actual answer is forwarded to the harness — a dropped
+        // resolver (Err) forwards nothing, so the harness resolves Err (an error),
+        // never an empty answer posing as one. Deliberate empty answers (run-end
+        // drain, post-turn auto-decline, interrupt) still forward as empties.
         let request_input = {
             let pending = pending_inputs.clone();
             let engine_tx = engine_tx.clone();
             Box::new(move |questions: Vec<UserInputQuestion>| {
-                let (tx, rx) = oneshot::channel();
+                let (mut tx, rx) = oneshot::channel();
+                let (answer_tx, answer_rx) = oneshot::channel();
                 let request_id = new_id();
-                lock(&pending).insert(request_id.clone(), tx);
+                lock(&pending).insert(request_id.clone(), answer_tx);
                 let _ = engine_tx.send(AgentEvent::InputRequested {
-                    request_id,
+                    request_id: request_id.clone(),
                     questions,
+                });
+                let pending = pending.clone();
+                let engine_tx = engine_tx.clone();
+                tokio::spawn(async move {
+                    tokio::select! {
+                        // A dropped resolver stays an error for the harness, as before.
+                        answer = answer_rx => if let Ok(answer) = answer { let _ = tx.send(answer); },
+                        // The harness gave up on the answer (input cancelled):
+                        // retire the question so a late answer finds no resolver,
+                        // and release the AwaitingInput park like a real answer would.
+                        _ = tx.closed() => {
+                            lock(&pending).remove(&request_id);
+                            let _ = engine_tx.send(AgentEvent::InputResolved { request_id });
+                        }
+                    }
                 });
                 rx
             })
