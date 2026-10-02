@@ -141,6 +141,38 @@ live in `issues/` (01–30). Decisions resolved up front:
   verification, `-j 3`, no `cargo clean`, no dev servers, no visual
   verification. The uid-1001 passwd shim and python3-shebang quirks are
   environmental (CI runs them).
+- **Build-cycle economy (measured on this box: 3 cores).** `cargo check
+  -p roboco-ui` with dep drift: 9m41s; warm no-op: 0.8s; crate-root
+  touch: 4.4s; the ui TEST binary at default `debug = 2`: 15min+ per
+  build. Per-ticket test builds are the wave's real cost — the same
+  wall the last run hit. Countermeasures, all mandatory for this run:
+  - `[profile.dev] debug = "line-tables-only"` (committed as prep;
+    upstream CI's own `CARGO_PROFILE_DEV_DEBUG=0` trick, one notch
+    gentler so panic line numbers survive test triage). Profile is
+    manifest-level — never override it per-shell: one fingerprint for
+    every shell and worktree sharing the target, or the shared cache
+    thrashes.
+  - Worker env stays exactly `~/.bashrc_pi` (sccache,
+    `CARGO_INCREMENTAL=0`, shared `CARGO_TARGET_DIR`): sccache makes a
+    fresh worktree cheap; no-incremental keeps the shared target stable
+    across parallel worktrees.
+  - **Bundle verification.** `cargo check` per edit iteration (seconds
+    warm); `nextest` ONCE per ticket BUNDLE, not per ticket — the
+    tickets' per-ticket "Verification budget" lines define WHAT to run
+    (the filters); this spec defines WHEN (once per bundle, all filters
+    in one build). The full suite runs once, at the skill's finish
+    step.
+  - **Ticket bundling is the default.** A worker claims a BUNDLE of
+    2–6 consecutive frontier tickets in the same file domain — one
+    worktree, one branch, one commit per ticket, one shared
+    verification pass at the end — instead of one-worker-per-ticket.
+    This amortizes the test-binary build, worktree spin-up, and
+    sccache/target warm-up, and is the single biggest wall-clock lever
+    on this box. Tickets still advance one at a time in the tracker
+    (Status + Comments per ticket, commits reference the upstream SHA).
+  - Wave-1 pre-warm: one background `cargo nextest run --workspace
+    --no-run` under the worker env before the first wave spawns, so
+    every worker starts warm.
 - Renames: `ZERON_SESSION_IDLE_MS` → `ROBOCO_SESSION_IDLE_MS` (ticket 02
   introduces the override; our reaper currently hardcodes 30min),
   `~/.zeron/app/current` → `~/.roboco/app/current`, "Open in Zeron" →

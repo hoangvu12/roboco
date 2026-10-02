@@ -169,6 +169,12 @@ strip = "symbols"
 [profile.dev]
 # gpui is slow unoptimized; match zed's approach for deps
 opt-level = 0
+# Line tables only: the ui test binary links multi-GB with full DWARF on a
+# 3-core box (15min+ per test build); line tables keep panic line numbers at
+# a fraction of the link cost. Upstream's CI does the same via
+# CARGO_PROFILE_DEV_DEBUG=0. Manifest-level on purpose: one fingerprint for
+# every shell and worktree sharing the target dir.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
