@@ -24,7 +24,7 @@ lease.messageId !== rowId`.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` (queue item).
 
@@ -66,7 +66,35 @@ the composer shows the notice for the row's chat and not another.
 
 ## 3. Acceptance checklist
 
-- [ ] All lease failures render as the composer's red notice, chat-scoped
-- [ ] The missing-lease arm surfaces :1559's string instead of returning
-- [ ] Sidebar toasts removed for these paths (other toast users untouched)
-- [ ] Tests + full app suite green
+- [x] All lease failures render as the composer's red notice, chat-scoped
+- [x] The missing-lease arm surfaces :1559's string instead of returning
+- [x] Sidebar toasts removed for these paths (other toast users untouched)
+- [x] Tests + full app suite green
+
+## Comments
+
+Implemented on `ticket/wpn-06-queue-lease-failure-placement` (reviewed,
+full-suite verified):
+
+- The outcome→message copy lives in `lib/queue-actions.ts`
+  (`describeBeginEditFailure` / `describeFinishEditFailure` /
+  `describeRenewEditFailure` + the three non-outcome constants), pinned
+  verbatim by `tests/queue-actions.test.ts` — the missing-lease arm
+  (:1559) included.
+- The composer's `editFailureRef` (the `editCommitRef` pattern) assigns
+  `(message) => setFailure({ message, key: chat.id })`;
+  `tests/composer-edit-failure.test.ts` (mounted, jsdom) pins the notice
+  paint, click-dismiss, chat-scoping (stands down on route flip, re-keys
+  under the new chat), and the unmount stand-down.
+- The non-commit finish arm maps per-outcome (conflict/missing get their
+  own copy), matching the desktop's action-independent post-RPC match
+  (queue.rs:1609-1634 — `finish_queue_edit` handles all four actions with
+  one match). The old web lump (everything → "The edit lease changed…")
+  was the drift, not the desktop truth.
+- The missing-lease arm sets `keepRow = true` (the edit stays open, text
+  preserved) — the desktop's `let … else` returns with the edit intact and
+  the message promises the text stays in the editor.
+- Renewal's `setEditingRow(null)` kept (documented divergence).
+- Verification: `pnpm exec tsc --noEmit` clean; full app suite
+  `pnpm exec vitest run` — 147 files / 2201 tests green (review commit);
+  focused seams green before that.

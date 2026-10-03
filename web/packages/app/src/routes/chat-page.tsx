@@ -56,7 +56,7 @@ import {
 } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
-import { QueueStore } from "../state/queue-store";
+import { QueueStore, type FinishLeaseOutcome } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
@@ -569,6 +569,7 @@ export function ConversationPage() {
             keepRow = true;
             return;
           }
+          let result: FinishLeaseOutcome;
           if (outcome.action === "commit") {
             // `finish_queue_edit("commit")`: the staged set uploads first
             // (queue.rs:1522-1539) — the row's own attachments were staged
@@ -581,22 +582,20 @@ export function ConversationPage() {
                 : ([] as readonly { path: string }[]);
             const body =
               outcome.text.trim().length > 0 ? outcome.text : ATTACHMENT_ONLY_TEXT;
-            const result = await store.finishEdit("commit", {
+            result = await store.finishEdit("commit", {
               text: body,
               attachments: uploaded.map((entry) => entry.path),
             });
-            const failure = describeFinishEditFailure(result.kind);
-            if (failure !== null) {
-              editFailureRef.current?.(failure);
-              keepRow = true;
-            }
           } else {
-            const result = await store.finishEdit(outcome.action);
-            const failure = describeFinishEditFailure(result.kind);
-            if (failure !== null) {
-              editFailureRef.current?.(failure);
-              keepRow = true;
-            }
+            result = await store.finishEdit(outcome.action);
+          }
+          // The outcome→copy match is action-independent, exactly like the
+          // desktop's post-RPC match (queue.rs:1609-1634): conflict/missing
+          // keep the edit locally for commit and cancel alike.
+          const failure = describeFinishEditFailure(result.kind);
+          if (failure !== null) {
+            editFailureRef.current?.(failure);
+            keepRow = true;
           }
         } catch (error) {
           editFailureRef.current?.(QUEUE_EDIT_UNREACHABLE_MESSAGE);
