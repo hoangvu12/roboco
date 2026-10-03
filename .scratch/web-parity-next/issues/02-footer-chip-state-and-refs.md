@@ -34,7 +34,7 @@ the current branch with the cursor anchored on it.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` §2.
 
@@ -75,9 +75,19 @@ key → branch/checkout/refs reset, RefChip remounts.
 
 ## 3. Acceptance checklist
 
-- [ ] Space/device switch resets branch, checkout kind, refs, switch state
-- [ ] Worktree-reuse pick flips the chip to "Current worktree"
-- [ ] Refs eager-load once per space; chips show the current branch; cursor
+- [x] Space/device switch resets branch, checkout kind, refs, switch state
+- [x] Worktree-reuse pick flips the chip to "Current worktree"
+- [x] Refs eager-load once per space; chips show the current branch; cursor
       anchors on it
-- [ ] Stale rows no longer block the new space's load
-- [ ] Tests + full app suite green
+- [x] Stale rows no longer block the new space's load
+- [x] Tests + full app suite green
+
+## Comments
+
+**Implemented and reviewed** (branch `ticket/wpn-02-footer-chip-state-and-refs`, commit `61f74eae` → review fixes on top):
+
+- New `web/packages/app/src/lib/footer-git-draft.ts` owns the draft git state (`DraftGitState`: branch, checkout kind, refs): `useDraftGitState(ownerKey)` resets the draft when the owner key changes (the pickers.rs:700-737 invalidation collapsed onto one key), pure `applyRefPick` is the pick_ref recording port (worktree row → branch + Local, :1599-1604; plain/current → branch only), `applyCheckoutPick` carries pick_checkout's drop rule (:1359-1373), and `effectiveRefName`/`effectiveRefWorktree` are the selected_ref/selected_ref_worktree fallbacks (:2160-2184). `CheckoutKind` moved here and re-exports from composer-footer.
+- Both parents wire it: the canvas keys on `space.id + targetDeviceId` and the draft footer on `chat.spaceId` (the ticket's file table), each re-keying `<RefChip>` on the same string so the chip's rows/switching state fall with the reset and a late resolution of the old mount's in-flight load is dropped (the cancel, :721-722). `onPick` passes the row; `RefChip.autoLoad` runs one ListRefs per space (gated on `gitDetected`; Error still waits for the open's force, :1535-1542; the in-flight latch is the refs_task analog, :1531-1533).
+- Verification: `tests/footer-git-draft.test.ts` 8/8 (pure pick/reset rules + the hook reset), `tests/composer-footer-git.test.ts` 9/9 and `tests/new-thread-git-selectors.test.ts` 3/3 (mounted:eager cadence, current-branch labels, worktree flip, reset through the no-project phase, stale-rows-don't-block, anchor + late-rows re-home, mid-flight switch race, StrictMode single-RPC); `pnpm exec tsc --noEmit` clean; full app suite `pnpm exec vitest run` → **151 files / 2250 tests green**. Every new spec-relevant test was red-verified against the pre-fix code.
+- Two-axis code review passed. Review fixes landed on top of 61f74eae: the ref list marks only the draft pick `selected` (the anchor is the cursor — desktop pickers.rs:3633; the current row keeps the "current" tag and highlight, never aria-selected); the cursor re-homes to the anchor row when rows land under an open un-searched popover (:1578-1585) — the acceptance "cursor anchors on it" now holds in the open-before-load path too; the load guard's in-flight latch is a ref so StrictMode's double effects can't race a duplicate eager RPC; inaccurate desktop citations corrected (:1535-1542, :1298-1301) and `emptyDraftGitState` un-exported (internal only).
+- Adjudicated, no action: footer keyed on `chat.spaceId` alone — the ticket's file table prescribes it, and the footer's device derives from its space (deviceId immutable at create), so the desktop's device-owner clause is subsumed; the canvas keeps the ticket's space+device key. Deliberate parity choices, documented in code: the switch-path pick records via the same pure `applyRefPick` after SwitchRef succeeds (desktop :1655-1662), and canvas git picks stay chip-local (send payload out of scope per the prior spec).

@@ -9,6 +9,13 @@ import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberNoProject, rememberTarget } from "../lib/composer-draft";
+import {
+  applyCheckoutPick,
+  applyRefPick,
+  effectiveRefWorktree,
+  useDraftGitState,
+  type CheckoutKind,
+} from "../lib/footer-git-draft";
 import { sidebarStore } from "../state/sidebar";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
 import { AccountUsageIndicator } from "./account-usage";
@@ -55,8 +62,12 @@ import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 /** `MAX_REF_ROWS` (pickers.rs) — the ref list's cap, surfaced as "Showing X of Y". */
 const MAX_REF_ROWS = 300;
 
-/** The checkout-kind pair shared by the footer's draft row and the canvas's git selectors. */
-export type CheckoutKind = "local" | "newWorktree";
+/**
+ * The checkout-kind pair shared by the footer's draft row and the canvas's
+ * git selectors — moved to `lib/footer-git-draft.ts` with the draft git
+ * state it belongs to; re-exported for the chip consumers.
+ */
+export type { CheckoutKind } from "../lib/footer-git-draft";
 
 export interface ComposerFooterProps {
   readonly chat: {
@@ -103,19 +114,29 @@ export function ComposerFooter({ chat, crSummary, contextUsage, harness }: Compo
     space !== null && ownDeviceId !== null && space.deviceId !== ownDeviceId ? space.deviceId : null;
 
   const committed = chat.config !== null || chat.branch !== null;
-  // Draft picks for the git row (refs are fixed once the chat runs).
-  const [draftBranch, setDraftBranch] = useState<string | null>(null);
-  const [checkout, setCheckout] = useState<CheckoutKind>("local");
-  // The loaded refs, lifted so the checkout chip can read "Current worktree"
-  // off the picked ref (`checkout_label`, pickers.rs:1280-1304).
-  const [refs, setRefs] = useState<readonly RepoRef[]>([]);
+  // Draft picks for the git row (refs are fixed once the chat runs). The
+  // owner key — the chat's space — drives the invalidation (the desktop's
+  // space/device observer, pickers.rs:700-737): a switch resets the pick,
+  // the checkout kind, and the refs, and re-keys the ref chip below so its
+  // own rows/switching state fall with them.
+  const gitOwnerKey = chat.spaceId ?? "";
+  const [draft, setDraft] = useDraftGitState(gitOwnerKey);
+  // The loaded refs ride the draft (the desktop's `self.refs`); the ref
+  // chip reports every load here.
+  const handleRefs = useCallback(
+    (rows: readonly RepoRef[]) => setDraft((current) => ({ ...current, refs: rows })),
+    [],
+  );
 
   const spacePath = space?.path ?? null;
   const gitDetected = space?.gitDetected ?? false;
   const canSwitch = !committed && spacePath !== null && session !== null;
-  const picked = draftBranch ?? chat.branch;
-  const pickedRefHasWorktree =
-    picked !== null && refs.some((row) => row.name === picked && row.worktreePath !== null && row.worktreePath !== undefined);
+  // The checkout chip's "Current worktree" reads the effective ref's
+  // worktree (`selected_ref_worktree`, pickers.rs:2182-2184).
+  const pickedRefHasWorktree = effectiveRefWorktree(draft, chat.branch) !== null;
+  // `selected_ref` (pickers.rs:2160-2183): the picked ref, else the repo's
+  // current branch — the chips read real values before any interaction.
+  const currentRowBranch = draft.refs.find((row) => row.current)?.name ?? null;
 
   // `render_footer`'s established-chat branch (pickers.rs:2571-2660): the
   // checkout-kind label reads the space row — "Worktree" when the chat's
@@ -147,34 +168,22 @@ export function ComposerFooter({ chat, crSummary, contextUsage, harness }: Compo
           <DeviceChip devices={devices} effectiveDevice={effectiveDevice} ownDeviceId={ownDeviceId} now={now} />
           <ProjectChip spaces={spaces} currentSpaceId={space?.id ?? null} />
           <CheckoutChip
-            checkout={checkout}
+            checkout={draft.checkout}
             pickedRefHasWorktree={pickedRefHasWorktree}
-            onPick={(kind) => {
-              setCheckout(kind);
-              // Picking Local from NewWorktree with a non-current plain ref
-              // picked drops the branch override — the current branch takes
-              // over (pickers.rs:1359-1373).
-              if (
-                kind === "local" &&
-                checkout === "newWorktree" &&
-                !pickedRefHasWorktree &&
-                picked !== null &&
-                !refs.some((row) => row.name === picked && row.current)
-              ) {
-                setDraftBranch(null);
-              }
-            }}
+            onPick={(kind) => setDraft(applyCheckoutPick(kind, draft))}
           />
           <RefChip
+            key={gitOwnerKey}
             session={session}
             repoPath={spacePath}
-            currentBranch={chat.branch}
-            draftBranch={draftBranch}
-            checkout={checkout}
+            currentBranch={chat.branch ?? currentRowBranch}
+            draftBranch={draft.branch}
+            checkout={draft.checkout}
             targetDeviceId={targetDeviceId}
             canPick={canSwitch}
-            onPick={(name) => setDraftBranch(name)}
-            onRefs={setRefs}
+            autoLoad={gitDetected}
+            onPick={(row) => setDraft(applyRefPick(row, draft))}
+            onRefs={handleRefs}
           />
         </>
       )}
@@ -618,12 +627,22 @@ interface RefsState {
 export interface RefChipProps {
   readonly session: ReturnType<typeof useEngineSession>;
   readonly repoPath: string | null;
+  /** The chat's stamped branch, or the repo's current branch row — the label fallback (`selected_ref`). */
   readonly currentBranch: string | null;
   readonly draftBranch: string | null;
   readonly checkout: CheckoutKind;
   readonly targetDeviceId: string | null;
   readonly canPick: boolean;
-  readonly onPick: (name: string) => void;
+  /**
+   * The eager cadence (`ensure_refs(false)`, pickers.rs:1524-1567): load
+   * once per mount — the parents re-key this chip per space, so the
+   * remount IS the once-per-space gate. Gated on the target's git (the
+   * caller passes `gitDetected`); non-forced loads never re-run from an
+   * Error (that waits for the open's force/retry).
+   */
+  readonly autoLoad?: boolean;
+  /** The picked row — the parent applies `applyRefPick` (the pick_ref port). */
+  readonly onPick: (row: RepoRef) => void;
   readonly onRefs: (rows: readonly RepoRef[]) => void;
 }
 
@@ -635,6 +654,7 @@ export function RefChip({
   checkout,
   targetDeviceId,
   canPick,
+  autoLoad = false,
   onPick,
   onRefs,
 }: RefChipProps) {
@@ -643,14 +663,42 @@ export function RefChip({
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
+  // The remount-based invalidation's cancel: a target switch re-keys this
+  // chip (the parents' space key), and a LATE resolution of the old
+  // instance's in-flight load must not push the old space's rows into the
+  // parent's fresh draft through `onRefs` — the desktop cancels the task
+  // outright (pickers.rs:721-722); this drops its consumer instead.
+  const aliveRef = useRef(false);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  // The load's in-flight latch — a ref, not the `loading` state: the guard
+  // must hold across the state-commit boundary, or React's StrictMode
+  // double-effects (and any double kick before the loading paint) would
+  // race the stale closure and fire two RPCs. The desktop's `refs_task`
+  // slot is the analogue (pickers.rs:1531-1533).
+  const inFlightRef = useRef(false);
+
   const loadRefs = useCallback(
     async (force: boolean): Promise<void> => {
       if (session === null || repoPath === null) {
         return;
       }
-      if (refs.loading || (refs.rows.length > 0 && !force)) {
+      if (inFlightRef.current) {
+        return; // a load is already in flight (force never bypasses it)
+      }
+      // Non-forced (the eager kick) only loads from a clean slate: rows
+      // present means this space is loaded, and an Error waits for the
+      // open's force or the retry row (pickers.rs:1535-1542 — re-renders
+      // must never flip Error back to Loading).
+      if (!force && (refs.rows.length > 0 || refs.error !== null)) {
         return;
       }
+      inFlightRef.current = true;
       setRefs((current) => ({ ...current, loading: true, error: null }));
       try {
         const params: Record<string, unknown> = { repoPath };
@@ -658,16 +706,34 @@ export function RefChip({
           params.targetDeviceId = targetDeviceId;
         }
         const rows = await session.client.call<RepoRef[]>(methods.LIST_REFS, params);
+        if (!aliveRef.current) {
+          return;
+        }
         const list = Array.isArray(rows) ? rows : [];
         setRefs({ rows: list, loading: false, error: null });
         onRefs(list);
       } catch (error) {
+        if (!aliveRef.current) {
+          return;
+        }
         setRefs({ rows: [], loading: false, error: error instanceof Error ? error.message : String(error) });
         onRefs([]);
+      } finally {
+        inFlightRef.current = false;
       }
     },
-    [session, repoPath, refs.loading, refs.rows.length, targetDeviceId, onRefs],
+    [session, repoPath, refs.rows.length, refs.error, targetDeviceId, onRefs],
   );
+
+  // The eager kick (ensure_refs(false), pickers.rs:1524-1567): one
+  // LIST_REFS per space while mounted — the re-key per target replaces
+  // the desktop's refs_space check, and loadRefs' own guards make the
+  // re-runs (identity churn as rows land) no-ops.
+  useEffect(() => {
+    if (autoLoad) {
+      void loadRefs(false);
+    }
+  }, [autoLoad, loadRefs]);
 
   // Every open force-reloads refs and clears any stale switch error
   // (toggle steps 7-8).
@@ -688,13 +754,14 @@ export function RefChip({
       return;
     }
     if (row.worktreePath !== null && row.worktreePath !== undefined) {
-      // Reuse the ref's existing worktree ("Current worktree").
-      onPick(row.name);
+      // Reuse the ref's existing worktree ("Current worktree") — the parent
+      // applies the pick with its checkout-kind flip (pickers.rs:1599-1604).
+      onPick(row);
       setOpen(false);
       return;
     }
     if (checkout === "newWorktree" || row.current) {
-      onPick(row.name);
+      onPick(row);
       setOpen(false);
       return;
     }
@@ -713,7 +780,7 @@ export function RefChip({
         params.targetDeviceId = targetDeviceId;
       }
       await session.client.call(methods.SWITCH_REF, params);
-      onPick(row.name);
+      onPick(row);
       setOpen(false);
       void loadRefs(true);
     } catch (error) {
@@ -741,7 +808,8 @@ export function RefChip({
         repoPath={repoPath}
         switching={switching}
         switchError={switchError}
-        picked={picked}
+        anchor={picked}
+        selectedName={draftBranch}
         onRetry={() => void loadRefs(true)}
         onPick={(row) => void pickRef(row)}
       />
@@ -756,7 +824,8 @@ function BranchCard({
   repoPath,
   switching,
   switchError,
-  picked,
+  anchor,
+  selectedName,
   onRetry,
   onPick,
 }: {
@@ -766,7 +835,10 @@ function BranchCard({
   readonly repoPath: string | null;
   readonly switching: string | null;
   readonly switchError: string | null;
-  readonly picked: string | null;
+  /** The cursor's landing row: the effective ref (the picked, else the current branch) — `selected_ref_index`, pickers.rs:2144-2158. */
+  readonly anchor: string | null;
+  /** The row marked selected: the draft pick ONLY ("current" gets the tag, never the selection wash) — pickers.rs:3633. */
+  readonly selectedName: string | null;
   readonly onRetry: () => void;
   readonly onPick: (row: RepoRef) => void;
 }) {
@@ -792,6 +864,12 @@ function BranchCard({
     },
   });
 
+  /** The anchor's index in the filtered list, capped to the window — Branch → the current ref's row, capped to 299 (toggle step 5). */
+  const anchorIndex = (): number => {
+    const target = anchor === null ? 0 : filtered.findIndex((row) => row.name === anchor);
+    return Math.min(target < 0 ? 0 : target, Math.max(0, MAX_REF_ROWS - 1));
+  };
+
   // The walk spans the CAPPED row count while the rendered list is the
   // FILTERED one, so this card keeps its own scroll effect — keyed on the
   // rendered length, not the walk count (the hook's `listRef` effect
@@ -804,13 +882,22 @@ function BranchCard({
   useEffect(() => {
     if (open) {
       setQuery("");
-      // Branch → the current ref's row, capped to 299 (toggle step 5).
-      const target = picked === null ? 0 : filtered.findIndex((row) => row.name === picked);
-      setCursor(Math.min(target < 0 ? 0 : target, Math.max(0, MAX_REF_ROWS - 1)));
+      setCursor(anchorIndex());
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Rows landed under an open, un-searched popover: re-home the nav
+  // highlight to the anchor row (pickers.rs:1578-1585) — the open effect
+  // ran while the list was still empty, and the late resolution must
+  // still land the cursor on the current branch.
+  useEffect(() => {
+    if (open && query === "" && refs.rows.length > 0) {
+      setCursor(anchorIndex());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refs.rows]);
 
   return (
     <div className="picker-key-frame" onKeyDown={onKeyDown}>
@@ -842,7 +929,7 @@ function BranchCard({
               fadeKey={row.name}
               data-ref-index={ix}
               highlighted={ix === cursor}
-              selected={picked === row.name}
+              selected={selectedName === row.name}
               onClick={() => onPick(row)}
             >
               <span className="menu-row-label">{row.name}</span>
