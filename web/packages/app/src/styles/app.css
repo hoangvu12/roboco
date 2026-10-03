@@ -7079,6 +7079,44 @@ button.files-root-retry:hover {
   margin: 0;
   padding: 0;
   outline: none;
+  /*
+   * The tree's edge fades (`edge_faded` + `tree_scroll_overflow`,
+   * tree.rs:205-221): a 24px quadratic ramp per edge, gated live by
+   * `--rb-files-fade-top`/-`bottom` (set from the scroll offset with the
+   * desktop's 0.5px dead-zone — TreeList's effect). Same gated-stop shape
+   * as `.sidebar-scroll`: `1 − gate × (1 − ramp)`, because a CSS mask
+   * paints at the gradient's alpha and the unfaded edge must stay fully
+   * opaque. The vars default to 0, so the search-results list (which never
+   * sets them) stays unfaded, matching the desktop.
+   */
+  --rb-files-fade-top: 0;
+  --rb-files-fade-bottom: 0;
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 1)) 0px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.9375)) 6px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.75)) 12px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.4375)) 18px,
+    rgba(0, 0, 0, 1) 24px,
+    rgba(0, 0, 0, 1) calc(100% - 24px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.4375)) calc(100% - 18px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.75)) calc(100% - 12px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.9375)) calc(100% - 6px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 1)) 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 1)) 0px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.9375)) 6px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.75)) 12px,
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-top) * 0.4375)) 18px,
+    rgba(0, 0, 0, 1) 24px,
+    rgba(0, 0, 0, 1) calc(100% - 24px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.4375)) calc(100% - 18px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.75)) calc(100% - 12px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 0.9375)) calc(100% - 6px),
+    rgba(0, 0, 0, calc(1 - var(--rb-files-fade-bottom) * 1)) 100%
+  );
 }
 
 /*
