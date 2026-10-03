@@ -623,6 +623,27 @@ function useCatalogModels(
   return lists;
 }
 
+/**
+ * `models_for` — the `model_rows` closure both presentations share
+ * (pickers.rs:1976-1991): a loaded slot's rows, null otherwise. A latched
+ * refresh error KEEPS the stale rows (`listWithError` preserves rows+loaded),
+ * so a failed revalidation never blanks the list — the retry row carries the
+ * failure instead. ONE hook for both cards: the compact arm's extra
+ * `slot.error !== null` arm was exactly the drift that blanked its models
+ * page while the identity card kept its rows.
+ */
+function useModelsFor(
+  modelsLists: Map<HarnessId, LoadableList<Model>>,
+): (harness: HarnessId) => readonly Model[] | null {
+  return useCallback(
+    (harness: HarnessId): readonly Model[] | null => {
+      const slot = modelsLists.get(harness);
+      return slot === undefined || !slot.loaded ? null : slot.rows;
+    },
+    [modelsLists],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The one identity card
 // ---------------------------------------------------------------------------
@@ -703,13 +724,7 @@ function IdentityCard(props: IdentityCardProps) {
     [favorites],
   );
 
-  const modelsFor = useCallback(
-    (harness: HarnessId): readonly Model[] | null => {
-      const slot = modelsLists.get(harness);
-      return slot === undefined || !slot.loaded ? null : slot.rows;
-    },
-    [modelsLists],
-  );
+  const modelsFor = useModelsFor(modelsLists);
 
   const scopedRows = useMemo(
     () => scopedModelRows(query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite),
@@ -722,7 +737,7 @@ function IdentityCard(props: IdentityCardProps) {
   // pick, unclickable, starless. The query gates it exactly like a catalog
   // row (empty, or the id/label matches); its id is absent from the catalog
   // by construction, so the row key stays unique.
-  const selectedAbsent = useMemo(() => {
+  const selectedAbsentRow = useMemo(() => {
     if (rail !== "harness" || draft.model === null) {
       return null;
     }
@@ -749,8 +764,8 @@ function IdentityCard(props: IdentityCardProps) {
     return selectedOnlyRow(effectiveHarness, descriptor.name, draft.model, remembered);
   }, [rail, draft.model, modelsLists, effectiveHarness, railDescriptors, query]);
   const rows = useMemo(
-    () => (selectedAbsent === null ? scopedRows : [selectedAbsent, ...scopedRows]),
-    [scopedRows, selectedAbsent],
+    () => (selectedAbsentRow === null ? scopedRows : [selectedAbsentRow, ...scopedRows]),
+    [scopedRows, selectedAbsentRow],
   );
 
   // `setting_groups` — the traits tray's trigger rows: the reasoning ladder
@@ -766,7 +781,7 @@ function IdentityCard(props: IdentityCardProps) {
   // selected-absent row anchors the selection at index 0 when it renders
   // (the desktop's position lookup finds the chat's id at 0 by construction).
   const selectedModelIndex = useMemo(() => {
-    if (selectedAbsent !== null) {
+    if (selectedAbsentRow !== null) {
       return 0;
     }
     if (selectedModel === undefined || (rail === "favorites" && !isFavorite(effectiveHarness, selectedModel.id))) {
@@ -774,13 +789,13 @@ function IdentityCard(props: IdentityCardProps) {
     }
     const index = rows.findIndex((row) => row.harness === effectiveHarness && row.model.id === selectedModel.id);
     return index < 0 ? 0 : index;
-  }, [rows, selectedAbsent, selectedModel, effectiveHarness, rail, isFavorite]);
+  }, [rows, selectedAbsentRow, selectedModel, effectiveHarness, rail, isFavorite]);
 
   // `is_selected` (render_model_row, pickers.rs:4165-4170): the effective
   // pick's id matches the row — the synthetic row IS the selected row when
   // it renders (its id is the chat's pick); the resolved default paints it
   // otherwise, and nothing paints while the catalog is still settling.
-  const selectedRowId = selectedAbsent !== null ? draft.model : (selectedModel?.id ?? null);
+  const selectedRowId = selectedAbsentRow !== null ? draft.model : (selectedModel?.id ?? null);
 
   const activateRow = (index: number): void => {
     if (index >= rows.length) {
@@ -1310,17 +1325,7 @@ function CompactCard(props: CompactCardProps) {
     [favorites],
   );
 
-  const modelsFor = useCallback(
-    (harness: HarnessId): readonly Model[] | null => {
-      const slot = modelsLists.get(harness);
-      // A latched refresh error KEEPS the stale rows (`listWithError`
-      // preserves rows+loaded): the failed revalidation must not blank the
-      // models page — the retry row at its top carries the failure instead
-      // (the identity card's `modelsFor` arm, mirrored).
-      return slot === undefined || !slot.loaded ? null : slot.rows;
-    },
-    [modelsLists],
-  );
+  const modelsFor = useModelsFor(modelsLists);
 
   // `show_compact_models` (#749): browse every offered provider, just as
   // the standard picker's rail allows; a chat's fixed provider limits its

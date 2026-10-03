@@ -306,6 +306,21 @@ describe("ComposerPickers compact model card (upstream #471)", () => {
 // ── Ticket 02: picker list truth — the refresh-retry row + selected_only ─────
 
 describe("ComposerPickers picker list truth (ticket 02)", () => {
+  /** An established chat whose pick is absent from the fresh catalog. */
+  const ABSENT_CHAT: ChatConfig = {
+    harness: "claude-code",
+    model: "gone-model",
+    reasoning: "high",
+    modelOptions: {},
+    sandbox: "workspace-write",
+  };
+
+  /** Deterministic mount seed: sticky defaults cleared, the pick's label remembered. */
+  function seedAbsentPick(): void {
+    resetDefaults();
+    composerDefaults.update({ modelLabels: { "gone-model": "Gone model" } });
+  }
+
   it("keeps stale rows with the refresh-retry row between search and list; Retry re-forces the fetch", async () => {
     // A refresh failure on a loaded slot must NOT blank the list (the
     // desktop's `model_refresh_errors` row, pickers.rs:4056-4075): the stale
@@ -392,6 +407,42 @@ describe("ComposerPickers picker list truth (ticket 02)", () => {
       expect(errorRow!.nextElementSibling?.classList.contains("compact-list-host")).toBe(true);
       expect(errorRow!.closest(".compact-list-host")).toBeNull();
     });
+
+    it("the compact panel names the remembered pick with no wrong-model controls leaking", async () => {
+      // The `selected_model` no-fallback mirror (pickers.rs:982-991) ripples
+      // through the compact panel too (`model_name`/`compact_title_text`):
+      // the panel names the remembered label, and NO wrong-model controls
+      // leak — the desktop's `trait_ladder` is empty without a resolved
+      // model (pickers.rs:1904-1908), so there is no effort slider, no
+      // options tray (Haiku's Thinking never leaks), no fast toggle; the
+      // models page paints NO selected row — the pick is absent, not
+      // models[0].
+      seedAbsentPick();
+      const client = new FakeClient();
+      client.harnesses = [CLAUDE];
+      client.modelsByHarness.set("claude-code", [HAIKU]);
+      const handle = mountPicker({
+        client,
+        initial: draft({ model: "gone-model", reasoning: "high" }),
+        chatConfig: ABSENT_CHAT,
+      });
+      await flush();
+      await openCard(handle);
+
+      const panel = document.querySelector<HTMLElement>(".compact-panel");
+      expect(panel).not.toBeNull();
+      expect(panel!.querySelector(".compact-model-name")?.textContent).toBe("Gone model");
+      // No ladder without a resolved model: no slider, no tray, no toggle.
+      expect(panel!.querySelector(".compact-effort")).toBeNull();
+      expect(panel!.querySelector(".compact-options")).toBeNull();
+      expect(panel!.querySelector(".compact-fast")).toBeNull();
+
+      await act(async () => {
+        panel!.querySelector<HTMLElement>(".compact-model")!.click();
+      });
+      expect(document.querySelector(".compact-list-page")).not.toBeNull();
+      expect(document.querySelector(".model-row-selected")).toBeNull();
+    });
   });
 
   it("renders the selected-absent row: unclickable, anchored at 0, starless — the chip keeps the remembered label", async () => {
@@ -400,22 +451,14 @@ describe("ComposerPickers picker list truth (ticket 02)", () => {
     // 1996-2033) — unclickable (2085-2087), the anchored selected row, star
     // suppressed — while the chip names the remembered label, never the
     // first catalog row's.
-    resetDefaults();
-    composerDefaults.update({ modelLabels: { "gone-model": "Gone model" } });
+    seedAbsentPick();
     const client = new FakeClient();
     client.harnesses = [CLAUDE];
     client.modelsByHarness.set("claude-code", [HAIKU]);
-    const chat: ChatConfig = {
-      harness: "claude-code",
-      model: "gone-model",
-      reasoning: "high",
-      modelOptions: {},
-      sandbox: "workspace-write",
-    };
     const handle = mountPicker({
       client,
       initial: draft({ model: "gone-model", reasoning: "high" }),
-      chatConfig: chat,
+      chatConfig: ABSENT_CHAT,
     });
     await flush();
     await openCard(handle);
@@ -453,6 +496,15 @@ describe("ComposerPickers picker list truth (ticket 02)", () => {
     expect(document.querySelector("#picker-model .identity-chip-model")?.textContent).toBe(
       "Gone model",
     );
+    // The traits tray follows the ABSENT pick (desktop `trait_ladder` +
+    // `setting_groups` with a None model: no ladder, no options — the tray
+    // is omitted entirely), so the fallback row's own option (Haiku's
+    // Thinking) never leaks into it.
+    expect(document.querySelector(".model-traits")).toBeNull();
+    // The reasoning label still rides the chip's suffix (desktop
+    // `traits_summary` pushes it even without a resolved model) — but never
+    // the wrong model's option (the old "High · Off").
+    expect(document.querySelector(".identity-chip-suffix")?.textContent).toBe("High");
   });
 });
 
