@@ -14,6 +14,9 @@ import {
   LIST_COMMANDS,
   LIST_MODELS,
   LIST_SKILLS,
+  READ_ATTACHMENT_CHUNK,
+  UPLOAD_CHUNK,
+  UPLOAD_COMMIT,
 } from "./methods";
 import { wireParams } from "./request-routing";
 import { RpcError, wireError } from "./rpc-error";
@@ -556,6 +559,25 @@ export class EngineClient {
 
   #timeoutFor(method: string): number {
     if (method.includes("Clone") || method.includes("Fetch")) {
+      return this.#longCallTimeoutMs;
+    }
+    if (
+      method === UPLOAD_CHUNK ||
+      method === UPLOAD_COMMIT ||
+      method === READ_ATTACHMENT_CHUNK
+    ) {
+      // Attachment transfers run under the app's own ladder (attachments.ts
+      // callWithTimeout: the 90s cold-dial window on a first-window chunk,
+      // 30s per later chunk, 150s commit, 20s read) plus the ≤900s
+      // whole-send deadline — and the desktop's RPC client arms no
+      // per-call timer at all, so that ladder is the only bound there. This
+      // inner cap must never bind first: a remote engine on a slow link
+      // routinely exceeds 30s on a first chunk (cold dial) or the commit's
+      // final flush, and the default unary timeout used to kill the
+      // transfer from underneath — surfacing as "Couldn't upload the
+      // attachment — the device may be offline" where the desktop
+      // survives the same link. The long budget (default 900s) keeps the
+      // ladder the binding constraint.
       return this.#longCallTimeoutMs;
     }
     if (method === LIST_MODELS || method === LIST_COMMANDS || method === LIST_SKILLS) {

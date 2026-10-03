@@ -325,6 +325,42 @@ describe("unary call deadlines", () => {
       kind: "timeout",
     });
   });
+
+  test("attachment transfers outlive the default unary timeout", async () => {
+    const fake = new FakeEngine();
+    // The upload ladder intends 90s (first-window chunk) / 30s (chunk) /
+    // 150s (commit) / 20s (read) — all capped by an app-level race in
+    // attachments.ts, plus the ≤900s whole-send deadline. The client's own
+    // unary cap must not bind beneath that ladder (a slow remote link takes
+    // >30s on a cold first chunk or the commit flush; the desktop's RPC
+    // client arms no per-call timer at all).
+    for (const method of ["UploadChunk", "UploadCommit", "ReadAttachmentChunk"]) {
+      fake.calls[method] = (_params, reply) => {
+        setTimeout(() => reply.ok({ ok: true }), 250);
+      };
+    }
+    fake.calls["Slow"] = (params, reply) => {
+      setTimeout(() => reply.ok(params), 250);
+    };
+    cleanups.push(() => fake.close());
+    await fake.listen();
+    // callTimeoutMs 60ms < the 250ms reply delay, long budget 5s above it:
+    // the transfer methods must ride the long tier, everything else not.
+    const { client } = newClient(fake, { callTimeoutMs: 60, longCallTimeoutMs: 5_000 });
+
+    client.connect();
+    await statusWhen(client, (status) => status.state === "connected");
+
+    await expect(client.call("UploadChunk", { uploadId: "u", seq: 0, data: "" })).resolves.toEqual({ ok: true });
+    await expect(client.call("UploadCommit", { uploadId: "u", fileName: "a.png" })).resolves.toEqual({ ok: true });
+    await expect(client.call("ReadAttachmentChunk", { path: "/uploads/a.png", offset: 0 })).resolves.toEqual({ ok: true });
+
+    // Control: an ordinary call under the same tiny unary budget still times
+    // out — the tier is method-specific, not a global loosening.
+    await expect(client.call("Slow", { value: 1 })).rejects.toMatchObject({
+      kind: "timeout",
+    });
+  });
 });
 
 describe("the backoff curve", () => {

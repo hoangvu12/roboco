@@ -54,6 +54,8 @@ A zeron PR that is realistically mergeable: "allow video attachments to opencode
 
 Fix sketch (web only): in `#timeoutFor`, treat upload/read methods like `Clone|Fetch` (the 900 s long budget) — the app-level `callWithTimeout` + whole-send deadline (`attachmentDeadlineMs`, ≤ 900 s) already bound the total; the client's inner cap should never be the binding constraint. Alternatively add a per-call `timeoutMs` override parameter to `call`.
 
+**Fixed 2026-10-03:** `#timeoutFor` now routes `UploadChunk` / `UploadCommit` / `ReadAttachmentChunk` to the long budget (`client.ts`), so the app-level ladder is the binding constraint, matching the desktop (whose RPC client arms no per-call timer). Regression test added in `fake-server.test.ts` ("attachment transfers outlive the default unary timeout") with a control proving the tier is method-specific.
+
 ### Other plausible "doesn't work" UX causes (both platforms, worth knowing)
 
 - **HEIC/AVIF photos are silently skipped**: the engine jail knows `heic`/`avif` (`uploads.rs:443-444`) but the UI staging set excludes them (gpui can't decode them). An iPhone default-format photo dropped on the composer does nothing, with no error. Same on web (not in `accept`, not in `EXT_TO_FORMAT`).
