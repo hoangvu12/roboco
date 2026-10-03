@@ -85,6 +85,9 @@ export interface ModelRowData {
   readonly harness: HarnessId;
   readonly harnessName: string;
   readonly model: Model;
+  /** The synthetic selected-absent row (`selected_only`, pickers.rs:470):
+   *  unclickable, starless — never a pickable catalog choice. */
+  readonly selectedOnly: boolean;
 }
 
 /**
@@ -111,6 +114,7 @@ export function scopedModelRows(
     harness: descriptor.id,
     harnessName: descriptor.name,
     model,
+    selectedOnly: false,
   });
   const inScope = (descriptor: HarnessDescriptor, model: Model): boolean =>
     rail === "all"
@@ -206,6 +210,46 @@ function minDefined(a: number | null, b: number | null): number | null {
     return a;
   }
   return Math.min(a, b);
+}
+
+// ---------------------------------------------------------------------------
+// selected_only — the selected-absent row
+// ---------------------------------------------------------------------------
+
+/**
+ * The synthetic row's description (pickers.rs:2018-2026, verbatim): the
+ * standard row's attribution slot renders it inline for free.
+ */
+export const SELECTED_ONLY_DESCRIPTION = "Selected in this chat; absent from the current model list";
+
+/**
+ * `selected_only` (pickers.rs:1996-2033): when the chat's chosen model is
+ * absent from the fresh catalog, the harness tab unshifts this synthetic
+ * row at index 0 — the remembered label (else the raw id) names the pick,
+ * the description explains it, and the row carries no traits of its own
+ * (an absent model offers no reasoning ladder or options). Activation is a
+ * no-op (pickers.rs:2085-2087) and the star is suppressed: the row belongs
+ * only to the current selection, never merged into the catalog or offered
+ * as a new choice elsewhere.
+ */
+export function selectedOnlyRow(
+  harness: HarnessId,
+  harnessName: string,
+  modelId: string,
+  rememberedLabel: string | null,
+): ModelRowData {
+  return {
+    harness,
+    harnessName,
+    selectedOnly: true,
+    model: {
+      id: modelId,
+      label: rememberedLabel ?? modelId,
+      description: SELECTED_ONLY_DESCRIPTION,
+      reasoningLevels: [],
+      options: [],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

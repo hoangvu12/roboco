@@ -91,6 +91,11 @@ afterAll(() => {
 class FakeClient {
   harnesses: HarnessDescriptor[] = [];
   readonly modelsByHarness = new Map<string, Model[]>();
+  /** Ticket 02's hook: the NEXT `ListModels` for this harness rejects once —
+   *  a refresh failure after a successful load (the stale-rows state). */
+  failNextModels: string | null = null;
+  /** Every `ListModels` call's harness, in order (the re-force probe). */
+  readonly listModelsCalls: string[] = [];
 
   async call<T>(method: string, params?: unknown): Promise<T> {
     if (method === "ListHarnesses") {
@@ -98,6 +103,11 @@ class FakeClient {
     }
     if (method === "ListModels") {
       const harness = (params as { harness: string }).harness;
+      this.listModelsCalls.push(harness);
+      if (this.failNextModels === harness) {
+        this.failNextModels = null;
+        throw new Error("model refresh failed");
+      }
       return (this.modelsByHarness.get(harness) ?? []) as unknown as T;
     }
     return {} as T;
@@ -290,6 +300,159 @@ describe("ComposerPickers compact model card (upstream #471)", () => {
     expect(handle.observed.current.harness).toBe("codex");
     pressKey("Shift+Tab");
     expect(handle.observed.current.harness).toBe("claude-code");
+  });
+});
+
+// ── Ticket 02: picker list truth — the refresh-retry row + selected_only ─────
+
+describe("ComposerPickers picker list truth (ticket 02)", () => {
+  it("keeps stale rows with the refresh-retry row between search and list; Retry re-forces the fetch", async () => {
+    // A refresh failure on a loaded slot must NOT blank the list (the
+    // desktop's `model_refresh_errors` row, pickers.rs:4056-4075): the stale
+    // rows stay, the retry row renders BETWEEN the search row and the list
+    // band — outside the virtualizer's 216px host — and its Retry click
+    // re-forces the fetch so the fresh catalog heals the error in place.
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU, OPUS]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+    await flush();
+    await openCard(handle);
+    expect(document.querySelectorAll(".model-list-sizer .model-row-item")).toHaveLength(2);
+    expect(document.querySelector(".error-row")).toBeNull();
+
+    client.failNextModels = "claude-code";
+    await act(async () => {
+      await handle.catalog.loadModels("claude-code", { force: true });
+    });
+    await flush();
+
+    // The stale rows persist — the empty-state takeover never fires.
+    expect(document.querySelectorAll(".model-list-sizer .model-row-item")).toHaveLength(2);
+    expect(document.querySelector(".menu-scroll-fallback")).toBeNull();
+    // The retry row renders with the error message…
+    const errorRow = document.querySelector<HTMLElement>(".error-row");
+    expect(errorRow).not.toBeNull();
+    expect(errorRow!.textContent).toContain("model refresh failed");
+    // …directly between the search row and the list host, OUTSIDE the list
+    // band so the virtualizer is untouched (the card grows ~28px instead).
+    expect(errorRow!.previousElementSibling?.classList.contains("model-search-row")).toBe(true);
+    expect(errorRow!.nextElementSibling?.id).toBe("model-list-scroll-host");
+    expect(errorRow!.closest("#model-list-scroll-host")).toBeNull();
+
+    const callsBefore = client.listModelsCalls.length;
+    await act(async () => {
+      errorRow!.querySelector<HTMLElement>(".error-row-retry")!.click();
+    });
+    await flush();
+    // The Retry re-forced the fetch and the fresh catalog landed: the error
+    // cleared while the rows stayed.
+    expect(client.listModelsCalls.length).toBeGreaterThan(callsBefore);
+    expect(document.querySelector(".error-row")).toBeNull();
+    expect(document.querySelectorAll(".model-list-sizer .model-row-item")).toHaveLength(2);
+    expect(handle.observed.current.model).toBe("haiku");
+  });
+
+  describe("compact arm", () => {
+    beforeEach(() => {
+      uiSettings.updateImmediate({ compactModelPicker: true });
+    });
+    afterEach(() => {
+      uiSettings.updateImmediate({ compactModelPicker: false });
+    });
+
+    it("the compact models page keeps its rows on a refresh failure and shows the retry row at the top", async () => {
+      // The compact `modelsFor` dropped stale rows on a slot error — the
+      // models page went blank. It must keep them and show the same retry
+      // row at the top of the page (under the header, above the list band).
+      const client = new FakeClient();
+      client.harnesses = [CLAUDE];
+      client.modelsByHarness.set("claude-code", [HAIKU, OPUS]);
+      const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+      await flush();
+      await openCard(handle);
+      await act(async () => {
+        document.querySelector<HTMLElement>(".compact-model")!.click();
+      });
+      expect(document.querySelector(".compact-list-page")).not.toBeNull();
+      expect(document.querySelectorAll(".model-list-sizer .model-row-item")).toHaveLength(2);
+
+      client.failNextModels = "claude-code";
+      await act(async () => {
+        await handle.catalog.loadModels("claude-code", { force: true });
+      });
+      await flush();
+
+      // Rows kept (the old error arm dropped them), retry row on top.
+      expect(document.querySelectorAll(".model-list-sizer .model-row-item")).toHaveLength(2);
+      const errorRow = document.querySelector<HTMLElement>(".error-row");
+      expect(errorRow).not.toBeNull();
+      expect(errorRow!.textContent).toContain("model refresh failed");
+      expect(errorRow!.previousElementSibling?.classList.contains("compact-list-header")).toBe(true);
+      expect(errorRow!.nextElementSibling?.classList.contains("compact-list-host")).toBe(true);
+      expect(errorRow!.closest(".compact-list-host")).toBeNull();
+    });
+  });
+
+  it("renders the selected-absent row: unclickable, anchored at 0, starless — the chip keeps the remembered label", async () => {
+    // A chat whose model is absent from the fresh catalog: the harness tab
+    // unshifts the synthetic `selected_only` row at index 0 (pickers
+    // 1996-2033) — unclickable (2085-2087), the anchored selected row, star
+    // suppressed — while the chip names the remembered label, never the
+    // first catalog row's.
+    resetDefaults();
+    composerDefaults.update({ modelLabels: { "gone-model": "Gone model" } });
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    const chat: ChatConfig = {
+      harness: "claude-code",
+      model: "gone-model",
+      reasoning: "high",
+      modelOptions: {},
+      sandbox: "workspace-write",
+    };
+    const handle = mountPicker({
+      client,
+      initial: draft({ model: "gone-model", reasoning: "high" }),
+      chatConfig: chat,
+    });
+    await flush();
+    await openCard(handle);
+
+    // Row 0: the remembered label, the verbatim description in the
+    // attribution slot, and NO star.
+    const row0 = document.querySelector<HTMLElement>('.model-list-scroll [data-model-index="0"]');
+    expect(row0).not.toBeNull();
+    expect(row0!.querySelector(".model-row-label")?.textContent).toBe("Gone model");
+    expect(row0!.querySelector(".model-row-attribution")?.textContent).toBe(
+      "Selected in this chat; absent from the current model list",
+    );
+    expect(row0!.querySelector(".model-row-star")).toBeNull();
+    // The catalog row keeps its star.
+    const row1 = document.querySelector<HTMLElement>('[data-model-index="1"]');
+    expect(row1!.querySelector(".model-row-star")).not.toBeNull();
+
+    // Row 0 is the anchored SELECTED row; the fallback catalog row never
+    // paints as the selection.
+    expect(row0!.querySelector(".model-row")!.classList.contains("model-row-selected")).toBe(true);
+    expect(row0!.querySelector(".model-row")!.getAttribute("aria-selected")).toBe("true");
+    expect(row1!.querySelector(".model-row")!.classList.contains("model-row-selected")).toBe(false);
+
+    // Clicking (and Enter on the anchored cursor) does not pick — the
+    // synthetic row is a no-op, never a new choice.
+    await act(async () => {
+      row0!.querySelector<HTMLElement>(".model-row")!.click();
+    });
+    pressKey("Enter");
+    expect(handle.drafts).toHaveLength(0);
+    expect(handle.persists).toHaveLength(0);
+    expect(handle.observed.current.model).toBe("gone-model");
+
+    // The chip names the remembered pick — never "Haiku 4.5".
+    expect(document.querySelector("#picker-model .identity-chip-model")?.textContent).toBe(
+      "Gone model",
+    );
   });
 });
 
