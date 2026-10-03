@@ -3,6 +3,7 @@ import { useEngineSession } from "../../state/session-provider";
 import { useFleetSnapshot } from "../../state/fleet";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { FileTreeModel } from "../../lib/file-tree";
+import { chatFileInserts } from "../../lib/chat-insert";
 import { FileTreePanel } from "./file-tree-panel";
 import { ExplorerSections } from "./explorer-sections";
 import { rightPaneStore, type ChatPaneState } from "../../state/right-pane";
@@ -73,6 +74,15 @@ export function FilesPaneColumn({
     return `Files in ${chat.cwd ?? "~"} · ${device}`;
   }, [snapshot, chatId]);
 
+  /** The owning workspace's root (`chat.cwd`): Copy path builds the full
+   * path in the HOST's format, remote workspaces included. */
+  const workspaceRoot = useMemo(() => {
+    if (!snapshot.chats.loaded) {
+      return null;
+    }
+    return chatCwd(snapshot, chatId);
+  }, [snapshot, chatId]);
+
   if (!pane.filesOpen) {
     return null;
   }
@@ -89,6 +99,8 @@ export function FilesPaneColumn({
           client={client}
           onOpenFile={(path) => rightPaneStore.addFileSurface(chatId, path)}
           gitStatus={(handlers) => client.watchGitStatus(session.client, handlers)}
+          workspaceRoot={workspaceRoot}
+          onAddToChat={(path, isDirectory) => chatFileInserts.insert(chatId, { path, isDirectory })}
         />
       ) : (
         <div className="files-tree-panel" />
@@ -119,4 +131,12 @@ function useSyncExternalStoreConsume(chatId: string, model: FileTreeModel | null
     rightPaneStore.clearFilesReveal();
     void model.revealInTree(reveal.path);
   }, [reveal, chatId, model]);
+}
+
+/** The chat row's `cwd`, when the fleet snapshot has it. */
+function chatCwd(snapshot: ReturnType<typeof useFleetSnapshot>, chatId: string): string | null {
+  if (!snapshot.chats.loaded) {
+    return null;
+  }
+  return snapshot.chats.rows.find((row) => row.id === chatId)?.cwd ?? null;
 }

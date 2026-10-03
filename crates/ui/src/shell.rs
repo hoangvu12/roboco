@@ -56,14 +56,18 @@ use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_heigh
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
-mod files_panel;
 mod actions_ui;
+mod chat_dropzone;
+#[cfg(test)]
+mod chat_dropzone_tests;
+mod command_palette;
+mod file_mutations;
+mod files_panel;
+mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
 mod project_icon;
-mod command_palette;
-mod harness_updates;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -2784,10 +2788,43 @@ impl Shell {
             .collect()
     }
 
+    /// Attach a workspace path only while the surface it came from still
+    /// shows this chat's workspace; a drag outliving a session switch is dropped.
+    fn attach_workspace_drag(
+        &mut self,
+        payload: &WorkspacePathDrag,
+        composer: &Entity<Composer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(origin) = &payload.origin else {
+            return;
+        };
+        let current = crate::files::client::FilesRequestContext::for_chat(
+            self.state.read(cx),
+            &self.panel_key(cx),
+        );
+        if current.as_ref() != Some(&origin.context) || !matches!(self.route, Route::Chat) {
+            return;
+        }
+        let valid = self
+            .files
+            .values()
+            .chain(self.file_surfaces.values())
+            .any(|files| {
+                files.entity_id() == origin.surface_id && files.read(cx).accepts_origin(origin, cx)
+            });
+        if valid {
+            composer.update(cx, |composer, cx| {
+                composer.add_workspace_path(&payload.path, payload.is_directory, window, cx)
+            });
+        }
+    }
+
     fn workspace_path_for_surface(
         &self,
         surface: RightSurface,
-        _cx: &App,
+        cx: &App,
     ) -> Option<WorkspacePathDrag> {
         let path = match surface {
             RightSurface::File(id) => self.file_surface_paths.get(&id)?.clone(),
@@ -2800,7 +2837,18 @@ impl Shell {
                 return None;
             }
         };
-        Some(WorkspacePathDrag::new(path, false))
+        let RightSurface::File(id) = surface else {
+            return None;
+        };
+        // File tabs carry the live editor surface's origin: the tab's own
+        // workspace reference stays attachable only while that surface still
+        // shows this chat's workspace.
+        let origin = self.file_surfaces.get(&id)?.read(cx).interaction_origin(cx);
+        Some(WorkspacePathDrag::new(path, false).with_origin(
+            origin,
+            crate::files::WorkspacePathSource::FileTab,
+            None,
+        ))
     }
 
     /// Drag-reorder a surface tab within this chat's strip.
@@ -3216,6 +3264,35 @@ impl Shell {
                     return;
                 }
                 match event {
+                    FilesEvent::HoldMutation { origin, path } => {
+                        let surfaces = this
+                            .files
+                            .values()
+                            .chain(this.file_surfaces.values())
+                            .filter(|s| s.read(cx).shares_workspace(origin))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        for surface in surfaces {
+                            surface.update(cx, |files, cx| files.hold_mutation(path.clone(), cx));
+                        }
+                    }
+                    FilesEvent::AddToChat {
+                        path,
+                        is_directory,
+                        origin,
+                    } => {
+                        let payload = WorkspacePathDrag::new(path.clone(), *is_directory)
+                            .with_origin(
+                                Some(origin.clone()),
+                                crate::files::WorkspacePathSource::Tree,
+                                None,
+                            );
+                        let composer = this.composer.clone();
+                        this.attach_workspace_drag(&payload, &composer, window, cx);
+                    }
+                    FilesEvent::Mutate(intent) => {
+                        this.start_file_mutation(source.clone(), intent.clone(), cx)
+                    }
                     // Navigation from an editor stays in its own chat.
                     FilesEvent::OpenFile(path) => {
                         let owner = (source.read(cx).chat_id().to_owned(), owner_state.clone());
@@ -8616,14 +8693,15 @@ impl Shell {
         // Attachment dropzone over the ENTIRE conversation column (transcript
         // + composer, not just the pill). OS images keep using the upload
         // pipeline; workspace files/directories and file tabs become the same
-        // projected file-mention chips the composer already understands.
+        // projected file-mention chips the composer already understands — but
+        // only through the shared dropzone's origin checks (chat_dropzone.rs).
         // The veil itself uses typed `drag_over` styles below. Do not cache
         // drag presence in shell state: the platform's `FileDrop::Exited`
         // clears GPUI's external payload without sending one last mouse-move,
         // so a cached bit can survive and reappear during an unrelated drag
         // such as a pane resize.
-        div()
-            .id("chat-dropzone")
+        self.chat_dropzone("chat-dropzone", self.composer.clone(), cx)
+            .debug_selector(|| "chat-dropzone".into())
             .track_focus(&self.navigation_focus.main)
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
                 this.capture_navigation_focus(false, false, window, cx);
@@ -8635,28 +8713,8 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
-            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                let paths = paths.paths().to_vec();
-                this.composer
-                    .update(cx, |composer, cx| composer.add_paths(paths, cx));
-                cx.notify();
-            }))
-            .on_drop::<WorkspacePathDrag>(cx.listener(
-                |this, payload: &WorkspacePathDrag, window, cx| {
-                    this.composer.update(cx, |composer, cx| {
-                        composer.add_workspace_path(&payload.path, payload.is_directory, window, cx)
-                    });
-                    cx.notify();
-                },
-            ))
-            .on_drop::<RightTabDrag>(cx.listener(|this, payload: &RightTabDrag, window, cx| {
-                if let Some(path) = &payload.workspace_path {
-                    this.composer.update(cx, |composer, cx| {
-                        composer.add_workspace_path(&path.path, path.is_directory, window, cx)
-                    });
-                }
-                cx.notify();
-            }))
+            // The three drop receivers (OS paths, workspace drags, file
+            // tabs) live in `chat_dropzone` — with the origin checks.
             // The hero is deliberately outside the transcript EdgeFade below:
             // it must paint under the overlaid titlebar instead of becoming
             // fully transparent across the titlebar's inset band.
@@ -8779,33 +8837,7 @@ impl Shell {
                         }),
                 )
             })
-            .child(
-                div()
-                    .id("attachment-drop-overlay")
-                    .absolute()
-                    .inset_0()
-                    .opacity(0.0)
-                    .bg(theme.scrim().opacity(0.4 / 0.6))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .text_color(theme.text)
-                    // GPUI matches these styles against the active payload's
-                    // concrete TypeId. Resize markers therefore cannot reveal
-                    // this overlay, even after an external drag exits without
-                    // another move event.
-                    .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.opacity(1.0))
-                    .drag_over::<WorkspacePathDrag>(|style, _, _, _| style.opacity(1.0))
-                    .drag_over::<RightTabDrag>(|style, tab, _, _| {
-                        if tab.workspace_path.is_some() {
-                            style.opacity(1.0)
-                        } else {
-                            style
-                        }
-                    })
-                    .child("Drop to attach"),
-            )
+            .child(Self::attachment_drop_overlay(theme))
             .into_any_element()
     }
 
@@ -10315,6 +10347,21 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Hidden explorers cannot honor drag origins or menus: suspend their
+        // captured interactions so stale payloads attach nowhere. Upstream
+        // does this for every explorer not currently on screen.
+        let active_files_key = self.panel_key(cx);
+        let hidden_explorers = self
+            .files
+            .iter()
+            .filter(|(key, _)| {
+                key.as_str() != active_files_key || !matches!(self.route, Route::Chat)
+            })
+            .map(|(_, files)| files.clone())
+            .collect::<Vec<_>>();
+        for files in hidden_explorers {
+            files.update(cx, |files, cx| files.suspend_tree_interactions(cx));
+        }
         self.navigation_focus
             .remember(&self.shortcut_focus, window, cx);
         if let Some(command) = self.pending_workspace_command.take() {

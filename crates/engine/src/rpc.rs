@@ -40,7 +40,8 @@
 //!   every change) so every client paired to this engine mirrors pins and
 //!   custom sections live. Engine-local per ADR 0004 — never synced.
 //! - Workspace files: lazy directory listing, recursive path search, bounded text
-//!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
+//!   reads, hash-guarded writes, revision-guarded entry moves/deletes, and a
+//!   checkout-scoped filesystem change stream.
 //! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows, cwd?}` → `TerminalSession`,
 //!   `SubscribeTerminal {terminalId, afterSeq?}` → stream of `TerminalEvent`
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
@@ -2492,6 +2493,26 @@ impl RpcService for EngineRpc {
                 .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
                 .map_err(RpcError::from)?;
                 RpcReply::value(&file)
+            }
+            // Structural mutations run without the short file-RPC timeout: a
+            // recursive delete over a large tree can outlast it.
+            methods::DELETE_WORKSPACE_ENTRY => {
+                let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
+                let outcome = self
+                    .workspace_files
+                    .delete_entry(request)
+                    .await
+                    .map_err(RpcError::from)?;
+                RpcReply::value(&outcome)
+            }
+            methods::MOVE_WORKSPACE_ENTRY => {
+                let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
+                let outcome = self
+                    .workspace_files
+                    .move_entry(request)
+                    .await
+                    .map_err(RpcError::from)?;
+                RpcReply::value(&outcome)
             }
             methods::WRITE_WORKSPACE_FILE => {
                 let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;

@@ -1,4 +1,10 @@
-import type { WorkspaceDirectoryPage, WorkspaceEntry, WorkspaceFileChanges } from "@roboco/proto";
+import type {
+  WorkspaceDirectoryPage,
+  WorkspaceEntry,
+  WorkspaceFileChanges,
+  WorkspaceMutationCapabilities,
+  WorkspaceMutationOutcome,
+} from "@roboco/proto";
 import type { WatchHandlers } from "@roboco/engine-client";
 import type { WorkspaceFilesClient } from "./files-client";
 import { describeFilesError } from "./files-client";
@@ -48,6 +54,10 @@ export interface FileTreeSnapshot {
    * loaded (mod.rs:213-247).
    */
   readonly rootError: string | null;
+  /** The mutation RPC's rejection message (desktop `mutation_error`). */
+  readonly mutationError: string | null;
+  /** True while a mutation RPC is in flight (desktop `mutation_busy`). */
+  readonly mutationBusy: boolean;
   /**
    * Git status decorations joined onto the rows (files/git_status.rs):
    * workspace path → classified color kind. Empty while no status has
@@ -162,6 +172,12 @@ export class FileTreeModel {
   #snapshot: FileTreeSnapshot;
   #gitStatus: ReadonlyMap<string, GitDecorationKind> = new Map();
   #disposed = false;
+  // Mutation surface (files/mutations.rs): the checkout identity and
+  // capabilities a page announced, plus the in-flight operation's guard.
+  #checkoutId: string | null = null;
+  #mutationCapabilities: WorkspaceMutationCapabilities | null = null;
+  #mutationError: string | null = null;
+  #mutationBusy = false;
 
   constructor(options: FileTreeModelOptions) {
     this.#client = options.client;
@@ -176,6 +192,8 @@ export class FileTreeModel {
       selected: null,
       rootLoaded: false,
       rootError: null,
+      mutationError: null,
+      mutationBusy: false,
       gitStatus: this.#gitStatus,
     };
   }
@@ -213,6 +231,29 @@ export class FileTreeModel {
 
   entry(path: string): WorkspaceEntry | undefined {
     return this.#nodes.get(path)?.entry;
+  }
+
+  /** The entry's metadata revision, when the host published one. */
+  mutationRevision(path: string): string | null {
+    return this.#nodes.get(path)?.entry.mutationRevision ?? null;
+  }
+
+  /** `can_mutate_tree_entry` (rename.rs): capabilities + a live revision +
+   *  not a symlink, with no operation in flight. */
+  canMutate(path: string, deleting: boolean): boolean {
+    const entry = this.#nodes.get(path)?.entry;
+    if (
+      entry === undefined ||
+      this.#mutationBusy ||
+      this.#checkoutId === null ||
+      entry.kind === "symlink" ||
+      entry.mutationRevision == null
+    ) {
+      return false;
+    }
+    return deleting
+      ? this.#mutationCapabilities?.deleteEntry === true
+      : this.#mutationCapabilities?.moveEntry === true;
   }
 
   /** Begin the root listing and the change stream. */
@@ -411,7 +452,7 @@ export class FileTreeModel {
       return null;
     }
     for (const [index, { directory, page }] of pages.entries()) {
-      this.#applyPage(directory, page.entries, page.nextCursor ?? null, generation);
+      this.#applyPage(directory, page.entries, page.nextCursor ?? null, generation, page);
       const ancestor = ancestors[index - 1];
       if (ancestor !== undefined) {
         this.#expanded.add(ancestor);
@@ -470,7 +511,7 @@ export class FileTreeModel {
     void this.#client
       .listDirectory(directory, this.#includeIgnored, cursor ?? undefined)
       .then((page) => {
-        this.#applyPage(directory, page.entries, page.nextCursor ?? null, generation);
+        this.#applyPage(directory, page.entries, page.nextCursor ?? null, generation, page);
       })
       .catch((error: unknown) => {
         this.#failLoad(directory, cursor, describeFilesError(error), generation);
@@ -505,13 +546,19 @@ export class FileTreeModel {
   }
 
   /** Desktop `apply_page`: append-or-replace pages, deletion only on the last. */
-  #applyPage(directory: string, entries: readonly WorkspaceEntry[], nextCursor: string | null, generation: number): void {
+  #applyPage(directory: string, entries: readonly WorkspaceEntry[], nextCursor: string | null, generation: number, page?: WorkspaceDirectoryPage): void {
     if (this.#disposed || generation !== this.#generation) {
       return;
     }
     const parent = this.#nodes.get(directory);
     if (parent === undefined || parent.entry.kind !== "directory") {
       return;
+    }
+    // The page announces the host's mutation capabilities and checkout
+    // identity (mod.rs load_directory task).
+    if (page !== undefined) {
+      this.#checkoutId = page.checkoutId ?? null;
+      this.#mutationCapabilities = page.mutationCapabilities ?? null;
     }
     const parentIgnored = parent.entry.ignored;
     const append = parent.load.kind === "loading" && parent.load.cursor !== null;
@@ -588,6 +635,19 @@ export class FileTreeModel {
       if (typeof change?.path !== "string") {
         continue;
       }
+      // A host-published mutation event is semantic: apply it exactly,
+      // idempotently, without treating its parts as independent file events
+      // (watch.rs apply_workspace_changes).
+      if (typeof change.operationId === "string") {
+        this.#applySemanticChange(change);
+        for (const changed of [change.path, typeof change.oldPath === "string" ? change.oldPath : null]) {
+          const parent = changed !== null ? parentPath(changed) : null;
+          if (parent !== null) {
+            parents.add(parent);
+          }
+        }
+        continue;
+      }
       switch (change.kind) {
         case "created": {
           this.#onFileEvent?.({ kind: "created", path: change.path });
@@ -598,7 +658,16 @@ export class FileTreeModel {
           break;
         }
         case "modified":
-          this.#onFileEvent?.({ kind: "modified", path: change.path });
+          // Saves (including atomic replacement) change the metadata revision
+          // used by move/delete: reload the parent so a later mutation can
+          // quote the fresh revision.
+          {
+            const parent = parentPath(change.path);
+            if (parent !== null) {
+              parents.add(parent);
+            }
+            this.#onFileEvent?.({ kind: "modified", path: change.path });
+          }
           break;
         case "removed": {
           this.#remove(change.path);
@@ -612,7 +681,7 @@ export class FileTreeModel {
         case "renamed": {
           const oldPath = typeof change.oldPath === "string" ? change.oldPath : null;
           if (oldPath !== null) {
-            this.#remove(oldPath);
+            this.#relocateSubtree(oldPath, change.path, undefined);
             const oldParent = parentPath(oldPath);
             if (oldParent !== null) {
               parents.add(oldParent);
@@ -640,6 +709,204 @@ export class FileTreeModel {
       }
     }
     this.#commit();
+  }
+
+  /** `apply_semantic_mutation` (files/mutations.rs): the mutation's own
+   *  published change — a rename relocates the subtree (keeping expansion
+   *  and selection), a removal drops it. */
+  #applySemanticChange(change: {
+    kind: string;
+    path: string;
+    oldPath?: string | null;
+    operationId?: string | null;
+  }): void {
+    if (change.kind === "renamed" && typeof change.oldPath === "string") {
+      this.#relocateSubtree(change.oldPath, change.path, undefined);
+      this.select(change.path);
+    } else if (change.kind === "removed") {
+      this.#remove(change.path);
+    }
+    const parent = parentPath(change.path);
+    if (parent !== null) {
+      const node = this.#nodes.get(parent);
+      if (node !== undefined && node.entry.kind === "directory") {
+        node.stale = true;
+        if (this.#expanded.has(parent) && node.hasLoaded) {
+          this.#requestDirectory(parent, null);
+        }
+      }
+    }
+  }
+
+  // ── Mutations (files/mutations.rs + shell/file_mutations.rs) ──────────
+
+  /**
+   * Move (or rename) one entry without replacement. The engine revalidates
+   * the checkout and the metadata revision; on success the outcome's own
+   * semantic change relocates the subtree, and open documents hear the
+   * rename through `onFileEvent`. Rejections surface as `mutationError`.
+   */
+  async moveEntry(path: string, destination: string): Promise<boolean> {
+    const entry = this.#nodes.get(path)?.entry;
+    if (entry === undefined || !this.canMutate(path, false) || this.#checkoutId === null) {
+      return false;
+    }
+    const operationId = newOperationId();
+    this.#beginMutation();
+    try {
+      const outcome = await this.#client.moveEntry({
+        operationId,
+        expectedCheckoutId: this.#checkoutId,
+        sourcePath: path,
+        destinationPath: destination,
+        expectedSourceRevision: entry.mutationRevision ?? "",
+        expectedKind: entry.kind,
+      });
+      return this.#finishMutation(operationId, path, outcome, { renamed: destination });
+    } catch (error: unknown) {
+      this.#failMutation(describeFilesError(error));
+      return false;
+    }
+  }
+
+  /** Delete an entry (folders always recursive — the dialog consented). */
+  async deleteEntry(path: string): Promise<boolean> {
+    const entry = this.#nodes.get(path)?.entry;
+    if (entry === undefined || !this.canMutate(path, true) || this.#checkoutId === null) {
+      return false;
+    }
+    const operationId = newOperationId();
+    this.#beginMutation();
+    try {
+      const outcome = await this.#client.deleteEntry({
+        operationId,
+        expectedCheckoutId: this.#checkoutId,
+        path,
+        expectedSourceRevision: entry.mutationRevision ?? "",
+        expectedKind: entry.kind,
+        recursive: entry.kind === "directory",
+      });
+      return this.#finishMutation(operationId, path, outcome, { removed: true });
+    } catch (error: unknown) {
+      this.#failMutation(describeFilesError(error));
+      return false;
+    }
+  }
+
+  #beginMutation(): void {
+    this.#mutationBusy = true;
+    this.#mutationError = null;
+    this.#commit();
+  }
+
+  #failMutation(message: string): void {
+    this.#mutationBusy = false;
+    this.#mutationError = message;
+    this.#commit();
+  }
+
+  /** Clear the surfaced mutation error (the error row's Dismiss). */
+  dismissMutationError(): void {
+    this.#mutationError = null;
+    this.#commit();
+  }
+
+  #finishMutation(
+    operationId: string,
+    sourcePath: string,
+    outcome: WorkspaceMutationOutcome,
+    expectation: { renamed: string } | { removed: true },
+  ): boolean {
+    this.#mutationBusy = false;
+    if (outcome.status !== "applied") {
+      this.#mutationError = outcome.message;
+      this.#commit();
+      return false;
+    }
+    this.#mutationError = null;
+    // Apply the host's own semantic change (the local surface's copy — the
+    // watcher carries the same operation id and is idempotent here because
+    // the subtree is already at its new key).
+    if ("renamed" in expectation) {
+      this.#applySemanticChange({
+        kind: "renamed",
+        path: outcome.change.path,
+        oldPath: sourcePath,
+        operationId,
+      });
+      this.#onFileEvent?.({ kind: "renamed", path: outcome.change.path, oldPath: sourcePath });
+    } else {
+      this.#applySemanticChange({ kind: "removed", path: outcome.change.path, operationId });
+      this.#onFileEvent?.({ kind: "removed", path: outcome.change.path });
+    }
+    this.#commit();
+    return true;
+  }
+
+  /** `relocate_subtree` (model.rs): re-key a confirmed move without
+   *  throwing away expansion or selection. */
+  #relocateSubtree(old: string, next: string, entryBase: WorkspaceEntry | undefined): boolean {
+    if (old === ROOT || old === next || isDescendant(next, old) || !this.#nodes.has(old)) {
+      return false;
+    }
+    const remap = (path: string): string =>
+      path === old ? next : isDescendant(path, old) ? `${next}${path.slice(old.length)}` : path;
+    const oldParent = parentPath(old)!;
+    const newParent = parentPath(next)!;
+    const oldParentNode = this.#nodes.get(oldParent);
+    if (oldParentNode !== undefined) {
+      oldParentNode.children = oldParentNode.children.filter((child) => child !== old);
+    }
+    const nodes = new Map(this.#nodes);
+    this.#nodes.clear();
+    for (const [path, node] of nodes) {
+      const key = remap(path);
+      const moved = isDescendant(path, old) || path === old;
+      const entry: WorkspaceEntry =
+        path === old && entryBase !== undefined ? { ...entryBase, path: key } : { ...node.entry, path: key };
+      if (path === old) {
+        entry.name = next.split("/").pop() ?? next;
+      }
+      const renamed: TreeNode = {
+        entry,
+        children: node.children.map(remap),
+        load: moved && node.entry.kind === "directory" ? { kind: "unloaded" } : node.load,
+        stale: moved ? true : node.stale,
+        hasLoaded: node.hasLoaded,
+      };
+      this.#nodes.set(key, renamed);
+    }
+    const expanded = [...this.#expanded].map(remap);
+    this.#expanded.clear();
+    for (const path of expanded) {
+      this.#expanded.add(path);
+    }
+    this.#selected = this.#selected !== null ? remap(this.#selected) : null;
+    let ancestor: string | null = newParent;
+    while (ancestor !== null) {
+      this.#expanded.add(ancestor);
+      ancestor = parentPath(ancestor);
+    }
+    this.#listingChildren.clear();
+    const newParentNode = this.#nodes.get(newParent);
+    if (newParentNode !== undefined && !newParentNode.children.includes(next)) {
+      newParentNode.children.push(next);
+    }
+    for (const parent of [oldParent, newParent]) {
+      const node = this.#nodes.get(parent);
+      if (node !== undefined) {
+        node.stale = true;
+        node.load = { kind: "unloaded" };
+        node.children.sort((left, right) =>
+          compareEntries(this.#nodes.get(left)!.entry, this.#nodes.get(right)!.entry),
+        );
+        if (this.#expanded.has(parent) && node.hasLoaded) {
+          this.#requestDirectory(parent, null);
+        }
+      }
+    }
+    this.#commit();
+    return true;
   }
 
   /** Desktop `remove`: drop the path and its subtree from the model. */
@@ -722,6 +989,8 @@ export class FileTreeModel {
       selected: this.#selected,
       rootLoaded: this.#nodes.get(ROOT)?.hasLoaded === true,
       rootError: this.#rootError,
+      mutationError: this.#mutationError,
+      mutationBusy: this.#mutationBusy,
       gitStatus: this.#gitStatus,
     };
     for (const listener of this.#listeners) {
@@ -787,6 +1056,82 @@ export class FileTreeModel {
 /** Desktop watch.rs `sequence_needs_resync`. */
 export function sequenceNeedsResync(previous: number | null, next: number): boolean {
   return previous !== null && next !== previous + 1;
+}
+
+/** `absolute_workspace_path` (files/context_menu.rs): interpret the OWNING
+ *  host's path format — a Windows workspace viewed from any OS keeps its
+ *  separators and drive/UNC form. */
+export function absoluteWorkspacePath(root: string, relative: string): string {
+  const bytes = root;
+  const windows =
+    root.startsWith("\\\\") ||
+    (bytes.length >= 3 &&
+      isAsciiAlpha(bytes.charCodeAt(0)) &&
+      bytes.charAt(1) === ":" &&
+      (bytes.charAt(2) === "/" || bytes.charAt(2) === "\\"));
+  if (windows) {
+    return `${root.replace(/[\\/]+$/, "").replaceAll("/", "\\")}\\${relative.replaceAll("/", "\\")}`;
+  }
+  return `${root.replace(/\/+$/, "")}/${relative}`;
+}
+
+function isAsciiAlpha(code: number): boolean {
+  return (code >= 97 && code <= 122) || (code >= 65 && code <= 90);
+}
+
+/** `destination_path` (files/drag.rs): the gesture semantics of a drop —
+ *  same parent is a no-op, a folder cannot move into itself; the host
+ *  remains authoritative for existence and collisions. */
+export function destinationPath(source: string, directory: string, isDirectory: boolean): string | null {
+  if (source.length === 0 || parentPath(source) === directory) {
+    return null;
+  }
+  if (isDirectory && (directory === source || isDescendant(directory, source))) {
+    return null;
+  }
+  const name = source.split("/").pop();
+  if (name === undefined) {
+    return null;
+  }
+  return directory === "" ? name : `${directory}/${name}`;
+}
+
+/** `name_selection` (files/rename.rs): select the name without its
+ *  extension, like the platform explorers. */
+export function nameSelection(name: string, directory: boolean): { start: number; end: number } {
+  const end = directory
+    ? name.length
+    : (() => {
+        const dot = name.lastIndexOf(".");
+        return dot > 0 ? dot : name.length;
+      })();
+  return { start: 0, end };
+}
+
+/** `renamed_path` (files/rename.rs): a single safe name joined onto the
+ *  original parent. */
+export function renamedPath(path: string, name: string): string | null {
+  if (
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    name.toLowerCase() === ".git" ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    name.includes("\0") ||
+    name.includes(":")
+  ) {
+    return null;
+  }
+  const parent = parentPath(path) ?? "";
+  return parent === "" ? name : `${parent}/${name}`;
+}
+
+/** `uuid::Uuid::new_v4()`'s web shape for `operation_id`. */
+function newOperationId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `op-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
 /** Desktop `VisibleTreeRow::selectable`: Entry and LoadMore rows. */

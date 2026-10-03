@@ -6,6 +6,7 @@ import {
   encodeClientFrame,
   isStreamAck,
 } from "../src/codec";
+import { DELETE_WORKSPACE_ENTRY, MOVE_WORKSPACE_ENTRY } from "../src/methods";
 import { recorded } from "./fixtures/recorded";
 
 describe("client frame encoding", () => {
@@ -124,5 +125,12 @@ describe("recorded engine frames", () => {
       expect(chat.title === null || typeof chat.title === "string").toBe(true);
       expect(chat.cwd === null || typeof chat.cwd === "string").toBe(true);
     }
+  });
+});
+
+describe("workspace mutation methods (crates/rpc methods parity)", () => {
+  test("structural entry mutations use the engine's RPC strings", () => {
+    expect(MOVE_WORKSPACE_ENTRY).toBe("MoveWorkspaceEntry");
+    expect(DELETE_WORKSPACE_ENTRY).toBe("DeleteWorkspaceEntry");
   });
 });

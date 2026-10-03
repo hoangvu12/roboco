@@ -145,7 +145,7 @@ impl WorkspaceFilesClient {
     /// Refresh through the cached children before publishing the new listing.
     /// Usually this reads only the pages already visited. If a cached child is
     /// missing, reach the end before treating it as deleted.
-    pub(super) async fn list_directory_snapshot(
+    pub(crate) async fn list_directory_snapshot(
         &self,
         mut request: ListWorkspaceDirectoryRequest,
         cached_paths: &[String],
@@ -169,6 +169,13 @@ impl WorkspaceFilesClient {
                 }
                 request.cursor = Some(cursor);
                 let next = self.list_directory(request.clone()).await?;
+                // Pages of one snapshot must describe the same checkout: a
+                // swap between pages invalidates the accumulated pages.
+                if next.checkout_id != page.checkout_id {
+                    return Err(FilesClientError::Decode(
+                        "Workspace changed between directory pages".into(),
+                    ));
+                }
                 for entry in &next.entries {
                     remaining.remove(entry.path.as_str());
                 }
@@ -269,6 +276,23 @@ impl WorkspaceFilesClient {
         self.call(methods::WRITE_WORKSPACE_FILE, &request).await
     }
 
+    /// Move (or rename) a workspace entry without replacement. Structural
+    /// mutations are never retried on transport errors — the host is
+    /// authoritative for whether the operation landed.
+    pub async fn move_entry(
+        &self,
+        request: roboco_proto::MoveWorkspaceEntryRequest,
+    ) -> Result<roboco_proto::WorkspaceMutationOutcome, FilesClientError> {
+        self.call(methods::MOVE_WORKSPACE_ENTRY, &request).await
+    }
+
+    pub async fn delete_entry(
+        &self,
+        request: roboco_proto::DeleteWorkspaceEntryRequest,
+    ) -> Result<roboco_proto::WorkspaceMutationOutcome, FilesClientError> {
+        self.call(methods::DELETE_WORKSPACE_ENTRY, &request).await
+    }
+
     pub async fn watch(&self) -> Result<mpsc::Receiver<serde_json::Value>, FilesClientError> {
         let request = WatchWorkspaceFilesRequest {
             target: self.context.target.clone(),
@@ -367,6 +391,42 @@ mod tests {
                 "modifiedAt": null, "ignored": false, "readOnly": false
             }], "nextCursor": next, "truncated": next.is_some()
         })
+    }
+
+    #[tokio::test]
+    async fn structural_mutations_preserve_remote_addressing_and_never_retry_transport_errors() {
+        let transport = Arc::new(DeterministicTransport {
+            scripted_responses: Mutex::new([Err(RpcError::Transport("reply lost".into()))].into()),
+            ..Default::default()
+        });
+        let client = WorkspaceFilesClient::with_transport(
+            transport.clone(),
+            FilesRequestContext {
+                engine: crate::engine_registry::EngineKey::local(),
+                target: target(),
+                target_device_id: Some("host".into()),
+                cwd: "/remote".into(),
+                checkout_id: Some("checkout".into()),
+            },
+        );
+        let result = client
+            .move_entry(roboco_proto::MoveWorkspaceEntryRequest {
+                target: target(),
+                operation_id: "op".into(),
+                expected_checkout_id: "checkout".into(),
+                source_path: "a".into(),
+                destination_path: "folder/a".into(),
+                expected_source_revision: "rev".into(),
+                expected_kind: roboco_proto::WorkspaceEntryKind::File,
+            })
+            .await;
+        assert!(result.is_err());
+        let calls = transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, methods::MOVE_WORKSPACE_ENTRY);
+        assert_eq!(calls[0].1["targetDeviceId"], "host");
+        assert_eq!(calls[0].1["expectedCheckoutId"], "checkout");
+        assert_eq!(calls[0].1["sourcePath"], "a");
     }
 
     #[tokio::test]

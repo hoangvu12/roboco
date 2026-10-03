@@ -1,7 +1,9 @@
 import {
   MAX_WORKSPACE_IMAGE_BYTES,
   WORKSPACE_IMAGE_CHUNK_BYTES,
+  type DeleteWorkspaceEntryRequest,
   type ListWorkspaceDirectoryRequest,
+  type MoveWorkspaceEntryRequest,
   type ReadWorkspaceFileRequest,
   type ReadWorkspaceImageRequest,
   type SearchWorkspaceFilesRequest,
@@ -12,6 +14,7 @@ import {
   type WorkspaceFileText,
   type WorkspaceGitStatusFrame,
   type WorkspaceImageChunk,
+  type WorkspaceMutationOutcome,
   type WriteWorkspaceFileOutcome,
   type WriteWorkspaceFileRequest,
 } from "@roboco/proto";
@@ -90,6 +93,21 @@ export class WorkspaceFilesClient {
     request: Omit<WriteWorkspaceFileRequest, "spaceId" | "chatId" | "checkoutPath">,
   ): Promise<WriteWorkspaceFileOutcome> {
     return this.#caller.call(methods.WRITE_WORKSPACE_FILE, { ...this.#target, ...request });
+  }
+
+  /** Structural mutations (client.rs move_entry/delete_entry): carried
+   *  with the target's remote addressing, never retried on transport
+   *  errors — the host is authoritative for whether they landed. */
+  moveEntry(
+    request: Omit<MoveWorkspaceEntryRequest, "spaceId" | "chatId" | "checkoutPath">,
+  ): Promise<WorkspaceMutationOutcome> {
+    return this.#caller.call(methods.MOVE_WORKSPACE_ENTRY, { ...this.#target, ...request });
+  }
+
+  deleteEntry(
+    request: Omit<DeleteWorkspaceEntryRequest, "spaceId" | "chatId" | "checkoutPath">,
+  ): Promise<WorkspaceMutationOutcome> {
+    return this.#caller.call(methods.DELETE_WORKSPACE_ENTRY, { ...this.#target, ...request });
   }
 
   /** The watch request body for `EngineClient.watch(WATCH_WORKSPACE_FILES, …)`. */

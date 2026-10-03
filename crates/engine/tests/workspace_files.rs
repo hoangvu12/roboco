@@ -645,6 +645,95 @@ async fn write_rejects_changed_checkout_even_when_contents_match() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_mutations_validate_revision_and_publish_semantic_events() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    init_repo(&repo).await;
+    let core = assemble(&temp.path().join("data"), "device-mutations");
+    core.workspace
+        .create_space(
+            "space",
+            &core.device_id,
+            &repo.to_string_lossy(),
+            None,
+            true,
+        )
+        .expect("space");
+    core.workspace
+        .create_chat("chat", Some("space"), None, None, None)
+        .expect("chat");
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    let page: WorkspaceDirectoryPage = serde_json::from_value(
+        client
+            .call(
+                methods::LIST_WORKSPACE_DIRECTORY,
+                serde_json::json!({"chatId":"chat"}),
+            )
+            .await
+            .expect("list root"),
+    )
+    .expect("typed page");
+    assert!(
+        page.mutation_capabilities
+            .expect("capabilities")
+            .delete_entry
+    );
+    let revision = page
+        .entries
+        .iter()
+        .find(|e| e.path == "README.md")
+        .expect("readme listed")
+        .mutation_revision
+        .clone()
+        .expect("revision listed");
+    let checkout = page.checkout_id.expect("checkout listed");
+    let mut watch = client
+        .subscribe(
+            methods::WATCH_WORKSPACE_FILES,
+            serde_json::json!({"chatId":"chat"}),
+        )
+        .await
+        .expect("watch");
+    watch.recv().await.expect("baseline");
+    let mut request = serde_json::json!({"chatId":"chat", "operationId":"rename", "expectedCheckoutId":checkout, "sourcePath":"README.md", "destinationPath":"src/read me.md", "expectedSourceRevision":revision, "expectedKind":"file"});
+    request["expectedCheckoutId"] = "wrong".into();
+    let rejected = client
+        .call(methods::MOVE_WORKSPACE_ENTRY, request.clone())
+        .await
+        .expect("rejected reply");
+    assert_eq!(rejected["reason"], "workspaceChanged");
+    request["expectedCheckoutId"] = checkout.clone().into();
+    let moved = client
+        .call(methods::MOVE_WORKSPACE_ENTRY, request)
+        .await
+        .expect("moved reply");
+    assert_eq!(moved["status"], "applied");
+    assert!(!repo.join("README.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/read me.md")).unwrap(),
+        "hello\n"
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let frame: WorkspaceFileChanges =
+                serde_json::from_value(watch.recv().await.expect("watch frame")).expect("frame");
+            if frame.changes.iter().any(|c| {
+                c.operation_id.as_deref() == Some("rename")
+                    && c.old_path.as_deref() == Some("README.md")
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("semantic event");
+    let deleted = client.call(methods::DELETE_WORKSPACE_ENTRY, serde_json::json!({"chatId":"chat", "operationId":"delete", "expectedCheckoutId":checkout, "path":"src/read me.md", "expectedSourceRevision":moved["entry"]["mutationRevision"], "expectedKind":"file", "recursive":false})).await.expect("deleted reply");
+    assert_eq!(deleted["status"], "applied");
+    assert!(!repo.join("src/read me.md").exists());
+    core.shutdown().await;
+}
+
 // Absolute reads take POSIX paths — the only shape a UI sends.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

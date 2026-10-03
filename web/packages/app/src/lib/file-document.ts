@@ -51,7 +51,7 @@ interface PendingSave {
 
 export class FileDocument {
   readonly #client: WorkspaceFilesClient;
-  readonly path: string;
+  #path: string;
   readonly #listeners = new Set<() => void>();
 
   #phase: DocumentPhase = { kind: "loading" };
@@ -72,7 +72,7 @@ export class FileDocument {
 
   constructor(client: WorkspaceFilesClient, path: string, options: { autosaveDelayMs?: number } = {}) {
     this.#client = client;
-    this.path = path;
+    this.#path = path;
     // document.rs `FileDocument::loading` — markdown starts in preview mode.
     this.#showMarkdown = isMarkdownPath(path);
     this.#autosaveDelayMs = options.autosaveDelayMs ?? 900;
@@ -88,6 +88,35 @@ export class FileDocument {
     return () => {
       this.#listeners.delete(listener);
     };
+  }
+
+  /** The document's workspace-relative path (retargeted by `rename`). */
+  get path(): string {
+    return this.#path;
+  }
+
+  /**
+   * `rename_documents` (preview.rs): retarget the live document to its new
+   * path — the buffer, dirty state and undo survive; a rename across the
+   * Markdown boundary flips the presentation and resets the view choice,
+   * while a rename within Markdown preserves it.
+   */
+  rename(newPath: string): void {
+    if (newPath === this.#path || this.#disposed) {
+      return;
+    }
+    const wasMarkdown = isMarkdownPath(this.#path);
+    const isMarkdown = isMarkdownPath(newPath);
+    this.#path = newPath;
+    if (wasMarkdown !== isMarkdown) {
+      this.#showMarkdown = isMarkdown;
+    }
+    // The staged save still quotes the old path's content hash — the next
+    // save recomputes from the buffer; a pending save is dropped.
+    this.#pendingSave = null;
+    this.#clearAutosaveTimer();
+    this.#generation += 1;
+    this.#commit();
   }
 
   dispose(): void {

@@ -66,6 +66,21 @@ export class FileDocumentRegistry {
     this.#dirtyListener?.();
   }
 
+  /**
+   * `rename_file_surface` for the registry side: the live entry's path (and
+   * the document it owns) retargets to the renamed path so a later mount
+   * with the new path reuses the same buffer instead of re-reading it.
+   */
+  renameSurfacePath(surfaceId: string, oldPath: string, newPath: string): void {
+    const entry = this.#bySurface.get(surfaceId);
+    if (entry === undefined || entry.path !== oldPath) {
+      return;
+    }
+    entry.document.rename(newPath);
+    this.#bySurface.set(surfaceId, { document: entry.document, model: entry.model, path: newPath });
+    this.#dirtyListener?.();
+  }
+
   /** The tab strip's dirty dot: this surface's document has unflushed edits. */
   isDirtyFor(surfaceId: string): boolean {
     return this.#bySurface.get(surfaceId)?.document.hasUnsavedChanges() ?? false;

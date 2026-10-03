@@ -2,4 +2,9 @@
 
 import type { WorkspaceEntryKind } from "./WorkspaceEntryKind";
 
-export type WorkspaceEntry = { path: string, name: string, kind: WorkspaceEntryKind, size?: number | null, modifiedAt?: string | null, ignored: boolean, readOnly: boolean, };
+export type WorkspaceEntry = { 
+/**
+ * Opaque metadata revision guarding move/delete consent. Absent on
+ * entries an older host listed (and on the synthetic root).
+ */
+mutationRevision?: string | null, path: string, name: string, kind: WorkspaceEntryKind, size?: number | null, modifiedAt?: string | null, ignored: boolean, readOnly: boolean, };
