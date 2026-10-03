@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@roboco/icons";
+import { GlyphSpinner } from "./glyph-spinner";
 import {
   focusInRightPane,
   resolvedActive,
@@ -336,11 +337,19 @@ function TabChip({
       }}
     >
       <span className="right-tab-slot">
-        <Icon
-          name={icon}
-          size={iconSize}
-          className={`right-tab-icon ${surface.kind === "file" ? "right-tab-icon-file" : ""}`}
-        />
+        {facts.running ? (
+          // A running subagent or side chat swaps the leading icon for the
+          // glyph spinner (`subagent_running`'s mini glyph spinner,
+          // render_right_tab) — the chip's state tells which background
+          // surface is live at a glance.
+          <GlyphSpinner size={iconSize} className="right-tab-icon" />
+        ) : (
+          <Icon
+            name={icon}
+            size={iconSize}
+            className={`right-tab-icon ${surface.kind === "file" ? "right-tab-icon-file" : ""}`}
+          />
+        )}
       </span>
       <span className="right-tab-title">{facts.title}</span>
       <span className="right-tab-trailing">

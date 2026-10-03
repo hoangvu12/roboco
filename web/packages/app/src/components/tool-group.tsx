@@ -11,6 +11,7 @@ import {
 import { Icon } from "@roboco/icons";
 import type { FetchToolBlobReply } from "@roboco/proto";
 import { methods } from "@roboco/engine-client";
+import { rightPaneStore } from "../state/right-pane";
 import { useResolvedAppearance } from "../state/appearance";
 import { useUiSettings } from "../state/ui-settings";
 import { diffLineHeight as scaledDiffLineHeight } from "../lib/typography";
@@ -81,6 +82,8 @@ export interface SubagentOpen {
   readonly docId: string;
   readonly title: string;
   readonly frozen: boolean;
+  /** The spawn's live status — seeds the tab chip's spinner flag. */
+  readonly running: boolean;
 }
 
 export interface ToolGroupRowProps {
@@ -265,10 +268,23 @@ export function ToolGroupRow({
         docId: tool.subagentRef,
         title: subagentTabTitle(tool.call),
         frozen,
+        running: tool.subagentStatus === "running",
       });
     },
     [chatId, onOpenSubagent],
   );
+
+  // The spawn chip's live status feeds any OPEN subagent tab's spinner
+  // (`subagent_running`'s background arm): the chip re-renders when the
+  // parent transcript updates, so a backgrounded tab's run coming to rest
+  // clears its chip without the surface being mounted.
+  useEffect(() => {
+    for (const tool of tools) {
+      if (tool.subagentRef !== null) {
+        rightPaneStore.setSubagentRunning(tool.subagentRef, tool.subagentStatus === "running");
+      }
+    }
+  }, [tools]);
 
   const shimmerActive = active && !reduced;
 

@@ -163,6 +163,7 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
         docId: row.docId,
         title: row.title,
         frozen: subagentFrozen(row),
+        running: row.status === "running",
       };
       rightPaneStore.addSubagentSurface(chatId, payload);
     },

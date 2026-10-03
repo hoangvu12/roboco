@@ -16,6 +16,7 @@ import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import {
   chatListRows,
   chatRowHeight,
+  displayStatus,
   healedSpaceFilter,
   resortOffsets,
   sidebarGroups,
@@ -26,6 +27,7 @@ import {
   type ChatRow,
   type SidebarKeyed,
 } from "../lib/view";
+import { rightPaneStore } from "../state/right-pane";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { PinnedSection } from "./pinned-section";
@@ -279,6 +281,27 @@ export function ChatList() {
       .filter((key): key is string => key !== null);
     sidebarStore.pruneUnknownPins(keys, new Set(chats.rows.map((chat) => chat.id)));
   }, [chats.loaded, chats.error, chats.rows, registry]);
+
+  // Child-chat working flags feed the side-chat TAB chips (`indicator_for
+  // == Working`'s background arm, spec: right-pane tabs): the sidebar's
+  // merged watch covers every side chat on every engine, tab mounted or
+  // not — a backgrounded run coming to rest clears its chip here. The
+  // store no-ops on unknown chats and notifies only on flips, so this
+  // never loops.
+  useEffect(() => {
+    if (chats.error !== null) {
+      return;
+    }
+    const statusByChat = new Map(snapshot.statuses.rows.map((row) => [row.chatId, row]));
+    for (const chat of chats.rows) {
+      if (chat.parentChatId != null) {
+        rightPaneStore.setSideChatRunning(
+          chat.id,
+          displayStatus(chat, statusByChat.get(chat.id), now) === "working",
+        );
+      }
+    }
+  }, [chats.rows, chats.error, snapshot.statuses.rows, now]);
 
   // Project icons (ticket 05): reconcile the per-space artwork cache with
   // the fleet's space list — new spaces probe `ICON_PATHS` through their

@@ -168,6 +168,77 @@ describe("session_panels_update_tracks_right_surfaces", () => {
   });
 });
 
+describe("surface facts carry the running flag (spec: right-pane tabs)", () => {
+  it("a subagent tab seeds running from its spawn and clears when the run rests", () => {
+    const store = new RightPaneStore();
+    store.addSubagentSurface("chat-1", {
+      chatId: "chat-1",
+      docId: "doc-9",
+      title: "Worker",
+      frozen: false,
+      running: true,
+    });
+    // A running spawn shows the live spinner in the tab chip (the desktop
+    // swaps the leading icon for the mini glyph spinner).
+    expect(store.describe({ kind: "subagent", id: "s1" }, "chat-1")?.running).toBe(true);
+    // The mounted surface (or the parent transcript's spawn chip) reports
+    // the run's rest: the flag clears, the spinner goes.
+    store.setSubagentRunning("doc-9", false);
+    expect(store.describe({ kind: "subagent", id: "s1" }, "chat-1")?.running).toBe(false);
+    // And back on — a steered subagent re-runs.
+    store.setSubagentRunning("doc-9", true);
+    expect(store.describe({ kind: "subagent", id: "s1" }, "chat-1")?.running).toBe(true);
+  });
+
+  it("a frozen spawn never spins", () => {
+    const store = new RightPaneStore();
+    store.addSubagentSurface("chat-1", {
+      chatId: "chat-1",
+      docId: "doc-9",
+      title: "Worker",
+      frozen: true,
+      running: false,
+    });
+    expect(store.describe({ kind: "subagent", id: "s1" }, "chat-1")?.running).toBe(false);
+  });
+
+  it("a side-chat tab spins while its chat works (indicator_for == Working)", () => {
+    const store = new RightPaneStore();
+    store.addSideChatSurface("chat-1", { chatId: "side-1", title: "Side chat" });
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.running).toBe(false);
+    store.setSideChatRunning("side-1", true);
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.running).toBe(true);
+    store.setSideChatRunning("side-1", false);
+    expect(store.describe({ kind: "sidechat", id: "c1" }, "chat-1")?.running).toBe(false);
+  });
+
+  it("running flips notify subscribers; a no-op write notifies nobody", () => {
+    const store = new RightPaneStore();
+    store.addSideChatSurface("chat-1", { chatId: "side-1", title: "Side chat" });
+    let fired = 0;
+    store.subscribe(() => {
+      fired += 1;
+    });
+    store.setSideChatRunning("side-1", true);
+    expect(fired).toBe(1);
+    // Same value again: no version bump, no re-render.
+    store.setSideChatRunning("side-1", true);
+    expect(fired).toBe(1);
+    store.setSubagentRunning("no-such-doc", true);
+    expect(fired).toBe(1);
+  });
+
+  it("every other surface fact reads running false", () => {
+    const store = new RightPaneStore(new FakePaneTerminal());
+    store.addTerminalSurface("chat-1");
+    expect(store.describe({ kind: "terminal", id: "t1" }, "chat-1")?.running).toBe(false);
+    store.addFileSurface("chat-1", "src/main.rs");
+    expect(store.describe({ kind: "file", id: "f1" }, "chat-1")?.running).toBe(false);
+    store.addDiffSurface("chat-1", "diff");
+    expect(store.describe({ kind: "diff", id: "d1" }, "chat-1")?.running).toBe(false);
+  });
+});
+
 describe("terminal_surfaces_are_per_instance (add_terminal_surface, shell.rs:2634-2650)", () => {
   it("every click opens a FRESH embedded terminal tab addressing its own PTY", () => {
     const { store, terminals } = fresh();

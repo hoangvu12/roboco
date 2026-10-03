@@ -180,6 +180,25 @@ function SubagentSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
     };
   }, [client, docId, frozen]);
 
+  // The tab chip's spinner flag (`subagent_running`: the doc's last entry
+  // streaming). While this surface watches the doc it pushes the live
+  // flag; backgrounded tabs are fed by the parent transcript's spawn chips.
+  const pushRunning = useCallback(
+    (live: TranscriptStore) => {
+      rightPaneStore.setSubagentRunning(live.docId, live.getSnapshot().streaming);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (store === null) {
+      return;
+    }
+    pushRunning(store);
+    return store.subscribe(() => {
+      pushRunning(store);
+    });
+  }, [store, pushRunning]);
+
   // The frozen snapshot fetch — a best-effort blob read; ANY failure falls
   // back to the live doc watch (`resubscribe` arms it).
   useEffect(() => {
@@ -328,6 +347,21 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
     }
   }, [effectiveChat, surfaceId]);
 
+  // The tab chip's spinner flag (`subagent_running`'s side-chat arm,
+  // `indicator_for(chat) == Working`): while this surface is mounted it
+  // pushes the live indicator — the run coming to rest clears the chip.
+  // Backgrounded tabs are fed by the sidebar's child-chat statuses.
+  const statusRow = snapshot.statuses.rows.find((row) => row.chatId === sideChatId);
+  const chatWorking =
+    effectiveChat !== null &&
+    sideChatId !== null &&
+    displayStatusFor(effectiveChat, statusRow, now) === "working";
+  useEffect(() => {
+    if (sideChatId !== null) {
+      rightPaneStore.setSideChatRunning(sideChatId, chatWorking);
+    }
+  }, [sideChatId, chatWorking]);
+
   // The creation seed retires the moment the registry row lands (the
   // snapshot wins by construction; the map stays the size of the gap).
   useEffect(() => {
@@ -413,7 +447,6 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
     chatDrafts.set(sideChatId, draft.text);
   };
   const deliveryDegraded = chatDeliveryDegraded(sessionWatch?.connectivity.value?.state);
-  const statusRow = snapshot.statuses.rows.find((row) => row.chatId === sideChatId);
   const indicator = displayStatusFor(effectiveChat, statusRow, now);
   const turnStartedAt = startedAtOf(statusRow);
   const markdownSurface = useMemo(

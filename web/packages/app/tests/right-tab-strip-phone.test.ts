@@ -221,3 +221,27 @@ describe("right pane `+` menu phone arm (ticket 15 regression)", () => {
     expect(handle.sheetOpen()).toBe(false);
   });
 });
+
+describe("the tab chip's live spinner (parity spec: right-pane tabs)", () => {
+  it("a running side chat swaps the chip's leading icon for the glyph spinner; rest clears it", async () => {
+    const chatId = "chat-spinner";
+    rightPaneStore.addSideChatSurface(chatId, { chatId: "side-77", title: "Side chat" });
+    rightPaneStore.setSideChatRunning("side-77", true);
+    const handle = await mountPane(chatId);
+
+    // The chip's leading slot is the LIVE spinner while the run is on.
+    const chip = document.querySelector<HTMLElement>(".right-tab");
+    expect(chip).not.toBeNull();
+    expect(chip!.querySelector(".glyph-spinner")).not.toBeNull();
+
+    // The run comes to rest: the spinner clears and the static icon
+    // returns — the chip's state always tells the truth.
+    act(() => {
+      rightPaneStore.setSideChatRunning("side-77", false);
+    });
+    expect(chip!.querySelector(".glyph-spinner")).toBeNull();
+    expect(chip!.querySelector(".right-tab-icon")).not.toBeNull();
+    expect(chip!.textContent).toContain("Side chat");
+    void handle;
+  });
+});

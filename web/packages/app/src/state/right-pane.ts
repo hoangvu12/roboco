@@ -186,6 +186,13 @@ export interface SurfaceFacts {
   /** `Changes::is_history()` — switches the diff chip's icon to git-branch. */
   readonly isHistory: boolean;
   readonly isDirty: boolean;
+  /**
+   * The surface is RUNNING (`render_right_tab`'s `subagent_running`): a
+   * subagent doc still streaming, or a side chat whose indicator reads
+   * Working. The tab chip swaps its leading icon for the glyph spinner
+   * while set, and the run coming to rest clears it.
+   */
+  readonly running: boolean;
 }
 
 /**
@@ -308,14 +315,16 @@ export class RightPaneStore {
   /** `diffs` — id → flavour + label (scope label / pinned commit subject). */
   readonly #diffMeta = new Map<string, DiffMeta>();
   /** `subagent_tabs` — id → { chatId, docId, title, frozen }. One tab per doc. */
-  readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean }>();
+  readonly #subagentMeta = new Map<string, { chatId: string; docId: string; title: string; frozen: boolean; running: boolean }>();
   /**
-   * `side_chats` (side_chats.rs) — surface id → { chatId, title }. One
-   * entity per side-chat chat id: reopening re-attaches the kept entity
-   * instead of minting a second tab, and a close with a draft KEEPS it
-   * (detached) so the reopen restores the draft.
+   * `side_chats` (side_chats.rs) — surface id → { chatId, title, running }.
+   * One entity per side-chat chat id: reopening re-attaches the kept
+   * entity instead of minting a second tab, and a close with a draft KEEPS
+   * it (detached) so the reopen restores the draft. `running` is the tab's
+   * spinner flag — pushed by the mounted surface and the sidebar's child
+   * statuses, the desktop's `indicator_for == Working` read.
    */
-  readonly #sideChats = new Map<string, { chatId: string; title: string }>();
+  readonly #sideChats = new Map<string, { chatId: string; title: string; running: boolean }>();
   /** The side-chat entity source (draft retention + disposal), boot-injected. */
   #sideChatEntities: SideChatEntitySource | null = null;
 
@@ -617,21 +626,34 @@ export class RightPaneStore {
    * programmatically from a transcript spawn chip, never from the picker.
    * `frozen` (subagent done/failed) tries the uploaded transcript blob
    * first and falls back to the live doc watch; running subagents watch
-   * the doc directly.
+   * the doc directly. `running` seeds the tab's spinner from the spawn
+   * chip's own status — the surface (or the parent transcript's chip)
+   * keeps it current.
    */
   addSubagentSurface(
     chatId: string,
-    spawn: { chatId: string; docId: string; title: string; frozen: boolean },
+    spawn: { chatId: string; docId: string; title: string; frozen: boolean; running: boolean },
   ): void {
     for (const [id, meta] of this.#subagentMeta) {
       if (meta.docId === spawn.docId) {
+        // A re-open carries the spawn chip's FRESH status: a subagent
+        // that settled since the tab opened flips the spinner off now.
+        if (meta.running !== spawn.running && !spawn.frozen) {
+          this.#subagentMeta.set(id, { ...meta, running: spawn.running });
+        }
         this.setActive(chatId, { kind: "subagent", id });
         return;
       }
     }
     this.#subagentSeq += 1;
     const id = `s${this.#subagentSeq}`;
-    this.#subagentMeta.set(id, { chatId: spawn.chatId, docId: spawn.docId, title: spawn.title, frozen: spawn.frozen });
+    this.#subagentMeta.set(id, {
+      chatId: spawn.chatId,
+      docId: spawn.docId,
+      title: spawn.title,
+      frozen: spawn.frozen,
+      running: spawn.running,
+    });
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "subagent", id }] }));
     this.setActive(chatId, { kind: "subagent", id });
   }
@@ -643,6 +665,26 @@ export class RightPaneStore {
       return null;
     }
     return { ...meta };
+  }
+
+  /**
+   * The subagent doc's streaming flag — the tab chip's spinner
+   * (`sub_transcript(doc).last().status == Streaming`'s push peer).
+   * Keyed by DOC id: the surface knows its doc, and so does the parent
+   * transcript's spawn chip. A no-op write notifies nobody; an unknown
+   * doc is a no-op (a chip for a tab that never opened).
+   */
+  setSubagentRunning(docId: string, running: boolean): void {
+    for (const [id, meta] of this.#subagentMeta) {
+      if (meta.docId === docId) {
+        if (meta.running === running) {
+          return;
+        }
+        this.#subagentMeta.set(id, { ...meta, running });
+        this.#notify();
+        return;
+      }
+    }
   }
 
   /**
@@ -666,7 +708,7 @@ export class RightPaneStore {
     }
     this.#sideChatSeq += 1;
     const id = `c${this.#sideChatSeq}`;
-    this.#sideChats.set(id, { chatId: spawn.chatId, title: spawn.title });
+    this.#sideChats.set(id, { chatId: spawn.chatId, title: spawn.title, running: false });
     this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, { kind: "sidechat", id }] }));
     this.setActive(chatId, { kind: "sidechat", id });
   }
@@ -677,7 +719,28 @@ export class RightPaneStore {
     if (meta === undefined) {
       return null;
     }
-    return { ...meta };
+    const { running: _running, ...rest } = meta;
+    return rest;
+  }
+
+  /**
+   * The side chat's working flag — the tab chip's spinner
+   * (`indicator_for(chat) == Working`'s push peer). Keyed by the side
+   * chat's chat id: the mounted surface pushes while it is the active tab,
+   * and the sidebar's child-chat statuses push for backgrounded tabs. A
+   * no-op write notifies nobody.
+   */
+  setSideChatRunning(chatId: string, running: boolean): void {
+    for (const [id, meta] of this.#sideChats) {
+      if (meta.chatId === chatId) {
+        if (meta.running === running) {
+          return;
+        }
+        this.#sideChats.set(id, { ...meta, running });
+        this.#notify();
+        return;
+      }
+    }
   }
 
   /**
@@ -923,7 +986,7 @@ export class RightPaneStore {
   describe(surface: RightSurface, chatId: string | null = null): SurfaceFacts | null {
     switch (surface.kind) {
       case "picker":
-        return { title: "Picker", detail: null, isHistory: false, isDirty: false };
+        return { title: "Picker", detail: null, isHistory: false, isDirty: false, running: false };
       case "file": {
         const entry = this.#files.get(surface.id);
         if (entry === undefined) {
@@ -936,6 +999,7 @@ export class RightPaneStore {
           // `right_surface_rows`' dirty dot — the live document's
           // unflushed edits (the file surface registers itself).
           isDirty: fileDocuments.isDirtyFor(surface.id),
+          running: false,
         };
       }
       case "diff": {
@@ -948,6 +1012,7 @@ export class RightPaneStore {
           detail: null,
           isHistory: meta.flavor === "history",
           isDirty: false,
+          running: false,
         };
       }
       case "terminal": {
@@ -958,21 +1023,21 @@ export class RightPaneStore {
         if (title === null) {
           return null;
         }
-        return { title, detail: null, isHistory: false, isDirty: false };
+        return { title, detail: null, isHistory: false, isDirty: false, running: false };
       }
       case "subagent": {
         const meta = this.#subagentMeta.get(surface.id);
         if (meta === undefined) {
           return null;
         }
-        return { title: meta.title, detail: null, isHistory: false, isDirty: false };
+        return { title: meta.title, detail: null, isHistory: false, isDirty: false, running: meta.running };
       }
       case "sidechat": {
         const meta = this.#sideChats.get(surface.id);
         if (meta === undefined) {
           return null;
         }
-        return { title: meta.title, detail: null, isHistory: false, isDirty: false };
+        return { title: meta.title, detail: null, isHistory: false, isDirty: false, running: meta.running };
       }
     }
   }
