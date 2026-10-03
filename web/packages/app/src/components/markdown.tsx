@@ -819,6 +819,7 @@ export function CodeBlock({
             type="button"
             className="md-action md-copy"
             aria-label={copied ? "Copied" : "Copy"}
+            title={copied ? "Copied" : "Copy code"}
             onClick={copy}
           >
             <Icon name={copied ? "check" : "copy"} size={12} />

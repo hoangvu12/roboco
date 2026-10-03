@@ -425,6 +425,7 @@ function AddSurfaceButton({ chatId, paneOpen }: { chatId: string; paneOpen: bool
         ref={buttonRef}
         className="right-surface-add"
         aria-label="Add panel surface"
+        title="New tab"
         aria-haspopup="menu"
         aria-expanded={open}
         onPointerDown={() => {

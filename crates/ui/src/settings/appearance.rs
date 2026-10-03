@@ -2499,6 +2499,7 @@ impl AppearancePage {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_raised_hover))
+                    .tooltip(widgets::text_tooltip("Close"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.import_dialog = None;
                         cx.notify();
@@ -3024,6 +3025,7 @@ impl AppearancePage {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_raised_hover))
+                    .tooltip(widgets::text_tooltip("Close"))
                     .tab_index(0)
                     .role(gpui::Role::Button)
                     .aria_label("Close background adjustment")

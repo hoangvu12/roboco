@@ -324,6 +324,7 @@ function HistorySearchControl({
             type="button"
             className="history-search-close"
             aria-label="Clear search"
+            title="Clear search"
             onClick={() => {
               if (snapshot.searchQuery.length > 0) {
                 store?.setSearchQuery("");

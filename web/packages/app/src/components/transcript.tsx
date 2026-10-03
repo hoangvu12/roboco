@@ -2199,6 +2199,7 @@ function RowMeta({ row, visible, isUserRow }: { row: TranscriptRow; visible: boo
               copy();
             }}
             aria-label="Copy message"
+            title="Copy message"
           >
             <Icon name={copied ? "check" : "copy"} size={14} />
           </button>

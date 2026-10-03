@@ -3389,6 +3389,7 @@ export function Composer({
                   type="button"
                   className="composer-attach"
                   aria-label="Attach"
+                  title="Attach images"
                   onClick={onAttachClick}
                   style={
                     expandedRender
@@ -3471,9 +3472,8 @@ export function Composer({
                   {/*
                     A 28px filled circle — up-arrow to send or queue, a dark
                     rounded square on the same light circle to stop
-                    (`render_send_button`, composer.rs:7106). No label, no
-                    tooltip; blocked sends dim to 0.35 with no click handler;
-                    Stop is never blocked.
+                    (`render_send_button`, composer.rs:7106). Blocked sends dim
+                    to 0.35 with no click handler; Stop is never blocked.
                   */}
                   <button
                     type="button"
@@ -3481,6 +3481,9 @@ export function Composer({
                     onClick={() => (mode === "stop" ? void interrupt() : void submit())}
                     disabled={blocked}
                     aria-label={sendAriaLabel}
+                    title={
+                      mode === "stop" ? "Stop" : mode === "queue" ? "Queue message" : "Send message"
+                    }
                   >
                     {mode === "stop" ? (
                       <span className="composer-stop-square" />

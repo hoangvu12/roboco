@@ -732,6 +732,7 @@ function ColumnHeaderRow(props: ColumnHeaderRowProps) {
         id="history-columns-button"
         className="history-columns-button"
         aria-label="Show column menu"
+        title="Show column menu"
         aria-haspopup="menu"
         onClick={(event) => {
           const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();

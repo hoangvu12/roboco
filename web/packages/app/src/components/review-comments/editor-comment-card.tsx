@@ -43,6 +43,7 @@ export function EditorCommentCard({ comment, left, top, width, onEdit, onRemove 
           type="button"
           className="comment-card-action comment-card-remove"
           aria-label="Remove comment"
+          title="Remove comment"
           onMouseDown={(event: ReactMouseEvent<HTMLButtonElement>) => event.stopPropagation()}
           onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
             event.stopPropagation();

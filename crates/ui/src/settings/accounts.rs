@@ -1165,6 +1165,7 @@ impl AccountsPage {
                         .cursor_pointer()
                         .when(is_busy, |el| el.opacity(0.5))
                         .hover(|s| s.bg(crate::theme::ink(0.06)).text_color(theme.text))
+                        .tooltip(widgets::text_tooltip("Forget account"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.account_action(methods::FORGET_AGENT_ACCOUNT, &forget_account, cx);
                         }))

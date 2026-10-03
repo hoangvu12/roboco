@@ -448,6 +448,7 @@ impl Pickers {
                     .id("compact-list-back")
                     .role(gpui::Role::Button)
                     .aria_label("Back")
+                    .tooltip(|_, cx| cx.new(|_| PickerHint("Back".into())).into())
                     .flex_none()
                     .on_click(cx.listener(|this, _, _, cx| this.show_compact_panel(cx)))
                     .child(

@@ -295,6 +295,7 @@ export function SectionMenu({
           type="button"
           className="sidebar-section-menu-button"
           aria-label={`Section menu: ${sectionName}`}
+          title={`Section menu: ${sectionName}`}
           aria-haspopup="menu"
           // The press must not reach the header's drag/click surfaces; the
           // toggle itself is Base UI's `trigger-press` on the adopted element.

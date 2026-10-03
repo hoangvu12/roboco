@@ -32,6 +32,7 @@ export function CommentCard({ comment, onEdit, onRemove }: CommentCardProps) {
             type="button"
             className="comment-card-action comment-card-remove"
             aria-label="Remove comment"
+            title="Remove comment"
             onMouseDown={(event: ReactMouseEvent<HTMLButtonElement>) => event.stopPropagation()}
             onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
               event.stopPropagation();
@@ -59,6 +60,7 @@ export function CommentEditButton({ commentId, onEdit }: { commentId: string; on
       type="button"
       className="comment-card-action comment-card-edit"
       aria-label="Edit comment"
+      title="Edit comment"
       onMouseDown={(event: ReactMouseEvent<HTMLButtonElement>) => event.stopPropagation()}
       onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
         event.stopPropagation();

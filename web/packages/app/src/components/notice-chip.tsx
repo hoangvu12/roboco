@@ -60,6 +60,7 @@ export function NoticeChip({
           type="button"
           className="notice-chip-copy"
           aria-label="Copy message"
+          title="Copy message"
           onClick={copy}
         >
           <Icon name="copy" size={12} />

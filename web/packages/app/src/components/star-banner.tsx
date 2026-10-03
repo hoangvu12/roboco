@@ -51,6 +51,7 @@ export function StarBanner() {
         type="button"
         className="star-banner-dismiss"
         aria-label="Dismiss"
+        title="Dismiss"
         onClick={() => uiSettings.updateImmediate({ githubStarBannerDismissed: true })}
       >
         <Icon name="close" size={10} />

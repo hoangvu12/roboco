@@ -1800,6 +1800,7 @@ function CompactCard(props: CompactCardProps) {
                 type="button"
                 className="compact-list-back"
                 aria-label="Back"
+                title="Back"
                 onClick={() => {
                   setPage("panel");
                   setQuery("");
@@ -1951,6 +1952,7 @@ function ModelRow({
           type="button"
           className={`model-row-star ${starred ? "model-row-star-on" : ""}`}
           aria-label={starred ? "Unstar model" : "Star model"}
+          title={starred ? "Unstar model" : "Star model"}
           onClick={(event) => {
             event.stopPropagation();
             onToggleFavorite();

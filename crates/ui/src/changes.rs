@@ -2551,6 +2551,16 @@ impl Changes {
             })
     }
 
+    /// The fold-all button's label: it names the action it will perform
+    /// (upstream #628 — toggle buttons label the pending action).
+    fn fold_all_label(&self) -> &'static str {
+        if self.all_collapsed() {
+            "Expand all files"
+        } else {
+            "Collapse all files"
+        }
+    }
+
     /// Collapse every file section, or expand them all when everything is
     /// already shut (the toolbar's fold button, t3code parity). Steady-state
     /// writes — no per-row tween arming, the whole list just snaps. List
@@ -3696,9 +3706,10 @@ impl Changes {
     fn header_button(
         id: &'static str,
         icon_path: &'static str,
+        label: &'static str,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        Self::header_toggle(id, icon_path, false, theme)
+        Self::header_toggle(id, icon_path, label, false, theme)
     }
 
     /// [`Self::header_button`] with a latched look: an `active` toggle holds
@@ -3707,6 +3718,7 @@ impl Changes {
     fn header_toggle(
         id: &'static str,
         icon_path: &'static str,
+        label: &'static str,
         active: bool,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
@@ -3737,6 +3749,8 @@ impl Changes {
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.prevent_default()
             })
+            .tooltip(move |_, cx| cx.new(|_| DiffHeaderTooltip(label)).into())
+            .tooltip_show_delay(Duration::from_millis(350))
             .child(
                 crate::icons::icon(icon_path)
                     .size(px(crate::surface_chrome::ICON_SIZE))
@@ -3754,6 +3768,7 @@ impl Changes {
         Self::header_toggle(
             "changes-split",
             crate::icons::SPLIT_COLUMNS,
+            "Split view",
             self.mode.is_split(),
             theme,
         )
@@ -3768,6 +3783,7 @@ impl Changes {
         Self::header_toggle(
             "changes-wrap",
             crate::icons::WRAP_TEXT,
+            "Wrap long lines",
             self.wrap_lines,
             theme,
         )
@@ -3775,8 +3791,6 @@ impl Changes {
             cx.stop_propagation();
             this.toggle_wrap(cx);
         }))
-        .tooltip(|_, cx| cx.new(|_| DiffHeaderTooltip("Wrap long lines")).into())
-        .tooltip_show_delay(Duration::from_millis(350))
         .into_any_element()
     }
 
@@ -3825,11 +3839,16 @@ impl Changes {
                 .child(self.split_toggle(&theme, cx))
                 .child(self.wrap_toggle(&theme, cx))
                 .child(
-                    Self::header_button("changes-fold-all", crate::icons::FOLD_VERTICAL, &theme)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_collapse_all(cx);
-                        })),
+                    Self::header_button(
+                        "changes-fold-all",
+                        crate::icons::FOLD_VERTICAL,
+                        self.fold_all_label(),
+                        &theme,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_collapse_all(cx);
+                    })),
                 )
                 .into_any_element();
         }
@@ -3940,13 +3959,17 @@ impl Changes {
                 .children(history_fetch_button)
                 .children(history_view_button)
                 .child(
-                    Self::header_button("history-refresh", crate::icons::REFRESH, &theme).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.history_pane(cx)
-                                .update(cx, |history, cx| history.refresh(cx));
-                        }),
-                    ),
+                    Self::header_button(
+                        "history-refresh",
+                        crate::icons::REFRESH,
+                        "Refresh",
+                        &theme,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.history_pane(cx)
+                            .update(cx, |history, cx| history.refresh(cx));
+                    })),
                 )
                 .into_any_element()
         } else {
@@ -3955,6 +3978,7 @@ impl Changes {
             let discard_button = Self::header_button(
                 "changes-discard-working-tree",
                 crate::icons::TRASH_BIN_MINIMALISTIC,
+                "Discard changes",
                 &theme,
             )
             .when(!discard_enabled, |button| button.opacity(0.35))
@@ -3975,11 +3999,16 @@ impl Changes {
                 .child(self.split_toggle(&theme, cx))
                 .child(self.wrap_toggle(&theme, cx))
                 .child(
-                    Self::header_button("changes-fold-all", crate::icons::FOLD_VERTICAL, &theme)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_collapse_all(cx);
-                        })),
+                    Self::header_button(
+                        "changes-fold-all",
+                        crate::icons::FOLD_VERTICAL,
+                        self.fold_all_label(),
+                        &theme,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_collapse_all(cx);
+                    })),
                 )
                 .into_any_element()
         };
