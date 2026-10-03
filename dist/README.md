@@ -10,11 +10,17 @@ PROFILE=debug scripts/package-linux.sh   # fast smoke package
 Produces `target/package/roboco-<version>-linux-<arch>.tar.gz` containing:
 
 - `roboco` — the binary (headed by default; `roboco headless` runs the engine alone)
-- `roboco.desktop` — XDG desktop entry
+- `roboco.desktop` — XDG desktop entry template (`Exec=roboco` for packagers;
+  the installer rewrites `Exec`, `TryExec`, and `Icon` to absolute paths under
+  `~/.roboco/app/current`, since `~/.local/bin` is often not on a desktop
+  session's `PATH`)
 - `roboco.png` — 1024×1024 Roboco app icon
 - `install.sh` — installs into `~/.roboco/app/<version>` behind a `current`
-  symlink (the layout the in-app updater manages) and links `~/.local/bin/roboco`,
-  the desktop entry, and the icon to it
+  symlink (the layout the in-app updater manages), links `~/.local/bin/roboco`
+  to it, and writes the desktop entry and icon under `$XDG_DATA_HOME`
+  (default `~/.local/share`); `scripts/test-linux-desktop-entry.sh` checks it
+  offline (upstream's curl-installer copy of the entry code lives in
+  `edge/src/install.sh`, which Roboco removed — this is the single copy)
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 `strip = "symbols"` for distribution builds.
