@@ -1,4 +1,5 @@
 import type { IconName } from "@roboco/icons";
+import type { Device } from "@roboco/proto";
 import { DEVICE_ONLINE_WINDOW_SECS } from "./view";
 
 /**
@@ -115,6 +116,46 @@ export function shortId(id: string): string {
     return `${id.slice(0, 8)}…${id.slice(id.length - 4)}`;
   }
   return id;
+}
+
+/**
+ * The Devices page's two-section split (devices.rs:372-375 partition, blocks
+ * assembled :517-557): `local` — rows whose id is the connected engine's own
+ * device — render under the "This device" header, `others` under "Other
+ * devices". `unknown` is the web-only fallback arm: the engine session's
+ * `engineInfo` (hence its `deviceId`) has not loaded yet, so the split is
+ * unknowable and the page keeps the flat single card until it is.
+ */
+export type DevicePartition =
+  | { readonly kind: "unknown"; readonly rows: readonly Device[] }
+  | { readonly kind: "known"; readonly local: readonly Device[]; readonly others: readonly Device[] };
+
+/**
+ * `partition` (devices.rs:372-375): the local device alone in the first
+ * section, everything else in the second, each keeping the registry's
+ * order. A `localDeviceId` that matches no row (or an empty registry)
+ * leaves `local` empty — the page hides the "This device" section then,
+ * like the desktop's `.when_some(local_block, …)`. `localDeviceId === null`
+ * (engineInfo not loaded) routes to the flat fallback arm instead of
+ * guessing every row into "Other devices".
+ */
+export function partitionDevices(
+  rows: readonly Device[],
+  localDeviceId: string | null,
+): DevicePartition {
+  if (localDeviceId === null) {
+    return { kind: "unknown", rows };
+  }
+  const local: Device[] = [];
+  const others: Device[] = [];
+  for (const device of rows) {
+    if (device.id === localDeviceId) {
+      local.push(device);
+    } else {
+      others.push(device);
+    }
+  }
+  return { kind: "known", local, others };
 }
 
 /**

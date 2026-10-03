@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { Device } from "@roboco/proto";
 import {
   lastSeenOnline,
   formatLastSeen,
   formatLastSeenAt,
+  partitionDevices,
   platformLabel,
   presenceDot,
   shortId,
@@ -79,6 +81,57 @@ describe("shortId (devices.rs:299-305)", () => {
     expect(shortId("0123456789abcdef")).toBe("01234567…cdef");
   });
 });
+
+describe("partitionDevices (devices.rs:372-375, 517-557)", () => {
+  const laptop = device("dev-a", "Vu's Studio");
+  const phone = device("dev-b", "Vu's Phone");
+  const tablet = device("dev-c", "Vu's Tablet");
+
+  it("splits rows around the local device — local alone in the first section, the rest in order", () => {
+    // The desktop's `partition(|(_, device)| local_id == Some(device.id))`:
+    // exactly the engine's own device in `local`, everything else in
+    // `others`, each keeping the registry's order.
+    expect(partitionDevices([phone, laptop, tablet], "dev-a")).toEqual({
+      kind: "known",
+      local: [laptop],
+      others: [phone, tablet],
+    });
+  });
+
+  it("an unknown local device id leaves every row in the others section", () => {
+    // engineInfo loaded but the engine's own device not in the registry:
+    // the desktop's `.when_some(local_block, …)` hides the empty "This
+    // device" section — the page keys off the empty `local` array.
+    expect(partitionDevices([phone, tablet], "dev-z")).toEqual({
+      kind: "known",
+      local: [],
+      others: [phone, tablet],
+    });
+  });
+
+  it("a null localDeviceId routes to the fallback arm — the flat list until known", () => {
+    // engineInfo has not loaded yet; the page keeps the flat single card
+    // (the web-only unknown arm, made testable here).
+    expect(partitionDevices([laptop, phone], null)).toEqual({
+      kind: "unknown",
+      rows: [laptop, phone],
+    });
+  });
+
+  it("empty others is the empty-state flag the page reads", () => {
+    // `others: []` is what renders "Pair another device to see it here."
+    // (devices.rs:525-536) — pinned so the flag stays observable.
+    expect(partitionDevices([laptop], "dev-a")).toEqual({
+      kind: "known",
+      local: [laptop],
+      others: [],
+    });
+  });
+});
+
+function device(id: string, name: string): Device {
+  return { id, name, platform: "macos", lastSeenAt: null, createdAt: null };
+}
 
 function ago(seconds: number): string {
   return new Date(NOW - seconds * 1000).toISOString();
