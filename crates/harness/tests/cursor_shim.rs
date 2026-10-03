@@ -514,10 +514,28 @@ async fn mcp_injection_reaches_sdk_on_create_and_resume_with_fresh_identity() {
             &std::fs::read(fixture.dir.path().join("mcp-options.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(options["roboco"]["type"], "stdio");
-        assert_eq!(options["roboco"]["command"], "/path with spaces/roboco");
-        assert_eq!(options["roboco"]["args"], serde_json::json!(["mcp"]));
-        assert_eq!(options["roboco"]["env"]["ROBOCO_CHAT_ID"], chat);
-        assert_eq!(options["roboco"]["env"]["ROBOCO_IPC_PORT"], "27699");
+        assert_eq!(options["mcpServers"]["roboco"]["type"], "stdio");
+        assert_eq!(
+            options["mcpServers"]["roboco"]["command"],
+            "/path with spaces/roboco"
+        );
+        assert_eq!(
+            options["mcpServers"]["roboco"]["args"],
+            serde_json::json!(["mcp"])
+        );
+        assert_eq!(
+            options["mcpServers"]["roboco"]["env"]["ROBOCO_CHAT_ID"],
+            chat
+        );
+        assert_eq!(
+            options["mcpServers"]["roboco"]["env"]["ROBOCO_IPC_PORT"],
+            "27699"
+        );
+        // Never "project"/"all": the SDK skips MCP approvals, so a repo's
+        // .cursor/mcp.json would run unprompted.
+        assert_eq!(
+            options["settingSources"],
+            serde_json::json!(["user", "team", "mdm", "plugins"])
+        );
     }
 }
