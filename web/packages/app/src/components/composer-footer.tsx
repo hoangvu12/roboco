@@ -227,7 +227,8 @@ export interface DeviceChipProps {
    * canvas target row passes `anchorAboveEnd` (the desktop's
    * `attach_overlay_end`, pickers.rs:3175); the footer's Layer B — a
    * web-only surface, the desktop's draft footer has no device chip
-   * (:3351-3353) — keeps the start-aligned default.
+   * (:3372-3373 — "Space/Device popovers mount in the floating row above
+   * the pill") — keeps the start-aligned default.
    */
   readonly placement?: AnchorPlacement | AnchorHelperId;
 }

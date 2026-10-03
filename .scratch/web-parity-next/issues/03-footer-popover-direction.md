@@ -21,7 +21,7 @@
 
 **Blocked by:** ticket 02 (shared RefChip surgery; land after).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` §2.
 
@@ -58,7 +58,18 @@
 
 ## 3. Acceptance checklist
 
-- [ ] Canvas checkout/ref cards open below the row; draft footer unchanged
-- [ ] Device/project canvas popovers end-aligned
-- [ ] Ref list dims during SwitchRef
-- [ ] Tests + full app suite green
+- [x] Canvas checkout/ref cards open below the row; draft footer unchanged
+- [x] Device/project canvas popovers end-aligned
+- [x] Ref list dims during SwitchRef
+- [x] Tests + full app suite green
+
+## Comments
+
+**Implemented and reviewed** (branch `ticket/wpn-03-footer-popover-direction`, commit `3159f0cb` → review fixes on top):
+
+- `DeviceChip`/`CheckoutChip`/`RefChip` (`composer-footer.tsx`) each gained a `placement` passthrough (PickerCard's `AnchorPlacement | AnchorHelperId`, default `anchorAbove` — the footer Layer B is unchanged). The canvas mounts pass it through `new-thread-selectors.tsx`: checkout/ref `anchorBelow` (below always, no flip — the desktop's `attach_overlay_below`, pickers.rs:3242-3258; the floating row sits above the pill, so an upward card covers the input), device `anchorAboveEnd` (`attach_overlay_end`, :3175). ProjectChip was already hard-pinned `anchorAboveEnd`, so the canvas project popover needed no change — the ticket's file table lists the passthrough on three chips only, and both arms demonstrably render the project card end-aligned.
+- The ref list dim: `BranchCard`'s `.picker-list` carries `data-switching` while a SwitchRef is in flight, and the dim rule is the ticket's container form `.picker-list[data-switching] { opacity: 0.55 }` (pickers.rs:3666 dims every row; the per-row "switching…" tag rides the dim). Ticket 10's per-row selector was DEAD at the base — `git grep data-switching 649f9d91 -- web/` shows the CSS rule and nothing rendering the attr; this ticket wires it and folds the rule onto the container.
+- Tests (TDD, red-verified against the pre-fix code): `openChipPlacement` reads Base UI's `data-side`/`data-align` off the open `.rb-popover-positioner` — canvas checkout/ref `bottom`/`start`, canvas device/project `top`/`end`, draft footer `top`/`start` + device `start` + project `end` (the unchanged guard); the dim test defers the SwitchRef RPC (a `deferSwitch` arm on the harness double) and asserts the attr mid-flight plus the 0.55 rule text in app.css, then resolves and checks the pick records. Phone arm untouched — the sheet replaces placement (`picker-card-phone.test.ts` green).
+- Verification: `tests/composer-footer-git.test.ts` 11/11 and `tests/new-thread-git-selectors.test.ts` 5/5; phone/popover suites (`picker-card-phone`, `footer-git-draft`, `composer-dock`, `escape`, `base-popover`, `responsive-surface`, `completion-popup-scroll`) 96/96; `pnpm exec tsc --noEmit` clean; full app suite `pnpm exec vitest run` → **153 files / 2285 tests green**.
+- Two-axis review (Standards + Spec, both axes run in-session — no subagent tool). Findings fixed: the DeviceChip doc's draft-footer citation corrected (:3351-3353, copied from this ticket, → :3372-3373, the real `"Space/Device popovers mount in the floating row above the pill"` arm); the CSS comment now attributes the container form to the ticket (the desktop dims rows); the implementation commit message's supersession story corrected by amend — ticket 10's table prescribed `anchorBelow` for the new-chat git row in BOTH revisions and `attach_overlay_below` predates ticket 10's implementation, so the drift was ticket 10's code (one hard-coded `anchorAbove` shared by both mounts), not a desktop move (this ticket's own note mis-cites :234-235 as "pinned above").
+- Adjudicated, no action: `measure_trigger`'s height budget (≥180px-fits-below, clamp 640) stays unported — the ticket asks for the placement passthrough only ("Base UI's positioner is no-flip by contract, so 'below' is a placement prop, not new geometry code"), and the web's pre-existing `.picker-list` 224px cap already carries `list_budget`'s `clamp(0, 224)`; the footer Layer B device chip keeps start per the ticket's parenthetical; the footer's ProjectChip stays end (its shipped placement, no desktop counterpart to mirror).
