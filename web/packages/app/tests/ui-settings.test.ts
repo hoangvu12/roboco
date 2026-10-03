@@ -216,6 +216,15 @@ describe("heal", () => {
     expect(storedWith({}).githubStarBannerDismissed).toBe(false);
   });
 
+  it("pauseAnimationsInBackground — a healed boolean, false by default (wpn-07)", () => {
+    // The desktop's pause-in-background field (motion::resolve's 4th arm)
+    // healed like the star-banner flag: the web persisted it with no
+    // consumer until wpn-07 gave it a row and the focus arm.
+    expect(storedWith({ pauseAnimationsInBackground: true }).pauseAnimationsInBackground).toBe(true);
+    expect(storedWith({ pauseAnimationsInBackground: "junk" }).pauseAnimationsInBackground).toBe(false);
+    expect(storedWith({}).pauseAnimationsInBackground).toBe(false);
+  });
+
   it("sidebar_display_defaults_and_preferences_round_trip", () => {
     // The desktop's round-trip test (settings.rs): a fully customized
     // display slice survives a serialize→heal cycle, including ByProject.
