@@ -1236,9 +1236,10 @@ function CompactCard(props: CompactCardProps) {
     [modelsLists],
   );
 
-  // `show_compact_models` (pre-#749): the provider button picks the
-  // provider; the list holds its models.
-  const rail: ModelRail = "harness";
+  // `show_compact_models` (#749): browse every offered provider, just as
+  // the standard picker's rail allows; a chat's fixed provider limits its
+  // list. A foreign-provider row switches the provider before picking.
+  const rail: ModelRail = locked ? "harness" : "all";
 
   const modelsList = modelsLists.get(effectiveHarness);
   const models: readonly Model[] = modelsList?.rows ?? [];
@@ -1421,6 +1422,18 @@ function CompactCard(props: CompactCardProps) {
       }
       const current = pageRef.current;
       if (current === "panel") {
+        // F toggles fast mode (upstream #745) — bare F only, no modifiers.
+        if (
+          event.key.toLowerCase() === "f" &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          fastChoice !== null
+        ) {
+          event.preventDefault();
+          toggleFast();
+          return;
+        }
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
           event.preventDefault();
           showModels();
@@ -1505,7 +1518,7 @@ function CompactCard(props: CompactCardProps) {
     // walkKeys reads the render's cursor/rows and is re-created per render;
     // re-arm on the inputs it captures (see the identity card's note).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, open, rows, effort, cursor, railDescriptors, locked, effectiveHarness]);
+  }, [opened, open, rows, effort, cursor, railDescriptors, locked, effectiveHarness, fastChoice, toggleFast]);
 
   const onQueryChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
     setQuery(event.target.value);
