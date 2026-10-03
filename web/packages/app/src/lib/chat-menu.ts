@@ -30,13 +30,12 @@ export function isSideChat(chat: Chat): boolean {
  * The root page's rows: Rename, Pin, Archive, Copy, then Delete for a
  * top-level chat (`chat-menu-rename` / `-pin` / `-archive` / `-copy` /
  * `-delete`); a side chat keeps Rename and Delete alone. The separator
- * before Delete always renders — the component owns it.
+ * before Delete always renders — the component owns it. The pinned state
+ * is deliberately NOT an input: the model is stateless about the rows'
+ * own labels (Pin vs Unpin) and mutations, which the component owns too.
  */
-export function chatMenuRows(input: {
-  readonly chat: Chat;
-  readonly isPinned: boolean;
-}): ChatMenuRowId[] {
-  if (isSideChat(input.chat)) {
+export function chatMenuRows(chat: Chat): ChatMenuRowId[] {
+  if (isSideChat(chat)) {
     return ["rename", "delete"];
   }
   return ["rename", "pin", "archive", "copy", "delete"];

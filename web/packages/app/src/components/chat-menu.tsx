@@ -163,7 +163,7 @@ function ChatMenuPages({
   // The side-chat gate (shell.rs:8076's `is_side_chat`): a chat with a
   // parent keeps Rename and Delete and drops Pin/Archive/Copy — the model
   // computes the row set, this component renders it.
-  const rows = chatMenuRows({ chat, isPinned });
+  const rows = chatMenuRows(chat);
   const harnessSessionId =
     typeof chat.harnessSessionId === "string" && chat.harnessSessionId.trim().length > 0
       ? chat.harnessSessionId

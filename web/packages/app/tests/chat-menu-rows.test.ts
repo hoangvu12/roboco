@@ -29,7 +29,7 @@ function chat(fields: Partial<Chat>): Chat {
 
 describe("chatMenuRows (shell.rs ChatMenuPage::Root)", () => {
   it("a top-level chat offers rename, pin, archive, copy, then delete", () => {
-    expect(chatMenuRows({ chat: chat({ id: "a" }), isPinned: false })).toEqual([
+    expect(chatMenuRows(chat({ id: "a" }))).toEqual([
       "rename",
       "pin",
       "archive",
@@ -38,10 +38,10 @@ describe("chatMenuRows (shell.rs ChatMenuPage::Root)", () => {
     ]);
   });
 
-  it("the pin row's label follows the pinned state — the model is stateless about ordering", () => {
-    // The caller reads `isPinned` for the label; the row set itself is
-    // identical either way.
-    expect(chatMenuRows({ chat: chat({ id: "a" }), isPinned: true })).toEqual([
+  it("the model is stateless about the pin row's label — the row set never varies with pinned state", () => {
+    // The caller reads `isPinned` for the label and the mutation; the row
+    // model is deliberately not an input to it.
+    expect(chatMenuRows(chat({ id: "a", archived: false }))).toEqual([
       "rename",
       "pin",
       "archive",
@@ -51,9 +51,10 @@ describe("chatMenuRows (shell.rs ChatMenuPage::Root)", () => {
   });
 
   it("a side chat drops pin, archive, and copy — rename and delete remain", () => {
-    expect(
-      chatMenuRows({ chat: chat({ id: "child", parentChatId: "parent" }), isPinned: false }),
-    ).toEqual(["rename", "delete"]);
+    expect(chatMenuRows(chat({ id: "child", parentChatId: "parent" }))).toEqual([
+      "rename",
+      "delete",
+    ]);
   });
 
   it("side chat detection follows parent linkage alone — archived status is irrelevant", () => {

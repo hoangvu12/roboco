@@ -766,10 +766,30 @@ export interface ArchivedRow {
 }
 
 /**
- * The sidebar's archived shelf (render_archived_section): archived chats of
- * the filter scope — all spaces under "All" — in the user's sidebar sort
- * (`compareSidebarChats`, the same comparator the active list uses — never
- * its own fixed recency order).
+ * The archived derivations' shared scope (render_archived_section's set,
+ * dfd2fc0c): archived chats of the filter scope — all spaces under "All" —
+ * in the user's sidebar sort (`compareSidebarChats`, the same comparator
+ * the active list uses — never its own fixed recency order). Both the
+ * shelf's compact rows and its full-card rows derive from this one scope.
+ */
+function archivedScope(
+  chats: readonly Chat[],
+  spaceFilter: string | null,
+  sort: SidebarSort,
+): Chat[] {
+  const rows = chats.filter(
+    (chat) =>
+      chat.archived &&
+      (spaceFilter === null || (chat.spaceId !== undefined && chat.spaceId === spaceFilter)),
+  );
+  rows.sort((left, right) => compareSidebarChats(sort, left, right));
+  return rows;
+}
+
+/**
+ * The sidebar's archived shelf (render_archived_section): the compact
+ * legacy row shape — single-line title + relative time (the Settings →
+ * Archived page drives this same derivation).
  */
 export function archivedRows(
   chats: readonly Chat[],
@@ -777,13 +797,7 @@ export function archivedRows(
   now: number,
   sort: SidebarSort = "lastUpdated",
 ): ArchivedRow[] {
-  const rows = chats.filter(
-    (chat) =>
-      chat.archived &&
-      (spaceFilter === null || (chat.spaceId !== undefined && chat.spaceId === spaceFilter)),
-  );
-  rows.sort((left, right) => compareSidebarChats(sort, left, right));
-  return rows.map((chat) => {
+  return archivedScope(chats, spaceFilter, sort).map((chat) => {
     const title = chat.title === null ? "" : singleLine(chat.title);
     return {
       chat,
@@ -831,8 +845,7 @@ export function archivedChatRows(
       rows.push(row);
     }
   }
-  const sort = options.sort ?? "lastUpdated";
-  return rows.sort((left, right) => compareSidebarChats(sort, left.chat, right.chat));
+  return rows;
 }
 
 /** Project label from a cwd (project_label): its basename, or null. */

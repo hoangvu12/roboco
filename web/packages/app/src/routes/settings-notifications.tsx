@@ -22,7 +22,8 @@ interface NotificationRow {
     | "soundInputEnabled"
     | "soundAttentionEnabled"
     | "notificationsEnabled"
-    | "notificationsBackgroundOnly";
+    | "notificationsBackgroundOnly"
+    | "agentUpdateNotifications";
   readonly title: string;
   readonly tile: IconName;
   readonly description: string;
@@ -74,6 +75,13 @@ const ROWS: readonly NotificationRow[] = [
     description: "Skip the banner while a Roboco window is focused.",
     master: "notificationsEnabled",
   },
+  {
+    key: "agentUpdateNotifications",
+    title: "Agent updates",
+    tile: "refresh",
+    description: "Show a banner when monitored agent CLIs have updates.",
+    master: "notificationsEnabled",
+  },
 ];
 
 export function NotificationsSettingsPage() {
@@ -88,6 +96,7 @@ export function NotificationsSettingsPage() {
       soundAttentionEnabled: settings.soundAttentionEnabled,
       notificationsEnabled: settings.notificationsEnabled,
       notificationsBackgroundOnly: settings.notificationsBackgroundOnly,
+      agentUpdateNotifications: settings.agentUpdateNotifications,
     };
     patch[key] = !settings[key];
     uiSettings.updateImmediate(patch);
