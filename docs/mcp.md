@@ -31,18 +31,29 @@ instructions in the stored prompt for agents.
 
 ### Parent links
 
-A chat created through `create_chat` records the creating chat as its parent:
-`Chat.parent_chat_id` (proto) ⇄ `parentChatId` on the registry/workspace chat
-row (`Mutate createChat { parentChatId? }` → `WorkspaceHost::create_chat_with_parent`).
-Chats with a parent cannot create chats through MCP, including batch creation
-or an explicit parent override. A side chat cannot be selected as a parent;
-only one level of side chats is supported.
+`create_chat` and each request in `create_chats` accept `kind`:
 
-The default is the origin chat (`ROBOCO_CHAT_ID`); an explicit `parent` argument
-(id, prefix, or title) overrides it. `list_chats { parent }` returns a chat's
-children, and every chat summary carries `parentChatId`. The field is additive
-and serde-defaulted: rows written by older engines read as parentless, and a
-dangling id (parent deleted) is tolerated rather than cascaded.
+| Input | Placement |
+| --- | --- |
+| `kind: "chat"` | Standalone session, visible in the left **Sessions** sidebar; no `parentChatId` is written. |
+| `kind: "side"` | Child of the explicit `parent` or origin chat. Requires one of those. |
+| Kind omitted, origin or parent supplied | Child, preserving the previous default. |
+| Kind omitted, no origin or parent | Standalone, preserving terminal usage. |
+
+`kind: "chat"` with a nonempty `parent`, `kind: "side"` without an origin/parent,
+and unknown kinds fail before any writes. Empty `parent` uses the default.
+The creation result includes the effective `kind`, `chatId`, `deviceId`,
+`project` and `parentChatId`. Kind is derived from the parent; it is not persisted.
+
+Children record `Chat.parent_chat_id` (proto) ⇄ `parentChatId` on the registry
+row (`Mutate createChat { parentChatId? }` → `WorkspaceHost::create_chat_with_parent`).
+Chats with a parent cannot create chats through MCP, including standalone and
+batch creation or an explicit parent override. A side chat cannot be selected
+as a parent; only one level is supported.
+
+For children, `parent` (id, prefix, or title) overrides the origin (`ROBOCO_CHAT_ID`).
+`list_chats { parent }` returns children, and chat summaries carry `parentChatId`.
+Rows from older engines read as parentless; a dangling parent id is tolerated.
 
 Chats with a parent stay out of the main sidebar (the left sidebar, project
 tabs and jump slots require `parent_chat_id == None`); children remain
@@ -108,15 +119,16 @@ the copy lists as a sibling.
 
 Chats are referenced by full id, a unique id prefix, or an exact title.
 Projects by id, path, display name, or unique path suffix. Devices by id or
-name (default: the local engine's device).
+name (default: the local engine's device — the engine is device-local, so a
+`device` argument must resolve to it).
 
 | Tool               | Engine calls                                              |
 | ------------------ | --------------------------------------------------------- |
 | `whoami`           | `LocalDevice`, `EngineInfo`, origin chat summary          |
 | `list_devices`     | `WatchDevices` snapshot                                   |
-| `list_projects`    | `WatchSpaces` snapshot                                    |
-| `list_harnesses`   | `ListHarnesses`                                           |
-| `list_models`      | `ListModels {harness}`                                    |
+| `list_projects`    | `WatchSpaces` snapshot (device filter resolves locally)   |
+| `list_harnesses`   | `ListHarnesses` (device arg validates against this engine) |
+| `list_models`      | `ListModels {harness}` (device arg validates locally)    |
 | `list_chats`       | `WatchChats` + `WatchSessions` snapshots (status merged)  |
 | `get_chat`         | above + `WatchDocMessages` opening frame (pending input)  |
 | `create_chat`      | `Mutate createChat` (+ `renameChat`; optional first send) |
@@ -147,6 +159,74 @@ edge. A brand-new chat has no session row until the host picks the run up, so
 the wait keeps waiting in that case rather than reporting the unstarted run as
 done (this was the one bug the first live run found).
 
+## Selecting a project and device
+
+`list_projects {device?}` filters by device id or exact name; without arguments
+it lists all projects. `list_harnesses {device?}` and
+`list_models {harness, device?}` validate the device argument — engine-local,
+there is exactly one device, and every catalog is this engine's.
+
+For creation, project alone determines the chat's device. Device alone creates
+a session without a project on that device. With both, the project is resolved
+**within** the selected device, and a project id belonging to another device is
+rejected. Neither argument means a projectless session on the local engine.
+Repeated names or paths are errors with candidate ids and devices; use ids from
+discovery.
+
+Before writing, creation checks the harness catalog, chooses the available
+default (Claude Code when available, otherwise the first available non-mock
+harness), and validates any explicit model against the catalog. An explicit
+harness must be offered, installed and enabled. Catalog failures, including
+model lookup failures, are returned with the device id; there is no catalog
+fallback.
+
+Discover and launch a standalone session:
+
+```text
+list_devices {}
+list_projects { device: "<device-id>" }
+list_harnesses { device: "<device-id>" }
+list_models { device: "<device-id>", harness: "codex" }
+create_chat {
+  kind: "chat",
+  device: "<device-id>",
+  project: "<project-id>",
+  harness: "codex",
+  model: "<model-id from the catalog>",
+  title: "Implement feature",
+  prompt: "Implement the feature...",
+  wait: false
+}
+```
+
+Without a project (the engine uses the home directory unless `cwd` is given):
+
+```json
+{"kind":"chat", "device":"<device-id>", "harness":"codex", "prompt":"Reply with pong", "wait":true}
+```
+
+A mixed `create_chats` batch, with an origin chat or explicit top-level parent:
+
+```json
+{
+  "requests": [
+    {"kind":"chat", "device":"<device-id>", "project":"<project-id>", "title":"Feature", "prompt":"Implement the feature"},
+    {"kind":"side", "parent":"<parent-chat-id>", "project":"<project-id>", "prompt":"Review the API"}
+  ]
+}
+```
+
+The first prompt and later sends use durable chat commands drained by the host.
+Sends remember the session row and existing message ids on the MCP connection
+before sending, so a subsequent `wait_for_turn` after `wait:false` waits for
+that send, even before a session row appears. A separate MCP server has no send
+baseline and reports the chat's current posture. If completion arrives before
+the transcript, the wait allows the new assistant response to arrive within the
+**same timeout**. Replies are matched by message id, not by `createdAt` (the
+host's clock can run behind the caller's), so a previous response is never
+substituted for a missing response to a new send. An unfinished transcript or
+missing response at the deadline returns `timedOut`.
+
 ## Parallel side chats
 
 Use `create_chats` with a `requests` array to launch independent workers in
@@ -166,7 +246,8 @@ Use `send_messages` with the same envelope for existing chats; each item uses
 and return `results` in input order with `index`, `isError`, and either `result`
 or `error`. A failed request does not cancel or roll back successful requests.
 Each request defaults to `wait: false`; explicit waits also run concurrently.
-Only batch independent work, not ordered messages to the same chat.
+Only batch independent work, not ordered messages to the same chat. Requests
+may mix `kind: "chat"` and `kind: "side"`; guards run per request.
 
 When using individual tools, launch **all** chats/messages with `wait: false`
 first, then collect replies with `wait_for_turn`. Waiting on each individual
@@ -186,3 +267,19 @@ BIN=target/debug/roboco
 against a live daemon returns the assistant's `pong` in a few seconds; archive
 the chat afterwards with `archive_chat`. Unit tests (`cargo test -p roboco-mcp`)
 drive the whole tool set against an in-memory stub `RpcService`.
+
+An isolated stdio instance is available with
+`cargo run -p roboco-engine --example mcp_standalone_smoke`. It provides a
+temporary project, an origin coordinator and a scripted `codex` adapter
+(`smoke-1`) returning `pong`. Discover its ids with the list tools, create
+`kind: "chat"` with a prompt and `wait: true`, then check `read_chat`,
+`send_message` and a mixed batch. The profile is removed on exit. This checks
+MCP dispatch and engine execution without changing your running app's sessions
+or requiring provider credentials.
+
+The `mcp_standalone_session_executes_on_this_engine` test in `device_routing`
+additionally runs the whole flow against a real assembled engine — standalone
+row parentless, the session executed here, id-matched wait replies, side-chat
+guards — and pins the fail-closed `targetDeviceId` contract: a target device
+that is not this engine is rejected, because engine-local means there is no
+other connection to forward to.
