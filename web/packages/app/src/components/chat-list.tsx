@@ -1216,7 +1216,19 @@ function ChatListRow({
             </span>
           )}
           {compact && (
-            <span className="chat-row-time chat-row-time-compact">
+            /* The time slot is 30px, which holds "17m" but not "Ctrl+2":
+               give a text-length hint one line in a wider slot — a floor,
+               not content sized, so "Ctrl+1" (a narrower glyph) doesn't
+               nudge its row's badge off the others'. The floor scales with
+               the UI font like the desktop's `ui_rems` does (upstream
+               #641). */
+            <span
+              className={
+                jumpLabel !== null && jumpLabel.length > 3
+                  ? "chat-row-time chat-row-time-compact chat-row-time-hint"
+                  : "chat-row-time chat-row-time-compact"
+              }
+            >
               {jumpLabel !== null ? jumpLabel : row.timeAgo}
             </span>
           )}

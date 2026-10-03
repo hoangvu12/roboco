@@ -20,9 +20,40 @@ keep web hint chips on one line (no wrap) with a slot wide enough for
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 sidebar/chat-list tests; web `pnpm -r build`.
 
-- [ ] Hints stay on one line; rows aligned; slot scales with font
+- [x] Hints stay on one line; rows aligned; slot scales with font
       (desktop + web)
-- [ ] Tests green
-- [ ] Port commit records upstream SHA
+- [ ] Tests green (no sidebar-row unit tests exist on either side — the
+      change is styling/geometry; execution deferred to the wave-final
+      batched pass — user directive)
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `546ecb68` (#641) by intent, both of its commits.
+- Desktop `crates/ui/src/shell.rs`: new `COMPACT_JUMP_HINT_WIDTH = 42.0`
+  const; the non-compact jump badge gains `.whitespace_nowrap()`; the
+  compact time slot (the `chat-time-{id}` div) computes `text_hint =
+  compact_jump_label` longer than 3 chars and, while a text hint occupies
+  it, swaps the fixed `.w(px(30.0))` for `.min_w(ui_rems(42.0))` — a floor,
+  not content-sized, so "Ctrl+1" (a narrower glyph) doesn't nudge its
+  row's badge off the others', and a longer rebound combo grows the slot
+  instead of spilling over the title. The slot is always
+  `.whitespace_nowrap()` now. Mac's "⌘9" (2 chars) keeps the 30px slot,
+  exactly like upstream's chars().count() > 3 rule.
+- Web parity (chat-list.tsx + app.css): the compact time span gains the
+  `chat-row-time-hint` class when `jumpLabel.length > 3`; the CSS gives it
+  `width: auto; min-width: calc(var(--rb-ui-size, 16) * 2.625px)` — 42px at
+  the default UI size, scaling with the UI font exactly like the desktop's
+  `ui_rems(42)` (web rems would be off: the web root is 14px at default).
+  `.chat-row-time-compact` and `.chat-row-jump` (the non-compact badge
+  variant) both gain `white-space: nowrap`.
+- `state/jump-hints.ts` (named by the ticket) needed no change: it only
+  supplies the held-modifier state and combos; the fix is pure geometry in
+  the row and CSS.
+- Exclusions: none — upstream's diff is shell.rs only; the web side is this
+  ticket's named deliverable.
+- Verification: `cargo check -p roboco -j 3` (clean; no new warnings);
+  `rustfmt --edition 2024 --check` on touched files (shell.rs reports only
+  the known pre-existing drift hunks on untouched regions — left alone);
+  `pnpm -r build` from web/ (tsc --noEmit + vite, clean). Test execution
+  deferred to the wave-final batched pass (user directive).

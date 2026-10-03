@@ -2832,8 +2832,22 @@ a:focus-visible,
   flex: none;
   width: 30px;
   text-align: right;
+  /* The hint that stands in for the time must not wrap — "Ctrl+2"
+     broke after the `+` and stacked two lines (upstream #641). */
+  white-space: nowrap;
   font-size: 11px;
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+}
+
+/* The compact time slot while a TEXT hint ("Ctrl+9", longer than the
+   three-char time labels) occupies it: a 42px floor at the default UI
+   size, scaled with the font like the desktop's `ui_rems`
+   (COMPACT_JUMP_HINT_WIDTH, upstream #641) — a floor, not content sized,
+   so "Ctrl+1" (a narrower glyph) doesn't nudge its row's badge off the
+   others'. */
+.chat-row-time-compact.chat-row-time-hint {
+  width: auto;
+  min-width: calc(var(--rb-ui-size, 16) * 2.625px);
 }
 
 .chat-row-remote {
@@ -3031,6 +3045,8 @@ a:focus-visible,
   color: color-mix(in srgb, var(--rb-text-muted) 85%, transparent);
   font-size: 10px;
   font-weight: 500;
+  /* The hint badge never wraps (upstream #641). */
+  white-space: nowrap;
 }
 
 /* Line 2: the harness mark belongs directly with the title. */
