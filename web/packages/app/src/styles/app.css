@@ -3373,12 +3373,15 @@ a:focus-visible,
   flex: none;
   display: flex;
   flex-direction: column;
-  /* PANEL_RADIUS = 16 (queue.rs:81) — the queue tray's own radius, not the
+  /* PANEL_RADIUS = 16 (queue.rs:82) — the queue tray's own radius, not the
      generic 10px `--rb-radius-panel` panels use. */
   border-radius: 16px 16px 0 0;
   border: 1px solid var(--rb-border);
   background: var(--rb-raised);
-  padding-bottom: 18px;
+  /* GPUI (and CSS) clip children to rectangles, so the rows are inset
+     (PANEL_PAD_X/PANEL_PAD_TOP = 4, queue.rs:83-84) to keep their rounded
+     hover and editing backgrounds inside the tray's rounded corners. */
+  padding: 4px 4px 18px;
   box-shadow: var(--rb-shadow-popover);
   animation: rb-fade-quick var(--rb-motion-fade-quick) var(--rb-ease-ease);
   transition: opacity var(--rb-motion-fade-quick) var(--rb-ease-ease);
@@ -3420,13 +3423,13 @@ a:focus-visible,
 }
 
 /*
- * `queue_row` (queue.rs:498-631): NOT a card — borderless and transparent
- * at idle, 36px tall, flush rows (ROW_GAP 0), 8px side pad, 8px radius.
- * The internal flex gap is 8, or 4 under the narrow composer
- * (`queue_preview_limit() == 1`, queue.rs:508-512). The drag slide
- * (TAB_SLIDE: 150ms EASE_OUT, queue.rs:650-656) rides a compositor
- * transform — siblings never reflow, and the row's own layout never
- * re-runs (ticket 59: the inline `top` became an inline `translateY`).
+ * `queue_row` (queue.rs:418-640): NOT a card — borderless and transparent
+ * at idle, 36px tall, flush rows (ROW_GAP 0), a 4px side pad
+ * (ROW_PAD_X − PANEL_PAD_X, queue.rs:528), 8px radius. The internal flex
+ * gap is 8, or 4 under the narrow composer (`queue_preview_limit() == 1`).
+ * The drag slide (TAB_SLIDE: 150ms EASE_OUT) rides a compositor transform —
+ * siblings never reflow, and the row's own layout never re-runs (ticket 59:
+ * the inline `top` became an inline `translateY`).
  */
 .queue-row {
   position: relative;
@@ -3436,7 +3439,7 @@ a:focus-visible,
   align-items: center;
   gap: 8px;
   height: 36px;
-  padding: 0 8px;
+  padding: 0 4px;
   border-radius: 8px;
   cursor: default;
   transition: transform var(--rb-motion-tab-slide) var(--rb-ease-ease-out);
@@ -3446,7 +3449,7 @@ a:focus-visible,
   gap: 4px;
 }
 
-/* Hover wash only when not editing/removing (queue.rs:513-518). */
+/* Hover wash only when not editing/removing (queue.rs:522-527). */
 .queue-row:not([data-editing="true"]):not([data-removing="true"]):hover {
   background: rgb(var(--rb-ink) / 0.04);
 }
@@ -3492,15 +3495,14 @@ a:focus-visible,
   width: 14px;
 }
 
-/* The text column (queue.rs:561-575): one truncated 12.5px/16px line at
-   `text @ 0.9`, plus the 11px/13px attachment summary in text_muted when
-   the row is not image-only. */
+/* The text column (queue.rs:569-575): one truncated 12.5px/16px line at
+   `text @ 0.9` — attachment filenames no longer print here; thumbnails and
+   the +N chip carry the names as tooltip/a11y labels. */
 .queue-row-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
 .queue-row-title {
@@ -3511,16 +3513,6 @@ a:focus-visible,
   font-size: 12.5px;
   line-height: 16px;
   color: color-mix(in srgb, var(--rb-text) 90%, transparent);
-}
-
-.queue-row-summary {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  line-height: 13px;
-  color: var(--rb-text-muted);
 }
 
 .queue-row-editing-text {
@@ -3566,8 +3558,9 @@ a:focus-visible,
   object-fit: cover;
 }
 
-/* The "+N more" overflow chip (queue.rs:584-602): 28×28, radius 5,
-   `ink(0.06)` plate, 11px muted text. */
+/* The "+N more" overflow chip (queue.rs:594-612): 28×28, radius 5,
+   `ink(0.06)` plate, 11px muted text; the tooltip carries every hidden
+   attachment's name. */
 .queue-row-overflow {
   flex: none;
   width: 28px;

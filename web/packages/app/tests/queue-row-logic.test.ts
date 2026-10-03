@@ -8,9 +8,9 @@ import {
   modifierSendLabel,
   oneLine,
   queueAttachmentLabels,
-  queueAttachmentSummary,
   queueDragOffsets,
   queueDropIndex,
+  queueHiddenAttachmentsLabel,
   queueLatestShortcutVisible,
   queuePreviewLimit,
   queueRowText,
@@ -136,11 +136,13 @@ describe("queueAttachmentLabels (queue.rs::attachment_labels_…, appshot half d
   });
 });
 
-describe("queueAttachmentSummary", () => {
-  it("prefixes the count when there are several attachments", () => {
-    expect(queueAttachmentSummary(["a.png", "b.png"])).toBe("2 attachments · a.png · b.png");
-    expect(queueAttachmentSummary(["a.png"])).toBe("a.png");
-    expect(queueAttachmentSummary([])).toBe("");
+describe("queueHiddenAttachmentsLabel (queue.rs::overflow_chip_names_every_hidden_attachment)", () => {
+  it("names every attachment folded into the +N chip", () => {
+    const labels = ["a.png", "b.png", "c.png"];
+    expect(queueHiddenAttachmentsLabel(labels, 1)).toBe("2 more: b.png · c.png");
+    expect(queueHiddenAttachmentsLabel(labels, 3)).toBeNull();
+    expect(queueHiddenAttachmentsLabel(labels, 5)).toBeNull();
+    expect(queueHiddenAttachmentsLabel([], 2)).toBeNull();
   });
 });
 
