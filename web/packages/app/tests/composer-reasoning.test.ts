@@ -206,6 +206,13 @@ describe("ComposerPickers compact model card (upstream #471)", () => {
   });
   afterEach(() => {
     uiSettings.updateImmediate({ compactModelPicker: false });
+    // These tests star models; clear the sticky defaults so no favorite
+    // leaks into the later identity-card suites (composerDefaults is
+    // module state shared by every mount in this file). act-wrapped: the
+    // still-mounted picker re-renders on the store's notification.
+    act(() => {
+      resetDefaults();
+    });
   });
 
   it("the panel names the model, drives the effort, and the list picks", async () => {
@@ -285,6 +292,150 @@ describe("ComposerPickers compact model card (upstream #471)", () => {
     // A pick lands back on the panel.
     expect(document.querySelector(".compact-list-page")).toBeNull();
     expect(document.querySelector(".compact-panel")).not.toBeNull();
+  });
+
+  it("the Starred row scopes the models page to the starred set with the starred placeholder and empty note", async () => {
+    // `show_compact_starred` (compact.rs:339-342, the desktop test at
+    // pickers.rs:7519-7538): the provider page's Starred row opens the
+    // models page on the FAVORITES rail — only the starred models render
+    // (never the full list starred-first), the filter's placeholder reads
+    // "Search starred…", and an emptied starred set falls to the standard
+    // card's empty note ("No starred models yet — hit a row's star",
+    // pickers.rs:4032-4050). Escape steps back to the panel with the rail
+    // reset — the next models-page open lists every offered model again
+    // under the standard placeholder.
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, BARE];
+    client.modelsByHarness.set("claude-code", [HAIKU, OPUS]);
+    client.modelsByHarness.set("codex", [
+      { id: "gpt", label: "GPT", description: null, reasoningLevels: [], options: [] },
+    ]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+    await flush();
+    await openCard(handle);
+
+    // Star Opus from the models page, then reach the provider page.
+    await act(async () => {
+      document.querySelector<HTMLElement>(".compact-model")!.click();
+    });
+    const starRow = (label: string): HTMLElement => {
+      const row = Array.from(document.querySelectorAll<HTMLElement>(".model-list-sizer .model-row-item")).find(
+        (el) => el.querySelector(".model-row-label")?.textContent === label,
+      );
+      return row!.querySelector<HTMLElement>(".model-row-star")!;
+    };
+    await act(async () => {
+      starRow("Opus 5.5").click();
+    });
+    pressKey("Escape");
+    expect(document.querySelector(".compact-panel")).not.toBeNull();
+    await act(async () => {
+      document.querySelector<HTMLElement>(".compact-provider")!.click();
+    });
+
+    // The Starred row sits ahead of the providers; it opens the favorites rail.
+    const starredRow = Array.from(document.querySelectorAll<HTMLElement>(".compact-provider-row")).find(
+      (el) => el.querySelector(".compact-provider-name")?.textContent === "Starred",
+    );
+    expect(starredRow).not.toBeNull();
+    await act(async () => {
+      starredRow!.click();
+    });
+    const labels = Array.from(document.querySelectorAll(".model-list-sizer .model-row-label")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(labels).toEqual(["Opus 5.5"]);
+    expect(
+      document.querySelector<HTMLInputElement>(".compact-list-header input")?.getAttribute("placeholder"),
+    ).toBe("Search starred…");
+
+    // Unstarring the last favorite swaps in the standard card's empty note.
+    await act(async () => {
+      starRow("Opus 5.5").click();
+    });
+    expect(document.querySelector(".model-list-note")?.textContent).toBe(
+      "No starred models yet — hit a row's star",
+    );
+
+    // Escape lands back on the panel with the rail still holding the
+    // favorites scope — and the panel's Up/Down neighbor math rides the
+    // browse rail anyway (the desktop recomputes `model_rows` after
+    // `show_compact_models`): Down reopens the models page on the FULL
+    // list under the standard placeholder, on the row BESIDE the
+    // selection, and Enter picks it — never a favorites-scoped index.
+    pressKey("Escape");
+    expect(document.querySelector(".compact-panel")).not.toBeNull();
+    pressKey("ArrowDown");
+    expect(document.querySelector(".compact-list-page")).not.toBeNull();
+    const fullLabels = Array.from(document.querySelectorAll(".model-list-sizer .model-row-label")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(fullLabels).toEqual(["Haiku 4.5", "Opus 5.5", "GPT"]);
+    expect(
+      document.querySelector<HTMLInputElement>(".compact-list-header input")?.getAttribute("placeholder"),
+    ).toBe("Search models…");
+    expect(
+      document
+        .querySelector<HTMLElement>(".model-list-sizer .model-row-highlighted")
+        ?.closest(".model-row-item")
+        ?.querySelector(".model-row-label")?.textContent,
+    ).toBe("Opus 5.5");
+    pressKey("Enter");
+    expect(handle.observed.current.model).toBe("opus");
+    expect(document.querySelector(".compact-panel")).not.toBeNull();
+  });
+
+  it("the rail resets when the card closes and reopens", async () => {
+    // The rail state is per-open (the desktop's `toggle` resets the
+    // compact page state on every open): a card closed on the starred
+    // page reopens on the panel, and the models page lists every offered
+    // model under the standard placeholder — never a latched favorites
+    // scope.
+    resetDefaults();
+    composerDefaults.update({ favorites: [{ harness: "claude-code", model: "opus" }] });
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, BARE];
+    client.modelsByHarness.set("claude-code", [HAIKU, OPUS]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+    await flush();
+    await openCard(handle);
+
+    // Open the starred page, then close the card on it.
+    await act(async () => {
+      document.querySelector<HTMLElement>(".compact-provider")!.click();
+    });
+    const starredRow = Array.from(document.querySelectorAll<HTMLElement>(".compact-provider-row")).find(
+      (el) => el.querySelector(".compact-provider-name")?.textContent === "Starred",
+    );
+    await act(async () => {
+      starredRow!.click();
+    });
+    expect(
+      Array.from(document.querySelectorAll(".model-list-sizer .model-row-label")).map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(["Opus 5.5"]);
+    await act(async () => {
+      handle.container.querySelector<HTMLElement>("#picker-model")!.click();
+    });
+    expect(document.querySelector(".compact-card")).toBeNull();
+
+    // Reopen: the panel, and the models page back on the browse rail —
+    // the full list (starred-first) under the standard placeholder.
+    await openCard(handle);
+    expect(document.querySelector(".compact-panel")).not.toBeNull();
+    await act(async () => {
+      document.querySelector<HTMLElement>(".compact-model")!.click();
+    });
+    expect(
+      Array.from(document.querySelectorAll(".model-list-sizer .model-row-label")).map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(["Opus 5.5", "Haiku 4.5"]);
+    expect(
+      document.querySelector<HTMLInputElement>(".compact-list-header input")?.getAttribute("placeholder"),
+    ).toBe("Search models…");
   });
 
   it("Tab on the panel cycles providers in place", async () => {

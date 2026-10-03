@@ -1367,7 +1367,16 @@ function CompactCard(props: CompactCardProps) {
   // `show_compact_models` (#749): browse every offered provider, just as
   // the standard picker's rail allows; a chat's fixed provider limits its
   // list. A foreign-provider row switches the provider before picking.
-  const rail: ModelRail = locked ? "harness" : "all";
+  const browseRail: ModelRail = locked ? "harness" : "all";
+  // The models page's rail — `model_rail` as the compact pages drive it
+  // (`show_compact_models` → the browse rail, `show_compact_starred` →
+  // Favorites, pickers/compact.rs:327-342): the provider page's Starred
+  // row scopes the models page to the starred set, never the full list
+  // starred-first. Off the models page the walk's rows read the browse
+  // rail — the desktop recomputes `model_rows` on every page entry, so
+  // the panel's Up/Down neighbor math never sees a stale favorites scope.
+  const [rail, setRail] = useState<ModelRail>(() => browseRail);
+  const listRail: ModelRail = page === "models" ? rail : browseRail;
 
   const modelsList = modelsLists.get(effectiveHarness);
   const models: readonly Model[] = modelsList?.rows ?? [];
@@ -1376,13 +1385,13 @@ function CompactCard(props: CompactCardProps) {
     () =>
       scopedModelRows(
         query,
-        rail,
+        listRail,
         effectiveHarness,
         railDescriptors,
         modelsFor,
         isFavorite,
       ),
-    [query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
+    [query, listRail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
   );
 
   const groups = useMemo(() => {
@@ -1487,6 +1496,7 @@ function CompactCard(props: CompactCardProps) {
 
   function showModels(): void {
     setPage("models");
+    setRail(browseRail);
     setQuery("");
     setScrollTop(0);
     setOpenSetting(null);
@@ -1500,6 +1510,9 @@ function CompactCard(props: CompactCardProps) {
 
   function showStarred(): void {
     setPage("models");
+    // The favorites rail (show_compact_starred): only the starred models,
+    // with the starred placeholder on the shared filter.
+    setRail("favorites");
     setQuery("");
     setScrollTop(0);
     setOpenSetting(null);
@@ -1532,6 +1545,7 @@ function CompactCard(props: CompactCardProps) {
     setQuery("");
     setOpenSetting(null);
     setScrollTop(0);
+    setRail(browseRail);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened]);
 
@@ -1667,12 +1681,21 @@ function CompactCard(props: CompactCardProps) {
   const slice = rows.slice(first, last);
 
   const modelsListError = modelsList?.error ?? null;
+  // The empty-list note precedence (the standard card's, pickers
+  // 4032-4050): a query wins, then the favorites view's own note.
   const emptyNote =
     query.trim().length > 0
       ? page === "providers"
         ? "No providers found"
         : "No models found"
-      : null;
+      : page === "models" && rail === "favorites"
+        ? "No starred models yet — hit a row's star"
+        : null;
+  // The shared list-page filter's label — `reset_compact_search`'s
+  // placeholder per entry (compact.rs:341's "Search starred…"); the
+  // placeholder is the label plus the ellipsis.
+  const filterLabel: string =
+    page === "providers" ? "Search providers" : rail === "favorites" ? "Search starred" : "Search models";
 
   // — The nested option menus (the identity tray's seam, reused) ————————
   function registerSettingSection(id: string, element: HTMLDivElement | null): void {
@@ -1942,10 +1965,10 @@ function CompactCard(props: CompactCardProps) {
                 type="text"
                 value={query}
                 onChange={onQueryChange}
-                placeholder={page === "providers" ? "Search providers…" : "Search models…"}
+                placeholder={`${filterLabel}…`}
                 spellCheck={false}
                 autoComplete="off"
-                aria-label={page === "providers" ? "Search providers" : "Search models"}
+                aria-label={filterLabel}
               />
             </div>
             {page === "models" && modelsListError !== null && rows.length > 0 && (

@@ -16,7 +16,7 @@ Also fold in the one-line compact row height: web rows are 34px
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §2 compact notes (item 13a).
 
@@ -49,7 +49,47 @@ rail reset.
 
 ## 3. Acceptance checklist
 
-- [ ] Starred row scopes the models page to favorites
-- [ ] Placeholder and empty-note strings match the desktop
-- [ ] Rail resets on close/reopen
-- [ ] Full app suite green
+- [x] Starred row scopes the models page to favorites
+- [x] Placeholder and empty-note strings match the desktop
+- [x] Rail resets on close/reopen
+- [x] Full app suite green
+
+## Comments
+
+**Branch:** `ticket/mp-05-compact-starred-scoping` (base `a485d5ce`). Commit
+`f151ae22` (implementation, TDD red→green — red failed at the ticket's exact
+bug: `['Opus 5.5','Haiku 4.5','GPT']` instead of `['Opus 5.5']`) + review-pass
+commit (extracts the repeated browse-rail decision into one `browseRail`
+const and the filter's placeholder/aria-label into one `filterLabel`; adds
+two regression guards: the panel's ↑/↓ neighbor math rides the browse rail
+while the rail state still holds a favorites scope — verified failing
+without the `listRail` derivation — and the card close/reopen rail reset;
+the compact block's afterEach clears the starred sticky defaults so no
+favorite leaks into the later identity suites). Verification (all from
+`web/packages/app`): named seam `tests/composer-reasoning.test.ts` → 38/38;
+adjacent composer-pickers mounters (`flyout-side`, `shortcuts`,
+`base-popover`) → 85/85; full app suite `pnpm exec vitest run` → **148
+files, 2232 tests, all passed**; `pnpm exec tsc --noEmit` clean.
+
+**Row height — left as-is, with cause:** the ticket's "34px vs 32px"
+compared the web's virtualizer ITEM box against the desktop's ROW: the 34
+is `COMPACT_ROW_HEIGHT + 2` with the 2px inter-row gap baked into the box
+(`.model-row-item { padding-bottom: 2px; box-sizing: border-box }`), so
+the visual row is 32px — exactly the desktop's `COMPACT_ROW_HEIGHT: 32.0`
++ `MENU_GAP: 2.0` (compact.rs:6-7, popover.rs:316), and `compactListHeight`
+is `compact_list_height` verbatim (`count * (32 + 2) + 2 * 4`). Shrinking
+the box to 32 would double-count the gap (30px visual rows) — a
+regression, not an alignment. The desktop renders the compact models
+page's rows one-line on every rail (`render_model_row`'s
+`compact_model_picker` gate, pickers.rs:4157-4159 → `render_compact_model_row`),
+so the web's one-line rows match on every rail too.
+
+**Judgment calls:** the rail state is the full `ModelRail` union
+(`"all" | "favorites" | "harness"`) rather than the ticket's
+`"all" | "favorites"` sketch — the locked chat's Harness scope must
+survive (compact.rs:327-336; ticket 04's lane). `showStarred()` keeps
+`setCursor(0)`; the desktop anchors on the selected row when it is
+starred (compact.rs:357-363) — an anchor difference only when the selected
+model is starred below index 0's row, left as a residual. The filter's
+placeholder/aria-label derive from one `filterLabel` ("Search starred…",
+"Search models…", "Search providers…" — all label + ellipsis).
