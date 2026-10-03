@@ -24,12 +24,13 @@ import { Tooltip } from "./ui/Tooltip";
  * The strip lives in the titlebar band, not in the pane, because the titlebar
  * overlay owns that band's hit-testing. Chip geometry is the desktop's: a
  * 24px-tall, 112px-wide chip on a 4px strip gap (116px slot) with a 6px
- * radius, 4px/8px padding and a 3px inner gap. The active chip wears
- * `wash(0.10)`, the rest light up at `wash(0.06)` on hover; the leading 18px
- * slot swaps its icon for the close ✕ on chip hover, and the ✕ closes THAT
- * tab, never the pane (gap R9). Drag-reorder is pointer driven with a custom
- * ghost chip (gap R13) and the strip fades 36px at whichever edge hides chips
- * (gap R15).
+ * radius, symmetric 4px padding and a 3px inner gap. The active chip wears
+ * `wash(0.10)`, the rest light up at `wash(0.06)` on hover; the icon stays
+ * put in the leading 18px slot while the ✕ fades in on hover in a TRAILING
+ * slot (upstream #587) — the unsaved dot swaps out for it — and the ✕ closes
+ * THAT tab, never the pane (gap R9). Drag-reorder is pointer driven with a
+ * custom ghost chip (gap R13) and the strip fades 36px at whichever edge
+ * hides chips (gap R15).
  */
 
 /** `CHIP_W` (`shell.rs:6690`) — the terminal drawer's drag mechanics share it. */
@@ -340,10 +341,15 @@ function TabChip({
           size={iconSize}
           className={`right-tab-icon ${surface.kind === "file" ? "right-tab-icon-file" : ""}`}
         />
+      </span>
+      <span className="right-tab-title">{facts.title}</span>
+      <span className="right-tab-trailing">
+        {facts.isDirty && <span className="right-tab-dirty" />}
         <button
           type="button"
           className="right-tab-close"
-          aria-label={`Close ${facts.title}`}
+          aria-label="Close tab"
+          title="Close tab"
           // Claim the press before the drag-carrying parent arms
           // (`shell.rs:6898-6904`): without the stop the pointerdown starts
           // a tab drag instead of delivering the close click.
@@ -356,8 +362,6 @@ function TabChip({
           <Icon name="close" size={12} />
         </button>
       </span>
-      <span className="right-tab-title">{facts.title}</span>
-      {facts.isDirty && <span className="right-tab-dirty" />}
     </div>
   );
   if (facts.detail === null) {
