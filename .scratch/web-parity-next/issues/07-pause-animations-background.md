@@ -17,7 +17,7 @@ while its document is unfocused, resuming mid-phase on refocus.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` (settings item 1 — the
 full mechanism research).
@@ -76,8 +76,64 @@ user-interaction only); the 15s `useNow` clock and queue renew interval
 
 ## 4. Acceptance checklist
 
-- [ ] Row renders after Reduce motion, writes the setting immediately
-- [ ] Unfocused document pauses the infinite loops; refocus resumes mid-phase
-- [ ] reduced-motion.ts doc comment updated (decision reversal recorded)
-- [ ] Out-of-scope list respected
-- [ ] Tests + full app suite green
+- [x] Row renders after Reduce motion, writes the setting immediately
+- [x] Unfocused document pauses the infinite loops; refocus resumes mid-phase
+- [x] reduced-motion.ts doc comment updated (decision reversal recorded)
+- [x] Out-of-scope list respected
+- [x] Tests + full app suite green
+
+## Comments
+
+**Implemented and reviewed** (branch `ticket/wpn-07-pause-animations-background`,
+base `a485d5ce`; implementation `870b8a04`, review pass on top). What landed:
+
+- The row in `web/packages/app/src/routes/settings-appearance.tsx` — after
+  Reduce motion, the existing `RbSwitch` idiom, copy "Hold animations still
+  while this tab isn't focused." (the desktop's appearance.rs:3877-3917 meta,
+  adapted to the tab), writing `pauseAnimationsInBackground` through
+  `uiSettings.updateImmediate`.
+- The mechanism in `web/packages/app/src/lib/reduced-motion.ts`:
+  `effectiveReducedMotion(preference, documentHasFocus)` folds the 4th arm
+  (`backgroundPauseArm` = `pauseAnimationsInBackground &&
+  !document.hasFocus()`, ONE definition shared by the resolver and the root
+  attr); `initBackgroundPauseMonitor()` listens to window `focus`/`blur` +
+  `visibilitychange`, all resolving through `document.hasFocus()` (never event
+  payloads — the spurious-blur guard), writes/removes the root
+  `data-animations-paused` attr, re-notifies `subscribeToBackgroundPause`
+  listeners on flips only (install establishes the attr without notifying),
+  and rides the settings store so a toggle landing while unfocused pauses at
+  once. `useEffectiveReducedMotion` subscribes to the channel; per-evaluation
+  readers (tool-motion clock, chat-page, fades, history, changes-surface,
+  terminal-dock) inherit the arm by construction.
+- One CSS rule in `app.css`: `:root[data-animations-paused] … {
+  animation-play-state: paused }` over the 13 infinite-loop selectors
+  (gspin cells, pulse loaders, skeletons, attachment loading/sending, tool
+  shimmer). Deliberately NOT `data-reduced-motion="on"`. The caret blink,
+  `rb-veil`, one-shots, the canvas effects, the chat-list resort glide and
+  `useNow`/queue-renew are untouched (§2 respected; the ticket's line refs had
+  drifted ~25 lines — coverage re-derived from the full `infinite` inventory).
+- Deviation from the file table, adjudicated KEEP: `main.tsx` carries a
+  one-line boot call to `initBackgroundPauseMonitor()` beside
+  `initAppearance()` — the monitor the ticket specifies needs an install
+  point and this is the repo's existing boot-wiring idiom; import side
+  effects or lazy arming would be worse.
+- Monitor tests beyond §3's two named seams, adjudicated KEEP: they assert
+  exactly the mechanism row's specified behavior (event set,
+  hasFocus-not-payloads, attr write, re-notify) and are the only way to
+  demonstrate acceptance criterion 2.
+- Verification: `tests/reduced-motion.test.ts` 10/10 (resolver seam with
+  injected focus read + monitor behavior) and `tests/ui-settings.test.ts`
+  heal case; consumer suites (titlebar-island, media, chat-arrival,
+  sidebar-tween, dock-glide, transcript-fade, phone-pane-close,
+  queue-row-logic, appearance-store, tool-reveal-clock, settings-completion)
+  157 green; `pnpm exec tsc --noEmit` clean; one-shot `vite build` clean with
+  the pause rule present in the built CSS; FULL app suite
+  `pnpm exec vitest run` → **149 files / 2241 tests green**.
+- Two-axis code review passed (Standards: the pause-arm duplication —
+  resolver inline vs attr condition — extracted to one `backgroundPauseArm`,
+  the delegating `animationsPausedNow` middle man removed; Spec: nothing
+  missing, nothing unasked). Coherence note: reactive consumers via
+  state/media.ts's `usePrefersReducedMotion` (titlebar, right-pane,
+  new-thread-background) deliberately do NOT live-flip on focus — they drive
+  one-shot/canvas surfaces §2 keeps out of the pause scope; a future ticket
+  can subscribe them through the exported `subscribeToBackgroundPause`.

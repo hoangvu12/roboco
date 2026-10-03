@@ -62,6 +62,19 @@ function liveDocumentHasFocus(): boolean {
 }
 
 /**
+ * The background-pause arm alone — `pause_in_background && !active`, with
+ * the injected focus read standing in for `active` (tests inject it; the
+ * monitor and the resolver's default read it live). ONE definition: the
+ * resolver's fourth arm and the root attr's condition are the same concept,
+ * so they cannot drift apart.
+ */
+function backgroundPauseArm(
+  documentHasFocus: () => boolean = liveDocumentHasFocus,
+): boolean {
+  return uiSettings.getSnapshot().pauseAnimationsInBackground && !documentHasFocus();
+}
+
+/**
  * The resolved flag right now: `motion::resolve` with all four arms — the
  * stored pin over the live media query, then the background-pause arm
  * (`pauseAnimationsInBackground && !document.hasFocus()`), exactly the
@@ -75,7 +88,7 @@ export function effectiveReducedMotion(
 ): boolean {
   return (
     resolveReducedMotion(preference, mediaPrefersReducedMotion()) ||
-    (uiSettings.getSnapshot().pauseAnimationsInBackground && !documentHasFocus())
+    backgroundPauseArm(documentHasFocus)
   );
 }
 
@@ -125,11 +138,6 @@ export function subscribeToBackgroundPause(listener: () => void): () => void {
   };
 }
 
-/** The pause arm alone — the condition the root attr records. */
-function animationsPausedNow(): boolean {
-  return uiSettings.getSnapshot().pauseAnimationsInBackground && !liveDocumentHasFocus();
-}
-
 /**
  * The focus/visibility monitor — the desktop's `window_activation_changed`,
  * web-shaped. Window `focus`/`blur` plus `visibilitychange` all funnel into
@@ -157,10 +165,10 @@ export function initBackgroundPauseMonitor(): () => void {
   // Install establishes the attr without notifying: no flip has happened yet,
   // and every subscriber re-resolves on its own mount (the desktop's `apply`
   // likewise refreshes only when the flag actually flips).
-  let applied = animationsPausedNow();
+  let applied = backgroundPauseArm();
   writeAttr(applied);
   const refresh = (): void => {
-    const paused = animationsPausedNow();
+    const paused = backgroundPauseArm();
     if (paused === applied) {
       return;
     }
