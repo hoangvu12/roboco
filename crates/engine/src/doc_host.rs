@@ -14,8 +14,8 @@ use tokio_util::task::TaskTracker;
 use roboco_doc::{
     COMMAND_DEFAULT_TTL_MS, CommandBasedOn, CommandDisposition, DocError, EvaluationContext,
     MessagePart, MessageRole, MessageStatus, QueueDeliveryGate, QueuedMessage, SessionCommandEntry,
-    SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
-    join_continuation_entries,
+    SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry, SubagentStatus,
+    evaluate_command, join_continuation_entries,
 };
 use roboco_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInputQuestion};
 use roboco_sync::DocsStore;
@@ -273,6 +273,9 @@ pub struct ChatDocHandle {
     /// the turn and starting its own the chat reads Idle, and an idle chat with
     /// a queue is exactly what the flush drains.
     drain_lock: tokio::sync::Mutex<()>,
+    /// Queue rows held as explicit steers for a turn-boundary agent. They
+    /// lead ordinary queued rows, in the order they were steered.
+    steered_rows: Mutex<Vec<String>>,
     /// An explicit user interrupt freezes automatic queue delivery. The next
     /// explicit prompt or queue send resumes it; incidental doc/status changes
     /// must not turn Cancel into "send the next row".
@@ -341,6 +344,20 @@ impl ChatDocHandle {
         rx
     }
 
+    /// Where a newly steered row goes: after the rows already steered, ahead
+    /// of every ordinary row. Records `id` as steered.
+    fn steer_slot(&self, id: &str) -> Result<usize, DocError> {
+        let mut steered = lock(&self.steered_rows);
+        let queue = self.doc.read_queue()?;
+        steered.retain(|row| queue.iter().any(|q| &q.id == row));
+        let slot = queue
+            .iter()
+            .take_while(|row| steered.contains(&row.id))
+            .count();
+        steered.push(id.to_string());
+        Ok(slot)
+    }
+
     fn publish_queue(&self) {
         match self.doc.read_queue() {
             Ok(items) => {
@@ -393,17 +410,33 @@ impl ChatDocHandle {
         })
     }
 
-    /// Recovery sweep: stamp this device's abandoned `streaming` entries `aborted`, appending
+    /// Recovery sweep: settle this device's running subagent chips (including
+    /// chips in completed parent turns), then stamp abandoned `streaming`
+    /// entries `aborted`, appending
     /// `note` as a visible error part so the transcript says WHY the turn
     /// ended (roboco folded "Run interrupted by backend restart" the same
     /// way). Returns the stamped entries' `(id, created_at)` — recovery uses
     /// them for the resume-freshness check.
     pub fn mark_abandoned_streams(&self, note: &str) -> Result<Vec<(String, i64)>, DocError> {
         let mut stamped = Vec::new();
+        let mut chips_changed = false;
         for entry in self.doc.read_entries()? {
-            if entry.role == MessageRole::Assistant
-                && entry.status == Some(MessageStatus::Streaming)
-                && entry.device_id == self.device_id
+            if entry.role != MessageRole::Assistant || entry.device_id != self.device_id {
+                continue;
+            }
+            for part in &entry.parts {
+                if let MessagePart::Tool {
+                    id,
+                    subagent_status: Some(SubagentStatus::Running),
+                    ..
+                } = part
+                {
+                    chips_changed |=
+                        self.doc
+                            .update_subagent_chip(id, None, Some("failed"), None)?;
+                }
+            }
+            if entry.status == Some(MessageStatus::Streaming)
                 && self
                     .doc
                     .set_message_status(&entry.id, MessageStatus::Aborted)?
@@ -415,7 +448,7 @@ impl ChatDocHandle {
                 stamped.push((entry.id.clone(), entry.created_at));
             }
         }
-        if !stamped.is_empty() {
+        if chips_changed || !stamped.is_empty() {
             self.publish_messages();
         }
         Ok(stamped)
@@ -745,6 +778,7 @@ impl DocHost {
             transcript_history,
             queue_tx,
             drain_lock: tokio::sync::Mutex::new(()),
+            steered_rows: Mutex::new(Vec::new()),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
             persistence,
@@ -1517,8 +1551,10 @@ impl DocHost {
 
     /// Promote one held row without ever interrupting a turn. A live,
     /// steerable turn receives it as steering; if that turn has already ended,
-    /// it starts normally as the next turn. Unsupported harnesses and
-    /// attachment-bearing rows stay untouched.
+    /// it starts normally as the next turn. A turn-boundary agent cannot read
+    /// it until the turn ends, so the row leads the queue instead and the
+    /// drain delivers it the moment the current turn ends. Attachment-bearing
+    /// rows stay untouched.
     pub async fn steer_queued_now(&self, chat_id: &str, id: &str) -> Result<bool, EngineError> {
         if !self.is_host(chat_id) {
             return Err(EngineError::Other(format!(
@@ -1528,14 +1564,6 @@ impl DocHost {
         }
         let handle = self.open(chat_id)?;
         let _drain = handle.drain_lock.lock().await;
-        let Some(sessions) = self.sessions() else {
-            return Err(EngineError::Other("sessions engine not wired".into()));
-        };
-        if !sessions.steers_mid_turn(self.harness_for(chat_id)) {
-            return Err(EngineError::Other(
-                "the selected agent cannot accept mid-turn steering".into(),
-            ));
-        }
         let Some(candidate) = handle
             .doc
             .read_queue()?
@@ -1553,6 +1581,22 @@ impl DocHost {
             return Err(EngineError::Other(
                 "queued message is blocked for editing or review".into(),
             ));
+        }
+        if self
+            .sessions()
+            .is_some_and(|sessions| sessions.defers_to_turn_end(chat_id, None))
+        {
+            // Send next: lead the ordinary rows; the drain delivers it the
+            // moment the current turn ends.
+            let Some(item) = handle.doc.take_queued(id)? else {
+                return Ok(false);
+            };
+            handle
+                .doc
+                .insert_queued(handle.steer_slot(&item.id)?, &item)?;
+            handle.queue_paused.store(false, Ordering::Release);
+            handle.publish_queue();
+            return Ok(true);
         }
         let Some(item) = handle.doc.take_queued(id)? else {
             return Ok(false);
@@ -1651,6 +1695,7 @@ impl DocHost {
             let Ok(Some(item)) = handle.doc.take_queued(&head.id) else {
                 return;
             };
+            lock(&handle.steered_rows).retain(|row| row != &item.id);
             handle.publish_queue();
             if let Err(err) = self.dispatch_queued(handle, &item, send).await {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");

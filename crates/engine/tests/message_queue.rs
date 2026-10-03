@@ -104,17 +104,17 @@ impl Harness for HeldHarness {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         self.prompts.lock().unwrap().push(request.prompt.clone());
         self.requests.lock().unwrap().push(request.clone());
-        if self.asks {
+        let answer = self.asks.then(|| {
             // Only the engine can mint a request id it will honour, so the
             // question has to go through controls rather than the stream.
-            let _answer = (controls.request_input)(vec![UserInputQuestion {
+            (controls.request_input)(vec![UserInputQuestion {
                 id: "q1".into(),
                 header: "Choose".into(),
                 question: "which one?".into(),
                 options: vec!["a".into(), "b".into()],
                 multi_select: false,
-            }]);
-        }
+            }])
+        });
         let mut finish = self.finish.subscribe();
         let mut steering = controls.steering;
         let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
@@ -149,7 +149,14 @@ impl Harness for HeldHarness {
                 }
             }
         });
-        Ok(started.chain(done).boxed())
+        // A live question owns its receiver until the run finishes. Dropping it
+        // now explicitly cancels the engine-owned input lifecycle.
+        Ok(started
+            .chain(done)
+            .inspect(move |_| {
+                let _ = &answer;
+            })
+            .boxed())
     }
 }
 
@@ -724,8 +731,15 @@ async fn held_policy_keeps_a_steerable_message_visible_until_steer_now() {
     core.shutdown().await;
 }
 
+/// Send next (`SteerQueuedMessageNow`) on a turn-boundary agent — the
+/// desktop queue row's "Send next" button. It must not error: the row is
+/// promoted to LEAD the queue, and the drain delivers it the moment the
+/// current turn ends, ahead of rows queued before it. (Pre-fix the engine
+/// rejected the call — "the selected agent cannot accept mid-turn
+/// steering" — which the UI surfaced as a send failure for exactly the
+/// harnesses the button is shown for.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn steer_now_leaves_the_row_when_the_agent_cannot_steer_mid_turn() {
+async fn send_next_promotes_the_row_to_lead_the_queue_at_turn_end() {
     let (core, harness, prompts) = setup(SteeringMode::TurnBoundary).await;
 
     core.doc_host
@@ -736,13 +750,61 @@ async fn steer_now_leaves_the_row_when_the_agent_cannot_steer_mid_turn() {
         "the first turn to start",
     )
     .await;
-    let id = core
+    core.doc_host
+        .queue_message(CHAT, "ordinary", Vec::new())
+        .expect("queue ordinary row");
+    let promoted_id = core
         .doc_host
-        .queue_message(CHAT, "still queued", Vec::new())
-        .expect("queue held message");
+        .queue_message(CHAT, "promoted", Vec::new())
+        .expect("queue promoted row");
 
-    assert!(core.doc_host.steer_queued_now(CHAT, &id).await.is_err());
-    assert_eq!(queue_texts(&core), vec!["still queued"]);
+    assert!(
+        core.doc_host
+            .steer_queued_now(CHAT, &promoted_id)
+            .await
+            .expect("send next promotes the row instead of erroring")
+    );
+    assert_eq!(
+        queue_texts(&core),
+        vec!["promoted", "ordinary"],
+        "the promoted row leads the ordinary rows, id stable"
+    );
+    assert!(!prompts.lock().unwrap().iter().any(|p| p == "promoted"));
+
+    // Turn ends → the drain delivers the promoted row first.
+    let _ = harness.finish.send(());
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "promoted"),
+        "the promoted row to lead the next turn",
+    )
+    .await;
+    wait_for(
+        || user_message_id(&core, "promoted").as_deref() == Some(promoted_id.as_str()),
+        "the promoted queue id to become the next-turn message id",
+    )
+    .await;
+    assert_eq!(
+        queue_texts(&core),
+        vec!["ordinary"],
+        "the ordinary row keeps waiting for its own turn"
+    );
+
+    let _ = harness.finish.send(());
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "ordinary"),
+        "the ordinary row to flush after the promoted one",
+    )
+    .await;
+    let order = prompts.lock().unwrap().clone();
+    let sent: Vec<&String> = order
+        .iter()
+        .filter(|p| ["opening", "promoted", "ordinary"].contains(&p.as_str()))
+        .collect();
+    assert_eq!(
+        sent,
+        vec!["opening", "promoted", "ordinary"],
+        "the promoted row delivers before rows queued ahead of it"
+    );
 
     let _ = harness.finish.send(());
     core.shutdown().await;

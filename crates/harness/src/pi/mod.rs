@@ -233,7 +233,10 @@ pub struct PiHarness {
     kill_grace: Duration,
     /// Bound on spawn → first `get_state` response; pi's startup (session
     /// load, background catalog refresh) must finish inside it or the run
-    /// errors instead of spinning "Working" forever.
+    /// errors instead of spinning "Working" forever. Defaults to 120s — the
+    /// budget the ACP handshake gave pi — because a cold extension (the
+    /// per-run `--extension` bridge spawns one) can push a first `get_state`
+    /// past 60s.
     startup_timeout: Duration,
     /// Provider-scoped successful catalog, with bounded refresh and backoff.
     models_cache: crate::catalog::Catalog,
@@ -245,7 +248,7 @@ impl Default for PiHarness {
             executable: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
-            startup_timeout: Duration::from_secs(60),
+            startup_timeout: Duration::from_secs(120),
             models_cache: crate::catalog::Catalog::default(),
         }
     }
