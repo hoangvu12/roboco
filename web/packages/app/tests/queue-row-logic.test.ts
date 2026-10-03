@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ATTACHMENT_ONLY_TEXT, withAttachments } from "../src/lib/attachments";
+import { invocationLink, localFileLink } from "../src/lib/mentions";
 import {
   QUEUE_ROW_SLOT,
   availableQueuePrimaryAction,
@@ -12,6 +13,7 @@ import {
   queueDropIndex,
   queueLatestShortcutVisible,
   queuePreviewLimit,
+  queueRowText,
   queueVisibleText,
   visibleQueueRows,
 } from "../src/lib/queue-row-logic";
@@ -100,6 +102,27 @@ describe("queueVisibleText (queue.rs::legacy_attachment_trailers_are_hidden_from
     expect(queueVisibleText(withAttachments("inspect this", ["/tmp/other.png"]), [path])).toBe(
       withAttachments("inspect this", ["/tmp/other.png"]),
     );
+  });
+});
+
+describe("queueRowText (queue.rs::queue_rows_label_commands_skills_and_files)", () => {
+  it("labels commands, skills and file mentions the way the transcript does", () => {
+    const command = invocationLink({ kind: "command", name: "compact" });
+    const skill = invocationLink({
+      kind: "skill",
+      name: "review-pr",
+      path: "/skills/review-pr/SKILL.md",
+    });
+    const file = localFileLink("src/queue.rs", false);
+    const text = `${command} then ${skill}\non ${file}`;
+    expect(queueRowText(text, [])).toBe("/compact then $review-pr on @queue.rs");
+  });
+
+  it("never shows raw links, and still hides attachment trailers", () => {
+    const command = invocationLink({ kind: "command", name: "compact" });
+    const path = "/tmp/image.png";
+    expect(queueRowText(withAttachments(command, [path]), [path])).toBe("/compact");
+    expect(queueRowText("plain  text", [])).toBe("plain text");
   });
 });
 

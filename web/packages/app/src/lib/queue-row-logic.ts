@@ -1,6 +1,7 @@
 /**
  * The queue row's pure logic — the web port of `crates/ui/src/queue.rs`'s
- * helper block (`one_line`, `queue_visible_text`, `queue_attachment_labels`,
+ * helper block (`one_line`, `queue_visible_text`, `queue_row_text`,
+ * `queue_attachment_labels`, `queueAttachmentSummary`,
  * `available_queue_primary_action`, `queue_latest_shortcut_visible`,
  * `queue_drop_index`, `queue_drag_offsets`, `visible_queue_rows`) plus
  * `queue_preview_limit` (composer.rs:4392) and the terminal panel's
@@ -16,6 +17,7 @@
 
 import { ATTACHMENT_ONLY_TEXT, parseUserMessageImages } from "./attachments";
 import { COMPOSER_MAX_WIDTH } from "./composer-flip";
+import { sentMentionDisplay } from "./mentions";
 
 /** `ROW_HEIGHT` (queue.rs:75). */
 export const QUEUE_ROW_HEIGHT = 36;
@@ -61,6 +63,18 @@ export function queueVisibleText(text: string, attachments: readonly string[]): 
     return ATTACHMENT_ONLY_TEXT;
   }
   return parsed.text;
+}
+
+/**
+ * `queue_row_text` (queue.rs): the row's one-line label. Commands, skills
+ * and file mentions show the same labels as the transcript
+ * (`sent_mention_display`'s projection); editing and delivery still read the
+ * stored text, which keeps their canonical links.
+ */
+export function queueRowText(text: string, attachments: readonly string[]): string {
+  const visible = queueVisibleText(text, attachments);
+  const display = sentMentionDisplay(visible)?.display ?? visible;
+  return oneLine(display);
 }
 
 /** `Path::file_name` — the path's final component, or `"Image"` when it has none. */

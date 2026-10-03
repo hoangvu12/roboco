@@ -18,13 +18,13 @@ import {
   availableQueuePrimaryAction,
   modifierSendCompactLabel,
   modifierSendLabel,
-  oneLine,
   queueAttachmentLabels,
   queueAttachmentSummary,
   queueDragOffsets,
   queueDropIndex,
   queueLatestShortcutVisible,
   queuePreviewLimit,
+  queueRowText,
   queueVisibleText,
   visibleQueueRows,
 } from "../lib/queue-row-logic";
@@ -488,7 +488,7 @@ function QueueRow(props: QueueRowProps) {
     if (gate !== null && !beingEdited) {
       return gate.kind === "editing" ? `Editing on ${gate.ownerDeviceId}` : "Needs review";
     }
-    return oneLine(queueVisibleText(row.text, row.attachments ?? []));
+    return queueRowText(row.text, row.attachments ?? []);
   }, [gate, beingEdited, row.text, row.attachments]);
 
   const attachments = row.attachments ?? [];
