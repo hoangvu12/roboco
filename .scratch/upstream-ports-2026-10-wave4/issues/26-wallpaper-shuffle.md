@@ -38,14 +38,63 @@ positioning/zoom setting applied to the web background renderer.
 appearance/wallpaper/background tests (decode-once, orphan retirement,
 warm switch on framing change); `pnpm -r build` if web touched.
 
-- [ ] Shuffle with preloading: decode-once, orphan retirement, adaptive
+- [x] Shuffle with preloading: decode-once, orphan retirement, adaptive
       colours
-- [ ] Positioning + zoom; preload queue keyed on managed path (warm
+- [x] Positioning + zoom; preload queue keyed on managed path (warm
       switch test)
-- [ ] Appearance strings + shortcut wiring; fixture coverage
-- [ ] Tests green
-- [ ] Web: shuffle + preloading + positioning/zoom in settings-appearance
+- [x] Appearance strings + shortcut wiring; fixture coverage
+- [ ] Tests green (deferred: written + ported, execution deferred to the
+      wave-final batched pass per the verification-economy directive)
+- [x] Web: shuffle + preloading + positioning/zoom in settings-appearance
       and the background renderer
-- [ ] Port commit records upstream SHAs
+- [x] Port commit records upstream SHAs
 
 ## Comments
+
+- Ported `09d04b29` (#598) + `626bccc8` (#660) by intent across the rebrand
+  (`roboco-*`, `roboco_theme::Color`, "Restart Roboco" copy). File mapping
+  is 1:1 with upstream's list; the wallpaper/color extraction, preload
+  queue (history cooldown, LOOKAHEAD 3, generation invalidation, orphan
+  retirement), `NewThreadBackgroundAdjustment` (focal/zoom, MIN 1.0/MAX
+  4.0, healing on load), the crossfade `Readiness::frame` model
+  (`WALLPAPER_CROSSFADE` = 180 ms cubic-bezier(1/3, 1, 2/3, 1)), the
+  `fitted_geometry`/pan/zoom math in the mask module, the theme's
+  `wallpaper_color` overlay (glass interactions lift toward white) and the
+  `Theme::install`/`appearance::apply` hooks are all ported.
+- Roboco-specific adaptations: the shortcut heals into pre-existing
+  `ui-settings.json` keymaps through our repo's load-time "taken-combo"
+  upgrade (upstream relies on serde defaults alone); `RandomWallpaper`
+  lands in the Shortcuts page's new "Appearance" group; our
+  `active_new_thread_background` fallback (bundled default, ticket 48)
+  drives the hero frame's `enabled`/path inputs, so the default renders
+  with the centered cover crop while a stored user image keeps its crop.
+- Tests ported: wallpaper.rs (6), wallpaper_colors.rs (4), effects.rs
+  crossfade trio, mask.rs geometry/pan/zoom suite, theme.rs wallpaper
+  glass/text-contrast pair, settings.rs adjustment
+  normalization/setter/round-trip + install replacement-reset, appearance.rs
+  adjustment-dialog + pinch/zoom-slider/preview suite, shell.rs
+  exit-regression wallpaper round-trip.
+- Exclusions: none of upstream's diff was dropped (no CI/edge/iOS hunks
+  existed in these commits).
+- Web parity: the pool is the desktop's folder (IndexedDB blobs under
+  `wallpaper-<id>` keys, listed in `wallpaperPoolIds`; the desktop's
+  filesystem folder does not exist in a browser). The shuffle commits the
+  chosen blob into the existing managed slot (history/cooldown identical),
+  preloads the next three candidates through the memoized effect-worker
+  jobs, and the hero crossfades the departing artwork in the renderer
+  (GL two-sampler fragment mix / CPU globalAlpha legs — the departing image
+  keeps its own framing). Adaptive colours: `extractWallpaperColor` (the
+  4096-bin saturation-weighted quantization) + the `@roboco/theme`
+  `accentRoles` seam + `theme.ts`'s `wallpaperTint` (surfaces mixed 0.4
+  toward the tint; accent re-derived), applied on every settings write and
+  backfilled (`ensure_color` equivalent) on first enable. Positioning/zoom:
+  `fittedGeometry`/`panAdjustment`/`zoomAdjustmentAround` in the lib, the
+  renderer's focal fit (both backends), and the Adjust dialog (drag/wheel/
+  slider/keyboard-less Reset-Apply) in settings-appearance. The web Adjust
+  preview paints the raw artwork (the desktop's dialog rasterizes the
+  effect); the framing math is identical. `mod-u` dispatches through the
+  shortcut bus (`random-wallpaper` event) from anywhere, routing to
+  Appearance when no pool is set.
+- Verification: `pnpm install --frozen-lockfile` + `pnpm -r build` from
+  web/ (clean); test execution deferred to the wave-final batched pass
+  (user directive).

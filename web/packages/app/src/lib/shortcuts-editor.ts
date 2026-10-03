@@ -123,6 +123,8 @@ export function shortcutDescription(id: ShortcutId): string {
   switch (id) {
     case "captureAppshot":
       return "Capture the focused application from anywhere on your desktop.";
+    case "randomWallpaper":
+      return "Pick a random image from the wallpaper folder.";
     case "saveFile":
       return "Save the active workspace file.";
     case "browserReload":

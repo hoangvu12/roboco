@@ -117,7 +117,7 @@ describe("shortcut event bus", () => {
 
 describe("SHORTCUT_IDS", () => {
   it("has exactly 22 entries in settings.rs order", () => {
-    expect(SHORTCUT_IDS).toHaveLength(22);
+    expect(SHORTCUT_IDS).toHaveLength(23);
     expect(SHORTCUT_IDS).toEqual([
       "captureAppshot",
       "saveFile",

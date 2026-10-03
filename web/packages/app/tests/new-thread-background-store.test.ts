@@ -7,7 +7,7 @@ import {
 } from "../src/lib/new-thread-background";
 import { idbBackgroundBlobStore } from "../src/lib/background-blob-store";
 import { NewThreadArtworkStore, type NewThreadArtwork } from "../src/state/appearance";
-import { UiSettingsStore } from "../src/state/ui-settings";
+import { NEW_THREAD_ADJUSTMENT_DEFAULT, UiSettingsStore } from "../src/state/ui-settings";
 import type { StorageLike } from "../src/lib/engine-store";
 
 /**
@@ -44,7 +44,7 @@ interface ArtworkHarness {
 function createArtworkHarness(options: { reduced?: boolean } = {}): ArtworkHarness {
   const settings = new UiSettingsStore({ storage: memoryStorage() });
   settings.updateImmediate({
-    newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+    newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
   });
   const clock = { now: 0 };
   const frames: Array<() => void> = [];
@@ -88,34 +88,62 @@ function runFrame(frames: Array<() => void>): void {
 }
 
 describe("cold_artwork_fades_in_once_and_warm_navigation_does_not_restart_it (effects.rs:319-336)", () => {
-  it("cold id → 0.5 at 60 ms, 1 at ≥120; the fade loop stops at 1", async () => {
+  it("cold id → 0.875 at the 90 ms midpoint, 1 at ≥180; the fade loop stops at 1", async () => {
     const { store, clock, frames } = createArtworkHarness();
     await settle();
-    // The arrival starts the clock: value 0, not ready, and the frame loop
-    // is live (shell.rs:5884-5886 — rAF while artwork && opacity < 1).
+    // The arrival starts the clock: mix 0, not ready, and the frame loop
+    // is live (shell.rs:5884-5886 — rAF while artwork && the blend runs).
     expect(store.readinessValue()).toBe(0);
     expect(store.getSnapshot()).toMatchObject({ url: "blob:wall.png", id: "blob:wall.png", ready: false });
     expect(frames.length).toBe(1);
     clock.now = 60;
     runFrame(frames);
-    expect(store.readinessValue()).toBeCloseTo(0.5, 6);
+    // cubic-bezier(1/3, 1, 2/3, 1) = 3t − 3t² + t³: 0.704 at 60 ms.
+    expect(store.readinessValue()).toBeCloseTo(0.704, 3);
     expect(store.getSnapshot().ready).toBe(true);
     expect(frames.length).toBe(1);
-    clock.now = 120;
+    clock.now = 180;
     runFrame(frames);
     expect(store.readinessValue()).toBe(1);
     expect(store.getSnapshot().ready).toBe(true);
-    // The rAF-while-fading rule: no frames once the value reaches 1.
+    // The rAF-while-fading rule: no frames once the blend settles.
     expect(frames.length).toBe(0);
+  });
+
+  it("a replacement crossfades: the departing url blends out over 180 ms (upstream #598)", async () => {
+    const { store, settings, clock, frames } = createArtworkHarness();
+    await settle();
+    clock.now = 180;
+    runFrame(frames);
+    expect(store.readinessValue()).toBe(1);
+    settings.updateImmediate({
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "other.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
+    });
+    await settle();
+    // The new artwork adopts with the old one as the departing leg.
+    const snapshot = store.getSnapshot();
+    expect(snapshot.url).toBe("blob:other.png");
+    expect(snapshot.departing).toBe("blob:wall.png");
+    expect(snapshot.mix).toBe(0);
+    clock.now += 90;
+    const blending = store.getSnapshot();
+    expect(blending.mix).toBeCloseTo(0.875, 3);
+    expect(blending.departing).toBe("blob:wall.png");
+    clock.now += 90;
+    runFrame(frames);
+    // Settled: the departing leg clears.
+    const settled = store.getSnapshot();
+    expect(settled.mix).toBe(1);
+    expect(settled.departing).toBe(null);
   });
 
   it("the same id across a warm navigation stays ready — no re-fade, no re-resolve", async () => {
     const { store, clock, frames, resolveCount } = createArtworkHarness();
     await settle();
     // Warm the artwork fully.
-    clock.now = 60;
+    clock.now = 90;
     runFrame(frames);
-    clock.now = 120;
+    clock.now = 180;
     runFrame(frames);
     expect(store.readinessValue()).toBe(1);
     // A "navigation": hero remounts are subscribe/unsubscribe cycles around
@@ -135,10 +163,10 @@ describe("cold_artwork_fades_in_once_and_warm_navigation_does_not_restart_it (ef
   it("a NEW id restarts the clock from 0", async () => {
     const { store, settings, clock } = createArtworkHarness();
     await settle();
-    clock.now = 120;
+    clock.now = 180;
     expect(store.readinessValue()).toBe(1);
     settings.updateImmediate({
-      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "other.png" },
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "other.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
     });
     await settle();
     // The new artwork's arrival (a new blob URL identity) starts cold.
@@ -146,7 +174,7 @@ describe("cold_artwork_fades_in_once_and_warm_navigation_does_not_restart_it (ef
     expect(store.readinessValue()).toBe(0);
     expect(store.getSnapshot().ready).toBe(false);
     clock.now += 60;
-    expect(store.readinessValue()).toBeCloseTo(0.5, 6);
+    expect(store.readinessValue()).toBeCloseTo(0.704, 3);
   });
 
   it("reduced motion snaps to 1 with no frame loop", async () => {
@@ -204,10 +232,10 @@ describe("the hero layer survives the route change (shell.rs:5865-5895)", () => 
   it("never unmounts across `/` → `/chat/$id` → `/`; the artwork id is continuous", async () => {
     const { store, clock, frames } = createArtworkHarness();
     await settle();
-    // Warm the artwork fully (the fade ran out long before navigating).
-    clock.now = 60;
+    // Warm the artwork fully (the crossfade ran out long before navigating).
+    clock.now = 90;
     runFrame(frames);
-    clock.now = 120;
+    clock.now = 180;
     runFrame(frames);
     expect(store.getSnapshot()).toMatchObject({ url: "blob:wall.png", ready: true });
 

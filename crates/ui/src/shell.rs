@@ -79,6 +79,7 @@ actions!(
     shell,
     [
         SaveFile,
+        RandomWallpaper,
         ToggleSidebar,
         ToggleChanges,
         ToggleFiles,
@@ -413,6 +414,11 @@ pub fn apply_keymap(
     // key equivalents and must survive keymap re-application.
     crate::app_menus::bind_keys(cx);
     cx.bind_keys([
+        KeyBinding::new(
+            &valid_or_default(&keymap.random_wallpaper, "mod-u"),
+            RandomWallpaper,
+            None,
+        ),
         KeyBinding::new(
             &valid_or_default(&keymap.save_file, "mod-s"),
             SaveFile,
@@ -1270,13 +1276,14 @@ fn new_thread_background_opacity(is_frost: bool) -> f32 {
     }
 }
 
-fn new_thread_background_height(viewport_height: f32) -> f32 {
+pub(crate) fn new_thread_background_height(viewport_height: f32) -> f32 {
     (viewport_height.max(0.0) * NEW_THREAD_BACKGROUND_VIEWPORT_RATIO)
         .min(NEW_THREAD_BACKGROUND_MAX_HEIGHT)
 }
 
 fn new_thread_background(
     artwork: Option<std::sync::Arc<gpui::RenderImage>>,
+    adjustment: settings::NewThreadBackgroundAdjustment,
     viewport_height: f32,
     hero_width: f32,
     composer_bounds: crate::new_thread_background_mask::SurfaceBounds,
@@ -1321,6 +1328,7 @@ fn new_thread_background(
                                     artwork.clone(),
                                     bounds,
                                     composer,
+                                    adjustment,
                                     cutout,
                                     window,
                                 );
@@ -4055,6 +4063,11 @@ impl Shell {
         self.settings.window_geometry = current.window_geometry;
         self.settings.new_thread_composer_background = current.new_thread_composer_background;
         self.settings.new_thread_background_effect = current.new_thread_background_effect;
+        self.settings.wallpaper_folder = current.wallpaper_folder;
+        self.settings.wallpaper_source = current.wallpaper_source;
+        self.settings.wallpaper_history = current.wallpaper_history;
+        self.settings.wallpaper_theme_colors = current.wallpaper_theme_colors;
+        self.settings.wallpaper_color = current.wallpaper_color;
         self.settings.open_web_links_in_roboco = current.open_web_links_in_roboco;
         self.settings.ui_font_family = current.ui_font_family;
         self.settings.ui_font_size = current.ui_font_size;
@@ -4159,6 +4172,46 @@ impl Shell {
         }
         self.close_chat_menu(cx);
         cx.notify();
+    }
+
+    fn ensure_appearance_page(&mut self, cx: &mut Context<Self>) {
+        if self.appearance_page.is_none() {
+            let page = cx.new(AppearancePage::new);
+            self.appearance_settings_sub = Some(cx.subscribe(
+                &page,
+                |this: &mut Shell, _, event: &AppearanceSettingsEvent, cx| match *event {
+                    AppearanceSettingsEvent::CodeFontSizeChanged(size) => {
+                        this.set_code_font_size(size, cx);
+                    }
+                },
+            ));
+            self.appearance_page = Some(page);
+        }
+    }
+
+    /// The random-wallpaper shortcut: pick from the preloaded queue, or open
+    /// Appearance to choose a folder first (upstream #598).
+    fn random_wallpaper(&mut self, cx: &mut Context<Self>) {
+        self.ensure_appearance_page(cx);
+        if settings::current(cx).wallpaper_folder.is_none() {
+            self.open_settings(SettingsSection::Appearance, cx);
+            if let Some(page) = &self.appearance_page {
+                page.update(cx, |page, cx| page.choose_wallpaper_folder(cx));
+            }
+            return;
+        }
+        let task = settings::wallpaper::randomize(cx);
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.open_settings(SettingsSection::Appearance, cx);
+                    if let Some(page) = &this.appearance_page {
+                        page.update(cx, |page, cx| page.show_wallpaper_error(error, cx));
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
@@ -4353,18 +4406,7 @@ impl Shell {
                 }
             }
             SettingsSection::Appearance => {
-                if self.appearance_page.is_none() {
-                    let page = cx.new(AppearancePage::new);
-                    self.appearance_settings_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &AppearanceSettingsEvent, cx| match *event {
-                            AppearanceSettingsEvent::CodeFontSizeChanged(size) => {
-                                this.set_code_font_size(size, cx);
-                            }
-                        },
-                    ));
-                    self.appearance_page = Some(page);
-                }
+                self.ensure_appearance_page(cx);
                 match &self.appearance_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
@@ -8429,13 +8471,21 @@ impl Shell {
         // The conversation-width setting (Appearance page) — shared with the
         // docked composer below (upstream d721f301).
         let transcript_width_setting = settings::current(cx).transcript_width;
+        // The resolved background drives the hero: the user's stored image
+        // (with its framing) or the bundled default (centered crop).
+        let resolved_background = crate::settings::active_new_thread_background(cx);
+        let new_thread_background_adjustment = resolved_background
+            .as_ref()
+            .map(|background| background.adjustment)
+            .unwrap_or_default();
         let frame_time = self.render_time.unwrap_or_else(std::time::Instant::now);
         // Prewarm even in an established thread. Decode/effect work is not
         // contingent on a hero measurement or a navigation gesture. The
         // accessor resolves the user background, else the bundled default;
         // a stored-but-missing file resolves to None, which flows into
         // `prepare` exactly like the missing path did before.
-        let artwork = crate::settings::active_new_thread_background(cx)
+        let artwork = resolved_background
+            .as_ref()
             .map(|background| std::path::PathBuf::from(&background.path))
             .and_then(|path| {
                 crate::new_thread_background_effects::prepare(
@@ -8445,8 +8495,13 @@ impl Shell {
                     cx,
                 )
             });
-        let artwork_opacity = self.new_thread_artwork_ready.opacity(
-            artwork.as_ref().map(|image| image.id),
+        let artwork_frame = self.new_thread_artwork_ready.frame(
+            artwork,
+            resolved_background
+                .as_ref()
+                .map(|background| std::path::Path::new(&background.path)),
+            new_thread_background_adjustment,
+            resolved_background.is_some(),
             self.reduced_motion,
             frame_time,
         );
@@ -8483,24 +8538,40 @@ impl Shell {
         if has_selection {
             self.set_harness_updates_expanded(false, cx);
         }
-        let harness_update_card =
-            if chip_opacity > 0.001 && (!has_selection || dock_frame.active) {
-                self.render_harness_update_card(window, main_content_width, cx)
-            } else {
-                None
-            };
+        let harness_update_card = if chip_opacity > 0.001 && (!has_selection || dock_frame.active) {
+            self.render_harness_update_card(window, main_content_width, cx)
+        } else {
+            None
+        };
         let new_thread_background_layer = (!has_selection || dock_frame.active).then(|| {
-            if artwork.is_some() && artwork_opacity < 1.0 {
+            if artwork_frame.active {
                 window.request_animation_frame();
             }
-            new_thread_background(
-                artwork,
-                self.viewport_height,
-                (self.viewport_width - self.sidebar_now()).max(0.0),
-                self.composer.read(cx).surface_bounds(),
-                dock_frame.dissolve(),
-                artwork_opacity * new_thread_background_opacity(theme.is_frost()),
-            )
+            let width = (self.viewport_width - self.sidebar_now()).max(0.0);
+            let bounds = self.composer.read(cx).surface_bounds();
+            let opacity = new_thread_background_opacity(theme.is_frost());
+            div()
+                .absolute()
+                .inset_0()
+                .child(new_thread_background(
+                    artwork_frame.previous,
+                    artwork_frame.previous_adjustment,
+                    self.viewport_height,
+                    width,
+                    bounds.clone(),
+                    dock_frame.dissolve(),
+                    (1.0 - artwork_frame.mix) * opacity,
+                ))
+                .child(new_thread_background(
+                    artwork_frame.current,
+                    artwork_frame.current_adjustment,
+                    self.viewport_height,
+                    width,
+                    bounds,
+                    dock_frame.dissolve(),
+                    artwork_frame.mix * opacity,
+                ))
+                .into_any_element()
         });
 
         // Content outlet: selected chat → transcript; nothing selected → the
@@ -10289,6 +10360,10 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Warm the shuffle queue on every frame: cheap when warm (a key
+        // comparison), speculative-decoding the next three candidates when
+        // the folder, effect, or appearance changed (upstream #598).
+        settings::wallpaper::preload(cx);
         self.navigation_focus
             .remember(&self.shortcut_focus, window, cx);
         if let Some(command) = self.pending_workspace_command.take() {
@@ -10571,6 +10646,9 @@ impl Render for Shell {
                         file.update(cx, |file, cx| file.save_active_document(cx));
                     }
                 }
+            }))
+            .on_action(cx.listener(|this, _: &RandomWallpaper, _, cx| {
+                this.random_wallpaper(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 if !matches!(this.route, Route::Settings(_)) {
@@ -12182,6 +12260,10 @@ mod exit_regressions {
                     shell.schedule_save(cx);
                     settings::set_new_thread_background_effect(effect, cx);
                     settings::update(settings::SavePolicy::Immediate, cx, |settings| {
+                        settings.wallpaper_folder = Some(dir.path().join("wallpapers"));
+                        settings.wallpaper_source = Some(dir.path().join("wallpapers/current.png"));
+                        settings.wallpaper_history =
+                            vec![dir.path().join("wallpapers/current.png")];
                         settings.window_geometry = geometry;
                         settings.open_web_links_in_roboco = open_links_in_roboco;
                         settings.terminal_font_family = terminal_family.clone();
@@ -12203,6 +12285,18 @@ mod exit_regressions {
                         shell.settings.terminal_height = 300.0 + step as f32;
                         shell.schedule_save(cx);
                         let current = settings::current(cx);
+                        assert_eq!(
+                            current.wallpaper_history,
+                            vec![dir.path().join("wallpapers/current.png")]
+                        );
+                        assert_eq!(
+                            current.wallpaper_folder,
+                            Some(dir.path().join("wallpapers"))
+                        );
+                        assert_eq!(
+                            current.wallpaper_source,
+                            Some(dir.path().join("wallpapers/current.png"))
+                        );
                         assert_eq!(current.window_geometry, geometry);
                         assert_eq!(current.new_thread_background_effect, effect);
                         assert_eq!(current.open_web_links_in_roboco, open_links_in_roboco);
@@ -12226,6 +12320,15 @@ mod exit_regressions {
                     settings::flush(cx);
                     let loaded = settings::UiSettings::load(dir.path());
                     assert_eq!(loaded.window_geometry, geometry);
+                    assert_eq!(
+                        loaded.wallpaper_history,
+                        vec![dir.path().join("wallpapers/current.png")]
+                    );
+                    assert_eq!(loaded.wallpaper_folder, Some(dir.path().join("wallpapers")));
+                    assert_eq!(
+                        loaded.wallpaper_source,
+                        Some(dir.path().join("wallpapers/current.png"))
+                    );
                     assert_eq!(loaded.new_thread_background_effect, effect);
                     assert_eq!(loaded.open_web_links_in_roboco, open_links_in_roboco);
                     assert_eq!(loaded.terminal_font_family, terminal_family);
@@ -12289,6 +12392,7 @@ mod exit_regressions {
                                 .to_string_lossy()
                                 .into_owned(),
                             name: "missing.png".into(),
+                            adjustment: crate::settings::NewThreadBackgroundAdjustment::default(),
                         });
                 });
                 let _ = shell.render_titlebar_cluster(cx);

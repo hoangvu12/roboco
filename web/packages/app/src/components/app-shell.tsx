@@ -61,6 +61,14 @@ import { sendInterrupt } from "../lib/composer-actions";
 import { sidebarNotice } from "../state/notice";
 import { uiSettings, FILES_PANEL_MAX, FILES_PANEL_MIN, FILES_PANEL_DEFAULT } from "../state/ui-settings";
 import {
+  decodeBackgroundBlob,
+  randomizeWallpaper,
+} from "../lib/new-thread-background";
+import {
+  idbBackgroundBlobStore,
+  idbWallpaperPoolStore,
+} from "../lib/background-blob-store";
+import {
   RIGHT_PANE_MIN,
   cycleRightTabTarget,
   focusInRightPane,
@@ -259,6 +267,22 @@ export function AppShell() {
     emitShortcut("new-chat");
   }, [fleet.engines.length, navigate]);
 
+  // The random-wallpaper shortcut (upstream #598): shuffle the pool from
+  // anywhere; with no pool chosen it routes to Appearance to pick one, the
+  // same handoff the desktop's `Shell::random_wallpaper` performs.
+  const onRandomWallpaper = useCallback(() => {
+    if (uiSettings.getSnapshot().wallpaperPoolIds === null) {
+      void navigate({ to: "/settings/appearance" });
+      return;
+    }
+    void randomizeWallpaper({
+      settings: uiSettings,
+      blobs: idbBackgroundBlobStore(),
+      pool: idbWallpaperPoolStore(),
+      decode: decodeBackgroundBlob,
+    });
+  }, [navigate]);
+
   // One control, two meanings — the desktop's `toggle_sidebar` collapses the
   // column; at phone widths the same button opens the drawer over the content.
   // The breakpoint is the shared media hook's (`state/media.ts`, ticket 49):
@@ -324,6 +348,12 @@ export function AppShell() {
           return;
         case "toggle-sidebar":
           emitShortcut("toggle-sidebar");
+          return;
+        case "random-wallpaper":
+          // Works from anywhere (shell.rs's `random_wallpaper`): the shuffle
+          // commits the preloaded pool entry, or opens Appearance to choose
+          // a pool first.
+          onRandomWallpaper();
           return;
         case "save-file":
           // `SaveFile`'s scope: a chat route with the pane open on a

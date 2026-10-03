@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import {
   accentForVariant,
   accentPresets,
@@ -60,11 +60,30 @@ import {
 import {
   backgroundRowState,
   installNewThreadBackground,
+  randomizeWallpaper,
   removeNewThreadBackground,
   resolveActiveNewThreadBackground,
+  resolveNewThreadBackground,
+  wallpaperColorOf,
+  decodeBackgroundBlob,
+  fittedGeometry,
+  panAdjustment,
+  zoomAdjustmentAround,
   type ResolvedNewThreadBackground,
 } from "../lib/new-thread-background";
-import { idbBackgroundBlobStore } from "../lib/background-blob-store";
+import {
+  idbBackgroundBlobStore,
+  idbWallpaperPoolStore,
+} from "../lib/background-blob-store";
+import {
+  NEW_THREAD_ADJUSTMENT_DEFAULT,
+  NEW_THREAD_BACKGROUND_MAX_ZOOM,
+  NEW_THREAD_BACKGROUND_MIN_ZOOM,
+  normalizeNewThreadBackgroundAdjustment,
+  type NewThreadBackgroundAdjustment,
+  type NewThreadComposerBackground,
+} from "../state/ui-settings";
+
 
 /**
  * Appearance settings (desktop settings/appearance.rs parity): the
@@ -83,6 +102,22 @@ import { idbBackgroundBlobStore } from "../lib/background-blob-store";
 
 /** One shared blob store for the page's background installs. */
 const backgroundBlobs = idbBackgroundBlobStore();
+
+/** The wallpaper folder row's meta (the pool's size, or the invite). */
+function wallpaperFolderMeta(pool: readonly string[] | null): readonly string[] {
+  if (pool === null) {
+    return ["Choose a folder of wallpaper images."];
+  }
+  return [`${pool.length} image${pool.length === 1 ? "" : "s"} in the pool`];
+}
+
+/** The Adjust dialog's draft state (upstream #660's dialog, web-shaped). */
+interface BackgroundAdjustState {
+  /** The stored entry the draft belongs to — Apply guards on it. */
+  readonly path: string;
+  readonly name: string;
+  readonly draft: NewThreadBackgroundAdjustment;
+}
 
 /** `NewThreadBackgroundEffect::ALL` with labels + descriptions (settings.rs). */
 const BACKGROUND_EFFECTS: readonly {
@@ -104,6 +139,7 @@ export function AppearanceSettingsPage() {
   const settings = useUiSettings();
   const [openMenu, setOpenMenu] = useState<Appearance | null>(null);
   const [backgroundError, setBackgroundError] = useState<string | null>(null);
+  const [adjustState, setAdjustState] = useState<BackgroundAdjustState | null>(null);
   const [activeBackground, setActiveBackground] = useState<ResolvedNewThreadBackground | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [importState, setImportState] = useState<ImportDialogState | null>(null);
@@ -159,6 +195,40 @@ export function AppearanceSettingsPage() {
     setBackgroundError(null);
     void removeNewThreadBackground({ settings: uiSettings, blobs: backgroundBlobs }).then((error) => {
       setBackgroundError(error);
+    });
+  };
+
+  // The shuffle's web stores (upstream #598): the pool lives in IndexedDB, the
+  // managed copy in the same blob store the install path uses.
+  const shuffleWallpaper = (): void => {
+    setBackgroundError(null);
+    void randomizeWallpaper({
+      settings: uiSettings,
+      blobs: backgroundBlobs,
+      pool: idbWallpaperPoolStore(),
+      decode: decodeBackgroundBlob,
+    }).then((key) => {
+      if (key === null) {
+        setBackgroundError(
+          "No readable wallpapers found in this folder. Add images such as PNG or JPEG, or choose another folder.",
+        );
+      }
+    });
+  };
+
+  const wallpaperInputRef = useRef<HTMLInputElement>(null);
+  const onPickWallpaperFiles = (files: readonly File[]): void => {
+    setBackgroundError(null);
+    if (files.length === 0) {
+      return;
+    }
+    void (async (): Promise<void> => {
+      const keys = await idbWallpaperPoolStore().putAll(files);
+      uiSettings.updateImmediate({ wallpaperPoolIds: keys, wallpaperHistory: [] });
+    })().then(shuffleWallpaper, () => {
+      setBackgroundError(
+        "Unable to save the wallpaper pool. Check storage permissions and try again.",
+      );
     });
   };
 
@@ -256,6 +326,21 @@ export function AppearanceSettingsPage() {
           <div className="settings-row-actions">
             {backgroundInstalled ? (
               <>
+                {/* Adjusting a crop needs a stored user image: the bundled
+                    default carries no persisted framing to apply it to. */}
+                {settings.newThreadComposerBackground !== null && backgroundAvailable ? (
+                  <CompactAction
+                    onClick={() =>
+                      setAdjustState({
+                        path: settings.newThreadComposerBackground!.path,
+                        name: settings.newThreadComposerBackground!.name,
+                        draft: settings.newThreadComposerBackground!.adjustment,
+                      })
+                    }
+                  >
+                    Adjust
+                  </CompactAction>
+                ) : null}
                 <CompactAction onClick={() => backgroundInputRef.current?.click()}>Replace image</CompactAction>
                 <CompactActionDanger onClick={onRemoveBackground}>Remove</CompactActionDanger>
               </>
@@ -305,6 +390,66 @@ export function AppearanceSettingsPage() {
             </div>
           </div>
         )}
+        <div className="settings-row">
+          <RowTile icon="tuning" />
+          <div className="settings-row-main">
+            <span className="settings-row-title">Match wallpaper colors</span>
+            <MetaLine
+              fragments={[
+                "Use wallpaper colors for accents, highlights, and subtle surface tints.",
+              ]}
+            />
+          </div>
+          <RbSwitch
+            checked={settings.wallpaperThemeColors}
+            aria-label="Match wallpaper colors"
+            onCheckedChange={(checked) => {
+              uiSettings.updateImmediate({ wallpaperThemeColors: checked });
+              // `ensure_color`: a background stored before colour extraction
+              // existed gets its palette backfilled on the first enable.
+              if (checked && settings.wallpaperColor === null && settings.newThreadComposerBackground !== null) {
+                const stored = settings.newThreadComposerBackground;
+                void (async (): Promise<void> => {
+                  const url = await resolveNewThreadBackground(stored);
+                  const blob = await (await fetch(url)).blob();
+                  const color = await wallpaperColorOf(blob);
+                  if (color !== null && uiSettings.getSnapshot().newThreadComposerBackground?.path === stored.path) {
+                    uiSettings.updateImmediate({ wallpaperColor: color });
+                  }
+                })();
+              }
+            }}
+          />
+        </div>
+        <div className="settings-row">
+          <RowTile icon="folderWithFiles" />
+          <div className="settings-row-main">
+            <span className="settings-row-title">Wallpaper folder</span>
+            <MetaLine fragments={wallpaperFolderMeta(settings.wallpaperPoolIds)} />
+          </div>
+          <div className="settings-row-actions">
+            <CompactAction onClick={() => wallpaperInputRef.current?.click()}>
+              Choose images
+            </CompactAction>
+            {settings.wallpaperPoolIds !== null ? (
+              <CompactAction onClick={shuffleWallpaper}>Shuffle</CompactAction>
+            ) : null}
+            <input
+              ref={wallpaperInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = "";
+                if (files.length > 0) {
+                  onPickWallpaperFiles(files);
+                }
+              }}
+            />
+          </div>
+        </div>
         {backgroundError !== null && (
           <div className="settings-row-error">
             <p className="error-strip">
@@ -345,6 +490,13 @@ export function AppearanceSettingsPage() {
         <p className="library-warning">{libraryError ?? libraryWarning}</p>
       )}
 
+      {adjustState !== null && (
+        <BackgroundAdjustDialog
+          state={adjustState}
+          stored={settings.newThreadComposerBackground}
+          onClose={() => setAdjustState(null)}
+        />
+      )}
       {importState !== null && (
         <ThemeImportDialog
           state={importState}
@@ -819,6 +971,303 @@ interface ImportDialogState {
   readonly selected: ReadonlySet<string>;
   readonly detailsVariant: string | null;
   readonly error: string | null;
+}
+
+function BackgroundAdjustDialog(props: {
+  readonly state: BackgroundAdjustState;
+  readonly stored: NewThreadComposerBackground | null;
+  readonly onClose: () => void;
+}) {
+  const [draft, setDraft] = useState<NewThreadBackgroundAdjustment>(props.state.draft);
+  const previewRef = useRef<HTMLCanvasElement | null>(null);
+  const boundsRef = useRef<{ x: number; y: number; width: number; height: number }>({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; adjustment: NewThreadBackgroundAdjustment } | null>(
+    null,
+  );
+  // The draft pans by whole viewport-relative fractions; the pointer's
+  // resolution is the preview's own box (the hero's aspect, scaled down).
+  const [dragging, setDragging] = useState(false);
+
+  // Resolve + draw the stored entry (the exact hero crop without its mask —
+  // upstream #660's `paint_adjusted` preview, web-shaped).
+  const stored = props.stored;
+  const sameImage = stored !== null && stored.path === props.state.path && stored.name === props.state.name;
+  const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (stored === null || !sameImage) {
+      setArtworkUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void resolveNewThreadBackground(stored).then(
+      (url) => {
+        if (!cancelled) {
+          setArtworkUrl(url);
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setArtworkUrl(null);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [stored, sameImage]);
+
+  useEffect(() => {
+    if (artworkUrl === null) {
+      setNatural(null);
+      return;
+    }
+    let cancelled = false;
+    const element = new Image();
+    element.src = artworkUrl;
+    void element.decode().then(
+      () => {
+        if (!cancelled) {
+          imageElementCache.set(artworkUrl, element);
+          setNatural({ width: element.naturalWidth, height: element.naturalHeight });
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setNatural(null);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [artworkUrl]);
+  const url = artworkUrl;
+
+  useLayoutEffect(() => {
+    const canvas = previewRef.current;
+    if (canvas === null || natural === null) {
+      return;
+    }
+    const draw = (): void => {
+      const bounds = boundsRef.current;
+      if (bounds.width <= 0 || bounds.height <= 0) {
+        return;
+      }
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const width = Math.round(bounds.width * dpr);
+      const height = Math.round(bounds.height * dpr);
+      if (canvas.width !== width) {
+        canvas.width = width;
+      }
+      if (canvas.height !== height) {
+        canvas.height = height;
+      }
+      const context = canvas.getContext("2d");
+      if (context === null) {
+        return;
+      }
+      context.clearRect(0, 0, width, height);
+      const fitted = fittedGeometry(natural.width, natural.height, bounds, draft) ?? {
+        left: bounds.x,
+        top: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        overflowX: 0,
+        overflowY: 0,
+      };
+      const element = imageElementOf(url);
+      if (element !== null) {
+        context.drawImage(
+          element,
+          (fitted.left - bounds.x) * dpr,
+          (fitted.top - bounds.y) * dpr,
+          fitted.width * dpr,
+          fitted.height * dpr,
+        );
+      }
+    };
+    draw();
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(draw) : null;
+    if (observer !== null && previewRef.current !== null) {
+      observer.observe(previewRef.current);
+    }
+    return () => {
+      observer?.disconnect();
+    };
+  }, [natural, draft, url]);
+
+  const zoom = (next: number, anchor: { x: number; y: number } | null): void => {
+    if (natural === null) {
+      return;
+    }
+    const bounds = boundsRef.current;
+    const clamped = Math.min(
+      Math.max(next, NEW_THREAD_BACKGROUND_MIN_ZOOM),
+      NEW_THREAD_BACKGROUND_MAX_ZOOM,
+    );
+    setDraft((current) =>
+      zoomAdjustmentAround(natural.width, natural.height, bounds, current, clamped, anchor ?? {
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height / 2,
+      }),
+    );
+  };
+
+  const pan = (delta: { x: number; y: number }): void => {
+    if (natural === null) {
+      return;
+    }
+    const bounds = boundsRef.current;
+    setDraft((current) => panAdjustment(natural.width, natural.height, bounds, current, delta));
+  };
+
+  const apply = (): void => {
+    if (stored === null || !sameImage) {
+      return;
+    }
+    uiSettings.updateImmediate({
+      newThreadComposerBackground: {
+        ...stored,
+        adjustment: normalizeNewThreadBackgroundAdjustment(draft),
+      },
+    });
+    props.onClose();
+  };
+
+  const zoomFraction =
+    (draft.zoom - NEW_THREAD_BACKGROUND_MIN_ZOOM) /
+    (NEW_THREAD_BACKGROUND_MAX_ZOOM - NEW_THREAD_BACKGROUND_MIN_ZOOM);
+  const step = 0.1;
+  const ready = natural !== null && sameImage;
+
+  return (
+    <Dialog ariaLabel="Adjust background" onClose={props.onClose}>
+      <div className="import-dialog-card">
+        <header className="import-dialog-header">
+          <div className="import-dialog-heading">
+            <h2 className="import-dialog-title">Adjust background</h2>
+            <p className="import-dialog-body">Drag to reposition. Scroll to zoom.</p>
+          </div>
+          <button type="button" className="import-dialog-close" aria-label="Close" onClick={props.onClose}>
+            <Icon name="close" size={12} className="import-dialog-close-icon" />
+          </button>
+        </header>
+        <div className="import-dialog-main">
+          <div
+            className="background-adjust-preview"
+            ref={(node) => {
+              if (node !== null) {
+                const rect = node.getBoundingClientRect();
+                boundsRef.current = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+              }
+            }}
+            style={{ cursor: ready ? (dragging ? "grabbing" : "grab") : "default" }}
+            onWheel={(event) => {
+              if (natural === null) {
+                return;
+              }
+              event.preventDefault();
+              const factor = Math.exp(Math.min(Math.max(event.deltaY * 0.0025, -2), 2));
+              zoom(draft.zoom * factor, { x: event.clientX, y: event.clientY });
+            }}
+            onPointerDown={(event) => {
+              if (natural === null) {
+                return;
+              }
+              event.currentTarget.setPointerCapture(event.pointerId);
+              dragRef.current = { x: event.clientX, y: event.clientY, adjustment: draft };
+              setDragging(true);
+            }}
+            onPointerMove={(event) => {
+              const drag = dragRef.current;
+              if (drag === null) {
+                return;
+              }
+              setDraft(drag.adjustment);
+              pan({ x: event.clientX - drag.x, y: event.clientY - drag.y });
+            }}
+            onPointerUp={() => {
+              dragRef.current = null;
+              setDragging(false);
+            }}
+            onPointerCancel={() => {
+              dragRef.current = null;
+              setDragging(false);
+            }}
+          >
+            <canvas
+              ref={previewRef}
+              style={{ width: "100%", height: "100%" }}
+              className="background-adjust-canvas"
+            />
+            {!ready ? (
+              <p className="background-adjust-hint">
+                {sameImage ? "Preparing preview…" : "Background changed. Close and adjust the new image."}
+              </p>
+            ) : null}
+          </div>
+          <div className="background-adjust-controls">
+            <CompactAction
+              onClick={() => {
+                setDraft(NEW_THREAD_ADJUSTMENT_DEFAULT);
+                dragRef.current = null;
+              }}
+            >
+              Reset
+            </CompactAction>
+            <div className="background-adjust-zoom">
+              <CompactAction
+                aria-label="Zoom out"
+                onClick={() => zoom(draft.zoom - step, null)}
+              >
+                −
+              </CompactAction>
+              <input
+                type="range"
+                className="background-adjust-range"
+                min={NEW_THREAD_BACKGROUND_MIN_ZOOM}
+                max={NEW_THREAD_BACKGROUND_MAX_ZOOM}
+                step={step}
+                value={draft.zoom}
+                aria-label="Background zoom"
+                onChange={(event) => zoom(Number(event.target.value), null)}
+              />
+              <span className="background-adjust-zoom-value">
+                {Math.round(draft.zoom * 100)}%
+              </span>
+              <CompactAction aria-label="Zoom in" onClick={() => zoom(draft.zoom + step, null)}>
+                +
+              </CompactAction>
+            </div>
+          </div>
+        </div>
+        <footer className="import-dialog-footer">
+          <CompactAction onClick={props.onClose}>Cancel</CompactAction>
+          <BtnPrimary onClick={apply} disabled={!ready}>
+            Apply
+          </BtnPrimary>
+        </footer>
+      </div>
+    </Dialog>
+  );
+}
+
+const imageElementCache = new Map<string, HTMLImageElement>();
+
+/** A decoded <img> for a URL, memoized for the dialog's redraws. */
+function imageElementOf(url: string | null): HTMLImageElement | null {
+  if (url === null) {
+    return null;
+  }
+  return imageElementCache.get(url) ?? null;
 }
 
 function ThemeImportDialog(props: {

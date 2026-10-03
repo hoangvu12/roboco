@@ -366,6 +366,14 @@ where
     element.with_animation(id, FADE_QUICK.animation(), |el, t| el.opacity(t))
 }
 
+/// Wallpaper replacement (upstream #598): immediate attack with a short,
+/// soft landing. Desktop-only by design — it drives the hand-evaluated hero
+/// crossfade (`Readiness::frame`), so it lives here rather than in the
+/// proto catalog the web theme artifact exports; the web lib carries the
+/// same 180 ms curve inline.
+pub const WALLPAPER_CROSSFADE: MotionSpec =
+    MotionSpec::new(180, CubicBezier::new(1.0 / 3.0, 1.0, 2.0 / 3.0, 1.0));
+
 /// Popover entrance: fade + translateY −2→0 over [`MENU_IN`].
 /// (roboco also scales 0.96→1; divs have no scale transform in gpui — approximated.)
 pub fn menu_in<E>(id: impl Into<ElementId>, element: E) -> AnimationElement<E>
@@ -995,6 +1003,7 @@ mod tests {
         let mid_rise = gspin_opacity(0.96, 0.1);
         assert!(mid_rise > 0.1 && mid_rise < 1.0, "eases up");
     }
+
 }
 
 #[cfg(windows)]

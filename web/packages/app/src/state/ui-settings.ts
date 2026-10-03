@@ -148,6 +148,8 @@ export type NewThreadBackgroundEffect = "none" | "dither" | "ascii" | "halftone"
 export interface KeymapConfig {
   /** Desktop-only (appshots); reserved here so the shape stays whole. */
   readonly captureAppshot: string;
+  /** Mod+U — shuffles the wallpaper pool (upstream #598). */
+  readonly randomWallpaper: string;
   readonly saveFile: string;
   readonly browserReload: string;
   readonly toggleSidebar: string;
@@ -191,6 +193,48 @@ export interface ThemeSelection {
 export interface NewThreadComposerBackground {
   readonly path: string;
   readonly name: string;
+  /** Viewport-relative framing, kept with the image it belongs to (#660). */
+  readonly adjustment: NewThreadBackgroundAdjustment;
+}
+
+/**
+ * The hero's framing (`NewThreadBackgroundAdjustment`, settings.rs): where the
+ * overflowing image sits and how magnified it is, viewport-independent so a
+ * resize preserves the crop.
+ */
+export interface NewThreadBackgroundAdjustment {
+  readonly focalX: number;
+  readonly focalY: number;
+  readonly zoom: number;
+}
+
+/** `MIN_ZOOM`/`MAX_ZOOM` (settings.rs) — the zoom slider's bounds. */
+export const NEW_THREAD_BACKGROUND_MIN_ZOOM = 1.0;
+export const NEW_THREAD_BACKGROUND_MAX_ZOOM = 4.0;
+
+/** `NewThreadBackgroundAdjustment::default` — the centered cover crop. */
+export const NEW_THREAD_ADJUSTMENT_DEFAULT: NewThreadBackgroundAdjustment = {
+  focalX: 0.5,
+  focalY: 0.5,
+  zoom: 1.0,
+};
+
+/** `normalized`: clamp into range, healing non-finite values to the default. */
+export function normalizeNewThreadBackgroundAdjustment(
+  value: NewThreadBackgroundAdjustment,
+): NewThreadBackgroundAdjustment {
+  const heal = (v: number, low: number, high: number, dflt: number): number =>
+    Number.isFinite(v) ? Math.min(Math.max(v, low), high) : dflt;
+  return {
+    focalX: heal(value.focalX, 0, 1, 0.5),
+    focalY: heal(value.focalY, 0, 1, 0.5),
+    zoom: heal(
+      value.zoom,
+      NEW_THREAD_BACKGROUND_MIN_ZOOM,
+      NEW_THREAD_BACKGROUND_MAX_ZOOM,
+      1.0,
+    ),
+  };
 }
 
 /**
@@ -365,6 +409,14 @@ export interface UiSettings {
   readonly accent: UiAccentSelection;
   readonly surface: UiSurfacePreference;
   readonly newThreadComposerBackground: NewThreadComposerBackground | null;
+  /** The shuffle pool's blob keys; null while no folder is chosen (#598). */
+  readonly wallpaperPoolIds: readonly string[] | null;
+  /** Most recently displayed pool keys first; bounded by the cooldown. */
+  readonly wallpaperHistory: readonly string[];
+  /** Derive accents and surface tints from the active wallpaper (#598). */
+  readonly wallpaperThemeColors: boolean;
+  /** The active wallpaper's dominant colour, `#rrggbb`, extracted at install. */
+  readonly wallpaperColor: string | null;
   readonly newThreadBackgroundEffect: NewThreadBackgroundEffect;
 }
 
@@ -397,6 +449,7 @@ function isMacPlatform(): boolean {
 export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
   return {
     captureAppshot: mac ? "ctrl-alt-space" : "mod-alt-space",
+    randomWallpaper: "mod-u",
     saveFile: "mod-s",
     browserReload: "mod-shift-r",
     toggleSidebar: "mod-b",
@@ -473,6 +526,10 @@ export function defaultUiSettings(): UiSettings {
     accent: "themeDefault",
     surface: "themeDefault",
     newThreadComposerBackground: null,
+    wallpaperPoolIds: null,
+    wallpaperHistory: [],
+    wallpaperThemeColors: false,
+    wallpaperColor: null,
     newThreadBackgroundEffect: "none",
   };
 }
@@ -690,9 +747,36 @@ export function healTerminalFontFamily(value: unknown): UiFontFamily {
 function healBackground(value: unknown): NewThreadComposerBackground | null {
   const raw = record(value);
   return typeof raw.path === "string" && typeof raw.name === "string"
-    ? { path: raw.path, name: raw.name }
+    ? {
+        path: raw.path,
+        name: raw.name,
+        adjustment: healAdjustment(raw.adjustment),
+      }
     : null;
 }
+
+/** The adjustment's per-field healing — non-finite values fall to defaults. */
+function healAdjustment(value: unknown): NewThreadBackgroundAdjustment {
+  const raw = record(value);
+  const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+  return normalizeNewThreadBackgroundAdjustment({
+    focalX: num(raw.focalX) ?? 0.5,
+    focalY: num(raw.focalY) ?? 0.5,
+    zoom: num(raw.zoom) ?? 1.0,
+  });
+}
+
+/** `wallpaper_history` healing — strings only, bounded. */
+function healWallpaperHistory(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .slice(0, WALLPAPER_HISTORY_LIMIT);
+}
+
+const WALLPAPER_HISTORY_LIMIT = 8;
 
 /**
  * `KeymapConfig::healed` — restore the jump list's length, then release any
@@ -705,7 +789,7 @@ export function healKeymap(value: unknown): KeymapConfig {
   // that combo is free: a user who had already bound the same chord elsewhere
   // keeps their binding and the new row arrives unbound rather than
   // double-bound (the desktop's load-time `toggleFiles` upgrade, b9b35665).
-  for (const field of ["toggleFiles"] as const) {
+  for (const field of ["toggleFiles", "randomWallpaper"] as const) {
     if (raw[field] !== undefined) {
       continue;
     }
@@ -732,6 +816,7 @@ export function healKeymap(value: unknown): KeymapConfig {
   };
   return {
     captureAppshot: combo("captureAppshot"),
+    randomWallpaper: combo("randomWallpaper"),
     saveFile: combo("saveFile"),
     browserReload: combo("browserReload"),
     toggleSidebar: combo("toggleSidebar"),
@@ -875,6 +960,16 @@ export function healUiSettings(value: unknown): UiSettings {
     surface:
       raw.surface === "frosted" ? "opaque" : oneOf(raw.surface, ["themeDefault", "opaque"], "themeDefault"),
     newThreadComposerBackground: healBackground(raw.newThreadComposerBackground),
+    // The desktop's wallpaper folder is a filesystem path; the web pool is
+    // the IndexedDB blob-key list beside it (same cooldown semantics).
+    wallpaperPoolIds: Array.isArray(raw.wallpaperPoolIds)
+      ? raw.wallpaperPoolIds.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : null,
+    wallpaperHistory: healWallpaperHistory(raw.wallpaperHistory),
+    wallpaperThemeColors: bool(raw.wallpaperThemeColors, false),
+    wallpaperColor: typeof raw.wallpaperColor === "string" ? raw.wallpaperColor : null,
     newThreadBackgroundEffect: oneOf(
       raw.newThreadBackgroundEffect,
       ["none", "dither", "ascii", "halftone", "scanlines"],

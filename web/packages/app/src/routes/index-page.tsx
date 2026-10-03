@@ -1,4 +1,5 @@
 import { useNewThreadBackground } from "../state/appearance";
+import { useUiSettings } from "../state/ui-settings";
 import { NewThreadBackground } from "../components/new-thread-background";
 
 /**
@@ -35,6 +36,7 @@ export function NewThreadCanvas({
   // (and the readiness clock's `ready` flag) instead of re-resolving from
   // null.
   const background = useNewThreadBackground();
+  const settings = useUiSettings();
   const artwork =
     background.url === null
       ? null
@@ -50,6 +52,9 @@ export function NewThreadCanvas({
       heroWidth={heroWidth}
       dissolve={dissolve}
       effect={background.effect}
+      adjustment={settings.newThreadComposerBackground?.adjustment}
+      departing={background.departing === null ? null : { url: background.departing }}
+      mix={background.mix}
       sidebarTween={sidebarTween}
     />
   );

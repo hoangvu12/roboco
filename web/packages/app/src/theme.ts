@@ -16,6 +16,13 @@ import {
   type AppearancePreferences,
 } from "./lib/appearance-store";
 import { findVariantAnywhere } from "./lib/theme-library";
+import { uiSettings } from "./state/ui-settings";
+import {
+  deriveAccentRoles,
+  mixHex,
+  type AccentRoles,
+  type ThemeVariant,
+} from "@roboco/theme";
 
 /**
  * Install the appearance preferences on the document root: the resolved
@@ -26,6 +33,63 @@ import { findVariantAnywhere } from "./lib/theme-library";
  * or OS-appearance change — application is idempotent, so "live" costs a
  * style recalculation only.
  */
+/**
+ * The wallpaper-derived overlay (upstream #598's `tint_variant`, web-shaped):
+ * the surfaces mix toward the artwork's dominant colour, and the interactive
+ * roles re-derive from it through the same contrast-aware accent derivation.
+ * User theme/accent selections stay intact — disabling the overlay restores
+ * them untouched.
+ */
+function wallpaperTint(
+  variant: ThemeVariant,
+  color: string,
+  appearance: Appearance,
+): { variant: ThemeVariant; accentRoles: AccentRoles } {
+  const dark = appearance === "dark";
+  const tint = mixHex(color, dark ? "#000000" : "#ffffff", dark ? 0.88 : 0.94);
+  const mixSurface = (value: string): string => mixHex(value, tint, 0.4);
+  const tinted: ThemeVariant = {
+    ...variant,
+    colors: {
+      ...variant.colors,
+      background: mixSurface(variant.colors.background),
+      shell: mixSurface(variant.colors.shell),
+      raised: mixSurface(variant.colors.raised),
+      card: mixSurface(variant.colors.card),
+      dialog: mixSurface(variant.colors.dialog),
+      overlay: mixSurface(variant.colors.overlay),
+      input: mixSurface(variant.colors.input),
+    },
+    terminal: {
+      ...variant.terminal,
+      background: mixSurface(variant.terminal.background),
+    },
+  };
+  const accentRoles = deriveAccentRoles(color, appearance, tinted.colors.background);
+  return {
+    variant: {
+      ...tinted,
+      colors: {
+        ...tinted.colors,
+        hover: withAlphaHex(accentRoles.primary, 0.09),
+        active: withAlphaHex(accentRoles.primary, 0.15),
+        border: withAlphaHex(accentRoles.primary, 0.14),
+        borderStrong: withAlphaHex(accentRoles.primary, 0.3),
+      },
+      terminal: {
+        ...tinted.terminal,
+        selection: accentRoles.selection,
+      },
+    },
+    accentRoles,
+  };
+}
+
+function withAlphaHex(hex: string, alpha: number): string {
+  const value = Math.round(Math.min(Math.max(alpha, 0), 1) * 255);
+  return `${hex}${value.toString(16).padStart(2, "0")}`;
+}
+
 export function applyAppearanceToDocument(
   preferences: AppearancePreferences = DEFAULT_APPEARANCE,
   system: Appearance = "dark",
@@ -39,7 +103,19 @@ export function applyAppearanceToDocument(
   if (variant === undefined) {
     throw new Error(`Unknown theme variant: ${variantId}`);
   }
-  applyThemeVariant(root, variant, { accent: preferences.accent });
+  // The wallpaper overlay owns the interactive roles while enabled: the
+  // variant is cloned and tinted, its accent re-derived from the artwork.
+  const settings = uiSettings.getSnapshot();
+  if (settings.wallpaperThemeColors && settings.wallpaperColor !== null) {
+    const { variant: tinted, accentRoles } = wallpaperTint(
+      variant,
+      settings.wallpaperColor,
+      appearance,
+    );
+    applyThemeVariant(root, tinted, { accentRoles });
+  } else {
+    applyThemeVariant(root, variant, { accent: preferences.accent });
+  }
   for (const [name, value] of Object.entries({ ...layoutCssVars(), ...motionCssVars() })) {
     root.style.setProperty(name, value);
   }

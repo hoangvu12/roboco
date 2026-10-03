@@ -12596,6 +12596,63 @@ button.files-save-pill:hover {
   flex: none;
 }
 
+/* The background-adjust dialog (upstream #660, web-shaped): the preview
+   holds the hero's aspect (the page computes its size), the canvas paints the
+   exact fitted crop, and the controls carry Reset plus the zoom ladder. */
+.background-adjust-preview {
+  position: relative;
+  width: 100%;
+  height: 260px;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+  background: var(--rb-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.background-adjust-canvas {
+  display: block;
+}
+
+.background-adjust-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.background-adjust-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.background-adjust-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.background-adjust-zoom-value {
+  width: 52px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.background-adjust-range {
+  width: 168px;
+  accent-color: var(--rb-accent);
+}
+
 .import-dialog-footer {
   border-top: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
   background: color-mix(in srgb, var(--rb-raised) 18%, transparent);

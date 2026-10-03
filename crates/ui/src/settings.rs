@@ -25,6 +25,8 @@ pub mod notifications;
 pub mod remote_access;
 pub mod shortcuts;
 pub mod thread_naming;
+pub mod wallpaper;
+pub mod wallpaper_colors;
 pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).
@@ -105,17 +107,59 @@ pub fn active_new_thread_background(cx: &App) -> Option<NewThreadComposerBackgro
         None => default_new_thread_background(cx).map(|path| NewThreadComposerBackground {
             path: path.to_string_lossy().into_owned(),
             name: DEFAULT_NEW_THREAD_BACKGROUND_NAME.to_owned(),
+            adjustment: NewThreadBackgroundAdjustment::default(),
         }),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewThreadComposerBackground {
     /// Managed copy inside Roboco's device-local data directory.
     pub path: String,
     /// Original file name shown in Appearance settings.
     pub name: String,
+    /// Viewport-relative framing, kept with the image it belongs to.
+    #[serde(default)]
+    pub adjustment: NewThreadBackgroundAdjustment,
+}
+
+/// The new-thread hero's framing: where the overflowing image sits and how
+/// magnified it is, viewport-independent so a resize preserves the crop
+/// (upstream #660).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NewThreadBackgroundAdjustment {
+    /// Normalized horizontal alignment of the overflowing image: 0 left, 1 right.
+    pub focal_x: f32,
+    /// Normalized vertical alignment of the overflowing image: 0 top, 1 bottom.
+    pub focal_y: f32,
+    /// Multiplier applied after the image has been scaled to cover the viewport.
+    pub zoom: f32,
+}
+
+impl NewThreadBackgroundAdjustment {
+    pub const MIN_ZOOM: f32 = 1.0;
+    pub const MAX_ZOOM: f32 = 4.0;
+
+    /// Clamp into range, healing non-finite hand-edited values to the default.
+    pub fn normalized(mut self) -> Self {
+        let defaults = Self::default();
+        self.focal_x = clamp_or(self.focal_x, 0.0, 1.0, defaults.focal_x);
+        self.focal_y = clamp_or(self.focal_y, 0.0, 1.0, defaults.focal_y);
+        self.zoom = clamp_or(self.zoom, Self::MIN_ZOOM, Self::MAX_ZOOM, defaults.zoom);
+        self
+    }
+}
+
+impl Default for NewThreadBackgroundAdjustment {
+    fn default() -> Self {
+        Self {
+            focal_x: 0.5,
+            focal_y: 0.5,
+            zoom: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,13 +406,50 @@ pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Re
     let staged = crate::attachments::stage_file(source)?;
     // Do not persist the candidate or retire the old managed file until the
     // renderer's decoder has accepted the exact bytes we are about to save.
-    crate::new_thread_background_image::decode(staged.bytes()).map_err(|_| {
+    let image = crate::new_thread_background_image::decode(staged.bytes()).map_err(|_| {
         "This background image is unsupported or damaged. Choose a valid image such as PNG or JPEG.".to_string()
     })?;
+    let proxy = image.thumbnail(64, 64).to_rgba8();
+    let color = wallpaper_colors::extract(proxy.pixels().map(|pixel| pixel.0));
+    install_staged_background(source, staged, color, cx)
+}
+
+fn install_staged_background(
+    source: &Path,
+    staged: crate::attachments::StagedAttachment,
+    color: Option<roboco_theme::Color>,
+    cx: &mut App,
+) -> Result<(), String> {
     let data_dir = cx
         .try_global::<SettingsStore>()
         .map(|store| store.data_dir.clone())
         .ok_or_else(|| "Unable to save the image. Restart Roboco and try again.".to_string())?;
+    let prepared = prepare_background_file(staged, &data_dir)?;
+    commit_background(source, prepared, color, cx)
+}
+
+/// Owns a prewritten managed file until it is committed; dropped queue entries
+/// and failed commits clean up their files without touching the active image.
+pub(super) struct PreparedBackgroundFile(Option<NewThreadComposerBackground>);
+
+impl PreparedBackgroundFile {
+    fn path(&self) -> &Path {
+        Path::new(&self.0.as_ref().unwrap().path)
+    }
+}
+
+impl Drop for PreparedBackgroundFile {
+    fn drop(&mut self) {
+        if let Some(background) = &self.0 {
+            let _ = std::fs::remove_file(&background.path);
+        }
+    }
+}
+
+fn prepare_background_file(
+    staged: crate::attachments::StagedAttachment,
+    data_dir: &Path,
+) -> Result<PreparedBackgroundFile, String> {
     let backgrounds_dir = data_dir.join(NEW_THREAD_BACKGROUND_DIR);
     std::fs::create_dir_all(&backgrounds_dir).map_err(|_| {
         "Unable to save the image. Check folder permissions and try again.".to_string()
@@ -397,8 +478,30 @@ pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Re
     let replacement = NewThreadComposerBackground {
         path: destination.to_string_lossy().into_owned(),
         name: staged.name,
+        adjustment: NewThreadBackgroundAdjustment::default(),
     };
+    Ok(PreparedBackgroundFile(Some(replacement)))
+}
+
+fn commit_background(
+    source: &Path,
+    mut prepared: PreparedBackgroundFile,
+    color: Option<roboco_theme::Color>,
+    cx: &mut App,
+) -> Result<(), String> {
+    let data_dir = cx
+        .try_global::<SettingsStore>()
+        .map(|store| store.data_dir.clone())
+        .ok_or_else(|| "Unable to save the image. Restart Roboco and try again.".to_string())?;
+    let backgrounds_dir = data_dir.join(NEW_THREAD_BACKGROUND_DIR);
+    let replacement = prepared.0.as_ref().unwrap().clone();
     let mut next = current(cx);
+    if let Some(previous) = &next.wallpaper_source {
+        wallpaper::remember(&mut next.wallpaper_history, previous);
+    }
+    wallpaper::remember(&mut next.wallpaper_history, source);
+    next.wallpaper_source = Some(source.to_path_buf());
+    next.wallpaper_color = color;
     let previous = next
         .new_thread_composer_background
         .replace(replacement.clone());
@@ -406,13 +509,16 @@ pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Re
     // updates memory first and only logs an I/O failure; for a file-backed
     // setting that order can leave disk pointing at an image we just deleted.
     if next.save(&data_dir).is_err() {
-        let _ = std::fs::remove_file(&destination);
         return Err(
             "Unable to save the image. Check folder permissions and try again.".to_string(),
         );
     }
+    prepared.0.take();
     replace(next, SavePolicy::Immediate, cx);
     remove_managed_new_thread_background(previous.as_ref(), &backgrounds_dir);
+    if current(cx).wallpaper_theme_colors {
+        crate::appearance::apply(cx);
+    }
     cx.refresh_windows();
     Ok(())
 }
@@ -424,6 +530,8 @@ pub fn remove_new_thread_composer_background(cx: &mut App) -> Result<(), String>
         .ok_or_else(|| "Unable to remove the image. Restart Roboco and try again.".to_string())?;
     let mut next = current(cx);
     let previous = next.new_thread_composer_background.take();
+    next.wallpaper_source = None;
+    next.wallpaper_color = None;
     if previous.is_none() {
         return Ok(());
     }
@@ -437,6 +545,9 @@ pub fn remove_new_thread_composer_background(cx: &mut App) -> Result<(), String>
         previous.as_ref(),
         &data_dir.join(NEW_THREAD_BACKGROUND_DIR),
     );
+    if current(cx).wallpaper_theme_colors {
+        crate::appearance::apply(cx);
+    }
     cx.refresh_windows();
     Ok(())
 }
@@ -444,6 +555,19 @@ pub fn remove_new_thread_composer_background(cx: &mut App) -> Result<(), String>
 pub fn set_new_thread_background_effect(effect: NewThreadBackgroundEffect, cx: &mut App) {
     if update(SavePolicy::Immediate, cx, |settings| {
         settings.new_thread_background_effect = effect;
+    }) {
+        cx.refresh_windows();
+    }
+}
+
+pub fn set_new_thread_background_adjustment(
+    adjustment: NewThreadBackgroundAdjustment,
+    cx: &mut App,
+) {
+    if update(SavePolicy::Immediate, cx, |settings| {
+        if let Some(background) = settings.new_thread_composer_background.as_mut() {
+            background.adjustment = adjustment.normalized();
+        }
     }) {
         cx.refresh_windows();
     }
@@ -872,6 +996,17 @@ pub struct UiSettings {
     /// Optional device-local artwork behind the blank new-thread composer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_thread_composer_background: Option<NewThreadComposerBackground>,
+    /// Device-local folder used by the random wallpaper shortcut.
+    pub wallpaper_folder: Option<PathBuf>,
+    /// The source file the active background was installed from.
+    pub wallpaper_source: Option<PathBuf>,
+    /// Most recently displayed sources first; bounded by the shuffle cooldown.
+    pub wallpaper_history: Vec<PathBuf>,
+    /// Derive accents and surface tints from the active wallpaper.
+    pub wallpaper_theme_colors: bool,
+    /// The active wallpaper's dominant colour, extracted at install time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper_color: Option<roboco_theme::Color>,
     /// Non-destructive treatment composited inside the artwork's fade mask.
     pub new_thread_background_effect: NewThreadBackgroundEffect,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
@@ -950,6 +1085,11 @@ impl Default for UiSettings {
             accent: roboco_theme::AccentSelection::default(),
             surface: roboco_theme::SurfacePreference::default(),
             new_thread_composer_background: None,
+            wallpaper_folder: None,
+            wallpaper_source: None,
+            wallpaper_history: Vec::new(),
+            wallpaper_theme_colors: false,
+            wallpaper_color: None,
             new_thread_background_effect: NewThreadBackgroundEffect::None,
             legacy_accent_color: None,
         }
@@ -986,6 +1126,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
     CaptureAppshot,
+    RandomWallpaper,
     SaveFile,
     BrowserReload,
     ToggleSidebar,
@@ -1002,8 +1143,9 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 13 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
         ShortcutId::CaptureAppshot,
+        ShortcutId::RandomWallpaper,
         ShortcutId::SaveFile,
         ShortcutId::BrowserReload,
         ShortcutId::ToggleSidebar,
@@ -1035,6 +1177,7 @@ impl ShortcutId {
     pub fn label(self) -> &'static str {
         match self {
             ShortcutId::CaptureAppshot => "Capture Appshot",
+            ShortcutId::RandomWallpaper => "Random wallpaper",
             ShortcutId::SaveFile => "Save file",
             ShortcutId::BrowserReload => "Reload browser page",
             ShortcutId::ToggleSidebar => "Toggle left sidebar",
@@ -1062,6 +1205,7 @@ impl ShortcutId {
         match self {
             ShortcutId::CaptureAppshot if mac => "ctrl-alt-space",
             ShortcutId::CaptureAppshot => "mod-alt-space",
+            ShortcutId::RandomWallpaper => "mod-u",
             ShortcutId::SaveFile => "mod-s",
             ShortcutId::BrowserReload => "mod-shift-r",
             ShortcutId::ToggleSidebar => "mod-b",
@@ -1109,6 +1253,7 @@ impl ShortcutId {
 pub struct KeymapConfig {
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), serde(skip))]
     pub capture_appshot: String,
+    pub random_wallpaper: String,
     pub save_file: String,
     pub browser_reload: String,
     pub toggle_sidebar: String,
@@ -1132,6 +1277,7 @@ impl Default for KeymapConfig {
     fn default() -> Self {
         Self {
             capture_appshot: ShortcutId::CaptureAppshot.default_combo().into(),
+            random_wallpaper: ShortcutId::RandomWallpaper.default_combo().into(),
             save_file: ShortcutId::SaveFile.default_combo().into(),
             browser_reload: ShortcutId::BrowserReload.default_combo().into(),
             toggle_sidebar: ShortcutId::ToggleSidebar.default_combo().into(),
@@ -1174,6 +1320,7 @@ impl KeymapConfig {
     pub fn get(&self, id: ShortcutId) -> &str {
         match id {
             ShortcutId::CaptureAppshot => &self.capture_appshot,
+            ShortcutId::RandomWallpaper => &self.random_wallpaper,
             ShortcutId::SaveFile => &self.save_file,
             ShortcutId::BrowserReload => &self.browser_reload,
             ShortcutId::ToggleSidebar => &self.toggle_sidebar,
@@ -1197,6 +1344,7 @@ impl KeymapConfig {
     pub fn set(&mut self, id: ShortcutId, combo: String) {
         match id {
             ShortcutId::CaptureAppshot => self.capture_appshot = combo,
+            ShortcutId::RandomWallpaper => self.random_wallpaper = combo,
             ShortcutId::SaveFile => self.save_file = combo,
             ShortcutId::BrowserReload => self.browser_reload = combo,
             ShortcutId::ToggleSidebar => self.toggle_sidebar = combo,
@@ -1504,6 +1652,9 @@ impl UiSettings {
         self.git_history_column_widths = self.git_history_column_widths.clamped();
         self.git_history_column_order = self.git_history_column_order.normalized();
         self.ui_font_size = self.ui_font_size.normalized();
+        if let Some(background) = self.new_thread_composer_background.as_mut() {
+            background.adjustment = background.adjustment.normalized();
+        }
         self.keymap.heal_jump_slots();
         self.keymap.heal_reserved_composer_shortcuts();
         self
@@ -1590,7 +1741,10 @@ impl UiSettings {
                         .get_mut("keymap")
                         .and_then(serde_json::Value::as_object_mut)
                     {
-                        for (id, field) in [(ShortcutId::ToggleFiles, "toggleFiles")] {
+                        for (id, field) in [
+                            (ShortcutId::ToggleFiles, "toggleFiles"),
+                            (ShortcutId::RandomWallpaper, "randomWallpaper"),
+                        ] {
                             let default = platform_combo(id.default_combo());
                             let taken = !keymap.contains_key(field)
                                 && keymap.values().any(|existing| {
@@ -2031,6 +2185,7 @@ mod tests {
             let user = NewThreadComposerBackground {
                 path: dir.path().join("user.png").to_string_lossy().into_owned(),
                 name: "user.png".into(),
+                adjustment: NewThreadBackgroundAdjustment::default(),
             };
             std::fs::write(&user.path, b"user").unwrap();
             update(SavePolicy::Immediate, cx, |settings| {
@@ -2048,6 +2203,7 @@ mod tests {
                         .to_string_lossy()
                         .into_owned(),
                     name: "missing.png".into(),
+                    adjustment: NewThreadBackgroundAdjustment::default(),
                 });
             });
             assert_eq!(active_new_thread_background(cx), None);
@@ -2182,6 +2338,7 @@ mod tests {
             Some(&NewThreadComposerBackground {
                 path: unrelated.to_string_lossy().into_owned(),
                 name: "keep.png".into(),
+                adjustment: NewThreadBackgroundAdjustment::default(),
             }),
             &backgrounds,
         );
@@ -2190,6 +2347,7 @@ mod tests {
             Some(&NewThreadComposerBackground {
                 path: managed.to_string_lossy().into_owned(),
                 name: "owned.png".into(),
+                adjustment: NewThreadBackgroundAdjustment::default(),
             }),
             &backgrounds,
         );
@@ -2199,6 +2357,108 @@ mod tests {
         // guard Option B would have needed: materializing the default into
         // the setting would make it deletable.)
         assert!(default_file.exists());
+    }
+
+    #[test]
+    fn legacy_background_defaults_to_centered_cover_adjustment() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"newThreadComposerBackground":{"path":"managed.png","name":"background.png"}}"#,
+        )
+        .unwrap();
+
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(
+            loaded.new_thread_composer_background.unwrap().adjustment,
+            NewThreadBackgroundAdjustment::default()
+        );
+    }
+
+    #[test]
+    fn background_adjustment_normalizes_invalid_and_out_of_range_values() {
+        let normalized = NewThreadBackgroundAdjustment {
+            focal_x: f32::NAN,
+            focal_y: 2.0,
+            zoom: f32::INFINITY,
+        }
+        .normalized();
+        assert_eq!(
+            normalized,
+            NewThreadBackgroundAdjustment {
+                focal_x: 0.5,
+                focal_y: 1.0,
+                zoom: 1.0,
+            }
+        );
+
+        let clamped = UiSettings {
+            new_thread_composer_background: Some(NewThreadComposerBackground {
+                path: "managed.png".into(),
+                name: "background.png".into(),
+                adjustment: NewThreadBackgroundAdjustment {
+                    focal_x: -1.0,
+                    focal_y: 0.25,
+                    zoom: 99.0,
+                },
+            }),
+            ..Default::default()
+        }
+        .clamped();
+        assert_eq!(
+            clamped.new_thread_composer_background.unwrap().adjustment,
+            NewThreadBackgroundAdjustment {
+                focal_x: 0.0,
+                focal_y: 0.25,
+                zoom: NewThreadBackgroundAdjustment::MAX_ZOOM,
+            }
+        );
+    }
+
+    #[gpui::test]
+    fn background_adjustment_setter_normalizes_and_persists_immediately(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            let settings = UiSettings {
+                new_thread_composer_background: Some(NewThreadComposerBackground {
+                    path: "managed.png".into(),
+                    name: "background.png".into(),
+                    adjustment: NewThreadBackgroundAdjustment::default(),
+                }),
+                ..Default::default()
+            };
+            init(settings, dir.path(), cx);
+            set_new_thread_background_adjustment(
+                NewThreadBackgroundAdjustment {
+                    focal_x: -0.5,
+                    focal_y: 0.7,
+                    zoom: 2.25,
+                },
+                cx,
+            );
+
+            let expected = NewThreadBackgroundAdjustment {
+                focal_x: 0.0,
+                focal_y: 0.7,
+                zoom: 2.25,
+            };
+            assert_eq!(
+                current(cx)
+                    .new_thread_composer_background
+                    .unwrap()
+                    .adjustment,
+                expected
+            );
+            assert_eq!(
+                UiSettings::load(dir.path())
+                    .new_thread_composer_background
+                    .unwrap()
+                    .adjustment,
+                expected
+            );
+        });
     }
 
     #[gpui::test]
@@ -2259,6 +2519,14 @@ mod tests {
             let default_path = default_new_thread_background(cx).unwrap();
             assert!(default_path.is_file());
             install_new_thread_composer_background(&first, cx).unwrap();
+            set_new_thread_background_adjustment(
+                NewThreadBackgroundAdjustment {
+                    focal_x: 0.2,
+                    focal_y: 0.8,
+                    zoom: 2.0,
+                },
+                cx,
+            );
             let old_path = current(cx).new_thread_composer_background.unwrap().path;
             install_new_thread_composer_background(&second, cx).unwrap();
             let settings = current(cx);
@@ -2272,6 +2540,10 @@ mod tests {
             assert_eq!(
                 settings.new_thread_background_effect,
                 NewThreadBackgroundEffect::Ascii
+            );
+            assert_eq!(
+                replacement.adjustment,
+                NewThreadBackgroundAdjustment::default()
             );
             assert!(!Path::new(&old_path).exists());
             assert!(first.exists() && second.exists());
@@ -2469,7 +2741,17 @@ mod tests {
             new_thread_composer_background: Some(NewThreadComposerBackground {
                 path: "/tmp/roboco/new-thread-background.png".into(),
                 name: "background.png".into(),
+                adjustment: NewThreadBackgroundAdjustment {
+                    focal_x: 0.25,
+                    focal_y: 0.75,
+                    zoom: 1.8,
+                },
             }),
+            wallpaper_folder: Some("/tmp/wallpapers".into()),
+            wallpaper_source: Some("/tmp/wallpapers/background.png".into()),
+            wallpaper_history: vec!["/tmp/wallpapers/background.png".into()],
+            wallpaper_theme_colors: false,
+            wallpaper_color: None,
             new_thread_background_effect: NewThreadBackgroundEffect::Ascii,
             legacy_accent_color: None,
         };
@@ -2480,6 +2762,9 @@ mod tests {
         assert!(json.contains(r#""codeFencesFitContent": true"#));
         assert!(json.contains(r#""openWebLinksInRoboco": false"#));
         assert!(json.contains(r#""newThreadBackgroundEffect": "ascii""#));
+        assert!(json.contains(r#""focalX": 0.25"#));
+        assert!(json.contains(r#""focalY": 0.75"#));
+        assert!(json.contains(r#""zoom": 1.8"#));
         // Option A: a default-background install persists nothing for it —
         // the field is absent from a default settings file.
         let default_json = serde_json::to_value(UiSettings::default()).unwrap();
@@ -2697,7 +2982,10 @@ mod tests {
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.appearance, crate::appearance::AppearanceMode::System);
         assert_eq!(loaded.accent, roboco_theme::AccentSelection::ThemeDefault);
-        assert_eq!(loaded.surface, roboco_theme::SurfacePreference::ThemeDefault);
+        assert_eq!(
+            loaded.surface,
+            roboco_theme::SurfacePreference::ThemeDefault
+        );
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(loaded.sidebar_pinned_session_ids_by_profile.is_empty());
         assert!(!loaded.sound_enabled, "other keys still parse");
