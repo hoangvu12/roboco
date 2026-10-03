@@ -24,6 +24,7 @@ import { FooterChip, FooterLabel } from "./ui/Chip";
 import { PickerSearchField, useCursorList } from "./ui/CursorList";
 import { MenuRowNav } from "./ui/MenuRows";
 import { PickerCard } from "./ui/PickerCard";
+import type { AnchorHelperId, AnchorPlacement } from "./base/popover";
 import { ErrorRow, SkeletonRows } from "./ui/Skeleton";
 
 /**
@@ -221,6 +222,15 @@ export interface DeviceChipProps {
   readonly now: number;
   /** The label with no device row — "Select device" in the footer, "This device" on the canvas (pickers.rs:2426). */
   readonly fallbackLabel?: string;
+  /**
+   * The popover's placement, passed through to the card (wpn-03): the
+   * canvas target row passes `anchorAboveEnd` (the desktop's
+   * `attach_overlay_end`, pickers.rs:3175); the footer's Layer B — a
+   * web-only surface, the desktop's draft footer has no device chip
+   * (:3372-3373 — "Space/Device popovers mount in the floating row above
+   * the pill") — keeps the start-aligned default.
+   */
+  readonly placement?: AnchorPlacement | AnchorHelperId;
 }
 
 export function DeviceChip({
@@ -229,6 +239,7 @@ export function DeviceChip({
   ownDeviceId,
   now,
   fallbackLabel = "Select device",
+  placement = "anchorAbove",
 }: DeviceChipProps) {
   const [open, setOpen] = useState(false);
 
@@ -252,7 +263,7 @@ export function DeviceChip({
     <PickerCard
       open={open}
       onOpenChange={setOpen}
-      placement="anchorAbove"
+      placement={placement}
       role="dialog"
       ariaLabel="Devices"
       width={224}
@@ -524,9 +535,18 @@ export interface CheckoutChipProps {
   readonly checkout: CheckoutKind;
   readonly pickedRefHasWorktree: boolean;
   readonly onPick: (kind: CheckoutKind) => void;
+  /**
+   * The popover's placement, passed through to the card (wpn-03): the
+   * canvas git row passes `anchorBelow` (the desktop's
+   * `attach_overlay_below`, pickers.rs:3242-3258 — below always, no
+   * flip; `measure_trigger` only sizes the height budget); the draft
+   * footer keeps the above default (the desktop's adaptive
+   * `attach_overlay`, :3404-3416).
+   */
+  readonly placement?: AnchorPlacement | AnchorHelperId;
 }
 
-export function CheckoutChip({ checkout, pickedRefHasWorktree, onPick }: CheckoutChipProps) {
+export function CheckoutChip({ checkout, pickedRefHasWorktree, onPick, placement = "anchorAbove" }: CheckoutChipProps) {
   const [open, setOpen] = useState(false);
 
   // `checkout_label` (pickers.rs:1280-1304): "New worktree" |
@@ -539,7 +559,7 @@ export function CheckoutChip({ checkout, pickedRefHasWorktree, onPick }: Checkou
     <PickerCard
       open={open}
       onOpenChange={setOpen}
-      placement="anchorAbove"
+      placement={placement}
       role="dialog"
       ariaLabel="Checkout kind"
       width={224}
@@ -644,6 +664,14 @@ export interface RefChipProps {
   /** The picked row — the parent applies `applyRefPick` (the pick_ref port). */
   readonly onPick: (row: RepoRef) => void;
   readonly onRefs: (rows: readonly RepoRef[]) => void;
+  /**
+   * The popover's placement, passed through to the card (wpn-03): the
+   * canvas git row passes `anchorBelow` (the desktop's
+   * `attach_overlay_below`, pickers.rs:3242-3258 — below always, no
+   * flip); the draft footer keeps the above default (the desktop's
+   * adaptive `attach_overlay`, :3404-3416).
+   */
+  readonly placement?: AnchorPlacement | AnchorHelperId;
 }
 
 export function RefChip({
@@ -657,6 +685,7 @@ export function RefChip({
   autoLoad = false,
   onPick,
   onRefs,
+  placement = "anchorAbove",
 }: RefChipProps) {
   const [open, setOpen] = useState(false);
   const [refs, setRefs] = useState<RefsState>({ rows: [], loading: false, error: null });
@@ -794,7 +823,7 @@ export function RefChip({
     <PickerCard
       open={open}
       onOpenChange={setOpen}
-      placement="anchorAbove"
+      placement={placement}
       role="dialog"
       ariaLabel="Ref"
       width={320}
@@ -922,7 +951,14 @@ function BranchCard({
       ) : filtered.length === 0 ? (
         <div className="picker-empty-note">No refs found.</div>
       ) : (
-        <div className="picker-list" ref={listRef}>
+        <div
+          className="picker-list"
+          ref={listRef}
+          // The whole list dims while a SwitchRef runs (wpn-03 — the
+          // desktop dims every row to 0.55, pickers.rs:3666; the per-row
+          // "switching…" tag above rides the dim, never replaces it).
+          data-switching={switching !== null ? "true" : undefined}
+        >
           {filtered.map((row, ix) => (
             <MenuRowNav
               key={row.name}

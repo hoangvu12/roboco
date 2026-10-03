@@ -143,6 +143,10 @@ export function NewThreadTargetSelectors() {
         ownDeviceId={target.ownDeviceId}
         now={now}
         fallbackLabel="This device"
+        // End-aligned on the canvas (wpn-03 — the desktop's
+        // `attach_overlay_end`, pickers.rs:3175); the footer's Layer B
+        // keeps the start default.
+        placement="anchorAboveEnd"
       />
       <ProjectChip
         spaces={target.spaces}
@@ -236,6 +240,11 @@ export function NewThreadGitSelectors() {
         checkout={draft.checkout}
         pickedRefHasWorktree={pickedRefHasWorktree}
         onPick={(kind) => setDraft(applyCheckoutPick(kind, draft))}
+        // Below ALWAYS, no flip (wpn-03 — the desktop's
+        // `attach_overlay_below`, pickers.rs:3242-3258: the floating row
+        // sits above the pill, so a card opening upward covers the input);
+        // the draft footer keeps the above default.
+        placement="anchorBelow"
       />
       <RefChip
         key={gitOwnerKey}
@@ -249,6 +258,7 @@ export function NewThreadGitSelectors() {
         autoLoad={space.gitDetected}
         onPick={(row) => setDraft(applyRefPick(row, draft))}
         onRefs={handleRefs}
+        placement="anchorBelow"
       />
     </div>
   );

@@ -9044,8 +9044,13 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
 }
 
-/* Every row dims while any switch is in flight (§2.4.1). */
-.picker-list[data-switching] .menu-row {
+/* The whole ref list dims while a SwitchRef runs (wpn-03 — pickers.rs:3666:
+   the desktop dims every ROW to 0.55; the per-row "switching…" tag above
+   rides the dim). Ticket 10 shipped this selector dead — the attr never
+   rendered; wpn-03 wires `data-switching` onto the BranchCard's list and
+   folds the dim onto the container (the ticket's whole-list form — the
+   same paint, only rows live inside the list). */
+.picker-list[data-switching] {
   opacity: 0.55;
 }
 
