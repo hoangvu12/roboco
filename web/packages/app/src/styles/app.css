@@ -4242,6 +4242,15 @@ a:focus-visible,
 
 .composer-pill[data-mode="expanded"] .composer-attach {
   position: absolute;
+  /* The actions strip is a full-width (left:0/right:0) absolute sibling
+     that comes AFTER this button in the DOM and "reserves" the slot via
+     its 42px left padding. Padding boxes still hit-test, so without this
+     the transparent strip paints over the paperclip and swallows every
+     click/tap (new-chat canvas and phone are ALWAYS expanded, so the
+     button read as dead there). z-index lifts the button above the strip;
+     the strip's own interactive children (model chip, Send) sit far right
+     and never overlap the 12–40px slot. */
+  z-index: 1;
 }
 
 .composer-attach:hover {
