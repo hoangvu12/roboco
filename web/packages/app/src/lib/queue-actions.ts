@@ -188,6 +188,93 @@ export function mintEditorInstanceId(): string {
   return mintId();
 }
 
+// ── Edit-lease failure copy (the desktop's `Composer::failure` arms) ────
+//
+// On the desktop every edit-lease failure lands in `Composer::failure` —
+// the red notice chip above the composer pill (`queue.rs:1458-1470` begin,
+// `:1557-1636` finish, `:1680-1685` renewal). The strings live here,
+// placement-agnostic: the mappers key on the store's normalized outcome
+// kinds (`BeginLeaseOutcome`/`FinishLeaseOutcome`, state/queue-store.ts),
+// and the callers route the copy to the composer's chat-scoped failure
+// channel — never a sidebar toast.
+
+/**
+ * The begin-edit failure copy (queue.rs:1458-1470): `locked` → another
+ * device holds the lease, `missing` → the row left the queue. `acquired`
+ * returns null — the edit proceeds, no notice. The overloads carry which
+ * kinds are failure arms, so a `kind !== "acquired"` guard both narrows
+ * the outcome and yields a non-null message.
+ */
+export function describeBeginEditFailure(kind: "acquired"): null;
+export function describeBeginEditFailure(kind: "locked" | "missing"): string;
+export function describeBeginEditFailure(kind: "acquired" | "locked" | "missing"): string | null;
+export function describeBeginEditFailure(
+  kind: "acquired" | "locked" | "missing",
+): string | null {
+  switch (kind) {
+    case "locked":
+      return "That queued message is being edited on another device";
+    case "missing":
+      return "That queued message is no longer available";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The finish-edit failure copy (queue.rs:1609-1634): `conflict`/`missing`
+ * keep the edit locally, the unknown arm (`lost`) keeps the text in the
+ * editor. The four terminal arms return null — the edit closed cleanly.
+ */
+export function describeFinishEditFailure(
+  kind: "committed" | "cancelled" | "discarded" | "released",
+): null;
+export function describeFinishEditFailure(kind: "conflict" | "lost" | "missing"): string;
+export function describeFinishEditFailure(
+  kind: "committed" | "cancelled" | "discarded" | "released" | "conflict" | "lost" | "missing",
+): string | null;
+export function describeFinishEditFailure(
+  kind: "committed" | "cancelled" | "discarded" | "released" | "conflict" | "lost" | "missing",
+): string | null {
+  switch (kind) {
+    case "conflict":
+      return "This message changed on another device; your edit was kept locally";
+    case "missing":
+      return "The queued message was removed; your edit was kept locally";
+    case "lost":
+      return "The edit lease changed; your text is still in the editor";
+    default:
+      return null;
+  }
+}
+
+/**
+ * The renewal failure copy (queue.rs:1680-1685): a non-renewed lease means
+ * the row's protection expired and now needs review. `renewed` returns
+ * null — the heartbeat keeps going.
+ */
+export function describeRenewEditFailure(kind: "renewed"): null;
+export function describeRenewEditFailure(kind: "lost" | "missing"): string;
+export function describeRenewEditFailure(kind: "renewed" | "lost" | "missing"): string | null;
+export function describeRenewEditFailure(
+  kind: "renewed" | "lost" | "missing",
+): string | null {
+  return kind === "renewed" ? null : "Edit protection expired; review this message before sending";
+}
+
+/** Finish with no local lease state (queue.rs:1559) — the arm the web used
+ *  to swallow silently: the desktop's `let ... else` raises this instead of
+ *  returning quietly, and the text stays in the editor. */
+export const QUEUE_EDIT_LEASE_LOST_MESSAGE =
+  "The edit lease was lost; your text is still in the editor";
+
+/** Begin's transport failure (queue.rs:1468). */
+export const QUEUE_EDIT_CONNECT_MESSAGE = "Connect to the chat host to edit this message";
+
+/** Finish's transport failure (queue.rs:1636). */
+export const QUEUE_EDIT_UNREACHABLE_MESSAGE =
+  "Couldn't reach the chat host; your edit is still in the editor";
+
 /** User-facing mutation failure copy (mirrors chat-actions describeMutateError). */
 export const describeQueueError = describeMutateError;
 

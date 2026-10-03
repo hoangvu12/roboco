@@ -3,10 +3,16 @@ import { RpcError } from "@roboco/engine-client";
 import type { BeginQueueEditOutcome, FinishQueueEditOutcome, RenewQueueEditOutcome } from "@roboco/proto";
 import {
   beginQueuedMessageEdit,
+  describeBeginEditFailure,
+  describeFinishEditFailure,
   describeQueueError,
+  describeRenewEditFailure,
   finishQueuedMessageEdit,
   mintEditorInstanceId,
   moveQueuedMessage,
+  QUEUE_EDIT_CONNECT_MESSAGE,
+  QUEUE_EDIT_LEASE_LOST_MESSAGE,
+  QUEUE_EDIT_UNREACHABLE_MESSAGE,
   queueMessage,
   removeQueuedMessage,
   renewQueuedMessageEdit,
@@ -254,6 +260,49 @@ describe("mintEditorInstanceId", () => {
     const b = mintEditorInstanceId();
     expect(a).not.toBe(b);
     expect(a.length).toBeGreaterThan(0);
+  });
+});
+
+describe("edit-lease failure copy (queue.rs → the composer's failure notice)", () => {
+  // Ticket 06: the desktop lands every edit-lease failure in
+  // `Composer::failure` (the red notice chip); the web ports the strings
+  // verbatim, placement-agnostically — the mappers take the store's
+  // normalized outcome kinds, the callers decide where the copy lands.
+  it("begin: locked → the cross-device copy, missing → the gone copy, acquired stays silent", () => {
+    expect(describeBeginEditFailure("locked")).toBe("That queued message is being edited on another device");
+    expect(describeBeginEditFailure("missing")).toBe("That queued message is no longer available");
+    expect(describeBeginEditFailure("acquired")).toBe(null);
+  });
+
+  it("finish: conflict/missing keep the edit locally; the unknown arm keeps the text in the editor", () => {
+    expect(describeFinishEditFailure("conflict")).toBe(
+      "This message changed on another device; your edit was kept locally",
+    );
+    expect(describeFinishEditFailure("missing")).toBe(
+      "The queued message was removed; your edit was kept locally",
+    );
+    expect(describeFinishEditFailure("lost")).toBe("The edit lease changed; your text is still in the editor");
+  });
+
+  it("finish: the four terminal arms stay silent", () => {
+    expect(describeFinishEditFailure("committed")).toBe(null);
+    expect(describeFinishEditFailure("cancelled")).toBe(null);
+    expect(describeFinishEditFailure("discarded")).toBe(null);
+    expect(describeFinishEditFailure("released")).toBe(null);
+  });
+
+  it("renewal: a non-renewed lease asks for review; a renewed one stays silent", () => {
+    expect(describeRenewEditFailure("lost")).toBe("Edit protection expired; review this message before sending");
+    expect(describeRenewEditFailure("missing")).toBe("Edit protection expired; review this message before sending");
+    expect(describeRenewEditFailure("renewed")).toBe(null);
+  });
+
+  it("the arms without an RPC outcome: the lost-lease precondition and the two transport failures", () => {
+    // queue.rs:1559 — the arm the web silently swallowed (chat-page's
+    // silent return), plus the begin/finish Err arms.
+    expect(QUEUE_EDIT_LEASE_LOST_MESSAGE).toBe("The edit lease was lost; your text is still in the editor");
+    expect(QUEUE_EDIT_CONNECT_MESSAGE).toBe("Connect to the chat host to edit this message");
+    expect(QUEUE_EDIT_UNREACHABLE_MESSAGE).toBe("Couldn't reach the chat host; your edit is still in the editor");
   });
 });
 
