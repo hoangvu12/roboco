@@ -19,7 +19,7 @@ import {
   rememberReasoningForModel,
   toggleModelFavorite,
 } from "../lib/composer-draft";
-import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
+import { effectiveReasoningLadder, fastModeValues, fastTierOn, traitsCustomized, traitsSummary } from "../lib/traits-summary";
 import { flyoutOpensLeft } from "../lib/flyout-side";
 import {
   MODEL_LIST_HEIGHT,
@@ -31,7 +31,6 @@ import {
 import {
   compactEffort,
   compactHiddenOptions,
-  fastModeValues,
   offeredHarnesses,
   REASONING_SETTING_ID,
   scopedModelRows,
@@ -382,6 +381,10 @@ export function ComposerPickers(props: ComposerPickersProps) {
     catalogLoading(harnesses) && chatConfig === null && defaults.harness === null && !noAgents;
   const suffix = traitsSummary(selectedModel, draft.reasoning, draft.modelOptions);
   const suffixActive = traitsCustomized(selectedModel, draft.reasoning, ladder, draft.modelOptions);
+  // The chip's `fast` local (pickers.rs:5490-5510): the fast tier resolves
+  // against the same selections the summary reads — the glyph rides the
+  // resolved model, so an absent pick (mp-02) never carries a stale tier.
+  const fastTier = fastTierOn(selectedModel, draft.modelOptions);
 
   // Force: the enabled set moves under us (Settings → Agents, possibly from
   // another viewer) — every open revalidates, keeping current rows visible
@@ -494,6 +497,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
               <span className={`identity-chip-suffix ${suffixActive ? "identity-chip-suffix-active" : ""}`}>
                 {suffix}
               </span>
+            )}
+            {fastTier && !noAgents && (
+              <Icon name="fastTierBold" size={13} className="identity-chip-fast" />
             )}
           </button>
         }

@@ -1463,3 +1463,40 @@ describe("useDraftModelReconciliation (the composer's reconciliation owner)", ()
     expect(source).toContain("useDraftModelReconciliation(models.rows, harnesses.rows, setDraft)");
   });
 });
+
+// ── The identity chip's CSS contract (mp-03) ─────────────────────────────────
+
+describe("the identity chip's CSS contract (mp-03)", () => {
+  // (cwd is the app package root under vitest; jsdom rewrites import.meta.url)
+  const css = readFileSync(join(process.cwd(), "src/styles/app.css"), "utf8");
+
+  /** The declarations of a top-level (column-0) rule for a selector. */
+  function topLevelRule(selector: string): string {
+    const match = css.match(new RegExp(`^${selector}\\s*\\{([^}]*)\\}`, "m"));
+    const rule = match?.[1];
+    if (rule === undefined) {
+      throw new Error(`top-level ${selector} rule not found in app.css`);
+    }
+    return rule;
+  }
+
+  it("the model trigger pads 6px inline, not the pill's 10px", () => {
+    // pickers.rs:2931-2937: the HarnessModel trigger's own padding
+    // participates in the visible gap beside the composer's actions, so it
+    // is px 6 — every other trigger keeps the pill's wider px 10 hit area,
+    // and the web's `.identity-chip` is the model trigger alone.
+    const rule = topLevelRule("\\.identity-chip");
+    expect(rule).toMatch(/padding-inline:\s*6px;/);
+    expect(rule).not.toMatch(/padding-inline:\s*10px;/);
+  });
+
+  it("the fast glyph is a 13px accent mark pinned after the suffix", () => {
+    // pickers.rs:5523-5530: FAST_TIER_BOLD at 13px in the accent color,
+    // flex-none, appended after the suffix when the fast tier is on.
+    const rule = topLevelRule("\\.identity-chip-fast");
+    expect(rule).toMatch(/width:\s*13px;/);
+    expect(rule).toMatch(/height:\s*13px;/);
+    expect(rule).toMatch(/color:\s*var\(--rb-accent\);/);
+    expect(rule).toMatch(/flex:\s*none;/);
+  });
+});

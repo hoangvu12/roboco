@@ -4734,9 +4734,12 @@ a:focus-visible,
 
 /*
  * The ghost pill (`trigger_chip`, after roboco's composer/styles.tsx `pill`):
- * `h-8 rounded-lg px-2.5 gap-1.5 text-[12px] font-medium`, 16px icon, no
+ * `h-8 rounded-lg gap-1.5 text-[12px] font-medium`, 16px icon, no
  * border and no caret — the actions row stays quiet. The wash and the text
- * brighten ride the same 150ms blend.
+ * brighten ride the same 150ms blend. The inline padding is the desktop
+ * model trigger's own 6px (pickers.rs:2931-2937) — it participates in the
+ * visible gap beside the composer's actions, where the pill's px-2.5
+ * belongs to the triggers that keep their wider independent hit areas.
  */
 .identity-chip {
   height: 32px;
@@ -4745,7 +4748,7 @@ a:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding-inline: 10px;
+  padding-inline: 6px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -4795,6 +4798,18 @@ a:focus-visible,
 
 .identity-chip-suffix-active {
   color: color-mix(in srgb, var(--rb-text) 85%, transparent);
+}
+
+/*
+ * The fast tier's glyph (pickers.rs:5523-5530): FAST_TIER_BOLD at 13px in
+ * the accent color, flex-none, appended after the suffix when the tier is
+ * on — the run's speed reads at a glance without opening the card.
+ */
+.identity-chip-fast {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--rb-accent);
 }
 
 /*

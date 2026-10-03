@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { HarnessDescriptor, Model, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, Model, ModelOption, ReasoningLevel } from "@roboco/proto";
 import {
   clampReasoning,
   defaultReasoning,
   effectiveReasoningLadder,
+  fastModeValues,
+  fastTierOn,
   offeredOptions,
   reasoningLabel,
   traitsCustomized,
@@ -170,5 +172,80 @@ describe("traits", () => {
     expect(traitsCustomized(MODEL, defaultReasoning(LADDER), LADDER, { speed: "ludicrous" })).toBe(false);
     // A non-default level on a medium-first ladder counts.
     expect(traitsCustomized(MODEL, "medium", LADDER, {})).toBe(true);
+  });
+
+  it("every fast-mode encoding resolves the same on/off pair", () => {
+    const option = (id: string, choices: readonly string[], defaultChoice: string): ModelOption => ({
+      id,
+      label: id,
+      choices: choices.map((choice) => ({ id: choice, label: choice })),
+      defaultChoice,
+    });
+    // Codex tier, Claude toggle, the speed option and the snake_case toggle.
+    expect(fastModeValues(option("serviceTier", ["default", "fast"], "default"))).toEqual({
+      on: "fast",
+      off: "default",
+    });
+    expect(fastModeValues(option("fastMode", ["off", "on"], "off"))).toEqual({ on: "on", off: "off" });
+    expect(fastModeValues(option("speed", ["standard", "fast"], "standard"))).toEqual({
+      on: "fast",
+      off: "standard",
+    });
+    // Cursor's true/false switch, off and on by default: both toggle.
+    expect(fastModeValues(option("fast", ["false", "true"], "false"))).toEqual({
+      on: "true",
+      off: "false",
+    });
+    expect(fastModeValues(option("fast", ["false", "true"], "true"))).toEqual({
+      on: "true",
+      off: "false",
+    });
+    // Not fast mode: other toggles, including Cursor's true/false ones.
+    expect(fastModeValues(option("thinking", ["off", "on"], "off"))).toBeNull();
+    expect(fastModeValues(option("thinking", ["false", "true"], "true"))).toBeNull();
+    expect(fastModeValues(option("contextWindow", ["200k", "1m"], "200k"))).toBeNull();
+  });
+
+  it("the fast tier flag rides the summary: on spells Fast and the glyph, off neither", () => {
+    // The chip's `fast` local (pickers.rs:5490-5510): the fast-mode option
+    // resolved to its effective choice (the saved pick when one is a
+    // string, else the default); the accent glyph rides exactly when that
+    // choice is the on value (pickers.rs:5523-5530).
+    const on: Record<string, unknown> = { context: "1m", speed: "fast" };
+    expect(traitsSummary(MODEL, "high", on)).toBe("High · 1M · Fast");
+    expect(fastTierOn(MODEL, on)).toBe(true);
+    // The default speed: the summary still names the effective choices,
+    // but neither a "Fast" part nor the glyph.
+    expect(traitsSummary(MODEL, null, {})).toBe("Standard · Normal");
+    expect(fastTierOn(MODEL, {})).toBe(false);
+    // An explicit off pick reads the same as the default.
+    expect(fastTierOn(MODEL, { speed: "normal" })).toBe(false);
+    // A stale id is not the on value — a vanished choice carries no glyph.
+    expect(fastTierOn(MODEL, { speed: "ludicrous" })).toBe(false);
+    // No model: nothing to resolve a tier on.
+    expect(fastTierOn(undefined, { speed: "fast" })).toBe(false);
+  });
+
+  it("cursor's true/false fast switch defaults on — the glyph rides an unconfigured chip", () => {
+    // Cursor runs some models fast by default (fast_mode_values' off rule).
+    const cursor: Model = {
+      id: "cursor-m",
+      label: "Cursor M",
+      description: null,
+      reasoningLevels: [],
+      options: [
+        {
+          id: "fast",
+          label: "Fast mode",
+          choices: [
+            { id: "false", label: "Off" },
+            { id: "true", label: "On" },
+          ],
+          defaultChoice: "true",
+        },
+      ],
+    };
+    expect(fastTierOn(cursor, {})).toBe(true);
+    expect(fastTierOn(cursor, { fast: "false" })).toBe(false);
   });
 });
