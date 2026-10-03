@@ -28,7 +28,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` §3.
 
@@ -70,7 +70,54 @@ muting).
 
 ## 3. Acceptance checklist
 
-- [ ] New chat / New project / Settings rows show their shortcut badge
-- [ ] Hovering a row moves the highlight; keyboard continues from it
-- [ ] Archived chat rows' icons dim (active restores)
-- [ ] Tests + full app suite green
+- [x] New chat / New project / Settings rows show their shortcut badge
+- [x] Hovering a row moves the highlight; keyboard continues from it
+- [x] Archived chat rows' icons dim (active restores)
+- [x] Tests + full app suite green
+
+## Comments
+
+**Implemented on `ticket/wpn-04-command-palette-rows`** (base `f375fcb0`;
+implementation `005fb5dc`, review pass on top). What landed:
+
+- Badges: `actionBadge(actionId, keymap, isMac)` (exported pure helper in
+  `components/command-palette.tsx`) — `newSession`→new-chat,
+  `newProject`→new-project, settings→literal `"mod-,"`, theme→null;
+  unparseable/cleared rebinds fall back to the default via `validOrDefault`.
+  Rows render `<KbdHint>` after a `flex: 1` label wrapper (badge outside
+  `Highlighted`, so it is not a search target).
+- Hover: `CommandPaletteStore.hover(ix)` —
+  `if (!open || ix === active) return; active = ix; commit()` — wired from
+  both row kinds' `onMouseMove` (motion only). The keyboard reveal
+  (`scroll_to_item`) moved from a `state.active` effect into the up/down
+  key arms so hover never scrolls; wrap/enter-latch/esc semantics are
+  byte-identical otherwise (diff-verified) and query-edit/open no longer
+  scroll — which also matches the desktop, which only scrolls in the
+  key arms.
+- Archived muting: `command-chat-row-archived` on ChatRow + CSS (harness
+  icon 0.4 restored to 0.8 under active; optional web-consistency 55%
+  title dim scoped to the title line, mirroring the sidebar).
+
+Verification (web/packages/app):
+
+- `pnpm exec vitest run tests/command-palette.test.ts` → 25/25 (was 18;
+  each TDD cycle red→green).
+- Adjacent CSS-parsing suites (`sidebar-fade`, `shortcuts`, `archived`,
+  `archived-section-rows`) → 103/103.
+- `pnpm exec vitest run` (full app suite) → 146 files / 2200 tests, all
+  green.
+- `pnpm exec tsc --noEmit` → exit 0.
+
+Spot-verified-at-parity items confirmed untouched: `src/lib/` diff is
+empty (sort/cap-30); keyDown's wrap/enter-latch/esc lines identical apart
+from the reveal calls; sections/empty/footer copy zero diff; action order
+still pinned by the unchanged `actionsFor` tests.
+
+Known adjacent debt (pre-existing, NOT introduced here): the keyboard
+reveal indexes `listRef.children.item(active)`, but the section separator
+is a list child on the web (the desktop nests it inside the row wrapper),
+so the reveal targets one slot above for chat rows while the Actions
+section renders. Behavior is preserved verbatim by this ticket; fix
+belongs in its own ticket (needs a uniform row-identity attribute —
+action rows and chat rows carry different `data-rb-row-key` prefixes —
+plus a regression test).

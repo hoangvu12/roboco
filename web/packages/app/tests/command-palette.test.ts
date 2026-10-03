@@ -317,9 +317,15 @@ describe("CommandPaletteStore (toggle/close/activate)", () => {
 
   it("hovering the active row commits nothing; a closed store ignores hover", () => {
     commandPaletteStore.open();
-    const before = commandPaletteStore.getSnapshot();
+    // The observable no-op contract is the store's own seam: no listener
+    // fires (and the highlight stays put) when the hovered row is already
+    // the active one.
+    const listener = vi.fn();
+    const unsubscribe = commandPaletteStore.subscribe(listener);
     commandPaletteStore.hover(0);
-    expect(commandPaletteStore.getSnapshot()).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+    expect(commandPaletteStore.getSnapshot().active).toBe(0);
+    unsubscribe();
     commandPaletteStore.forceClose();
     commandPaletteStore.hover(2);
     expect(commandPaletteStore.getSnapshot()).toEqual({
