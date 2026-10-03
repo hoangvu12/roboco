@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "@roboco/icons";
 import type { InvocationRow } from "../../lib/invocations";
 import { skillDisplayName, slashDescription } from "../../lib/invocations";
+import { rowUnavailable } from "../../lib/native";
 import { MenuRow } from "../ui/MenuRows";
 import { MenuScrollbar } from "../ui/Scrollbar";
 import { SkeletonRows } from "../ui/Skeleton";
@@ -33,6 +34,8 @@ export interface SlashPopupProps {
   readonly supported: boolean;
   /** The harness's `separate_from_slash` preference (empty-state wording). */
   readonly separateFromSlash: boolean;
+  /** The native conversation has active work: `idleOnly` rows show unavailable. */
+  readonly busy?: boolean;
   /** Clicking (or Enter/Tab on) row `ix` of the FILTERED list accepts it. */
   readonly onAccept: (rowIx: number) => void;
   readonly onDismiss: () => void;
@@ -83,6 +86,7 @@ export function SlashPopup(props: SlashPopupProps) {
               <SlashRow
                 key={`${row.invocation.kind}-${row.name}`}
                 row={row}
+                unavailable={rowUnavailable(row, props.busy === true)}
                 selected={props.active === listIx}
                 onAccept={() => props.onAccept(listIx)}
               />
@@ -115,10 +119,12 @@ export function SlashPopup(props: SlashPopupProps) {
  * words, commands show `/{name}`), and the description (truncated). */
 function SlashRow({
   row,
+  unavailable,
   selected,
   onAccept,
 }: {
   readonly row: InvocationRow;
+  readonly unavailable: string | null;
   readonly selected: boolean;
   readonly onAccept: () => void;
 }) {
@@ -128,8 +134,11 @@ function SlashRow({
     <MenuRow
       fadeKey={`slash-result-${row.invocation.kind}-${row.name}`}
       selected={selected}
-      onClick={onAccept}
+      onClick={unavailable === null ? onAccept : () => {}}
       className="composer-completion-row"
+      aria-disabled={unavailable !== null ? true : undefined}
+      title={unavailable ?? undefined}
+      style={unavailable !== null ? { opacity: 0.55 } : undefined}
     >
       <span className="composer-completion-row-icon">
         <Icon
@@ -139,7 +148,7 @@ function SlashRow({
         />
       </span>
       <span className="slash-row-name">{name}</span>
-      <span className="slash-row-description">{slashDescription(row)}</span>
+      <span className="slash-row-description">{unavailable ?? slashDescription(row)}</span>
     </MenuRow>
   );
 }

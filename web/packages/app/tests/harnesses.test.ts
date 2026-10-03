@@ -145,6 +145,7 @@ describe("page copy tables (harnesses.rs:41-68)", () => {
       "pi",
       "opencode",
       "antigravity",
+      "mimir",
       "mock",
     ] as const) {
       expect(blurb(id).length).toBeGreaterThan(0);

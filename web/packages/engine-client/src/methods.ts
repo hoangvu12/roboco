@@ -19,6 +19,17 @@ export const WATCH_CONNECTIVITY = "WatchConnectivity";
 export const WATCH_DOC_MESSAGES = "WatchDocMessages";
 /** Fetch a tool sidecar blob (`{blobRef}` → `{text}`) - full output/diff text. */
 export const FETCH_TOOL_BLOB = "FetchToolBlob";
+/** Native conversations (Mimir), reads only; controls travel as `native` commands through QueueCommand
+ *  (crates/rpc/src/lib.rs). `{force?}` → `NativeReadiness` for the routed engine's device. */
+export const GET_NATIVE_READINESS = "GetNativeReadiness";
+/** `{chatId}` → `NativeChatCatalog` from the chat's attached conversation. */
+export const GET_NATIVE_CATALOG = "GetNativeCatalog";
+/** `{chatId}` → `NativePlanArtifact | null` with the plan's Markdown. */
+export const GET_NATIVE_PLAN = "GetNativePlan";
+/** `{chatId}` → `NativeChild[]`, the canonical inventory. */
+export const LIST_NATIVE_CHILDREN = "ListNativeChildren";
+/** `{chatId, handle, attempt}` → that attempt's `NativeChildOutcome`, or `null` while it runs. */
+export const GET_NATIVE_CHILD_OUTCOME = "GetNativeChildOutcome";
 /** Dev-server discovery for one chat: streams `PreviewSnapshot` (crates/proto/src/preview.rs). */
 export const WATCH_PREVIEWS = "WatchPreviews";
 /** The one stream that answers a `{stream: true}` readiness ack before items. */
@@ -81,6 +92,8 @@ export const LIST_SKILLS = "ListSkills";
 export const SEARCH_FILES = "SearchFiles";
 /** Composer surface: QueueCommand takes `{chatId, command, transfers}`; command is one of the SessionCommandPayload variants. */
 export const QUEUE_COMMAND = "QueueCommand";
+/** `{chatId, commandId}` → `SessionCommandEntry | null`, without replaying work. */
+export const GET_COMMAND = "GetCommand";
 /** Failed-send retry (crates/rpc/src/lib.rs:54): `{chatId}` — the engine
  *  re-issues the chat's dead Run/Steer commands under their original message
  *  ids; the user-entry pre-write dedupes by id, so the optimistic echo acks

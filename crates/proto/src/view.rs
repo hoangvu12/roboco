@@ -333,6 +333,24 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
             None if name == "Agent" => ("Agent", String::new()),
             None => ("Tool", name.clone()),
         },
+        // The host's own title is the detail; the label is its typed kind.
+        ToolCall::Native { view } => (native_kind_label(view.kind), view.title.clone()),
+    }
+}
+
+fn native_kind_label(kind: crate::NativeToolKind) -> &'static str {
+    use crate::NativeToolKind as K;
+    match kind {
+        K::Shell => "Run",
+        K::FileRead | K::ImageView => "Read",
+        K::FileChange => "Edit",
+        K::FileContentSearch | K::FilePathSearch => "Search",
+        K::Web => "Web",
+        K::Agent => "Agent",
+        K::Mcp => "MCP",
+        K::Plan => "Plan",
+        K::Answer | K::UserRequest => "Ask",
+        K::Status | K::Generic => "Tool",
     }
 }
 
@@ -374,6 +392,23 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
             ToolCall::WebFetch { .. } => fetches += 1,
             ToolCall::Todo { .. } => todos += 1,
             ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => other += 1,
+            ToolCall::Native { view } => match view.kind {
+                crate::NativeToolKind::Shell => commands += 1,
+                crate::NativeToolKind::FileRead | crate::NativeToolKind::ImageView => reads += 1,
+                crate::NativeToolKind::FileContentSearch
+                | crate::NativeToolKind::FilePathSearch => searches += 1,
+                crate::NativeToolKind::Web => fetches += 1,
+                crate::NativeToolKind::FileChange => {
+                    let path = view
+                        .locations
+                        .first()
+                        .map_or(view.title.as_str(), |l| l.path.as_str());
+                    if !edited.contains(&path) {
+                        edited.push(path);
+                    }
+                }
+                _ => other += 1,
+            },
         }
     }
     let mut segments: Vec<String> = Vec::new();

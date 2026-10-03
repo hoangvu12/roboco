@@ -10,13 +10,13 @@ import type { HarnessUpdateProgress } from "./HarnessUpdateProgress";
 /**
  * One row in the device-local harness-update stream.
  */
-export type HarnessUpdateStatus = { harness: HarnessId, installedVersion?: string | null, latestVersion?: string | null, channel?: string | null, source: HarnessInstallSource, policy: HarnessUpdatePolicy, phase: HarnessUpdatePhase, progress?: HarnessUpdateProgress | null, checkedAt?: number | null, error?: HarnessUpdateFailure | null, 
+export type HarnessUpdateStatus = { harness: HarnessId, installedVersion?: string | null, latestVersion?: string | null, channel?: string | null, source: HarnessInstallSource, policy: HarnessUpdatePolicy, phase: HarnessUpdatePhase, progress?: HarnessUpdateProgress | null, checkedAt?: number | null, error?: HarnessUpdateFailure | null,
 /**
  * Whether this device can safely apply the update without guessing which
  * package manager owns the installation. Older engines omit this field,
  * so clients must default to the conservative read-only behavior.
  */
-canApply: boolean, 
+canApply: boolean,
 /**
  * Provider command shown when mutation cannot be safely automated.
  */

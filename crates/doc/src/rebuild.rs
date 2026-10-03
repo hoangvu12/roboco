@@ -203,6 +203,7 @@ mod tests {
             expires_at: None,
             status,
             resolution: None,
+            outcome: None,
         }
     }
 

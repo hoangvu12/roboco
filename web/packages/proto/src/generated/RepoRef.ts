@@ -6,11 +6,11 @@
  * as a linked worktree. Drives the composer's ref picker (`current` /
  * `worktree` tags) and the checkout-kind selector.
  */
-export type RepoRef = { name: string, 
+export type RepoRef = { name: string,
 /**
  * Checked out in the repo's MAIN folder right now.
  */
-current: boolean, 
+current: boolean,
 /**
  * Path of the linked worktree this branch is checked out in, if any.
  */

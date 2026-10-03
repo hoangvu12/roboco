@@ -4,7 +4,7 @@ import type { WorkspaceLineEnding } from "./WorkspaceLineEnding";
 import type { WorkspaceReadOnlyReason } from "./WorkspaceReadOnlyReason";
 import type { WorkspaceTextEncoding } from "./WorkspaceTextEncoding";
 
-export type WorkspaceFileText = { 
+export type WorkspaceFileText = {
 /**
  * Identity of the checkout this snapshot was read from.
  */

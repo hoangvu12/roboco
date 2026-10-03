@@ -192,6 +192,8 @@ export interface InvocationRow {
   readonly name: string;
   readonly description: string;
   readonly inputHint: string | null;
+  /** The host rejects this command while the conversation has active work. */
+  readonly idleOnly?: boolean;
 }
 
 /**

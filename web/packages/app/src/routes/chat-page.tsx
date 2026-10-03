@@ -3,7 +3,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { encodeScopedId, methods, parseScopedId } from "@roboco/engine-client";
 import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
-import type { Chat, QueuedMessage } from "@roboco/proto";
+import type { Chat, NativeChild, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
@@ -18,6 +18,8 @@ import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-p
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
 import { ComposerFooter } from "../components/composer-footer";
+import { NativeDock } from "../components/native-dock";
+import { useNativeState } from "../state/native-state";
 import { useNewThreadTarget } from "../components/composer/new-thread-selectors";
 import { NewThreadCanvas } from "./index-page";
 import {
@@ -1116,6 +1118,18 @@ export function ConversationPage() {
     }
   }, [hasSelection, departing]);
   const liveTranscript = hasSelection ? transcriptStore : departing ? storeRef.current : null;
+  const nativeState = useNativeState(liveTranscript);
+  const onOpenNativeChild = useCallback(
+    (child: NativeChild) => {
+      rightPaneStore.addSubagentSurface(chatId, {
+        chatId,
+        docId: child.docId,
+        title: child.description.length > 0 ? child.description : child.profile,
+        frozen: false,
+      });
+    },
+    [chatId],
+  );
 
   // Existing-chat navigation switches the outlet immediately. The outlet
   // keeps the destination's seed hidden until live arrival, with loading
@@ -1337,6 +1351,21 @@ export function ConversationPage() {
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
           <StatusStrip status={row?.status ?? "idle"} sending={sending} />
+          {/*
+            Keyed by the chat: a question draft, goal editor or plan read
+            started in one chat can never be sent to the next. A departing
+            transcript's state never gets a dock on the blank route.
+          */}
+          {session !== null && hasSelection && nativeState !== null && (
+            <NativeDock
+              key={chatId}
+              client={session.client}
+              chatId={chatId}
+              state={nativeState}
+              connectivity={sessionWatch?.connectivity.value?.state}
+              onOpenChild={onOpenNativeChild}
+            />
+          )}
           {session !== null && (
             <div
               className="persistent-composer"

@@ -3,7 +3,7 @@
 /**
  * `ReadAttachmentChunk` reply.
  */
-export type AttachmentChunk = { name: string, mimeType: string, 
+export type AttachmentChunk = { name: string, mimeType: string,
 /**
  * Base64 of this chunk's byte range.
  */

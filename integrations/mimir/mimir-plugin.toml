@@ -1,0 +1,9 @@
+manifest_version = 1
+id = "sh.roboco.bridge"
+version = "0.1.0"
+artifact = "plugin.wasm"
+lifetime = "runtime"
+frontends = ["headless"]
+name = "Roboco bridge"
+description = "Framed JSON-RPC bridge that lets the Roboco engine own native Mimir sessions over stdio."
+license = "MIT"

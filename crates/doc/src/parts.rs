@@ -205,6 +205,13 @@ pub enum MessagePart {
         id: String,
         message: String,
     },
+    /// A native transcript item that is neither text nor a tool call (plan
+    /// lifecycle, compaction, plugin snapshot, delivered child results).
+    /// Old readers' unknown-kind fallback renders its plain `text` summary.
+    Notice {
+        id: String,
+        notice: roboco_proto::NativeNotice,
+    },
     /// The seam in a forked chat's transcript: everything above was copied
     /// from `source_chat_id` when the fork was cut, everything below is this
     /// chat's own. Written once by the fork RPC; renders as a labeled
@@ -230,6 +237,7 @@ impl MessagePart {
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
+            | MessagePart::Notice { id, .. }
             | MessagePart::Fork { id, .. } => id,
         }
     }
@@ -263,12 +271,60 @@ impl MessagePart {
                 mime_type,
             } => id.len() + path.len() + name.len() + mime_type.len(),
             MessagePart::Error { message, .. } => message.len(),
+            MessagePart::Notice { notice, .. } => serde_json::to_vec(notice).map_or(0, |v| v.len()),
             MessagePart::Fork {
                 source_chat_id,
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
         }
+    }
+}
+
+/// The plain-text summary of a notice: what readers without a notice
+/// renderer show, and the one-line form for previews.
+pub fn notice_text(notice: &roboco_proto::NativeNotice) -> String {
+    use roboco_proto::{NativeNotice, NativePlanStatus};
+    match notice {
+        NativeNotice::PlanLifecycle { name, status, .. } => {
+            let status = match status {
+                NativePlanStatus::ReviewPending => "ready for review",
+                NativePlanStatus::SavedStopped => "saved",
+                NativePlanStatus::Accepted => "accepted",
+                NativePlanStatus::Implementing => "implementing",
+                NativePlanStatus::Completed => "completed",
+                NativePlanStatus::Abandoned => "abandoned",
+            };
+            format!("Plan {name}: {status}")
+        }
+        NativeNotice::Compaction {
+            trigger,
+            before_tokens,
+            after_tokens,
+        } => match (before_tokens, after_tokens) {
+            (Some(before), Some(after)) => {
+                format!("Context compacted ({trigger}): {before} → {after} tokens")
+            }
+            _ => format!("Context compacted ({trigger})"),
+        },
+        NativeNotice::BranchSummary { summary } => summary.clone(),
+        NativeNotice::PluginSnapshot {
+            title, fallback, ..
+        } => format!("{title}\n{fallback}"),
+        NativeNotice::SubagentCompletions { completions } => completions
+            .iter()
+            .map(|c| format!("{}: {}", c.description, c.result_preview))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        NativeNotice::CommandDisplay { text } | NativeNotice::Status { text } => text.clone(),
+        NativeNotice::Interrupted { message, .. } => format!("Interrupted: {message}"),
+        NativeNotice::Image { media_type, .. } => {
+            format!(
+                "Image ({})",
+                media_type.as_deref().unwrap_or("unknown type")
+            )
+        }
+        NativeNotice::Unsupported { item, .. } => format!("Unsupported transcript item: {item}"),
     }
 }
 

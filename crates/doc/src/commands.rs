@@ -22,6 +22,8 @@ pub enum SessionCommandKind {
     Steer,
     Interrupt,
     RespondInput,
+    /// A typed control for a native conversation (`roboco_proto::NativeControl`).
+    Native,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -33,6 +35,9 @@ pub enum SessionCommandStatus {
     Expired,
     Superseded,
     Cancelled,
+    /// Executed, but the receiving host's answer was lost: the effect is
+    /// undetermined and the command is never re-run on its own.
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -55,6 +60,9 @@ pub enum SessionCommandPayload {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
+    Native {
+        control: roboco_proto::NativeControl,
+    },
 }
 
 impl SessionCommandPayload {
@@ -64,6 +72,7 @@ impl SessionCommandPayload {
             SessionCommandPayload::Steer { .. } => SessionCommandKind::Steer,
             SessionCommandPayload::Interrupt {} => SessionCommandKind::Interrupt,
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
+            SessionCommandPayload::Native { .. } => SessionCommandKind::Native,
         }
     }
 }
@@ -91,6 +100,9 @@ pub struct SessionCommandEntry {
     pub status: SessionCommandStatus,
     #[serde(default)]
     pub resolution: Option<String>,
+    /// The host's typed result for a `Native` control, written with the status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<roboco_proto::NativeControlOutcome>,
 }
 
 impl SessionCommandEntry {
@@ -187,6 +199,7 @@ mod tests {
             expires_at: None,
             status: SessionCommandStatus::Pending,
             resolution: None,
+            outcome: None,
         }
     }
 

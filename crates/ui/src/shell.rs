@@ -1415,8 +1415,13 @@ fn resolve_shell_escape(
 /// read-only transcript entity whose drop tears the view down.
 struct SubagentTab {
     doc_id: String,
+    /// The owning chat's state (the main conversation's or a side chat's):
+    /// it watches the doc and projects the child's host facts.
+    state: Entity<AppState>,
     title: SharedString,
     transcript: Entity<Transcript>,
+    /// Host facts and exact-attempt controls when this tab is a native child.
+    native_panel: Entity<crate::native_child::NativeChildPanel>,
     /// Keeps a frozen-blob fetch alive (it falls back to a live doc watch).
     _fetch: Option<Task<()>>,
     /// Spawn chips INSIDE the subagent transcript open their own tabs.
@@ -1467,6 +1472,9 @@ pub struct Shell {
     sidebar_pane: Entity<SidebarPane>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
+    /// Native (Mimir) controls above the composer; empty for every other harness.
+    native_dock: Entity<crate::native_dock::NativeDock>,
+    _native_dock_events: Subscription,
     /// Measured height of the bottom chrome stack (status strip + composer +
     /// terminal dock) the full-height transcript scrolls under. Paint-time
     /// measurement schedules another frame whenever this value changes.
@@ -1796,6 +1804,8 @@ impl Shell {
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         transcript.update(cx, |transcript, _| transcript.retain_for_route_exit());
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        let native_dock = cx.new(|cx| crate::native_dock::NativeDock::new(state.clone(), cx));
+        let native_dock_events = cx.subscribe(&native_dock, Self::on_native_dock_event);
         let links = Self::session_links(None, cx);
         transcript.update(cx, |transcript, _| {
             transcript.set_workspace_link_handler(links)
@@ -1951,6 +1961,8 @@ impl Shell {
             sidebar_pane,
             transcript,
             composer,
+            native_dock,
+            _native_dock_events: native_dock_events,
             // Seed with the compact composer stack's rough height so the
             // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
@@ -3591,6 +3603,34 @@ impl Shell {
         }
     }
 
+    /// A native child's Open: the same right-pane tab a spawn chip opens, keyed by the
+    /// child's stable doc id, so a continued attempt reuses its tab.
+    fn on_native_dock_event(
+        &mut self,
+        _: Entity<crate::native_dock::NativeDock>,
+        event: &crate::native_dock::NativeDockEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            crate::native_dock::NativeDockEvent::OpenChild {
+                chat_id,
+                doc_id,
+                title,
+            } => self.add_subagent_surface(chat_id.clone(), doc_id.clone(), title.clone(), false, cx),
+        }
+    }
+
+    /// The state that owns `chat_id`: a side chat's own when one shows it,
+    /// else the conversation's. A child pane must read its parent's host
+    /// facts and watches from there, never from whichever chat is main.
+    fn chat_owner(&self, chat_id: &str, cx: &App) -> Entity<AppState> {
+        self.side_chats
+            .values()
+            .find(|tab| tab.state.read(cx).selected_chat.as_deref() == Some(chat_id))
+            .map(|tab| tab.state.clone())
+            .unwrap_or_else(|| self.state.clone())
+    }
+
     /// A spawn chip's "Open subagent": focus the existing tab for that doc,
     /// or open one. `frozen` (subagent done/failed) tries the uploaded
     /// transcript blob first and falls back to the live doc watch; running
@@ -3616,28 +3656,38 @@ impl Shell {
         }
         self.subagent_seq += 1;
         let id = self.subagent_seq;
+        let owner = self.chat_owner(&chat_id, cx);
         // A live subagent follows its streaming end (main-transcript feel);
         // a frozen one reads top-down.
         let transcript =
-            cx.new(|cx| Transcript::for_doc(self.state.clone(), doc_id.clone(), !frozen, cx));
+            cx.new(|cx| Transcript::for_doc(owner.clone(), doc_id.clone(), !frozen, cx));
         let links = Self::session_links(Some(self.active_chat.clone()), cx);
         transcript.update(cx, |transcript, _| {
             transcript.set_workspace_link_handler(links)
         });
         let events = cx.subscribe(&transcript, Self::on_transcript_event);
         let fetch = if frozen {
-            self.spawn_subagent_snapshot_fetch(&chat_id, &doc_id, cx)
+            self.spawn_subagent_snapshot_fetch(&owner, &chat_id, &doc_id, cx)
         } else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
+            owner.update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
             None
         };
+        let native_panel = cx.new(|cx| {
+            crate::native_child::NativeChildPanel::new(
+                owner.clone(),
+                chat_id.clone(),
+                doc_id.clone(),
+                cx,
+            )
+        });
         self.subagent_tabs.insert(
             id,
             SubagentTab {
                 doc_id,
+                state: owner,
                 title: title.into(),
                 transcript,
+                native_panel,
                 _fetch: fetch,
                 _events: events,
             },
@@ -3655,13 +3705,13 @@ impl Shell {
     /// — the blob upload is best-effort engine-side.
     fn spawn_subagent_snapshot_fetch(
         &self,
+        owner: &Entity<AppState>,
         chat_id: &str,
         doc_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<Task<()>> {
-        let Ok(engine) = self.state.read(cx).target_for_id(chat_id) else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.to_string(), cx));
+        let Ok(engine) = owner.read(cx).target_for_id(chat_id) else {
+            owner.update(cx, |s, cx| s.watch_subagent_doc(doc_id.to_string(), cx));
             return None;
         };
         let raw_chat = crate::engine_registry::ScopedId::parse(chat_id)
@@ -3675,7 +3725,7 @@ impl Shell {
             .map(|(source, _)| source)
             .unwrap_or(&raw_chat);
         let blob_ref = format!("{raw_source}/{raw_doc}");
-        let state = self.state.clone();
+        let state = owner.clone();
         let doc_id = doc_id.to_string();
         Some(cx.spawn(async move |_, cx| {
             let reply = crate::attachments::call_with_timeout(
@@ -3698,6 +3748,7 @@ impl Shell {
                         replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
                         frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
                         context_usage: None,
+                        native: None,
                     };
                     let prepared = crate::transcript::TranscriptPreparation::default()
                         .prepare(&update)
@@ -3814,7 +3865,7 @@ impl Shell {
                 // Unwatch drops the watch task — that cancels the engine-side
                 // watch and unpins the subagent doc from the engine LRU.
                 if let Some(tab) = self.subagent_tabs.remove(&id) {
-                    self.state
+                    tab.state
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
@@ -8930,6 +8981,8 @@ impl Shell {
                 let measured_has_composer = self.bottom_stack_has_composer.clone();
                 let contains_composer = (has_spaces || no_project || has_appshots) && has_selection;
                 let composer = self.composer.clone();
+                let native_dock_visible =
+                    has_selection && crate::native_dock::NativeDock::visible(self.state.read(cx));
                 div()
                     .flex_none()
                     .relative()
@@ -8955,6 +9008,14 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
+                    .when(native_dock_visible, |el| {
+                        el.child(
+                            div()
+                                .w(px(composer_width))
+                                .mx_auto()
+                                .child(self.native_dock.clone()),
+                        )
+                    })
                     .when(has_spaces || no_project || has_appshots, |el| {
                         let composer_opacity = self.composer_dock.borrow().opacity();
                         el.child(
@@ -9356,12 +9417,9 @@ impl Shell {
                 }
                 RightSurface::SideChat(id) => self.render_side_chat(id, cx),
                 RightSurface::Subagent(id) if self.subagent_tabs.contains_key(&id) => {
-                    let transcript = self
-                        .subagent_tabs
-                        .get(&id)
-                        .expect("checked")
-                        .transcript
-                        .clone();
+                    let tab = self.subagent_tabs.get(&id).expect("checked");
+                    let transcript = tab.transcript.clone();
+                    let native_panel = tab.native_panel.clone();
                     // The pane hosts its own jump pill: the conversation
                     // overlay's is bound to the PRIMARY transcript, and this
                     // one anchors to the pane (no composer stack to clear).
@@ -9387,6 +9445,7 @@ impl Shell {
                         .relative()
                         .flex()
                         .flex_col()
+                        .child(native_panel)
                         .child(div().flex_1().min_h_0().child(transcript))
                         .children(pill)
                         .into_any_element()

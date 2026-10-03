@@ -3,12 +3,12 @@
 import type { WorkspaceEntry } from "./WorkspaceEntry";
 import type { WorkspaceMutationCapabilities } from "./WorkspaceMutationCapabilities";
 
-export type WorkspaceDirectoryPage = { 
+export type WorkspaceDirectoryPage = {
 /**
  * The listing's owning checkout — present when the host supports
  * mutations, absent for older hosts.
  */
-checkoutId?: string | null, 
+checkoutId?: string | null,
 /**
  * Host capabilities; absent fields keep older peers read-only for mutations.
  */

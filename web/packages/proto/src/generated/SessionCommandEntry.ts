@@ -2,15 +2,20 @@
 // Legacy wire name (ADR 0005): the chat doc family — canonical term is "Chat doc" — see CONTEXT.md.
 
 import type { CommandBasedOn } from "./CommandBasedOn";
+import type { NativeControlOutcome } from "./NativeControlOutcome";
 import type { SessionCommandPayload } from "./SessionCommandPayload";
 import type { SessionCommandStatus } from "./SessionCommandStatus";
 
-export type SessionCommandEntry = { id: string, payload: SessionCommandPayload, issuedBy: string, 
+export type SessionCommandEntry = { id: string, payload: SessionCommandPayload, issuedBy: string,
 /**
  * Epoch millis.
  */
-issuedAt: number, basedOn: CommandBasedOn | null, 
+issuedAt: number, basedOn: CommandBasedOn | null,
 /**
  * Epoch millis; defaults to issued_at + COMMAND_DEFAULT_TTL_MS when absent.
  */
-expiresAt: number | null, status: SessionCommandStatus, resolution: string | null, };
+expiresAt: number | null, status: SessionCommandStatus, resolution: string | null,
+/**
+ * The host's typed result for a `Native` control, written with the status.
+ */
+outcome?: NativeControlOutcome | null, };

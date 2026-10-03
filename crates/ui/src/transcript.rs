@@ -381,6 +381,28 @@ fn is_agent_call(call: &ToolCall) -> bool {
 /// (a background shell's `task_notification` was mis-tagged as subagent
 /// traffic), and honoring the ref alone turned those Runs into spawn chips
 /// that opened empty, never-created subagent docs.
+/// A settled native call the host marked quiet: shown only behind its own folded group.
+fn is_quiet_success(item: &ToolItem) -> bool {
+    matches!(&item.call, ToolCall::Native { view } if item.resolved && crate::native::is_quiet_success(view, item.is_error))
+}
+
+/// The host's own label when every call in the group shares one group key.
+fn native_group_label(tools: &[ToolItem]) -> Option<String> {
+    if tools.len() < 2 {
+        return None;
+    }
+    let views: Vec<&roboco_proto::NativeToolView> = tools
+        .iter()
+        .filter_map(|tool| match &tool.call {
+            ToolCall::Native { view } => Some(view.as_ref()),
+            _ => None,
+        })
+        .collect();
+    (views.len() == tools.len())
+        .then(|| crate::native::group_label(&views))
+        .flatten()
+}
+
 fn is_agent_tool(item: &ToolItem) -> bool {
     is_agent_call(&item.call)
 }
@@ -897,6 +919,26 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
             ),
             None => name.clone(),
         },
+        // The full input lives in the engine detail blob behind `detail_ref`.
+        ToolCall::Native { view } => {
+            let mut text = view.title.clone();
+            if let Some(summary) = &view.summary {
+                text.push('\n');
+                text.push_str(summary);
+            }
+            for location in &view.locations {
+                text.push('\n');
+                text.push_str(&location.path);
+                if let Some(line) = location.line {
+                    text.push_str(&format!(":{line}"));
+                }
+            }
+            if let Some(progress) = view.progress.as_deref().filter(|_| view.duration_ms.is_none()) {
+                text.push('\n');
+                text.push_str(progress);
+            }
+            text
+        }
     };
     let mut lines: Vec<SharedString> = text
         .lines()
@@ -1036,6 +1078,10 @@ pub enum RowKind {
     },
     ErrorChip {
         message: SharedString,
+    },
+    /// A public Mimir item that is neither text nor a tool call.
+    Notice {
+        view: Arc<crate::native::NoticeView>,
     },
     /// The fork seam: a labeled divider between copied history and the
     /// chat's own turns.
@@ -1353,13 +1399,15 @@ pub fn rows_for_entry(
                 return;
             }
             let tools = std::mem::take(group);
-            let auto_open = streaming && last_ix == last_part_ix;
+            // Quiet host successes stay folded away even while the turn streams.
+            let auto_open = streaming && last_ix == last_part_ix && !is_quiet_success(&tools[0]);
+            let summary = native_group_label(&tools).unwrap_or_else(|| tool_group_summary(&tools));
             rows.push(Row {
                 id: format!("{}#g{}", entry.id, group_ix).into(),
-                version: tool_fingerprint(&tools, auto_open),
+                version: tool_fingerprint(&tools, auto_open) ^ fnv1a(summary.as_bytes()),
                 turn_start: false,
                 kind: RowKind::ToolGroup {
-                    summary: tool_group_summary(&tools).into(),
+                    summary: summary.into(),
                     tools: Arc::new(tools),
                     auto_open,
                     worked_secs: None,
@@ -1390,16 +1438,54 @@ pub fn rows_for_entry(
                 subagent_tail,
                 ..
             } => {
+                // A native call keeps its public detail in one engine blob, keyed
+                // at the version the chip shows so a read made while it ran is
+                // never shown as the settled record. The chip and its inline
+                // body follow the host's declared title, result state, preview
+                // and semantic.
+                let (call, output_ref, output_bytes, detail) = match call {
+                    ToolCall::Native { view } => {
+                        let mut shown = view.clone();
+                        shown.title = crate::native::chip_title(view, *resolved);
+                        let detail = match crate::native::inline_result(view) {
+                            crate::native::InlineResult::Hidden => {
+                                tool_detail(None, diff.as_ref(), diff_stats.as_deref())
+                            }
+                            crate::native::InlineResult::Text => {
+                                tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref())
+                            }
+                            crate::native::InlineResult::Markdown => {
+                                output.as_deref().and_then(markdown_detail)
+                            }
+                        };
+                        let version = crate::native::detail_version(view, *resolved, *is_error);
+                        (
+                            ToolCall::Native { view: shown },
+                            view.detail_ref
+                                .as_deref()
+                                .map(|detail_ref| native_detail_key(detail_ref, version))
+                                .or_else(|| output_ref.clone()),
+                            view.detail_bytes.or(*output_bytes),
+                            detail,
+                        )
+                    }
+                    other => (
+                        other.clone(),
+                        output_ref.clone(),
+                        *output_bytes,
+                        tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref()),
+                    ),
+                };
+                let call = &call;
                 let item = ToolItem {
                     part_id: part.id().to_owned(),
                     call: call.clone(),
                     is_error: *is_error,
                     resolved: *resolved,
-                    detail: tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref())
-                        .map(Arc::new),
+                    detail: detail.map(Arc::new),
                     invocation: call_block(call).map(Arc::new),
-                    output_ref: output_ref.clone().map(SharedString::from),
-                    output_bytes: *output_bytes,
+                    output_ref: output_ref.map(SharedString::from),
+                    output_bytes,
                     diff_ref: diff_ref.clone().map(SharedString::from),
                     subagent_ref: subagent_ref.clone().map(SharedString::from),
                     subagent_status: *subagent_status,
@@ -1411,10 +1497,10 @@ pub fn rows_for_entry(
                     // agent chips fold in with everything else, so the genus
                     // split below never runs.
                     compact_group_pos.get_or_insert(rows.len());
-                } else if pending_group
-                    .first()
-                    .is_some_and(|head| is_agent_tool(head) != is_agent_tool(&item))
-                {
+                } else if pending_group.first().is_some_and(|head| {
+                    is_agent_tool(head) != is_agent_tool(&item)
+                        || is_quiet_success(head) != is_quiet_success(&item)
+                }) {
                     // Agent chips don't share a fold with ordinary tools:
                     // flush whenever the genus flips so each group is uniform.
                     flush_group(
@@ -1597,6 +1683,28 @@ pub fn rows_for_entry(
                     // intake landed first): the part persists in the doc and
                     // simply renders no row here until the UI port lands.
                     MessagePart::Image { .. } => {}
+                    MessagePart::Notice {
+                        id: part_id,
+                        notice,
+                    } => {
+                        let view = crate::native::notice_view(notice);
+                        let mut hash = fnv1a(view.title.as_bytes());
+                        for text in view.body.iter().chain(view.detail_ref.iter()) {
+                            hash = hash.rotate_left(7) ^ fnv1a(text.as_bytes());
+                        }
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: hash,
+                            turn_start: false,
+                            kind: RowKind::Notice {
+                                view: Arc::new(view),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                            compact_fold: None,
+                        });
+                    }
                 }
             }
         }
@@ -2095,10 +2203,80 @@ struct ChipAffordance {
 /// the harness bounds outputs at 4KiB, so this is rarely reached).
 const FULL_OUTPUT_MAX_LINES: usize = 400;
 
+/// A native detail is the host's whole record, so its inline view runs longer; Save keeps every byte.
+const NATIVE_DETAIL_MAX_LINES: usize = 2000;
+
+/// A native detail's cache key: its blob ref at the version the chip shows.
+fn native_detail_key(detail_ref: &str, version: u64) -> String {
+    format!("{detail_ref}#{version:016x}")
+}
+
+/// The blob ref behind a native detail key; `None` for every other sidecar.
+fn native_detail_ref(key: &str) -> Option<&str> {
+    key.rsplit_once('#')
+        .map(|(detail_ref, _)| detail_ref)
+        .filter(|detail_ref| detail_ref.ends_with(".native"))
+}
+
+/// The host's public Markdown (an answer or a report) as styled detail lines.
+fn markdown_detail(text: &str) -> Option<ToolDetail> {
+    let mut lines = thought_lines(&parse_full(text));
+    if lines.is_empty() {
+        return None;
+    }
+    let truncated_by = lines.len().saturating_sub(OUTPUT_DETAIL_MAX_LINES);
+    lines.truncate(OUTPUT_DETAIL_MAX_LINES);
+    Some(ToolDetail::Thought {
+        lines,
+        truncated_by,
+    })
+}
+
+/// A fetched native detail: the preview's cut said first, then each titled
+/// section, Markdown sections rendered and every other body verbatim.
+fn native_preview_detail(preview: &crate::native_blob::DetailPreview) -> ToolDetail {
+    let styled = |text: String, style: InlineStyle| vec![InlineRun { text, style }];
+    let title = InlineStyle {
+        bold: true,
+        ..Default::default()
+    };
+    let verbatim = InlineStyle {
+        code: true,
+        ..Default::default()
+    };
+    let mut lines: Vec<Vec<InlineRun>> = Vec::new();
+    if let Some(cut) = &preview.cut {
+        lines.push(styled(cut.clone(), title.clone()));
+    }
+    for section in &preview.sections {
+        if !lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        lines.push(styled(section.title.clone(), title.clone()));
+        if section.markdown {
+            lines.extend(thought_lines(&parse_full(&section.body)));
+        } else {
+            lines.extend(
+                section
+                    .body
+                    .lines()
+                    .flat_map(|line| wrap_cols(line, THOUGHT_WRAP_COLS))
+                    .map(|line| styled(line.to_string(), verbatim.clone())),
+            );
+        }
+    }
+    let truncated_by = lines.len().saturating_sub(NATIVE_DETAIL_MAX_LINES);
+    lines.truncate(NATIVE_DETAIL_MAX_LINES);
+    ToolDetail::Thought {
+        lines,
+        truncated_by,
+    }
+}
+
 /// Build the upgraded detail from a fetched sidecar blob. Diff blobs parse
 /// the `ToolDiff` JSON through the same pipeline as inline diffs; output
 /// blobs render (near-)uncapped — fetching past the summary was the point.
-fn blob_detail(text: &str, is_diff: bool) -> Option<ToolDetail> {
+fn blob_detail(text: &str, is_diff: bool, max_lines: usize) -> Option<ToolDetail> {
     if is_diff {
         let diff: roboco_proto::ToolDiff = serde_json::from_str(text).ok()?;
         return tool_detail(None, Some(&diff), None);
@@ -2113,8 +2291,8 @@ fn blob_detail(text: &str, is_diff: bool) -> Option<ToolDetail> {
     if lines.is_empty() {
         return None;
     }
-    let truncated_by = lines.len().saturating_sub(FULL_OUTPUT_MAX_LINES);
-    lines.truncate(FULL_OUTPUT_MAX_LINES);
+    let truncated_by = lines.len().saturating_sub(max_lines);
+    lines.truncate(max_lines);
     Some(ToolDetail::Output {
         lines,
         truncated_by,
@@ -3339,6 +3517,15 @@ pub struct Transcript {
     /// Deliberately NOT cleared on chat switch: refs are chat-qualified and a
     /// fetched blob stays valid.
     blob_details: HashMap<SharedString, BlobFetch>,
+    /// Native detail refs the user opened. A newer version of an opened
+    /// record (the call settled) is read again without another click.
+    native_opened: HashSet<String>,
+    /// Native notice details, keyed by blob ref.
+    notice_details: HashMap<SharedString, NoticeDetail>,
+    /// Where each Save stands, keyed by the record's blob ref.
+    saves: HashMap<SharedString, SaveState>,
+    /// Outstanding save-to-file prompts and writes.
+    save_tasks: Vec<Task<()>>,
     /// Monotonic fetch order per blob ref: when a tool has BOTH a diff and
     /// an output blob fetched, the chip shows the one requested most
     /// recently (click "Show full output" after a diff → see the output).
@@ -3355,6 +3542,42 @@ enum BlobFetch {
     Failed,
     Ready(Arc<ToolDetail>),
 }
+
+/// What Save writes: always every byte, never an inline preview.
+enum Export {
+    /// A tool detail record and every series chunk it names.
+    ToolDetail(String),
+    /// One record exactly as stored.
+    Record(String),
+}
+
+/// Where one Save stands, said where the user started it.
+enum SaveState {
+    Saving,
+    Saved(String),
+    Failed(String),
+}
+
+impl SaveState {
+    fn text(&self) -> String {
+        match self {
+            Self::Saving => "Saving the complete record…".to_owned(),
+            Self::Saved(path) => format!("Saved to {path}"),
+            Self::Failed(message) => format!("Could not save: {message}"),
+        }
+    }
+}
+
+/// A native notice's detail record as the user last asked for it.
+enum NoticeDetail {
+    Loading(#[allow(dead_code)] Task<()>),
+    Ready(Arc<str>),
+    Failed(String),
+    Hidden,
+}
+
+/// Lines of a detail shown inline; Save keeps every byte.
+const NOTICE_INLINE_LINES: usize = 80;
 
 /// Shell-facing events (the transcript itself hosts no surfaces).
 #[derive(Debug, Clone)]
@@ -3612,6 +3835,10 @@ impl Transcript {
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
             blob_details: HashMap::new(),
+            native_opened: HashSet::new(),
+            notice_details: HashMap::new(),
+            saves: HashMap::new(),
+            save_tasks: Vec::new(),
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
             _observe: observe,
@@ -5375,6 +5602,28 @@ impl Transcript {
         };
         let is_diff = blob_ref.ends_with(".diff");
         let ref_key = blob_ref.clone();
+        if let Some(detail_ref) = native_detail_ref(&blob_ref).map(str::to_owned) {
+            self.native_opened.insert(detail_ref.clone());
+            let task = cx.spawn(async move |this, cx| {
+                let preview = crate::native_blob::read_tool_detail_preview(
+                    &engine,
+                    cx.background_executor(),
+                    &detail_ref,
+                )
+                .await;
+                this.update(cx, |this, cx| {
+                    let fetched = match preview {
+                        Ok(preview) => BlobFetch::Ready(Arc::new(native_preview_detail(&preview))),
+                        Err(_) => BlobFetch::Failed,
+                    };
+                    this.blob_details.insert(ref_key, fetched);
+                    cx.notify();
+                })
+                .ok();
+            });
+            self.blob_details.insert(blob_ref, BlobFetch::Loading(task));
+            return;
+        }
         let task = cx.spawn(async move |this, cx| {
             let reply = crate::attachments::call_with_timeout(
                 &engine,
@@ -5390,7 +5639,7 @@ impl Transcript {
                         .get("text")
                         .and_then(|t| t.as_str())
                         .unwrap_or_default();
-                    blob_detail(text, is_diff)
+                    blob_detail(text, is_diff, FULL_OUTPUT_MAX_LINES)
                         .map(|d| BlobFetch::Ready(Arc::new(d)))
                         .unwrap_or(BlobFetch::Failed)
                 }
@@ -5403,6 +5652,319 @@ impl Transcript {
             .ok();
         });
         self.blob_details.insert(blob_ref, BlobFetch::Loading(task));
+    }
+
+    /// Native records the user opened whose chip now names a newer version:
+    /// the call settled after the earlier read, so that read is stale and is
+    /// read again without another click.
+    fn stale_native_reads(&self, tools: &[ToolItem]) -> Vec<SharedString> {
+        tools
+            .iter()
+            .filter_map(|tool| tool.output_ref.as_ref())
+            .filter(|key| {
+                native_detail_ref(key)
+                    .is_some_and(|detail_ref| self.native_opened.contains(detail_ref))
+                    && !self.blob_details.contains_key(*key)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Read every byte `export` names, after the user picked where it goes, and
+    /// write it there. Each step is said under the control keyed `key`; a
+    /// cancelled dialog leaves nothing behind.
+    fn save_record(
+        &mut self,
+        key: SharedString,
+        export: Export,
+        suggested: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let engine = self
+            .chat_id
+            .as_deref()
+            .ok_or_else(|| "No chat is open.".to_owned())
+            .and_then(|chat_id| {
+                self.state
+                    .read(cx)
+                    .target_for_id(chat_id)
+                    .map_err(|error| error.to_string())
+            });
+        let engine = match engine {
+            Ok(engine) => engine,
+            Err(message) => {
+                self.saves.insert(key, SaveState::Failed(message));
+                cx.notify();
+                return;
+            }
+        };
+        let rx = cx.prompt_for_new_path(&std::env::temp_dir(), Some(suggested));
+        let task = cx.spawn(async move |this, cx| {
+            let path = match rx.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    this.update(cx, |this, cx| {
+                        this.saves.insert(key, SaveState::Failed(error.to_string()));
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                Err(_) => return,
+            };
+            this.update(cx, |this, cx| {
+                this.saves.insert(key.clone(), SaveState::Saving);
+                cx.notify();
+            })
+            .ok();
+            let executor = cx.background_executor().clone();
+            let bytes = match &export {
+                Export::ToolDetail(detail_ref) => {
+                    crate::native_blob::export_tool_detail(&engine, &executor, detail_ref).await
+                }
+                Export::Record(blob_ref) => {
+                    crate::native_blob::read_whole(&engine, &executor, blob_ref).await
+                }
+            };
+            let outcome = match bytes {
+                Ok(bytes) => {
+                    cx.background_spawn(async move {
+                        std::fs::write(&path, bytes)
+                            .map(|()| path.display().to_string())
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                }
+                Err(message) => Err(message),
+            };
+            this.update(cx, |this, cx| {
+                let state = match outcome {
+                    Ok(path) => SaveState::Saved(path),
+                    Err(message) => SaveState::Failed(message),
+                };
+                this.saves.insert(key, state);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.save_tasks.push(task);
+    }
+
+    /// Toggle one notice's detail record, reading it on first open.
+    fn toggle_notice_detail(
+        &mut self,
+        detail_ref: SharedString,
+        binary: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match self.notice_details.get(&detail_ref) {
+            Some(NoticeDetail::Ready(_)) => {
+                self.notice_details.insert(detail_ref, NoticeDetail::Hidden);
+                cx.notify();
+                return;
+            }
+            Some(NoticeDetail::Loading(_)) => return,
+            Some(NoticeDetail::Hidden) | Some(NoticeDetail::Failed(_)) | None => {}
+        }
+        let Some(chat_id) = self.chat_id.as_deref() else {
+            return;
+        };
+        let Ok(engine) = self.state.read(cx).target_for_id(chat_id) else {
+            return;
+        };
+        let key = detail_ref.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let read = if binary {
+                // Image bytes are saved, not shown inline; this proves they are readable.
+                crate::native_blob::read_whole(&engine, cx.background_executor(), &key)
+                    .await
+                    .map(|bytes| {
+                        format!(
+                            "{} of image data read.",
+                            crate::native::format_bytes(bytes.len() as u64)
+                        )
+                    })
+            } else {
+                crate::native_blob::read_notice_preview(&engine, cx.background_executor(), &key)
+                    .await
+            };
+            this.update(cx, |this, cx| {
+                let next = match read {
+                    Ok(text) => NoticeDetail::Ready(Arc::from(text)),
+                    Err(message) => NoticeDetail::Failed(message),
+                };
+                this.notice_details.insert(key, next);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.notice_details
+            .insert(detail_ref, NoticeDetail::Loading(task));
+        cx.notify();
+    }
+
+    /// Save an image notice's bytes exactly as the host stored them.
+    fn save_notice_image(
+        &mut self,
+        detail_ref: SharedString,
+        media_type: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let extension = match media_type.as_deref() {
+            Some("image/png") => "png",
+            Some("image/jpeg") => "jpg",
+            Some("image/gif") => "gif",
+            Some("image/webp") => "webp",
+            _ => "bin",
+        };
+        let record = Export::Record(detail_ref.to_string());
+        self.save_record(detail_ref, record, &format!("mimir-image.{extension}"), cx);
+    }
+
+    fn render_notice(
+        &mut self,
+        row_id: &SharedString,
+        view: &Arc<crate::native::NoticeView>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::native::Tone;
+        let accent = match view.tone {
+            Tone::Warn => theme.warning,
+            Tone::Danger => theme.danger,
+            _ => theme.border_strong,
+        };
+        let mut card = div()
+            .w_full()
+            .min_w_0()
+            .my(px(4.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(accent.opacity(0.35))
+            .bg(theme.surface_raised)
+            .text_size(crate::typography::ui_rems(12.5))
+            .child(
+                div()
+                    .text_color(theme.text)
+                    .child(SharedString::from(view.title.clone())),
+            );
+        if let Some(body) = &view.body {
+            card = card.child(
+                div()
+                    .min_w_0()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(body.clone())),
+            );
+        }
+        if let Some(detail_ref) = view.detail_ref.clone().map(SharedString::from) {
+            let state = self.notice_details.get(&detail_ref);
+            let shown = matches!(state, Some(NoticeDetail::Ready(_)));
+            let loading = matches!(state, Some(NoticeDetail::Loading(_)));
+            let label = if loading {
+                "Loading detail…"
+            } else if shown {
+                "Hide detail"
+            } else {
+                "Show detail"
+            };
+            let binary = view.binary_detail;
+            let toggle_ref = detail_ref.clone();
+            let mut actions = div().flex().flex_row().gap(px(12.0)).child(
+                div()
+                    .id(SharedString::from(format!("{row_id}-detail")))
+                    .text_color(theme.text_faint)
+                    .when(!loading, |el| {
+                        el.cursor_pointer()
+                            .hover(|s| s.text_color(theme.text_muted))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_notice_detail(toggle_ref.clone(), binary, cx);
+                            }))
+                    })
+                    .child(label),
+            );
+            if !binary {
+                let save_ref = detail_ref.clone();
+                actions = actions.child(
+                    div()
+                        .id(SharedString::from(format!("{row_id}-save")))
+                        .text_color(theme.text_faint)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme.text_muted))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let record = Export::Record(save_ref.to_string());
+                            this.save_record(save_ref.clone(), record, "mimir-detail.json", cx);
+                        }))
+                        .child("Save complete record"),
+                );
+            }
+            if binary {
+                let save_ref = detail_ref.clone();
+                let media_type = view.media_type.clone();
+                actions = actions.child(
+                    div()
+                        .id(SharedString::from(format!("{row_id}-save-image")))
+                        .text_color(theme.text_faint)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme.text_muted))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.save_notice_image(save_ref.clone(), media_type.clone(), cx);
+                        }))
+                        .child("Save image"),
+                );
+            }
+            card = card.child(actions);
+            if let Some(save) = self.saves.get(&detail_ref) {
+                card = card.child(
+                    div()
+                        .id(SharedString::from(format!("{row_id}-save-state")))
+                        .min_w_0()
+                        .text_color(match save {
+                            SaveState::Failed(_) => theme.danger,
+                            _ => theme.text_muted,
+                        })
+                        .child(SharedString::from(save.text())),
+                );
+            }
+            match state {
+                Some(NoticeDetail::Ready(text)) => {
+                    let total = text.lines().count();
+                    let mut shown: Vec<&str> = text.lines().take(NOTICE_INLINE_LINES).collect();
+                    let more = total.saturating_sub(shown.len());
+                    if more > 0 {
+                        shown.push("");
+                    }
+                    let mut block = shown.join("\n");
+                    if more > 0 {
+                        block.push_str(&format!(
+                            "{more} more lines. Save the complete record to read them."
+                        ));
+                    }
+                    card = card.child(
+                        div()
+                            .min_w_0()
+                            .font_family(theme.font_mono.clone())
+                            .text_size(px(TOOL_TEXT_SIZE))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(block)),
+                    );
+                }
+                Some(NoticeDetail::Failed(message)) => {
+                    card = card.child(
+                        div()
+                            .text_color(theme.danger)
+                            .child(SharedString::from(format!("Could not read the detail. {message}"))),
+                    );
+                }
+                _ => {}
+            }
+        }
+        card.into_any_element()
     }
 
     /// Expand/collapse one long user bubble. Heights come from the text's
@@ -6857,6 +7419,10 @@ impl Transcript {
                 input_chip(header.clone(), *resolved, &theme)
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
+            RowKind::Notice { view } => {
+                let view = view.clone();
+                self.render_notice(&row.id, &view, &theme, cx)
+            }
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
         };
 
@@ -7314,6 +7880,9 @@ impl Transcript {
                     .toggled_at
                     .is_some_and(|at| at.elapsed() < TOOL_FOLD.total()));
         let tools = if body_visible { tools.as_slice() } else { &[] };
+        for key in self.stale_native_reads(tools) {
+            self.spawn_blob_fetch(key, cx);
+        }
         // Chips render their EFFECTIVE detail: the precomputed doc-resident
         // one, upgraded in place by a fetched sidecar blob (chat2-sync A3).
         // Resolved per paint (a HashMap probe per chip) so fetched content
@@ -7377,12 +7946,24 @@ impl Transcript {
                 ];
                 for (blob_ref, what, bytes) in candidates {
                     let Some(blob_ref) = blob_ref else { continue };
+                    let native = native_detail_ref(blob_ref);
+                    let what = if native.is_some() { "detail" } else { what };
                     let label = match self.blob_details.get(blob_ref) {
                         Some(BlobFetch::Ready(_)) => {
-                            if shown == Some(blob_ref) {
+                            // A native detail is shown; what is left to offer is the complete file.
+                            if let Some(detail_ref) = native {
+                                self.saves.get(detail_ref).map_or_else(
+                                    || "Save complete detail".to_owned(),
+                                    |save| match save {
+                                        SaveState::Saving => save.text(),
+                                        _ => format!("{} · Save again", save.text()),
+                                    },
+                                )
+                            } else if shown == Some(blob_ref) {
                                 continue;
+                            } else {
+                                format!("Show full {what}")
                             }
-                            format!("Show full {what}")
                         }
                         Some(BlobFetch::Loading(_)) => format!("Loading full {what}…"),
                         Some(BlobFetch::Failed) => {
@@ -7826,21 +8407,50 @@ impl Transcript {
                             self.blob_details.get(&blob_ref),
                             Some(BlobFetch::Loading(_))
                         );
+                        let failed_save = native_detail_ref(&blob_ref).is_some_and(|detail_ref| {
+                            matches!(self.saves.get(detail_ref), Some(SaveState::Failed(_)))
+                        });
                         let mut row = div()
                             .id(SharedString::from(format!("{key}-blob")))
                             .h(px(BLOB_AFFORDANCE_HEIGHT))
                             .flex_none()
                             .flex()
                             .items_center()
+                            .min_w_0()
                             .text_size(px(TOOL_TEXT_SIZE))
-                            .text_color(theme.text_faint)
-                            .child(label);
+                            .text_color(if failed_save {
+                                theme.danger
+                            } else {
+                                theme.text_faint
+                            })
+                            .child(div().min_w_0().truncate().child(label));
                         if !loading {
                             row = row
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(theme.text_muted))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.spawn_blob_fetch(blob_ref.clone(), cx);
+                                    let ready = matches!(
+                                        this.blob_details.get(&blob_ref),
+                                        Some(BlobFetch::Ready(_))
+                                    );
+                                    match native_detail_ref(&blob_ref).filter(|_| ready) {
+                                        Some(detail_ref) => {
+                                            let key = SharedString::from(detail_ref.to_owned());
+                                            let export = Export::ToolDetail(detail_ref.to_owned());
+                                            if !matches!(
+                                                this.saves.get(&key),
+                                                Some(SaveState::Saving)
+                                            ) {
+                                                this.save_record(
+                                                    key,
+                                                    export,
+                                                    "mimir-tool-detail.txt",
+                                                    cx,
+                                                );
+                                            }
+                                        }
+                                        None => this.spawn_blob_fetch(blob_ref.clone(), cx),
+                                    }
                                     cx.notify();
                                 }));
                         }
@@ -8245,6 +8855,21 @@ fn tool_icon_path(call: &ToolCall) -> &'static str {
         call if is_agent_call(call) => crate::icons::BOT,
         ToolCall::Unknown { name, .. } if name == "Wait for agents" => crate::icons::BOT,
         ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => crate::icons::WIDGET,
+        ToolCall::Native { view } => {
+            use roboco_proto::NativeToolKind as K;
+            match view.kind {
+                K::Shell => crate::icons::TERMINAL,
+                K::FileRead | K::ImageView => crate::icons::DOCUMENT,
+                K::FileChange => crate::icons::PEN,
+                K::FileContentSearch | K::FilePathSearch => crate::icons::MAGNIFER,
+                K::Web => crate::icons::GLOBAL,
+                K::Plan => crate::icons::CHECKLIST,
+                K::Agent => crate::icons::BOT,
+                K::Generic | K::Status | K::Answer | K::UserRequest | K::Mcp => {
+                    crate::icons::WIDGET
+                }
+            }
+        }
     }
 }
 
@@ -9553,6 +10178,7 @@ mod tests {
                                 frame,
                                 replay_baseline,
                                 context_usage: None,
+                                native: None,
                             },
                             cx,
                         )
@@ -9665,6 +10291,7 @@ mod tests {
             .prepare(&roboco_doc::TranscriptUpdate {
                 frame: roboco_doc::TranscriptFrame::reset(&original),
                 context_usage: None,
+                native: None,
                 replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&original)),
             })
             .unwrap();
@@ -9677,6 +10304,7 @@ mod tests {
             .prepare(&roboco_doc::TranscriptUpdate {
                 frame: roboco_doc::diff_transcript(&original, &changed),
                 context_usage: None,
+                native: None,
                 replay_baseline: None,
             })
             .unwrap();
@@ -9701,6 +10329,7 @@ mod tests {
                 replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
                 frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
                 context_usage: None,
+                native: None,
             };
             let start = Instant::now();
             let prepared = TranscriptPreparation::default().prepare(&update).unwrap();
@@ -9787,6 +10416,7 @@ mod tests {
                                     entries,
                                 )),
                                 context_usage: None,
+                                native: None,
                             },
                             pending,
                             cx,
@@ -9841,6 +10471,7 @@ mod tests {
                             frame: roboco_doc::diff_transcript(&full, &live),
                             replay_baseline: None,
                             context_usage: None,
+                            native: None,
                         },
                         cx,
                     )
@@ -9855,6 +10486,46 @@ mod tests {
                 "existing tool must remain settled"
             );
             assert!(tail.starts[1].is_some(), "new live tool must still animate");
+        });
+    }
+
+    #[gpui::test]
+    fn native_state_follows_each_transcript_update_and_clears_on_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let native = roboco_proto::NativeChatState {
+                active_request: Some("req-7".into()),
+                recovering: true,
+                ..Default::default()
+            };
+            let update = |native| roboco_doc::TranscriptUpdate {
+                frame: roboco_doc::diff_transcript(&[], &[]),
+                context_usage: None,
+                native,
+                replay_baseline: None,
+            };
+            state.update(cx, |state, cx| {
+                state.selected_chat = Some("mimir-chat".into());
+                state
+                    .receive_transcript_update(update(Some(native.clone())), cx)
+                    .unwrap();
+                let held = state.native.as_ref().expect("host state is kept");
+                assert_eq!(held.active_request.as_deref(), Some("req-7"));
+                assert!(held.recovering, "recovery rides the same state");
+                state.receive_transcript_update(update(None), cx).unwrap();
+                assert!(state.native.is_none(), "a non-native update clears it");
+                state
+                    .receive_transcript_update(update(Some(native)), cx)
+                    .unwrap();
+                state.select_chat(Some("other".into()), cx);
+                assert!(state.native.is_none(), "another chat never inherits it");
+            });
         });
     }
 
@@ -9880,6 +10551,7 @@ mod tests {
                         roboco_doc::TranscriptUpdate {
                             frame,
                             context_usage: None,
+                            native: None,
                             replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
                                 &history,
                             )),
@@ -9893,6 +10565,7 @@ mod tests {
                         roboco_doc::TranscriptUpdate {
                             frame: roboco_doc::diff_transcript(&history, &live),
                             context_usage: None,
+                            native: None,
                             replay_baseline: None,
                         },
                         cx,
@@ -9929,6 +10602,7 @@ mod tests {
                                 frame,
                                 replay_baseline: baseline,
                                 context_usage: None,
+                                native: None,
                             },
                             cx,
                         )
@@ -9985,6 +10659,7 @@ mod tests {
                         roboco_doc::TranscriptUpdate {
                             frame: roboco_doc::TranscriptFrame::reset(&[]),
                             context_usage: None,
+                            native: None,
                             replay_baseline: Some(Default::default()),
                         },
                         cx,
@@ -10003,6 +10678,7 @@ mod tests {
                         roboco_doc::TranscriptUpdate {
                             frame: roboco_doc::diff_transcript(&[], &live),
                             context_usage: None,
+                            native: None,
                             replay_baseline: None,
                         },
                         cx,
@@ -10037,6 +10713,7 @@ mod tests {
                         roboco_doc::TranscriptUpdate {
                             frame,
                             context_usage: None,
+                            native: None,
                             replay_baseline: None,
                         },
                         cx,
@@ -12154,6 +12831,445 @@ mod tests {
         }
     }
 
+    fn native_tool(id: &str, title: &str, resolved: bool, is_error: bool) -> MessagePart {
+        use roboco_proto::{
+            NativeToolKind, NativeToolPreview, NativeToolResultState, NativeToolView,
+        };
+        MessagePart::Tool {
+            id: id.into(),
+            call: ToolCall::Native {
+                view: Box::new(NativeToolView {
+                    name: "read_file".into(),
+                    tool_call_id: format!("call-{id}"),
+                    invocation_id: Some(id.into()),
+                    title: title.into(),
+                    running_title: Some(format!("Working on {title}")),
+                    kind: NativeToolKind::FileRead,
+                    summary: None,
+                    locations: Vec::new(),
+                    result_state: NativeToolResultState::Normal,
+                    preview: NativeToolPreview::Full,
+                    semantic: None,
+                    quiet: false,
+                    group: None,
+                    subagent: None,
+                    progress: None,
+                    duration_ms: None,
+                    detail_ref: Some(format!("chat/{id}.native")),
+                    detail_bytes: Some(2048),
+                    child: None,
+                }),
+            },
+            is_error,
+            resolved,
+            output: None,
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+        }
+    }
+
+    fn with_native_view(
+        mut part: MessagePart,
+        edit: impl FnOnce(&mut roboco_proto::NativeToolView),
+    ) -> MessagePart {
+        if let MessagePart::Tool {
+            call: ToolCall::Native { view },
+            ..
+        } = &mut part
+        {
+            edit(view);
+        }
+        part
+    }
+
+    fn group_tools(rows: &[Row]) -> Vec<(String, Vec<ToolItem>)> {
+        rows.iter()
+            .filter_map(|row| match &row.kind {
+                RowKind::ToolGroup { summary, tools, .. } => {
+                    Some((summary.to_string(), tools.as_ref().clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_running_call_shows_the_host_running_title_then_the_settled_one() {
+        let running = assistant(
+            "a",
+            MessageStatus::Streaming,
+            vec![native_tool("inv-1", "Read: note.txt", false, false)],
+        );
+        let rows = rows_for_entry(&running, false, false, &mut parse);
+        let groups = group_tools(&rows);
+        let ToolCall::Native { view } = &groups[0].1[0].call else {
+            panic!("native call")
+        };
+        assert_eq!(view.title, "Working on Read: note.txt");
+        // The full record is reachable behind the chip, not guessed from the title.
+        let running_key = groups[0].1[0].output_ref.clone().unwrap();
+        assert_eq!(native_detail_ref(&running_key), Some("chat/inv-1.native"));
+        assert_eq!(groups[0].1[0].output_bytes, Some(2048));
+
+        let settled = assistant(
+            "a",
+            MessageStatus::Complete,
+            vec![with_native_view(
+                native_tool("inv-1", "Read: note.txt", true, false),
+                |view| view.duration_ms = Some(30),
+            )],
+        );
+        let rows = rows_for_entry(&settled, false, false, &mut parse);
+        let groups = group_tools(&rows);
+        let ToolCall::Native { view } = &groups[0].1[0].call else {
+            panic!("native call")
+        };
+        assert_eq!(view.title, "Read: note.txt");
+        let settled_key = groups[0].1[0].output_ref.clone().unwrap();
+        assert_eq!(native_detail_ref(&settled_key), Some("chat/inv-1.native"));
+        assert_ne!(
+            settled_key, running_key,
+            "a detail read while the call ran is never shown as the settled record"
+        );
+    }
+
+    /// The user opened a running call's detail; the call then settles. The
+    /// chip names a new version, so the earlier read is never shown as the
+    /// settled record and the new record is read without another click.
+    #[gpui::test]
+    fn an_opened_native_detail_is_read_again_when_its_call_settles(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let state = cx.new(|_| AppState::new());
+        let mut wire = crate::native_dock::scripted::attach(&state, cx);
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+        let tools_of = |part: MessagePart| {
+            let rows = rows_for_entry(
+                &assistant("a", MessageStatus::Streaming, vec![part]),
+                false,
+                false,
+                &mut parse,
+            );
+            group_tools(&rows)
+                .into_iter()
+                .flat_map(|(_, tools)| tools)
+                .collect::<Vec<_>>()
+        };
+        let running = tools_of(native_tool("inv-1", "Read: note.txt", false, false));
+        transcript.update(cx, |transcript, cx| {
+            transcript.chat_id = Some("chat".into());
+            transcript.spawn_blob_fetch(running[0].output_ref.clone().unwrap(), cx);
+        });
+        crate::native_dock::scripted::pump(&runtime, cx);
+        let first =
+            crate::native_dock::scripted::only(&wire.drain(), roboco_rpc::methods::FETCH_TOOL_BLOB)
+                .clone();
+        assert_eq!(first.params["blobRef"], "chat/inv-1.native");
+        let settled = tools_of(with_native_view(
+            native_tool("inv-1", "Read: note.txt", true, false),
+            |view| view.duration_ms = Some(40),
+        ));
+        transcript.update(cx, |transcript, _| {
+            assert_eq!(
+                transcript.stale_native_reads(&running),
+                Vec::<SharedString>::new()
+            );
+            assert_eq!(
+                transcript.stale_native_reads(&settled),
+                vec![settled[0].output_ref.clone().unwrap()],
+                "the settled version is read again"
+            );
+            let other = tools_of(native_tool("inv-2", "Read: other.txt", true, false));
+            assert!(
+                transcript.stale_native_reads(&other).is_empty(),
+                "an unopened record is not read"
+            );
+        });
+    }
+
+    #[test]
+    fn native_chips_render_the_host_semantic_preview_and_result_state() {
+        let answer = with_native_view(native_tool("ans", "Answer", true, false), |view| {
+            view.semantic = Some(roboco_proto::NativeToolSemantic::AnswerMarkdown);
+            view.preview = roboco_proto::NativeToolPreview::Compact;
+        });
+        let compact = with_native_view(native_tool("cmp", "Run tests", true, false), |view| {
+            view.preview = roboco_proto::NativeToolPreview::Compact;
+        });
+        let empty = with_native_view(native_tool("grp", "Search retry", true, false), |view| {
+            view.result_state = roboco_proto::NativeToolResultState::NoMatches;
+        });
+        let full = native_tool("full", "Read a.rs", true, false);
+        let parts: Vec<MessagePart> = [answer, compact, empty, full]
+            .into_iter()
+            .map(|mut part| {
+                if let MessagePart::Tool { output, .. } = &mut part {
+                    *output = Some("## Findings\n\n- **one** entry".into());
+                }
+                part
+            })
+            .collect();
+        let rows = rows_for_entry(
+            &assistant("a", MessageStatus::Complete, parts),
+            false,
+            false,
+            &mut parse,
+        );
+        let tools: Vec<ToolItem> = group_tools(&rows)
+            .into_iter()
+            .flat_map(|(_, tools)| tools)
+            .collect();
+        let by_id = |id: &str| tools.iter().find(|tool| tool.part_id == id).unwrap();
+        let Some(ToolDetail::Thought { lines, .. }) = by_id("ans").detail.as_deref() else {
+            panic!("an answer renders as Markdown, not raw text");
+        };
+        let heading: Vec<&InlineRun> = lines[0].iter().filter(|run| !run.text.is_empty()).collect();
+        assert_eq!(heading[0].text, "Findings");
+        assert!(
+            heading[0].style.bold,
+            "the heading is styled, not shown as ##"
+        );
+        assert!(
+            lines
+                .iter()
+                .flatten()
+                .any(|run| run.text.trim() == "one" && run.style.bold),
+            "{lines:?}"
+        );
+        assert!(
+            by_id("cmp").detail.is_none(),
+            "a compact preview shows no inline body"
+        );
+        assert!(
+            by_id("grp").detail.is_none(),
+            "a no-match result shows no body"
+        );
+        let ToolCall::Native { view } = &by_id("grp").call else {
+            panic!("native call")
+        };
+        assert_eq!(view.title, "Search retry · No matches");
+        assert!(
+            matches!(
+                by_id("full").detail.as_deref(),
+                Some(ToolDetail::Output { .. })
+            ),
+            "a full preview keeps its verbatim result"
+        );
+    }
+
+    #[test]
+    fn a_fetched_native_detail_says_what_the_preview_cut_and_renders_declared_markdown() {
+        let preview = crate::native_blob::DetailPreview {
+            sections: vec![
+                crate::native::DetailSection {
+                    title: "Raw input, as the host received it".into(),
+                    body: "{\"q\": 1}".into(),
+                    markdown: false,
+                },
+                crate::native::DetailSection {
+                    title: "Result".into(),
+                    body: "**done**".into(),
+                    markdown: true,
+                },
+            ],
+            cut: Some(
+                "This view shows the first 8.0 MB of 9.0 MB. Save exports the complete record."
+                    .into(),
+            ),
+        };
+        let ToolDetail::Thought {
+            lines,
+            truncated_by,
+        } = native_preview_detail(&preview)
+        else {
+            panic!("styled detail");
+        };
+        assert_eq!(truncated_by, 0);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| line.iter().map(|run| run.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            text[0],
+            "This view shows the first 8.0 MB of 9.0 MB. Save exports the complete record."
+        );
+        assert!(text.contains(&"{\"q\": 1}".to_owned()));
+        assert!(lines.iter().flatten().any(|run| run.text == "done" && run.style.bold));
+    }
+
+    #[test]
+    fn quiet_successes_fold_away_but_a_quiet_failure_stays_visible() {
+        let quiet = |id: &str, is_error: bool| {
+            with_native_view(native_tool(id, id, true, is_error), |view| view.quiet = true)
+        };
+        let entry = assistant(
+            "a",
+            MessageStatus::Complete,
+            vec![
+                native_tool("loud", "Loud", true, false),
+                quiet("calm-1", false),
+                quiet("calm-2", false),
+                quiet("broken", true),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        let groups = group_tools(&rows);
+        let names: Vec<Vec<String>> = groups
+            .iter()
+            .map(|(_, tools)| tools.iter().map(|t| t.part_id.clone()).collect())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                vec!["loud".to_string()],
+                vec!["calm-1".to_string(), "calm-2".to_string()],
+                vec!["broken".to_string()],
+            ],
+            "quiet successes get their own group; the failure keeps the visible one"
+        );
+        // A streaming turn never opens the quiet group by itself.
+        let streaming = assistant(
+            "a",
+            MessageStatus::Streaming,
+            vec![quiet("calm-1", false)],
+        );
+        let rows = rows_for_entry(&streaming, false, false, &mut parse);
+        let RowKind::ToolGroup { auto_open, .. } = &rows[0].kind else {
+            panic!("group")
+        };
+        assert!(!auto_open);
+    }
+
+    #[test]
+    fn calls_sharing_a_host_group_key_render_under_the_host_label() {
+        let grouped = |id: &str, item: &str| {
+            with_native_view(native_tool(id, id, true, false), |view| {
+                view.group = Some(roboco_proto::NativeToolGroup {
+                    key: "reads".into(),
+                    label: "Read files".into(),
+                    item: item.into(),
+                })
+            })
+        };
+        let entry = assistant(
+            "a",
+            MessageStatus::Complete,
+            vec![grouped("one", "a.rs"), grouped("two", "b.rs")],
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        assert_eq!(group_tools(&rows)[0].0, "Read files · a.rs, b.rs");
+    }
+
+    #[test]
+    fn every_native_notice_variant_gets_its_own_row_with_its_facts() {
+        use roboco_proto::{NativeChildCompletion, NativeChildStatus, NativeNotice, NativePlanStatus, NativeUsage};
+        let notices = vec![
+            NativeNotice::PlanLifecycle {
+                plan_id: "p1".into(),
+                name: "Ship it".into(),
+                status: NativePlanStatus::ReviewPending,
+            },
+            NativeNotice::Compaction {
+                trigger: "Context was full".into(),
+                before_tokens: Some(90_000),
+                after_tokens: None,
+            },
+            NativeNotice::BranchSummary {
+                summary: "Explored the cache".into(),
+            },
+            NativeNotice::PluginSnapshot {
+                plugin_id: "todo".into(),
+                title: "Todo".into(),
+                revision: 3,
+                fallback: "2 open".into(),
+                lines: serde_json::json!([{"styled": true}]),
+            },
+            NativeNotice::SubagentCompletions {
+                completions: vec![NativeChildCompletion {
+                    handle: "agent-1".into(),
+                    attempt: Some(2),
+                    status: NativeChildStatus::Completed,
+                    description: "Scan the repo".into(),
+                    result_preview: "Found 3 callers".into(),
+                    result_truncated: true,
+                    changed_files: vec!["a.rs".into(), "b.rs".into()],
+                    omitted_changed_files: 4,
+                    run: None,
+                    usage: Some(NativeUsage {
+                        total_tokens: 1200,
+                        input_tokens: 1000,
+                        output_tokens: 200,
+                        ..Default::default()
+                    }),
+                }],
+            },
+            NativeNotice::CommandDisplay {
+                text: "ok".into(),
+            },
+            NativeNotice::Status {
+                text: "Retrying in 4 s".into(),
+            },
+            NativeNotice::Interrupted {
+                message: "The bridge stopped.".into(),
+                detail_ref: Some("chat/n7.native".into()),
+            },
+            NativeNotice::Image {
+                media_type: Some("image/png".into()),
+                detail_ref: Some("chat/n8.native".into()),
+            },
+            NativeNotice::Unsupported {
+                item: "audio".into(),
+                detail_ref: None,
+            },
+        ];
+        let entry = assistant(
+            "a",
+            MessageStatus::Complete,
+            notices
+                .into_iter()
+                .enumerate()
+                .map(|(ix, notice)| MessagePart::Notice {
+                    id: format!("n{ix}"),
+                    notice,
+                })
+                .collect(),
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        let views: Vec<_> = rows
+            .iter()
+            .map(|row| match &row.kind {
+                RowKind::Notice { view } => view.clone(),
+                _ => panic!("every notice is its own row"),
+            })
+            .collect();
+        assert_eq!(views.len(), 10);
+        assert_eq!(views[0].title, "Plan \"Ship it\"");
+        assert!(views[1].body.as_deref().unwrap().contains("90,000 tokens before, unknown after"));
+        assert_eq!(views[2].body.as_deref(), Some("Explored the cache"));
+        assert_eq!(views[3].body.as_deref(), Some("2 open"), "unreadable plugin lines fall back to the host's text");
+        let done = views[4].body.as_deref().unwrap();
+        for fact in ["Scan the repo", "agent-1", "attempt 2", "Found 3 callers", "shortened", "a.rs, b.rs", "4 more", "1,200 tokens"] {
+            assert!(done.contains(fact), "completion detail lost {fact}: {done}");
+        }
+        assert_eq!(views[5].body.as_deref(), Some("ok"));
+        assert_eq!(views[6].body.as_deref(), Some("Retrying in 4 s"));
+        assert_eq!(views[7].detail_ref.as_deref(), Some("chat/n7.native"));
+        assert!(views[7].body.as_deref().unwrap().contains("provisional"));
+        assert!(views[8].binary_detail && views[8].media_type.as_deref() == Some("image/png"));
+        assert!(views[9].detail_ref.is_none());
+        let ids: std::collections::HashSet<_> = rows.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids.len(), 10, "stable, distinct row ids");
+    }
+
     const MD: &str = "# Title\n\npara one\n\n```rust\nlet x = 1;\n```";
 
     #[test]
@@ -12630,6 +13746,7 @@ mod tests {
                                 roboco_doc::TranscriptUpdate {
                                     frame: roboco_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
+                                    native: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
                                         &history,
                                     )),
@@ -12658,6 +13775,7 @@ mod tests {
                                 roboco_doc::TranscriptUpdate {
                                     frame: roboco_doc::diff_transcript(&history, &next),
                                     context_usage: None,
+                                    native: None,
                                     // The RPC must retain its opening cutoff when
                                     // publishing subsequent changed-part history.
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
@@ -12713,6 +13831,7 @@ mod tests {
                                 roboco_doc::TranscriptUpdate {
                                     frame: roboco_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
+                                    native: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
                                         &history,
                                     )),
@@ -12725,6 +13844,7 @@ mod tests {
                                 roboco_doc::TranscriptUpdate {
                                     frame: roboco_doc::diff_transcript(&history, &live),
                                     context_usage: None,
+                                    native: None,
                                     replay_baseline: None,
                                 },
                                 cx,
@@ -12775,6 +13895,7 @@ mod tests {
                                 roboco_doc::TranscriptUpdate {
                                     frame: roboco_doc::diff_transcript(&live, &next),
                                     context_usage: None,
+                                    native: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
                                         &next_history,
                                     )),
@@ -12882,6 +14003,7 @@ mod tests {
                                     roboco_doc::TranscriptUpdate {
                                         frame,
                                         context_usage: None,
+                                        native: None,
                                         replay_baseline: Some(
                                             roboco_doc::TranscriptBaseline::capture(&updated),
                                         ),

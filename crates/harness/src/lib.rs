@@ -160,6 +160,13 @@ pub trait Harness: Send + Sync {
         ))
     }
 
+    /// The native conversation owner, for a harness whose host owns execution
+    /// and the saved conversation. The engine drives such chats through it
+    /// instead of [`Self::run`].
+    fn native(&self) -> Option<&mimir::MimirHarness> {
+        None
+    }
+
     /// Run one (persistent) session; the stream ends with `AgentEvent::Done`.
     async fn run(
         &self,
@@ -182,6 +189,7 @@ pub mod cursor;
 pub(crate) mod executable;
 pub mod install;
 pub(crate) mod jsonrpc;
+pub mod mimir;
 pub mod mock;
 mod model_context;
 pub mod opencode;
@@ -391,6 +399,7 @@ pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
 pub use cursor::CursorHarness;
+pub use mimir::MimirHarness;
 pub use opencode::OpencodeHarness;
 pub use pi::PiHarness;
 

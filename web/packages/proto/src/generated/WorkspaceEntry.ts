@@ -2,7 +2,7 @@
 
 import type { WorkspaceEntryKind } from "./WorkspaceEntryKind";
 
-export type WorkspaceEntry = { 
+export type WorkspaceEntry = {
 /**
  * Opaque metadata revision guarding move/delete consent. Absent on
  * entries an older host listed (and on the synthetic root).

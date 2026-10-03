@@ -25,6 +25,10 @@ pub enum HarnessId {
     /// google's antigravity agent over acp (`agy_acp_server`, installed from
     /// its pinned release archive).
     Antigravity,
+    /// Mimir, driven natively through the Roboco-owned frontend plugin
+    /// (`mimir plugin run sh.roboco.bridge`). Mimir owns execution and the
+    /// saved conversation; the engine owns the chat projection.
+    Mimir,
     /// Test harness; never shown in production pickers.
     Mock,
 }
@@ -357,6 +361,12 @@ pub enum ToolCall {
         #[ts(type = "unknown")]
         input: Option<serde_json::Value>,
     },
+    /// A call from a harness whose host supplies its own display semantics
+    /// (Mimir). The full public input and result live behind
+    /// `view.detail_ref`; renderers use the view, never the tool name.
+    Native {
+        view: Box<crate::NativeToolView>,
+    },
 }
 
 impl ToolCall {
@@ -372,6 +382,8 @@ impl ToolCall {
         let name = match self {
             ToolCall::Unknown { name, .. } => name,
             ToolCall::Mcp { tool, .. } => tool,
+            // Typed: the host presents the call as a delegated agent.
+            ToolCall::Native { view } => return view.kind == crate::NativeToolKind::Agent,
             _ => return false,
         };
         name == "Agent" || name.starts_with("Agent: ")
@@ -394,6 +406,9 @@ impl ToolCall {
         }
         let input = match self {
             ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. } => input.as_ref()?,
+            ToolCall::Native { view } => {
+                return view.subagent.as_ref()?.model.as_deref();
+            }
             _ => return None,
         };
         SUBAGENT_MODEL_KEYS

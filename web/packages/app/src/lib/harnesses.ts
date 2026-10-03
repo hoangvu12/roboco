@@ -249,6 +249,8 @@ export function blurb(harness: HarnessId): string {
       return "SST's opencode agent (opencode CLI).";
     case "antigravity":
       return "Google's Antigravity agent (Antigravity ACP server).";
+    case "mimir":
+      return "The Mimir agent, through the Roboco bridge plugin (mimir CLI).";
     case "mock":
       return "Scripted test harness.";
   }
@@ -275,6 +277,8 @@ export function cliName(harness: HarnessId): string {
       return "opencode";
     case "antigravity":
       return "agy";
+    case "mimir":
+      return "mimir";
     case "mock":
       return "mock";
   }
@@ -383,6 +387,7 @@ export function manualCommand(harness: HarnessId): string | null {
     case "devin":
       return "curl -fsSL https://cli.devin.ai/install.sh | bash";
     case "antigravity":
+    case "mimir":
     case "mock":
       return null;
   }
@@ -597,6 +602,8 @@ export function agentName(harness: HarnessId): string {
       return "OpenCode";
     case "antigravity":
       return "Antigravity";
+    case "mimir":
+      return "Mimir";
     case "mock":
       return "Mock";
   }

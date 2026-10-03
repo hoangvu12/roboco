@@ -2,7 +2,7 @@
 
 import type { WorkspaceEntryKind } from "./WorkspaceEntryKind";
 
-export type DeleteWorkspaceEntryRequest = { operationId: string, expectedCheckoutId: string, path: string, expectedSourceRevision: string, expectedKind: WorkspaceEntryKind, 
+export type DeleteWorkspaceEntryRequest = { operationId: string, expectedCheckoutId: string, path: string, expectedSourceRevision: string, expectedKind: WorkspaceEntryKind,
 /**
  * Explicit consent to delete the directory's current contents.
  */

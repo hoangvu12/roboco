@@ -2,7 +2,7 @@
 
 import type { FolderEntry } from "./FolderEntry";
 
-export type FolderListing = { path: string, entries: Array<FolderEntry>, 
+export type FolderListing = { path: string, entries: Array<FolderEntry>,
 /**
  * True when the listing hit the entry cap.
  */

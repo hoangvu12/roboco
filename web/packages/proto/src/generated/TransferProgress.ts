@@ -9,11 +9,11 @@
  * sender's thumbnails can resolve their `pending://{uploadId}/…` refs to a
  * real percent instead of an indeterminate spinner.
  */
-export type TransferProgress = { uploadId: string, fileName: string, 
+export type TransferProgress = { uploadId: string, fileName: string,
 /**
  * Raw bytes the host has acknowledged so far.
  */
-done: number, 
+done: number,
 /**
  * Total raw bytes of the staged file.
  */

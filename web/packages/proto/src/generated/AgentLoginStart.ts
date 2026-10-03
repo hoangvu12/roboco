@@ -7,11 +7,11 @@ import type { AgentLoginMode } from "./AgentLoginMode";
  * `StartAgentLogin` reply: open `url`, then either paste the code back
  * (`CompleteAgentLogin`) or poll until the browser flow lands (`PollAgentLogin`).
  */
-export type AgentLoginStart = { loginId: string, 
+export type AgentLoginStart = { loginId: string,
 /**
  * Empty when the sign-in page is only known later (a poll carries it).
  */
-url: string, mode: AgentLoginMode, 
+url: string, mode: AgentLoginMode,
 /**
  * The loopback port the login's OAuth redirect lands on, on the device
  * running the login. A device whose browser finishes the sign-in for a
@@ -22,7 +22,7 @@ url: string, mode: AgentLoginMode,
  * loopback logins with it). `None` when the sign-in has no loopback
  * callback.
  */
-callbackPort?: number | null, 
+callbackPort?: number | null,
 /**
  * True when the spawned CLI opens the authorization page itself
  * (the engine could not suppress it) — clients must not open it too.

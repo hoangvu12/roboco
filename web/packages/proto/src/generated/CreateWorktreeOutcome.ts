@@ -6,11 +6,11 @@ import type { ProjectActionRun } from "./ProjectActionRun";
  * Result of creating a worktree. The worktree remains flattened so this is
  * wire-compatible with both legacy callers and legacy engine replies.
  */
-export type CreateWorktreeOutcome = { setupAction?: ProjectActionRun | null, setupError?: string | null, repoPath: string, path: string, branch: string, 
+export type CreateWorktreeOutcome = { setupAction?: ProjectActionRun | null, setupError?: string | null, repoPath: string, path: string, branch: string,
 /**
  * Generated worktree folder name (`roboco/<name>` is its branch).
  */
-name: string, 
+name: string,
 /**
  * Canonical checkout identity (device-scoped hash of the git dir).
  */

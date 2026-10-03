@@ -5,16 +5,16 @@
  * branch. Counts are computed only from locally available refs; callers must
  * fetch explicitly when they want newer remote state.
  */
-export type GitHistoryComparison = { 
+export type GitHistoryComparison = {
 /**
  * The local remote-tracking ref used as the comparison base, e.g.
  * `upstream/main`.
  */
-base: string, 
+base: string,
 /**
  * Commits reachable from HEAD but not from [`Self::base`].
  */
-ahead: number, 
+ahead: number,
 /**
  * Commits reachable from [`Self::base`] but not from HEAD.
  */

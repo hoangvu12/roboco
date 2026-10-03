@@ -235,6 +235,59 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::DoneStatus,
         roboco_proto::AgentEvent,
         roboco_proto::ContextUsage,
+        // native.rs
+        roboco_proto::NativeLink,
+        roboco_proto::NativeConversation,
+        roboco_proto::NativeMode,
+        roboco_proto::NativeConfiguration,
+        roboco_proto::NativeRequestStatus,
+        roboco_proto::NativeRequest,
+        roboco_proto::NativePlanStatus,
+        roboco_proto::NativePlanSummary,
+        roboco_proto::NativePlanSection,
+        roboco_proto::NativePlanArtifact,
+        roboco_proto::NativePlanDecision,
+        roboco_proto::NativeGoalPhase,
+        roboco_proto::NativeGoalCause,
+        roboco_proto::NativeGoalRequirement,
+        roboco_proto::NativeGoalCompletion,
+        roboco_proto::NativeGoal,
+        roboco_proto::NativeQuestionOption,
+        roboco_proto::NativeQuestion,
+        roboco_proto::NativeUserRequest,
+        roboco_proto::NativeAnswer,
+        roboco_proto::NativeChildStatus,
+        roboco_proto::NativeSubagentRun,
+        roboco_proto::NativeChild,
+        roboco_proto::NativeChildAttempt,
+        roboco_proto::NativeUsage,
+        roboco_proto::NativeDelivery,
+        roboco_proto::NativeSubmissionKind,
+        roboco_proto::NativeSubmission,
+        roboco_proto::NativeChatState,
+        roboco_proto::NativeGoalChange,
+        roboco_proto::NativeControl,
+        roboco_proto::NativeErrorKind,
+        roboco_proto::NativeChildControl,
+        roboco_proto::NativeControlOutcome,
+        roboco_proto::NativeToolKind,
+        roboco_proto::NativeToolResultState,
+        roboco_proto::NativeToolPreview,
+        roboco_proto::NativeToolSemantic,
+        roboco_proto::NativeToolLocation,
+        roboco_proto::NativeToolGroup,
+        roboco_proto::NativeToolView,
+        roboco_proto::NativeToolDetail,
+        roboco_proto::NativeBlobSeries,
+        roboco_proto::NativeNotice,
+        roboco_proto::NativeChildCompletion,
+        roboco_proto::NativeChildOutcome,
+        roboco_proto::NativeCommand,
+        roboco_proto::NativeSkill,
+        roboco_proto::NativeModelChoice,
+        roboco_proto::NativeProviderChoice,
+        roboco_proto::NativeChatCatalog,
+        roboco_proto::NativeReadiness,
         // invocation.rs
         roboco_proto::invocation::SkillCommand,
         roboco_proto::invocation::Skill,
@@ -287,6 +340,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_engine::doc_host::BeginQueueEditOutcome,
         roboco_engine::doc_host::RenewQueueEditOutcome,
         roboco_engine::doc_host::FinishQueueEditOutcome,
+        roboco_engine::doc_host::ToolBlobEncoding,
+        roboco_engine::doc_host::ToolBlobWindow,
         roboco_engine::rpc::FinishQueuedMessageEditAction,
         roboco_engine::rpc::MutateParams,
         roboco_engine::pairing::SessionGrant,
@@ -415,7 +470,10 @@ fn postprocess(dir: &Path) -> Result<BTreeMap<String, String>> {
             out.push('\n');
         }
         out.push('\n');
-        out.push_str(body);
+        for line in body.lines() {
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
         files.insert(stem, out);
     }
     Ok(files)

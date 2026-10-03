@@ -11,6 +11,9 @@
 
 import type {
   MessagePart,
+  NativeNotice,
+  NativeToolKind,
+  NativeToolView,
   SessionMessageEntry,
   ToolCall,
   ToolDiff,
@@ -22,6 +25,7 @@ import { layout } from "@roboco/theme";
 import { bodyHeight, DIFF_LINE_HEIGHT, truncateFileLines, type FileDiff } from "./diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
+import { nativeGroupLabel, nativeToolTitle, nativeToolVisible } from "./native";
 import { sentMentionDisplay, type SentMentionSpan } from "./mentions";
 import { splitBadges, type MessageBadge } from "./badges";
 
@@ -86,6 +90,38 @@ function toolChipContentRaw(call: ToolCall): [string, string] {
       }
       return ["Tool", call.name];
     }
+    // The host's own title is the detail; the label is its typed kind.
+    case "native":
+      return [nativeKindLabel(call.view.kind), call.view.title];
+  }
+}
+
+function nativeKindLabel(kind: NativeToolKind): string {
+  switch (kind) {
+    case "shell":
+      return "Run";
+    case "fileRead":
+    case "imageView":
+      return "Read";
+    case "fileChange":
+      return "Edit";
+    case "fileContentSearch":
+    case "filePathSearch":
+      return "Search";
+    case "web":
+      return "Web";
+    case "agent":
+      return "Agent";
+    case "mcp":
+      return "MCP";
+    case "plan":
+      return "Plan";
+    case "answer":
+    case "userRequest":
+      return "Ask";
+    case "status":
+    case "generic":
+      return "Tool";
   }
 }
 
@@ -137,6 +173,33 @@ export function toolGroupSummary(tools: readonly { call: ToolCall; isError: bool
       case "mcp":
       case "unknown":
         other++;
+        break;
+      case "native":
+        switch (call.view.kind) {
+          case "shell":
+            commands++;
+            break;
+          case "fileRead":
+          case "imageView":
+            reads++;
+            break;
+          case "fileContentSearch":
+          case "filePathSearch":
+            searches++;
+            break;
+          case "web":
+            fetches++;
+            break;
+          case "fileChange": {
+            const path = call.view.locations[0]?.path ?? call.view.title;
+            if (!edited.includes(path)) {
+              edited.push(path);
+            }
+            break;
+          }
+          default:
+            other++;
+        }
         break;
     }
   }
@@ -218,6 +281,10 @@ export function toolGroupTitle(tools: readonly ToolItem[]): string {
  * subagent binding; see the Rust doc for why the call, never the ref, decides.
  */
 export function isSubagentSpawn(call: ToolCall): boolean {
+  // Typed: the host presents the call as a delegated agent.
+  if (call.kind === "native") {
+    return call.view.kind === "agent";
+  }
   const name = call.kind === "unknown" ? call.name : call.kind === "mcp" ? call.tool : null;
   return name !== null && (name === "Agent" || name.startsWith("Agent: "));
 }
@@ -229,6 +296,9 @@ const SUBAGENT_MODEL_KEYS = ["model", "model_id", "modelId", "subagent_model"];
 export function subagentModel(call: ToolCall): string | null {
   if (!isSubagentSpawn(call)) {
     return null;
+  }
+  if (call.kind === "native") {
+    return call.view.subagent?.model ?? null;
   }
   const input = call.kind === "unknown" || call.kind === "mcp" ? call.input : null;
   if (typeof input !== "object" || input === null) {
@@ -396,6 +466,11 @@ export interface ToolItem {
   /** One-line live tail — LEGACY docs only; fingerprinted, never rendered. */
   readonly subagentTail: string | null;
   /**
+   * The host's views behind a native call: one for a plain call, several for
+   * adjacent calls merged under one group key. Null for every other chip.
+   */
+  readonly native: readonly NativeToolView[] | null;
+  /**
    * The chip's genus (`ToolItemKind` on the desktop): `"call"` is a real doc
    * tool invocation; `"thought"` (a reasoning part riding the tool group)
    * and `"note"` (compact mode's folded narration text) are synthesized in
@@ -443,6 +518,26 @@ export const BLOB_AFFORDANCE_HEIGHT = 24;
 export const FULL_OUTPUT_MAX_LINES = 400;
 /** `SUBAGENT_TITLE_MAX` — chars a subagent tab title keeps (:7149). */
 export const SUBAGENT_TITLE_MAX = 40;
+
+/**
+ * A native call's inline body, as the host declared it: an empty or no-match
+ * result shows none (the chip title says so), a compact preview shows none,
+ * an answer or report renders as Markdown, and a full preview keeps its text.
+ */
+export function nativeInlineDetail(
+  view: NativeToolView,
+  output: string | null | undefined,
+  diff: ToolDiff | null,
+  diffStats: readonly ToolDiffStat[] | null | undefined,
+): ToolDetail | null {
+  if (view.resultState !== "normal") {
+    return toolDetail(null, diff, diffStats);
+  }
+  if (view.semantic !== null) {
+    return output === null || output === undefined ? null : thoughtDetail(output, false);
+  }
+  return view.preview === "full" ? toolDetail(output, diff, diffStats) : toolDetail(null, diff, diffStats);
+}
 
 /** A reasoning part flattened into styled, wrapped detail lines. */
 export function thoughtDetail(text: string, live: boolean): ToolDetail | null {
@@ -1046,6 +1141,27 @@ export function toolIconName(call: ToolCall): IconName {
         return "bot";
       }
       return "widget";
+    case "native":
+      switch (call.view.kind) {
+        case "shell":
+          return "terminal";
+        case "fileRead":
+        case "imageView":
+          return "document";
+        case "fileChange":
+          return "pen";
+        case "fileContentSearch":
+        case "filePathSearch":
+          return "magnifer";
+        case "web":
+          return "global";
+        case "plan":
+          return "checklist";
+        case "agent":
+          return "bot";
+        default:
+          return "widget";
+      }
   }
 }
 
@@ -1146,6 +1262,10 @@ export function callBlock(call: ToolCall): ToolDetail | null {
       text = pretty !== null ? `${call.name}\n${pretty}` : call.name;
       break;
     }
+    // The full input lives in the engine detail blob behind `detailRef`.
+    case "native":
+      text = call.view.summary !== null ? `${call.view.title}\n${call.view.summary}` : call.view.title;
+      break;
   }
   const lines = text.split("\n").flatMap((line) => wrapCols(line, CALL_WRAP_COLS));
   while (lines.length > 0 && lines[lines.length - 1]!.trim().length === 0) {
@@ -1525,7 +1645,11 @@ export type TranscriptRowKind =
    * source title is stamped on the part at fork time, so a later rename or
    * delete of the source never rewrites the seam.
    */
-  | { readonly kind: "forkMarker"; readonly sourceChatId: string; readonly sourceTitle: string };
+  | { readonly kind: "forkMarker"; readonly sourceChatId: string; readonly sourceTitle: string }
+  /** A host notice (plan, compaction, completions, unsupported item, ...), shown as the host sent it. */
+  | { readonly kind: "notice"; readonly notice: NativeNotice }
+  /** Quiet native calls the host marked as hidden; `shown` flips the toggle's wording. */
+  | { readonly kind: "quietCalls"; readonly count: number; readonly shown: boolean };
 
 /** A transcript row: stable id + content version (diff key) + block payload. */
 export interface TranscriptRow {
@@ -1556,6 +1680,8 @@ export interface RowsOptions {
    * trailing run of text parts) stays a visible row.
    */
   readonly compact?: boolean;
+  /** Show quiet native calls (the host's `quiet` flag) that succeeded. Failures always show. */
+  readonly showQuiet?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,6 +1786,9 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
   // never share a collapse with Reads/Runs. In compact mode every working
   // step of the turn instead folds into ONE collapsed work accordion.
   const compact = options.compact ?? false;
+  const showQuiet = options.showQuiet ?? false;
+  let quietCount = 0;
+  let quietRowIx: number | null = null;
   const lastPartIx = entry.parts.length - 1;
   let groupIx = 0;
   let pendingGroup: ToolItem[] = [];
@@ -1706,7 +1835,10 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         call: part.call,
         isError: part.isError,
         resolved: part.resolved,
-        detail: toolDetail(part.output, part.diff ?? null, part.diffStats),
+        detail:
+          part.call.kind === "native"
+            ? nativeInlineDetail(part.call.view, part.output, part.diff ?? null, part.diffStats)
+            : toolDetail(part.output, part.diff ?? null, part.diffStats),
         invocation: callBlock(part.call),
         outputRef: part.outputRef ?? null,
         outputBytes: part.outputBytes ?? null,
@@ -1714,8 +1846,30 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         subagentRef: part.subagentRef ?? null,
         subagentStatus: part.subagentStatus ?? null,
         subagentTail: part.subagentTail ?? null,
+        native: part.call.kind === "native" ? [part.call.view] : null,
         kind: "call",
       };
+      if (!compact && part.call.kind === "native" && part.call.view.quiet && !part.isError) {
+        // The toggle row sits where the first quiet success landed.
+        quietCount++;
+        if (quietRowIx === null) {
+          flushGroup();
+          quietRowIx = rows.length;
+          rows.push({
+            id: `${entry.id}#quiet`,
+            version: 0,
+            turnStart: false,
+            rowKind: { kind: "quietCalls", count: 0, shown: showQuiet },
+            entryId: entry.id,
+            timestamp: null,
+            copyText: null,
+            compactFold: null,
+          });
+        }
+      }
+      if (!compact && part.call.kind === "native" && !nativeToolVisible(part.call.view, part.isError, showQuiet)) {
+        return;
+      }
       if (compact) {
         // Compact mode keeps ONE group for the whole turn — agent chips
         // fold in with everything else, so the genus split never runs.
@@ -1728,7 +1882,13 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
           flushGroup();
         }
       }
-      pendingGroup.push(item);
+      const last = pendingGroup[pendingGroup.length - 1];
+      const merged = last !== undefined ? mergeNativeGroup(last, item) : null;
+      if (merged !== null) {
+        pendingGroup[pendingGroup.length - 1] = merged;
+      } else {
+        pendingGroup.push(item);
+      }
       groupLastPartIx = partIx;
       return;
     }
@@ -1751,6 +1911,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         subagentRef: null,
         subagentStatus: null,
         subagentTail: null,
+        native: null,
         kind: "thought",
       };
       if (compact) {
@@ -1855,6 +2016,19 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         copyText: null,
         compactFold: null,
       });
+      return;
+    }
+    if (part.kind === "notice") {
+      rows.push({
+        id: `${entry.id}#${part.id}`,
+        version: fnv1a(JSON.stringify(part.notice)),
+        turnStart: false,
+        rowKind: { kind: "notice", notice: part.notice },
+        entryId: entry.id,
+        timestamp: null,
+        copyText: null,
+        compactFold: null,
+      });
     }
   });
   if (compact) {
@@ -1909,6 +2083,14 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
     flushGroup();
   }
 
+  if (quietRowIx !== null) {
+    const row = rows[quietRowIx]!;
+    rows[quietRowIx] = {
+      ...row,
+      version: quietCount * 2 + Number(showQuiet),
+      rowKind: { kind: "quietCalls", count: quietCount, shown: showQuiet },
+    };
+  }
   if (rows.length > 0) {
     rows[0] = { ...rows[0]!, turnStart: true };
   }
@@ -1987,6 +2169,7 @@ function noteItem(text: string, live: boolean): ToolItem {
     subagentRef: null,
     subagentStatus: null,
     subagentTail: null,
+    native: null,
     kind: "note",
   };
 }
@@ -2027,10 +2210,51 @@ export function workedForLabel(secs: number): string {
  * `subagent_ref.is_some() | status<<1` byte, and the subagent tail bytes.
  * Finally the `auto_open` byte.
  */
+/**
+ * Adjacent native calls sharing a host group key render as one chip,
+ * "<label> · <item>, <item>". The merged chip keeps every call's view so each
+ * stays inspectable; it has no inline body of its own.
+ */
+function mergeNativeGroup(prev: ToolItem, next: ToolItem): ToolItem | null {
+  if (prev.native === null || next.native === null || prev.kind !== "call" || next.kind !== "call") {
+    return null;
+  }
+  const views = [...prev.native, ...next.native];
+  const head = views[0];
+  if (head === undefined || head.kind === "agent") {
+    return null;
+  }
+  const title = nativeGroupLabel(views);
+  if (title === null) {
+    return null;
+  }
+  const resolved = prev.resolved && next.resolved;
+  return {
+    call: { kind: "native", view: { ...head, title, runningTitle: null, summary: null, detailRef: null, detailBytes: null } },
+    isError: prev.isError || next.isError,
+    resolved,
+    detail: null,
+    invocation: null,
+    outputRef: null,
+    outputBytes: null,
+    diffRef: null,
+    subagentRef: null,
+    subagentStatus: null,
+    subagentTail: null,
+    native: views,
+    kind: "call",
+  };
+}
+
 function toolFingerprint(tools: readonly ToolItem[], autoOpen: boolean): number {
   let acc = "";
   for (const tool of tools) {
     const { label, detail } = toolChipContent(tool.call);
+    if (tool.native !== null) {
+      acc += tool.native
+        .map((view) => `${nativeToolTitle(view, tool.resolved)}\u{1}${view.progress ?? ""}\u{1}${view.detailRef ?? ""}`)
+        .join("\u{2}");
+    }
     acc += label;
     acc += String(detail.length);
     acc += String(Number(tool.isError) | (Number(tool.resolved) << 1));

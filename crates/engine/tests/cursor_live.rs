@@ -133,7 +133,7 @@ async fn remote_steer_batch_reaches_real_muse_with_every_message() {
             id: format!("remote-{i}"),
             payload: SessionCommandPayload::Steer {prompt: format!("Remember {token}. Reply with the immediately previous user token and this token. Do not use tools."), message_id: Some(format!("message-{i}"))},
             issued_by: "remote-viewer".into(), issued_at: now + i as i64,
-            based_on: None, expires_at: None, status: roboco_doc::SessionCommandStatus::Pending, resolution: None,
+            based_on: None, expires_at: None, status: roboco_doc::SessionCommandStatus::Pending, resolution: None, outcome: None,
         }).unwrap();
     }
     core.doc_host.drain_commands(&handle).await;

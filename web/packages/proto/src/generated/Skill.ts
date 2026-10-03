@@ -2,7 +2,7 @@
 
 import type { SkillCommand } from "./SkillCommand";
 
-export type Skill = { name: string, path: string, description: string, enabled: boolean, 
+export type Skill = { name: string, path: string, description: string, enabled: boolean,
 /**
  * A provider-advertised slash invocation for this skill, when available.
  */

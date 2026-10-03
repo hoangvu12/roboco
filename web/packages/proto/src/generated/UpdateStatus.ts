@@ -5,7 +5,7 @@
  * strip). Version facts only — download/apply progress is owned by whoever
  * drives the update (UI or CLI).
  */
-export type UpdateStatus = { currentVersion: string, latestVersion?: string | null, updateAvailable: boolean, 
+export type UpdateStatus = { currentVersion: string, latestVersion?: string | null, updateAvailable: boolean,
 /**
  * Epoch ms of the last successful check.
  */
