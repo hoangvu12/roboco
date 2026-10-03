@@ -180,7 +180,9 @@ function ViewerToolbar({
   readonly onRetrySave: (() => void) | null;
 }) {
   const appearance = useResolvedAppearance();
-  const parts = path.split("/");
+  // Outside paths are absolute: the empty crumb before their leading slash
+  // is not a segment (preview.rs `render_breadcrumb`).
+  const parts = path.split("/").filter((part) => part.length > 0);
   return (
     <div className="files-breadcrumb-bar">
       <FileIcon kind="file" name={path} appearance={appearance} size={14} className="files-breadcrumb-icon" />
@@ -568,6 +570,11 @@ function TextViewer({
             doc?.keepEditing();
           }}
         />
+        {snapshot.phase.kind === "readOnly" && snapshot.phase.reason === "outsideWorkspace" && (
+          <div className="files-outside-banner" role="status">
+            {readOnlyMessage("outsideWorkspace")}
+          </div>
+        )}
         <div className="files-viewer-body">{body}</div>
       </div>
     </div>

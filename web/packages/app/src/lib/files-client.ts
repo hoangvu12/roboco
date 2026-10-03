@@ -120,7 +120,9 @@ export class WorkspaceFilesClient {
    * must stay consistent across chunks or the read fails.
    */
   async readImage(path: string, expectedCheckoutId: string): Promise<WorkspaceImage> {
-    if (expectedCheckoutId.length === 0) {
+    // Outside files carry no checkout identity — the device resolves them
+    // by absolute path (files/client.rs).
+    if (expectedCheckoutId.length === 0 && !path.startsWith("/")) {
       throw new Error("Workspace checkout identity unavailable");
     }
     const parts: Uint8Array[] = [];
@@ -185,6 +187,11 @@ export function describeFilesError(error: unknown): string {
   if (error instanceof RpcError) {
     if (error.kind === "transport") {
       return "Engine is offline; reconnecting";
+    }
+    // A missing file shows its own wording — the transport's RPC framing
+    // never reaches the reader (preview.rs `read_error_message`).
+    if (error.message === "file not found") {
+      return "File not found.";
     }
     return error.message;
   }

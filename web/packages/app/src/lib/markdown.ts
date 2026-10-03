@@ -17,6 +17,20 @@
 /** Sentinel destination for a link whose URL is still streaming (mend). */
 export const PENDING_LINK_URL = "roboco:pending-link";
 
+/** The label an unlabeled file link shows: the final path component of its
+ * destination (a single lenient percent decode — a broken escape keeps the
+ * raw spelling), with any `:line`/`#L` suffix riding along. Port of the
+ * desktop's file-name labels (`file_name` + the span's own suffix). */
+export function fileNameLabel(destination: string): string {
+  const slash = destination.lastIndexOf("/");
+  const path = slash < 0 ? destination : destination.slice(slash + 1) || destination;
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
 export interface InlineStyle {
   readonly bold?: boolean;
   readonly italic?: boolean;
@@ -24,6 +38,13 @@ export interface InlineStyle {
   readonly strikethrough?: boolean;
   /** Destination URL when inside a link (or an image's source). */
   readonly link?: string | null;
+  /** The label to show instead of `text` for a file link whose text is the
+   * path itself (an unlabeled link — the parser fell back to the
+   * destination as the visible text) rather than a label the author wrote.
+   * The renderer decides what the label shows; `undefined`/null shows
+   * `text`. (Port of the desktop parser's `InlineStyle::file_label`, which
+   * the inline-code link rewriter sets for the same population.) */
+  readonly fileLabel?: string | null;
   /** Alt text marks an image run; hosts decide whether to render media. */
   readonly image?: boolean;
 }
@@ -431,6 +452,7 @@ function styleEquals(a: InlineStyle, b: InlineStyle): boolean {
     a.code === b.code &&
     a.strikethrough === b.strikethrough &&
     a.link === b.link &&
+    a.fileLabel === b.fileLabel &&
     a.image === b.image
   );
 }
@@ -529,6 +551,12 @@ export function parseInline(src: string, style: InlineStyle = PLAIN): InlineRun[
         flush();
         for (const run of parseInline(parsed.text, { ...style, link: parsed.dest })) {
           pushRun(runs, run.text, run.style);
+        }
+        // An unlabeled link (`[](dest)`) has no author-written label: its
+        // destination is the visible text, and the renderer shows that
+        // path's file name instead (the desktop's `file_label` population).
+        if (parsed.text.length === 0) {
+          pushRun(runs, parsed.dest, { ...style, link: parsed.dest, fileLabel: parsed.dest });
         }
         ix = parsed.end;
         continue;

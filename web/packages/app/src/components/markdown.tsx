@@ -11,8 +11,13 @@ import {
 } from "react";
 import { Icon } from "@roboco/icons";
 import type { Block, BlockTree, InlineRun, TableAlign } from "../lib/markdown";
-import { PENDING_LINK_URL, tableColumns } from "../lib/markdown";
-import { graphemeBreaks, resolveWorkspaceFileLink, transcriptAddress } from "../lib/links";
+import { PENDING_LINK_URL, fileNameLabel, tableColumns } from "../lib/markdown";
+import {
+  graphemeBreaks,
+  resolveWorkspaceFileLink,
+  transcriptAddress,
+  type WorkspaceFileLink,
+} from "../lib/links";
 import { hasSpecificFileIcon, wellBg } from "../lib/file-icons";
 import { highlightCode, splitTokenLines, type SyntaxRole, type SyntaxToken } from "../lib/syntax";
 import { sliceTokensForVeil } from "../lib/veil";
@@ -231,7 +236,17 @@ export function InlineRunView({ run }: { run: InlineRun }) {
       // link's label, or a veiled piece) still renders as media.
       content = <MarkdownImage run={run} />;
     } else {
-      content = <MarkdownLink href={style.link}>{content}</MarkdownLink>;
+      // An unlabeled file link shows its file name; the full path stays on
+      // the hover card and the copy action (the desktop's `file_label`).
+      const label =
+        style.fileLabel !== null && style.fileLabel !== undefined
+          ? fileNameLabel(style.fileLabel)
+          : null;
+      content = (
+        <MarkdownLink href={style.link} label={label}>
+          {label ?? content}
+        </MarkdownLink>
+      );
     }
   }
   return <>{content}</>;
@@ -296,7 +311,16 @@ const LINK_MENU_WIDTH = 260;
 /** The destination card's show delay — gpui's hoverable-tooltip default. */
 const LINK_CARD_DELAY_MS = 650;
 
-function MarkdownLink({ href, children }: { href: string; children: ReactNode }) {
+function MarkdownLink({
+  href,
+  label,
+  children,
+}: {
+  href: string;
+  /** The file-name label an unlabeled file link shows (null = authored label). */
+  label: string | null;
+  children: ReactNode;
+}) {
   const surface = useMarkdownSurface();
   const address = useMemo(() => transcriptAddress(href), [href]);
   const workspace = useMemo(
@@ -334,7 +358,7 @@ function LinkChrome({
 }: {
   href: string;
   address: string | null;
-  workspace: { path: string; line: number | null; column: number | null } | null;
+  workspace: WorkspaceFileLink | null;
   surface: MarkdownSurface;
   children: ReactNode;
 }) {
@@ -365,7 +389,9 @@ function LinkChrome({
   };
 
   const copyAddress = (): void => {
-    void navigator.clipboard?.writeText(address ?? href);
+    // A file link copies its decoded path — root-relative inside the
+    // workspace, absolute outside — not the raw href.
+    void navigator.clipboard?.writeText(workspace?.path ?? address ?? href);
   };
 
   const onMouseDown = (event: { button: number; clientX: number; clientY: number }): void => {
@@ -406,7 +432,11 @@ function LinkChrome({
   return (
     <RbContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <RbTooltip
-        label={<span className="md-link-card-text">{graphemeBreaks(address ?? href)}</span>}
+        label={
+          <span className="md-link-card-text">
+            {graphemeBreaks(workspace?.path ?? address ?? href)}
+          </span>
+        }
         placement={{ side: "bottom", align: "start" }}
         popupClassName="md-link-card"
       >

@@ -7575,6 +7575,21 @@ button.files-save-pill:hover {
   color: var(--rb-warning-muted);
 }
 
+/* The read-only line an outside (link-opened host) file shows above its
+   content — the truncated-preview row's shape with the muted foreground
+   (preview.rs `outside_read_only_row`). */
+.files-outside-banner {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+  font-size: 10px;
+  color: var(--rb-text-muted);
+}
+
 /* ── Centered states ───────────────────────────────────────────────────── */
 
 .files-note {
