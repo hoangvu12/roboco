@@ -33,6 +33,40 @@ import { findVariantAnywhere, variantsForAppearanceAll } from "./theme-library";
 /** The persisted mode choice; `system` follows `prefers-color-scheme`. */
 export type AppearanceMode = "system" | "light" | "dark";
 
+/**
+ * `motion::ReduceMotion` (upstream #642): follow `prefers-reduced-motion`
+ * (the default) or pin reduced motion on/off.
+ */
+export type ReduceMotion = "system" | "on" | "off";
+
+export const REDUCE_MOTION_CHOICES: readonly ReduceMotion[] = ["system", "on", "off"];
+
+export function reduceMotionLabel(preference: ReduceMotion): string {
+  return preference === "system" ? "System" : preference === "on" ? "On" : "Off";
+}
+
+/**
+ * `motion::resolve` (upstream #642, web-shaped — no background pause): the
+ * pin overrides the media query; `system` follows it.
+ */
+export function resolveReducedMotion(preference: ReduceMotion, system: boolean): boolean {
+  return preference === "on" ? true : preference === "off" ? false : system;
+}
+
+/** `reduce_motion_helper` (appearance.rs): the row's meta line. */
+export function reduceMotionHelper(preference: ReduceMotion, system: boolean): string {
+  switch (preference) {
+    case "system":
+      return system
+        ? "Following the system, which currently reduces motion."
+        : "Following the system, which currently allows motion.";
+    case "on":
+      return "Animations skip straight to their final state.";
+    case "off":
+      return "Animations play even if the system asks for less motion.";
+  }
+}
+
 /** Accent selection: the variant's authored accent, or one of the 7 presets. */
 export type AccentSelection = "themeDefault" | AccentPresetId;
 
@@ -45,6 +79,8 @@ export type AccentSelection = "themeDefault" | AccentPresetId;
 export type SurfacePreference = "themeDefault" | "opaque";
 
 export interface AppearancePreferences {
+  /** Reduced-motion pin (upstream #642); drives the effective flag. */
+  readonly reduceMotion: ReduceMotion;
   readonly mode: AppearanceMode;
   /** Variant id used whenever the light appearance is active. */
   readonly lightVariant: string;
@@ -61,6 +97,7 @@ export const DEFAULT_APPEARANCE: AppearancePreferences = {
   darkVariant: "roboco-dark",
   accent: "themeDefault",
   surface: "themeDefault",
+  reduceMotion: "system",
 };
 
 export const APPEARANCE_MODES: readonly AppearanceMode[] = ["system", "light", "dark"];
@@ -364,6 +401,11 @@ export class AppearanceStore {
     this.#update({ surface });
   }
 
+  /** The reduced-motion pin (upstream #642's `set_preference`). */
+  setReduceMotion(reduceMotion: ReduceMotion): void {
+    this.#update({ reduceMotion });
+  }
+
   #update(patch: Partial<AppearancePreferences>): void {
     const next: AppearancePreferences = { ...this.#preferences, ...patch };
     // Appearance is a discrete choice, never a drag — write it straight
@@ -374,6 +416,7 @@ export class AppearanceStore {
         themeSelection: { light: next.lightVariant, dark: next.darkVariant },
         accent: next.accent,
         surface: next.surface,
+        reduceMotion: next.reduceMotion,
       },
       "immediate",
     );
@@ -386,7 +429,8 @@ export class AppearanceStore {
       next.lightVariant === this.#preferences.lightVariant &&
       next.darkVariant === this.#preferences.darkVariant &&
       next.accent === this.#preferences.accent &&
-      next.surface === this.#preferences.surface
+      next.surface === this.#preferences.surface &&
+      next.reduceMotion === this.#preferences.reduceMotion
     ) {
       return;
     }
@@ -412,5 +456,6 @@ function project(settings: UiSettings): AppearancePreferences {
       variantForAppearance(settings.themeSelection.dark, "dark") ?? DEFAULT_APPEARANCE.darkVariant,
     accent: settings.accent,
     surface: settings.surface,
+    reduceMotion: settings.reduceMotion,
   };
 }

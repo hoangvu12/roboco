@@ -45,7 +45,7 @@ import {
   resolveInstalledBackground,
 } from "../src/lib/new-thread-background";
 import { memoryBackgroundBlobStore } from "../src/lib/background-blob-store";
-import { UiSettingsStore } from "../src/state/ui-settings";
+import { NEW_THREAD_ADJUSTMENT_DEFAULT, UiSettingsStore } from "../src/state/ui-settings";
 import type { StorageLike } from "../src/lib/engine-store";
 
 function memoryStorage(): StorageLike & { dump(): Map<string, string> } {
@@ -82,6 +82,7 @@ describe("AppearanceStore", () => {
       darkVariant: "nord",
       accent: "pink",
       surface: "opaque",
+      reduceMotion: "system",
     });
   });
 
@@ -136,6 +137,7 @@ describe("AppearanceStore", () => {
       darkVariant: "nord",
       accent: "pink",
       surface: "opaque",
+      reduceMotion: "system",
     });
     expect(storage.getItem("roboco.ui-settings.v1")).not.toBe(null);
   });
@@ -379,7 +381,7 @@ describe("new-thread background install/remove (settings.rs:305-386)", () => {
     const settings = new UiSettingsStore({ storage: memoryStorage() });
     const blobs = memoryBackgroundBlobStore();
     settings.updateImmediate({
-      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
     });
     await blobs.put(new Blob(["bytes"], { type: "image/png" }));
     expect(await blobs.url()).not.toBe(null);
@@ -397,7 +399,7 @@ describe("new-thread background install/remove (settings.rs:305-386)", () => {
     const settings = new UiSettingsStore({ storage: memoryStorage() });
     const blobs = memoryBackgroundBlobStore();
     settings.updateImmediate({
-      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
     });
     // Nothing staged yet: the row reads "Image unavailable", not the default.
     expect(await resolveInstalledBackground(settings.getSnapshot().newThreadComposerBackground, blobs)).toBe(null);
@@ -437,7 +439,7 @@ describe("settings-page background row resolution (ticket 48)", () => {
     const settings = new UiSettingsStore({ storage: memoryStorage() });
     const blobs = memoryBackgroundBlobStore();
     settings.updateImmediate({
-      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png" },
+      newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: "wall.png", adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT },
     });
     const stored = settings.getSnapshot().newThreadComposerBackground;
     await blobs.put(new Blob(["bytes"], { type: "image/png" }));

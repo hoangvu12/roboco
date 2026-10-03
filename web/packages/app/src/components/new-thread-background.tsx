@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SurfaceTreatment } from "@roboco/theme";
-import type { NewThreadBackgroundEffect } from "../state/ui-settings";
+import {
+  NEW_THREAD_ADJUSTMENT_DEFAULT,
+  type NewThreadBackgroundAdjustment,
+  type NewThreadBackgroundEffect,
+} from "../state/ui-settings";
 import {
   newThreadBackgroundElementOpacity,
   newThreadBackgroundHeight,
@@ -13,6 +17,7 @@ import {
 } from "../lib/new-thread-background-renderer";
 import { HeroRenderScheduler, type HeroGeometrySample } from "../lib/sidebar-tween";
 import { useResolvedAppearance } from "../state/appearance";
+import { usePrefersReducedMotion } from "../state/media";
 
 /**
  * The new-thread background hero — the web port of `shell.rs:857-914`
@@ -71,6 +76,19 @@ export interface NewThreadBackgroundProps {
   /** The settings-store effect — `none` paints the raw artwork; the others paint their raster. */
   readonly effect: NewThreadBackgroundEffect;
   /**
+   * The active background's framing (upstream #660): the renderer's cover fit
+   * gains the zoom multiplier and the focal-aligned position. Defaults to the
+   * centered cover crop.
+   */
+  readonly adjustment?: NewThreadBackgroundAdjustment;
+  /**
+   * The crossfade's departing artwork (upstream #598): its url while a
+   * wallpaper replacement blends, null once settled. The mix comes with it.
+   */
+  readonly departing?: { readonly url: string } | null;
+  /** The crossfade's eased progress (1 = settled). */
+  readonly mix?: number;
+  /**
    * True while the sidebar's 200ms CSS glide runs (ticket 57a): renders the
    * hero's `data-sidebar-tween` flag (its width transition + the raster
    * window) and, on the fall to false, re-rasters at the settled geometry
@@ -79,21 +97,9 @@ export interface NewThreadBackgroundProps {
   readonly sidebarTween: boolean;
 }
 
-/** `prefers-reduced-motion` at first paint, reactive afterwards. */
+/** The effective reduced-motion flag (the pin over the query, upstream #642). */
 function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReduced(query.matches);
-    onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
+  return usePrefersReducedMotion();
 }
 
 function readRootSurfaceTreatment(): SurfaceTreatment {
@@ -211,6 +217,9 @@ export function NewThreadBackground({
   heroWidth,
   dissolve,
   effect,
+  adjustment = NEW_THREAD_ADJUSTMENT_DEFAULT,
+  departing = null,
+  mix = 1,
   sidebarTween,
 }: NewThreadBackgroundProps) {
   const reduced = useReducedMotion();
@@ -221,6 +230,26 @@ export function NewThreadBackground({
   const appearance = useResolvedAppearance();
   const image = useDecodedImage(artwork === null ? null : artwork.url);
   const raster = useEffectRaster(artwork === null ? null : artwork.url, effect, appearance === "light");
+  // The crossfade's departing leg (upstream #598): the outgoing artwork keeps
+  // decoding/rasterizing through the same memoized jobs while it blends out.
+  const departingImage = useDecodedImage(departing === null ? null : departing.url);
+  const departingRaster = useEffectRaster(
+    departing === null ? null : departing.url,
+    effect,
+    appearance === "light",
+  );
+  const departingRasterCanvas = useMemo(
+    () => (departingRaster === null ? null : rasterToCanvas(departingRaster)),
+    [departingRaster],
+  );
+  // The departing image's own framing: the (url, adjustment) pair from the
+  // render BEFORE the url changed, captured as each render settles.
+  const previousRenderRef = useRef<{ url: string | null; adjustment: NewThreadBackgroundAdjustment }>({
+    url: null,
+    adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT,
+  });
+  const departingAdjustment =
+    departing === null ? NEW_THREAD_ADJUSTMENT_DEFAULT : previousRenderRef.current.adjustment;
   const rasterCanvas = useMemo(() => (raster === null ? null : rasterToCanvas(raster)), [raster]);
   const rendererRef = useRef<HeroBackgroundRenderer | null>(null);
   const schedulerRef = useRef<HeroRenderScheduler | null>(null);
@@ -330,7 +359,10 @@ export function NewThreadBackground({
   // window), with the rAF deferral preserving the same-frame transform
   // contract. An installed effect paints its RASTER only — the desktop's
   // hero is `Empty` while the raster is cold, never the raw artwork
-  // swapping mid-view; `none` paints the decoded raw artwork.
+  // swapping mid-view; `none` paints the decoded raw artwork. The framing
+  // (`adjustment`) rides the same upload, and a live crossfade re-runs this
+  // effect per mix frame (the store notifies per frame) so the blend
+  // advances without a remount.
   useLayoutEffect(() => {
     const renderer = rendererRef.current;
     if (renderer === null) {
@@ -346,12 +378,52 @@ export function NewThreadBackground({
             height: drawable instanceof HTMLImageElement ? drawable.naturalHeight : drawable.height,
           };
     renderer.setSource(source);
+    renderer.setAdjustment(adjustment);
+    const departingDrawable = effect === "none" ? departingImage : departingRasterCanvas;
+    const departingSource: HeroArtworkSource | null =
+      departing === null || departingDrawable === null
+        ? null
+        : {
+            drawable: departingDrawable,
+            width:
+              departingDrawable instanceof HTMLImageElement
+                ? departingDrawable.naturalWidth
+                : departingDrawable.width,
+            height:
+              departingDrawable instanceof HTMLImageElement
+                ? departingDrawable.naturalHeight
+                : departingDrawable.height,
+          };
+    renderer.setDeparting(departingSource, departing === null ? 1 : mix, departingAdjustment);
     const raf = requestAnimationFrame(() => schedulerRef.current?.noteArtwork());
     return () => {
       cancelAnimationFrame(raf);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [artwork, image, rasterCanvas, effect, surface]);
+  }, [
+    artwork,
+    image,
+    rasterCanvas,
+    effect,
+    surface,
+    adjustment,
+    departing,
+    mix,
+    departingImage,
+    departingRasterCanvas,
+    departingAdjustment,
+  ]);
+
+  // Record the settled (url, adjustment) pair AFTER the effects committed —
+  // the next render's crossfade reads it as the departing artwork's framing,
+  // and the pair HOLDS while a blend runs (the departing image keeps its own
+  // crop for the whole crossfade, upstream's `previous_adjustment`).
+  useLayoutEffect(() => {
+    if (departing !== null) {
+      return;
+    }
+    previousRenderRef.current = { url: artwork === null ? null : artwork.url, adjustment };
+  }, [artwork, adjustment, departing]);
 
   // The tween's settle (or a drag takeover's disarm): the commit that
   // returns the readiness layer to `inset: 0` has already restored the
@@ -390,10 +462,13 @@ export function NewThreadBackground({
       aria-hidden="true"
     >
       {/*
-        The readiness wrapper keyed on the artwork id: a NEW id mounts with
-        data-ready="false" and the store-owned clock flips it a frame later
-        (the 120 ms CSS ramp); the SAME id mounts ready and never re-fades —
-        a remount keeps its identity, so no transition runs (ticket 35).
+        The readiness wrapper: the store-owned clock flips `data-ready` so the
+        120 ms CSS ramp covers a cold artwork's arrival, while a LIVE
+        crossfade holds the wrapper open (`data-ready` forced true) and blends
+        the departing artwork inside the canvases — the wrapper itself is not
+        keyed to the artwork id, so the renderer's canvases stay bound to the
+        mount across a shuffle (ticket 35's stable-identity rule, extended by
+        upstream #598's crossfade).
         During a sidebar tween this layer becomes the RASTER WINDOW (app.css,
         ticket 57a): fixed at the current raster's width, centered on the
         hero, so the cutout dome (painted at the pill's center = the raster's
@@ -401,8 +476,7 @@ export function NewThreadBackground({
       */}
       <div
         className="new-thread-hero-readiness"
-        key={String(artwork.id)}
-        data-ready={artwork.ready ? "true" : "false"}
+        data-ready={artwork.ready || departing !== null ? "true" : "false"}
         data-reduced={reduced ? "true" : "false"}
       >
         {/*

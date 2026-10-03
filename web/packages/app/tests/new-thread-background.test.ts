@@ -276,25 +276,37 @@ describe("bottom fade gradient stops (ticket §2.8 CSS mapping)", () => {
   });
 });
 
-describe("readiness_opacity (new_thread_background_effects.rs:328-330)", () => {
-  it("is exactly 0.5 at 60 ms, restarts only on id change, snaps reduced", () => {
+describe("readiness_frame (new_thread_background_effects.rs, upstream #598)", () => {
+  it("crossfades over 180 ms, holds while loading, snaps reduced", () => {
     const readiness = new Readiness();
-    // No image: clear state, 0.
-    expect(readiness.opacity(null, false, 0)).toBe(0);
-    // First sighting stores the clock.
-    expect(readiness.opacity("art-1", false, 0)).toBe(0);
-    expect(readiness.opacity("art-1", false, 60)).toBe(0.5);
-    expect(readiness.opacity("art-1", false, 120)).toBe(1);
-    // The same artwork never re-fades.
-    expect(readiness.opacity("art-1", false, 5000)).toBe(1);
-    // A DIFFERENT id restarts the clock.
-    expect(readiness.opacity("art-2", false, 5000)).toBe(0);
-    expect(readiness.opacity("art-2", false, 5060)).toBe(0.5);
-    // Reduced motion snaps to 1.
-    expect(readiness.opacity("art-3", true, 9000)).toBe(1);
-    // Clearing again resets.
-    expect(readiness.opacity(null, false, 9100)).toBe(0);
-    expect(readiness.opacity("art-1", false, 9200)).toBe(0);
+    // Nothing enabled: clear state.
+    expect(readiness.frame(null, true, false, 0).current).toBe(null);
+    // First sighting adopts the artwork and starts the blend at 0.
+    expect(readiness.frame("art-1", true, false, 0).mix).toBe(0);
+    // The curve is cubic-bezier(1/3, 1, 2/3, 1) = 3t − 3t² + t³: 0.704 at
+    // 60 ms, 0.875 at the 90 ms midpoint (the desktop test's anchor).
+    expect(readiness.frame("art-1", true, false, 60).mix).toBeCloseTo(0.704, 3);
+    expect(readiness.frame("art-1", true, false, 90).mix).toBeCloseTo(0.875, 3);
+    expect(readiness.frame("art-1", true, false, 180).mix).toBe(1);
+    // The same artwork never re-blends.
+    expect(readiness.frame("art-1", true, false, 5000).mix).toBe(1);
+    // A DIFFERENT id restarts the blend, holding the old artwork as the
+    // departing leg while the new one is still loading.
+    const loading = readiness.frame(null, true, false, 5000);
+    expect(loading.current).toBe("art-1");
+    expect(loading.active).toBe(false);
+    const start = readiness.frame("art-2", true, false, 5000);
+    expect(start.mix).toBe(0);
+    expect(start.previous).toBe("art-1");
+    expect(readiness.frame("art-2", true, false, 5090).mix).toBeCloseTo(0.875, 3);
+    // Reduced motion snaps to 1 with no departing leg.
+    const snapped = readiness.frame("art-3", true, true, 9000);
+    expect(snapped.mix).toBe(1);
+    expect(snapped.previous).toBe(null);
+    expect(snapped.active).toBe(false);
+    // Clearing (nothing enabled) removes the artwork.
+    expect(readiness.frame(null, false, false, 9100).current).toBe(null);
+    expect(readiness.frame("art-1", true, false, 9200).mix).toBe(0);
   });
 });
 

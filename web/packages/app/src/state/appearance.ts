@@ -3,6 +3,7 @@ import type { Appearance } from "@roboco/theme";
 import type { NewThreadBackgroundEffect, NewThreadComposerBackground } from "./ui-settings";
 import { AppearanceStore, type AppearancePreferences, resolveAppearance } from "../lib/appearance-store";
 import { applyAppearanceToDocument, applyConversationWidthToDocument, applyTypographyToDocument } from "../theme";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
 import { Readiness, resolveNewThreadBackground } from "../lib/new-thread-background";
 import { prepareNewThreadBackgroundEffects } from "../lib/new-thread-background-effects";
 import { uiSettings, type UiSettingsStore } from "./ui-settings";
@@ -68,20 +69,20 @@ function systemAppearance(): Appearance {
 // shell-scoped artwork + readiness, shell.rs:5846-5895)
 // ---------------------------------------------------------------------------
 
-/** The resolved new-thread hero artwork plus the settings-store effect. */
+/**
+ * The resolved new-thread hero artwork plus the settings-store effect: the
+ * current url, the departing url of a live crossfade, and the blend's
+ * progress (upstream #598's `ArtworkFrame`, web-shaped).
+ */
 export interface NewThreadArtwork {
-  /** The decoded image to paint, or null while resolving / nothing installed. */
   readonly url: string | null;
-  /** The artwork's identity — the readiness fade restarts when it changes. */
-  readonly id: string | number | null;
+  readonly id: string | null;
   readonly effect: NewThreadBackgroundEffect;
-  /**
-   * The store-owned readiness clock's past-arrival flag — the hero wrapper's
-   * `data-ready`: false while a cold artwork's 120 ms fade has yet to start,
-   * true from the first frame on. A warm artwork (the same id across a route
-   * change) mounts ready and never re-fades.
-   */
   readonly ready: boolean;
+  /** The url fading out while the current one fades in; null when settled. */
+  readonly departing: string | null;
+  /** The crossfade's eased progress (1 = settled). */
+  readonly mix: number;
 }
 
 /** Construction seams for the store's tests (settings, resolve, clock, frames). */
@@ -99,13 +100,9 @@ export interface NewThreadArtworkStoreOptions {
   readonly reducedMotion?: () => boolean;
 }
 
-/** `prefers-reduced-motion` right now (the store reads it per evaluation). */
+/** The effective reduced-motion read (the pin over the query, #642). */
 function prefersReducedMotionNow(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+  return effectiveReducedMotion();
 }
 
 /** rAF while fading (shell.rs:5884-5886); environments without rAF never advance. */
@@ -149,7 +146,7 @@ export class NewThreadArtworkStore {
   readonly #schedule: (callback: () => void) => void;
   readonly #reducedMotion: () => boolean;
   readonly #listeners = new Set<() => void>();
-  /** shell.rs:1032 — the shell-owned readiness clock (effects.rs:11-33). */
+  /** shell.rs:1032 — the shell-owned crossfade clock (effects.rs #598). */
   readonly #readiness = new Readiness();
   #url: string | null = null;
   #effect: NewThreadBackgroundEffect;
@@ -167,7 +164,14 @@ export class NewThreadArtworkStore {
     this.#reducedMotion = options.reducedMotion ?? prefersReducedMotionNow;
     const initial = this.#settings.getSnapshot();
     this.#effect = initial.newThreadBackgroundEffect;
-    this.#snapshot = { url: null, id: null, effect: this.#effect, ready: false };
+    this.#snapshot = {
+      url: null,
+      id: null,
+      effect: this.#effect,
+      ready: false,
+      departing: null,
+      mix: 1,
+    };
     this.#settings.subscribe(this.#onSettings);
     // Resolve + prewarm from boot, on BOTH routes (shell.rs:5846-5859).
     this.#onSettings();
@@ -183,13 +187,17 @@ export class NewThreadArtworkStore {
   };
 
   /**
-   * The readiness clock's current value — the desktop's `artwork_opacity`
-   * input (shell.rs:5860-5864). Tests and the one-fade assertion read it;
-   * the hero consumes the `ready` flip, whose CSS transition is the visible
-   * ramp.
+   * The crossfade clock's current mix — the desktop's `artwork_frame.mix`
+   * input (shell.rs, upstream #598). Tests read it; the hero consumes the
+   * `departing`/`mix` pair, whose canvas blend is the visible crossfade.
    */
   readinessValue(): number {
-    return this.#readiness.opacity(this.#url, this.#reducedMotion(), this.#nowMs());
+    return this.#readiness.frame(
+      this.#url,
+      this.#url !== null,
+      this.#reducedMotion(),
+      this.#nowMs(),
+    ).mix;
   }
 
   /**
@@ -248,27 +256,44 @@ export class NewThreadArtworkStore {
   }
 
   /**
-   * Evaluate the clock and publish when an observable field changed. The
-   * frame loop keeps evaluating while the artwork is resolved and its
-   * opacity is under 1 (shell.rs:5884-5886): the ramp rides the store's own
-   * frame source, never a hero remount.
+   * Evaluate the crossfade and publish when an observable field changed. The
+   * frame loop keeps evaluating while a blend is running (shell.rs:5884-5886,
+   * upstream #598): the crossfade rides the store's own frame source, never
+   * a hero remount.
    */
   #evaluate(): void {
-    const value = this.#readiness.opacity(this.#url, this.#reducedMotion(), this.#nowMs());
-    const ready = this.#url !== null && value > 0;
-    const next: NewThreadArtwork = { url: this.#url, id: this.#url, effect: this.#effect, ready };
+    const frame = this.#readiness.frame(
+      this.#url,
+      this.#url !== null,
+      this.#reducedMotion(),
+      this.#nowMs(),
+    );
+    // `mix > 0` reproduces the adoption frame's false→true flip that starts
+    // the readiness wrapper's 120 ms CSS ramp (the cold-load fade); a live
+    // crossfade keeps the blend in the canvases instead.
+    const ready = frame.current !== null && frame.mix > 0;
+    const next: NewThreadArtwork = {
+      url: frame.current,
+      id: frame.current,
+      effect: this.#effect,
+      ready,
+      departing: frame.previous,
+      mix: frame.mix,
+    };
     if (
       next.url !== this.#snapshot.url ||
       next.id !== this.#snapshot.id ||
       next.effect !== this.#snapshot.effect ||
-      next.ready !== this.#snapshot.ready
+      next.ready !== this.#snapshot.ready ||
+      next.departing !== this.#snapshot.departing ||
+      next.mix !== this.#snapshot.mix
     ) {
       this.#snapshot = next;
       for (const listener of this.#listeners) {
         listener();
       }
     }
-    if (this.#url !== null && value < 1) {
+    if (this.#url !== null && frame.active) {
       this.#scheduleFrame();
     }
   }
@@ -318,6 +343,11 @@ export function initAppearance(): () => void {
   // theme, then re-applied on every settings write — a discrete choice, so
   // any snapshot change carries it.
   const applyTypography = () => {
+    // The theme application reads the wallpaper overlay fields straight from
+    // the settings snapshot, so every settings write re-applies the palette —
+    // a wallpaper-colour toggle lands with the same write (upstream #598's
+    // `appearance::apply` on `set_enabled`).
+    apply();
     const settings = uiSettings.getSnapshot();
     applyTypographyToDocument({
       uiFontFamily: settings.uiFontFamily,

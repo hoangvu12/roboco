@@ -51,6 +51,7 @@ export function isMacPlatform(): boolean {
 
 export type ShortcutId =
   | "captureAppshot"
+  | "randomWallpaper"
   | "saveFile"
   | "browserReload"
   | "toggleSidebar"
@@ -65,9 +66,10 @@ export type ShortcutId =
   | "archiveSession"
   | { jumpSession: number };
 
-/** `ShortcutId::ALL` — 20 entries, in `settings.rs`'s order. */
+/** `ShortcutId::ALL` — 21 entries, in `settings.rs`'s order. */
 export const SHORTCUT_IDS: readonly ShortcutId[] = [
   "captureAppshot",
+  "randomWallpaper",
   "saveFile",
   "browserReload",
   "toggleSidebar",
@@ -100,6 +102,8 @@ export function shortcutLabel(id: ShortcutId): string {
   switch (id) {
     case "captureAppshot":
       return "Capture Appshot";
+    case "randomWallpaper":
+      return "Random wallpaper";
     case "saveFile":
       return "Save file";
     case "browserReload":
@@ -133,6 +137,8 @@ export function shortcutGroup(id: ShortcutId): string {
     return "Jump to session";
   }
   switch (id) {
+    case "randomWallpaper":
+      return "Appearance";
     case "captureAppshot":
       return "Appshots";
     case "saveFile":
@@ -161,6 +167,7 @@ export function shortcutGroup(id: ShortcutId): string {
  * cards render.
  */
 export const SHORTCUT_GROUPS: readonly string[] = [
+  "Appearance",
   "Files",
   "Browser",
   "Panels",
@@ -532,6 +539,7 @@ export function browserNeverDelivers(keystroke: string): boolean {
  */
 export type ShortcutEvent =
   | "new-chat"
+  | "random-wallpaper"
   | "save-file"
   | "toggle-sidebar"
   | "toggle-changes"
@@ -575,6 +583,10 @@ function bindingFor(id: ShortcutId): Keybinding {
     return { event: "jump-session", slot: id.jumpSession, bare: false };
   }
   switch (id) {
+    case "randomWallpaper":
+      // The shuffle works from anywhere — no folder chosen yet opens
+      // Appearance to pick one (shell.rs's `random_wallpaper`).
+      return { event: "random-wallpaper", bare: false };
     case "saveFile":
       return { event: "save-file", bare: false };
     case "toggleSidebar":
@@ -748,6 +760,7 @@ export function healReservedComposerShortcuts(
     combo === "mod-enter" ? fallback : combo;
   return {
     captureAppshot: heal(config.captureAppshot, defaults.captureAppshot),
+    randomWallpaper: heal(config.randomWallpaper, defaults.randomWallpaper),
     saveFile: heal(config.saveFile, defaults.saveFile),
     browserReload: heal(config.browserReload, defaults.browserReload),
     toggleSidebar: heal(config.toggleSidebar, defaults.toggleSidebar),

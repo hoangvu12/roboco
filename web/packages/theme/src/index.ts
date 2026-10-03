@@ -143,6 +143,16 @@ function flattenHex(fg: string, bg: string): string {
   }).slice(0, 7);
 }
 
+/** `Color::mix` for two hex colors (the wallpaper tint's blend). */
+export function mixHex(a: string, b: string, amount: number): string {
+  const front = rgbaOf(a);
+  const back = rgbaOf(b);
+  if (front === null || back === null) {
+    return a;
+  }
+  return hexOf(mix(front, back, amount));
+}
+
 function mix(a: Rgba, b: Rgba, amount: number): Rgba {
   const t = Math.min(Math.max(amount, 0), 1);
   const channel = (front: number, back: number): number => Math.round(front + (back - front) * t);
@@ -259,6 +269,11 @@ const COLOR_VARS: Record<keyof ThemeColors, string> = {
 export interface VariantCssOptions {
   /** Accent selection; defaults to the theme-authored accent. */
   accent?: AccentPresetId | "themeDefault";
+  /**
+   * Explicit accent roles (a wallpaper-derived derivation, upstream #598);
+   * wins over `accent` when present.
+   */
+  accentRoles?: AccentRoles;
 }
 
 /**
@@ -282,7 +297,7 @@ export function variantCssVars(
   // opaque mode — the composer pill, the wizard, form inputs, and the
   // comment draft consume it.
   vars["--rb-input-plate"] = flattenHex(variant.colors.input, variant.colors.background);
-  const accent = accentForVariant(variant, options.accent);
+  const accent = options.accentRoles ?? accentForVariant(variant, options.accent);
   vars["--rb-accent"] = accent.primary;
   vars["--rb-accent-strong"] = accent.strong;
   vars["--rb-accent-wash"] = accent.wash;

@@ -2137,11 +2137,19 @@ a:focus-visible,
  * styles inline in their class rules.
  */
 @media (prefers-reduced-motion: reduce) {
-  .glyph-spinner-cell,
-  .mark-loader-cell,
-  .roboco-loader-cell {
+  :root:not([data-reduced-motion="off"]) .glyph-spinner-cell,
+  :root:not([data-reduced-motion="off"]) .mark-loader-cell,
+  :root:not([data-reduced-motion="off"]) .roboco-loader-cell {
     animation: none;
   }
+}
+
+/* Upstream #642's pin: `data-reduced-motion` carries the RESOLVED flag, so a
+   pinned-on preference applies the same snap the OS media query would. */
+:root[data-reduced-motion="on"] .glyph-spinner-cell,
+:root[data-reduced-motion="on"] .mark-loader-cell,
+:root[data-reduced-motion="on"] .roboco-loader-cell {
+  animation: none;
 }
 
 /*
@@ -3179,9 +3187,13 @@ a:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-arrival-gate {
+  :root:not([data-reduced-motion="off"]) .chat-arrival-gate {
     transition: none;
   }
+}
+
+:root[data-reduced-motion="on"] .chat-arrival-gate {
+  transition: none;
 }
 
 /*
@@ -3452,9 +3464,13 @@ a:focus-visible,
 
 /* The drag slide snaps under reduce — the documented TAB_SLIDE contract. */
 @media (prefers-reduced-motion: reduce) {
-  .queue-row {
+  :root:not([data-reduced-motion="off"]) .queue-row {
     transition: none;
   }
+}
+
+:root[data-reduced-motion="on"] .queue-row {
+  transition: none;
 }
 
 /* The drag marker (queue.rs:481-498): 14×22, rounded 4, the drag-handle
@@ -4318,9 +4334,13 @@ a:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .composer-input-caret {
+  :root:not([data-reduced-motion="off"]) .composer-input-caret {
     animation: none;
   }
+}
+
+:root[data-reduced-motion="on"] .composer-input-caret {
+  animation: none;
 }
 
 /*
@@ -12594,6 +12614,63 @@ button.files-save-pill:hover {
 
 .import-error-icon {
   flex: none;
+}
+
+/* The background-adjust dialog (upstream #660, web-shaped): the preview
+   holds the hero's aspect (the page computes its size), the canvas paints the
+   exact fitted crop, and the controls carry Reset plus the zoom ladder. */
+.background-adjust-preview {
+  position: relative;
+  width: 100%;
+  height: 260px;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+  background: var(--rb-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.background-adjust-canvas {
+  display: block;
+}
+
+.background-adjust-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.background-adjust-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.background-adjust-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.background-adjust-zoom-value {
+  width: 52px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+.background-adjust-range {
+  width: 168px;
+  accent-color: var(--rb-accent);
 }
 
 .import-dialog-footer {

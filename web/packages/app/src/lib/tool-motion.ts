@@ -16,6 +16,7 @@
 import { motion } from "@roboco/theme";
 import type { ChatArrivalWindow } from "./chat-arrival";
 import { blobDetail, isSpawnLink, toolGroupCollapses, type ToolDetail, type TranscriptRow } from "./transcript";
+import { effectiveReducedMotion } from "./reduced-motion";
 
 // ---------------------------------------------------------------------------
 // Catalog curves (proto/motion.rs:215-237) — solved locally so this module
@@ -425,16 +426,12 @@ export interface ToolRevealClockSeams {
   readonly reduced?: () => boolean;
 }
 
-let reducedQuery: MediaQueryList | null = null;
-
-/** `prefers-reduced-motion` as a live read (cached query, node-safe). */
-const prefersReducedMotion = (): boolean => {
-  if (typeof globalThis.matchMedia !== "function") {
-    return false;
-  }
-  reducedQuery ??= globalThis.matchMedia("(prefers-reduced-motion: reduce)");
-  return reducedQuery.matches;
-};
+/**
+ * The effective reduced-motion read (upstream #642): the stored pin over the
+ * live media query (node-safe — off-browser the query reads false, but an
+ * explicit "on" pin still reduces).
+ */
+const prefersReducedMotion = (): boolean => effectiveReducedMotion();
 
 /**
  * The ONE rAF clock behind every tool-group row's reveal/fold tween. Each

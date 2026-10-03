@@ -14,6 +14,7 @@ import {
   slideOffset,
 } from "./tabs";
 import { evalWidthTween } from "../state/layout";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
 
 /**
  * The terminal panel — the web peer of the desktop's `TerminalPanel`
@@ -128,7 +129,7 @@ function DrawerDock({
       }
       return;
     }
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (effectiveReducedMotion()) {
       setGlide(null);
       return;
     }

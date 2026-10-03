@@ -28,9 +28,19 @@
  */
 
 import type { SurfaceTreatment } from "@roboco/theme";
-import type { UiSettingsStore } from "../state/ui-settings";
-import { clamp } from "./new-thread-background-effects";
-import { idbBackgroundBlobStore, type BackgroundBlobStore } from "./background-blob-store";
+import {
+  NEW_THREAD_ADJUSTMENT_DEFAULT,
+  normalizeNewThreadBackgroundAdjustment,
+  type NewThreadBackgroundAdjustment,
+  type UiSettingsStore,
+} from "../state/ui-settings";
+import { clamp, prepareNewThreadBackgroundEffects } from "./new-thread-background-effects";
+import {
+  idbBackgroundBlobStore,
+  idbWallpaperPoolStore,
+  type BackgroundBlobStore,
+  type WallpaperPoolStore,
+} from "./background-blob-store";
 
 // ---------------------------------------------------------------------------
 // Constants (shell.rs:694-699, mask.rs:8)
@@ -286,33 +296,80 @@ export const BOTTOM_FADE_GRADIENT =
 export { rectEquals };
 
 // ---------------------------------------------------------------------------
-// Artwork readiness (new_thread_background_effects.rs::Readiness, :11-32)
+// Artwork crossfade (new_thread_background_effects.rs::Readiness, upstream #598/#660)
 // ---------------------------------------------------------------------------
 
 /**
- * The artwork's 120 ms fade-in, restarting only when the image id changes
- * (the same artwork does not re-fade); reduced motion snaps to 1. Exactly
- * 0.5 at 60 ms (`smoothstep(0.5)`), asserted by the desktop's test at
- * effects.rs:328-330.
+ * The wallpaper replacement crossfade: 180 ms over the desktop's
+ * `WALLPAPER_CROSSFADE` curve (`cubic-bezier(1/3, 1, 2/3, 1)` — an immediate
+ * attack with a short, soft landing). The web lib carries the spec inline:
+ * the proto catalog the theme artifact exports is desktop-only.
+ */
+export const WALLPAPER_CROSSFADE_MS = 180;
+
+/** `WALLPAPER_CROSSFADE`'s curve as a CSS `cubic-bezier()` token. */
+export const WALLPAPER_CROSSFADE_EASING = "cubic-bezier(0.3333, 1, 0.6667, 1)";
+
+/** The crossfade's eased progress at `elapsedMs` since the blend started. */
+function crossfadeProgress(elapsedMs: number): number {
+  // cubic-bezier(1/3, 1, 2/3, 1): the x-projection is linear (x1 = 1/3 and
+  // x2 = 2/3 make x(u) = u), so the eased value is the closed form
+  // y(t) = 3t − 3t² + t³ — exactly 0.875 at the halfway point, matching the
+  // desktop's crossfade test.
+  const t = clamp(elapsedMs / WALLPAPER_CROSSFADE_MS, 0, 1);
+  return clamp(3 * t - 3 * t * t + t * t * t, 0, 1);
+}
+
+/** One evaluated crossfade frame (effects.rs `ArtworkFrame`). */
+export interface ArtworkFrame {
+  readonly current: string | null;
+  readonly previous: string | null;
+  readonly mix: number;
+  /** True while a blend is still running (the shell requests frames for it). */
+  readonly active: boolean;
+}
+
+/**
+ * Hold the displayed artwork during loading, then crossfade to the ready
+ * image. Finish each blend before adopting another image to keep rapid
+ * changes smooth. `None` while enabled means "still loading", not "remove
+ * artwork" (effects.rs `Readiness::frame`).
  */
 export class Readiness {
-  #id: string | number | null = null;
-  #startMs = 0;
+  #current: string | null = null;
+  #previous: string | null = null;
+  #startedMs: number | null = null;
 
-  opacity(imageId: string | number | null, reduced: boolean, nowMs: number): number {
-    if (imageId === null) {
-      this.#id = null;
-      return 0;
+  frame(
+    url: string | null,
+    enabled: boolean,
+    reduced: boolean,
+    nowMs: number,
+  ): ArtworkFrame {
+    const progress =
+      this.#startedMs === null ? 1 : crossfadeProgress(nowMs - this.#startedMs);
+    if (reduced || progress >= 1) {
+      this.#previous = null;
+      this.#startedMs = null;
     }
-    if (this.#id !== imageId) {
-      this.#id = imageId;
-      this.#startMs = nowMs;
+    if (this.#startedMs === null && (!enabled || url !== null)) {
+      const target = enabled ? url : null;
+      if (this.#current !== target) {
+        this.#previous = this.#current;
+        this.#current = target;
+        if (reduced) {
+          this.#previous = null;
+        } else {
+          this.#startedMs = nowMs;
+        }
+      }
     }
-    if (reduced) {
-      return 1;
-    }
-    const t = clamp((nowMs - this.#startMs) / 120, 0, 1);
-    return t * t * (3 - 2 * t);
+    return {
+      current: this.#current,
+      previous: this.#previous,
+      mix: this.#startedMs === null ? 1 : crossfadeProgress(nowMs - this.#startedMs),
+      active: this.#startedMs !== null,
+    };
   }
 }
 
@@ -508,8 +565,17 @@ export async function installNewThreadBackground(file: File, deps: BackgroundDep
   } catch {
     return BACKGROUND_SAVE_MESSAGE;
   }
+  // The install path also records the artwork's dominant colour (upstream
+  // #598's `install_new_thread_composer_background`), so adaptive colours
+  // apply immediately rather than waiting for the backfill.
+  const color = await wallpaperColorOf(file);
   deps.settings.updateImmediate({
-    newThreadComposerBackground: { path: NEW_THREAD_BACKGROUND_IDB_PATH, name: file.name },
+    newThreadComposerBackground: {
+      path: NEW_THREAD_BACKGROUND_IDB_PATH,
+      name: file.name,
+      adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT,
+    },
+    wallpaperColor: color,
   });
   return null;
 }
@@ -530,4 +596,368 @@ export async function removeNewThreadBackground(deps: BackgroundDeps): Promise<s
     return BACKGROUND_REMOVE_MESSAGE;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Fitted geometry (new_thread_background_mask.rs, upstream #660)
+// ---------------------------------------------------------------------------
+
+/**
+ * `fitted_geometry`: the cover-fit scaled by `zoom`, positioned by the
+ * normalized focal point. `fittedWidth = max(cover·zoom, bounds)` so every
+ * supported crop still covers the whole viewport.
+ */
+export interface FittedGeometry {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  readonly overflowX: number;
+  readonly overflowY: number;
+}
+
+export function fittedGeometry(
+  sourceWidth: number,
+  sourceHeight: number,
+  bounds: { width: number; height: number; x: number; y: number },
+  adjustment: NewThreadBackgroundAdjustment,
+): FittedGeometry | null {
+  const width = bounds.width;
+  const height = bounds.height;
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    sourceWidth <= 0 ||
+    sourceHeight <= 0 ||
+    !Number.isFinite(sourceWidth) ||
+    !Number.isFinite(sourceHeight)
+  ) {
+    return null;
+  }
+  const normalized = normalizeNewThreadBackgroundAdjustment(adjustment);
+  const cover = Math.max(width / sourceWidth, height / sourceHeight);
+  const fittedWidth = Math.max(sourceWidth * cover * normalized.zoom, width);
+  const fittedHeight = Math.max(sourceHeight * cover * normalized.zoom, height);
+  const overflowX = Math.max(fittedWidth - width, 0);
+  const overflowY = Math.max(fittedHeight - height, 0);
+  return {
+    left: bounds.x - overflowX * normalized.focalX,
+    top: bounds.y - overflowY * normalized.focalY,
+    width: fittedWidth,
+    height: fittedHeight,
+    overflowX,
+    overflowY,
+  };
+}
+
+/** `pan_adjustment`: translate a drag into viewport-independent framing. */
+export function panAdjustment(
+  sourceWidth: number,
+  sourceHeight: number,
+  bounds: { width: number; height: number; x: number; y: number },
+  adjustment: NewThreadBackgroundAdjustment,
+  delta: { x: number; y: number },
+): NewThreadBackgroundAdjustment {
+  const normalized = normalizeNewThreadBackgroundAdjustment(adjustment);
+  const geometry = fittedGeometry(sourceWidth, sourceHeight, bounds, normalized);
+  if (geometry === null) {
+    return normalized;
+  }
+  return normalizeNewThreadBackgroundAdjustment({
+    focalX: geometry.overflowX > 0 ? normalized.focalX - delta.x / geometry.overflowX : normalized.focalX,
+    focalY: geometry.overflowY > 0 ? normalized.focalY - delta.y / geometry.overflowY : normalized.focalY,
+    zoom: normalized.zoom,
+  });
+}
+
+/** `zoom_adjustment_around`: keep the source pixel under `anchor`. */
+export function zoomAdjustmentAround(
+  sourceWidth: number,
+  sourceHeight: number,
+  bounds: { width: number; height: number; x: number; y: number },
+  adjustment: NewThreadBackgroundAdjustment,
+  zoom: number,
+  anchor: { x: number; y: number },
+): NewThreadBackgroundAdjustment {
+  const normalized = normalizeNewThreadBackgroundAdjustment(adjustment);
+  const previous = fittedGeometry(sourceWidth, sourceHeight, bounds, normalized);
+  if (previous === null) {
+    return normalized;
+  }
+  const next = normalizeNewThreadBackgroundAdjustment({ ...normalized, zoom });
+  const fitted = fittedGeometry(sourceWidth, sourceHeight, bounds, next);
+  if (fitted === null) {
+    return normalized;
+  }
+  const sourceX = (anchor.x - previous.left) / previous.width;
+  const sourceY = (anchor.y - previous.top) / previous.height;
+  const focalX =
+    fitted.overflowX > 0
+      ? (bounds.x - (anchor.x - sourceX * fitted.width)) / fitted.overflowX
+      : next.focalX;
+  const focalY =
+    fitted.overflowY > 0
+      ? (bounds.y - (anchor.y - sourceY * fitted.height)) / fitted.overflowY
+      : next.focalY;
+  return normalizeNewThreadBackgroundAdjustment({ ...next, focalX, focalY });
+}
+
+// ---------------------------------------------------------------------------
+// Wallpaper colours (settings/wallpaper_colors.rs, upstream #598)
+// ---------------------------------------------------------------------------
+
+/**
+ * `extract`: the quantized dominant colour, favouring chromatic regions over
+ * neutral pixels; transparent pixels do not influence it.
+ */
+export function extractWallpaperColor(pixels: readonly [number, number, number, number][]): string | null {
+  const bins = new Float64Array(4096);
+  const channels = [new Float64Array(4096), new Float64Array(4096), new Float64Array(4096)];
+  for (const [r, g, b, a] of pixels) {
+    if (a < 128) {
+      continue;
+    }
+    const high = Math.max(r, g, b);
+    const low = Math.min(r, g, b);
+    const saturation = (high - low) / Math.max(high, 1);
+    const weight = (0.2 + saturation * saturation) * (a / 255);
+    const index = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    bins[index] = (bins[index] ?? 0) + weight;
+    const red = channels[0]!;
+    const green = channels[1]!;
+    const blue = channels[2]!;
+    red[index] = (red[index] ?? 0) + r * weight;
+    green[index] = (green[index] ?? 0) + g * weight;
+    blue[index] = (blue[index] ?? 0) + b * weight;
+  }
+  let best = -1;
+  let bestCount = 0;
+  for (let i = 0; i < 4096; i++) {
+    if (bins[i]! > bestCount) {
+      bestCount = bins[i]!;
+      best = i;
+    }
+  }
+  if (best < 0 || bestCount <= 0) {
+    return null;
+  }
+  const hex = (value: number): string => Math.round(value / bestCount).toString(16).padStart(2, "0");
+  return `#${hex(channels[0]![best] ?? 0)}${hex(channels[1]![best] ?? 0)}${hex(channels[2]![best] ?? 0)}`;
+}
+
+/** A `#rrggbb` string to the RGBA tuple the extractors consume. */
+export function hexToRgba(hex: string): [number, number, number, number] | null {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
+    return null;
+  }
+  return [
+    Number.parseInt(hex.slice(1, 3), 16),
+    Number.parseInt(hex.slice(3, 5), 16),
+    Number.parseInt(hex.slice(5, 7), 16),
+    255,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Wallpaper shuffle (settings/wallpaper.rs, upstream #598)
+// ---------------------------------------------------------------------------
+
+/** `HISTORY_LIMIT` (wallpaper.rs): the shuffle cooldown's bound. */
+const WALLPAPER_HISTORY_LIMIT = 8;
+
+/** `LOOKAHEAD`: how many candidates stay predecoded ahead of the current one. */
+export const WALLPAPER_LOOKAHEAD = 3;
+
+/**
+ * `remember`: push `source` to the front of the history, bounded by the
+ * cooldown limit.
+ */
+export function rememberWallpaper(history: readonly string[], source: string): readonly string[] {
+  const next = [source, ...history.filter((entry) => entry !== source)];
+  return next.slice(0, WALLPAPER_HISTORY_LIMIT);
+}
+
+/**
+ * The pool-side selection (`choose`, web-shaped): independent random ranks
+ * ordered by a recency cooldown, so recent images cool down and a small pool
+ * keeps at least two random choices.
+ */
+export function chooseWallpaperKeys(
+  pool: readonly string[],
+  history: readonly string[],
+  random: () => number = Math.random,
+): string | null {
+  if (pool.length === 0) {
+    return null;
+  }
+  const cooldown = Math.min(Math.max(pool.length - 2, 1), WALLPAPER_HISTORY_LIMIT);
+  const ranked = pool.map((key) => {
+    const recency = history
+      .slice(0, cooldown)
+      .indexOf(key);
+    return { key, rank: random(), recency: recency < 0 ? 0 : cooldown - recency };
+  });
+  ranked.sort((a, b) => a.recency - b.recency || a.rank - b.rank);
+  return ranked[0]?.key ?? null;
+}
+
+/** The stores a shuffle touches; injectable for tests. */
+export interface WallpaperShuffleDeps {
+  readonly settings: UiSettingsStore;
+  readonly blobs: BackgroundBlobStore;
+  readonly pool: WallpaperPoolStore;
+  /** Decode gate: the desktop's decode-by-sniffing contract. */
+  readonly decode: (blob: Blob) => Promise<boolean>;
+}
+
+/**
+ * Commit one shuffled pool entry as the active background (`take_ready` +
+ * `commit_background`, web-shaped): decode the blob (reusing the browser's
+ * decode as the validation), put it in the managed slot, and write the
+ * settings atomically. Returns the chosen key or null when the pool is empty.
+ */
+export async function commitWallpaper(
+  key: string,
+  deps: WallpaperShuffleDeps,
+): Promise<string | null> {
+  const url = await deps.pool.url(key);
+  if (url === null) {
+    return null;
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    return null;
+  }
+  const blob = await response.blob();
+  if (!(await deps.decode(blob))) {
+    return null;
+  }
+  await deps.blobs.put(blob);
+  const snapshot = deps.settings.getSnapshot();
+  const color = await wallpaperColorOf(blob);
+  deps.settings.updateImmediate({
+    newThreadComposerBackground: {
+      path: NEW_THREAD_BACKGROUND_IDB_PATH,
+      name: key,
+      adjustment: NEW_THREAD_ADJUSTMENT_DEFAULT,
+    },
+    wallpaperHistory: rememberWallpaper(snapshot.wallpaperHistory, key),
+    wallpaperColor: color,
+  });
+  return key;
+}
+
+/**
+ * `randomize`: pick from the pool with the cooldown, commit the chosen
+ * entry, and preload the next lookahead entries through the existing effect
+ * worker pipeline (the desktop's `PreloadedArtwork` queue).
+ */
+export async function randomizeWallpaper(deps: WallpaperShuffleDeps): Promise<string | null> {
+  const snapshot = deps.settings.getSnapshot();
+  const pool = snapshot.wallpaperPoolIds ?? [];
+  const chosen = chooseWallpaperKeys(pool, snapshot.wallpaperHistory);
+  if (chosen === null) {
+    return null;
+  }
+  const committed = await commitWallpaper(chosen, deps);
+  if (committed === null) {
+    return null;
+  }
+  void preloadWallpapers(deps);
+  return committed;
+}
+
+/**
+ * `preload`: warm the next lookahead candidates — the memoized decode +
+ * effect-raster jobs key on the pool URLs, so a warm shuffle commit paints
+ * the new artwork on the very next frame with no decode or raster work.
+ */
+export async function preloadWallpapers(deps: WallpaperShuffleDeps): Promise<void> {
+  const snapshot = deps.settings.getSnapshot();
+  const pool = snapshot.wallpaperPoolIds ?? [];
+  if (pool.length === 0) {
+    return;
+  }
+  const active = snapshot.newThreadComposerBackground?.name ?? null;
+  const history = active === null ? snapshot.wallpaperHistory : rememberWallpaper(snapshot.wallpaperHistory, active);
+  const keys: string[] = [];
+  for (const key of chooseWallpaperOrder(pool, history)) {
+    if (keys.length >= WALLPAPER_LOOKAHEAD) {
+      break;
+    }
+    keys.push(key);
+  }
+  await Promise.all(
+    keys.map(async (key) => {
+      const url = await deps.pool.url(key);
+      if (url === null) {
+        return;
+      }
+      void prepareNewThreadBackgroundEffects(
+        snapshot.newThreadBackgroundEffect,
+        appearanceForPrewarm(deps),
+        url,
+      );
+    }),
+  );
+}
+
+function chooseWallpaperOrder(pool: readonly string[], history: readonly string[]): readonly string[] {
+  // The cooldown-ordered pool — every entry in the order `choose` would pick.
+  const cooldown = Math.min(Math.max(pool.length - 2, 1), WALLPAPER_HISTORY_LIMIT);
+  const ranked = pool.map((key) => {
+    const recency = history.slice(0, cooldown).indexOf(key);
+    return { key, rank: Math.random(), recency: recency < 0 ? 0 : cooldown - recency };
+  });
+  ranked.sort((a, b) => a.recency - b.recency || a.rank - b.rank);
+  return ranked.map((entry) => entry.key);
+}
+
+function appearanceForPrewarm(deps: WallpaperShuffleDeps): "light" | "dark" {
+  // The settings' pinned mode wins; `system` defers to the OS media query
+  // (QueueKey::current reads the installed Theme's appearance).
+  const mode = deps.settings.getSnapshot().appearance;
+  if (mode === "light") {
+    return "light";
+  }
+  if (mode === "dark") {
+    return "dark";
+  }
+  const prefersLight =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: light)").matches;
+  return prefersLight ? "light" : "dark";
+}
+
+/**
+ * The dominant colour of a candidate blob (`install_new_thread_composer_
+ * background`'s 64px proxy extraction): decode, thumbnail, quantize.
+ */
+export async function wallpaperColorOf(blob: Blob): Promise<string | null> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const scale = Math.min(1, 64 / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (context === null) {
+      return null;
+    }
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const { data } = context.getImageData(0, 0, width, height);
+    const pixels: [number, number, number, number][] = [];
+    for (let offset = 0; offset < data.length; offset += 4) {
+      pixels.push([data[offset]!, data[offset + 1]!, data[offset + 2]!, data[offset + 3]!]);
+    }
+    return extractWallpaperColor(pixels);
+  } catch {
+    return null;
+  }
 }

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { PHONE_MAX_WIDTH } from "./layout";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
+import { uiSettings } from "./ui-settings";
 
 /**
  * The one shared media-hook module (ticket 49, research M8(b)1): every
@@ -55,19 +57,26 @@ export function useIsDesktop(): boolean {
 // Reduced motion
 // ---------------------------------------------------------------------------
 
-/** `prefers-reduced-motion` at first paint, reactive afterwards. */
+/**
+ * The EFFECTIVE reduced-motion flag (upstream #642): the media query under
+ * system-follow, or the persisted pin when set on/off. Reactive to both the
+ * query and the settings store that holds the pin.
+ */
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
+  const [reduced, setReduced] = useState(effectiveReducedMotion);
   useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReduced(query.matches);
+    const onChange = () => setReduced(effectiveReducedMotion());
     onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
+    const query =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    query?.addEventListener("change", onChange);
+    const unsubscribe = uiSettings.subscribe(onChange);
+    return () => {
+      query?.removeEventListener("change", onChange);
+      unsubscribe();
+    };
   }, []);
   return reduced;
 }
