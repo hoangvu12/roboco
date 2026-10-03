@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type { Device, RepoRef, Space } from "@roboco/proto";
 import { encodeScopedId } from "@roboco/engine-client";
 import { Icon } from "@roboco/icons";
@@ -6,11 +6,17 @@ import { useEngineSession } from "../../state/session-provider";
 import { useNow } from "../../state/hooks";
 import { useFleetSnapshot } from "../../state/fleet";
 import { composerDefaults } from "../../lib/composer-draft";
+import {
+  applyCheckoutPick,
+  applyRefPick,
+  effectiveRefWorktree,
+  useDraftGitState,
+} from "../../lib/footer-git-draft";
 import { spacesSorted } from "../../lib/view";
 import { useSidebar } from "../../state/sidebar";
 import { drawerTerminalStore } from "../../terminal/store";
 import { canvasTerminalKey, terminalOpenCwd } from "../../terminal/session";
-import { CheckoutChip, DeviceChip, ProjectChip, RefChip, type CheckoutKind } from "../composer-footer";
+import { CheckoutChip, DeviceChip, ProjectChip, RefChip } from "../composer-footer";
 
 /**
  * The new-thread canvas's target rows — the desktop's
@@ -197,51 +203,52 @@ export function NewThreadGitSelectors() {
   const session = useEngineSession();
   const target = useNewThreadTarget();
   const space = target.space;
-  // Draft picks for the git row — refs are fixed once the chat runs.
-  const [draftBranch, setDraftBranch] = useState<string | null>(null);
-  const [checkout, setCheckout] = useState<CheckoutKind>("local");
-  const [refs, setRefs] = useState<readonly RepoRef[]>([]);
+  // Draft picks for the git row — refs are fixed once the chat runs. The
+  // owner key — the space plus the device that runs its agents — drives
+  // the invalidation (the desktop's space/device observer,
+  // pickers.rs:700-737): a switch resets the pick, the checkout kind, and
+  // the refs, and re-keys the ref chip below so its own rows/switching
+  // state fall with them. Empty while no project is picked — the row
+  // renders nothing then, but the hooks stay mounted, so the reset is what
+  // clears a pick made in the PREVIOUS project once another lands.
+  const gitOwnerKey =
+    space === null ? "" : `${space.id}\u0000${target.targetDeviceId ?? ""}`;
+  const [draft, setDraft] = useDraftGitState(gitOwnerKey);
+  const handleRefs = useCallback(
+    (rows: readonly RepoRef[]) => setDraft((current) => ({ ...current, refs: rows })),
+    [],
+  );
 
   if (space === null || !space.gitDetected) {
     return null;
   }
   const repoPath = space.path;
-  const picked = draftBranch;
-  const pickedRefHasWorktree =
-    picked !== null &&
-    refs.some((row) => row.name === picked && row.worktreePath !== null && row.worktreePath !== undefined);
+  // The checkout chip's "Current worktree" reads the effective ref's
+  // worktree (`selected_ref_worktree`, pickers.rs:2182-2184).
+  const pickedRefHasWorktree = effectiveRefWorktree(draft, null) !== null;
+  // `selected_ref` (pickers.rs:2160-2183): the picked ref, else the repo's
+  // current branch — the chips read real values before any interaction.
+  const currentRowBranch = draft.refs.find((row) => row.current)?.name ?? null;
 
   return (
     <div className="new-thread-git-selectors">
       <CheckoutChip
-        checkout={checkout}
+        checkout={draft.checkout}
         pickedRefHasWorktree={pickedRefHasWorktree}
-        onPick={(kind) => {
-          setCheckout(kind);
-          // Picking Local from NewWorktree with a non-current plain ref
-          // picked drops the branch override — the current branch takes
-          // over (pickers.rs:1359-1373).
-          if (
-            kind === "local" &&
-            checkout === "newWorktree" &&
-            !pickedRefHasWorktree &&
-            picked !== null &&
-            !refs.some((row) => row.name === picked && row.current)
-          ) {
-            setDraftBranch(null);
-          }
-        }}
+        onPick={(kind) => setDraft(applyCheckoutPick(kind, draft))}
       />
       <RefChip
+        key={gitOwnerKey}
         session={session}
         repoPath={repoPath}
-        currentBranch={null}
-        draftBranch={draftBranch}
-        checkout={checkout}
+        currentBranch={currentRowBranch}
+        draftBranch={draft.branch}
+        checkout={draft.checkout}
         targetDeviceId={target.targetDeviceId}
         canPick={session !== null}
-        onPick={(name) => setDraftBranch(name)}
-        onRefs={setRefs}
+        autoLoad={space.gitDetected}
+        onPick={(row) => setDraft(applyRefPick(row, draft))}
+        onRefs={handleRefs}
       />
     </div>
   );
