@@ -16,6 +16,11 @@
  * - The desktop arm regression after the width change: the same Host at
  *   ≥769px renders the portaled floating card and the nested flyout, the
  *   pre-15 tree.
+ * - Ticket 06 (model-picker parity): the phone arm's Escape focus return —
+ *   `escapeFocusTarget` threaded through the sheet lands focus on the
+ *   composer textarea after the dismissal (the popover arm's
+ *   `pickers.rs:871-890` contract, the sheet's form); without the prop the
+ *   sheet keeps its default return (the adopted trigger chip).
  *
  * The mounted idiom follows project-actions-control.test.ts (controllable
  * matchMedia cell for `useIsPhone`, Base UI running for real, no JSX).
@@ -74,6 +79,8 @@ interface MountedPicker {
   drill(): HTMLElement | null;
   /** The nested flyout — portaled to the document (desktop arm only). */
   nestedPopup(): HTMLElement | null;
+  /** The composer textarea the host wires as the escape target. */
+  textarea(): HTMLTextAreaElement | null;
   unmount(): void;
 }
 
@@ -90,50 +97,78 @@ afterEach(() => {
 /**
  * A picker card whose body carries one nested group row — the view-options
  * shape (`PickerCard` + `NestedMenu`, both arms resolved by the components).
+ * The host renders a composer textarea above the picker (the app's layout);
+ * `composerEscapeTarget` wires it as the picker's `escapeFocusTarget` —
+ * "getter" is the composer's exact shape (`() => textareaRef.current`,
+ * composer.tsx:3637); "element" passes the textarea itself, the prop's
+ * other accepted form (absent until the first commit, so it wires on the
+ * press-to-open re-render).
  */
-function mountPicker(options?: { open?: boolean; nestedOpen?: boolean }): MountedPicker {
+function mountPicker(options?: {
+  open?: boolean;
+  nestedOpen?: boolean;
+  composerEscapeTarget?: "getter" | "element";
+}): MountedPicker {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   const startOpen = options?.open ?? false;
   const startNested = options?.nestedOpen ?? false;
+  let composerTextarea: HTMLTextAreaElement | null = null;
 
   function Host() {
     const [open, setOpen] = useState(startOpen);
     const [nested, setNested] = useState(startNested);
-    return createElement(PickerCard, {
-      open,
-      onOpenChange: (next: boolean) => {
-        setOpen(next);
-      },
-      placement: "anchorBelow",
-      cardClassName: "popover-card spaces-menu-card",
-      role: "menu",
-      ariaLabel: "Test picker",
-      width: 232,
-      trigger: createElement(
-        "button",
-        { type: "button", className: "picker-trigger" },
-        "Options",
-      ),
-      children: [
-        createElement(NestedMenu, {
-          open: nested,
-          onOpenChange: (next: boolean) => {
-            setNested(next);
-          },
-          label: "Show",
-          nativeButton: false,
-          trigger: createElement(
-            "div",
-            { className: "menu-row group-row", role: "menuitem" },
-            "Show",
-          ),
-          children: [createElement("button", { type: "button", key: "a" }, "Branches")],
-        }),
-        createElement("button", { type: "button", key: "plain" }, "Compact"),
-      ],
-    });
+    return createElement(
+      "div",
+      null,
+      createElement("textarea", {
+        key: "composer",
+        className: "composer-textarea",
+        ref: (el: HTMLTextAreaElement | null) => {
+          composerTextarea = el;
+        },
+      }),
+      createElement(PickerCard, {
+        open,
+        onOpenChange: (next: boolean) => {
+          setOpen(next);
+        },
+        placement: "anchorBelow",
+        cardClassName: "popover-card spaces-menu-card",
+        role: "menu",
+        ariaLabel: "Test picker",
+        width: 232,
+        escapeFocusTarget:
+          options?.composerEscapeTarget === "getter"
+            ? () => composerTextarea
+            : options?.composerEscapeTarget === "element"
+              ? (composerTextarea ?? undefined)
+              : undefined,
+        trigger: createElement(
+          "button",
+          { type: "button", className: "picker-trigger" },
+          "Options",
+        ),
+        children: [
+          createElement(NestedMenu, {
+            open: nested,
+            onOpenChange: (next: boolean) => {
+              setNested(next);
+            },
+            label: "Show",
+            nativeButton: false,
+            trigger: createElement(
+              "div",
+              { className: "menu-row group-row", role: "menuitem" },
+              "Show",
+            ),
+            children: [createElement("button", { type: "button", key: "a" }, "Branches")],
+          }),
+          createElement("button", { type: "button", key: "plain" }, "Compact"),
+        ],
+      }),
+    );
   }
 
   act(() => {
@@ -149,6 +184,7 @@ function mountPicker(options?: { open?: boolean; nestedOpen?: boolean }): Mounte
     sheet: () => document.querySelector<HTMLElement>(".rb-drawer-card"),
     drill: () => document.querySelector<HTMLElement>(".rb-submenu-drill"),
     nestedPopup: () => document.querySelector<HTMLElement>(".rb-popover-popup"),
+    textarea: () => container.querySelector<HTMLTextAreaElement>(".composer-textarea"),
     unmount() {
       act(() => {
         root.unmount();
@@ -202,6 +238,68 @@ describe("PickerCard phone arm (ticket 15 regression)", () => {
     expect(sheet!.hasAttribute("data-open")).toBe(true);
     // The adopted trigger carries the expanded state.
     expect(handle.trigger()!.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+// ── The phone arm's Escape focus return (ticket 06) ─────────────────────
+
+describe("PickerCard phone arm — the Escape focus return (ticket 06)", () => {
+  it("Escape dismisses the sheet and returns focus to the composer textarea (the threaded escapeFocusTarget)", async () => {
+    h.phone = true;
+    const handle = mountPicker({ open: true, composerEscapeTarget: "getter" });
+    const textarea = handle.textarea();
+    expect(textarea).not.toBeNull();
+    // Open: the sheet is up and focus is inside it (the modal trap), never
+    // on the composer.
+    expect(handle.sheet()).not.toBeNull();
+    expect(handle.sheet()!.hasAttribute("data-open")).toBe(true);
+    expect(document.activeElement).not.toBe(textarea);
+    // Escape — Base UI's document-level dismissal, the reason the popover
+    // arm's `escapeFinalFocusTarget` keys on.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    await act(async () => {});
+    // The sheet dismissed, and the focus return threaded through the sheet
+    // (Drawer.Popup's finalFocus) landed on the escape target — the
+    // composer textarea, not the trigger chip.
+    expect(handle.sheet()).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("the prop's plain-element form lands the same return — the textarea passed by value", async () => {
+    h.phone = true;
+    // The element form wires on the re-render that opens the sheet (the
+    // first render has no textarea yet) — a caller holding a stable element
+    // at open time.
+    const handle = mountPicker({ composerEscapeTarget: "element" });
+    press(handle.trigger()!);
+    const textarea = handle.textarea();
+    expect(textarea).not.toBeNull();
+    expect(handle.sheet()).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    await act(async () => {});
+    expect(handle.sheet()).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("without the escape target, Escape keeps the sheet's current return — the adopted trigger chip", async () => {
+    h.phone = true;
+    const handle = mountPicker({ open: true });
+    const textarea = handle.textarea();
+    expect(textarea).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    await act(async () => {});
+    expect(handle.sheet()).toBeNull();
+    // The prop is optional: no target, Base UI's default finalFocus return —
+    // the reference (the adopted trigger chip), the pre-06 behavior every
+    // other sheet consumer keeps.
+    expect(document.activeElement).toBe(handle.trigger());
+    expect(document.activeElement).not.toBe(textarea);
   });
 });
 

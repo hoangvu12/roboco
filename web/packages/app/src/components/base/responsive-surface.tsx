@@ -25,7 +25,10 @@
  *   invariant), so the sheet body always renders through it. `modal: true`
  *   gives the sheet the same semantics the Dialog provides — focus
  *   trapped, document scroll locked, pointer interactions outside
- *   disabled; Escape routes to `onOpenChange(false)`.
+ *   disabled; Escape routes to `onOpenChange(false)`, and the close's
+ *   focus return is `Drawer.Popup`'s `finalFocus` — the dialog arm passes
+ *   its own verbatim, and the picker arm threads its `escapeFocusTarget`
+ *   (the composer textarea, ticket 06) through the same seam.
  * - **Scrim contract per wrapper:** the dialog sheet carries
  *   `disablePointerDismissal` (mirroring `RbDialog`'s scrim —
  *   `base/dialog.tsx:76` — so only Escape/Cancel close the rename/delete
@@ -122,6 +125,15 @@ export interface RbDrawerSheetProps {
   /** The element to restore focus to on close. */
   readonly finalFocus?: DrawerPopupProps["finalFocus"];
   /**
+   * Where Escape returns focus (`pickers.rs:866` — the composer input): the
+   * picker phone arm's form of the popover contract
+   * (`base/popover.tsx`'s `escapeFocusTarget`), threaded as `Drawer.Popup`'s
+   * `finalFocus` so the sheet's close hands focus back to the target
+   * instead of the default trigger return. Optional — no target, the
+   * default return stands for every other sheet consumer.
+   */
+  readonly escapeFocusTarget?: HTMLElement | (() => HTMLElement | null);
+  /**
    * The backdrop's FULL class list. Defaults to `.modal-backdrop`; the glass
    * arm passes `.modal-glass-backdrop …` (both share the fixed inset-0
    * modal-tier base, `app.css:4783-4792`).
@@ -141,6 +153,21 @@ export interface RbDrawerSheetProps {
   /** The card frame's key handler (the picker's cursor keyboard model). */
   readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
   readonly children: ReactNode;
+}
+
+/**
+ * The sheet's close-time focus return: the picker arm's `escapeFocusTarget`
+ * (an element, or the composer's `() => textareaRef.current` getter —
+ * resolved at close time so a not-yet-mounted target falls back to Base
+ * UI's default) becomes `Drawer.Popup`'s `finalFocus`; the dialog arm's
+ * `finalFocus` passes through verbatim when no escape target was supplied.
+ */
+function sheetFinalFocus(props: RbDrawerSheetProps): DrawerPopupProps["finalFocus"] {
+  if (props.escapeFocusTarget === undefined) {
+    return props.finalFocus;
+  }
+  const escapeTarget = props.escapeFocusTarget;
+  return () => (typeof escapeTarget === "function" ? escapeTarget() : escapeTarget);
 }
 
 /**
@@ -171,7 +198,7 @@ export function RbDrawerSheet(props: RbDrawerSheetProps) {
             role={props.role}
             aria-label={props.ariaLabel}
             initialFocus={props.initialFocus}
-            finalFocus={props.finalFocus}
+            finalFocus={sheetFinalFocus(props)}
             onKeyDown={props.onKeyDown}
           >
             {props.children}

@@ -14,7 +14,7 @@ focus-return through the sheet: `PickerCard`'s phone branch passes
 **Blocked by:** None (independent of ticket 01, though both touch the sheet
 arm — land 01 first if sequencing matters, no hard edge).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §2 (focus-return item).
 
@@ -45,6 +45,36 @@ keeps the current behavior.
 
 ## 3. Acceptance checklist
 
-- [ ] Sheet Escape focuses the composer textarea on phone
-- [ ] Prop optional; no other sheet consumer changes
-- [ ] Test green; full app suite green
+- [x] Sheet Escape focuses the composer textarea on phone
+- [x] Prop optional; no other sheet consumer changes
+- [x] Test green; full app suite green
+
+## Comments
+
+**Implemented (ticket branch `ticket/mp-06-sheet-escape-focus`, commit
+`d24e3226` + review pass).** `PickerCard`'s phone branch threads
+`escapeFocusTarget` into `RbDrawerSheet`; the sheet's `sheetFinalFocus`
+resolves the element-or-getter form into `Drawer.Popup`'s `finalFocus`
+(Base UI's `finalFocus` union takes no plain element, so the adapter is the
+type-correct form of the spec's `finalFocus={props.escapeFocusTarget}`;
+a null/unset target falls back to Base UI's default, and the dialog arm's
+`finalFocus` passes through verbatim). `drawerOnOpenChange` and every
+dismissal path untouched.
+
+Deliberate, spec-mandated divergence from the desktop reference: the sheet
+forwards the target on every close (scrim/swipe/trigger press included),
+not Escape-only like the popover arm's reason-aware split — the ticket's
+mechanism line and "only thread the prop" note mandate plain forwarding.
+
+**Verification evidence** (web/packages/app):
+
+- `pnpm exec vitest run tests/picker-card-phone.test.ts` — 9/9: the
+  getter-form case (the composer's exact wiring, `() => textareaRef.current`)
+  and the plain-element case both land `document.activeElement` on the
+  textarea after Escape dismissal; the no-target case keeps the default
+  trigger-chip return.
+- Sheet-family suites (`responsive-surface`, `settings-dialogs`,
+  `settings-dialog`, `section-menu`, `right-pane`, `composer-reasoning`,
+  `base-popover`) — 129/129.
+- `pnpm exec tsc --noEmit` — exit 0.
+- Full app suite `pnpm exec vitest run` — 146 files / 2196 tests, all green.
