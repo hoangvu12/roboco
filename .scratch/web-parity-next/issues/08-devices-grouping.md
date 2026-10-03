@@ -12,7 +12,7 @@ badge (the header is the marker, as on desktop).
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` (settings item 2).
 
@@ -49,7 +49,50 @@ state. Mounted: headers render, badge gone, empty copy matches desktop.
 
 ## 3. Acceptance checklist
 
-- [ ] Two labeled sections, local first, badge dropped
-- [ ] Empty "Other devices" copy = "Pair another device to see it here."
-- [ ] Scope gate decided and recorded
-- [ ] Tests + full app suite green
+- [x] Two labeled sections, local first, badge dropped
+- [x] Empty "Other devices" copy = "Pair another device to see it here."
+- [x] Scope gate decided and recorded
+- [x] Tests + full app suite green
+
+## Comments
+
+**Implemented (wpn-08, commit `db2fb5c0`, reviewed on branch
+`ticket/wpn-08-devices-grouping`).** Pure `partitionDevices(rows,
+localDeviceId)` lives in `src/lib/devices.ts` (discriminated union:
+`unknown` fallback arm while engineInfo is not loaded — the flat card
+stays; `known` → `local` / `others`). The route renders "This device"
+(only when `local` is non-empty, the desktop's `when_some(local_block)`)
+and "Other devices" via the `settings-section-header` + `settings-card`
+idiom, local first, and drops the per-row badge and `DeviceRow.isLocal`.
+
+**Scope gate (decided + recorded): always render the "Other devices"
+section.** The web's `WatchCacheSnapshot`
+(`engine-client/src/watch-cache.ts:73`) exposes only
+generation/capabilities/chats/spaces/devices/statuses/connectivity — no
+workspace scope — and the browser can pair remote synced engines, so the
+desktop's hide-when-Local gate (`devices.rs:554-557`) has nothing to read
+on the web. Recorded in the route's JSX comment and the mounted suite's
+header. `session?.client.engineInfo?.workspaceScope` exists but was
+deliberately not used: the ticket pinned the gate to the snapshot.
+
+**Adjudicated visible-string change:** with engineInfo loaded and zero
+devices, the page now shows "Other devices" + "Pair another device to
+see it here." (the desktop's only zero-device state — `local_block` is
+skipped when empty, `others_block`'s empty state is the pair copy, and
+no "No devices registered" string exists on the desktop's Devices page)
+instead of the old "No devices registered". That string survives only
+in the `unknown` (pre-engineInfo) fallback arm, which the ticket mandates
+as the flat list.
+
+**Verification evidence** (`web/packages/app`):
+- `pnpm exec vitest run tests/devices.test.ts
+tests/settings-devices-sections.test.ts tests/settings-dialogs.test.ts
+tests/command-palette.test.ts tests/remote-access-view.test.ts` →
+60/60 passed (seams + every suite importing the touched modules).
+- `pnpm exec vitest run` (full app suite) → **154 files, 2289/2289
+passed**.
+- `pnpm exec tsc --noEmit` → clean.
+- TDD: partition unit tests and the mounted split tests were written red
+first and driven green (mounted suite: headers render in order
+`["Engines", "This device", "Other devices"]`, badge gone, exact empty
+copy, unknown-arm flat list, local-empty section hiding).
