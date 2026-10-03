@@ -98,6 +98,16 @@ export function MentionPopup(props: MentionPopupProps) {
       listRef.current.scrollTop = 0;
     }
   }, [props.results]);
+  // Every cursor step keeps the active row in view — `move_mention` →
+  // `scroll_to_item(active)` (composer.rs:7066-7074), with `block: "nearest"`
+  // as the repo-wide web substitute (CursorList.tsx:148-152): only the
+  // innermost ancestor that needs it scrolls, no `behavior: "smooth"`.
+  // Keyed on the rows too, so a fresh result set re-pins the reset cursor
+  // (row 0) instead of holding a stale row index. `listRef` is null in the
+  // skeleton/empty states; `item(-1)` covers the null cursor.
+  useEffect(() => {
+    listRef.current?.children.item(props.active ?? -1)?.scrollIntoView({ block: "nearest" });
+  }, [props.active, props.results]);
 
   let body: ReactNode;
   if (props.loading && props.results.length === 0) {
@@ -143,7 +153,7 @@ export function MentionPopup(props: MentionPopupProps) {
   );
 }
 
-/** One result row (composer.rs:5246-5302): the file-type icon (14px), the
+/** One result row (composer.rs:5246-5302): the file-type icon (16px), the
  * basename (13px), and the directory (12.5px, truncated, only when set). */
 function MentionRow({
   path,
@@ -170,7 +180,7 @@ function MentionRow({
       className="composer-completion-row"
     >
       <span className="composer-completion-row-icon">
-        <FileIcon kind={isDir ? "directory" : "file"} name={path} appearance={appearance} size={14} />
+        <FileIcon kind={isDir ? "directory" : "file"} name={path} appearance={appearance} size={16} />
       </span>
       <span className="composer-completion-row-name">{name}</span>
       {directory.length > 0 && <span className="composer-completion-row-directory">{directory}</span>}

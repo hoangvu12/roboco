@@ -4421,8 +4421,8 @@ a:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--rb-text-muted);
 }
 
