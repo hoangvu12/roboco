@@ -16,8 +16,41 @@ scroll — outcome already holds; record the check, fix only a real gap.
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 terminal tests.
 
-- [ ] Fractional deltas preserved across frames
-- [ ] Tests green; web check recorded
-- [ ] Port commit records upstream SHA
+- [x] Fractional deltas preserved across frames
+- [ ] Tests green (slow_trackpad_scroll_accumulates_per_terminal ported;
+      execution deferred to the wave-final batched pass — user directive);
+      web check recorded below
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `e5be4822` (#615) by intent onto the post-5a76aa51 terminal dock
+  (panel.rs was untouched by the dock restructure, so the fix lands on the
+  same scroll-wheel listener shape upstream patched).
+- `TerminalTab` gains `scroll_remainder: f32` (per terminal, seeded 0 in
+  `reserve_tab_for_chat`). The scroll-wheel listener now resolves the
+  active tab, resets the remainder on `TouchPhase::Started` (a fresh
+  gesture never inherits the previous one's partial row), accumulates the
+  fractional row delta, scrolls the truncated whole part, and keeps the
+  fraction on the tab for the next event. `round()` → `trunc()` — every
+  sub-half-row trackpad event used to round to zero and lose all movement;
+  signed fractions now accumulate in reverse, and mouse-wheel `Lines`
+  deltas stay exact. `cx.stop_propagation()` after the scroll, as upstream.
+- Tests: slow_trackpad_scroll_accumulates_per_terminal ported (gpui::test,
+  window-drawn grid geometry, simulate_event ScrollWheelEvents): 40×
+  quarter-row scrolls move 10 lines, reverse fractions walk back 2, +3
+  exact rows then a 0.75 remainder stays put at 11, a Started gesture
+  resets to a 0.25 remainder, and a second tab never inherits the first's
+  remainder (upstream selects tab key `1`; Roboco's tab keys count from 1,
+  so the second tab is key `2` here).
+- Web check: no gap — the web terminal is @xterm/xterm
+  (web/packages/app/src/terminal/), whose viewport owns wheel handling
+  with the browser's native fractional pixel scrolling; nothing in our
+  web terminal code rounds wheel deltas to whole lines (no onWheel /
+  deltaY handling exists there at all). Outcome already holds; nothing to
+  fix, matching the ticket's record-only instruction.
+- Exclusions: none — upstream's diff is panel.rs only.
+- Verification: `cargo check -p roboco -j 3` (clean; no new warnings);
+  `rustfmt --edition 2024 --check` on panel.rs (only the known pre-existing
+  import-order drift on untouched lines, left alone). Test execution
+  deferred to the wave-final batched pass (user directive).
