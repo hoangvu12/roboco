@@ -31,7 +31,6 @@ import {
 import {
   compactEffort,
   compactHiddenOptions,
-  EFFORT_OPTION_IDS,
   fastModeValues,
   offeredHarnesses,
   REASONING_SETTING_ID,

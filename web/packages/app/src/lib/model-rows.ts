@@ -508,11 +508,12 @@ export function compactEffort(
   selections: Readonly<Record<string, unknown>>,
 ): CompactEffort | null {
   if (ladder.length > 0) {
+    const selected = reasoning !== null ? ladder.indexOf(reasoning) : -1;
     return {
       kind: "reasoning",
       labels: ladder.map((level) => reasoningLabel(level)),
       levels: ladder,
-      selected: Math.max(0, ladder.indexOf(reasoning ?? ladder[0])),
+      selected: selected < 0 ? 0 : selected,
     };
   }
   const option = (model?.options ?? []).find(

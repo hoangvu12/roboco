@@ -97,7 +97,14 @@ pickers/compact + composer tests; `pnpm -r build` for web parity.
 
 **Verification:** `rustfmt --edition 2024` parse/format pass on every
  touched Rust file (pickers.rs brace-balance issues found and fixed);
-`cargo check -p roboco -j 3`; `pnpm -r build` from web/. Test execution
+`cargo check -p roboco -j 3` (clean; the first run surfaced the lost
+frost.rs import list and the compact-row `ambiguous` field — both fixed
+in 2c093bf5, re-run green); `pnpm install --frozen-lockfile` +
+`pnpm -r build` from web/ (clean after 77d5b7e7's two type fixes; the
+amended commit hash is 8086a107). The feature-gated fixture
+(`compact-picker-fixture`) and all `#[cfg(test)]` suites are written
+but NOT compile-verified here, per the verification economy — they ride
+the wave-final batched pass. Test execution
 deferred to the wave-final batched pass (user directive): ported tests
 are `compact_panel_shortcuts_…`, `compact_panel_lists_…`,
 `compact_fast_button_…` (+F arm), `compact_list_hides_…`,
@@ -107,6 +114,7 @@ are `compact_panel_shortcuts_…`, `compact_panel_lists_…`,
 `canvas_reopens_on_its_own_target_…`,
 `new_session_reopens_where_it_was_left_…`,
 `shell_saves_never_revert_…`, `open_model_trigger_follows_…`, the
-`settings_survive` regression, and the web suites'
+`compact_model_picker_is_default_and_opt_out_persists` settings test,
+and the web suites'
 `compact model rows`, `per_model_effort_memory`, and the mounted
 compact-card describe block.
