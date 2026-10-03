@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessDescriptor, HarnessId, Model } from "@roboco/proto";
+import type { ModelOption } from "@roboco/proto";
 import {
+  compactEffort,
+  compactHiddenOptions,
   defaultModel,
+  fastModeValues,
   normalizeModelRows,
   offeredHarnessesImpl,
   REASONING_SETTING_ID,
@@ -92,6 +96,88 @@ describe("scoped_model_rows", () => {
     const byDescription = scopedModelRows("baseten", "harness", "opencode", descriptors, modelsFor, starred);
     expect(byDescription).toHaveLength(1);
     expect(byDescription[0]!.model.id).toBe("glm-5.2-b");
+  });
+});
+
+
+describe("compact model rows (upstream #471)", () => {
+  const descriptors = [descriptor("claude-code", "Claude"), descriptor("codex", "Codex")];
+  const claude = [bareModel("plain-a", "Model A"), bareModel("star-a", "My Model A")];
+  const codex = [bareModel("plain-b", "Model B"), bareModel("star-b", "My Model B")];
+  const modelsFor = (harness: HarnessId): readonly Model[] | null =>
+    harness === "claude-code" ? claude : harness === "codex" ? codex : null;
+  const isFavorite = (harness: HarnessId, model: string): boolean => model.startsWith("star-");
+
+  it("compact_all_models_keeps_favorites_first_in_catalog_and_search", () => {
+    for (const query of ["", "model"]) {
+      const rows = scopedModelRows(query, "all", "codex", descriptors, modelsFor, isFavorite);
+      expect(rows.map((row) => row.model.id)).toEqual(["star-a", "star-b", "plain-a", "plain-b"]);
+    }
+  });
+
+  it("every_fast_mode_encoding_gets_the_same_controls", () => {
+    const option = (id: string, choices: readonly string[], defaultChoice: string): ModelOption => ({
+      id,
+      label: id,
+      choices: choices.map((choice) => ({ id: choice, label: choice })),
+      defaultChoice,
+    });
+    // Codex tier, Claude toggle, the speed option and the snake_case toggle.
+    expect(fastModeValues(option("serviceTier", ["default", "fast"], "default"))).toEqual({
+      on: "fast",
+      off: "default",
+    });
+    expect(fastModeValues(option("fastMode", ["off", "on"], "off"))).toEqual({ on: "on", off: "off" });
+    expect(fastModeValues(option("speed", ["standard", "fast"], "standard"))).toEqual({
+      on: "fast",
+      off: "standard",
+    });
+    // Cursor's true/false switch, off and on by default: both toggle.
+    expect(fastModeValues(option("fast", ["false", "true"], "false"))).toEqual({
+      on: "true",
+      off: "false",
+    });
+    expect(fastModeValues(option("fast", ["false", "true"], "true"))).toEqual({
+      on: "true",
+      off: "false",
+    });
+    // Not fast mode: other toggles, including Cursor's true/false ones.
+    expect(fastModeValues(option("thinking", ["off", "on"], "off"))).toBeNull();
+    expect(fastModeValues(option("thinking", ["false", "true"], "true"))).toBeNull();
+    expect(fastModeValues(option("contextWindow", ["200k", "1m"], "200k"))).toBeNull();
+  });
+
+  it("compact_effort_uses_the_ladder_else_an_effort_option", () => {
+    // The ladder wins when present.
+    const laddered = bareModel("m", "M", { reasoningLevels: ["low", "high"] });
+    expect(compactEffort(laddered, ["low", "high"], "high", {})).toEqual({
+      kind: "reasoning",
+      labels: ["Low", "High"],
+      levels: ["low", "high"],
+      selected: 1,
+    });
+    // Cursor's shape: no ladder, effort as an option; the slider owns it.
+    const cursor = bareModel("opus", "Opus", {
+      options: [
+        {
+          id: "effort",
+          label: "Effort",
+          defaultChoice: "high",
+          choices: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    });
+    const effort = compactEffort(cursor, [], null, {});
+    expect(effort?.kind).toBe("option");
+    expect(effort?.labels).toEqual(["Low", "Medium", "High"]);
+    expect(effort?.selected).toBe(2);
+    expect(compactHiddenOptions(cursor)).toEqual(["effort"]);
+    // No ladder and no effort option: no slider.
+    expect(compactEffort(bareModel("x", "X"), [], null, {})).toBeNull();
   });
 });
 

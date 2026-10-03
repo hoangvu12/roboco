@@ -128,6 +128,13 @@ export interface ComposerDefaults {
   readonly harness: HarnessId | null;
   readonly modelByHarness: Readonly<Record<string, RememberedModel>>;
   readonly reasoning: ReasoningLevel | null;
+  /**
+   * Per-model effort memory (`reasoning_by_model`, settings/composer.rs —
+   * upstream #471): last reasoning level picked per harness and model id,
+   * so switching back to a model (or its provider) restores the effort it
+   * was run at. Flat key `${harness}/${modelId}`, like modelOptionsByModel.
+   */
+  readonly reasoningByModel: Readonly<Record<string, ReasoningLevel>>;
   readonly modelOptionsByModel: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly modelLabels: Readonly<Record<string, string>>;
   readonly device: string | null;
@@ -142,6 +149,7 @@ const EMPTY_DEFAULTS: ComposerDefaults = {
   harness: null,
   modelByHarness: {},
   reasoning: null,
+  reasoningByModel: {},
   modelOptionsByModel: {},
   modelLabels: {},
   device: null,
@@ -149,6 +157,23 @@ const EMPTY_DEFAULTS: ComposerDefaults = {
   noProject: false,
   favorites: [],
 };
+
+/** A valid persisted reasoning level, else null (the wire union). */
+function healReasoningLevel(value: string): ReasoningLevel | null {
+  return ([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+    "ultracode",
+    "ultrathink",
+  ] as const).includes(value as ReasoningLevel)
+    ? (value as ReasoningLevel)
+    : null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -194,25 +219,20 @@ export function healComposerDefaults(value: unknown): ComposerDefaults {
     }
   }
   const reasoning = raw.reasoning;
+  const reasoningByModel: Record<string, ReasoningLevel> = {};
+  for (const [key, level] of Object.entries(asRecord(raw.reasoningByModel))) {
+    if (typeof level === "string") {
+      const parsed = healReasoningLevel(level);
+      if (parsed !== null) {
+        reasoningByModel[key] = parsed;
+      }
+    }
+  }
   return {
     harness: typeof raw.harness === "string" ? (raw.harness as HarnessId) : null,
     modelByHarness,
-    reasoning:
-      typeof reasoning === "string"
-        ? ([
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra",
-            "ultracode",
-            "ultrathink",
-          ] as const).includes(reasoning as ReasoningLevel)
-          ? (reasoning as ReasoningLevel)
-          : null
-        : null,
+    reasoning: typeof reasoning === "string" ? healReasoningLevel(reasoning) : null,
+    reasoningByModel,
     modelOptionsByModel,
     modelLabels,
     device: typeof raw.device === "string" ? raw.device : null,
@@ -366,6 +386,40 @@ export function rememberModel(harness: HarnessId, id: string, label: string): vo
 /** `pick_reasoning` — the remembered global default (not per-harness). */
 export function rememberReasoning(level: ReasoningLevel | null): void {
   composerDefaults.update({ reasoning: level });
+}
+
+/**
+ * `reasoning_for` (settings/composer.rs, upstream #471) — the level last
+ * used with this model, else the global last-used level.
+ */
+export function rememberedReasoningFor(harness: HarnessId, modelId: string | null): ReasoningLevel | null {
+  if (modelId !== null) {
+    const perModel = composerDefaults.getSnapshot().reasoningByModel[`${harness}/${modelId}`];
+    if (perModel !== undefined) {
+      return perModel;
+    }
+  }
+  return composerDefaults.getSnapshot().reasoning;
+}
+
+/**
+ * `remember_reasoning` (settings/composer.rs, upstream #471) — remember a
+ * reasoning pick for one model (and as the global fallback).
+ */
+export function rememberReasoningForModel(
+  harness: HarnessId,
+  modelId: string | null,
+  level: ReasoningLevel,
+): void {
+  const snapshot = composerDefaults.getSnapshot();
+  if (modelId === null) {
+    composerDefaults.update({ reasoning: level });
+    return;
+  }
+  composerDefaults.update({
+    reasoning: level,
+    reasoningByModel: { ...snapshot.reasoningByModel, [`${harness}/${modelId}`]: level },
+  });
 }
 
 /** `pick_option` — store the per-model pick; a default choice removes the key. */

@@ -17617,3 +17617,273 @@ button.segmented-option:hover {
 .harness-update-policy-menu {
   width: 220px;
 }
+
+/* ── The compact model card (pickers/compact.rs, upstream #471) ── */
+
+/*
+ * `render_compact_menu` — the 256px alternate presentation: panel page
+ * (provider button + model/effort title + fast toggle + slider + visible
+ * option rows) or a list page (back button + filter, then rows).
+ */
+.compact-card {
+  width: 256px;
+}
+
+.compact-panel {
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.compact-header {
+  display: flex;
+  gap: 4px;
+  height: 48px;
+  flex: none;
+}
+
+.compact-header-single {
+  height: 36px;
+}
+
+.compact-provider,
+.compact-fast {
+  flex: none;
+  width: 32px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.compact-provider:disabled {
+  cursor: default;
+}
+
+.compact-provider:not(:disabled):hover,
+.compact-fast:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.compact-fast-on {
+  color: var(--rb-accent);
+}
+
+.compact-model {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 8px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--rb-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+}
+
+.compact-model:hover {
+  background: var(--rb-hover);
+}
+
+.compact-model-effort {
+  font-size: 14px;
+  line-height: 17px;
+  font-weight: 600;
+}
+
+.compact-model-name {
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  line-height: 15px;
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-header-single .compact-model-name {
+  font-size: 14px;
+  line-height: 17px;
+  font-weight: 600;
+  color: var(--rb-text);
+}
+
+.compact-model-chevron {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+/* The effort slider (`effort_fill` + the thumb): a 28px rail with a 44×32
+   pill thumb whose centre is inset 22px from either end, stops painted on
+   the rail. Pure CSS — the stops and thumb position from the inline
+   `left: calc(22px + (100% - 44px) * fraction)`. */
+.compact-effort {
+  padding: 6px 8px 4px;
+}
+
+.compact-effort-rail {
+  position: relative;
+  height: 28px;
+  border-radius: 14px;
+  background: rgb(var(--rb-hairline) / calc(0.1 * var(--rb-hairline-scale)));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+
+.compact-effort-fill {
+  position: absolute;
+  top: 0;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--rb-accent);
+  opacity: 0.9;
+}
+
+.compact-effort-stop {
+  position: absolute;
+  top: 12px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--rb-text-muted) 28%, transparent);
+}
+
+.compact-effort-stop-filled {
+  background: rgb(255 255 255 / 40%);
+}
+
+.compact-effort-thumb {
+  position: absolute;
+  top: -2px;
+  width: 44px;
+  height: 32px;
+  margin-left: -22px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff, #f7f7f7);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 14%),
+    0 2px 6px rgb(0 0 0 / 6%);
+  pointer-events: none;
+}
+
+.compact-effort-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 22px 2px;
+}
+
+.compact-effort-label {
+  font-size: 10px;
+  color: var(--rb-text-muted);
+}
+
+.compact-effort-label-selected {
+  color: var(--rb-text);
+  font-weight: 600;
+}
+
+/* The panel's visible option rows reuse the traits tray (`model-traits`). */
+.compact-options {
+  margin-top: 4px;
+}
+
+/* The list pages' shared header row (`compact_list_header`). */
+.compact-list-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding-inline: 4px;
+  border-bottom: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+}
+
+.compact-list-back {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  cursor: pointer;
+}
+
+.compact-list-back:hover {
+  background: var(--rb-hover);
+  color: var(--rb-text);
+}
+
+.compact-list-header input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 13px;
+}
+
+.compact-list-page {
+  display: flex;
+  flex-direction: column;
+}
+
+/* One-line provider rows (`render_compact_provider_page`). */
+.compact-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.compact-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding-inline: 8px;
+  border-radius: 11px;
+  cursor: pointer;
+  color: var(--rb-text);
+}
+
+.compact-provider-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-provider-star {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.compact-provider-star-on {
+  color: var(--rb-accent);
+}
+
+.compact-brand-icon {
+  flex: none;
+}

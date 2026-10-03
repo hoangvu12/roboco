@@ -1467,6 +1467,12 @@ impl Composer {
         if self.editing_queued.is_none() {
             return false;
         }
+        if self
+            .input
+            .update(cx, |input, cx| input.finish_dictation(true, cx))
+        {
+            return true;
+        }
         let text = self.input.read(cx).text().to_string();
         if !self.check_reference_delivery(&text, cx) {
             return true;
@@ -1484,6 +1490,7 @@ impl Composer {
         if self.editing_queued.is_none() {
             return false;
         }
+        self.input.update(cx, |input, _| input.cancel_dictation());
         self.finish_queue_edit("cancel", None, cx);
         true
     }
@@ -1502,6 +1509,7 @@ impl Composer {
         self.queue_edit_pending_id = None;
         self.queue_edit_finishing = false;
         self.input.update(cx, |input, cx| {
+            input.cancel_dictation();
             input.read_only = false;
             cx.notify();
         });
@@ -1552,6 +1560,7 @@ impl Composer {
         });
         self.queue_edit_finishing = true;
         self.input.update(cx, |input, cx| {
+            input.cancel_dictation();
             input.read_only = true;
             cx.notify();
         });

@@ -11,10 +11,12 @@ import {
   rememberedLabelFor,
   rememberedModelFor,
   rememberedModelOptions,
+  rememberedReasoningFor,
   rememberHarness,
   rememberModel,
   rememberModelOption,
   rememberReasoning,
+  rememberReasoningForModel,
   toggleModelFavorite,
 } from "../lib/composer-draft";
 import { effectiveReasoningLadder, traitsCustomized, traitsSummary } from "../lib/traits-summary";
@@ -27,15 +29,20 @@ import {
   modelSpaceBelow,
 } from "../lib/model-picker-geometry";
 import {
+  compactEffort,
+  compactHiddenOptions,
+  fastModeValues,
   offeredHarnesses,
   REASONING_SETTING_ID,
   scopedModelRows,
   settingGroups,
+  type CompactEffort,
   type ModelRail,
   type SettingGroup,
 } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
 import { isMacPlatform, onShortcut } from "../state/shortcuts";
+import { useUiSettings } from "../state/ui-settings";
 import { openChipClass } from "./ui/Chip";
 import { useCursorList } from "./ui/CursorList";
 import { KbdHint } from "./ui/KeyHint";
@@ -264,7 +271,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
       commit({
         harness,
         model: remembered?.id ?? null,
-        reasoning: composerDefaults.getSnapshot().reasoning,
+        reasoning: rememberedReasoningFor(harness, remembered?.id ?? null),
         modelOptions:
           remembered === null ? {} : rememberedModelOptions(harness, remembered.id),
       });
@@ -274,11 +281,16 @@ export function ComposerPickers(props: ComposerPickersProps) {
     rememberHarness(harness);
     // The remembered model for this harness takes over via the defaults
     // fallback; a foreign pick must not linger (pickers.rs:1380-1394).
-    // Reasoning clears to the REMEMBERED level (native `pick_harness` clears
-    // the draft value and `effective_reasoning` falls back to the remembered
-    // default); the reconciliation re-derives it against the new harness's
-    // effective ladder once the models resolve.
-    commit({ harness, model: null, reasoning: composerDefaults.getSnapshot().reasoning });
+    // Reasoning clears to the REMEMBERED level — the model's own, else the
+    // global (native `pick_harness` clears the draft value and
+    // `effective_reasoning` falls back through `reasoning_for`); the
+    // reconciliation re-derives it against the new harness's effective
+    // ladder once the models resolve.
+    commit({
+      harness,
+      model: null,
+      reasoning: rememberedReasoningFor(harness, rememberedModelFor(harness)?.id ?? null),
+    });
   }
 
   function pickModel(harness: HarnessId, model: Model): void {
@@ -289,11 +301,20 @@ export function ComposerPickers(props: ComposerPickersProps) {
       pickHarness(harness);
     }
     rememberModel(harness, model.id, model.label);
-    commit({ model: model.id });
+    // Effort follows the model (upstream #471): its own remembered level,
+    // if any — the draft's explicit value clears so the memory applies.
+    commit({ model: model.id, reasoning: rememberedReasoningFor(harness, model.id) });
   }
 
   function pickReasoning(level: ReasoningLevel | null): void {
-    rememberReasoning(level);
+    // Per-model effort memory (upstream #471): a pick remembers the level
+    // for this model AND as the global fallback; no model resolved yet
+    // (or an existing chat) keeps the global-only write.
+    if (chatConfig === null && selectedModel !== undefined && level !== null) {
+      rememberReasoningForModel(draft.harness, selectedModel.id, level);
+    } else {
+      rememberReasoning(level);
+    }
     commit({ reasoning: level });
   }
 
@@ -390,6 +411,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
     };
   }, [catalog]);
 
+  // The compact presentation (`compact_model_picker`, upstream #471): on
+  // by default; the General page toggles it.
+  const compact = useUiSettings().compactModelPicker;
   // `render_harness_model_popover`'s band (pickers.rs:3245-3252): the fixed
   // 216 in-chat; on the new-chat canvas the band sizes to the MEASURED room
   // below the composer — `(space_below − 82 − tray).clamp(30, 216)`, the tray
@@ -407,7 +431,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
         cardClassName="popover-card popover-card-flush identity-card"
         role="dialog"
         ariaLabel="Run identity"
-        width={304}
+        width={compact ? COMPACT_WIDTH : 304}
         style={newChat ? undefined : { maxHeight: 640 }}
         overlaySource="composer-pickers"
         escapeFocusTarget={escapeFocusTarget}
@@ -448,6 +472,37 @@ export function ComposerPickers(props: ComposerPickersProps) {
             chip's with a 6px gap, clamped 8px inside: upward on a chat,
             BELOW the chip on the new-chat canvas, where the band sizes to
             the measured room (ticket 04). */}
+        {compact ? (
+          <CompactCard
+            open={open}
+            listHeight={listHeight}
+            harnesses={harnesses}
+            harnessError={harnessError}
+            noAgents={noAgents}
+            locked={locked}
+            railDescriptors={railDescriptors}
+            modelsLists={modelsLists}
+            effectiveHarness={effectiveHarness}
+            draft={draft}
+            favorites={favorites}
+            selectedModel={selectedModel}
+            ladder={ladder}
+            modelLabel={modelLabel}
+            labelLoading={labelLoading}
+            onRetryHarnesses={() => catalog.retryHarnessCatalog()}
+            onRetryModels={() => {
+              catalog.resetModels(effectiveHarness);
+              void catalog.loadModels(effectiveHarness, { force: true });
+            }}
+            onPickHarness={pickHarness}
+            onPickModel={pickModel}
+            onPickReasoning={pickReasoning}
+            onPickOption={pickOption}
+            onToggleFavorite={(harness, model) => {
+              toggleModelFavorite(harness, model.id, model.label);
+            }}
+          />
+        ) : (
         <IdentityCard
           open={open}
           listHeight={listHeight}
@@ -475,6 +530,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
             toggleModelFavorite(harness, model.id, model.label);
           }}
         />
+        )}
       </PickerCard>
     </div>
   );
@@ -1064,6 +1120,753 @@ function IdentityCard(props: IdentityCardProps) {
          );
       })()}
     </>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// The compact model card (pickers/compact.rs — upstream #471)
+// ---------------------------------------------------------------------------
+
+/** The compact card's width — `COMPACT_WIDTH` (pickers/compact.rs). */
+const COMPACT_WIDTH = 256;
+/** One-line model rows plus the 2px gap — `COMPACT_ROW_HEIGHT`. */
+const COMPACT_ROW_HEIGHT = 32;
+/** About seven rows at once — `COMPACT_LIST_ROWS`. */
+const COMPACT_LIST_ROWS = 7;
+
+/** `compact_list_height` (pickers/compact.rs): the list band for a row count. */
+function compactListHeight(rows: number): number {
+  const count = Math.min(rows === 0 ? 4 : rows, COMPACT_LIST_ROWS);
+  return count * (COMPACT_ROW_HEIGHT + 2) + 2 * 4;
+}
+
+/** The compact picker's page — `CompactPage` (pickers/compact.rs). */
+type CompactPage = "panel" | "models" | "providers";
+
+interface CompactCardProps {
+  readonly open: boolean;
+  readonly listHeight: number;
+  readonly harnesses: LoadableList<HarnessDescriptor>;
+  readonly harnessError: string | null;
+  readonly noAgents: boolean;
+  readonly locked: boolean;
+  readonly railDescriptors: readonly HarnessDescriptor[];
+  readonly modelsLists: Map<HarnessId, LoadableList<Model>>;
+  readonly effectiveHarness: HarnessId;
+  readonly draft: DraftConfig;
+  readonly favorites: readonly { harness: HarnessId; model: string }[];
+  readonly selectedModel: Model | undefined;
+  readonly ladder: readonly ReasoningLevel[];
+  /** The chip's resolved model label + its loading flag (§3.5). */
+  readonly modelLabel: string;
+  readonly labelLoading: boolean;
+  readonly onRetryHarnesses: () => void;
+  readonly onRetryModels: () => void;
+  readonly onPickHarness: (harness: HarnessId) => void;
+  readonly onPickModel: (harness: HarnessId, model: Model) => void;
+  readonly onPickReasoning: (level: ReasoningLevel | null) => void;
+  readonly onPickOption: (model: Model, optionId: string, choiceId: string, isDefault: boolean) => void;
+  readonly onToggleFavorite: (harness: HarnessId, model: Model) => void;
+}
+
+/**
+ * `pickers/compact.rs` — the compact presentation of the same model and
+ * option mutations: a panel page (provider button, model+effort title,
+ * fast toggle, effort slider, visible option rows), a models page (one
+ * line per row, stars first), and a provider page (Starred first). The
+ * page-scoped shortcuts mirror `compact_panel_key`/`compact_provider_key`:
+ * Up/Down/Enter open and walk the model list, Tab cycles providers,
+ * Left/Right/Home/End set the effort, Escape steps back a page (the panel
+ * page lets Base UI's dismissal own it, as the desktop's `animate_close`).
+ */
+function CompactCard(props: CompactCardProps) {
+  const {
+    open,
+    listHeight,
+    harnesses,
+    harnessError,
+    noAgents,
+    locked,
+    railDescriptors,
+    modelsLists,
+    effectiveHarness,
+    draft,
+    favorites,
+    selectedModel,
+    ladder,
+    modelLabel,
+    labelLoading,
+    onRetryHarnesses,
+    onRetryModels,
+    onPickHarness,
+    onPickModel,
+    onPickReasoning,
+    onPickOption,
+    onToggleFavorite,
+  } = props;
+
+  const [page, setPage] = useState<CompactPage>("panel");
+  const [query, setQuery] = useState("");
+  const [scrollTop, setScrollTop] = useState(0);
+  const [openSetting, setOpenSetting] = useState<string | null>(null);
+  const [settingCursor, setSettingCursor] = useState(0);
+  const [settingOnLeft, setSettingOnLeft] = useState(false);
+  const settingSectionsRef = useRef(new Map<string, HTMLDivElement>());
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pageRef = useRef<CompactPage>("panel");
+  pageRef.current = page;
+
+  const isFavorite = useCallback(
+    (harness: HarnessId, model: string): boolean =>
+      favorites.some((favorite) => favorite.harness === harness && favorite.model === model),
+    [favorites],
+  );
+
+  const modelsFor = useCallback(
+    (harness: HarnessId): readonly Model[] | null => {
+      const slot = modelsLists.get(harness);
+      if (slot === undefined || slot.error !== null || !slot.loaded) {
+        return null;
+      }
+      return slot.rows;
+    },
+    [modelsLists],
+  );
+
+  // `show_compact_models` (#749): browse every offered provider, just as
+  // the standard picker's rail allows; a chat's fixed provider limits its
+  // list. A foreign-provider row switches the provider before picking.
+  const rail: ModelRail = locked ? "harness" : "all";
+
+  const modelsList = modelsLists.get(effectiveHarness);
+  const models: readonly Model[] = modelsList?.rows ?? [];
+  const selectedModelId = draft.model ?? selectedModel?.id ?? null;
+  const rows = useMemo(
+    () =>
+      scopedModelRows(
+        query,
+        rail,
+        effectiveHarness,
+        railDescriptors,
+        modelsFor,
+        isFavorite,
+      ),
+    [query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
+  );
+
+  const groups = useMemo(() => {
+    const hidden = compactHiddenOptions(selectedModel);
+    return settingGroups(selectedModel, ladder, draft.reasoning, draft.modelOptions).filter(
+      (group) => group.id !== REASONING_SETTING_ID && !hidden.includes(group.id),
+    );
+  }, [selectedModel, ladder, draft.reasoning, draft.modelOptions]);
+
+  const effort = compactEffort(selectedModel, ladder, draft.reasoning, draft.modelOptions);
+
+  // `compact_fast_choice` (pickers/compact.rs): the on/off pair plus the
+  // option's default, so the panel's toggle returns to the default cleanly.
+  const fastChoice = useMemo(() => {
+    for (const option of selectedModel?.options ?? []) {
+      const values = fastModeValues(option);
+      if (values !== null) {
+        const saved = draft.modelOptions[option.id];
+        const current = typeof saved === "string" ? saved : option.defaultChoice;
+        return {
+          optionId: option.id,
+          on: values.on,
+          off: values.off,
+          defaultChoice: option.defaultChoice,
+          fast: current === values.on,
+        };
+      }
+    }
+    return null;
+  }, [selectedModel, draft.modelOptions]);
+
+  const toggleFast = useCallback(() => {
+    if (fastChoice === null || selectedModel === undefined) {
+      return;
+    }
+    const next = fastChoice.fast ? fastChoice.off : fastChoice.on;
+    onPickOption(selectedModel, fastChoice.optionId, next, next === fastChoice.defaultChoice);
+  }, [fastChoice, selectedModel, onPickOption]);
+
+  const pickEffortIndex = useCallback(
+    (index: number) => {
+      if (effort === null || index === effort.selected) {
+        return;
+      }
+      if (effort.kind === "reasoning") {
+        const level = effort.levels[index];
+        if (level !== undefined) {
+          onPickReasoning(level);
+        }
+        return;
+      }
+      const choice = effort.choiceIds[index];
+      if (choice !== undefined && selectedModel !== undefined) {
+        onPickOption(selectedModel, effort.optionId, choice, choice === effort.defaultChoice);
+      }
+    },
+    [effort, selectedModel, onPickReasoning, onPickOption],
+  );
+
+  // — The provider page (`compact_provider_rows`: Starred first) —————————
+  const providerRows = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    const matches = (name: string): boolean =>
+      trimmed.length === 0 || name.toLowerCase().includes(trimmed);
+    const starred = favorites.length > 0 && matches("Starred") ? ["starred" as const] : [];
+    return [
+      ...starred,
+      ...railDescriptors.filter((descriptor) => matches(descriptor.name)).map((descriptor) => descriptor.id),
+    ];
+  }, [query, favorites, railDescriptors]);
+
+  const cursorCount = page === "providers" ? providerRows.length : rows.length;
+  const { cursor, setCursor, onKeyDown: walkKeys } = useCursorList({
+    enabled: open && page !== "panel",
+    count: cursorCount,
+    onActivate: (index) => {
+      if (page === "providers") {
+        const row = providerRows[index];
+        if (row === "starred") {
+          showStarred();
+        } else if (row !== undefined) {
+          pickCompactProvider(row);
+        }
+      } else {
+        const row = rows[index];
+        if (row !== undefined) {
+          pickModelFromList(row.harness, row.model);
+        }
+      }
+    },
+    listRef,
+    rowAttribute: "model-index",
+  });
+
+  function pickModelFromList(harness: HarnessId, model: Model): void {
+    onPickModel(harness, model);
+    // A pick lands back on the panel (`activate_model_index`, pickers.rs).
+    setPage("panel");
+    setQuery("");
+    setOpenSetting(null);
+  }
+
+  function showModels(): void {
+    setPage("models");
+    setQuery("");
+    setScrollTop(0);
+    setOpenSetting(null);
+    // Open on the selected row, at the top when it is near the start.
+    const selected = selectedModelIndex();
+    setCursor(selected);
+    if (listRef.current !== null) {
+      listRef.current.scrollTop = 0;
+    }
+  }
+
+  function showStarred(): void {
+    setPage("models");
+    setQuery("");
+    setScrollTop(0);
+    setOpenSetting(null);
+    setCursor(0);
+  }
+
+  function pickCompactProvider(harness: HarnessId): void {
+    if (harness !== effectiveHarness) {
+      onPickHarness(harness);
+    }
+    setPage("panel");
+    setQuery("");
+    setOpenSetting(null);
+  }
+
+  function selectedModelIndex(): number {
+    const index = rows.findIndex(
+      (row) => row.harness === effectiveHarness && row.model.id === selectedModelId,
+    );
+    return index < 0 ? 0 : index;
+  }
+
+  // Fresh page state on open (the desktop resets on `toggle`).
+  const opened = open;
+  useEffect(() => {
+    if (!opened) {
+      return;
+    }
+    setPage("panel");
+    setQuery("");
+    setOpenSetting(null);
+    setScrollTop(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened]);
+
+  // Page-scoped shortcuts (`compact_panel_key` / `compact_provider_key`,
+  // pickers/compact.rs): capture-phase window listener while the card is
+  // open, exactly like the identity card's walk. Escape on the PANEL page
+  // is NOT intercepted — Base UI's dismissal owns the close (the desktop's
+  // `animate_close`); on the list pages it only steps back a page.
+  useEffect(() => {
+    if (!opened) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!open) {
+        return;
+      }
+      const current = pageRef.current;
+      if (current === "panel") {
+        // F toggles fast mode (upstream #745) — bare F only, no modifiers.
+        if (
+          event.key.toLowerCase() === "f" &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          fastChoice !== null
+        ) {
+          event.preventDefault();
+          toggleFast();
+          return;
+        }
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          showModels();
+          const delta = event.key === "ArrowUp" ? -1 : 1;
+          const next = selectedModelIndex() + delta;
+          setCursor(Math.max(0, Math.min(next, Math.max(0, rows.length - 1))));
+          return;
+        }
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          showModels();
+          return;
+        }
+        if (event.key === "Tab") {
+          // Tab cycles providers in place, each at its last-used model
+          // (`cycle_compact_provider`); a chat's fixed provider stays put.
+          if (locked || railDescriptors.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          const currentIx = railDescriptors.findIndex((row) => row.id === effectiveHarness);
+          const delta = event.shiftKey ? -1 : 1;
+          const next =
+            railDescriptors.length === 0
+              ? undefined
+              : railDescriptors[
+                  (Math.max(0, currentIx) + delta + railDescriptors.length) % railDescriptors.length
+                ];
+          if (next !== undefined) {
+            pickCompactProvider(next.id);
+          }
+          return;
+        }
+        if (
+          (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") &&
+          effort !== null
+        ) {
+          const last = effort.labels.length - 1;
+          const next =
+            event.key === "ArrowLeft"
+              ? Math.max(0, effort.selected - 1)
+              : event.key === "ArrowRight"
+                ? Math.min(last, effort.selected + 1)
+                : event.key === "Home"
+                  ? 0
+                  : last;
+          event.preventDefault();
+          pickEffortIndex(next);
+          return;
+        }
+        return;
+      }
+      // The list pages: Escape steps back to the panel (never closes the
+      // card — stop it before Base UI's dismissal pipeline sees it).
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setPage("panel");
+        setQuery("");
+        return;
+      }
+      // ⌘⇧F stars the highlighted model without picking it (⌘N's modifier).
+      if (
+        (isMacPlatform() ? event.metaKey : event.ctrlKey) &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "f" &&
+        current === "models"
+      ) {
+        const row = rows[cursor ?? 0];
+        if (row !== undefined) {
+          event.preventDefault();
+          onToggleFavorite(row.harness, row.model);
+        }
+        return;
+      }
+      walkKeys(event);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+    // walkKeys reads the render's cursor/rows and is re-created per render;
+    // re-arm on the inputs it captures (see the identity card's note).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened, open, rows, effort, cursor, railDescriptors, locked, effectiveHarness, fastChoice, toggleFast]);
+
+  const onQueryChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
+    setQuery(event.target.value);
+    setCursor(0);
+    setScrollTop(0);
+    setOpenSetting(null);
+    if (listRef.current !== null) {
+      listRef.current.scrollTop = 0;
+    }
+  };
+
+  // The list band: the compact sizing, clamped to the card's measured room.
+  const band = Math.min(compactListHeight(rows.length), listHeight + 48);
+  const rowHeight = COMPACT_ROW_HEIGHT + 2;
+  const viewport = band - 8;
+  const first = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
+  const last = Math.min(rows.length, Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN);
+  const slice = rows.slice(first, last);
+
+  const modelsListError = modelsList?.error ?? null;
+  const emptyNote =
+    query.trim().length > 0
+      ? page === "providers"
+        ? "No providers found"
+        : "No models found"
+      : null;
+
+  // — The nested option menus (the identity tray's seam, reused) ————————
+  function registerSettingSection(id: string, element: HTMLDivElement | null): void {
+    if (element === null) {
+      settingSectionsRef.current.delete(id);
+    } else {
+      settingSectionsRef.current.set(id, element);
+    }
+    const reach = element?.getBoundingClientRect().right ?? 0;
+    const left = reach + SETTING_MENU_FLYOUT_REACH > window.innerWidth;
+    setSettingOnLeft((current) => (current === left ? current : left));
+  }
+
+  function openSettingGroup(id: string): void {
+    setOpenSetting(id);
+    const group = groups.find((entry) => entry.id === id);
+    const index = group?.choices.findIndex((choice) => choice.selected) ?? -1;
+    setSettingCursor(index < 0 ? 0 : index);
+  }
+
+  function activateSettingChoice(group: SettingGroup, index: number): void {
+    const choice = group.choices[index];
+    if (choice === undefined) {
+      return;
+    }
+    if (choice.reasoning !== null) {
+      onPickReasoning(choice.reasoning);
+    } else if (selectedModel !== undefined) {
+      onPickOption(selectedModel, group.id, choice.value, choice.isDefault);
+    }
+    setOpenSetting(null);
+  }
+
+  // — The panel title (`compact_title_text` + `model_name`) —————————————
+  const panelTitle: string = noAgents
+    ? "No agents available"
+    : labelLoading
+      ? "Loading models…"
+      : modelLabel.length > 0
+        ? modelLabel
+        : "Select model";
+
+  const descriptor = railDescriptors.find((row) => row.id === effectiveHarness) ?? null;
+
+  return (
+    <div className="compact-card">
+      {(() => {
+        // Catalog-level takeover states, like the identity card's.
+        if (!harnesses.loaded && harnessError === null) {
+          return (
+            <div className="model-list-loading" id="model-skeleton" style={{ height: listHeight }}>
+              <SkeletonMenuRows count={5} />
+            </div>
+          );
+        }
+        if (harnessError !== null && !harnesses.loaded) {
+          return (
+            <div className="model-list-loading" style={{ height: listHeight }}>
+              <ErrorRow message={harnessError} onRetry={onRetryHarnesses} />
+            </div>
+          );
+        }
+        if (noAgents) {
+          return (
+            <div className="model-no-agents">
+              <Icon name="terminal" size={20} className="model-no-agents-icon" />
+              <span className="model-no-agents-title">No agents available</span>
+              <span className="model-no-agents-body">
+                Enable an installed agent in Settings → Agents, or install an agent CLI.
+              </span>
+            </div>
+          );
+        }
+        if (page === "panel") {
+          return (
+            <div className="compact-panel">
+              <div className={`compact-header ${effort === null ? "compact-header-single" : ""}`}>
+                {descriptor !== null && (
+                  <button
+                    type="button"
+                    className="compact-provider"
+                    aria-label={`${descriptor.name} · Change provider`}
+                    disabled={locked}
+                    title={locked ? descriptor.name : `${descriptor.name} · Change provider`}
+                    onClick={() => {
+                      if (!locked) {
+                        setPage("providers");
+                        setQuery("");
+                      }
+                    }}
+                  >
+                    <CompactBrandIcon harness={descriptor.id} size={16} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="compact-model"
+                  aria-label={`${effort?.labels[effort.selected] ?? "Default"} · ${panelTitle} · Change model`}
+                  onClick={showModels}
+                >
+                  {effort !== null && (
+                    <span className="compact-model-effort">{effort.labels[effort.selected]}</span>
+                  )}
+                  <span className="compact-model-name">
+                    {labelLoading ? <SkeletonBar width={72} /> : panelTitle}
+                  </span>
+                  <Icon name="altArrowRight" size={10} className="compact-model-chevron" />
+                </button>
+                {fastChoice !== null && (
+                  <button
+                    type="button"
+                    className="compact-fast"
+                    role="switch"
+                    aria-checked={fastChoice.fast}
+                    aria-label="Fast mode"
+                    title={fastChoice.fast ? "Fast mode on · Turn off" : "Fast mode off · Turn on"}
+                    onClick={toggleFast}
+                  >
+                    <Icon
+                      name={fastChoice.fast ? "fastTierBold" : "fastTier"}
+                      size={15}
+                      className={fastChoice.fast ? "compact-fast-on" : ""}
+                    />
+                  </button>
+                )}
+              </div>
+              {effort !== null && (
+                <div
+                  className="compact-effort"
+                  role="slider"
+                  aria-label="Reasoning effort"
+                  aria-valuetext={effort.labels[effort.selected]}
+                  aria-valuemin={0}
+                  aria-valuemax={effort.labels.length - 1}
+                  aria-valuenow={effort.selected}
+                >
+                  <div className="compact-effort-rail">
+                    <div
+                      className="compact-effort-fill"
+                      style={{
+                        left: 22,
+                        width: `calc((100% - 44px) * ${effort.selected / Math.max(1, effort.labels.length - 1)} + 14px)`,
+                      }}
+                    />
+                    {effort.labels.length > 1 &&
+                      effort.labels.map((_, ix) => (
+                        <span
+                          key={ix}
+                          className={`compact-effort-stop ${ix <= effort.selected ? "compact-effort-stop-filled" : ""}`}
+                          style={{ left: `calc(22px + (100% - 44px) * ${ix / (effort.labels.length - 1)})` }}
+                        />
+                      ))}
+                    <span
+                      className="compact-effort-thumb"
+                      style={{ left: `calc(22px + (100% - 44px) * ${effort.selected / Math.max(1, effort.labels.length - 1)})` }}
+                    />
+                  </div>
+                  <div className="compact-effort-labels">
+                    {effort.labels.map((label, ix) => (
+                      <span
+                        key={label}
+                        className={`compact-effort-label ${ix === effort.selected ? "compact-effort-label-selected" : ""}`}
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {groups.length > 0 && (
+                <div className="compact-options">
+                  <TraitsTray
+                    groups={groups}
+                    openSetting={openSetting}
+                    settingCursor={settingCursor}
+                    highlightedSetting={null}
+                    side={settingOnLeft ? "left" : "right"}
+                    onToggleSetting={(id) => (openSetting === id ? setOpenSetting(null) : openSettingGroup(id))}
+                    onOpenSetting={openSettingGroup}
+                    onCloseSetting={() => setOpenSetting(null)}
+                    onActivateChoice={activateSettingChoice}
+                    registerSection={registerSettingSection}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        }
+        // The models and providers pages share one header row: back to the
+        // panel, then the page's filter beside it (`compact_list_header`).
+        const listRows =
+          page === "providers"
+            ? providerRows.map((row, ix) => {
+                const isStarred = row === "starred";
+                const rowDescriptor = isStarred ? null : railDescriptors.find((d) => d.id === row);
+                const name = isStarred ? "Starred" : (rowDescriptor?.name ?? "");
+                const selected = !isStarred && row === effectiveHarness;
+                return (
+                  <div
+                    key={row}
+                    className={`compact-provider-row ${selected ? "model-row-selected" : ""} ${
+                      ix === cursor && !selected ? "model-row-highlighted" : ""
+                    }`}
+                    data-model-index={ix}
+                    role="option"
+                    aria-selected={selected}
+                    onMouseEnter={() => setCursor(ix)}
+                    onClick={() => {
+                      if (isStarred) {
+                        showStarred();
+                      } else {
+                        pickCompactProvider(row);
+                      }
+                    }}
+                  >
+                    <Icon
+                      name={isStarred ? "starBold" : "star"}
+                      size={14}
+                      className={`compact-provider-star ${isStarred ? "compact-provider-star-on" : ""}`}
+                    />
+                    {!isStarred && rowDescriptor !== null && <CompactBrandIcon harness={row} size={14} />}
+                    <span className="compact-provider-name">{name}</span>
+                  </div>
+                );
+              })
+            : slice.map((row, ixInSlice) => {
+                const ix = first + ixInSlice;
+                const selected =
+                  row.harness === effectiveHarness && row.model.id === selectedModelId;
+                return (
+                  <ModelRow
+                    key={`${row.harness}/${row.model.id}`}
+                    ix={ix}
+                    row={row}
+                    style={{ top: ix * rowHeight, height: rowHeight }}
+                    twoLine={false}
+                    selected={selected}
+                    highlighted={ix === cursor && !selected}
+                    starred={isFavorite(row.harness, row.model.id)}
+                    onActivate={() => pickModelFromList(row.harness, row.model)}
+                    onHover={() => setCursor(ix)}
+                    onToggleFavorite={() => {
+                      onToggleFavorite(row.harness, row.model);
+                    }}
+                  />
+                );
+              });
+        const rowsCount = page === "providers" ? providerRows.length : rows.length;
+        const pageBand = page === "providers" ? compactListHeight(providerRows.length) : band;
+        return (
+          <div className="compact-list-page">
+            <div className="compact-list-header">
+              <button
+                type="button"
+                className="compact-list-back"
+                aria-label="Back"
+                onClick={() => {
+                  setPage("panel");
+                  setQuery("");
+                }}
+              >
+                <Icon name="altArrowLeft" size={14} />
+              </button>
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={onQueryChange}
+                placeholder={page === "providers" ? "Search providers…" : "Search models…"}
+                spellCheck={false}
+                autoComplete="off"
+                aria-label={page === "providers" ? "Search providers" : "Search models"}
+              />
+            </div>
+            <div
+              className="model-list-scroll-host compact-list-host"
+              style={{ height: pageBand }}
+            >
+              <div
+                ref={listRef}
+                className="model-list-scroll"
+                style={{ height: pageBand }}
+                onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+              >
+                {rowsCount === 0 ? (
+                  <div className="menu-scroll-fallback">
+                    {page === "models" && modelsListError !== null ? (
+                      <ErrorRow message={modelsListError} onRetry={onRetryModels} />
+                    ) : emptyNote !== null ? (
+                      <div className="model-list-note">{emptyNote}</div>
+                    ) : (
+                      <div id="model-skeleton">
+                        <SkeletonMenuRows count={4} />
+                      </div>
+                    )}
+                  </div>
+                ) : page === "providers" ? (
+                  <div className="compact-provider-list">{listRows}</div>
+                ) : (
+                  <div className="model-list-sizer" style={{ height: rows.length * rowHeight }}>
+                    {listRows}
+                  </div>
+                )}
+              </div>
+              <MenuScrollbar scrollRef={listRef} />
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+/** A brand mark with its provider tint — the compact rows' leading glyph. */
+function CompactBrandIcon({ harness, size }: { harness: HarnessId; size: number }) {
+  const brand = harnessBrandIcon(harness);
+  return (
+    <Icon
+      name={brand.name}
+      size={size}
+      style={brand.tint === null ? undefined : { color: brand.tint }}
+      className="compact-brand-icon"
+    />
   );
 }
 

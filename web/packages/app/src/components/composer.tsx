@@ -36,7 +36,7 @@ import {
   noticeToneForMessage,
 } from "../lib/notice-chip";
 import { NoticeChip } from "./notice-chip";
-import { chatDrafts, composerDefaults, draftFromChat } from "../lib/composer-draft";
+import { chatDrafts, composerDefaults, draftFromChat, rememberedModelFor, rememberedReasoningFor } from "../lib/composer-draft";
 import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
 import {
@@ -564,13 +564,18 @@ export function Composer({
   projectionRef.current = projection;
   const mentionsActive = projection.mentions.length > 0;
   const [draft, setDraft] = useState<DraftConfig>(() =>
-    // A fresh chat seeds the remembered last-used reasoning as its preference
-    // layer (pickers.rs:762-775); an established chat replays its config.
+    // A fresh chat seeds the remembered reasoning as its preference layer
+    // (pickers.rs:762-775): the level last used with the resolved model,
+    // else the last-used level overall (upstream #471); an established chat
+    // replays its config.
     draftFromChat(
       chat,
       harnesses.rows,
       catalog.getModels(chat.config?.harness ?? "claude-code").rows,
-      composerDefaults.getSnapshot().reasoning,
+      rememberedReasoningFor(
+        chat.config?.harness ?? "claude-code",
+        chat.config?.model ?? rememberedModelFor(chat.config?.harness ?? "claude-code")?.id ?? null,
+      ),
     ),
   );
   const completionPreferences = useMemo(
@@ -757,10 +762,11 @@ export function Composer({
         harness: next,
         model: null,
         // A corrected harness keeps the remembered level as the preference
-        // layer (native falls back to it via effective_reasoning); the
+        // layer (native falls back to it via effective_reasoning; the
+        // model's own level, else the global — upstream #471);
         // reconciliation below re-derives it against the new harness's
         // effective ladder once models resolve.
-        reasoning: composerDefaults.getSnapshot().reasoning,
+        reasoning: rememberedReasoningFor(next, rememberedModelFor(next)?.id ?? null),
         sandbox: "workspace-write",
         modelOptions: {},
       };

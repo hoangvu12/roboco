@@ -47,6 +47,7 @@ install -m 644 "$ROOT/dist/roboco.desktop" "$STAGE/roboco.desktop"
 install -m 644 "$ROOT/dist/roboco.png" "$STAGE/roboco.png"
 mkdir -p "$STAGE/licenses/fonts"
 cp "$ROOT/crates/ui/assets/fonts/licenses/"* "$STAGE/licenses/fonts/"
+cp "$ROOT/crates/voice/NOTICE.md" "$STAGE/licenses/parakeet-v3.txt"
 
 cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
@@ -67,6 +68,10 @@ if [ ! -x "$DEST/roboco" ]; then
   cp -R "$HERE/." "$STAGE/"
   rm -rf "$DEST"
   mv "$STAGE" "$DEST"
+fi
+if ! "$DEST/roboco" --version >/dev/null; then
+  echo "Roboco could not start; see the loader error above. Install the missing runtime libraries (including ALSA, libasound.so.2), then retry." >&2
+  exit 1
 fi
 ln -sfn "$DEST" "$APP_ROOT/current"
 mkdir -p "$HOME/.local/bin"

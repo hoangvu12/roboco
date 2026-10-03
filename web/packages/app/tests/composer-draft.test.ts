@@ -8,9 +8,12 @@ import {
   defaultDraft,
   draftFromChat,
   draftsEqual,
+  healComposerDefaults,
   isHarnessLocked,
   reconcileDraftModel,
   rememberNoProject,
+  rememberReasoningForModel,
+  rememberedReasoningFor,
 } from "../src/lib/composer-draft";
 import type { StorageLike } from "../src/lib/engine-store";
 
@@ -358,6 +361,31 @@ describe("reconcileDraftModel", () => {
       { id: "sonnet", label: "Sonnet" },
     );
     expect(next.model).toBe("haiku");
+  });
+});
+
+
+describe("per_model_effort_memory (upstream #471)", () => {
+  it("heals and_round_trips_reasoning_by_model", () => {
+    const healed = healComposerDefaults({
+      harness: "codex",
+      reasoningByModel: { "codex/gpt-5.4": "high", "codex/bad": "nope" },
+    });
+    expect(healed.reasoningByModel).toEqual({ "codex/gpt-5.4": "high" });
+    // A bare unknown shape heals to the empty map.
+    expect(healComposerDefaults({}).reasoningByModel).toEqual({});
+  });
+
+  it("a_pick_remembers_the_level_for_the_model_and_the_global_fallback", () => {
+    rememberReasoningForModel("codex", "gpt-5.4", "low");
+    expect(rememberedReasoningFor("codex", "gpt-5.4")).toBe("low");
+    expect(rememberedReasoningFor("codex", "other")).toBe("low");
+    // Another model keeps its own level.
+    rememberReasoningForModel("codex", "gpt-5.2", "high");
+    expect(rememberedReasoningFor("codex", "gpt-5.2")).toBe("high");
+    expect(rememberedReasoningFor("codex", "gpt-5.4")).toBe("low");
+    // No model: the global fallback.
+    expect(rememberedReasoningFor("codex", null)).toBe("high");
   });
 });
 

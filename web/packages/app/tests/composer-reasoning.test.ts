@@ -28,13 +28,14 @@ import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ChatConfig, HarnessDescriptor, Model } from "@roboco/proto";
 import type { DraftConfig } from "../src/lib/composer-actions";
 import { ComposerPickers } from "../src/components/composer-pickers";
-import { composerDefaults } from "../src/lib/composer-draft";
+import { composerDefaults, rememberedReasoningFor } from "../src/lib/composer-draft";
 import { useDraftModelReconciliation } from "../src/lib/composer-reconciliation";
 import { PickerCatalog } from "../src/state/picker-catalog";
+import { uiSettings } from "../src/state/ui-settings";
 import { emitShortcut } from "../src/state/shortcuts";
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
@@ -48,6 +49,9 @@ let phoneMode = false;
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The compact model picker is on by default (upstream #471); this suite's
+  // identity-card tests exercise the opt-out presentation, so start it off.
+  uiSettings.updateImmediate({ compactModelPicker: false });
   window.matchMedia = ((query: string) => ({
     // `(max-width: 768px)` matches in phone mode; `(min-width: 769px)` in
     // desktop mode — the exact pair `state/media.ts` derives from the one
@@ -180,6 +184,114 @@ interface MountedPicker {
 }
 
 const mounted: MountedPicker[] = [];
+
+
+describe("ComposerPickers compact model card (upstream #471)", () => {
+  // The compact presentation replaces the identity card while the General
+  // setting is on: the panel page drives effort and fast, the models page
+  // picks, the provider page switches. This block re-arms the setting; the
+  // file's beforeAll turned it off for the identity-card suites above.
+  beforeEach(() => {
+    uiSettings.updateImmediate({ compactModelPicker: true });
+  });
+  afterEach(() => {
+    uiSettings.updateImmediate({ compactModelPicker: false });
+  });
+
+  it("the panel names the model, drives the effort, and the list picks", async () => {
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, BARE];
+    client.modelsByHarness.set("claude-code", [HAIKU, OPUS]);
+    client.modelsByHarness.set("codex", [
+      { id: "gpt", label: "GPT", description: null, reasoningLevels: [], options: [] },
+    ]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku", reasoning: "medium" }) });
+    await flush();
+    await openCard(handle);
+
+    // The panel shows the selected model's name, and the descriptor-backed
+    // ladder drives the slider's labels (Haiku's own list is empty).
+    const panel = document.querySelector(".compact-panel");
+    expect(panel).not.toBeNull();
+    expect(panel!.querySelector(".compact-model-name")?.textContent).toContain("Haiku 4.5");
+    const labels = Array.from(panel!.querySelectorAll(".compact-effort-label")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(labels).toEqual(["Low", "Medium", "High"]);
+    // The slider owns the ladder: no Reasoning row, only Haiku's thinking
+    // option (26px rows, the compact tray).
+    expect(
+      Array.from(panel!.querySelectorAll(".compact-options .menu-row-label")).map(
+        (el) => el.textContent ?? "",
+      ),
+    ).toEqual(["Thinking"]);
+
+    // Home picks the lowest level through the real key path.
+    pressKey("Home");
+    expect(handle.observed.current.reasoning).toBe("low");
+    // Right steps up one advertised level.
+    pressKey("ArrowRight");
+    expect(handle.observed.current.reasoning).toBe("medium");
+    // The pick remembered the level for THIS model.
+    expect(rememberedReasoningFor("claude-code", "haiku")).toBe("medium");
+
+    // Down opens the model list on the row beside the selected one; Enter
+    // picks it and lands back on the panel.
+    pressKey("ArrowDown");
+    expect(document.querySelector(".compact-list-page")).not.toBeNull();
+    pressKey("Enter");
+    expect(document.querySelector(".compact-list-page")).toBeNull();
+    expect(handle.observed.current.model).toBe("opus");
+    // A model with its own ladder keeps its own remembered level: haiku
+    // remembered medium, opus starts at the native default.
+    expect(handle.observed.current.reasoning).toBe("high");
+  });
+
+  it("the provider page lists Starred first and picks the provider's last model", async () => {
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, BARE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    client.modelsByHarness.set("codex", [OPUS]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+    await flush();
+    await openCard(handle);
+
+    await act(async () => {
+      document.querySelector<HTMLElement>(".compact-provider")!.click();
+    });
+    expect(document.querySelector(".compact-list-page")).not.toBeNull();
+    const names = Array.from(document.querySelectorAll(".compact-provider-name")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(names).toEqual(["Claude", "Codex"]);
+
+    await act(async () => {
+      const codexRow = Array.from(document.querySelectorAll<HTMLElement>(".compact-provider-row")).find(
+        (el) => el.textContent?.includes("Codex"),
+      );
+      codexRow!.click();
+    });
+    expect(handle.observed.current.harness).toBe("codex");
+    // A pick lands back on the panel.
+    expect(document.querySelector(".compact-list-page")).toBeNull();
+    expect(document.querySelector(".compact-panel")).not.toBeNull();
+  });
+
+  it("Tab on the panel cycles providers in place", async () => {
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, BARE];
+    client.modelsByHarness.set("claude-code", [HAIKU]);
+    client.modelsByHarness.set("codex", [OPUS]);
+    const handle = mountPicker({ client, initial: draft({ model: "haiku" }) });
+    await flush();
+    await openCard(handle);
+
+    pressKey("Tab");
+    expect(handle.observed.current.harness).toBe("codex");
+    pressKey("Shift+Tab");
+    expect(handle.observed.current.harness).toBe("claude-code");
+  });
+});
 
 afterEach(() => {
   while (mounted.length > 0) {
@@ -317,8 +429,13 @@ async function openSetting(id: string): Promise<void> {
 /** The card-level keydown path (the capture-phase window listener). Each key
  *  flushes React so the next key runs against the re-armed listener. */
 function pressKey(key: string): void {
+  // A "Shift+X" prefix sets shiftKey (the compact card's Tab cycling).
+  const shift = key.startsWith("Shift+");
+  const raw = shift ? key.slice(6) : key;
   act(() => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: raw, shiftKey: shift, bubbles: true, cancelable: true }),
+    );
   });
 }
 
