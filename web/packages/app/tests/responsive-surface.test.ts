@@ -361,3 +361,31 @@ describe("full-width drawer cards (ticket 15, research W4)", () => {
     expect(rule).toMatch(/padding:\s*20px;/);
   });
 });
+
+describe("phone sheets render full width (mp-01, model-picker-parity §3)", () => {
+  it("the frame owns the sheet's width — a fixed-width class riding the popup loses", () => {
+    // `RbDrawerSheet` puts the caller's `cardClassName` on the sheet popup
+    // itself, so `.identity-card`'s 304px (the model picker) and
+    // `.section-menu-body`'s 180px (the sidebar section menu) land ON the
+    // fixed element: left + right + width over-constrains it and width
+    // wins, painting a flush-left card instead of spanning the viewport.
+    // The frame's `width: 100%` is equal specificity (0,1,0) but later in
+    // source order than both victims — the frame owns the width the way it
+    // already owns placement, so the next fixed-width class to land on a
+    // sheet popup is covered too.
+    const rules = phoneRules("\\.rb-drawer-card");
+    const frame = rules.find((body) => body.includes("position: fixed"));
+    expect(frame).toBeDefined();
+    expect(frame).toMatch(/width:\s*100%;/);
+  });
+
+  it("the compact card's inner 256px yields — the picker's inner card spans the sheet", () => {
+    // The compact arm is a double victim (256 inside 304): the frame rule
+    // frees the popup, but `.compact-card`'s own 256px rides a DESCENDANT
+    // and sits later in source order than the phone block — only the
+    // (0,2,0) descendant rule beats it regardless of order.
+    const rules = phoneRules("\\.rb-drawer-card \\.compact-card");
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/width:\s*100%;/);
+  });
+});
