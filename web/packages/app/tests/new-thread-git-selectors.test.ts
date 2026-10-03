@@ -14,6 +14,10 @@
  *   new repo's refs: stale rows may never block the load.
  * - The no-project phase unmounts the row; the project that lands after
  *   it starts from a clean draft, not the one picked before it.
+ * - wpn-03: the canvas chips open BELOW (checkout/ref — the desktop's
+ *   `attach_overlay_below`, pickers.rs:3242-3258) and END-aligned
+ *   (device/project — `attach_overlay_end`, :3175/:3182), while the draft
+ *   footer keeps above (its own suite).
  */
 
 import { act, createElement } from "react";
@@ -21,7 +25,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeScopedId } from "@roboco/engine-client";
 import type { RepoRef, Space } from "@roboco/proto";
-import { NewThreadGitSelectors } from "../src/components/composer/new-thread-selectors";
+import { NewThreadGitSelectors, NewThreadTargetSelectors } from "../src/components/composer/new-thread-selectors";
 import { composerDefaults, rememberTarget } from "../src/lib/composer-draft";
 
 // ── Controllable doubles (the terminal/session/fleet layers) ────────────────
@@ -166,6 +170,31 @@ async function mountCanvas(): Promise<CanvasHandle> {
   };
 }
 
+/** The canvas's floating target row (`render_new_thread_target_selectors`). */
+async function mountCanvasTarget(): Promise<CanvasHandle> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root: Root = createRoot(container);
+  act(() => {
+    root.render(createElement(NewThreadTargetSelectors));
+  });
+  await act(async () => {});
+  return {
+    unmount() {
+      // Dismiss any open card first (the footer harness's exit-animation
+      // guard — the portal's removal defers to the exit animation's end).
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      });
+      act(() => {});
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    },
+  };
+}
+
 /** A chip trigger's label. */
 function chipLabel(id: string): string {
   return document.querySelector<HTMLElement>(`#${id} .footer-menu-chip-label`)?.textContent ?? "";
@@ -186,6 +215,21 @@ async function pressRow(key: string): Promise<void> {
   expect(row, `row ${key} must render`).not.toBeNull();
   press(row!);
   await act(async () => {});
+}
+
+/**
+ * Opens a chip's popover and reads the positioner's placement (Base UI's
+ * `data-side`/`data-align` on the OPEN positioner — the closing ones drop
+ * the `data-open` marker, so sequential presses switch cards cleanly).
+ */
+async function openChipPlacement(
+  chipId: string,
+): Promise<{ readonly side: string | null; readonly align: string | null }> {
+  press(document.querySelector<HTMLElement>(`#${chipId}`)!);
+  await act(async () => {});
+  const positioner = document.querySelector<HTMLElement>(".rb-popover-positioner[data-open]");
+  expect(positioner, `${chipId}'s popover must be open`).not.toBeNull();
+  return { side: positioner!.getAttribute("data-side"), align: positioner!.getAttribute("data-align") };
 }
 
 // ── The suites ──────────────────────────────────────────────────────────────
@@ -242,6 +286,32 @@ describe("NewThreadGitSelectors (wpn-02)", () => {
     await act(async () => {});
     expect(chipLabel("picker-branch")).toBe("trunk");
     expect(chipLabel("picker-checkout")).toBe("Current checkout");
+    handle.unmount();
+  });
+});
+
+describe("NewThreadGitSelectors popover placement (wpn-03)", () => {
+  it("the canvas checkout/ref cards open BELOW the row — no flip (attach_overlay_below, pickers.rs:3242-3258)", async () => {
+    rememberTarget(null, "sp-a", false);
+    const handle = await mountCanvas();
+    // The canvas's floating rows sit above the composer pill: a card opening
+    // upward covers the input. The desktop attaches below, ALWAYS — the
+    // footer's adaptive-above stays in the footer's own suite.
+    expect(await openChipPlacement("picker-checkout")).toEqual({ side: "bottom", align: "start" });
+    expect(await openChipPlacement("picker-branch")).toEqual({ side: "bottom", align: "start" });
+    handle.unmount();
+  });
+});
+
+describe("NewThreadTargetSelectors popover placement (wpn-03)", () => {
+  it("the canvas device/project cards are end-aligned (attach_overlay_end, pickers.rs:3175/:3182)", async () => {
+    rememberTarget(null, "sp-a", false);
+    const handle = await mountCanvasTarget();
+    // The target row hugs the composer's trailing edge: both popovers
+    // right-align to their chips (the footer's Layer B device chip — a
+    // web-only surface — keeps start, its own suite).
+    expect(await openChipPlacement("picker-device")).toEqual({ side: "top", align: "end" });
+    expect(await openChipPlacement("picker-project")).toEqual({ side: "top", align: "end" });
     handle.unmount();
   });
 });

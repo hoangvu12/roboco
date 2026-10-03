@@ -19,10 +19,16 @@
  * - A late resolution of the previous space's in-flight load never lands
  *   in the fresh draft (the remount drops its consumer — the cancel,
  *   pickers.rs:721-722).
+ * - wpn-03: the draft footer KEEPS its placements (checkout/ref above —
+ *   the adaptive stand-in; device start, project end) while the canvas
+ *   chips move below, and the ref list dims while a SwitchRef runs
+ *   (pickers.rs:3666).
  */
 
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RepoRef, Space } from "@roboco/proto";
 import { ComposerFooter, type ComposerFooterProps } from "../src/components/composer-footer";
@@ -40,6 +46,8 @@ const h = vi.hoisted(() => {
   /** Repos whose NEXT ListRefs stays pending until released (the race probes). */
   const deferNext = new Set<string>();
   const deferredResolvers = new Map<string, (rows: RepoRef[]) => void>();
+  /** Armed by a test: the NEXT SwitchRef stays pending until released (wpn-03's dim probe). */
+  const deferSwitch = { armed: false, resolve: null as (() => void) | null };
   const session = {
     engine: { baseUrl: "eng-1" },
     client: {
@@ -61,6 +69,12 @@ const h = vi.hoisted(() => {
         }
         if (method === "SwitchRef") {
           switchRefCalls.push(params.refName as string);
+          if (deferSwitch.armed) {
+            deferSwitch.armed = false;
+            return new Promise<T>((resolve) => {
+              deferSwitch.resolve = () => resolve({} as T);
+            });
+          }
           return {} as T;
         }
         throw new Error(`unexpected method: ${method}`);
@@ -73,7 +87,7 @@ const h = vi.hoisted(() => {
     spaces: { rows: [] as Space[], loaded: true, error: null },
     devices: { rows: [] as Space[], loaded: true, error: null },
   };
-  return { listRefsCalls, switchRefCalls, refsByPath, deferNext, deferredResolvers, session, snapshot };
+  return { listRefsCalls, switchRefCalls, refsByPath, deferNext, deferredResolvers, deferSwitch, session, snapshot };
 });
 
 vi.mock("../src/state/session-provider", () => ({
@@ -155,6 +169,8 @@ beforeEach(() => {
   h.refsByPath.set("/repo/beta", REFS_B);
   h.listRefsCalls.length = 0;
   h.switchRefCalls.length = 0;
+  h.deferSwitch.armed = false;
+  h.deferSwitch.resolve = null;
 });
 
 afterEach(() => {
@@ -248,6 +264,21 @@ function highlightedRow(): string | null {
   return document
     .querySelector<HTMLElement>(".menu-row-highlighted")
     ?.getAttribute("data-rb-row-key") ?? null;
+}
+
+/**
+ * Opens a chip's popover and reads the positioner's placement (Base UI's
+ * `data-side`/`data-align` on the OPEN positioner — the closing ones drop
+ * the `data-open` marker, so sequential presses switch cards cleanly).
+ */
+async function openChipPlacement(
+  chipId: string,
+): Promise<{ readonly side: string | null; readonly align: string | null }> {
+  press(document.querySelector<HTMLElement>(`#${chipId}`)!);
+  await act(async () => {});
+  const positioner = document.querySelector<HTMLElement>(".rb-popover-positioner[data-open]");
+  expect(positioner, `${chipId}'s popover must be open`).not.toBeNull();
+  return { side: positioner!.getAttribute("data-side"), align: positioner!.getAttribute("data-align") };
 }
 
 // ── The suites ──────────────────────────────────────────────────────────────
@@ -401,6 +432,50 @@ describe("ComposerFooter draft git chips (wpn-02)", () => {
     expect(h.switchRefCalls).toEqual(["feat/one"]);
     expect(chipLabel("picker-branch")).toBe("feat/one");
     expect(chipLabel("picker-checkout")).toBe("Current checkout");
+    handle.unmount();
+  });
+});
+
+describe("ComposerFooter popover placement and switch dim (wpn-03)", () => {
+  it("the draft footer KEEPS its placements: checkout/ref above, device start, project end", async () => {
+    const handle = await mountFooter(chat("sp-a"));
+    // The in-thread draft footer is the web's adaptive-above stand-in (the
+    // desktop's `attach_overlay`, pickers.rs:3404-3416): the canvas chips
+    // move below (wpn-03), and the footer must not follow them.
+    expect(await openChipPlacement("picker-device")).toEqual({ side: "top", align: "start" });
+    expect(await openChipPlacement("picker-project")).toEqual({ side: "top", align: "end" });
+    expect(await openChipPlacement("picker-checkout")).toEqual({ side: "top", align: "start" });
+    expect(await openChipPlacement("picker-branch")).toEqual({ side: "top", align: "start" });
+    handle.unmount();
+  });
+
+  it("the ref list dims while a SwitchRef is in flight (pickers.rs:3666)", async () => {
+    const handle = await mountFooter(chat("sp-a"));
+    press(document.querySelector<HTMLElement>("#picker-branch")!);
+    await act(async () => {});
+    // At rest the list carries no dim.
+    expect(document.querySelector(".picker-list[data-switching]")).toBeNull();
+
+    // Arm the in-flight switch and pick a plain non-current ref under Local —
+    // the RPC runs against the space folder and stays pending.
+    h.deferSwitch.armed = true;
+    await pressRow("feat/one");
+    expect(h.switchRefCalls).toEqual(["feat/one"]);
+    // The WHOLE list container dims while the switch runs (the desktop's
+    // 0.55) — the per-row "switching…" tag rides it, never replaces it.
+    const list = document.querySelector<HTMLElement>(".picker-list");
+    expect(list, "the ref list must render").not.toBeNull();
+    expect(list!.hasAttribute("data-switching")).toBe(true);
+    // The dim value itself: the desktop's `opacity(0.55)` (cwd is the
+    // app package root under vitest; jsdom rewrites import.meta.url).
+    const css = readFileSync(join(process.cwd(), "src/styles/app.css"), "utf8");
+    expect(css).toMatch(/\.picker-list\[data-switching\]\s*\{[^}]*opacity:\s*0\.55/);
+
+    // The switch resolves: the pick records and the popover closes.
+    await act(async () => {
+      h.deferSwitch.resolve!();
+    });
+    expect(chipLabel("picker-branch")).toBe("feat/one");
     handle.unmount();
   });
 });
