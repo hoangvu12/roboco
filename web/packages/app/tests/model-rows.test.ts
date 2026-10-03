@@ -8,6 +8,7 @@ import {
   offeredHarnessesImpl,
   REASONING_SETTING_ID,
   scopedModelRows,
+  scopedRailDescriptors,
   selectedOnlyRow,
   settingGroups,
   visibleHarnessesImpl,
@@ -98,6 +99,30 @@ describe("scoped_model_rows", () => {
   });
 });
 
+
+describe("rail descriptor scoping (pickers.rs:1936-1940)", () => {
+  const claude = descriptor("claude-code", "Claude Code");
+  const codex = descriptor("codex", "Codex");
+  const offered = [claude, codex];
+
+  it("locked_chats_rail_retains_only_the_locked_harness", () => {
+    // A locked chat (a side chat whose config is not editable) restricts
+    // every view to its own harness: the rail retains only that tab, so
+    // neither the list nor the favorites view can render a dead foreign
+    // row whose pick would no-op under the lock.
+    expect(scopedRailDescriptors(offered, true, "claude-code")).toEqual([claude]);
+    // A harness outside the rail stays out, and nothing is retained when
+    // there is no effective harness to keep (the desktop's retain arm).
+    expect(scopedRailDescriptors([codex], true, "claude-code")).toEqual([]);
+    expect(scopedRailDescriptors(offered, true, null)).toEqual([]);
+  });
+
+  it("unlocked_chats_keep_the_full_offered_rail", () => {
+    // New chats and editable side chats offer the full set, order kept —
+    // the favorites view spans every harness.
+    expect(scopedRailDescriptors(offered, false, "claude-code")).toEqual([claude, codex]);
+  });
+});
 
 describe("compact model rows (upstream #471)", () => {
   const descriptors = [descriptor("claude-code", "Claude"), descriptor("codex", "Codex")];

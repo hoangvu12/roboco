@@ -75,6 +75,36 @@ export function offeredHarnesses(list: readonly HarnessDescriptor[]): HarnessDes
 }
 
 // ---------------------------------------------------------------------------
+// Rail descriptor scoping — the lock arm
+// ---------------------------------------------------------------------------
+
+/**
+ * `rail_descriptors`' lock arm (pickers.rs:1936-1940): a locked chat (a
+ * side chat whose config is not editable, `harness_locked` :861-864)
+ * retains ONLY its own harness in the rail, so every view — the harness
+ * tab's list and the favorites view alike — scopes to it and no dead
+ * foreign row ever renders (a foreign row's pick would no-op under
+ * pickModel's lock guard). Nothing is retained when there is no effective
+ * harness to keep — the desktop's `retain` keeps nothing there either.
+ *
+ * The web's one deliberate divergence, kept on purpose: the tab STRIP
+ * still renders every offered harness, visible-but-disabled
+ * (`.model-tab-locked`, app.css "gap row 46") — the strip is the tab set,
+ * the content is the scope. Callers pass the strip's full descriptor set
+ * here and feed the result to the rows.
+ */
+export function scopedRailDescriptors(
+  descriptors: readonly HarnessDescriptor[],
+  locked: boolean,
+  effective: HarnessId | null,
+): HarnessDescriptor[] {
+  if (!locked) {
+    return [...descriptors];
+  }
+  return descriptors.filter((descriptor) => descriptor.id === effective);
+}
+
+// ---------------------------------------------------------------------------
 // The scoped model list
 // ---------------------------------------------------------------------------
 
