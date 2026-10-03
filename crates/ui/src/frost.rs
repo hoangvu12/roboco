@@ -9,8 +9,9 @@
 //! is structural: blur first, then shadow, tint, border, rows, text.
 
 use gpui::{
-    AnyElement, App, Bounds, Corners, Element, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Window, px,
+    AnyElement, App, Background, Bounds, BoxShadow, Corners, Element, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Styled, Window, hsla, linear_color_stop,
+    linear_gradient, point, px,
 };
 
 use crate::theme::Theme;

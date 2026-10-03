@@ -175,13 +175,16 @@ impl Pickers {
         let model = row.model.id.clone();
         let label: SharedString = row.model.label.clone().into();
         // The brand mark names the provider; a description appears only to
-        // tell identically named rows apart.
+        // tell rows apart. Upstream gates this on a ModelRowData `ambiguous`
+        // flag (same-label rows across providers) our tree never grew —
+        // our standard row's filter (non-empty, not the harness name)
+        // carries the same intent.
         let attribution: Option<SharedString> = row
             .model
             .description
             .as_deref()
             .map(str::trim)
-            .filter(|d| row.ambiguous && !d.is_empty())
+            .filter(|d| !d.is_empty() && !d.eq_ignore_ascii_case(row.harness_name.as_ref()))
             .map(|d| SharedString::from(d.to_owned()));
         let hovered = self.active == ix;
         let details: SharedString = match row.model.description.as_deref() {
