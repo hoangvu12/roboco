@@ -19,7 +19,7 @@ content is the scope — a deliberate web shape recorded below).
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §2 (locked-chat item).
 
@@ -57,7 +57,56 @@ locked-tab rendering arm). Say so in the commit message.
 
 ## 3. Acceptance checklist
 
-- [ ] Locked chat: list and favorites scoped to the locked harness
-- [ ] Foreign tabs still render (locked styling) — recorded decision kept
-- [ ] Pinned tests updated to the new semantics; no dead rows render
-- [ ] Full app suite green
+- [x] Locked chat: list and favorites scoped to the locked harness
+- [x] Foreign tabs still render (locked styling) — recorded decision kept
+- [x] Pinned tests updated to the new semantics; no dead rows render
+- [x] Full app suite green
+
+## Comments
+
+**Branch:** `ticket/mp-04-locked-chat-scoping` (base `a485d5ce`). Commit
+`751d9d89` (implementation, TDD red→green at both named seams: the new
+locked-scope pin failed pre-fix with exactly the dead foreign star
+`["Parent model", "Codex starred"]`) + review-pass commit (strengthens
+that pin with the viewed-tab assertion — the favorites tab must actually
+engage `aria-selected="true"`, else a regression that disables the tab
+would leave the rows assertion vacuously green; the desktop keeps the
+tab's on_click unguarded at pickers.rs:3918 and scopes content, not the
+tab). Verification (all from `web/packages/app`): named seams
+`tests/composer-reasoning.test.ts` + `tests/model-rows.test.ts` → 57/57;
+the six adjacent suites importing the changed modules (base-popover,
+catalog-loading, composer-edit-failure, flyout-side, picker-catalog,
+shortcuts) → 116/116; full app suite `pnpm exec vitest run` → **148 files,
+2233 tests, all passed**; `pnpm exec tsc --noEmit` clean.
+
+**Shape:** the web splits the desktop's one `rail_descriptors`
+(pickers.rs:1925-1940) into two memos — `tabDescriptors` (offered +
+force-inserted committed row, UNscoped, feeds the tab strip) and
+`railDescriptors` (the same set through the new pure
+`scopedRailDescriptors()` in lib/model-rows.ts, feeds the rows, the
+favorites scope, the models subscription, and the compact card). That is
+the §1 recorded decision made mechanical: the strip is the tab set, the
+content is the scope. Deleting the locked-tab rendering arm restores the
+desktop's full hiding — the one-line follow-up named in the commit
+message.
+
+**Adjudicated behavior deltas** (review phase, both against the desktop's
+`rail_descriptors` consumers): (1) the models SUBSCRIPTION narrows with
+the scope — faithful: the desktop still LOADS foreign models
+(`prefetch_models`, pickers.rs:1384-1397, targets offered + effective) and
+so does the web (`catalog.prefetchModels`, picker-catalog.ts:415-427,
+untouched); every desktop models-map READ while locked goes through the
+effective harness or the rail-scoped descriptors (:982, :1848, :1990,
+:4007), so subscribing only to slots whose rows can render mirrors the
+desktop's read scope exactly. (2) the compact card receives the scoped set
+— faithful: compact.rs consumes `rail_descriptors` for its providers page
+(:417), Tab cycling (:897), and the provider name lookup (:1131), and sets
+rail Harness when locked (:329-336); the providers page is unreachable
+when locked on both platforms (desktop `when(!locked)` on the provider
+button, web `disabled={locked}`).
+
+**Residual, out of ticket:** the web's committed-harness force-insert
+doesn't check `installed` (desktop pickers.rs:1931-1934 does) — pre-existing
+divergence, untouched. The web compact "Starred" entry opens the all/harness
+rail rather than a Favorites rail (desktop `show_compact_starred`,
+compact.rs:338-341) — pre-existing, owned by ticket 05.

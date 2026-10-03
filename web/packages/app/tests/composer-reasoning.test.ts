@@ -991,12 +991,17 @@ describe("ComposerPickers harness facet on new side chats (upstream #590)", () =
       expect(codexTab).not.toBeNull();
       expect(codexTab!.classList.contains("model-tab-locked")).toBe(true);
 
-      // The favorites view scopes to the locked harness too: only the
-      // claude star renders — the codex star is the dead row the lock keeps
-      // out (the pre-fix shape rendered both).
+      // The favorites view engages (the tab reads viewed — the desktop
+      // keeps the favorites tab clickable when locked, its on_click at
+      // pickers.rs:3918 sets the rail unguarded) and scopes to the locked
+      // harness: only the claude star renders — the codex star is the dead
+      // row the lock keeps out (the pre-fix shape rendered both).
       await act(async () => {
         document.querySelector<HTMLElement>("#model-tab-favorites")!.click();
       });
+      expect(document.querySelector("#model-tab-favorites")?.getAttribute("aria-selected")).toBe(
+        "true",
+      );
       expect(modelRowLabels()).toEqual(["Parent model"]);
     } finally {
       // The seeded stars are this test's fixture, not its legacy: leave the
