@@ -4,6 +4,8 @@ import { invocationLink, localFileLink } from "../src/lib/mentions";
 import {
   completionTrigger,
   invocationCandidates,
+  withWorkspaceCommands,
+  workspaceCommandForText,
   invocationInsertion,
   invocationToken,
   mergeInvocationResults,
@@ -201,8 +203,8 @@ describe("merge_invocation_results", () => {
     const merged = mergeInvocationResults({ ok: true, value: commands }, { ok: true, value: skills }, false);
     expect(merged).toEqual({
       rows: [
-        { invocation: { kind: "command", name: "compact" }, name: "compact", description: "Summarize", inputHint: null },
-        { invocation: { kind: "skill", name: "review", path: "/repo/SKILL.md", command: null }, name: "review", description: "Review — /repo/SKILL.md", inputHint: null },
+        { invocation: { kind: "command", name: "compact" }, name: "compact", description: "Summarize", inputHint: null, workspaceCommand: null },
+        { invocation: { kind: "skill", name: "review", path: "/repo/SKILL.md", command: null }, name: "review", description: "Review — /repo/SKILL.md", inputHint: null, workspaceCommand: null },
       ],
       supported: true,
       warning: null,
@@ -263,6 +265,7 @@ describe("refilter_slash_over_invocation_rows", () => {
         name: "goal",
         description: "",
         inputHint: "text...",
+        workspaceCommand: null,
       }),
     ).toBe("<text...>");
     expect(
@@ -271,6 +274,7 @@ describe("refilter_slash_over_invocation_rows", () => {
         name: "compact",
         description: "Summarize",
         inputHint: null,
+        workspaceCommand: null,
       }),
     ).toBe("Summarize");
   });
@@ -312,5 +316,77 @@ describe("catalog_reply_decoders", () => {
     });
     expect(parseSkillsReply([{ name: "review", path: 3, description: "d", enabled: true }]).ok).toBe(false);
     expect(parseSkillsReply("nope").ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workspace commands (composer.rs:5317-5413, the Roboco-local commands)
+// ---------------------------------------------------------------------------
+
+describe("with_workspace_commands / workspace_command_for_text", () => {
+  it("merges the nine Roboco commands behind the provider rows, gated by chat", () => {
+    const empty = withWorkspaceCommands([], true);
+    expect(empty.map((row) => row.workspaceCommand)).toEqual([
+      "model", "new", "resume", "settings", "diff", "files", "terminal", "rename", "stop",
+    ]);
+    expect(empty.map((row) => row.name)).toEqual([
+      "model", "new", "resume", "settings", "diff", "files", "terminal", "rename", "stop",
+    ]);
+    // The needs-chat gate: without a chat, only the four global ones.
+    const draftRows = withWorkspaceCommands([], false);
+    expect(draftRows.map((row) => row.workspaceCommand)).toEqual([
+      "model", "new", "resume", "settings",
+    ]);
+    // Descriptions read as Roboco-scoped.
+    expect(empty.find((row) => row.workspaceCommand === "model")?.description).toContain("Roboco:");
+  });
+
+  it("preserves native commands and avoids collisions (desktop test port)", () => {
+    const native: SlashCommand[] = [
+      { name: "model", description: "Native model command", inputHint: "model id" },
+      { name: "roboco:model", description: "Plugin command", inputHint: null },
+    ];
+    const rows = withWorkspaceCommands(invocationCandidates(native, []), true);
+    expect(rows).toHaveLength(11);
+    expect(rows[0]!.workspaceCommand).toBeNull();
+    expect(rows[0]!.inputHint).toBe("model id");
+    // The bare and singly-prefixed names belong to the provider: neither
+    // dispatches. The workspace row lands under roboco:roboco:model.
+    expect(workspaceCommandForText("/model", rows)).toBeNull();
+    expect(workspaceCommandForText("/roboco:model", rows)).toBeNull();
+    expect(workspaceCommandForText("/roboco:roboco:model", rows)).toBe("model");
+    // The merge is idempotent (re-merging never duplicates).
+    expect(withWorkspaceCommands(rows, true)).toHaveLength(11);
+    expect(withWorkspaceCommands([], false)).toHaveLength(4);
+  });
+
+  it("matches only a whole-prompt command token, trailing whitespace allowed", () => {
+    const rows = withWorkspaceCommands([], false);
+    expect(workspaceCommandForText("/model", rows)).toBe("model");
+    expect(workspaceCommandForText("/model  ", rows)).toBe("model");
+    // A needs-chat command with no chat never matches.
+    expect(workspaceCommandForText("/diff", rows)).toBeNull();
+    const inChat = withWorkspaceCommands([], true);
+    expect(workspaceCommandForText("/diff", inChat)).toBe("diff");
+    // Prose, code, arguments, and paths never dispatch.
+    for (const literal of [
+      "    /model",
+      "`/model`",
+      "```\n/model\n```",
+      "please /model",
+      "/model extra",
+      "/model/path",
+    ]) {
+      expect(workspaceCommandForText(literal, rows)).toBeNull();
+    }
+  });
+
+  it("a skill row shadowing a workspace name prefixes the workspace row too", () => {
+    const skills: Skill[] = [
+      { name: "new", path: "/repo/new/SKILL.md", description: "A skill named new", enabled: true, command: null },
+    ];
+    const rows = withWorkspaceCommands(invocationCandidates([], skills), true);
+    expect(workspaceCommandForText("/new", rows)).toBeNull();
+    expect(workspaceCommandForText("/roboco:new", rows)).toBe("new");
   });
 });

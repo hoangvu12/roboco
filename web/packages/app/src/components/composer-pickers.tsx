@@ -117,10 +117,16 @@ export interface ComposerPickersProps {
    * pickers.rs:4704-4714; the band clamp is pickers.rs:3245-3252).
    */
   readonly newChat?: boolean;
+  /**
+   * `/model`'s imperative open (`open_model_menu`): a counter the composer
+   * bumps when the workspace command dispatches — each increment opens the
+   * card (never closes it, like the `OpenModelPicker` shortcut).
+   */
+  readonly openRequest?: number;
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false } = props;
+  const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false, openRequest } = props;
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
     (next: boolean) => {
@@ -180,6 +186,13 @@ export function ComposerPickers(props: ComposerPickersProps) {
       setOpenAndNotify(true);
     });
   }, [setOpenAndNotify]);
+  // `/model`'s imperative open: the same open-only semantics, keyed to the
+  // composer's request counter (every bump opens; 0 never does).
+  useEffect(() => {
+    if (openRequest !== undefined && openRequest > 0) {
+      setOpenAndNotify(true);
+    }
+  }, [openRequest, setOpenAndNotify]);
   const defaults = useSyncExternalStore(
     useCallback((listener: () => void) => composerDefaults.subscribe(listener), []),
     useCallback(() => composerDefaults.getSnapshot(), []),

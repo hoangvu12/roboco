@@ -130,6 +130,10 @@ import {
   type MentionTooltipTarget,
 } from "../lib/mentions";
 import { chatFileInserts } from "../lib/chat-insert";
+import { sidebarNotice } from "../state/notice";
+import { drawerTerminalStore } from "../terminal/store";
+import { pollWorktreeSetupOutcome, WorktreeSetupSurfacer } from "../lib/worktree-setup";
+import type { WorktreeSpec } from "@roboco/proto";
 import {
   completionTrigger,
   invocationInsertion,
@@ -139,7 +143,10 @@ import {
   refilterSlash,
   referencesRequireUpdate,
   slashErrorMessage,
+  withWorkspaceCommands,
+  workspaceCommandForText,
   type InvocationRow,
+  type WorkspaceCommandId,
 } from "../lib/invocations";
 import {
   AUTO_ADVANCE_MS,
@@ -160,6 +167,7 @@ import { AttachmentStrip } from "./attachments/attachment-strip";
 import { CommentsChip } from "./review-comments/comments-chip";
 import { MentionPopup } from "./composer/mention-popup";
 import { SlashPopup } from "./composer/slash-popup";
+import { toggleCommandPalette } from "../state/command-palette";
 import { ComposerWizard } from "./composer/wizard";
 import { reviewCommentStore, useReviewComments } from "../state/review-comments";
 import { commentStripHeight, withComments } from "../lib/review-comments";
@@ -271,6 +279,33 @@ function pillLayoutEquals(a: PillLayout, b: PillLayout): boolean {
   );
 }
 
+/**
+ * The workspace commands' dispatch targets (the web peer of the desktop's
+ * shell-side `ComposerEvent::WorkspaceCommand` match): each host routes the
+ * command to its own surfaces. A side-chat pane's host targets the side
+ * chat's pane and rename; the chat page's host targets the page's.
+ */
+export interface WorkspaceCommandActions {
+  /** `/new` — start a new conversation (the new-chat canvas). */
+  readonly newChat: () => void;
+  /** `/settings` — open settings (the remembered section). */
+  readonly openSettings: () => void;
+  /** `/diff` | `/files` | `/terminal` — reveal the right-pane surface. */
+  readonly revealSurface: (kind: "diff" | "files" | "terminal") => void;
+  /** `/rename` — rename the composer's chat. */
+  readonly renameChat: () => void;
+}
+
+/**
+ * The worktree-setup outcome's surfacing host — the web peer of the shell's
+ * `attach_worktree_setup` (actions_ui.rs:42-83) over the DRAWER terminal
+ * store (`Shell::terminal`, the panel under the conversation column — the
+ * pane's embedded terminals never host setup runs). One per app, module-
+ * scoped: the drawer survives composer mounts, so a setup terminal for a
+ * backgrounded chat stays attached.
+ */
+const worktreeSetupSurfacer = new WorktreeSetupSurfacer(drawerTerminalStore);
+
 interface ComposerProps {
   readonly session: EngineSession;
   readonly chat: Chat;
@@ -326,6 +361,16 @@ interface ComposerProps {
    * the row's Save and the composer's submit share the one commit path.
    */
   readonly editCommitRef?: React.MutableRefObject<(() => void) | null>;
+  /**
+   * The workspace commands' host surfaces (composer.rs's
+   * `ComposerEvent::WorkspaceCommand` dispatch, web-shaped): the Roboco-local
+   * `/new`, `/settings`, `/diff`, `/files`, `/terminal`, and `/rename` route
+   * through the HOST — the chat page and the side-chat pane each target
+   * their own surfaces. `/model` (the composer's own picker), `/resume` (the
+   * command palette store), and `/stop` (the composer's own interrupt) need
+   * no host. Omitted: the commands still catalog but do not dispatch.
+   */
+  readonly workspaceCommands?: WorkspaceCommandActions;
   /**
    * Mod+Enter with a truly empty composer activates the most recently
    * queued row (composer.rs:6023). The action itself lives with the queue
@@ -412,6 +457,7 @@ export function Composer({
   dockCorrectionRef,
   seedStaged,
   onDraftChange,
+  workspaceCommands,
 }: ComposerProps) {
   // The MERGED fleet snapshot: the composer's per-chat status lookups read
   // scoped rows across engines; the calls themselves go through the routed
@@ -1669,8 +1715,14 @@ export function Composer({
           refilterSlashFor(slashTokenNow.query);
         } else if (session.client.state !== "connected") {
           // No engine target: command discovery reports the connection
-          // failure; skills simply stay closed.
+          // failure; skills simply stay closed. The workspace commands are
+          // Roboco-local, so the four global ones still offer (the desktop
+          // caches with_workspace_commands([], in_chat) on this branch).
           if (!trigger.skill && trigger.commandsAllowed) {
+            slashCacheRef.current.set(
+              context,
+              withWorkspaceCommands([], chat.id !== ""),
+            );
             setSlash((current) => ({
               ...current,
               loading: false,
@@ -1723,6 +1775,14 @@ export function Composer({
             const merged = mergeInvocationResults(commands, skills, trigger.skill);
             if ("error" in merged) {
               slashCacheRef.current.delete(context);
+              if (!trigger.skill && trigger.commandsAllowed) {
+                // A failed catalog still offers the Roboco-local commands
+                // (the desktop's error arm re-caches the workspace rows).
+                slashCacheRef.current.set(
+                  context,
+                  withWorkspaceCommands([], chat.id !== ""),
+                );
+              }
               setSlash((current) => ({
                 ...current,
                 loading: false,
@@ -1734,6 +1794,12 @@ export function Composer({
             let rows = merged.rows;
             if (!trigger.includeSkills) {
               rows = rows.filter((row) => row.invocation.kind === "command");
+            }
+            if (!trigger.skill && trigger.commandsAllowed) {
+              // `with_workspace_commands`: the Roboco-local `/model`, `/new`…
+              // join the menu behind the provider rows, chat-gated, collision-
+              // prefixed (composer.rs:5360).
+              rows = withWorkspaceCommands(rows, chat.id !== "");
             }
             slashCacheRef.current.set(context, rows);
             setSlash((current) => ({
@@ -1899,6 +1965,57 @@ export function Composer({
     [applyEdit, resetMention],
   );
 
+  // ── Workspace commands (composer.rs:5317-5413 + shell.rs:10540) ─────────
+  // `/model` opens the composer's own picker card; `/resume` toggles the
+  // command palette (the conversation search); `/stop` interrupts the active
+  // run. The rest route through the HOST's surfaces (the chat page's or the
+  // side-chat pane's own targets).
+  const [modelPickerRequest, setModelPickerRequest] = useState(0);
+  // `/stop` interrupts through a ref — the interrupt callback is built later
+  // in the component, and the accept/submit paths reach the dispatch first.
+  const interruptRef = useRef<(() => Promise<void>) | null>(null);
+  const dispatchWorkspaceCommand = useCallback(
+    (command: WorkspaceCommandId): void => {
+      switch (command) {
+        case "model":
+          setModelPickerRequest((current) => current + 1);
+          return;
+        case "resume":
+          toggleCommandPalette();
+          return;
+        case "stop":
+          void interruptRef.current?.();
+          return;
+        case "new":
+          workspaceCommands?.newChat();
+          return;
+        case "settings":
+          workspaceCommands?.openSettings();
+          return;
+        case "diff":
+        case "files":
+        case "terminal":
+          workspaceCommands?.revealSurface(command);
+          return;
+        case "rename":
+          workspaceCommands?.renameChat();
+          return;
+      }
+    },
+    [workspaceCommands],
+  );
+
+  /** `execute_workspace_command`: consume the trigger, dispatch, never send. */
+  const executeWorkspaceCommand = useCallback(
+    (command: WorkspaceCommandId, token: { start: number; end: number }): void => {
+      applyEdit(token.start, token.end, "", token.start);
+      resetSlash(null);
+      setFailure(null);
+      dispatchWorkspaceCommand(command);
+    },
+    [applyEdit, resetSlash, dispatchWorkspaceCommand],
+  );
+
   /** `accept_slash` (composer.rs:6960): insert the selected invocation —
    * the canonical `roboco-invoke:` link chip (plain `/name` text only for a
    * command on a delivery target without composer-references support),
@@ -1918,6 +2035,13 @@ export function Composer({
       if (row === undefined) {
         return;
       }
+      if (row.workspaceCommand !== null) {
+        // A Roboco-local command never inserts a reference: it consumes its
+        // token and dispatches (`accept_slash`'s workspace arm) — the rest of
+        // the draft survives untouched.
+        executeWorkspaceCommand(row.workspaceCommand, token);
+        return;
+      }
       const replacement = invocationInsertion(row.invocation, referenceDeliverySupported());
       const currentText = textRef.current;
       const existing = separatorAfter(currentText, token.end);
@@ -1926,7 +2050,7 @@ export function Composer({
       applyEdit(token.start, token.end, inserted, caretAfter);
       resetSlash(null);
     },
-    [applyEdit, resetSlash, referenceDeliverySupported],
+    [applyEdit, resetSlash, referenceDeliverySupported, executeWorkspaceCommand],
   );
 
   const acceptCompletion = useCallback(
@@ -2373,6 +2497,8 @@ export function Composer({
     }
   }, [chat.id, session.client]);
 
+  interruptRef.current = interrupt;
+
   // ── The send path (`Composer::send`, composer.rs:6032-6705) ────────────
   const send = useCallback(
     async (typed: string, queue: boolean): Promise<void> => {
@@ -2569,13 +2695,20 @@ export function Composer({
             uploaded.map((entry) => entry.path),
           );
         } else {
+          // The send's checkout plan (composer.rs:8421-8467, the `NewWorktree`
+          // arm): the web canvas's checkout pick stays chip-local — carrying
+          // the plan on the send is the parity spec's deliberate out-of-scope
+          // payload-shape item — so the run carries no worktree spec today.
+          // The wire field and the setup-outcome poll below are wired and
+          // ready for the plan the moment that work lands.
+          const runWorktree: WorktreeSpec | null = null;
           const sendResult = await sendRun(
             session.client,
             chatId,
             draft,
             trimmed,
             sendCwd,
-            { mintMessageId: () => messageId },
+            { mintMessageId: () => messageId, worktree: runWorktree },
             taken.length > 0 || takenComments.length > 0
               ? { stagedAttachments: taken, uploadProgress: onProgress, stagedReviewComments: takenComments }
               : { stagedReviewComments: takenComments },
@@ -2608,6 +2741,29 @@ export function Composer({
               });
             });
           }
+          // The worktree-setup handoff (composer.rs:8625-8703): the queue
+          // reply returns before the host creates the worktree, so a
+          // space-scoped spec's setup outcome arrives by POLL — bounded,
+          // 250ms cadence, UnknownMethod-stopping (lib/worktree-setup.ts).
+          // A running setup attaches and selects its drawer terminal; a
+          // failed one posts the sidebar notice. Inert for a specless send
+          // (the poll's own gate), and detached from the send's failure
+          // hand-back — the outcome is the HOST's, not the draft's.
+          const localDeviceId = deviceId;
+          const targetDeviceId =
+            chat.deviceId != null && chat.deviceId !== localDeviceId ? chat.deviceId : null;
+          void pollWorktreeSetupOutcome(session.client, {
+            chatId,
+            commandId: sendResult.commandId,
+            worktree: runWorktree,
+            targetDeviceId,
+          }).then((outcome) => {
+            if (outcome !== null) {
+              worktreeSetupSurfacer.surface(chatId, outcome, (message) => {
+                sidebarNotice.set(message);
+              });
+            }
+          });
         }
       } catch (error) {
         // Failure: red notice, echo removed, prompt back in the draft,
@@ -2701,6 +2857,18 @@ export function Composer({
       return;
     }
 
+    // A whole-prompt workspace command executes locally (`on_submit`'s
+    // workspace arm): the trigger is consumed, the action dispatches, and
+    // nothing is ever sent to the engine.
+    const workspaceCommand = workspaceCommandForText(
+      text,
+      slashCacheRef.current.get(slashRef.current.context) ?? [],
+    );
+    if (workspaceCommand !== null) {
+      executeWorkspaceCommand(workspaceCommand, { start: 0, end: text.length });
+      return;
+    }
+
     const content = composerHasContent(text, staged.length, commentCount);
     const mode = sendButtonMode(runLive, content);
     if (mode === "stop") {
@@ -2730,7 +2898,7 @@ export function Composer({
       return;
     }
     await send(text, mode === "queue");
-  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
+  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit, executeWorkspaceCommand]);
 
   // ── Key policy: completions → phone newline → wizard → Enter (§2.7) ────
   // `resolveEnterAction` (lib/composer-send.ts) is the Enter branch's single
@@ -3463,6 +3631,7 @@ export function Composer({
                       chatConfig={chat.config}
                       sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
                       newChat={newChat}
+                      openRequest={modelPickerRequest}
                       onDraft={applyDraft}
                       onPersist={persistDraft}
                       escapeFocusTarget={() => textareaRef.current}

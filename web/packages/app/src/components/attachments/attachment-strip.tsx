@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
 import { formatByName, stageBytes, stageFile, type StagedAttachment } from "../../lib/attachments";
+import { chatFileInserts } from "../../lib/chat-insert";
+import { workspaceDragActive, workspaceDragPayload } from "../../lib/workspace-drag";
 import { Lightbox } from "../lightbox";
 
 /**
@@ -19,6 +21,18 @@ import { Lightbox } from "../lightbox";
  * its `.chat-column` ancestor, which every drop inside the column bubbles
  * through. Non-image files are skipped silently (`add_paths`); genuine
  * failures (oversize, unreadable bytes) surface through `onError`.
+ *
+ * The same dropzone also accepts the INTERNAL workspace-path drag (tree and
+ * search rows' `application/x-roboco-workspace-path` payload, the desktop's
+ * `WorkspacePathDrag`): a drop converts into a file mention in THIS
+ * column's composer through the `chatFileInserts` hand-off — the tree's
+ * "Add to chat" row and the composer's `insert_dropped_mention` peer — so
+ * referencing a file never requires typing its path. The side-chat panes
+ * have no `.chat-column` ancestor; their composer column (`.side-chat-
+ * composer`) is a drop zone on its own, so a side chat's composer takes the
+ * same drops. The drag-over is canceled for the internal MIME only (an OS
+ * file drag keeps the shell's own overlay semantics) — that cancellation is
+ * what makes the column a valid drop target for our own drags.
  */
 
 interface AttachmentStripProps {
@@ -48,7 +62,10 @@ export function AttachmentStrip({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<StagedAttachment | null>(null);
   // The dropzone is the strip's `.chat-column` ancestor — the whole
-  // conversation column (transcript + composer), like `#chat-dropzone`.
+  // conversation column (transcript + composer), like `#chat-dropzone` —
+  // or, in a side-chat pane, the composer column hosting this strip (there
+  // is no `.chat-column` there; the pane's composer column is the zone).
+  // Re-resolved on mount since the column re-mounts per chat page.
   const [dropZone, setDropZone] = useState<HTMLElement | null>(null);
 
   // Resets the file input whenever the chat changes so the same file can
@@ -61,7 +78,7 @@ export function AttachmentStrip({
 
   // Re-resolved on mount since the column re-mounts per chat page.
   useEffect(() => {
-    const zone = wrapperRef.current?.closest(".chat-column") ?? null;
+    const zone = wrapperRef.current?.closest(".chat-column, .side-chat-composer") ?? null;
     setDropZone(zone instanceof HTMLElement ? zone : null);
   }, [chatId]);
 
@@ -96,13 +113,38 @@ export function AttachmentStrip({
   // `#chat-dropzone`'s `on_drop::<ExternalPaths>` (shell.rs:5998-6003): every
   // drop inside the conversation column stages its image files here. The
   // shell's own listener on `main.panel` swallows the browser default; this
-  // one, on the column the composer lives in, is the staging half.
+  // one, on the column the composer lives in, is the staging half. The
+  // internal workspace-path drag (tree/search rows) lands on the SAME zone
+  // (`attach_workspace_drag` → `add_workspace_path`): the drag-over is
+  // canceled for our MIME only — that is what keeps the drag alive over the
+  // column — and the drop hands the payload to THIS column's composer as a
+  // file mention through the shared `chatFileInserts` store, reusing the
+  // tree's "Add to chat" hand-off rather than a parallel mechanism.
   useEffect(() => {
     const zone = dropZone;
     if (zone === null) {
       return;
     }
+    const onDragOver = (event: DragEvent): void => {
+      if (!workspaceDragActive(event)) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer !== null) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+    };
     const onDrop = (event: DragEvent): void => {
+      const mention = workspaceDragPayload(event);
+      if (mention !== null) {
+        // A file mention (never a staging): consume the drag so the payload's
+        // text/plain half cannot also paste the path into the textarea.
+        event.preventDefault();
+        if (disabled !== true) {
+          chatFileInserts.insert(chatId, mention);
+        }
+        return;
+      }
       if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) {
         return;
       }
@@ -113,9 +155,13 @@ export function AttachmentStrip({
       }
       void ingestRef.current(files);
     };
+    zone.addEventListener("dragover", onDragOver);
     zone.addEventListener("drop", onDrop);
-    return () => zone.removeEventListener("drop", onDrop);
-  }, [dropZone, disabled]);
+    return () => {
+      zone.removeEventListener("dragover", onDragOver);
+      zone.removeEventListener("drop", onDrop);
+    };
+  }, [dropZone, disabled, chatId]);
 
   const onPickerChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {

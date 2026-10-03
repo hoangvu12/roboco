@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
 import { parseScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
@@ -13,6 +13,7 @@ import { reviewCommentStore } from "../state/review-comments";
 import { chatCopyPath } from "../lib/chat-copy-path";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { chatMenuRows } from "../lib/chat-menu";
+import { RenameChatDialog } from "./rename-chat-dialog";
 import { singleLine } from "../lib/view";
 import {
   RbContextMenu,
@@ -324,49 +325,6 @@ function encodeComponent(value: string): string {
     }
   }
   return out;
-}
-
-/**
- * The rename dialog (shell.rs open_rename_chat / submit_rename_chat):
- * prefilled single-line input, Enter submits, an empty title is a no-op.
- * Escape closes through RbDialog's escape path (`onOpenChange(false)`).
- */
-function RenameChatDialog({ chat, onSubmit, onClose }: { chat: Chat; onSubmit: (title: string) => void; onClose: () => void }) {
-  const [title, setTitle] = useState(chat.title ?? "");
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  return (
-    <Dialog ariaLabel="Rename session" onClose={onClose} initialFocus={inputRef}>
-      <DialogCard>
-        <DialogTitle>Rename session</DialogTitle>
-        <form
-          className="dialog-form-rows"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmit(title);
-            onClose();
-          }}
-        >
-          <DialogField>
-            <input
-              ref={inputRef}
-              type="text"
-              aria-label="Session title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              spellCheck={false}
-            />
-          </DialogField>
-          <div className="dialog-actions-row">
-            <BtnGhost type="button" onClick={onClose}>
-              Cancel
-            </BtnGhost>
-            <BtnPrimary type="submit">Rename</BtnPrimary>
-          </div>
-        </form>
-      </DialogCard>
-    </Dialog>
-  );
 }
 
 /**

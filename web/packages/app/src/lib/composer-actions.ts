@@ -142,7 +142,11 @@ export async function sendRun(
   draft: DraftConfig,
   prompt: string,
   chatCwd: string,
-  options: { mintMessageId?: () => string } = {},
+  /** `mintMessageId` overrides the id factory; `worktree` is the run's
+   *  isolated-worktree spec (composer.rs:8460-8467) — the HOST materializes
+   *  the worktree at drain time and runs the space's setup Action in it;
+   *  the caller polls the setup handoff separately (lib/worktree-setup.ts). */
+  options: { mintMessageId?: () => string; worktree?: WorktreeSpec | null } = {},
   attachments: SendAttachmentsOptions = {},
 ): Promise<SendResult> {
   const trimmed = prompt.trim();
@@ -184,7 +188,7 @@ export async function sendRun(
       finalPrompt,
       chatCwd,
       uploaded.map((entry) => entry.path),
-      null,
+      options.worktree ?? null,
     ),
     messageId,
   };

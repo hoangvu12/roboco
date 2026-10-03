@@ -192,6 +192,99 @@ export interface InvocationRow {
   readonly name: string;
   readonly description: string;
   readonly inputHint: string | null;
+  /**
+   * The Roboco-local command this row dispatches, when it is one — the
+   * workspace commands (`/model`, `/new`, …). Null for provider commands
+   * and skills; a workspace row never inserts a link, it executes.
+   */
+  readonly workspaceCommand: WorkspaceCommandId | null;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace commands (composer.rs:5317-5413) — Roboco's own `/` commands,
+// independent of the provider protocol
+// ---------------------------------------------------------------------------
+
+/** `WorkspaceCommand` — one of Roboco's locally-handled slash commands. */
+export type WorkspaceCommandId =
+  | "model"
+  | "new"
+  | "resume"
+  | "settings"
+  | "diff"
+  | "files"
+  | "terminal"
+  | "rename"
+  | "stop";
+
+/** `WorkspaceCommand::catalog()` — name, description, needs-chat. */
+export const WORKSPACE_COMMAND_CATALOG: readonly {
+  readonly id: WorkspaceCommandId;
+  readonly name: string;
+  readonly description: string;
+  readonly needsChat: boolean;
+}[] = [
+  { id: "model", name: "model", description: "Roboco: choose agent, model, and reasoning", needsChat: false },
+  { id: "new", name: "new", description: "Roboco: start a new conversation", needsChat: false },
+  { id: "resume", name: "resume", description: "Roboco: search and open conversations", needsChat: false },
+  { id: "settings", name: "settings", description: "Roboco: open settings", needsChat: false },
+  { id: "diff", name: "diff", description: "Roboco: open changes", needsChat: true },
+  { id: "files", name: "files", description: "Roboco: open project files", needsChat: true },
+  { id: "terminal", name: "terminal", description: "Roboco: open a terminal", needsChat: true },
+  { id: "rename", name: "rename", description: "Roboco: rename this conversation", needsChat: true },
+  { id: "stop", name: "stop", description: "Roboco: stop the active run", needsChat: true },
+];
+
+/**
+ * `with_workspace_commands`: merge the Roboco commands into the provider
+ * rows. Provider rows stay intact — a Roboco name already taken keeps its
+ * workspace row reachable under a `roboco:` prefix (repeatedly, until it
+ * lands free); a `needsChat` command is omitted without a chat; and the
+ * merge is idempotent (existing workspace rows are dropped first).
+ */
+export function withWorkspaceCommands(
+  rows: readonly InvocationRow[],
+  inChat: boolean,
+): InvocationRow[] {
+  const merged = rows.filter((row) => row.workspaceCommand === null).map((row) => ({ ...row }));
+  for (const command of WORKSPACE_COMMAND_CATALOG) {
+    if (command.needsChat && !inChat) {
+      continue;
+    }
+    let name = command.name;
+    while (merged.some((row) => row.name === name)) {
+      name = `roboco:${name}`;
+    }
+    merged.push({
+      invocation: { kind: "command", name },
+      name,
+      description: command.description,
+      inputHint: null,
+      workspaceCommand: command.id,
+    });
+  }
+  return merged;
+}
+
+/**
+ * `workspace_command_for_text`: the whole prompt is exactly one workspace
+ * command token (trailing whitespace allowed, leading prose / code fences /
+ * arguments / paths never dispatch). The rows are the merged catalog — a
+ * provider-owned name must not shadow into a Roboco dispatch.
+ */
+export function workspaceCommandForText(
+  text: string,
+  rows: readonly InvocationRow[],
+): WorkspaceCommandId | null {
+  const end = text.replace(/\s+$/, "").length;
+  const token = invocationToken(text, end, "/");
+  if (token === null) {
+    return null;
+  }
+  if (text.slice(0, token.start).trim().length > 0) {
+    return null;
+  }
+  return rows.find((row) => row.name === token.query)?.workspaceCommand ?? null;
 }
 
 /**
@@ -223,6 +316,7 @@ export function invocationCandidates(
       name: command.name,
       description: command.description,
       inputHint: command.inputHint ?? null,
+      workspaceCommand: null,
     }));
   for (const skill of validSkills) {
     if (!skill.enabled) {
@@ -240,6 +334,7 @@ export function invocationCandidates(
         ? skill.description
         : `${skill.description} — ${skill.path}`,
       inputHint: null,
+      workspaceCommand: null,
     });
   }
   return rows;

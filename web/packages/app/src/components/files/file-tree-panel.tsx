@@ -14,6 +14,7 @@ import { Icon } from "@roboco/icons";
 import type { Appearance } from "@roboco/theme";
 import type { WorkspaceFileSearchMatch } from "@roboco/proto";
 import { buildSearchTree, isSearchNodeExpanded, toggleSearchNode, type SearchTree, type SearchTreeRow } from "../../lib/file-search-tree";
+import { WORKSPACE_DRAG_MIME, workspaceDragPayload, workspaceDragActive, type WorkspaceDragPayload } from "../../lib/workspace-drag";
 import { resolveDirectoryIcon, resolveFileIcon } from "../../lib/file-icons";
 import {
   absoluteWorkspacePath,
@@ -711,33 +712,14 @@ function beginRowDrag(
 
 // ── Tree mutations: context menu, rename, delete, drop targets ─────────────
 
-/** The workspace-path drag's payload (the desktop's `WorkspacePathDrag`
- *  JSON). Our own rows write it in `beginRowDrag`. */
-interface WorkspaceDragPayload {
-  readonly path: string;
-  readonly isDirectory: boolean;
-}
-
-const WORKSPACE_DRAG_MIME = "application/x-roboco-workspace-path";
-
+/** The tree's drop-target reads of the internal drag payload — the
+ *  shared `lib/workspace-drag` helpers, typed for the tree's React events. */
 function treeDropPayload(event: DragEvent<HTMLElement>): WorkspaceDragPayload | null {
-  const raw = event.dataTransfer.getData(WORKSPACE_DRAG_MIME);
-  if (raw.length === 0) {
-    return null;
-  }
-  try {
-    const value = JSON.parse(raw) as Partial<WorkspaceDragPayload>;
-    if (typeof value.path !== "string" || typeof value.isDirectory !== "boolean") {
-      return null;
-    }
-    return { path: value.path, isDirectory: value.isDirectory };
-  } catch {
-    return null;
-  }
+  return workspaceDragPayload(event);
 }
 
 function treeDropActive(event: DragEvent<HTMLElement>): boolean {
-  return event.dataTransfer.types.includes(WORKSPACE_DRAG_MIME);
+  return workspaceDragActive(event);
 }
 
 function parentOf(path: string): string | null {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import type { Chat, ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
 import { methods, type ChatStatus } from "@roboco/engine-client";
 import type { IconName } from "@roboco/icons";
@@ -26,8 +27,10 @@ import { chatDrafts } from "../lib/composer-draft";
 import { dockFrameSettled } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { sidebarNotice } from "../state/notice";
-import { markChatSeen } from "../lib/chat-actions";
+import { describeMutateError, markChatSeen, renameChat } from "../lib/chat-actions";
 import { childChatTitle } from "../lib/explorer-sections";
+import { RenameChatDialog } from "./rename-chat-dialog";
+import type { WorkspaceCommandActions } from "./composer";
 import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
 import { HistoryPane } from "./history/history-pane";
 import { HistoryToolbar } from "./history/history-toolbar";
@@ -391,6 +394,9 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
       current?.shown === state.shown && state.shown === false ? current : state,
     );
   }, []);
+  // `/rename`'s dialog for THIS side chat (the chat page's target shape,
+  // side-chat-shaped): the host owns the mutation and its notice.
+  const [renaming, setRenaming] = useState(false);
 
   // The pane's width, measured live — the composer's `set_available_width`
   // feed (the desktop's `right_visible_width`).
@@ -449,6 +455,29 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const deliveryDegraded = chatDeliveryDegraded(sessionWatch?.connectivity.value?.state);
   const indicator = displayStatusFor(effectiveChat, statusRow, now);
   const turnStartedAt = startedAtOf(statusRow);
+  // The workspace commands' side-chat host (the composer's dispatch, the
+  // side-chat pane's targets): the pane commands dock into THIS pane's strip
+  // (the parent chat's pane — the host the side-chat tab itself lives in,
+  // the web shape of the desktop's side-chat panel), `/rename` targets THIS
+  // side chat, and the globals navigate like the chat page's.
+  const navigate = useNavigate();
+  const workspaceCommands = useMemo<WorkspaceCommandActions>(
+    () => ({
+      newChat: () => {
+        void navigate({ to: "/" });
+      },
+      openSettings: () => {
+        void navigate({ to: "/settings" });
+      },
+      revealSurface: (kind) => {
+        rightPaneStore.revealSurface(chatId, kind);
+      },
+      renameChat: () => {
+        setRenaming(true);
+      },
+    }),
+    [chatId, navigate],
+  );
   const markdownSurface = useMemo(
     () => ({
       workspaceRoot: effectiveChat.cwd,
@@ -500,6 +529,7 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
           session={session}
           chat={effectiveChat}
           catalog={session.catalog}
+          workspaceCommands={workspaceCommands}
           transcript={store}
           availableWidth={availableWidth}
           dockFrame={SIDE_CHAT_DOCK_FRAME}
@@ -510,6 +540,17 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
           }
         />
       </div>
+      {renaming && (
+        <RenameChatDialog
+          chat={effectiveChat}
+          onSubmit={(title) => {
+            void renameChat(session.client, sideChatId, title).catch((error: unknown) => {
+              sidebarNotice.set(describeMutateError(error));
+            });
+          }}
+          onClose={() => setRenaming(false)}
+        />
+      )}
     </div>
   );
 }

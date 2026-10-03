@@ -6,6 +6,9 @@ import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
+import { renameChat, describeMutateError } from "../lib/chat-actions";
+import { RenameChatDialog } from "../components/rename-chat-dialog";
+import type { WorkspaceCommandActions } from "../components/composer";
 import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
@@ -389,6 +392,27 @@ export function ConversationPage() {
   if (transcriptStore !== null) {
     storeRef.current = transcriptStore;
   }
+  // The workspace commands' host surfaces (composer.rs's dispatch, the
+  // chat page's targets): `/rename` opens the shared dialog for THIS chat.
+  const [renaming, setRenaming] = useState(false);
+  const workspaceCommands = useMemo<WorkspaceCommandActions>(
+    () => ({
+      newChat: () => {
+        void navigate({ to: "/" });
+      },
+      openSettings: () => {
+        void navigate({ to: "/settings" });
+      },
+      revealSurface: (kind) => {
+        rightPaneStore.revealSurface(chatId, kind);
+      },
+      renameChat: () => {
+        setRenaming(true);
+      },
+    }),
+    [chatId, navigate],
+  );
+
   // A spawn chip's "Open subagent" registers the right-pane tab under this
   // chat (`add_subagent_surface`, shell.rs:2682) — the pane opens on it.
   const onOpenSubagent = useCallback(
@@ -1354,6 +1378,7 @@ export function ConversationPage() {
                 session={session}
                 chat={effectiveChat}
                 catalog={session.catalog}
+                workspaceCommands={workspaceCommands}
                 // The LIVE store, never the swap-retained one: the
                 // composer's target is the destination chat — the wizard's
                 // rows must not offer the previous chat's entries.
@@ -1405,6 +1430,19 @@ export function ConversationPage() {
           <TerminalDock store={drawerTerminalStore} chatId={terminalSessionKey} />
         </div>
       </div>
+      {/* `/rename`'s dialog (the chat menu's Rename row uses the same
+          shared component): the host owns the mutation and its notice. */}
+      {renaming && session !== null && (
+        <RenameChatDialog
+          chat={effectiveChat}
+          onSubmit={(title) => {
+            void renameChat(session.client, chatId, title).catch((error: unknown) => {
+              sidebarNotice.set(describeMutateError(error));
+            });
+          }}
+          onClose={() => setRenaming(false)}
+        />
+      )}
     </div>
   );
 }
