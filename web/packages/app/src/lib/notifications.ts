@@ -53,12 +53,23 @@ export function sessionNotificationState(session: ChatStatus, now: number): Sess
  * baseline — suppressed pings must never be replayed later. Error first
  * (an error never masquerades as a completion), then input, then the
  * completion marker — only fresh, only un-masked by a pending send.
+ *
+ * `notify` is the chat's emit gate (shell.rs's side-chat rule): a chat
+ * the caller cannot see as top-level — a side chat (parent linkage) or a
+ * row whose chat is missing — keeps its baseline current but never
+ * emits completion, input-request, or failure sounds/banners. Default
+ * true, so the chat-not-found case must be decided by the caller, like
+ * the desktop's `chat.is_some_and(..)`.
  */
 export function soundSince(
   current: SessionNotificationState,
   prev: SessionNotificationState,
   sendPending: boolean,
+  notify: boolean = true,
 ): Sound | null {
+  if (!notify) {
+    return null;
+  }
   if (current.indicator === "errored" && prev.indicator !== "errored") {
     return "attention";
   }

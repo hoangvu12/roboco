@@ -481,7 +481,8 @@ export function sidebarKeyOrderChanged(old: readonly SidebarKeyed[], next: reado
  * preference with the show-toggle fields cleared before layout. Chats whose
  * spaceId points at a missing space row hide only once the spaces RowSet is
  * loaded (`options.spacesLoaded`); until then they render with the "?"
- * label (ticket 43).
+ * label (ticket 43). Child chats (a `parentChatId`) are top-level-never:
+ * `visible_chats` filters them, matching the desktop.
  */
 export function chatListRows(
   chats: readonly Chat[],
@@ -496,7 +497,12 @@ export function chatListRows(
   const deviceById = new Map(devices.map((device) => [device.id, device]));
   const rows: ChatRow[] = [];
   for (const chat of chats) {
-    if (chat.archived) {
+    // `state.rs::visible_chats`: the sidebar's active list is the TOP-LEVEL
+    // list — non-archived AND no parent linkage. Side chats (manual forks,
+    // agent-spawned workers) list under their parent in the explorer's
+    // Chats section and never as standalone rows, so a swarm of children
+    // never floods the list (spec: child-chat identity).
+    if (chat.archived || chat.parentChatId != null) {
       continue;
     }
     const row = toChatRow(chat, spaceById, statusByChat, now, deviceById, options);

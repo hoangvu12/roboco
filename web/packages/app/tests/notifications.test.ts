@@ -101,6 +101,28 @@ test("staleCompletionIsConsumedWithoutReplayingOnAHeartbeat", () => {
   expect(soundSince(refreshed, stale, false)).toBeNull();
 });
 
+// shell.rs's side-chat gate ("Keep side-chat baselines current, but never
+// emit their completion, input-request, or failure sounds/banners",
+// 2360 + 2379): the decider takes the chat's notify flag and swallows the
+// verdict for children. The BASELINE bookkeeping stays the driver's job —
+// the decider only stays silent, so a side chat's live status keeps
+// updating every other surface that reads it (spec story 5).
+test("sideChatRunsNeverChimeOrBanner", () => {
+  const working = baseline("working", "old");
+  const settled = baseline("none", "new");
+  const question = baseline("awaitingInput", "new");
+  const failed = baseline("errored", "failed");
+  // Completion, input-request, and failure all stay silent for a child.
+  expect(soundSince(settled, working, false, false)).toBeNull();
+  expect(soundSince(question, working, false, false)).toBeNull();
+  expect(soundSince(failed, working, false, false)).toBeNull();
+  // The same transitions on a top-level chat still emit (the default flag
+  // keeps every existing call site's behavior).
+  expect(soundSince(settled, working, false)).toBe("done");
+  expect(soundSince(question, working, false)).toBe("request");
+  expect(soundSince(failed, working, false)).toBe("attention");
+});
+
 // ---------------------------------------------------------------------------
 // The driver's send_pending probe (the echo overlay's id namespace)
 // ---------------------------------------------------------------------------

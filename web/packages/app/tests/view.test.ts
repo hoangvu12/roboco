@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Chat, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import {
+  archivedChatRows,
   attentionRank,
   chatIndicator,
   chatListRows,
@@ -294,6 +295,39 @@ describe("chatListRows", () => {
     ) as ChatRow[];
     expect(rows.find((row) => row.chat.id === "unseen")!.status).toBe("completed");
     expect(rows.find((row) => row.chat.id === "seen")!.status).toBe("idle");
+  });
+
+  // state.rs `visible_chats`: the sidebar's active list is the TOP-LEVEL
+  // list — non-archived AND no parent linkage. Side chats (manual forks,
+  // agent-spawned workers) list under their parent in the explorer's Chats
+  // section, never as standalone rows (spec: child-chat identity).
+  it("excludes child chats from the sidebar list, archived or not", () => {
+    const chats = [
+      chat({ id: "main", lastMessageAt: "2026-09-16T11:00:00Z" }),
+      chat({ id: "side", parentChatId: "main", lastMessageAt: "2026-09-16T11:30:00Z" }),
+      chat({ id: "archived-side", parentChatId: "main", archived: true }),
+      chat({ id: "orphan-side", parentChatId: "deleted-parent", lastMessageAt: "2026-09-16T11:45:00Z" }),
+    ];
+    expect(chatListRows(chats, [], [], NOW).map((row) => row.chat.id)).toEqual(["main"]);
+  });
+
+  it("the archived shelf keeps archived children — it filters on archive alone", () => {
+    // render_archived_section filters `archived` + the space filter only;
+    // a child chat archived away still rests on the shelf.
+    const chats = [
+      chat({ id: "main" }),
+      chat({ id: "archived-side", parentChatId: "main", archived: true, lastMessageAt: "2026-09-16T11:00:00Z" }),
+      chat({ id: "archived-top", archived: true, lastMessageAt: "2026-09-16T10:00:00Z" }),
+    ];
+    expect(archivedChatRows(chats, [], null, [], NOW).map((row) => row.chat.id)).toEqual([
+      "archived-side",
+      "archived-top",
+    ]);
+  });
+
+  it("chatPageRow still resolves a child chat — hiding is a list rule, not a page rule", () => {
+    const rows = chatPageRow("side", [chat({ id: "side", parentChatId: "main" })], [], [], NOW);
+    expect(rows?.chat.id).toBe("side");
   });
 });
 

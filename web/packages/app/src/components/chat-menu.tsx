@@ -12,6 +12,7 @@ import { sidebarPinProfileKey } from "../lib/sidebar-pins";
 import { reviewCommentStore } from "../state/review-comments";
 import { chatCopyPath } from "../lib/chat-copy-path";
 import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
+import { chatMenuRows } from "../lib/chat-menu";
 import { singleLine } from "../lib/view";
 import {
   RbContextMenu,
@@ -158,6 +159,10 @@ function ChatMenuPages({
   const isPinned = pinProfileKey !== null && (pinnedByProfile[pinProfileKey] ?? []).includes(chat.id);
 
   const codexLink = codexConversationLink(chat);
+  // The side-chat gate (shell.rs:8076's `is_side_chat`): a chat with a
+  // parent keeps Rename and Delete and drops Pin/Archive/Copy — the model
+  // computes the row set, this component renders it.
+  const rows = chatMenuRows({ chat, isPinned });
   const harnessSessionId =
     typeof chat.harnessSessionId === "string" && chat.harnessSessionId.trim().length > 0
       ? chat.harnessSessionId
@@ -195,44 +200,56 @@ function ChatMenuPages({
 
   return page === "root" ? (
     <>
-      <MenuRow fadeKey="rename" onClick={onRename}>
-        <Icon name="pen" size={16} className="chat-menu-row-icon" />
-        <span className="menu-row-label">Rename…</span>
-      </MenuRow>
-      <MenuRow
-        fadeKey="pin"
-        onClick={() => {
-          // `set_chat_pinned`: device-local, no engine roundtrip; the click
-          // closes the menu like the desktop's `close_chat_menu`.
-          onClose();
-          sidebarStore.setChatPinned(pinProfileKey, chat.id, !isPinned);
-        }}
-      >
-        <Icon name="pin" size={16} className="chat-menu-row-icon" />
-        <span className="menu-row-label">{isPinned ? "Unpin" : "Pin"}</span>
-      </MenuRow>
-      <MenuRow fadeKey="archive" onClick={onArchive}>
-        <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
-        <span className="menu-row-label">Archive</span>
-      </MenuRow>
-      <MenuRow
-        fadeKey="copy"
-        onClick={() => {
-          // The Copy page replaces the card's content IN PLACE —
-          // no second floating layer, no portal remount.
-          setPage("copy");
-        }}
-      >
-        <Icon name="copy" size={16} className="chat-menu-row-icon" />
-        <span className="menu-row-label">Copy</span>
-        <span className="chat-menu-row-spring" />
-        <Icon name="altArrowRight" size={14} className="chat-menu-row-arrow" />
-      </MenuRow>
-      <MenuSeparator />
-      <MenuRow fadeKey="delete" className="chat-menu-row-danger" onClick={onDelete}>
-        <Icon name="trashBinMinimalistic" size={16} className="chat-menu-row-icon-danger" />
-        <span className="menu-row-label">Delete…</span>
-      </MenuRow>
+      {rows.includes("rename") && (
+        <MenuRow fadeKey="rename" onClick={onRename}>
+          <Icon name="pen" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">Rename…</span>
+        </MenuRow>
+      )}
+      {rows.includes("pin") && (
+        <MenuRow
+          fadeKey="pin"
+          onClick={() => {
+            // `set_chat_pinned`: device-local, no engine roundtrip; the click
+            // closes the menu like the desktop's `close_chat_menu`.
+            onClose();
+            sidebarStore.setChatPinned(pinProfileKey, chat.id, !isPinned);
+          }}
+        >
+          <Icon name="pin" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">{isPinned ? "Unpin" : "Pin"}</span>
+        </MenuRow>
+      )}
+      {rows.includes("archive") && (
+        <MenuRow fadeKey="archive" onClick={onArchive}>
+          <Icon name="archiveMinimalistic" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">Archive</span>
+        </MenuRow>
+      )}
+      {rows.includes("copy") && (
+        <MenuRow
+          fadeKey="copy"
+          onClick={() => {
+            // The Copy page replaces the card's content IN PLACE —
+            // no second floating layer, no portal remount.
+            setPage("copy");
+          }}
+        >
+          <Icon name="copy" size={16} className="chat-menu-row-icon" />
+          <span className="menu-row-label">Copy</span>
+          <span className="chat-menu-row-spring" />
+          <Icon name="altArrowRight" size={14} className="chat-menu-row-arrow" />
+        </MenuRow>
+      )}
+      {rows.includes("delete") && (
+        <>
+          <MenuSeparator />
+          <MenuRow fadeKey="delete" className="chat-menu-row-danger" onClick={onDelete}>
+            <Icon name="trashBinMinimalistic" size={16} className="chat-menu-row-icon-danger" />
+            <span className="menu-row-label">Delete…</span>
+          </MenuRow>
+        </>
+      )}
     </>
   ) : (
     <>

@@ -183,6 +183,7 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
     // foreground, not "this chat's route is open"), so a ping for a
     // background chat in a focused app still stays a chime.
     const appFocused = document.hasFocus();
+    const chatById = new Map(snapshot.chats.rows.map((chat) => [chat.id, chat] as const));
     const titleByChat = new Map(snapshot.chats.rows.map((chat) => [chat.id, chat.title] as const));
 
     for (const status of snapshot.statuses.rows) {
@@ -196,7 +197,14 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
       // `send_pending`: the overlay is keyed by the scoped PAGE id, so the
       // probe scopes this row's RAW chat id to the session's engine first.
       const sendPending = echoSendPending(echoStore, session.engine.baseUrl, status.chatId, now);
-      const sound = soundSince(baseline, prev, sendPending);
+      // `notify` (shell.rs:2360): only a chat the state list knows as
+      // TOP-LEVEL — present AND without parent linkage — ever emits. The
+      // baseline above still updates for children, so a side chat's live
+      // status stays current for the explorer, palette, and tab surfaces
+      // that read it; only the chime/banner arm is muted.
+      const chat = chatById.get(status.chatId);
+      const notify = chat !== undefined && chat.parentChatId == null;
+      const sound = soundSince(baseline, prev, sendPending, notify);
       if (sound === null) {
         continue;
       }
