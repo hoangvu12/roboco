@@ -82,6 +82,7 @@ describe("AppearanceStore", () => {
       darkVariant: "nord",
       accent: "pink",
       surface: "opaque",
+      reduceMotion: "system",
     });
   });
 
@@ -136,6 +137,7 @@ describe("AppearanceStore", () => {
       darkVariant: "nord",
       accent: "pink",
       surface: "opaque",
+      reduceMotion: "system",
     });
     expect(storage.getItem("roboco.ui-settings.v1")).not.toBe(null);
   });

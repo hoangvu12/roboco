@@ -138,6 +138,9 @@ export type GitHistoryColumn = "author" | "date" | "sha";
 export type UiFontFamily = "geist" | "geistMono" | "system" | `installed:${string}`;
 export type UiAccentSelection = "themeDefault" | AccentPresetId;
 export type UiSurfacePreference = "themeDefault" | "opaque";
+/** `motion::ReduceMotion` (motion.rs): system-follow or an explicit pin. */
+export type ReduceMotionPreference = "system" | "on" | "off";
+
 export type NewThreadBackgroundEffect = "none" | "dither" | "ascii" | "halftone" | "scanlines";
 
 /**
@@ -418,6 +421,13 @@ export interface UiSettings {
   /** The active wallpaper's dominant colour, `#rrggbb`, extracted at install. */
   readonly wallpaperColor: string | null;
   readonly newThreadBackgroundEffect: NewThreadBackgroundEffect;
+  /**
+   * Reduce motion: follow `prefers-reduced-motion` (default) or pin on/off
+   * (upstream #642).
+   */
+  readonly reduceMotion: ReduceMotionPreference;
+  /** Also hold animations still while the window is not focused (desktop). */
+  readonly pauseAnimationsInBackground: boolean;
 }
 
 const ACCENT_IDS: readonly UiAccentSelection[] = [
@@ -531,6 +541,8 @@ export function defaultUiSettings(): UiSettings {
     wallpaperThemeColors: false,
     wallpaperColor: null,
     newThreadBackgroundEffect: "none",
+    reduceMotion: "system",
+    pauseAnimationsInBackground: false,
   };
 }
 
@@ -975,6 +987,8 @@ export function healUiSettings(value: unknown): UiSettings {
       ["none", "dither", "ascii", "halftone", "scanlines"],
       "none",
     ),
+    reduceMotion: oneOf(raw.reduceMotion, ["system", "on", "off"], "system"),
+    pauseAnimationsInBackground: bool(raw.pauseAnimationsInBackground, false),
   };
 }
 

@@ -17,6 +17,8 @@ import {
 } from "./lib/appearance-store";
 import { findVariantAnywhere } from "./lib/theme-library";
 import { uiSettings } from "./state/ui-settings";
+import { mediaPrefersReducedMotion } from "./lib/reduced-motion";
+import { resolveReducedMotion } from "./lib/appearance-store";
 import {
   deriveAccentRoles,
   mixHex,
@@ -151,6 +153,17 @@ export function applyAppearanceToDocument(
   }
   root.dataset.surface = resolveSurfaceTreatment();
   root.style.colorScheme = variant.appearance;
+  // The resolved reduced-motion flag (upstream #642): the stylesheet's
+  // `@media (prefers-reduced-motion: reduce)` blocks still follow the OS,
+  // qualified with `:not([data-reduced-motion="off"])` so an "off" pin
+  // suppresses them, and `:root[data-reduced-motion="on"]` applies the same
+  // rules when the pin (or a following system) asks for less motion.
+  root.dataset.reducedMotion = resolveReducedMotion(
+    preferences.reduceMotion,
+    mediaPrefersReducedMotion(),
+  )
+    ? "on"
+    : "off";
 }
 
 /**

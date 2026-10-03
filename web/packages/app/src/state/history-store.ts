@@ -13,6 +13,7 @@ import {
   type GraphLayout,
   type HistoryRowTransition,
 } from "../lib/git-history";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
 
 /**
  * The History pane's store — the web peer of the desktop's `GitHistory`
@@ -85,11 +86,8 @@ export interface HistoryTarget {
 const EMPTY_GRAPH: GraphLayout = { rows: [], maxLaneCount: 0 };
 
 function reducedMotion(): boolean {
-  return (
-    (globalThis as { matchMedia?: (query: string) => { matches: boolean } })
-      .matchMedia?.("(prefers-reduced-motion: reduce)")
-      .matches === true
-  );
+  // The reduced-motion pin rides the same effective read (upstream #642).
+  return effectiveReducedMotion();
 }
 
 function historyPageOf(value: unknown): GitHistoryPage | null {

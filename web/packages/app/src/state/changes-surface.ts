@@ -11,6 +11,7 @@ import {
 import type { ReviewComment } from "../lib/review-comments";
 import { diffLineHeight } from "../lib/typography";
 import { uiSettings } from "./ui-settings";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
 
 /**
  * The Changes surface's pane-level state — scope, base ref, layout, wrap, and
@@ -61,9 +62,8 @@ export interface ChangesSurfaceSnapshot {
 }
 
 function reducedMotion(): boolean {
-  return (globalThis as { matchMedia?: (query: string) => { matches: boolean } })
-    .matchMedia?.("(prefers-reduced-motion: reduce)")
-    .matches === true;
+  // The reduced-motion pin rides the same effective read (upstream #642).
+  return effectiveReducedMotion();
 }
 
 interface SurfaceState {

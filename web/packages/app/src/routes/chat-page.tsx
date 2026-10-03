@@ -64,6 +64,8 @@ import { drawerTerminalStore } from "../terminal/store";
 import { canvasTerminalKey } from "../terminal/session";
 import type { MarkdownSurface } from "../components/markdown";
 import { echoStore, TranscriptStore, chatDeliveryDegraded, type TranscriptCache } from "../state/transcript-store";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
+import { uiSettings } from "../state/ui-settings";
 
 /**
  * Ticket 81 — WHEN each offline transcript save happened, per
@@ -621,11 +623,19 @@ export function ConversationPage() {
   const sidebarNow = phone ? 0 : sidebarTarget(sidebar);
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
   useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReducedMotion(query.matches);
+    const onChange = () => setReducedMotion(effectiveReducedMotion());
+    // The media query AND the pin's settings write both re-resolve.
     onChange();
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
+    const query =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    query?.addEventListener("change", onChange);
+    const unsubscribe = uiSettings.subscribe(onChange);
+    return () => {
+      query?.removeEventListener("change", onChange);
+      unsubscribe();
+    };
   }, []);
   // Ticket 53's recorded choice (§2.2, option 1): the dock re-anchors at
   // phone exactly as at ≥769 — the glide, the chrome channels and the
@@ -1412,9 +1422,9 @@ function useViewportHeight(): number {
   return height;
 }
 
-/** `prefers-reduced-motion` at first paint. */
+/** The effective reduced-motion read at first paint (upstream #642's pin). */
 function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  return effectiveReducedMotion();
 }
 
 /**

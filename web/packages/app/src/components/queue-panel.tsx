@@ -35,6 +35,7 @@ import { isMacPlatform } from "../state/shortcuts";
 import { useQueueStore } from "../state/queue-store-context";
 import { Tooltip } from "./ui/Tooltip";
 import { Lightbox } from "./lightbox";
+import { useEffectiveReducedMotion } from "../lib/reduced-motion";
 
 /**
  * The message-queue panel — the web peer of `crates/ui/src/queue.rs`
@@ -793,18 +794,10 @@ function QueueActionTooltip({
   return <Tooltip label={label} delay={350} popupClassName="queue-action-tooltip" trigger={trigger} />;
 }
 
-/** `prefers-reduced-motion` as live state (the row slides snap under it). */
+/**
+ * The effective reduced-motion flag as live state (the row slides snap under
+ * it) — the pin over the query (upstream #642).
+ */
 function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = (): void => setReduced(query.matches);
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
+  return useEffectiveReducedMotion();
 }

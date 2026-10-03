@@ -3,6 +3,7 @@ import type { Appearance } from "@roboco/theme";
 import type { NewThreadBackgroundEffect, NewThreadComposerBackground } from "./ui-settings";
 import { AppearanceStore, type AppearancePreferences, resolveAppearance } from "../lib/appearance-store";
 import { applyAppearanceToDocument, applyConversationWidthToDocument, applyTypographyToDocument } from "../theme";
+import { effectiveReducedMotion } from "../lib/reduced-motion";
 import { Readiness, resolveNewThreadBackground } from "../lib/new-thread-background";
 import { prepareNewThreadBackgroundEffects } from "../lib/new-thread-background-effects";
 import { uiSettings, type UiSettingsStore } from "./ui-settings";
@@ -99,13 +100,9 @@ export interface NewThreadArtworkStoreOptions {
   readonly reducedMotion?: () => boolean;
 }
 
-/** `prefers-reduced-motion` right now (the store reads it per evaluation). */
+/** The effective reduced-motion read (the pin over the query, #642). */
 function prefersReducedMotionNow(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+  return effectiveReducedMotion();
 }
 
 /** rAF while fading (shell.rs:5884-5886); environments without rAF never advance. */

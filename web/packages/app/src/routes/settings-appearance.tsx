@@ -83,7 +83,12 @@ import {
   type NewThreadBackgroundAdjustment,
   type NewThreadComposerBackground,
 } from "../state/ui-settings";
-
+import {
+  REDUCE_MOTION_CHOICES,
+  reduceMotionHelper,
+  reduceMotionLabel,
+} from "../lib/appearance-store";
+import { mediaPrefersReducedMotion } from "../lib/reduced-motion";
 
 /**
  * Appearance settings (desktop settings/appearance.rs parity): the
@@ -458,6 +463,29 @@ export function AppearanceSettingsPage() {
             </p>
           </div>
         )}
+        <div className="settings-row">
+          <RowTile icon="tuning" />
+          <div className="settings-row-main">
+            <span className="settings-row-title">Reduce motion</span>
+            <MetaLine fragments={[reduceMotionHelper(settings.reduceMotion, mediaPrefersReducedMotion())]} />
+          </div>
+          <div className="settings-effect-choices" role="radiogroup" aria-label="Reduce motion">
+            {REDUCE_MOTION_CHOICES.map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                role="radio"
+                aria-checked={settings.reduceMotion === choice}
+                className={`choice choice-effect ${settings.reduceMotion === choice ? "choice-selected" : ""}`}
+                onClick={() => {
+                  appearanceStore.setReduceMotion(choice);
+                }}
+              >
+                {reduceMotionLabel(choice)}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="settings-row">
           <RowTile icon="folderWithFiles" />
           <div className="settings-row-main">
