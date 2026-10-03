@@ -102,9 +102,10 @@ export function subagentIndicator(row: SubagentRow): ChatIndicator {
 }
 
 /**
- * The active chat's subagents, most recently updated first (later spawns
- * lead within one turn), one row per subagent doc — `subagent_rows`
- * (sections.rs:190-227, upstream #568). A reopened (steered) subagent
+ * The active chat's subagents, one row per subagent doc: running ones
+ * first, longest-running leading, then the settled ones most recently
+ * updated first (later spawns lead within one turn) — `subagent_rows`
+ * (sections.rs, upstream #568 + #638). A reopened (steered) subagent
  * updates its row in place. The caller passes the ACTIVE chat's transcript
  * entries (the desktop's `state.selected_chat` gate is the host's store
  * choice); only genuine spawn chips with a stamped doc ref qualify.
@@ -137,7 +138,18 @@ export function subagentRows(entries: readonly SessionMessageEntry[]): SubagentR
   // on top (sections.rs, upstream #568).
   rows.reverse();
   rows.sort((a, b) => b.spawnedAt - a.spawnedAt);
-  return rows;
+  // Running subagents lead, longest-running first: one started long ago is
+  // buried under everything spawned since, and is the one to find and steer.
+  // Oldest-first also keeps the group still as new subagents join at its
+  // foot. The settled tail keeps the newest-first order above (upstream
+  // #638).
+  const running = rows.filter((row) => row.status === "running");
+  const settled = rows.filter((row) => row.status !== "running");
+  // Ties keep spawn order, like the group's oldest-first order. JS `sort` is
+  // stable, mirroring the Rust stable sort by key.
+  running.reverse();
+  running.sort((a, b) => a.spawnedAt - b.spawnedAt);
+  return [...running, ...settled];
 }
 
 // ── Child chat rows ─────────────────────────────────────────────────────────
