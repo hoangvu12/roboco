@@ -7292,6 +7292,177 @@ button.files-row-search:hover.files-row-active {
   display: block;
 }
 
+/* ── Files tree mutations (files/tree+rename+context_menu+drag.rs) ──────── */
+
+/* The root drop row above the tree (drag.rs render_tree_root_target): the
+ * same 24px band the desktop renders, faint label, active wash while a
+ * compatible drag targets the workspace root. */
+.files-tree-root-target {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--rb-text-muted);
+  font-size: 10.5px;
+  cursor: default;
+}
+
+.files-tree-root-label {
+  white-space: nowrap;
+}
+
+/* A row the drag currently targets (drag.rs destination highlight). */
+.files-row-drop-target {
+  background: rgb(var(--rb-wash) / 0.18);
+  color: var(--rb-text);
+}
+
+/* The inline rename field (rename.rs): the row's own box with the accent
+ * hairline and the input-glass fill; focus stays in the field. */
+.files-tree-rename {
+  flex: 1;
+  min-width: 0;
+  height: 23px;
+  margin-right: 8px;
+  padding: 0 4px;
+  border: 1px solid var(--rb-accent);
+  border-radius: 4px;
+  background: var(--rb-surface-input-glass);
+  color: var(--rb-text);
+  font: inherit;
+}
+
+/* The shared context menu (context_menu.rs): the popup-card treatment. */
+.files-tree-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: var(--rb-radius-md);
+  background: var(--rb-raised);
+  box-shadow: var(--rb-shadow-lg);
+  padding: 4px;
+}
+
+.files-tree-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--rb-text);
+  font-size: 11.5px;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.files-tree-menu-row:hover:not(:disabled) {
+  background: rgb(var(--rb-wash) / 0.1);
+}
+
+.files-tree-menu-row:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.files-tree-menu-danger {
+  color: var(--rb-danger);
+}
+
+.files-tree-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--rb-border);
+}
+
+/* The delete confirmation (rename.rs): modal scrim + dialog card. */
+.files-tree-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / var(--rb-scrim-alpha));
+}
+
+.files-tree-dialog {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--rb-border-strong);
+  border-radius: var(--rb-radius-lg);
+  background: var(--rb-raised);
+  padding: 18px;
+}
+
+.files-tree-dialog h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--rb-text);
+}
+
+.files-tree-dialog p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--rb-text-muted);
+}
+
+.files-tree-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.files-tree-dialog-cancel,
+.files-tree-dialog-delete {
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.files-tree-dialog-cancel {
+  border: 1px solid var(--rb-border);
+  background: rgb(var(--rb-wash) / 0.12);
+  color: var(--rb-text);
+}
+
+.files-tree-dialog-delete {
+  border: none;
+  background: var(--rb-danger);
+  color: var(--rb-raised);
+}
+
+/* The mutation error row (mod.rs mutation_error → error_row). */
+.files-mutation-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--rb-danger-fill);
+  color: var(--rb-danger);
+  font-size: 11.5px;
+}
+
+.files-mutation-dismiss {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ── Files viewer: the promoted editor presentation (preview.rs) ────────── */
 
 /* The pane-hosted viewer shell (the `file` surface body). */
@@ -7593,6 +7764,21 @@ button.files-save-pill:hover {
   background: color-mix(in srgb, var(--rb-warning) 4.5%, transparent);
   font-size: 10px;
   color: var(--rb-warning-muted);
+}
+
+/* The read-only line an outside (link-opened host) file shows above its
+   content — the truncated-preview row's shape with the muted foreground
+   (preview.rs `outside_read_only_row`). */
+.files-outside-banner {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rb-border);
+  background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+  font-size: 10px;
+  color: var(--rb-text-muted);
 }
 
 /* ── Centered states ───────────────────────────────────────────────────── */

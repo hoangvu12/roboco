@@ -1,7 +1,9 @@
 import {
   MAX_WORKSPACE_IMAGE_BYTES,
   WORKSPACE_IMAGE_CHUNK_BYTES,
+  type DeleteWorkspaceEntryRequest,
   type ListWorkspaceDirectoryRequest,
+  type MoveWorkspaceEntryRequest,
   type ReadWorkspaceFileRequest,
   type ReadWorkspaceImageRequest,
   type SearchWorkspaceFilesRequest,
@@ -12,6 +14,7 @@ import {
   type WorkspaceFileText,
   type WorkspaceGitStatusFrame,
   type WorkspaceImageChunk,
+  type WorkspaceMutationOutcome,
   type WriteWorkspaceFileOutcome,
   type WriteWorkspaceFileRequest,
 } from "@roboco/proto";
@@ -92,6 +95,21 @@ export class WorkspaceFilesClient {
     return this.#caller.call(methods.WRITE_WORKSPACE_FILE, { ...this.#target, ...request });
   }
 
+  /** Structural mutations (client.rs move_entry/delete_entry): carried
+   *  with the target's remote addressing, never retried on transport
+   *  errors — the host is authoritative for whether they landed. */
+  moveEntry(
+    request: Omit<MoveWorkspaceEntryRequest, "spaceId" | "chatId" | "checkoutPath">,
+  ): Promise<WorkspaceMutationOutcome> {
+    return this.#caller.call(methods.MOVE_WORKSPACE_ENTRY, { ...this.#target, ...request });
+  }
+
+  deleteEntry(
+    request: Omit<DeleteWorkspaceEntryRequest, "spaceId" | "chatId" | "checkoutPath">,
+  ): Promise<WorkspaceMutationOutcome> {
+    return this.#caller.call(methods.DELETE_WORKSPACE_ENTRY, { ...this.#target, ...request });
+  }
+
   /** The watch request body for `EngineClient.watch(WATCH_WORKSPACE_FILES, …)`. */
   watchParams(): WatchWorkspaceFilesRequest {
     return { ...this.#target };
@@ -120,7 +138,9 @@ export class WorkspaceFilesClient {
    * must stay consistent across chunks or the read fails.
    */
   async readImage(path: string, expectedCheckoutId: string): Promise<WorkspaceImage> {
-    if (expectedCheckoutId.length === 0) {
+    // Outside files carry no checkout identity — the device resolves them
+    // by absolute path (files/client.rs).
+    if (expectedCheckoutId.length === 0 && !path.startsWith("/")) {
       throw new Error("Workspace checkout identity unavailable");
     }
     const parts: Uint8Array[] = [];
@@ -185,6 +205,11 @@ export function describeFilesError(error: unknown): string {
   if (error instanceof RpcError) {
     if (error.kind === "transport") {
       return "Engine is offline; reconnecting";
+    }
+    // A missing file shows its own wording — the transport's RPC framing
+    // never reaches the reader (preview.rs `read_error_message`).
+    if (error.message === "file not found") {
+      return "File not found.";
     }
     return error.message;
   }

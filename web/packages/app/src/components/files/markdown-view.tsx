@@ -385,6 +385,13 @@ function MdLink({
   readonly children: ReactNode;
 }) {
   const target = markdownLinkTarget(href);
+  // A preview of a file beyond the workspace renders its local links as
+  // plain text: they would resolve against the linking chat's checkout,
+  // not the document's own folder (markdown_preview.rs
+  // `strip_outside_links`). Web links keep their normal handling.
+  if (target.kind === "workspace" && documentPath.startsWith("/")) {
+    return <>{children}</>;
+  }
   if (target.kind === "external") {
     return (
       <a className="md-link" href={target.href} target="_blank" rel="noreferrer noopener">

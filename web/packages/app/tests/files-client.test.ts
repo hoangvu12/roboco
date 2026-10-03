@@ -160,4 +160,57 @@ describe("WorkspaceFilesClient", () => {
     expect(calls).toBe(maxChunks + 1);
     expect(WORKSPACE_IMAGE_CHUNK_BYTES).toBeGreaterThan(0);
   });
+
+  it("structural mutations carry the target and consent, exactly once per call", async () => {
+    // A transport that never answers: the call fails ONCE (never retried).
+    let calls = 0;
+    const transport = caller(() => {
+      calls += 1;
+      return Promise.reject(new Error("reply lost"));
+    });
+    const client = new WorkspaceFilesClient(transport, { chatId: "chat-1" });
+    await expect(
+      client.moveEntry({
+        operationId: "op-1",
+        expectedCheckoutId: "checkout-1",
+        sourcePath: "a",
+        destinationPath: "folder/a",
+        expectedSourceRevision: "rev",
+        expectedKind: "file",
+      }),
+    ).rejects.toThrow("reply lost");
+    expect(calls).toBe(1);
+    expect(transport.calls).toHaveLength(1);
+    expect(transport.calls[0]?.method).toBe(methods.MOVE_WORKSPACE_ENTRY);
+    expect(transport.calls[0]?.params).toMatchObject({
+      chatId: "chat-1",
+      operationId: "op-1",
+      expectedCheckoutId: "checkout-1",
+      sourcePath: "a",
+      destinationPath: "folder/a",
+      expectedSourceRevision: "rev",
+      expectedKind: "file",
+    });
+  });
+
+  it("deleteEntry sends the consented recursive flag with the target", async () => {
+    const transport = caller(() => ({ status: "rejected", operationId: "op-2", reason: "sourceChanged", message: "Entry changed" }));
+    const client = new WorkspaceFilesClient(transport, { spaceId: "space-1" });
+    await expect(
+      client.deleteEntry({
+        operationId: "op-2",
+        expectedCheckoutId: "checkout-1",
+        path: "folder",
+        expectedSourceRevision: "rev",
+        expectedKind: "directory",
+        recursive: true,
+      }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "sourceChanged" });
+    expect(transport.calls[0]?.method).toBe(methods.DELETE_WORKSPACE_ENTRY);
+    expect(transport.calls[0]?.params).toMatchObject({
+      spaceId: "space-1",
+      path: "folder",
+      recursive: true,
+    });
+  });
 });

@@ -2,4 +2,10 @@
 
 import type { WorkspaceFileChangeKind } from "./WorkspaceFileChangeKind";
 
-export type WorkspaceFileChange = { kind: WorkspaceFileChangeKind, path: string, oldPath?: string | null, };
+export type WorkspaceFileChange = { 
+/**
+ * The mutation RPC that produced this change, when the host published
+ * it (external filesystem events never carry one). Lets the UI match
+ * a semantic event against its own operation, idempotently.
+ */
+operationId?: string | null, kind: WorkspaceFileChangeKind, path: string, oldPath?: string | null, };

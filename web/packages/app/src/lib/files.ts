@@ -99,6 +99,8 @@ export function readOnlyMessage(reason: WorkspaceReadOnlyReason | null): string 
       return "This file is too large to preview.";
     case "mixedLineEndings":
       return "Files with mixed line endings are read-only.";
+    case "outsideWorkspace":
+      return "Read-only: outside this chat's folder.";
     case "notRegularFile":
     case null:
       return "This file cannot be previewed.";

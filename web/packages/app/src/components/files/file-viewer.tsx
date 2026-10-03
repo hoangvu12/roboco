@@ -77,9 +77,24 @@ export function FileSurface({ chatId, surfaceId }: { chatId: string; surfaceId: 
           document.markDeleted();
         } else if (event.kind === "created") {
           document.restore();
+        } else if (event.kind === "renamed" && event.oldPath !== event.path) {
+          // `rename_documents` (preview.rs): a mutation (or watcher rename)
+          // retargets the live document — the tab keeps its id and buffer,
+          // only its path and title change. Descendants of a renamed
+          // directory follow the same prefix remap.
+          if (document.path === event.oldPath) {
+            document.rename(event.path);
+          } else if (
+            document.path.startsWith(`${event.oldPath}/`)
+          ) {
+            document.rename(`${event.path}${document.path.slice(event.oldPath.length)}`);
+          }
+          const newDocumentPath = document.path;
+          if (newDocumentPath !== path) {
+            fileDocuments.renameSurfacePath(surfaceId, path, newDocumentPath);
+            rightPaneStore.renameFileSurface(surfaceId, path, newDocumentPath);
+          }
         }
-        // `renamed` handling is not wired on web yet — the tab title keeps
-        // the old path until the surface reopens (see ticket Comments).
       },
     });
     model.start();
@@ -180,7 +195,9 @@ function ViewerToolbar({
   readonly onRetrySave: (() => void) | null;
 }) {
   const appearance = useResolvedAppearance();
-  const parts = path.split("/");
+  // Outside paths are absolute: the empty crumb before their leading slash
+  // is not a segment (preview.rs `render_breadcrumb`).
+  const parts = path.split("/").filter((part) => part.length > 0);
   return (
     <div className="files-breadcrumb-bar">
       <FileIcon kind="file" name={path} appearance={appearance} size={14} className="files-breadcrumb-icon" />
@@ -568,6 +585,11 @@ function TextViewer({
             doc?.keepEditing();
           }}
         />
+        {snapshot.phase.kind === "readOnly" && snapshot.phase.reason === "outsideWorkspace" && (
+          <div className="files-outside-banner" role="status">
+            {readOnlyMessage("outsideWorkspace")}
+          </div>
+        )}
         <div className="files-viewer-body">{body}</div>
       </div>
     </div>

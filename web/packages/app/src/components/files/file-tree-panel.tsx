@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -14,7 +15,15 @@ import type { Appearance } from "@roboco/theme";
 import type { WorkspaceFileSearchMatch } from "@roboco/proto";
 import { buildSearchTree, isSearchNodeExpanded, toggleSearchNode, type SearchTree, type SearchTreeRow } from "../../lib/file-search-tree";
 import { resolveDirectoryIcon, resolveFileIcon } from "../../lib/file-icons";
-import type { FileTreeModel, FileTreeSnapshot, TreeRow } from "../../lib/file-tree";
+import {
+  absoluteWorkspacePath,
+  destinationPath,
+  nameSelection,
+  renamedPath,
+  type FileTreeModel,
+  type FileTreeSnapshot,
+  type TreeRow,
+} from "../../lib/file-tree";
 import type { WorkspaceFilesClient } from "../../lib/files-client";
 import { describeFilesError } from "../../lib/files-client";
 import { useResolvedAppearance } from "../../state/appearance";
@@ -54,6 +63,8 @@ export function FileTreePanel({
   client,
   onOpenFile,
   gitStatus,
+  workspaceRoot = null,
+  onAddToChat,
 }: {
   model: FileTreeModel;
   client: WorkspaceFilesClient;
@@ -67,6 +78,12 @@ export function FileTreePanel({
     onItem: (frame: { status: { files: { path: string; index: string; worktree: string }[] } | null }) => void;
     onEnd?: (error?: unknown) => void;
   }) => { cancel(): void };
+  /** The owning workspace's root (`chat.cwd`) — Copy path builds the full
+   *  path in the HOST's format, even when browsing a remote workspace. */
+  workspaceRoot?: string | null;
+  /** `Add to chat` (context_menu.rs): insert a workspace reference into the
+   *  chat's draft. The host page wires the composer insert. */
+  onAddToChat?: (path: string, isDirectory: boolean) => void;
 }) {
   const subscribe = useCallback((listener: () => void) => model.subscribe(listener), [model]);
   const getSnapshot = useCallback(() => model.getSnapshot(), [model]);
@@ -104,6 +121,12 @@ export function FileTreePanel({
 
   const includeIgnored = snapshot.includeIgnored;
   const trimmed = query.trim();
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  // The directory a compatible drag currently hovers (drag.rs TreeDrag):
+  // null while no drop target is active.
+  const [dropDirectory, setDropDirectory] = useState<string | null>(null);
 
   /** The input's search keys (the ComposerInput's mention/submit events). */
   const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>): void => {
@@ -167,6 +190,33 @@ export function FileTreePanel({
           </button>
         </div>
       )}
+      {snapshot.mutationError !== null && (
+        <div className="files-mutation-error" role="alert">
+          <span>{snapshot.mutationError}</span>
+          <button type="button" className="files-mutation-dismiss" onClick={() => model.dismissMutationError()}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {menu !== null && (
+        <TreeContextMenu
+          model={model}
+          path={menu.path}
+          position={{ x: menu.x, y: menu.y }}
+          workspaceRoot={workspaceRoot}
+          onAddToChat={onAddToChat}
+          onRename={() => setRenaming(menu.path)}
+          onDelete={() => setDeleting(menu.path)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {deleting !== null && (
+        <TreeDeleteDialog
+          model={model}
+          path={deleting}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
       {trimmed.length > 0 ? (
         <SearchResults
           model={model}
@@ -188,7 +238,22 @@ export function FileTreePanel({
       ) : !snapshot.rootLoaded ? (
         <div className="files-placeholder" />
       ) : (
-        <TreeList model={model} snapshot={snapshot} appearance={appearance} onOpenFile={onOpenFile} />
+        <TreeList
+          model={model}
+          snapshot={snapshot}
+          appearance={appearance}
+          onOpenFile={onOpenFile}
+          renaming={renaming}
+          onRename={(path) => setRenaming(path)}
+          onRenameEnd={() => setRenaming(null)}
+          onDelete={(path) => setDeleting(path)}
+          onContextMenu={(path, x, y) => {
+            setRenaming(null);
+            setMenu({ path, x, y });
+          }}
+          dropDirectory={dropDirectory}
+          setDropDirectory={setDropDirectory}
+        />
       )}
     </div>
   );
@@ -201,11 +266,26 @@ function TreeList({
   snapshot,
   appearance,
   onOpenFile,
+  renaming,
+  onRename,
+  onRenameEnd,
+  onDelete,
+  onContextMenu,
+  dropDirectory,
+  setDropDirectory,
 }: {
   model: FileTreeModel;
   snapshot: FileTreeSnapshot;
   appearance: Appearance;
   onOpenFile: (path: string) => void;
+  /** The path being renamed inline, or null. */
+  renaming: string | null;
+  onRename: (path: string) => void;
+  onRenameEnd: () => void;
+  onDelete: (path: string) => void;
+  onContextMenu: (path: string, x: number, y: number) => void;
+  dropDirectory: string | null;
+  setDropDirectory: (directory: string | null) => void;
 }) {
   const listRef = useRef<HTMLUListElement | null>(null);
 
@@ -225,10 +305,35 @@ function TreeList({
     }
   }, [selected, rows]);
 
-  /** `on_tree_key_down` (tree.rs:300-357). */
+  /** `on_tree_key_down` (tree.rs:300-357, plus the mutation keys). */
   const onKeyDown = (event: ReactKeyboardEvent<HTMLUListElement>): void => {
     let handled = false;
     switch (event.key) {
+      case "F2": {
+        const path = model.selected();
+        if (path !== null) {
+          onRename(path);
+        }
+        handled = true;
+        break;
+      }
+      case "Delete": {
+        const path = model.selected();
+        if (path !== null) {
+          onDelete(path);
+        }
+        handled = true;
+        break;
+      }
+      case "ContextMenu": {
+        const path = model.selected();
+        if (path !== null) {
+          const rect = listRef.current?.getBoundingClientRect();
+          onContextMenu(path, rect?.left ?? 0, rect?.top ?? 0);
+        }
+        handled = true;
+        break;
+      }
       case "ArrowUp":
         model.selectPrevious();
         handled = true;
@@ -281,7 +386,47 @@ function TreeList({
   };
 
   return (
-    <ul ref={listRef} className="files-tree" role="tree" aria-label="Files" tabIndex={0} onKeyDown={onKeyDown}>
+    <ul
+      ref={listRef}
+      className="files-tree"
+      role="tree"
+      aria-label="Files"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      onDragOver={(event) => {
+        if (!treeDropActive(event)) {
+          return;
+        }
+        // The empty space below the rows targets the workspace root
+        // (drag.rs drop_directory_at).
+        if (event.target === event.currentTarget) {
+          setDropDirectory("");
+        }
+      }}
+      onDragLeave={(event) => {
+        if (event.target === event.currentTarget) {
+          setDropDirectory(null);
+        }
+      }}
+      onDrop={(event) => {
+        const source = treeDropPayload(event);
+        if (source === null) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        setDropDirectory(null);
+        const destination = destinationPath(source.path, "", source.isDirectory);
+        if (destination !== null) {
+          void model.moveEntry(source.path, destination);
+        }
+      }}
+    >
+      <li role="none" className={dropDirectory === "" ? "files-row files-tree-root-target files-row-drop-target" : "files-row files-tree-root-target"} aria-hidden={false}>
+        <span className="files-tree-root-label">
+          {dropDirectory !== null ? "Move to workspace root" : "Workspace root"}
+        </span>
+      </li>
       {rows.map((row, index) => (
         <TreeRowView
           key={row.path}
@@ -291,6 +436,12 @@ function TreeList({
           snapshot={snapshot}
           appearance={appearance}
           onOpenFile={onOpenFile}
+          renaming={renaming}
+          onRename={onRename}
+          onRenameEnd={onRenameEnd}
+          onContextMenu={onContextMenu}
+          dropDirectory={dropDirectory}
+          setDropDirectory={setDropDirectory}
         />
       ))}
     </ul>
@@ -330,6 +481,12 @@ function TreeRowView({
   snapshot,
   appearance,
   onOpenFile,
+  renaming,
+  onRename,
+  onRenameEnd,
+  onContextMenu,
+  dropDirectory,
+  setDropDirectory,
 }: {
   row: TreeRow;
   index: number;
@@ -337,6 +494,12 @@ function TreeRowView({
   snapshot: FileTreeSnapshot;
   appearance: Appearance;
   onOpenFile: (path: string) => void;
+  renaming: string | null;
+  onRename: (path: string) => void;
+  onRenameEnd: () => void;
+  onContextMenu: (path: string, x: number, y: number) => void;
+  dropDirectory: string | null;
+  setDropDirectory: (directory: string | null) => void;
 }) {
   const selected = snapshot.selected === row.path;
   switch (row.kind) {
@@ -344,15 +507,20 @@ function TreeRowView({
       const entry = row.entry;
       const isDirectory = entry.kind === "directory";
       const git = snapshot.gitStatus.get(row.path);
+      const isDropTarget = isDirectory && dropDirectory === row.path;
       const classes = [
         "files-row",
         selected ? "files-row-active" : "",
         entry.ignored ? "files-row-ignored" : "",
+        isDropTarget ? "files-row-drop-target" : "",
       ]
         .filter((name) => name.length > 0)
         .join(" ");
       return (
         <li role="treeitem" aria-expanded={isDirectory ? row.expanded : undefined} aria-selected={selected}>
+          {renaming === row.path && row.kind === "entry" ? (
+            <InlineRename model={model} row={row} onDone={onRenameEnd} />
+          ) : (
           <button
             type="button"
             className={classes}
@@ -362,6 +530,33 @@ function TreeRowView({
             draggable
             onDragStart={(event) => beginRowDrag(event, row.path, isDirectory, appearance)}
             onClick={() => activateTreePath(model, snapshot.rows, row.path, onOpenFile)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              model.select(row.path);
+              onContextMenu(row.path, event.clientX, event.clientY);
+            }}
+            onDragOver={(event) => {
+              if (!treeDropActive(event)) {
+                return;
+              }
+              setDropDirectory(isDirectory ? row.path : (parentOf(row.path) ?? ""));
+            }}
+            onDragLeave={() => setDropDirectory(null)}
+            onDrop={(event) => {
+              const source = treeDropPayload(event);
+              if (source === null) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              setDropDirectory(null);
+              const directory = isDirectory ? row.path : (parentOf(row.path) ?? "");
+              const destination = destinationPath(source.path, directory, source.isDirectory);
+              if (destination !== null) {
+                void model.moveEntry(source.path, destination);
+              }
+            }}
           >
             {/* Theme-aware indentation guides (c4d63fa8, tree.rs). */}
             {row.depth > 0 && (
@@ -377,6 +572,7 @@ function TreeRowView({
             <FileIcon className="files-row-icon" kind={entry.kind} name={entry.name} expanded={row.expanded} appearance={appearance} />
             <span className="files-row-name">{entry.name}</span>
           </button>
+          )}
         </li>
       );
     }
@@ -454,7 +650,7 @@ function beginRowDrag(
   isDirectory: boolean,
   appearance: Appearance,
 ): void {
-  event.dataTransfer.setData("application/x-roboco-workspace-path", JSON.stringify({ path, isDirectory }));
+  event.dataTransfer.setData(WORKSPACE_DRAG_MIME, JSON.stringify({ path, isDirectory }));
   event.dataTransfer.setData("text/plain", path);
   event.dataTransfer.effectAllowed = "copyLink";
 
@@ -473,6 +669,288 @@ function beginRowDrag(
   document.body.append(ghost);
   event.dataTransfer.setDragImage(ghost, 10, 12);
   window.setTimeout(() => ghost.remove(), 0);
+}
+
+// ── Tree mutations: context menu, rename, delete, drop targets ─────────────
+
+/** The workspace-path drag's payload (the desktop's `WorkspacePathDrag`
+ *  JSON). Our own rows write it in `beginRowDrag`. */
+interface WorkspaceDragPayload {
+  readonly path: string;
+  readonly isDirectory: boolean;
+}
+
+const WORKSPACE_DRAG_MIME = "application/x-roboco-workspace-path";
+
+function treeDropPayload(event: DragEvent<HTMLElement>): WorkspaceDragPayload | null {
+  const raw = event.dataTransfer.getData(WORKSPACE_DRAG_MIME);
+  if (raw.length === 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(raw) as Partial<WorkspaceDragPayload>;
+    if (typeof value.path !== "string" || typeof value.isDirectory !== "boolean") {
+      return null;
+    }
+    return { path: value.path, isDirectory: value.isDirectory };
+  } catch {
+    return null;
+  }
+}
+
+function treeDropActive(event: DragEvent<HTMLElement>): boolean {
+  return event.dataTransfer.types.includes(WORKSPACE_DRAG_MIME);
+}
+
+function parentOf(path: string): string | null {
+  const slash = path.lastIndexOf("/");
+  return slash > 0 ? path.slice(0, slash) : path.includes("/") ? "" : null;
+}
+
+/** `begin_tree_rename`/`render_tree_rename` (rename.rs): a single-line input
+ *  in the row, seeded with the name (basename selected, extension kept). */
+function InlineRename({
+  model,
+  row,
+  onDone,
+}: {
+  model: FileTreeModel;
+  row: TreeRow & { kind: "entry" };
+  onDone: () => void;
+}) {
+  const entry = row.entry;
+  const isDirectory = entry.kind === "directory";
+  const [value, setValue] = useState(entry.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const input = inputRef.current;
+    if (input === null) {
+      return;
+    }
+    input.focus();
+    const selection = nameSelection(entry.name, isDirectory);
+    input.setSelectionRange(selection.start, selection.end);
+  }, [entry.name, isDirectory]);
+
+  const submit = (): void => {
+    const destination = renamedPath(row.path, value.trim());
+    if (destination === null || destination === row.path) {
+      onDone();
+      return;
+    }
+    onDone();
+    void model.moveEntry(row.path, destination);
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      className="files-tree-rename"
+      style={{ marginLeft: `${8 + row.depth * TREE_INDENT}px` }}
+      value={value}
+      aria-label={`Rename ${entry.name}`}
+      spellCheck={false}
+      autoComplete="off"
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={submit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          submit();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onDone();
+        }
+      }}
+      onClick={(event) => event.stopPropagation()}
+    />
+  );
+}
+
+/** The shared tree context menu (context_menu.rs): Add to chat, Copy path,
+ *  Rename…, Delete… — delete styled destructive, mutation rows disabled
+ *  without capability/revision. */
+function TreeContextMenu({
+  model,
+  path,
+  position,
+  workspaceRoot,
+  onAddToChat,
+  onRename,
+  onDelete,
+  onClose,
+}: {
+  model: FileTreeModel;
+  path: string;
+  position: { x: number; y: number };
+  workspaceRoot: string | null;
+  onAddToChat?: (path: string, isDirectory: boolean) => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const entry = model.entry(path);
+  // Close on outside pointer or Escape, like the desktop's dismissal.
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent): void => {
+      if (ref.current !== null && !ref.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [onClose]);
+
+  const isDirectory = entry?.kind === "directory";
+  const canRename = model.canMutate(path, false);
+  const canDelete = model.canMutate(path, true);
+  const copy = (): void => {
+    const full =
+      workspaceRoot !== null
+        ? absoluteWorkspacePath(workspaceRoot, path)
+        : path;
+    void navigator.clipboard?.writeText(full);
+    onClose();
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="files-tree-menu"
+      role="menu"
+      aria-label="File actions"
+      style={{ left: position.x, top: position.y }}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        className="files-tree-menu-row"
+        onClick={() => {
+          onAddToChat?.(path, isDirectory);
+          onClose();
+        }}
+      >
+        <Icon name="chatRoundLine" size={16} />
+        <span>Add to chat</span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="files-tree-menu-row"
+        title="Copy full path"
+        onClick={copy}
+      >
+        <Icon name="copy" size={16} />
+        <span>Copy path</span>
+      </button>
+      <div className="files-tree-menu-separator" role="separator" />
+      <button
+        type="button"
+        role="menuitem"
+        className="files-tree-menu-row"
+        disabled={!canRename}
+        onClick={() => {
+          onRename();
+          onClose();
+        }}
+      >
+        <Icon name="pen" size={16} />
+        <span>Rename…</span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="files-tree-menu-row files-tree-menu-danger"
+        disabled={!canDelete}
+        onClick={() => {
+          onDelete();
+          onClose();
+        }}
+      >
+        <Icon name="trashBinMinimalistic" size={16} />
+        <span>Delete…</span>
+      </button>
+    </div>
+  );
+}
+
+/** `render_tree_delete` (rename.rs): permanent-delete confirmation, cancel
+ *  initially selected, only the entry NAME in the copy. */
+function TreeDeleteDialog({
+  model,
+  path,
+  onCancel,
+}: {
+  model: FileTreeModel;
+  path: string;
+  onCancel: () => void;
+}) {
+  const entry = model.entry(path);
+  const isDirectory = entry?.kind === "directory";
+  const name = path.split("/").pop() ?? path;
+  const [confirmRef, setConfirmRef] = useState<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    confirmRef?.focus();
+  }, [confirmRef]);
+
+  const confirm = (): void => {
+    onCancel();
+    void model.deleteEntry(path);
+  };
+
+  return (
+    <div className="files-tree-dialog-backdrop" role="presentation">
+      <div
+        className="files-tree-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="files-tree-dialog-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel();
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            event.stopPropagation();
+            confirm();
+          }
+        }}
+      >
+        <h3 id="files-tree-dialog-title">Delete permanently?</h3>
+        <p>
+          Permanently delete {name}?{" "}
+          {isDirectory ? "All current folder contents will be deleted. " : "This cannot be undone. "}
+          Open editor buffers will be kept for recovery.
+        </p>
+        <div className="files-tree-dialog-actions">
+          <button type="button" className="files-tree-dialog-cancel" autoFocus onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="files-tree-dialog-delete"
+            ref={setConfirmRef}
+            onClick={confirm}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────

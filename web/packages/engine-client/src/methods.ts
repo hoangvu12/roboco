@@ -115,6 +115,10 @@ export const SEARCH_WORKSPACE_FILES = "SearchWorkspaceFiles";
 export const READ_WORKSPACE_FILE = "ReadWorkspaceFile";
 export const READ_WORKSPACE_IMAGE = "ReadWorkspaceImage";
 export const WRITE_WORKSPACE_FILE = "WriteWorkspaceFile";
+/** Structural entry mutations (crates/proto WorkspaceMutation*): move
+ *  without replacement (rename shares it) and consent-guarded delete. */
+export const MOVE_WORKSPACE_ENTRY = "MoveWorkspaceEntry";
+export const DELETE_WORKSPACE_ENTRY = "DeleteWorkspaceEntry";
 /** The one workspace stream; items are `WorkspaceFileChanges` frames. */
 export const WATCH_WORKSPACE_FILES = "WatchWorkspaceFiles";
 

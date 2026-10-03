@@ -7,6 +7,7 @@ import {
   autolinkRuns,
   bareUrlLen,
   closeHanging,
+  fileNameLabel,
   findUrlStart,
   parseInline,
   parseMarkdown,
@@ -404,33 +405,218 @@ describe("per-line veil slicing for a code block", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolve_workspace_file_link", () => {
+  const link = (path: string, line: number | null, column: number | null) => ({
+    path,
+    line,
+    column,
+    outside: false,
+  });
+
   it("resolves relative, absolute and location links", () => {
     const root = "/work/comet";
-    expect(resolveWorkspaceFileLink("crates/ui/src/lib.rs", root)).toEqual({
-      path: "crates/ui/src/lib.rs",
+    expect(resolveWorkspaceFileLink("crates/ui/src/lib.rs", root)).toEqual(
+      link("crates/ui/src/lib.rs", null, null),
+    );
+    expect(resolveWorkspaceFileLink("/work/comet/crates/ui/src/lib.rs:42:7", root)).toEqual(
+      link("crates/ui/src/lib.rs", 42, 7),
+    );
+    expect(resolveWorkspaceFileLink("file:///work/comet/README.md#L12", root)).toEqual(
+      link("README.md", 12, null),
+    );
+  });
+
+  it("decodes relative and absolute paths once (workspace_links.rs #606)", () => {
+    const root = "/work/comet";
+    for (const [target, path] of [
+      ["2026-09-26/Some%20Folder/it's%20here.txt", "2026-09-26/Some Folder/it's here.txt"],
+      [
+        "/work/comet/2026-09-26/Some%20Folder/it's%20here.txt",
+        "2026-09-26/Some Folder/it's here.txt",
+      ],
+      ["file:///work/comet/a%20b.md", "a b.md"],
+      ["%2Ehidden%2Ffile.rs", ".hidden/file.rs"],
+    ] as const) {
+      expect(resolveWorkspaceFileLink(target, root), target).toEqual(link(path, null, null));
+    }
+    // An escaped slash is just another byte of the decoded path.
+    expect(resolveWorkspaceFileLink("docs%2Fnote.md", root)).toEqual(link("docs/note.md", null, null));
+    // Outside absolute paths decode too.
+    expect(resolveWorkspaceFileLink("/tmp/Some%20Folder/it's%20here.txt", root)).toEqual({
+      path: "/tmp/Some Folder/it's here.txt",
       line: null,
       column: null,
+      outside: true,
     });
-    expect(resolveWorkspaceFileLink("/work/comet/crates/ui/src/lib.rs:42:7", root)).toEqual({
-      path: "crates/ui/src/lib.rs",
-      line: 42,
-      column: 7,
-    });
-    expect(resolveWorkspaceFileLink("file:///work/comet/README.md#L12", root)).toEqual({
-      path: "README.md",
-      line: 12,
+    // Broken escapes keep the raw spelling — a file literally named
+    // `a%zz.md` still resolves.
+    expect(resolveWorkspaceFileLink("a%zz.md", root)).toEqual(link("a%zz.md", null, null));
+    expect(resolveWorkspaceFileLink("a%2.md", root)).toEqual(link("a%2.md", null, null));
+    // A decode that would produce unsafe content never resolves.
+    expect(resolveWorkspaceFileLink("%2E%2E/secret.md", root)).toBeNull();
+    expect(resolveWorkspaceFileLink("a%5Cb.md", root)).toBeNull();
+    expect(resolveWorkspaceFileLink("a%00b.md", root)).toBeNull();
+  });
+
+  it("line forms all open at their first line (#606)", () => {
+    const root = "/work/comet";
+    for (const [target, line, column] of [
+      ["src/lib.rs#L12", 12, null],
+      ["src/lib.rs#L12C5", 12, 5],
+      ["src/lib.rs#L12-L20", 12, null],
+      ["src/lib.rs#L12-20", 12, null],
+      ["src/lib.rs#L12C1-L20C3", 12, 1],
+      ["src/lib.rs:12", 12, null],
+      ["src/lib.rs:12:5", 12, 5],
+      ["src/lib.rs:12-20", 12, null],
+    ] as const) {
+      expect(resolveWorkspaceFileLink(target, root), target).toEqual(
+        link("src/lib.rs", line, column),
+      );
+    }
+  });
+
+  it("zero lines and reversed ranges are not links (#606)", () => {
+    const root = "/work/comet";
+    for (const target of [
+      "src/lib.rs:0",
+      "src/lib.rs:0:5",
+      "src/lib.rs:12:0",
+      "src/lib.rs:0-4",
+      "src/lib.rs:4-0",
+      "src/lib.rs#L0",
+      "src/lib.rs#L0-L3",
+      "src/lib.rs#L20-L10",
+      "src/lib.rs#L5-3",
+      "src/lib.rs#L5-L3",
+    ]) {
+      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
+    }
+  });
+
+  it("unrecognized fragments drop without killing the link (#606)", () => {
+    const root = "/work/comet";
+    for (const [target, path] of [
+      ["docs/readme.md#install", "docs/readme.md"],
+      ["docs/readme.md#", "docs/readme.md"],
+      ["docs/a.md#v1.2", "docs/a.md"],
+    ] as const) {
+      expect(resolveWorkspaceFileLink(target, root), target).toEqual(link(path, null, null));
+    }
+    // A `#` inside the path stays a path character, not an anchor.
+    expect(resolveWorkspaceFileLink("docs/we#ird/file.md", root)).toEqual(
+      link("docs/we#ird/file.md", null, null),
+    );
+  });
+
+  it("absolute paths follow the strict shape (#606)", () => {
+    const root = "/work/comet";
+    // `//`, a bare root and a trailing slash are not file paths.
+    for (const target of ["//work/comet/a.md", "/", "/work/comet/", "/work/comet", "/other/dir/"]) {
+      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
+    }
+    // The dot rule: plain absolute paths need one in the file name.
+    expect(resolveWorkspaceFileLink("/usr/bin/ls", root)).toBeNull();
+    expect(resolveWorkspaceFileLink("/usr/local/bin", root)).toBeNull();
+    expect(resolveWorkspaceFileLink("/.config/env", root)).toBeNull();
+    expect(resolveWorkspaceFileLink("/usr/lib/libc.so", root)).toEqual({
+      path: "/usr/lib/libc.so",
+      line: null,
       column: null,
+      outside: true,
+    });
+    // `file://` paths are exempt from the dot rule.
+    expect(resolveWorkspaceFileLink("file:///usr/bin/ls", root)).toEqual({
+      path: "/usr/bin/ls",
+      line: null,
+      column: null,
+      outside: true,
+    });
+    expect(resolveWorkspaceFileLink("file:///work/comet/src", root)).toEqual(
+      link("src", null, null),
+    );
+    // A leading-dot file name counts for the dot rule too.
+    expect(resolveWorkspaceFileLink("/etc/.env", root)).toEqual({
+      path: "/etc/.env",
+      line: null,
+      column: null,
+      outside: true,
+    });
+    // `?` and control characters are never file paths.
+    for (const target of ["/tmp/a?b.md", "/tmp/a\nb.md"]) {
+      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
+    }
+    expect(resolveWorkspaceFileLink("/tmp/%3Fb.md", root)).toBeNull();
+  });
+
+  it("relative paths follow the strict shape (#606)", () => {
+    const root = "/work/comet";
+    for (const target of [
+      "~/notes.md",
+      "#section",
+      "?query.md",
+      "src/Makefile",
+      "Makefile",
+      "a:b/file.md",
+      "C:\\dir\\file.md",
+      "C:/dir/file.md",
+      "https://example.com/file.rs",
+      "mailto:dev@example.com",
+      "../secret.rs",
+      "src/../../secret.rs",
+      "src/./lib.rs",
+      "src//lib.rs",
+    ]) {
+      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
+    }
+    // A sibling directory sharing the root's prefix is outside it, so it
+    // resolves as a host file rather than into the workspace.
+    expect(resolveWorkspaceFileLink("/work/comet-other/src/lib.rs", root)).toEqual({
+      path: "/work/comet-other/src/lib.rs",
+      line: null,
+      column: null,
+      outside: true,
+    });
+    // Leading-dot relative names are files; mid-path dots do not count.
+    expect(resolveWorkspaceFileLink(".env", root)).toEqual(link(".env", null, null));
+    expect(resolveWorkspaceFileLink("docs/.env", root)).toEqual(link("docs/.env", null, null));
+    expect(resolveWorkspaceFileLink("docs.v2/readme", root)).toBeNull();
+  });
+
+  it("the file scheme requires an empty host (#606)", () => {
+    const root = "/work/comet";
+    for (const target of [
+      "file://localhost/work/comet/a.md",
+      "file://host/work/comet/a.md",
+      "file:///work/comet/a.md?query",
+      "file://a.md",
+    ]) {
+      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
+    }
+    expect(resolveWorkspaceFileLink("file:///work/comet/a%20b.md", root)).toEqual(
+      link("a b.md", null, null),
+    );
+  });
+
+  it("outside absolute paths resolve as host files (#606)", () => {
+    const root = "/work/comet";
+    expect(resolveWorkspaceFileLink("/tmp/elsewhere/INFORME.md", root)).toEqual({
+      path: "/tmp/elsewhere/INFORME.md",
+      line: null,
+      column: null,
+      outside: true,
+    });
+    expect(resolveWorkspaceFileLink("/tmp/elsewhere/INFORME.md:4:2", root)).toEqual({
+      path: "/tmp/elsewhere/INFORME.md",
+      line: 4,
+      column: 2,
+      outside: true,
     });
   });
 
   it("line ranges open at their first line (d1010657)", () => {
     const root = "/work/comet";
     for (const target of ["src/lib.rs#L10-L20", "src/lib.rs#L10-20"]) {
-      expect(resolveWorkspaceFileLink(target, root)).toEqual({
-        path: "src/lib.rs",
-        line: 10,
-        column: null,
-      });
+      expect(resolveWorkspaceFileLink(target, root)).toEqual(link("src/lib.rs", 10, null));
     }
     for (const target of [
       "src/lib.rs#L10-",
@@ -443,42 +629,36 @@ describe("resolve_workspace_file_link", () => {
   });
 
   it("resolves canonical file mentions", () => {
-    expect(resolveWorkspaceFileLink("roboco-file:src/a%20file.rs", "/work/comet")).toEqual({
-      path: "src/a file.rs",
-      line: null,
-      column: null,
-    });
+    expect(resolveWorkspaceFileLink("roboco-file:src/a%20file.rs", "/work/comet")).toEqual(
+      link("src/a file.rs", null, null),
+    );
     expect(resolveWorkspaceFileLink("roboco-file:src/%61.rs", "/work/comet")).toBeNull();
     expect(resolveWorkspaceFileLink("roboco-file:src/", "/work/comet")).toBeNull();
-  });
-
-  it("rejects external and unsafe targets", () => {
-    const root = "/work/comet";
-    for (const target of [
-      "https://example.com/file.rs",
-      "mailto:dev@example.com",
-      "/work/comet-other/src/lib.rs",
-      "/tmp/file.rs",
-      "../secret.rs",
-      "src/../../secret.rs",
-      "src/./lib.rs",
-      "src//lib.rs",
-    ]) {
-      expect(resolveWorkspaceFileLink(target, root), target).toBeNull();
-    }
+    // Mentions with dotted-less names keep resolving like before.
+    expect(resolveWorkspaceFileLink("roboco-file:Makefile", "/work/comet")).toEqual(
+      link("Makefile", null, null),
+    );
+    // An absolute mention resolves inside its root or not at all — it is
+    // never an outside link.
+    expect(resolveWorkspaceFileLink("roboco-file:/work/comet/a.md", "/work/comet")).toEqual(
+      link("a.md", null, null),
+    );
+    expect(resolveWorkspaceFileLink("roboco-file:/tmp/a.md", "/work/comet")).toBeNull();
   });
 
   it("drive letters are rejected (`:` anywhere in the path)", () => {
-    // Even a Windows-rooted target cannot survive the colon check.
+    // Even a Windows-rooted target cannot survive the scheme check.
     expect(resolveWorkspaceFileLink("C:/work/comet/src/lib.rs", "C:\\work\\comet")).toBeNull();
-    // POSIX-style roots and Windows drive roots do not mix either.
-    expect(resolveWorkspaceFileLink("/work/comet/src/lib.rs", "C:\\work\\comet")).toBeNull();
+    // POSIX-style roots and Windows drive roots do not mix: the target is
+    // not inside the root, so it resolves as an outside host file.
+    expect(resolveWorkspaceFileLink("/work/comet/src/lib.rs", "C:\\work\\comet")).toEqual({
+      path: "/work/comet/src/lib.rs",
+      line: null,
+      column: null,
+      outside: true,
+    });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Link presentation truncation (link_presentation.rs, ported)
-// ---------------------------------------------------------------------------
 
 describe("link_presentation truncate", () => {
   const measure = (label: string): number => label.length * 10;
@@ -568,6 +748,29 @@ describe("parseInline autolink integration", () => {
       throw new Error("codeBlock");
     }
     expect(block.language).toBe("Rust");
+  });
+
+  it("unlabeled links show the destination as text and mark it for file-name labeling (#633)", () => {
+    // An unlabeled link (`[](dest)`) has no author-written label: its
+    // destination is the visible text, flagged with `fileLabel` so the
+    // renderer shows the file name instead (the desktop's `file_label`).
+    const runs = parseInline("see [](docs/deep/SOURCES.md) now");
+    expect(runs.map((run) => [run.text, run.style.fileLabel ?? null])).toEqual([
+      ["see ", null],
+      ["docs/deep/SOURCES.md", "docs/deep/SOURCES.md"],
+      [" now", null],
+    ]);
+    // A labeled link never gets the marker: authored labels render as
+    // written.
+    const authored = parseInline("see [SOURCES.md](docs/deep/SOURCES.md)");
+    expect(authored.every((run) => (run.style.fileLabel ?? null) === null)).toBe(true);
+    // The label keeps the line suffix and decodes percent escapes once —
+    // a broken escape keeps the raw spelling.
+    expect(fileNameLabel("2026-09-28/Some%20Folder/it's%20here.txt#L4")).toBe(
+      "it's here.txt#L4",
+    );
+    expect(fileNameLabel("src/lib.rs:12")).toBe("lib.rs:12");
+    expect(fileNameLabel("a%zz.md")).toBe("a%zz.md");
   });
 });
 

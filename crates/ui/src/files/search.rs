@@ -610,7 +610,13 @@ impl FilesSurface {
         let is_directory = row.kind == WorkspaceEntryKind::Directory;
         let decoration = self.git_decoration(&row.path, is_directory, cx);
         let padding = 8.0 + row.depth as f32 * super::tree::TREE_INDENT;
-        let drag_payload = WorkspacePathDrag::new(row.path.clone(), is_directory);
+        // Search rows always reference the conversation, never move entries:
+        // their revision is unknown, so the tree refuses them as drop sources.
+        let drag_payload = WorkspacePathDrag::new(row.path.clone(), is_directory).with_origin(
+            self.interaction_origin(cx),
+            super::WorkspacePathSource::Search,
+            None,
+        );
         let content = div()
             .id(("files-search-result", index))
             .role(gpui::Role::TreeItem)

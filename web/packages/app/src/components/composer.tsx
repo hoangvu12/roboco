@@ -118,6 +118,7 @@ import {
   localFileLink,
   MENTION_TOOLTIP_DELAY_MS,
   MENTION_TOOLTIP_HEIGHT,
+  droppedFileMention,
   mentionErrorMessage,
   mentionResponseIsCurrent,
   mentionTooltipPromote,
@@ -128,6 +129,7 @@ import {
   type MentionTooltipPhase,
   type MentionTooltipTarget,
 } from "../lib/mentions";
+import { chatFileInserts } from "../lib/chat-insert";
 import {
   completionTrigger,
   invocationInsertion,
@@ -1314,6 +1316,33 @@ export function Composer({
     el.setSelectionRange(target, target);
     setSelectionState([target, target]);
   }, [text]);
+
+  // The tree's "Add to chat" / dropzone insert (`add_workspace_path`, the
+  // `chat-insert.ts` hand-off): apply the pending workspace reference at the
+  // current selection, exactly like the desktop's `insert_dropped_mention`.
+  const lastInsertVersionRef = useRef(chatFileInserts.version());
+  useEffect(() => {
+    return chatFileInserts.subscribe(() => {
+      const version = chatFileInserts.version();
+      if (version === lastInsertVersionRef.current) {
+        return;
+      }
+      lastInsertVersionRef.current = version;
+      const pending = chatFileInserts.take(chat.id);
+      if (pending === null) {
+        return;
+      }
+      const el = textareaRef.current;
+      const start = el?.selectionStart ?? textRef.current.length;
+      const end = el?.selectionEnd ?? start;
+      const result = droppedFileMention(textRef.current, { start, end }, pending.path, pending.isDirectory);
+      if (result === null) {
+        return;
+      }
+      applyEdit(start, end, result.inserted, start + result.cursorAdvance);
+      el?.focus();
+    });
+  }, [applyEdit, chat.id]);
 
   /** Selection normalization through `normalize_range` — the atomic caret
    * contract enforced on every native selection change (clicks, arrows,

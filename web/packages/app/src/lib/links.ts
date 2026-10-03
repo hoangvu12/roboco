@@ -303,77 +303,170 @@ export interface WorkspaceFileLink {
   readonly path: string;
   readonly line: number | null;
   readonly column: number | null;
+  /**
+   * An absolute destination no known root owns: still a file link — the
+   * linking chat opens it read-only as a host file by absolute path.
+   */
+  readonly outside: boolean;
 }
 
 const FILE_MENTION_SCHEME = "roboco-file:";
 
+/** The path with its `#L12` fragment or `:12` line suffix taken off. */
+export function withoutLocation(target: string): string {
+  const split = splitLineFragment(target);
+  if (split === null) {
+    return target;
+  }
+  const suffix = splitLineSuffix(split.path);
+  return suffix === null ? target : suffix.path;
+}
+
 /**
- * `resolve_workspace_file_link` (workspace_links.rs:14-104) — resolve an
- * agent-authored link or bare token into a safe workspace-relative path with
- * an optional line/column. Rejects empty/`?`/NUL targets, `file://` absolute
- * paths outside the root, foreign schemes, `..`/`.`/empty segments,
- * backslashes, drive letters and non-round-tripping percent escapes.
+ * `resolve_workspace_file_link` (workspace_links.rs, #606) — classify an
+ * agent-authored link under the file-link grammar and resolve it against
+ * `workspaceRoot`. The destination decodes exactly once (a broken escape
+ * keeps the raw spelling — a literal `%` in a file name still opens); a
+ * relative target stays inside-or-unresolved, while a POSIX-absolute one
+ * inside the root reads like its relative equivalent and anything else
+ * resolves as an outside host file. Rejects `?`, controls, backslashes,
+ * `.`/`..`/empty segments, scheme-shaped targets, `~`, `file://` with a
+ * host, and non-round-tripping file mentions.
  */
 export function resolveWorkspaceFileLink(target: string, workspaceRoot: string): WorkspaceFileLink | null {
-  let candidate = target.trim();
-  if (candidate.length === 0 || candidate.includes("?") || candidate.includes("\0")) {
+  const classified = classifyFileLink(target);
+  if (classified === null) {
+    return null;
+  }
+  switch (classified.kind) {
+    case "mention":
+    case "relative": {
+      const path = resolveDecodedPath(classified.link.path, workspaceRoot);
+      return path === null ? null : { ...classified.link, path, outside: false };
+    }
+    case "absolute": {
+      const path = resolveDecodedPath(classified.link.path, workspaceRoot);
+      return path === null
+        ? { ...classified.link, outside: true }
+        : { ...classified.link, path, outside: false };
+    }
+  }
+}
+
+/** A decoded path plus its line reference, tagged by resolution shape. */
+interface ClassifiedLink {
+  readonly kind: "mention" | "relative" | "absolute";
+  readonly link: { readonly path: string; readonly line: number | null; readonly column: number | null };
+}
+
+/**
+ * `classify_file_link` (workspace_links.rs) — without a root to resolve
+ * against yet. Line references split on the raw target so an escaped `#`
+ * or `:` stays inside the path; the path itself then decodes exactly once
+ * and every safety check runs on the decoded string.
+ */
+function classifyFileLink(target: string): ClassifiedLink | null {
+  const trimmed = target.trim();
+  if (trimmed.length === 0) {
     return null;
   }
 
-  const isFileMention = candidate.startsWith(FILE_MENTION_SCHEME);
-  if (isFileMention) {
-    const encoded = candidate.slice(FILE_MENTION_SCHEME.length);
+  // `roboco-file:` mentions keep their strict canonical spelling: the whole
+  // path decodes once and must re-encode to the identical string.
+  if (trimmed.startsWith(FILE_MENTION_SCHEME)) {
+    const encoded = trimmed.slice(FILE_MENTION_SCHEME.length);
     const decoded = percentDecodePath(encoded);
-    if (decoded === null || percentEncodePath(decoded) !== encoded || decoded.endsWith("/")) {
+    if (
+      decoded === null ||
+      percentEncodePath(decoded) !== encoded ||
+      decoded.endsWith("/") ||
+      decoded.includes(":") ||
+      !cleanPath(decoded)
+    ) {
       return null;
     }
-    candidate = decoded;
-  } else if (candidate.startsWith("file://")) {
-    candidate = candidate.slice("file://".length);
-  } else if (candidate.includes("://") || candidate.startsWith("mailto:")) {
-    return null;
+    return { kind: "mention", link: { path: decoded, line: null, column: null } };
   }
 
-  let fragmentLine: number | null = null;
-  if (!isFileMention) {
-    const split = splitLineFragment(candidate);
-    candidate = split.path;
-    fragmentLine = split.line;
+  const isFileUrl = trimmed.startsWith("file://");
+  let raw: string;
+  if (isFileUrl) {
+    const rest = trimmed.slice("file://".length);
+    // Only an empty host keeps this a file path — `file://localhost/…`
+    // and friends are ordinary URLs — and a `?query` is never a file.
+    const hostEnd = rest.indexOf("/") >= 0 ? rest.indexOf("/") : rest.length;
+    if (rest.slice(0, hostEnd).length > 0 || rest.includes("?")) {
+      return null;
+    }
+    raw = rest.slice(hostEnd);
+  } else {
+    if (trimmed.includes("://") || trimmed.startsWith("mailto:")) {
+      return null;
+    }
+    raw = trimmed;
   }
-  let suffixLine: number | null = null;
-  let column: number | null = null;
-  if (!isFileMention) {
-    const split = splitLineSuffix(candidate);
-    candidate = split.path;
-    suffixLine = split.line;
-    column = split.column;
-  }
-  if (
-    candidate.includes("\\") ||
-    candidate.includes("\n") ||
-    candidate.includes("\r") ||
-    candidate
-      .split("/")
-      .some((part, index) => (part.length === 0 && index !== 0) || part === "." || part === "..")
-  ) {
-    return null;
-  }
-  if (candidate.includes(":")) {
-    return null;
-  }
-  const line = fragmentLine ?? suffixLine;
 
-  // A remote engine may supply POSIX paths to a Windows viewport: classify
-  // by whether the target has a root, not by the viewer's absolute-path rules.
-  const relative = hasRoot(candidate) ? stripRootPrefix(candidate, workspaceRoot) : candidate;
+  const fragment = splitLineFragment(raw);
+  if (fragment === null) {
+    return null;
+  }
+  const suffix = splitLineSuffix(fragment.path);
+  if (suffix === null) {
+    return null;
+  }
+  const rawPath = suffix.path;
+  let decoded: string;
+  if (rawPath.includes("%")) {
+    // Broken escapes keep the raw spelling — a literal `%` in a file name
+    // still opens.
+    decoded = percentDecodePath(rawPath) ?? rawPath;
+  } else {
+    decoded = rawPath;
+  }
+  if (decoded.length === 0 || !cleanPath(decoded)) {
+    return null;
+  }
+  let kind: "relative" | "absolute";
+  if (decoded.startsWith("/")) {
+    // Absolute POSIX path: one leading slash, not the root itself, and no
+    // trailing slash. A plain absolute path also wants a `.` in its file
+    // name (`/usr/bin/ls` stays plain text); `file://` is exempt.
+    if (
+      [...decoded].length <= 1 ||
+      decoded.startsWith("//") ||
+      decoded.endsWith("/") ||
+      (!isFileUrl && !fileName(decoded).includes("."))
+    ) {
+      return null;
+    }
+    kind = "absolute";
+  } else {
+    if (isFileUrl || decoded.startsWith("~") || hasUrlScheme(decoded)) {
+      return null;
+    }
+    if (!fileName(decoded).includes(".")) {
+      return null;
+    }
+    kind = "relative";
+  }
+  return {
+    kind,
+    link: {
+      path: decoded,
+      line: fragment.line ?? suffix.line,
+      column: fragment.column ?? suffix.column,
+    },
+  };
+}
+
+/** `resolve_decoded_path` — the absolute keeps only its root-relative
+ * remainder; anything else must already be a clean relative path. */
+function resolveDecodedPath(target: string, root: string): string | null {
+  const relative = hasRoot(target) ? stripRootPrefix(target, root) : target;
   if (relative === null) {
     return null;
   }
-  const path = safeRelativePath(relative);
-  if (path === null) {
-    return null;
-  }
-  return { path, line, column };
+  return safeRelativePath(relative);
 }
 
 /** `Path::has_root` for our purposes — a leading separator or drive prefix. */
@@ -415,55 +508,207 @@ function safeRelativePath(path: string): string | null {
   return parts.length > 0 ? parts.join("/") : null;
 }
 
-/** `split_line_fragment` — a `#L123` fragment (1-based, positive); GitHub-style
- * ranges (`#L10-L20`) open at their first line. */
-function splitLineFragment(target: string): { path: string; line: number | null } {
-  const hash = target.lastIndexOf("#");
-  if (hash < 0) {
-    return { path: target, line: null };
+/** `clean_path` — no `?`, no controls, no `.`/`..`/empty segments; a single
+ * leading `/` segment is allowed (it marks an absolute path). */
+function cleanPath(path: string): boolean {
+  if (path.includes("?") || path.includes("\\")) {
+    return false;
   }
-  const fragment = target.slice(hash + 1);
-  if (!fragment.startsWith("L")) {
-    return { path: target, line: null };
+  for (const c of path) {
+    if (isControlChar(c.codePointAt(0)!)) {
+      return false;
+    }
   }
-  const lines = fragment.slice(1);
-  const dash = lines.indexOf("-");
-  // `split_once('-').unwrap_or((lines, "1"))`: a bare `#L10` validates as the
-  // range `10..1`; a range validates both ends and opens at its first line.
-  const start = dash < 0 ? lines : lines.slice(0, dash);
-  const end = dash < 0 ? "1" : lines.slice(dash + 1).replace(/^L/, "");
-  if (positiveNumber(end) === null) {
-    return { path: target, line: null };
-  }
-  const line = positiveNumber(start);
-  if (line !== null) {
-    return { path: target.slice(0, hash), line };
-  }
-  return { path: target, line: null };
+  return path
+    .split("/")
+    .every((part, index) => (part.length !== 0 || index === 0) && part !== "." && part !== "..");
 }
 
-/** `split_line_suffix` — trailing `:123` or `:123:45` (1-based, positive). */
-function splitLineSuffix(target: string): { path: string; line: number | null; column: number | null } {
-  // `rsplitn(3, ':')`: the two rightmost pieces, then the head.
-  const last = target.lastIndexOf(":");
-  if (last < 0) {
+function fileName(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? path : path.slice(slash + 1);
+}
+
+/** `has_url_scheme` — `scheme:` at the start of a relative path means it is
+ * a URL, not a file. */
+function hasUrlScheme(path: string): boolean {
+  const chars = [...path];
+  const first = chars.shift();
+  if (first === undefined || !/[A-Za-z]/.test(first)) {
+    return false;
+  }
+  for (const c of chars) {
+    if (c === ":") {
+      return true;
+    }
+    if (!/[A-Za-z0-9+\-.]/.test(c)) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** A line reference one shape contributed (`split_line_fragment`). */
+interface ParsedAnchor {
+  readonly line: number | null;
+  readonly column: number | null;
+}
+
+/** null = not a location (stays whole); { line: null } = a `#`/`:` split
+ * that dropped away; invalid anchors return `null` from the split callers
+ * by killing the whole target — modeled as `{ invalid: true }`. */
+interface SplitResult {
+  readonly path: string;
+  readonly line: number | null;
+  readonly column: number | null;
+}
+
+/**
+ * `split_line_fragment` — a `#L12`-style fragment (GitHub line anchors,
+ * ranges included, all opening at the first line). A non-empty fragment
+ * without `/` that is not one of these drops away; `0` and reversed
+ * ranges make the whole target not a file link (null return).
+ */
+function splitLineFragment(target: string): SplitResult | null {
+  const hash = target.lastIndexOf("#");
+  if (hash < 0) {
     return { path: target, line: null, column: null };
   }
-  const lastPiece = target.slice(last + 1);
-  const lastNumber = positiveNumber(lastPiece);
+  const path = target.slice(0, hash);
+  const fragment = target.slice(hash + 1);
+  if (fragment.length === 0) {
+    return { path, line: null, column: null };
+  }
+  if (fragment.includes("/")) {
+    // The `#` is inside the path, not an anchor.
+    return { path: target, line: null, column: null };
+  }
+  const anchor = parseAnchor(fragment);
+  if (anchor === "invalid") {
+    return null;
+  }
+  if (anchor === "none") {
+    return { path, line: null, column: null };
+  }
+  return { path, line: anchor.line, column: anchor.column };
+}
+
+/**
+ * `split_line_suffix` — `path:12`, `path:12:5` and `path:12-20` line
+ * suffixes. As with fragments, a zero line or a backwards range makes the
+ * whole target not a file link (null return).
+ */
+function splitLineSuffix(target: string): SplitResult | null {
+  const colon = target.lastIndexOf(":");
+  if (colon < 0) {
+    return { path: target, line: null, column: null };
+  }
+  const last = target.slice(colon + 1);
+  const dash = last.indexOf("-");
+  if (dash >= 0) {
+    const start = last.slice(0, dash);
+    const end = last.slice(dash + 1);
+    const startNumber = /^\d+$/.test(start) ? Number.parseInt(start, 10) : null;
+    const endNumber = /^\d+$/.test(end) ? Number.parseInt(end, 10) : null;
+    if (
+      startNumber === null ||
+      endNumber === null ||
+      startNumber > 4294967295 ||
+      endNumber > 4294967295
+    ) {
+      // Not a range the grammar knows (a `u32` parse failure upstream):
+      // keep the target whole (its `:` may still reject it as scheme-shaped
+      // later).
+      return { path: target, line: null, column: null };
+    }
+    return startNumber === 0 || endNumber < startNumber
+      ? null
+      : { path: target.slice(0, colon), line: startNumber, column: null };
+  }
+  const lastNumber = positiveNumber(last);
+  if (/^\d+$/.test(last) && Number.parseInt(last, 10) === 0) {
+    return null;
+  }
   if (lastNumber === null) {
     return { path: target, line: null, column: null };
   }
-  const before = target.slice(0, last);
-  const beforeColon = before.lastIndexOf(":");
-  if (beforeColon >= 0) {
-    const beforePiece = before.slice(beforeColon + 1);
+  const before = target.slice(0, colon);
+  const colon2 = before.lastIndexOf(":");
+  if (colon2 >= 0) {
+    const beforePiece = before.slice(colon2 + 1);
     const line = positiveNumber(beforePiece);
     if (line !== null) {
-      return { path: before.slice(0, beforeColon), line, column: lastNumber };
+      return { path: before.slice(0, colon2), line, column: lastNumber };
     }
+    // `a:0:5` rejects like `a:0`; `a:x:5` keeps `a:x` as the path — the `:`
+    // it carries rejects it as a scheme-shaped target anyway.
+    if (/^\d+$/.test(beforePiece) && Number.parseInt(beforePiece, 10) === 0) {
+      return null;
+    }
+    return { path: before, line: lastNumber, column: null };
   }
   return { path: before, line: lastNumber, column: null };
+}
+
+/** `parse_anchor` — `#L12`, `#L12C5`, `#L12-L20`, `#L12-20` or
+ * `#L12C1-L20C3`: the first line plus its column when present. */
+function parseAnchor(fragment: string): "none" | "invalid" | { line: number; column: number | null } {
+  if (!fragment.startsWith("L")) {
+    return "none";
+  }
+  const rest = fragment.slice(1);
+  let startPart = rest;
+  let endPart: string | null = null;
+  const dash = rest.indexOf("-");
+  if (dash >= 0) {
+    startPart = rest.slice(0, dash);
+    const tail = rest.slice(dash + 1);
+    endPart = tail.startsWith("L") ? tail.slice(1) : tail;
+  }
+  const start = parseLineColumn(startPart);
+  if (start === null) {
+    return "none";
+  }
+  const [line, column] = start;
+  if (line === 0 || column === 0) {
+    return "invalid";
+  }
+  if (endPart !== null) {
+    const end = parseLineColumn(endPart);
+    if (end === null) {
+      return "none";
+    }
+    const [endLine, endColumn] = end;
+    if (endLine < line || endColumn === 0) {
+      return "invalid";
+    }
+  }
+  return { line, column };
+}
+
+/** `12` or `12C5` — the line number plus an optional column. */
+function parseLineColumn(value: string): [number, number | null] | null {
+  const cAt = value.indexOf("C");
+  const linePart = cAt >= 0 ? value.slice(0, cAt) : value;
+  const columnPart = cAt >= 0 ? value.slice(cAt + 1) : null;
+  if (!/^\d+$/.test(linePart)) {
+    return null;
+  }
+  const line = Number.parseInt(linePart, 10);
+  if (line > 4294967295) {
+    return null;
+  }
+  if (columnPart !== null) {
+    if (!/^\d+$/.test(columnPart)) {
+      return null;
+    }
+    const column = Number.parseInt(columnPart, 10);
+    if (column > 4294967295) {
+      return null;
+    }
+    return [line, column];
+  }
+  return [line, null];
 }
 
 function positiveNumber(value: string): number | null {

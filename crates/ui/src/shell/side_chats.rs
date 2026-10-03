@@ -337,7 +337,9 @@ impl Shell {
                     cx,
                 ))
         });
-        div()
+        // The same shared dropzone as the main conversation: drops attach to
+        // THIS side chat's composer, with the same origin checks (#612).
+        self.chat_dropzone(("side-chat-dropzone", id), composer.clone(), cx)
             .size_full()
             .flex()
             .flex_col()
@@ -358,6 +360,7 @@ impl Shell {
                     .children(pill),
             )
             .child(div().flex_none().child(composer))
+            .child(Self::attachment_drop_overlay(Theme::of(cx)))
             .into_any_element()
     }
 }
