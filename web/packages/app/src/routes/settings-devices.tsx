@@ -20,6 +20,7 @@ import { engineConnection } from "../lib/settings-engine";
 import {
   lastSeenOnline,
   formatLastSeenAt,
+  partitionDevices,
   platformGlyph,
   platformLabel,
   presenceDot,
@@ -29,8 +30,10 @@ import {
 
 /**
  * Devices settings (desktop settings/devices.rs parity): the device registry
- * of the connected engine — one row per device that has paired with it, with
- * the platform tile's corner presence dot, the meta line (platform · version
+ * of the connected engine, split into the desktop's two labeled sections
+ * (devices.rs:517-557) — "This device" (the row whose id is the engine's own
+ * `engineInfo.deviceId`, first) and "Other devices" — each row with the
+ * platform tile's corner presence dot, the meta line (platform · version
  * · connection · last seen · added · the click-to-copy id chip), Rename (via
  * the Mutate renameDevice op) and the pairing box that redeems a pairing URL
  * through the fleet store — the page's one paste entry (the `/pair` landing
@@ -85,6 +88,11 @@ export function DevicesSettingsPage() {
 
   const devices = snapshot?.devices.rows ?? [];
   const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  // The desktop's two-section split (devices.rs:372-375): local first,
+  // everything else under "Other devices". Before engineInfo loads the
+  // split is unknowable — the flat single card stays until it is (the
+  // helper's `unknown` arm).
+  const partition = partitionDevices(devices, localDeviceId);
   const activeEngine = fleet.engines.find((engine) => engine.baseUrl === fleet.active) ?? null;
   // One registry entry per stored engine, keyed by its baseUrl.
   const registryByEngine = new Map(registry.engines.map((entry) => [entry.key, entry]));
@@ -174,6 +182,28 @@ export function DevicesSettingsPage() {
 
   const count = devices.length;
 
+  /** One device row at its section position (same props every section). */
+  const renderDeviceRow = (device: Device, ix: number) => (
+    <DeviceRow
+      key={device.id}
+      device={device}
+      first={ix === 0}
+      connection={rowConnection(device.id)}
+      online={lastSeenOnline(device.lastSeenAt, now)}
+      copied={copied === device.id}
+      now={now}
+      forgetBaseUrl={forgetTarget(device.id)}
+      onCopyId={() => copyId(device.id)}
+      onForget={() => {
+        const target = forgetTarget(device.id);
+        if (target !== null) {
+          forget(target);
+        }
+      }}
+      onRename={() => setRename({ deviceId: device.id, name: device.name })}
+    />
+  );
+
   return (
     <div className="settings-page">
       <h1 className="settings-title">
@@ -230,33 +260,47 @@ export function DevicesSettingsPage() {
         )}
       </section>
 
-      <section className="settings-card">
-        {count === 0 ? (
-          <p className="settings-empty settings-empty-devices">No devices registered</p>
-        ) : (
-          devices.map((device, ix) => (
-            <DeviceRow
-              key={device.id}
-              device={device}
-              first={ix === 0}
-              isLocal={device.id === localDeviceId}
-              connection={rowConnection(device.id)}
-              online={lastSeenOnline(device.lastSeenAt, now)}
-              copied={copied === device.id}
-              now={now}
-              forgetBaseUrl={forgetTarget(device.id)}
-              onCopyId={() => copyId(device.id)}
-              onForget={() => {
-                const target = forgetTarget(device.id);
-                if (target !== null) {
-                  forget(target);
-                }
-              }}
-              onRename={() => setRename({ deviceId: device.id, name: device.name })}
-            />
-          ))
-        )}
-      </section>
+      {partition.kind === "unknown" ? (
+        // engineInfo not loaded yet — the split is unknowable, so the flat
+        // single card stays until the local device id is known.
+        <section className="settings-card">
+          {count === 0 ? (
+            <p className="settings-empty settings-empty-devices">No devices registered</p>
+          ) : (
+            devices.map(renderDeviceRow)
+          )}
+        </section>
+      ) : (
+        <>
+          {partition.local.length > 0 && (
+            <>
+              <div className="settings-section-header">
+                <h2>This device</h2>
+              </div>
+              <section className="settings-card">
+                {partition.local.map(renderDeviceRow)}
+              </section>
+            </>
+          )}
+          {/* The scope gate: the desktop hides this section for local-scope
+              workspaces (devices.rs:554-557 — "a local-only workspace never
+              has other devices to list") off its state.workspace_scope. The
+              web's `WatchCacheSnapshot` does not expose the workspace scope,
+              and the browser can pair remote synced engines, so the section
+              always renders here; its empty state is the desktop's pair copy
+              (devices.rs:525-536). */}
+          <div className="settings-section-header">
+            <h2>Other devices</h2>
+          </div>
+          <section className="settings-card">
+            {partition.others.length === 0 ? (
+              <p className="settings-empty">Pair another device to see it here.</p>
+            ) : (
+              partition.others.map(renderDeviceRow)
+            )}
+          </section>
+        </>
+      )}
 
       {rename !== null && (
         <RenameDeviceDialog dialog={rename} onCancel={() => setRename(null)} onSubmit={submitRename} />
@@ -322,7 +366,6 @@ function RemoveEngineButton({ engine }: { engine: StoredEngine }) {
 function DeviceRow(props: {
   readonly device: Device;
   readonly first: boolean;
-  readonly isLocal: boolean;
   readonly connection: EngineConnection | null;
   readonly online: boolean;
   readonly copied: boolean;
@@ -386,7 +429,6 @@ function DeviceRow(props: {
           </button>
         </span>
       </div>
-      {props.isLocal && <span className="badge">This device</span>}
       {props.forgetBaseUrl !== null && (
         <button type="button" className="btn btn-ghost" onClick={props.onForget}>
           Forget
