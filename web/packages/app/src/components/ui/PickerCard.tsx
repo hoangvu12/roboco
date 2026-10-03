@@ -104,8 +104,8 @@ export function PickerCard(props: PickerCardProps) {
   // sheet) and `motionSpeed` (no popover exit window).
   // `escapeFocusTarget` DOES thread through (ticket 06): the sheet forwards
   // it as the Drawer's close-time focus return, so phone Escape hands
-  // focus back to the composer textarea — the sheet's form of the popover
-  // arm's reason-aware `finalFocus` (pickers.rs:871-890).
+  // focus back to the composer textarea — the plain-forwarding form of the
+  // popover arm's reason-aware contract (pickers.rs:871-890).
   // The card body itself renders unchanged — the sheet replaces
   // placement, not the card's inner layout.
   const isPhone = useIsPhone();

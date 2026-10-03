@@ -98,13 +98,16 @@ afterEach(() => {
  * A picker card whose body carries one nested group row — the view-options
  * shape (`PickerCard` + `NestedMenu`, both arms resolved by the components).
  * The host renders a composer textarea above the picker (the app's layout);
- * `composerEscapeTarget` wires it as the picker's `escapeFocusTarget` — the
- * composer's exact shape (`() => textareaRef.current`, composer.tsx:3637).
+ * `composerEscapeTarget` wires it as the picker's `escapeFocusTarget` —
+ * "getter" is the composer's exact shape (`() => textareaRef.current`,
+ * composer.tsx:3637); "element" passes the textarea itself, the prop's
+ * other accepted form (absent until the first commit, so it wires on the
+ * press-to-open re-render).
  */
 function mountPicker(options?: {
   open?: boolean;
   nestedOpen?: boolean;
-  composerEscapeTarget?: boolean;
+  composerEscapeTarget?: "getter" | "element";
 }): MountedPicker {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -137,7 +140,11 @@ function mountPicker(options?: {
         ariaLabel: "Test picker",
         width: 232,
         escapeFocusTarget:
-          options?.composerEscapeTarget === true ? () => composerTextarea : undefined,
+          options?.composerEscapeTarget === "getter"
+            ? () => composerTextarea
+            : options?.composerEscapeTarget === "element"
+              ? (composerTextarea ?? undefined)
+              : undefined,
         trigger: createElement(
           "button",
           { type: "button", className: "picker-trigger" },
@@ -239,7 +246,7 @@ describe("PickerCard phone arm (ticket 15 regression)", () => {
 describe("PickerCard phone arm — the Escape focus return (ticket 06)", () => {
   it("Escape dismisses the sheet and returns focus to the composer textarea (the threaded escapeFocusTarget)", async () => {
     h.phone = true;
-    const handle = mountPicker({ open: true, composerEscapeTarget: true });
+    const handle = mountPicker({ open: true, composerEscapeTarget: "getter" });
     const textarea = handle.textarea();
     expect(textarea).not.toBeNull();
     // Open: the sheet is up and focus is inside it (the modal trap), never
@@ -256,6 +263,24 @@ describe("PickerCard phone arm — the Escape focus return (ticket 06)", () => {
     // The sheet dismissed, and the focus return threaded through the sheet
     // (Drawer.Popup's finalFocus) landed on the escape target — the
     // composer textarea, not the trigger chip.
+    expect(handle.sheet()).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("the prop's plain-element form lands the same return — the textarea passed by value", async () => {
+    h.phone = true;
+    // The element form wires on the re-render that opens the sheet (the
+    // first render has no textarea yet) — a caller holding a stable element
+    // at open time.
+    const handle = mountPicker({ composerEscapeTarget: "element" });
+    press(handle.trigger()!);
+    const textarea = handle.textarea();
+    expect(textarea).not.toBeNull();
+    expect(handle.sheet()).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    await act(async () => {});
     expect(handle.sheet()).toBeNull();
     expect(document.activeElement).toBe(textarea);
   });

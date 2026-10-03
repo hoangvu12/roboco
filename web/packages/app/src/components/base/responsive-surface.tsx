@@ -26,9 +26,9 @@
  *   gives the sheet the same semantics the Dialog provides — focus
  *   trapped, document scroll locked, pointer interactions outside
  *   disabled; Escape routes to `onOpenChange(false)`, and the close's
- *   focus return is `Drawer.Popup`'s `finalFocus` — the dialog arms pass
- *   theirs verbatim, the picker arm threads its `escapeFocusTarget` (the
- *   composer textarea, ticket 06) through the same seam.
+ *   focus return is `Drawer.Popup`'s `finalFocus` — the dialog arm passes
+ *   its own verbatim, and the picker arm threads its `escapeFocusTarget`
+ *   (the composer textarea, ticket 06) through the same seam.
  * - **Scrim contract per wrapper:** the dialog sheet carries
  *   `disablePointerDismissal` (mirroring `RbDialog`'s scrim —
  *   `base/dialog.tsx:76` — so only Escape/Cancel close the rename/delete
@@ -159,7 +159,7 @@ export interface RbDrawerSheetProps {
  * The sheet's close-time focus return: the picker arm's `escapeFocusTarget`
  * (an element, or the composer's `() => textareaRef.current` getter —
  * resolved at close time so a not-yet-mounted target falls back to Base
- * UI's default) becomes `Drawer.Popup`'s `finalFocus`; the dialog arms'
+ * UI's default) becomes `Drawer.Popup`'s `finalFocus`; the dialog arm's
  * `finalFocus` passes through verbatim when no escape target was supplied.
  */
 function sheetFinalFocus(props: RbDrawerSheetProps): DrawerPopupProps["finalFocus"] {
