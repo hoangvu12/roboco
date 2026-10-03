@@ -8627,16 +8627,20 @@ impl Composer {
                 })
         });
 
-        div()
+        // Stands in for the composer pill, so it is the same frosted surface:
+        // without the backdrop blur the translucent fill let the transcript
+        // show through unblurred.
+        let panel = div()
             .id("question-panel")
             .track_focus(&self.wizard_focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_wizard_key(event, window, cx)
             }))
+            .occlude()
             .rounded(px(COMPOSER_RADIUS))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.input_glass_bg())
+            .bg(theme.composer_surface_bg())
             .when(!theme.is_frost(), |el| el.shadow_lg())
             .flex()
             .flex_col()
@@ -8741,8 +8745,12 @@ impl Composer {
                             .when(!can_advance, |el| el.opacity(0.4))
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
                     ),
-            )
-            .into_any_element()
+            );
+        // Frosted like the pill it stands in for, at the pill's own 16px blur
+        // (upstream's shared MENU_BLUR happens to equal the pill's there; our
+        // MENU_BLUR is the menu treatment's 44, which would not match the
+        // pill this panel replaces).
+        crate::frost::frosted(COMPOSER_RADIUS, 16.0, panel).into_any_element()
     }
 
     fn render_send_button(

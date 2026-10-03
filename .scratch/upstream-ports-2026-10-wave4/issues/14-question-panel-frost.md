@@ -23,9 +23,41 @@ question-panel/composer tests. Web: the question wizard
 panel is opaque/frosted against the transcript and fix the styling only
 if it actually bleeds.
 
-- [ ] Question panel frosted, matching the pill on all materials
-- [ ] Token cleanup (no orphaned solid-input token)
-- [ ] Tests green
-- [ ] Port commit records upstream SHA
+- [x] Question panel frosted, matching the pill on all materials
+- [x] Token cleanup (no orphaned solid-input token — none ever existed here;
+      upstream added and dropped `input_solid_bg` within the same PR, and
+      this port carries the final state only)
+- [ ] Tests green (no new tests demanded — existing question-panel/composer
+      tests; execution deferred to the wave-final batched pass — user
+      directive)
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `0fab030f` (#669) by intent into `crates/ui/src/composer.rs`
+  (`render_wizard`): the panel is built into a `panel` binding, gains
+  `.occlude()`, swaps `.bg(theme.input_glass_bg())` for the pill's
+  `.bg(theme.composer_surface_bg())`, and is returned wrapped in
+  `crate::frost::frosted(COMPOSER_RADIUS, 16.0, panel)`.
+- One deliberate deviation from the ticket's literal "our MENU_BLUR":
+  upstream's `MENU_BLUR` is 16 — equal to their composer pill's blur, so
+  their `frosted(COMPOSER_RADIUS, MENU_BLUR, panel)` IS the pill
+  treatment. Our `MENU_BLUR` is 44 (the menu/popover treatment,
+  `frost.rs`), while our pill blurs 16; using 44 would make the panel
+  heavier-blurred than the pill it stands in for. Ported at the pill's
+  16.0 with a code comment recording why.
+- Upstream also has `frost.rs` (not `glass.rs` — the ticket's naming was
+  anticipatory; #471's rename is outside this wave). Our frost module's
+  `frosted()` + `MENU_BLUR` are the equivalents used.
+- Web verify-only (no fix needed): `web/packages/app/src/styles/app.css`
+  `.wizard-panel` already paints `background: var(--rb-input-plate)` —
+  the same opaque flattened token the web composer pill uses (web is
+  forced opaque since the 2026-09-17 defrost decision), and
+  `web/packages/app/tests/opaque-input-plate.test.ts` already asserts
+  the wizard paints the plate. The transcript cannot bleed through —
+  the outcome the upstream commit fixes on desktop already holds.
+- Exclusions: none — upstream's diff is composer.rs-only.
+- Verification: `rustfmt --edition 2024 --check` (no new drift; the 10
+  pre-existing drift hunks in composer.rs left untouched);
+  `cargo check -p roboco -j 3` at chunk end; test execution deferred to
+  the wave-final batched pass (user directive).
