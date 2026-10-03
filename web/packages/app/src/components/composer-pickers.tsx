@@ -35,6 +35,7 @@ import {
   offeredHarnesses,
   REASONING_SETTING_ID,
   scopedModelRows,
+  scopedRailDescriptors,
   selectedOnlyRow,
   settingGroups,
   type CompactEffort,
@@ -204,9 +205,15 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const locked = isHarnessLocked(chatConfig, sideChatHarnessEditable);
   const effectiveHarness = draft.harness;
   const offered = useMemo(() => offeredHarnesses(harnesses.rows), [harnesses.rows]);
-  // `rail_descriptors`: offered harnesses, the committed one force-inserted
-  // at index 0 when it sits outside the offered set (pickers.rs:1567).
-  const railDescriptors = useMemo(() => {
+  // The tab strip's descriptor set: offered harnesses, the committed one
+  // force-inserted at index 0 when it sits outside the offered set
+  // (pickers.rs:1925-1934). A locked chat still RENDERS every offered tab —
+  // the web's recorded decision (app.css "gap row 46"): visible at 0.35
+  // with the click handler attached (it no-ops), a disabled control rather
+  // than a hidden one — so the strip keeps the full set while the rows'
+  // scope narrows. Deleting the locked-tab rendering arm restores the
+  // desktop's full hiding; that is the one-line follow-up.
+  const tabDescriptors = useMemo(() => {
     const committed = chatConfig?.harness;
     if (committed === undefined || offered.some((descriptor) => descriptor.id === committed)) {
       return offered;
@@ -214,6 +221,15 @@ export function ComposerPickers(props: ComposerPickersProps) {
     const row = harnesses.rows.find((descriptor) => descriptor.id === committed);
     return row === undefined ? offered : [row, ...offered];
   }, [chatConfig?.harness, offered, harnesses.rows]);
+  // `rail_descriptors` (pickers.rs:1925-1940), lock arm included — the
+  // ROWS' scope: a locked chat retains only its own harness, so the list
+  // AND the favorites view never render a dead foreign row (its pick
+  // would no-op under the lock). Unlocked, the scope is the strip's full
+  // set and favorites span every harness.
+  const railDescriptors = useMemo(
+    () => scopedRailDescriptors(tabDescriptors, locked, effectiveHarness),
+    [tabDescriptors, locked, effectiveHarness],
+  );
 
   const noAgents = harnesses.loaded && harnesses.error === null && offered.length === 0;
 
@@ -542,6 +558,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
           noAgents={noAgents}
           locked={locked}
           railDescriptors={railDescriptors}
+          tabDescriptors={tabDescriptors}
           modelsLists={modelsLists}
           effectiveHarness={effectiveHarness}
           draft={draft}
@@ -661,7 +678,15 @@ interface IdentityCardProps {
   readonly harnessError: string | null;
   readonly noAgents: boolean;
   readonly locked: boolean;
+  /** The ROWS' descriptor scope — `rail_descriptors` with the lock arm
+   *  applied (pickers.rs:1936-1940): a locked chat's list AND favorites
+   *  view keep only its own harness, so no dead foreign row renders. */
   readonly railDescriptors: readonly HarnessDescriptor[];
+  /** The tab strip's descriptor set — the SAME scope before the lock arm.
+   *  A locked chat still renders every offered tab, disabled via
+   *  `.model-tab-locked` (the web's recorded decision: the strip is the
+   *  tab set, the content is the scope). */
+  readonly tabDescriptors: readonly HarnessDescriptor[];
   readonly modelsLists: Map<HarnessId, LoadableList<Model>>;
   readonly effectiveHarness: HarnessId;
   readonly draft: DraftConfig;
@@ -686,6 +711,7 @@ function IdentityCard(props: IdentityCardProps) {
     noAgents,
     locked,
     railDescriptors,
+    tabDescriptors,
     modelsLists,
     effectiveHarness,
     draft,
@@ -1100,7 +1126,12 @@ function IdentityCard(props: IdentityCardProps) {
                 <Icon name="starBold" size={15} className={`model-tab-star ${rail === "favorites" ? "model-tab-star-viewed" : ""}`} />
                 {rail === "favorites" && <span className="model-tab-marker" />}
               </button>
-              {railDescriptors.map((descriptor) => {
+              {tabDescriptors.map((descriptor) => {
+                // The strip renders the offered set even when locked: a
+                // foreign tab stays visible-but-disabled (the recorded
+                // decision this ticket preserves) — the strip is the tab
+                // set, while the rows above scope through
+                // `railDescriptors`.
                 const isViewed = rail === "harness" && effectiveHarness === descriptor.id;
                 const isDisabled = locked && effectiveHarness !== descriptor.id;
                 const brand = harnessBrandIcon(descriptor.id);

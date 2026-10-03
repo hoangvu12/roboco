@@ -828,12 +828,27 @@ function harnessTab(ix: number): HTMLElement | null {
   return tabs[ix] ?? null;
 }
 
-function mountSideChatPicker(sideChatHarnessEditable: boolean): MountedPicker {
+/** The rendered model rows' labels, in list order (the virtualized slice). */
+function modelRowLabels(): string[] {
+  return Array.from(document.querySelectorAll(".model-list-sizer .model-row-label")).map(
+    (el) => el.textContent ?? "",
+  );
+}
+
+function mountSideChatPicker(
+  sideChatHarnessEditable: boolean,
+  codexModels?: Model[],
+): MountedPicker {
   const client = new FakeClient();
   client.harnesses = [CLAUDE, BARE];
   client.modelsByHarness.set("claude-code", [PARENT]);
   // Codex's list is deliberately NOT seeded: the fake resolves it empty,
-  // the pre-catalog window the desktop's pick must survive.
+  // the pre-catalog window the desktop's pick must survive. The locked-scope
+  // pin below seeds a foreign catalog instead — the dead-row shape the
+  // lock must keep out of every view.
+  if (codexModels !== undefined) {
+    client.modelsByHarness.set("codex", codexModels);
+  }
   return mountPicker({
     client,
     initial: draft({
@@ -939,6 +954,56 @@ describe("ComposerPickers harness facet on new side chats (upstream #590)", () =
     });
     expect(locked.drafts).toHaveLength(0);
     expect(locked.observed.current.harness).toBe("claude-code");
+  });
+
+  it("a locked side chat scopes its rows and favorites to the locked harness", async () => {
+    // `rail_descriptors`' lock arm (pickers.rs:1936-1940): the rail retains
+    // only the locked chat's harness — the harness tab lists only its own
+    // models and the favorites view only its own starred rows, so a foreign
+    // star never renders as a dead row whose pick no-ops (pickModel's lock
+    // guard). The TAB STRIP still renders every offered harness: the web's
+    // recorded decision keeps the foreign tabs visible-but-disabled
+    // (`.model-tab-locked`) instead of hiding them like the desktop.
+    resetDefaults();
+    const CODEX_STAR: Model = {
+      id: "codex-star",
+      label: "Codex starred",
+      description: null,
+      reasoningLevels: [],
+      options: [],
+    };
+    composerDefaults.update({
+      favorites: [
+        { harness: "claude-code", model: "parent-model" },
+        { harness: "codex", model: "codex-star" },
+      ],
+    });
+    const handle = mountSideChatPicker(false, [CODEX_STAR]);
+    try {
+      await flush();
+      await openCard(handle);
+
+      // The harness tab lists only the locked harness's models.
+      expect(modelRowLabels()).toEqual(["Parent model"]);
+
+      // The foreign tab still renders — locked styling, never hidden.
+      const codexTab = harnessTab(1);
+      expect(codexTab).not.toBeNull();
+      expect(codexTab!.classList.contains("model-tab-locked")).toBe(true);
+
+      // The favorites view scopes to the locked harness too: only the
+      // claude star renders — the codex star is the dead row the lock keeps
+      // out (the pre-fix shape rendered both).
+      await act(async () => {
+        document.querySelector<HTMLElement>("#model-tab-favorites")!.click();
+      });
+      expect(modelRowLabels()).toEqual(["Parent model"]);
+    } finally {
+      // The seeded stars are this test's fixture, not its legacy: leave the
+      // shared sticky-picks store clean for the suites that follow (the
+      // file's deterministic-mount convention).
+      resetDefaults();
+    }
   });
 
   it("composer.tsx wires the unsaved side-chat window into the pickers", () => {
