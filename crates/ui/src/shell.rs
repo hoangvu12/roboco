@@ -1470,6 +1470,8 @@ pub struct Shell {
     pub(super) jump_hints: bool,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
+    /// Last resolved layout, for drag anchors and matching transcript clearance.
+    terminal_geometry: crate::terminal::dock::SharedGeometry,
     /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
@@ -2064,6 +2066,7 @@ impl Shell {
             viewport_width: 1280.0,
             viewport_height: 880.0,
             terminal_tween: None,
+            terminal_geometry: Default::default(),
             fullscreen: None,
             titlebar_tween: None,
             titlebar_island: None,
@@ -3869,7 +3872,7 @@ impl Shell {
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
     /// The flag is per chat (roboco `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from = self.terminal_target(cx);
+        let from = self.terminal_geometry.get().height;
         let key = self.panel_key(cx);
         let open = self.panels.toggle_terminal(&key);
         self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
@@ -3918,11 +3921,16 @@ impl Shell {
         let dy = anchor_y - f32::from(event.event.position.y);
         let viewport_h = f32::from(window.viewport_size().height);
         let requested = anchor_h + dy;
-        let max = (viewport_h * TERMINAL_MAX_VH).max(TERMINAL_MIN_HEIGHT);
-        self.settings.terminal_height = clamp_terminal_height(requested, viewport_h);
+        let max = self
+            .terminal_geometry
+            .get()
+            .limit
+            .min(viewport_h * TERMINAL_MAX_VH);
+        let min = TERMINAL_MIN_HEIGHT.min(max);
+        self.settings.terminal_height = clamp_terminal_height(requested.min(max), viewport_h);
         self.pane_resize_dragging = Some(PaneResizeKind::Terminal);
-        self.pane_resize_active = (requested > TERMINAL_MIN_HEIGHT && requested < max)
-            .then_some(PaneResizeKind::Terminal);
+        self.pane_resize_active =
+            (requested > min && requested < max).then_some(PaneResizeKind::Terminal);
         self.terminal_tween = None; // live drag tracks the pointer
         self.schedule_save(cx);
         cx.notify();
@@ -8471,7 +8479,16 @@ impl Shell {
         self.composer.update(cx, |composer, cx| {
             composer.set_available_width(composer_width, cx)
         });
-        let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+        let terminal_geometry =
+            std::rc::Rc::new(std::cell::Cell::new(crate::terminal::dock::Geometry::new(
+                self.eval_tween(self.terminal_tween, self.terminal_target(cx)),
+                self.settings.terminal_height,
+                (self.viewport_height * TERMINAL_MAX_VH).min(
+                    (self.viewport_height - Theme::TITLEBAR_HEIGHT - Theme::STATUS_STRIP_HEIGHT)
+                        .max(0.0),
+                ),
+            )));
+        let term_h = self.terminal_geometry.get().height;
         // Share the dock's choreography: release the bottom chip early on
         // departure, reveal it with the Home selectors on return. Absolute
         // mounting keeps it out of composer measurements and centering.
@@ -8661,22 +8678,56 @@ impl Shell {
                     // status strip above it is empty air), zero at the
                     // underlay's bottom edge.
                     let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
-                    div().absolute().inset_0().bottom(px(term_h)).child(
-                        crate::edge_fade::edge_faded(
-                            Theme::TRANSCRIPT_FADE_BAND,
-                            true,
-                            true,
-                            div().size_full().child(outlet),
-                        )
-                        // Fully faded BY the titlebar's bottom edge (the
-                        // title text is opaque — overlap read as collision),
-                        // ramping in the band just below it.
-                        .inset_top(Theme::TITLEBAR_HEIGHT)
-                        .band_top(Theme::TRANSCRIPT_FADE_BAND)
-                        .band_bottom(bottom_band),
-                    )
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(crate::terminal::dock::above_terminal(
+                            crate::edge_fade::edge_faded(
+                                Theme::TRANSCRIPT_FADE_BAND,
+                                true,
+                                true,
+                                div().size_full().child(outlet),
+                            )
+                            // Fully faded BY the titlebar's bottom edge (the
+                            // title text is opaque — overlap read as collision),
+                            // ramping in the band just below it.
+                            .inset_top(Theme::TITLEBAR_HEIGHT)
+                            .band_top(Theme::TRANSCRIPT_FADE_BAND)
+                            .band_bottom(bottom_band),
+                            terminal_geometry.clone(),
+                        ))
                 },
             )
+            .when_some(harness_update_card, |column, chip| {
+                // Home notices stay anchored to the window bottom, behind the
+                // dock. Clip paint and hitboxes at the same measured terminal
+                // edge as the transcript, including during open/close motion;
+                // draw order alone would show them through the terminal glass.
+                column.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(crate::terminal::dock::above_terminal(
+                            div().size_full().overflow_hidden().child(
+                                div().relative().w_full().h(px(self.viewport_height)).child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
+                                        .opacity(chip_opacity)
+                                        .flex()
+                                        .justify_center()
+                                        .child(chip)
+                                        .when(has_selection, |el| {
+                                            el.child(div().absolute().inset_0().occlude())
+                                        }),
+                                ),
+                            ),
+                            terminal_geometry.clone(),
+                        )),
+                )
+            })
             // The glass chrome stack, floating over the transcript's bottom:
             // reserved status strip (h-6, the WorkingIndicator — the composer
             // below never shifts), composer, terminal dock. A paint-time
@@ -8716,42 +8767,29 @@ impl Shell {
                     .child(status)
                     .when(has_spaces || no_project || has_appshots, |el| {
                         let composer_opacity = self.composer_dock.borrow().opacity();
-                        el.child(crate::composer_dock::docked_composer(
-                            div()
-                                .id("persistent-composer")
-                                .relative()
-                                .w(px(composer_width))
-                                .opacity(composer_opacity)
-                                .mx_auto()
-                                .child(self.composer.clone())
-                                .children(if has_selection {
-                                    self.render_jump_to_bottom(cx)
-                                } else {
-                                    None
-                                }),
-                            self.composer_dock.clone(),
-                            self.viewport_height,
-                            self.reduced_motion,
-                            frame_time,
-                        ))
+                        el.child(
+                            crate::composer_dock::docked_composer(
+                                div()
+                                    .id("persistent-composer")
+                                    .relative()
+                                    .w(px(composer_width))
+                                    .opacity(composer_opacity)
+                                    .mx_auto()
+                                    .child(self.composer.clone())
+                                    .children(if has_selection {
+                                        self.render_jump_to_bottom(cx)
+                                    } else {
+                                        None
+                                    }),
+                                self.composer_dock.clone(),
+                                self.viewport_height,
+                                self.reduced_motion,
+                                frame_time,
+                            )
+                            .reserve_terminal(terminal_geometry.clone()),
+                        )
                     })
-                    .child(self.render_terminal_container(window, cx))
-            })
-            .when_some(harness_update_card, |column, chip| {
-                column.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
-                        .opacity(chip_opacity)
-                        .flex()
-                        .justify_center()
-                        .child(chip)
-                        .when(has_selection, |el| {
-                            el.child(div().absolute().inset_0().occlude())
-                        }),
-                )
+                    .child(self.render_terminal_container(terminal_geometry, window, cx))
             })
             .child(
                 div()
@@ -8886,10 +8924,17 @@ impl Shell {
 
     /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
     /// over the panel, the whole container height-animated 200 ms on toggle.
-    fn render_terminal_container(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_terminal_container(
+        &mut self,
+        geometry: crate::terminal::dock::SharedGeometry,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let target = self.terminal_target(cx);
         let tween = self.terminal_tween;
         if target <= 0.0 && tween.is_none() {
+            self.terminal_geometry
+                .set(crate::terminal::dock::Geometry::default());
             return gpui::Empty.into_any_element();
         }
         // Defensive: an open flag needs its entity (and set_open) even if
@@ -8928,7 +8973,6 @@ impl Shell {
         } else {
             handle_hover
         };
-        let height = self.settings.terminal_height;
 
         let handle = div()
             .id("terminal-resize")
@@ -8949,8 +8993,10 @@ impl Shell {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.terminal_drag_anchor =
-                        Some((f32::from(event.position.y), this.settings.terminal_height));
+                    this.terminal_drag_anchor = Some((
+                        f32::from(event.position.y),
+                        this.terminal_geometry.get().height,
+                    ));
                     this.pane_resize_dragging = Some(PaneResizeKind::Terminal);
                     this.pane_resize_active = Some(PaneResizeKind::Terminal);
                     cx.notify();
@@ -8987,24 +9033,27 @@ impl Shell {
         // FLOATS over the panel's top edge (painted after, so it wins hit
         // testing) instead of stacking above it — stacked, its hitbox would read as
         // dead air between the seam and the tab bar (user report).
-        let inner = div()
-            .h(px(height))
-            .w_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .child(div().flex_1().min_h_0().child(panel))
-            .child(handle.absolute().top_0().left_0().right_0());
+        crate::terminal::dock::terminal(geometry, self.terminal_geometry.clone(), move |geometry| {
+            let inner = div()
+                .h(px(geometry.content_height))
+                .w_full()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(div().flex_1().min_h_0().child(panel))
+                .child(handle.absolute().top_0().left_0().right_0());
 
-        div()
-            .w_full()
-            .flex_none()
-            .overflow_hidden()
-            .border_t_1()
-            .border_color(border)
-            .h(px(self.eval_tween(tween, target)))
-            .child(inner)
-            .into_any_element()
+            div()
+                .w_full()
+                .flex_none()
+                .overflow_hidden()
+                .when(geometry.height > 0.0, |el| el.border_t_1())
+                .border_color(border)
+                .h(px(geometry.height))
+                .child(inner)
+                .into_any_element()
+        })
+        .into_any_element()
     }
 
     /// Working indicator strip: gradient spinner + rotating flavour word (7s,
@@ -10760,7 +10809,7 @@ impl Render for Shell {
                 // Clearance excludes the terminal dock: the transcript
                 // viewport ends at the dock's top (see the underlay in
                 // `render_main`), so only the chrome above it overlaps.
-                let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+                let term_h = self.terminal_geometry.get().height;
                 let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
                 let expected_has_composer = {
                     let state = self.state.read(cx);
