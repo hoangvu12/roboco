@@ -5,12 +5,13 @@ import type { EngineSession } from "./engine-session";
 /**
  * The command palette's state machine — the web port of the state half of
  * `crates/ui/src/shell/command_palette.rs` (`CommandPalette`,
- * `toggle_command_palette`, `close_command_palette`, `activate_command`):
- * the open flag with its exit window, the search query, and the keyboard
- * highlight. The entry derivations (actions + the global chat history)
- * live in `lib/command-palette.ts`; the mounted card
- * (`components/command-palette.tsx`) computes them from the live session
- * and resolves activation through the context attached here.
+ * `toggle_command_palette`, `close_command_palette`, `activate_command`,
+ * `hover_command`): the open flag with its exit window, the search query,
+ * and the row highlight (the keyboard's steps and pointer motion —
+ * last-writer-wins, as on the desktop). The entry derivations (actions +
+ * the global chat history) live in `lib/command-palette.ts`; the mounted
+ * card (`components/command-palette.tsx`) computes them from the live
+ * session and resolves activation through the context attached here.
  *
  * The mount lifecycle rides `RbDialogGlass` exactly like the add-space
  * palette: `open` is the dialog's open flag, the exit window
@@ -143,6 +144,22 @@ export class CommandPaletteStore {
       this.#active = next;
       this.#commit();
     }
+  }
+
+  /**
+   * `hover_command` (command_palette.rs:154-163, wired :228-231): row
+   * mouse-move moves the highlight so hover and the keyboard never light
+   * two rows — MOTION only, so rows scrolling under a resting pointer
+   * must not steal the keyboard's place. Last-writer-wins with the
+   * keyboard: `move` continues from here; hover never scrolls the row
+   * into view (the reveal rides the key handler, not the store).
+   */
+  hover(ix: number): void {
+    if (!this.#open || ix === this.#active) {
+      return;
+    }
+    this.#active = ix;
+    this.#commit();
   }
 
   /**

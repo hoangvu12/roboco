@@ -15750,6 +15750,14 @@ button.segmented-option:hover {
   color: var(--rb-text-muted);
 }
 
+/* The action label flexes so the kbd chip pins right (command_palette.rs
+   :287 — flex_1 + min_w_0 around the highlighted label). */
+.command-palette-action-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
 /* -- Chat history rows (render_chat_row's palette copy) ----------------- */
 
 .command-chat-row {
@@ -15812,6 +15820,31 @@ button.segmented-option:hover {
 .command-chat-harness {
   flex: none;
   opacity: 0.8;
+}
+
+/*
+ * Archived rows dim their ICONS — the desktop's `archived_muted`
+ * (shell.rs:6154-6161, 6590-6598): the harness mark falls to 40% (its
+ * rest alpha being 0.8); selection is never muted, and in the palette
+ * hover = motion = the active row, so the active rule restores it.
+ */
+.command-chat-row-archived .command-chat-harness {
+  opacity: 0.4;
+}
+
+.command-chat-row-archived.command-chat-row-active .command-chat-harness {
+  opacity: 0.8;
+}
+
+/* The title dim is the web sidebar's own archived treatment (no desktop
+ * equivalent — `.archived .chat-row-item .chat-row-title` at 55%), scoped
+ * to the title line so the muted folder/branch lines keep their shade. */
+.command-chat-row-archived .command-chat-line-2 .command-chat-label {
+  color: color-mix(in srgb, var(--rb-text) 55%, transparent);
+}
+
+.command-chat-row-archived.command-chat-row-active .command-chat-line-2 .command-chat-label {
+  color: var(--rb-text);
 }
 
 .command-chat-branch-icon {

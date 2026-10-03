@@ -14,12 +14,23 @@ import {
   actionsFor,
   paletteChats,
   type CommandAction,
+  type CommandActionId,
   type PaletteChatRow,
 } from "../lib/command-palette";
 import { highlightRanges } from "../lib/add-space";
 import { statusWord } from "../lib/view";
 import { classifyKey } from "../lib/picker-search";
-import { badgeCombo, isMacPlatform } from "../state/shortcuts";
+import { useKeymap } from "../state/keymap";
+import type { KeymapConfig } from "../state/ui-settings";
+import {
+  badgeCombo,
+  defaultComboOn,
+  isMacPlatform,
+  keymapGet,
+  platformCombo,
+  validOrDefault,
+  type ShortcutId,
+} from "../state/shortcuts";
 import { RbDialogGlass } from "./base/dialog";
 import { KbdHint } from "./ui/KeyHint";
 import { MenuRowNav } from "./ui/MenuRows";
@@ -32,10 +43,15 @@ import { ChangeRequestBadge } from "./change-request-badge";
  * 14px radius) with an Actions section over the global chat history.
  * Search matches highlight inside labels (the same `highlightRanges` the
  * add-space palette uses), the keyboard highlight wraps and scrolls, and
- * Enter runs the entry: New chat routes to the canvas, New project opens
- * the add-space step ladder, Open settings routes to settings, and a chat
- * row routes to that chat. Archived chats stay searchable; every chat's
- * metadata (project, device, branch, PR) is a search target.
+ * pointer MOTION moves it too — hover and the keyboard never light two
+ * rows, and the reveal scrolls only for the keyboard (`hover_command`).
+ * Action rows badge their shortcuts (the keymap binding for New chat and
+ * New project, the hardcoded `mod-,` for settings, none for theme), Enter
+ * runs the entry: New chat routes to the canvas, New project opens the
+ * add-space step ladder, Open settings routes to settings, and a chat
+ * row routes to that chat. Archived chats stay searchable with their
+ * icons dimmed until active; every chat's metadata (project, device,
+ * branch, PR) is a search target.
  *
  * The mount lifecycle rides `RbDialogGlass` (see `state/command-palette.ts`);
  * the escape ladder closes it at the `commandPalette` priority — first on
@@ -55,6 +71,7 @@ export function CommandPalette() {
   const now = useNow(10_000);
   const sidebar = useSidebar();
   const state = useCommandPaletteSnapshot();
+  const keymap = useKeymap();
   const resolvedAppearance = useResolvedAppearance();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -153,11 +170,6 @@ export function CommandPalette() {
   useEffect(() => {
     listRef.current?.scrollTo({ top: 0 });
   }, [state.query]);
-  // Keyboard reveal keeps the highlighted row in view (`scroll_to_item`).
-  useEffect(() => {
-    const row = listRef.current?.children.item(state.active);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [state.active]);
   // The results viewport's edge fade (edge_faded, RESULTS_FADE_BAND 18):
   // gated per edge from the live scroll offset, 1px dead-zone — the same
   // contract as the sidebar's scroll fade.
@@ -224,6 +236,17 @@ export function CommandPalette() {
     }
   }
 
+  /**
+   * `scroll_to_item`: keep the keyboard-stepped row in view (nearest).
+   * It rides the key handler, not the store's `active` — hover moves the
+   * highlight too (motion-only) and must not scroll (command_palette.rs
+   * calls it inside the up/down arms only, never in `hover_command`).
+   */
+  function revealActive(): void {
+    const row = listRef.current?.children.item(commandPaletteStore.getSnapshot().active);
+    row?.scrollIntoView({ block: "nearest" });
+  }
+
   function keyDown(event: React.KeyboardEvent<HTMLInputElement>): boolean {
     const key = classifyKey(
       event.nativeEvent.key,
@@ -236,9 +259,11 @@ export function CommandPalette() {
         return true;
       case "up":
         commandPaletteStore.move(-1, entries.length);
+        revealActive();
         return true;
       case "down":
         commandPaletteStore.move(1, entries.length);
+        revealActive();
         return true;
       case "enter":
         // The desktop latches Enter against X11's unflagged repeats
@@ -277,6 +302,7 @@ export function CommandPalette() {
         active={ix === state.active}
         query={state.query}
         sidebar={sidebar}
+        keymap={keymap}
         onClick={() => {
           activate(ix);
         }}
@@ -363,6 +389,41 @@ function CommandKeyHint(props: { readonly keys: string; readonly label: string }
   );
 }
 
+/**
+ * The action row's shortcut badge (`command_palette.rs:273-293`): New chat
+ * and New project badge their keymap binding (`newSession`/
+ * `newProject` — an unparseable or cleared rebind falls back to the
+ * default), Open settings badges the hardcoded `mod-,` (it is not
+ * keymap-bound), and the theme action gets none.
+ *
+ * The badge reads the platform-NEUTRAL combo so `mod` keeps its ⌘ glyph on
+ * macOS (`badgeCombo`'s contract, like the header's mod-k chip):
+ * `validOrDefault` answers in the platform spelling, so its result equals
+ * `platformCombo(stored)` exactly when the stored combo parses — the
+ * desktop's `Keystroke::parse(&platform_combo(combo)).is_ok()` check,
+ * resolved with the same helper the keymap table uses.
+ */
+export function actionBadge(
+  actionId: CommandActionId,
+  keymap: KeymapConfig,
+  isMac: boolean,
+): string | null {
+  switch (actionId) {
+    case "new-chat":
+    case "new-project": {
+      const id: ShortcutId = actionId === "new-chat" ? "newSession" : "newProject";
+      const stored = keymapGet(keymap, id);
+      const fallback = defaultComboOn(id, isMac);
+      const valid = validOrDefault(stored, fallback, isMac) === platformCombo(stored, isMac);
+      return badgeCombo(valid ? stored : fallback, isMac);
+    }
+    case "settings":
+      return badgeCombo("mod-,", isMac);
+    case "theme":
+      return null;
+  }
+}
+
 /** One palette row: an action row, or a chat-history row. */
 function PaletteRow(props: {
   readonly entry: PaletteEntry;
@@ -372,20 +433,31 @@ function PaletteRow(props: {
   readonly active: boolean;
   readonly query: string;
   readonly sidebar: ReturnType<typeof useSidebar>;
+  readonly keymap: KeymapConfig;
   readonly onClick: () => void;
 }) {
-  const { entry, ix, first, last, active, query, sidebar, onClick } = props;
+  const { entry, ix, first, last, active, query, sidebar, keymap, onClick } = props;
   const spacing = `${first ? "command-row-first" : ""} ${last ? "command-row-last" : ""}`;
   if (entry.kind === "action") {
+    const badge = actionBadge(entry.action.id, keymap, isMacPlatform());
     return (
       <MenuRowNav
         fadeKey={`command-action-${ix}`}
         highlighted={active}
         onClick={onClick}
+        onMouseMove={() => {
+          // `hover_command`: motion moves the highlight (motion only —
+          // rows scrolling under a resting pointer keep the keyboard's
+          // place; command_palette.rs:228-231).
+          commandPaletteStore.hover(ix);
+        }}
         className={`command-palette-action ${spacing}`}
       >
         <Icon name={entry.action.icon} size={16} className="command-palette-action-icon" />
-        <Highlighted text={entry.action.label} query={query} />
+        <span className="command-palette-action-label">
+          <Highlighted text={entry.action.label} query={query} />
+        </span>
+        {badge !== null && <KbdHint>{badge}</KbdHint>}
       </MenuRowNav>
     );
   }
@@ -431,8 +503,15 @@ function ChatRow(props: {
     <button
       type="button"
       data-rb-row-key={`command-chat-${ix}`}
-      className={`command-chat-row ${spacing} ${active ? "command-chat-row-active" : ""}`}
+      className={`command-chat-row ${spacing} ${active ? "command-chat-row-active" : ""} ${
+        row.archived ? "command-chat-row-archived" : ""
+      }`}
       onClick={onClick}
+      onMouseMove={() => {
+        // `hover_command`: motion moves the highlight, same as the action
+        // rows (command_palette.rs:228-231).
+        commandPaletteStore.hover(ix);
+      }}
     >
       <span className="command-chat-line command-chat-line-1">
         <Highlighted text={row.folder} query={query} />
