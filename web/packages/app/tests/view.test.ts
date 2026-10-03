@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
+import { UNDELIVERED_GRACE_MS, type PendingSend } from "../src/state/transcript-store";
 import {
   archivedChatRows,
   attentionRank,
@@ -328,6 +329,77 @@ describe("chatListRows", () => {
   it("chatPageRow still resolves a child chat — hiding is a list rule, not a page rule", () => {
     const rows = chatPageRow("side", [chat({ id: "side", parentChatId: "main" })], [], [], NOW);
     expect(rows?.chat.id).toBe("side");
+  });
+});
+
+describe("send truth on the sidebar row (state.rs display_status_for + render_chat_row)", () => {
+  /** A send in flight, started at NOW. */
+  function send(chatId: string, startedAtMs: number): PendingSend {
+    return {
+      messageId: `m-${chatId}`,
+      chatId,
+      startedAtMs,
+      text: "hello",
+      attachmentPaths: [],
+    };
+  }
+
+  it("an in-flight send maps the row's status to working (story 7)", () => {
+    // No live status row at all — the send alone reads as Working, the
+    // desktop's "the queued command is as good as running".
+    const rows = chatListRows([chat({ id: "a" })], [], [], NOW, [], {
+      sendsFor: (chatId) => (chatId === "a" ? [send("a", NOW - 1_000)] : []),
+    });
+    expect(rows[0]!.status).toBe("working");
+    expect(rows[0]!.sendState).toBe(null);
+  });
+
+  it("a send unadopted past the grace window reads Failed (story 8)", () => {
+    const rows = chatListRows([chat({ id: "a" })], [], [], NOW, [], {
+      sendsFor: (chatId) =>
+        chatId === "a" ? [send("a", NOW - UNDELIVERED_GRACE_MS - 1)] : [],
+    });
+    // The overlay yields: the underlying status is idle, and the corner
+    // carries the explicit Failed chip instead.
+    expect(rows[0]!.status).toBe("idle");
+    expect(rows[0]!.sendState).toBe("failed");
+  });
+
+  it("a send on a degraded path reads Queued, not failed (story 9)", () => {
+    const rows = chatListRows([chat({ id: "a" })], [], [], NOW, [], {
+      sendsFor: (chatId) => (chatId === "a" ? [send("a", NOW - 1_000)] : []),
+      degradedFor: () => true,
+    });
+    expect(rows[0]!.status).toBe("working");
+    expect(rows[0]!.sendState).toBe("queued");
+  });
+
+  it("a degraded send held past the grace window stays Queued — never a false failure", () => {
+    const rows = chatListRows([chat({ id: "a" })], [], [], NOW, [], {
+      sendsFor: (chatId) =>
+        chatId === "a" ? [send("a", NOW - UNDELIVERED_GRACE_MS - 60_000)] : [],
+      degradedFor: () => true,
+    });
+    expect(rows[0]!.sendState).toBe("queued");
+  });
+
+  it("a live working status wins nothing extra: the send state rides the same row", () => {
+    const statuses = [status({ chatId: "a", status: "working", updatedAt: "2026-09-16T11:59:30Z" })];
+    const rows = chatListRows([chat({ id: "a" })], [], statuses, NOW, [], {
+      sendsFor: (chatId) => (chatId === "a" ? [send("a", NOW - 1_000)] : []),
+    });
+    expect(rows[0]!.status).toBe("working");
+    expect(rows[0]!.sendState).toBe(null);
+  });
+
+  it("an unrelated chat's send never colors another row", () => {
+    const rows = chatListRows([chat({ id: "a" }), chat({ id: "b" })], [], [], NOW, [], {
+      sendsFor: (chatId) => (chatId === "b" ? [send("b", NOW - 1_000)] : []),
+    });
+    expect(rows.map((row) => [row.chat.id, row.status, row.sendState])).toEqual([
+      ["a", "idle", null],
+      ["b", "working", null],
+    ]);
   });
 });
 

@@ -1,8 +1,11 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { parseScopedId } from "@roboco/engine-client";
+import { pendingSendStatus, type PendingSend } from "../state/transcript-store";
 import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
 import { projectPinnedFirst } from "./sidebar-pins";
+
+const NO_SENDS: readonly PendingSend[] = [];
 
 /**
  * The desktop's view derivations, ported 1:1 from `roboco_proto::view` and
@@ -116,6 +119,15 @@ export interface ChatRow {
   readonly deviceOffline: boolean;
   /** The chat's current PR summary, when one is resolved (line 3, right). */
   readonly changeRequest: ChangeRequestSummary | null;
+  /**
+   * The corner's send-truth chip — the desktop's `render_chat_row` override
+   * words: "Failed" once a send sits unadopted past the grace window,
+   * "Queued" while a degraded delivery path holds an in-flight send.
+   * Null when the send state has nothing to say (the status word/time
+   * rules the corner). The status field itself already carries an
+   * in-flight send as `working` (state.rs `display_status_for`).
+   */
+  readonly sendState: "queued" | "failed" | null;
 }
 
 /** The view options that shape the sidebar's rows before layout (§2.1). */
@@ -136,6 +148,20 @@ export interface SidebarRowOptions {
    * one-drive-loop registry is never transiently wrong, state.rs:1438).
    */
   readonly spacesLoaded?: boolean;
+  /**
+   * The chat's unconfirmed sends, keyed by (scoped) chat id — the echo
+   * overlay store's pending sends. An in-flight send maps the row's
+   * status to working (state.rs `display_status_for`: "the queued command
+   * is as good as running"); a queued or failed send overrides the
+   * corner word through `sendState`.
+   */
+  readonly sendsFor?: (chatId: string) => readonly PendingSend[];
+  /**
+   * Whether the chat's delivery path is degraded (its owning engine's
+   * WatchConnectivity posture, `chatDeliveryDegraded`) — a degraded path
+   * holds an in-flight send queued rather than failing it.
+   */
+  readonly degradedFor?: (chatId: string) => boolean;
 }
 
 /** The corner's status word, mirroring the desktop (Idle shows time-ago). */
@@ -207,6 +233,69 @@ export function chatIndicator(chat: Chat, live: ChatStatus | undefined): ChatInd
 export function displayStatus(chat: Chat, session: ChatStatus | undefined, now: number): ChatIndicator {
   const live = session !== undefined && effectiveIndicator(session, now) !== "none" ? session : undefined;
   return chatIndicator(chat, live);
+}
+
+/**
+ * One chat's send-truth aggregation over the echo overlay's pending sends
+ * (state.rs `send_pending`/`send_queued`/`send_undelivered`, in the web's
+ * `pendingSendStatus` semantics): `pending` when any send is still inside
+ * the grace window or held by a degraded path, `undelivered` when one has
+ * sat unadopted past the grace window on a healthy path.
+ */
+function sendTruthFor(
+  sends: readonly PendingSend[],
+  now: number,
+  degraded: boolean,
+): { readonly pending: boolean; readonly undelivered: boolean } {
+  let pending = false;
+  let undelivered = false;
+  for (const send of sends) {
+    if (pendingSendStatus(send, now, degraded) === "pending") {
+      pending = true;
+    } else {
+      undelivered = true;
+    }
+  }
+  return { pending, undelivered };
+}
+
+/**
+ * The row's display status with the send overlay applied (state.rs
+ * `display_status_for`): an in-flight send reads as Working — the queued
+ * command is as good as running — whatever the watched status says. The
+ * corner's chip (`sendState`) is derived by the same call site.
+ */
+export function sendAwareStatus(
+  chat: Chat,
+  session: ChatStatus | undefined,
+  now: number,
+  sends: readonly PendingSend[],
+  degraded: boolean,
+): ChatIndicator {
+  if (sendTruthFor(sends, now, degraded).pending) {
+    return "working";
+  }
+  return displayStatus(chat, session, now);
+}
+
+/**
+ * The corner's send-truth chip: "failed" past the grace window on a healthy
+ * path, "queued" while a degraded path holds the send, null otherwise —
+ * `render_chat_row`'s override words (undelivered wins, like the desktop).
+ */
+export function sendStateChip(
+  sends: readonly PendingSend[],
+  now: number,
+  degraded: boolean,
+): "queued" | "failed" | null {
+  const truth = sendTruthFor(sends, now, degraded);
+  if (truth.undelivered) {
+    return "failed";
+  }
+  if (truth.pending && degraded) {
+    return "queued";
+  }
+  return null;
 }
 
 /** Attention bucket — lower is more urgent (view.rs attention_rank). */
@@ -366,7 +455,10 @@ export function sidebarGroups(
  * sections). The jump shortcuts and session cycling read THIS order so
  * keyboard order never drifts from the screen. While the pinned disclosure
  * is collapsed the hidden pins hold no slot (they are not on the screen),
- * and a collapsed section's members hold no slot either.
+ * and a collapsed section's members hold no slot either. A collapsed
+ * Sessions disclosure (the one-list mode's regular rows) holds no slot for
+ * any regular row — only pins and section members stay on the screen
+ * (`spaces.rs`'s `!sessions_open` retain).
  */
 export function sidebarVisibleOrder(
   rows: readonly ChatRow[],
@@ -375,6 +467,7 @@ export function sidebarVisibleOrder(
   pinnedIds: readonly string[] = [],
   pinnedOpen = true,
   sections: readonly SidebarSection[] = [],
+  sessionsOpen = true,
 ): string[] {
   const claimed = new Set(sections.flatMap((section) => section.sessionIds));
   const unclaimed = rows.filter((row) => !claimed.has(row.chat.id));
@@ -386,6 +479,18 @@ export function sidebarVisibleOrder(
     .filter((section) => !section.collapsed)
     .flatMap((section) => section.sessionIds.filter((id) => ids.has(id)));
   const visible = projectPinnedFirst([...customOrder, ...flat], pinnedIds);
+  if (!sessionsOpen && organization === "inOneList") {
+    // Collapsed Sessions: the regular rows are hidden — pins and custom
+    // section members (the disclosure only ever wraps the regular groups).
+    const pinned = new Set(pinnedIds);
+    const custom = new Set(customOrder);
+    const kept = visible.filter((id) => pinned.has(id) || custom.has(id));
+    if (!pinnedOpen) {
+      const pins = new Set(pinnedIds);
+      return kept.filter((id) => !pins.has(id));
+    }
+    return kept;
+  }
   if (!pinnedOpen) {
     const pins = new Set(pinnedIds);
     return visible.filter((id) => !pins.has(id));
@@ -566,11 +671,16 @@ function toChatRow(
   const branch = rawBranch !== null && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
   const project = space !== undefined ? spaceDisplayName(space) : dangling ? "?" : "~";
   const device = deviceById.get(chat.deviceId);
+  // The send overlay (state.rs `display_status_for` + render_chat_row's
+  // corner overrides): an in-flight send reads as Working, and a
+  // queued/failed send carries the corner chip.
+  const sends = options.sendsFor?.(chat.id) ?? NO_SENDS;
+  const degraded = options.degradedFor?.(chat.id) ?? false;
   const harness =
     options.showHarness === false ? null : (chat.config?.harness ?? null);
   return {
     chat,
-    status: displayStatus(chat, statusByChat.get(chat.id), now),
+    status: sendAwareStatus(chat, statusByChat.get(chat.id), now, sends, degraded),
     project,
     projectPath: space?.path ?? null,
     folder: device !== undefined ? `${project} @ ${device.name}` : project,
@@ -582,6 +692,7 @@ function toChatRow(
     deviceOffline: !deviceOnline(device, now, options.engineStates),
     changeRequest:
       options.showPullRequest === false ? null : (options.changeRequests?.get(chat.id) ?? null),
+    sendState: sendStateChip(sends, now, degraded),
   };
 }
 

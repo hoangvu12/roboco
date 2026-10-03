@@ -295,6 +295,41 @@ describe("sidebarGroups / sidebarVisibleOrder", () => {
     ]);
   });
 
+  it("a collapsed Sessions disclosure holds no slot — pins and section members stay (spec: Sessions)", () => {
+    const rows = chatRows([
+      chat("r1", { deviceId: "local" }),
+      chat("r2", { deviceId: "local" }),
+      chat("s1", { deviceId: "local" }),
+    ]);
+    const sections: readonly SidebarSection[] = [
+      { id: "a", name: "A", sessionIds: ["s1"], collapsed: false },
+    ];
+    // Collapsed Sessions (inOneList): the regular rows vanish from the
+    // displayed order; pins and custom-section members keep their slots —
+    // `spaces.rs`'s `!sessions_open` retain, verbatim.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["r1"], true, sections, false)).toEqual([
+      "r1",
+      "s1",
+    ]);
+    // With the pinned section ALSO collapsed, hidden pins drop too.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["r1"], false, sections, false)).toEqual([
+      "s1",
+    ]);
+    // The disclosure only gates the one-list mode: grouped organizations
+    // never had a Sessions section, so the flag is inert there.
+    expect(sidebarVisibleOrder(rows, "byDevice", "local", ["r1"], true, sections, false)).toEqual([
+      "r1",
+      "s1",
+      "r2",
+    ]);
+    // Open (the default) keeps every row.
+    expect(sidebarVisibleOrder(rows, "inOneList", null, ["r1"], true, sections, true)).toEqual([
+      "r1",
+      "s1",
+      "r2",
+    ]);
+  });
+
   it("a collapsed section's members hold no slot", () => {
     const rows = chatRows([
       chat("s1", { deviceId: "local" }),
@@ -386,5 +421,6 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     deviceName: null,
     deviceOffline: false,
     changeRequest: null,
+    sendState: null,
   }));
 }

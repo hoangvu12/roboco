@@ -62,6 +62,33 @@ export const SIDEBAR_DISCLOSURE_BODY_INSET = 4;
 /** The pinned disclosure's keyed header entry (the FLIP diff's phantom). */
 export const SIDEBAR_PINNED_HEADER_KEY = "sidebar-pinned-header";
 
+/** `shell/sidebar_pins.rs::MAX_SIDEBAR_PINS` — the admission limit for NEW pins. */
+export const MAX_SIDEBAR_PINS = 200;
+
+/**
+ * `validate_sidebar_pin_update` (sidebar_pins.rs): the optimistic
+ * projection gate before any pin write lands — ids must be non-empty and
+ * unique, and a projection that would admit a NEW pin beyond the limit is
+ * refused. Returns the desktop's notice message on rejection, null when
+ * the projection is valid (reorders of a full bucket stay fine).
+ */
+export function validateSidebarPinUpdate(
+  current: readonly string[],
+  next: readonly string[],
+): string | null {
+  const seen = new Set<string>();
+  for (const id of next) {
+    if (id.length === 0 || seen.has(id)) {
+      return "Sidebar pins must be non-empty and unique";
+    }
+    seen.add(id);
+  }
+  if (next.length > MAX_SIDEBAR_PINS && next.some((id) => !current.includes(id))) {
+    return "You can pin up to 200 sessions";
+  }
+  return null;
+}
+
 /**
  * `shell.rs`'s `pinned_body_height`: inset + rows + intra-list gaps — the
  * height the disclosure tween collapses to 0. Pure.

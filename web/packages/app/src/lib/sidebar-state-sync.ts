@@ -37,6 +37,18 @@ const RESUBSCRIBE_MS = 2_000;
 /** The client surface a bridge needs — `Pick<EngineClient, "call" | "watch">`. */
 export type SidebarStateClient = Pick<EngineClient, "call" | "watch">;
 
+/** Options for the bridge — the notice channel for failed writes. */
+export interface SidebarStateSyncOptions {
+  /**
+   * The sidebar notice channel — the desktop's `set_pin_write_notice`
+   * ("Couldn't save pins: …"). A failed RPC write surfaces here so local
+   * state never silently diverges from the engine's; the app wiring routes
+   * it to the notice strip. Unset: failures stay silent (tests that model
+   * only the state machine).
+   */
+  readonly onNotice?: (message: string) => void;
+}
+
 /** The wire shape of one custom section (`roboco_proto::SidebarSection`). */
 interface WireSidebarSection {
   readonly id: string;
@@ -205,10 +217,12 @@ export class SidebarStateSync {
   #lastPins: Readonly<Record<string, readonly string[]>> = {};
   #lastSections: Readonly<Record<string, readonly SidebarSection[]>> = {};
   #disposed = false;
+  readonly #onNotice: ((message: string) => void) | null;
   readonly #unsubscribeSettings: () => void;
 
-  constructor(settings: UiSettingsStore) {
+  constructor(settings: UiSettingsStore, options: SidebarStateSyncOptions = {}) {
     this.#settings = settings;
+    this.#onNotice = options.onNotice ?? null;
     const snapshot = settings.getSnapshot();
     this.#lastPins = snapshot.sidebarPinnedSessionIdsByProfile;
     this.#lastSections = snapshot.sidebarSectionsByProfile;
@@ -576,12 +590,17 @@ export class SidebarStateSync {
         // value. Yield first so the settings listeners settle.
         await Promise.resolve();
       }
-    } catch {
+    } catch (error) {
       // Offline or transport failure: the cache stays authoritative for
       // reads (the offline fallback), the surface stays dirty, and the
       // retry rides the next frame, mutation, or re-attach — never a busy
-      // loop.
+      // loop. But the failure is no longer silent (the desktop's
+      // `set_pin_write_notice` semantics): the user learns the engine
+      // never saw the write.
       failed = true;
+      if (this.#bridges.get(bridge.key) === bridge && this.#onNotice !== null) {
+        this.#onNotice(`Couldn't save pins: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } finally {
       bridge.writeRunning = false;
       if (

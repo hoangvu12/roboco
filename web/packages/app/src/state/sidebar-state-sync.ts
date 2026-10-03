@@ -1,4 +1,5 @@
 import { engineRegistry } from "./fleet";
+import { sidebarNotice } from "./notice";
 import { sidebarPinProfileKey } from "../lib/sidebar-pins";
 import { SidebarStateSync } from "../lib/sidebar-state-sync";
 import { uiSettings } from "./ui-settings";
@@ -16,7 +17,9 @@ import { uiSettings } from "./ui-settings";
  * reading `sidebarStore` / `uiSettings` unchanged.
  */
 
-export const sidebarStateSync = new SidebarStateSync(uiSettings);
+export const sidebarStateSync = new SidebarStateSync(uiSettings, {
+  onNotice: (message) => sidebarNotice.set(message),
+});
 
 function syncBridges(): void {
   const snapshot = engineRegistry.getSnapshot();

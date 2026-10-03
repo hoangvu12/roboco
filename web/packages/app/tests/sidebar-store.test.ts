@@ -22,6 +22,8 @@ describe("SidebarStore", () => {
       // `Shell::pinned_open`: pins are visible by default (a hidden pin
       // would be pointless), session-transient like the archived shelf.
       pinnedOpen: true,
+      // `Shell::sessions_open`: the one-list regular rows show by default.
+      sessionsOpen: true,
       pinnedByProfile: {},
       // Custom sections (upstream 86249cf0): device-local, profile-isolated,
       // never synchronized; the create-section dialog is in-memory.
@@ -94,6 +96,50 @@ describe("SidebarStore", () => {
     const second = new SidebarStore({ storage });
     expect(second.getSnapshot().pinnedOpen).toBe(true);
     expect(second.getSnapshot().pinnedByProfile).toEqual({ local: ["a"] });
+  });
+
+  it("a pin beyond the 200-session limit posts the limit notice and writes nothing", () => {
+    const notices: string[] = [];
+    const storage = memoryStorage();
+    const settings = new UiSettingsStore({ storage });
+    const store = new SidebarStore({ settings, onNotice: (message) => notices.push(message) });
+    const full = Array.from({ length: 200 }, (_, ix) => `p${ix}`);
+    settings.updateImmediate({ sidebarPinnedSessionIdsByProfile: { local: full } });
+    // The 201st NEW pin is refused client-side (spec: the pin must not
+    // silently vanish on the next engine frame).
+    store.setChatPinned("local", "over-limit", true);
+    expect(notices).toEqual(["You can pin up to 200 sessions"]);
+    expect(store.getSnapshot().pinnedByProfile["local"]).toHaveLength(200);
+    // Unpinning past the limit stays fine — the limit admits reorders.
+    store.setChatPinned("local", full[0]!, false);
+    expect(store.getSnapshot().pinnedByProfile["local"]).toHaveLength(199);
+  });
+
+  it("an invalid pin projection never disturbs the saved bucket", () => {
+    const notices: string[] = [];
+    const store = new SidebarStore({ storage: memoryStorage(), onNotice: (m) => notices.push(m) });
+    store.setChatPinned("local", "a", true);
+    // A duplicate would only arise from a corrupted drag commit; the store
+    // refuses the write and keeps the last valid bucket.
+    store.replacePinsByProfile({ local: ["a", "a"] });
+    expect(notices).toEqual(["Sidebar pins must be non-empty and unique"]);
+    expect(store.getSnapshot().pinnedByProfile).toEqual({ local: ["a"] });
+  });
+
+  it("the Sessions disclosure starts open, is in-memory only, and toggles", () => {
+    const storage = memoryStorage();
+    const store = new SidebarStore({ storage });
+    // `Shell::sessions_open`: open by default, session-transient — a
+    // reload re-expands (a fresh store never reads a persisted collapse).
+    expect(store.getSnapshot().sessionsOpen).toBe(true);
+    store.setSessionsOpen(false);
+    expect(store.getSnapshot().sessionsOpen).toBe(false);
+    store.setSessionsOpen(false);
+    expect(store.getSnapshot().sessionsOpen).toBe(false);
+    store.setSessionsOpen(true);
+    expect(store.getSnapshot().sessionsOpen).toBe(true);
+    const second = new SidebarStore({ storage });
+    expect(second.getSnapshot().sessionsOpen).toBe(true);
   });
 
   it("ignores corrupted legacy state without destroying it", () => {

@@ -309,6 +309,28 @@ describe("SidebarStateSync", () => {
     expect(engine.sectionsByProfile["local"]).toHaveLength(2);
   });
 
+  it("surfaces a failed write through the notice channel instead of swallowing it", async () => {
+    const notices: string[] = [];
+    const sync = new SidebarStateSync(store, { onNotice: (message) => notices.push(message) });
+    try {
+      sync.attach("eng-1", client as unknown as SidebarStateClient, "local");
+      client.offline = true;
+      setPins(store, "local", [scoped("eng-1", "never-lands")]);
+      await settle();
+
+      // The cache keeps serving (the offline fallback) AND the failure is
+      // visible: local state never silently diverges from the engine's.
+      expect(store.getSnapshot().sidebarPinnedSessionIdsByProfile["local"]).toEqual([
+        scoped("eng-1", "never-lands"),
+      ]);
+      expect(engine.pinsByProfile["local"]).toBeUndefined();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("Couldn't save pins");
+    } finally {
+      sync.dispose();
+    }
+  });
+
   it("falls back offline: the cache keeps serving, the push retries after reconnect", async () => {
     setPins(store, "local", [scoped("eng-1", "offline-pin")]);
     client.offline = true;

@@ -1,5 +1,5 @@
 import type { StorageLike } from "./engine-store";
-import { projectSidebarPinChange, retainKnownPins, type SidebarPinChange } from "./sidebar-pins";
+import { projectSidebarPinChange, retainKnownPins, validateSidebarPinUpdate, type SidebarPinChange } from "./sidebar-pins";
 import {
   assignSidebarSection,
   createSidebarSection,
@@ -48,6 +48,13 @@ export interface SidebarState {
    */
   readonly pinnedOpen: boolean;
   /**
+   * The one-list mode's Sessions disclosure — `Shell::sessions_open`: open
+   * by default, in-memory only (a reload re-expands the regular rows). The
+   * ByDevice/ByProject organizations have no Sessions section, so the flag
+   * only reads under `inOneList`.
+   */
+  readonly sessionsOpen: boolean;
+  /**
    * Device-local pinned sessions per workspace profile, in visual order
    * (`UiSettings::sidebar_pinned_session_ids_by_profile`; ui-settings, never
    * synced). Callers resolve the active bucket(s) off the fleet registry.
@@ -84,14 +91,25 @@ export interface SidebarStoreOptions {
   readonly settings?: UiSettingsStore;
   /** Convenience for tests: a settings store over this storage. */
   readonly storage?: StorageLike;
+  /**
+   * The sidebar notice channel — the desktop's `sidebar_notice`. Pin-write
+   * rejections (the 200-session limit, an invalid projection) post here
+   * instead of silently dropping the user's intent; the app wiring routes
+   * it to the notice strip.
+   */
+  readonly onNotice?: (message: string) => void;
 }
 
 export class SidebarStore {
   readonly #settings: UiSettingsStore;
+  readonly #onNotice: ((message: string) => void) | null;
   #archivedOpen = false;
   // `Shell::pinned_open`: pins are visible by default (a pin the section
   // hides would be pointless), and the flag never reaches storage.
   #pinnedOpen = true;
+  // `Shell::sessions_open`: the regular rows show by default; the flag
+  // never reaches storage (a reload re-expands).
+  #sessionsOpen = true;
   // `Shell::section_dialog` — in-memory like the archived shelf.
   #sectionDialogOpen = false;
   #state: SidebarState;
@@ -100,6 +118,7 @@ export class SidebarStore {
   constructor(options: SidebarStoreOptions = {}) {
     this.#settings =
       options.settings ?? (options.storage === undefined ? uiSettings : new UiSettingsStore({ storage: options.storage }));
+    this.#onNotice = options.onNotice ?? null;
     this.#state = this.#project(this.#settings.getSnapshot());
     // Settings can move from elsewhere (a settings page, another view onto the
     // same fields) — re-project, and stay quiet when this slice did not move.
@@ -147,6 +166,15 @@ export class SidebarStore {
       return;
     }
     this.#pinnedOpen = open;
+    this.#emit(this.#project(this.#settings.getSnapshot()));
+  }
+
+  /** `Shell::sessions_open`'s toggle: in-memory only, a no-op notifies nobody. */
+  setSessionsOpen(open: boolean): void {
+    if (open === this.#sessionsOpen) {
+      return;
+    }
+    this.#sessionsOpen = open;
     this.#emit(this.#project(this.#settings.getSnapshot()));
   }
 
@@ -212,6 +240,14 @@ export class SidebarStore {
         }
       : { action: "unpin", sessionId: chatId };
     const next = projectSidebarPinChange(bucket, change);
+    // `validate_sidebar_pin_change`: a projection that would admit a NEW
+    // pin beyond the limit is refused BEFORE any write — the notice says
+    // the limit (the desktop's message), and the saved bucket stands.
+    const rejection = validateSidebarPinUpdate(bucket, next);
+    if (rejection !== null) {
+      this.#onNotice?.(rejection);
+      return;
+    }
     const map: Record<string, readonly string[]> = { ...current };
     if (next.length === 0) {
       delete map[profileKey];
@@ -332,6 +368,17 @@ export class SidebarStore {
     const clean: Record<string, readonly string[]> = {};
     for (const [key, ids] of Object.entries(pinnedByProfile)) {
       if (ids.length > 0) {
+        // The drag-commit arm validates the same way (the desktop routes
+        // every projection through `apply_sidebar_pin_change`): a bad
+        // bucket is refused whole, the last valid state stands.
+        const rejection = validateSidebarPinUpdate(
+          this.#settings.getSnapshot().sidebarPinnedSessionIdsByProfile[key] ?? [],
+          ids,
+        );
+        if (rejection !== null) {
+          this.#onNotice?.(rejection);
+          return;
+        }
         clean[key] = ids;
       }
     }
@@ -376,6 +423,7 @@ export class SidebarStore {
       lastSpaceId: settings.lastSpaceId,
       archivedOpen: this.#archivedOpen,
       pinnedOpen: this.#pinnedOpen,
+      sessionsOpen: this.#sessionsOpen,
       pinnedByProfile: settings.sidebarPinnedSessionIdsByProfile,
       sectionsByProfile: settings.sidebarSectionsByProfile,
       sectionDialogOpen: this.#sectionDialogOpen,
@@ -396,6 +444,7 @@ export class SidebarStore {
       state.lastSpaceId === this.#state.lastSpaceId &&
       state.archivedOpen === this.#state.archivedOpen &&
       state.pinnedOpen === this.#state.pinnedOpen &&
+      state.sessionsOpen === this.#state.sessionsOpen &&
       // Healed snapshots allocate fresh containers per write — compare contents.
       pinMapsEqual(state.pinnedByProfile, this.#state.pinnedByProfile) &&
       sectionMapsEqual(state.sectionsByProfile, this.#state.sectionsByProfile) &&

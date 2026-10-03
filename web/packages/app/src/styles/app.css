@@ -74,7 +74,6 @@ button {
 a:focus-visible,
 .picker-chip:focus-visible,
 .chat-row:focus-visible,
-.arch-row:focus-visible,
 .term-tab:focus-visible {
   outline-offset: 2px;
 }
@@ -2925,39 +2924,12 @@ a:focus-visible,
 
 .project-monogram[data-active="1"],
 .chat-row:hover .project-monogram,
-.chat-row-active .project-monogram,
-.arch-row:hover .project-monogram,
-.arch-row-active .project-monogram {
+.chat-row-active .project-monogram {
   background: var(--rb-mono-plate-active);
   color: var(--rb-mono-ink-active);
 }
 
-/*
- * Archived history recedes (dfd2fc0c): the project mark dims at rest and
- * restores on hover/selection, matching the harness mark's treatment.
- */
-.arch-row-project {
-  flex: none;
-  width: 13px;
-  height: 13px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
 
-.arch-row:not(:hover):not(.arch-row-active) .arch-row-project,
-.arch-row:not(:hover):not(.arch-row-active) .arch-row-brand {
-  opacity: 0.4;
-}
-
-.arch-row-branch {
-  flex: none;
-  max-width: 90px;
-  overflow: hidden;
-  font-size: 11px;
-  line-height: 14px;
-  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
-}
 
 .chat-row-folder {
   flex: 1;
@@ -2997,6 +2969,28 @@ a:focus-visible,
 
 .status-working {
   color: var(--rb-activity);
+}
+
+/*
+ * The send-truth chips (`render_chat_row`'s override words): a send
+ * unadopted past the grace window is Failed (danger), one held by a
+ * degraded delivery path is Queued (warning) — the pending pill tells the
+ * truth instead of faking a spinner or a check.
+ */
+.status-send-failed {
+  color: var(--rb-danger);
+}
+
+.status-send-queued {
+  color: var(--rb-warning);
+}
+
+.dot-send-failed {
+  background: color-mix(in srgb, var(--rb-danger) 65%, transparent);
+}
+
+.dot-send-queued {
+  background: color-mix(in srgb, var(--rb-warning) 80%, transparent);
 }
 
 .status-awaitingInput {
@@ -10933,6 +10927,17 @@ button.files-save-pill:hover {
   padding-top: 12px;
 }
 
+/*
+ * The one-list mode's Sessions disclosure (`render_sessions_section`):
+ * the same column as the device groups; the 12px top band rides `follows`
+ * (the class composes with .sidebar-group when pinned/custom sections
+ * lead, stands alone at the list's head).
+ */
+.sidebar-sessions {
+  display: flex;
+  flex-direction: column;
+}
+
 .sidebar-disclosure-header {
   display: flex;
   align-items: center;
@@ -11009,87 +11014,30 @@ button.files-save-pill:hover {
 }
 
 /*
- * The slim one-liner (`spaces.rs:1716-1728`): 36px, a 10px harness gap
- * (looser than the active row's 8 — a one-line shelf carries a bigger mark
- * with more air), radius 6, selected wash, hover fill.
+ * The archived card dims until touched (the desktop's `archived_muted`):
+ * monogram and harness mark fall to 40%, the title to the muted 55% —
+ * hover or selection restores both, exactly the way the old slim row
+ * behaved but on the shared card's own chrome.
  */
-.arch-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 36px;
-  padding: 0 var(--rb-space-sm);
-  border-radius: 6px;
-  text-decoration: none;
-  color: var(--rb-text-muted);
-  cursor: pointer;
-}
-
-.arch-row:hover {
-  background: var(--rb-hover);
-}
-
-.arch-row-active,
-.arch-row-active:hover {
-  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
-}
-
-/* Dimmed-until-touched: mark and title restore on hover or selection. */
-.arch-row-brand {
-  flex: none;
+.archived .chat-row-item .project-monogram,
+.archived .chat-row-item .chat-row-brand {
   opacity: 0.4;
 }
 
-.arch-row-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
+.archived .chat-row-item .chat-row-title {
   color: color-mix(in srgb, var(--rb-text) 55%, transparent);
 }
 
-.arch-row:hover .arch-row-brand,
-.arch-row-active .arch-row-brand {
+.archived .chat-row-item:hover .project-monogram,
+.archived .chat-row-item .chat-row-active .project-monogram,
+.archived .chat-row-item:hover .chat-row-brand,
+.archived .chat-row-item .chat-row-active .chat-row-brand {
   opacity: 1;
 }
 
-.arch-row:hover .arch-row-title,
-.arch-row-active .arch-row-title {
+.archived .chat-row-item:hover .chat-row-title,
+.archived .chat-row-item .chat-row-active .chat-row-title {
   color: var(--rb-text);
-}
-
-.arch-row-time {
-  flex: none;
-  font-size: 11px;
-  color: color-mix(in srgb, var(--rb-text-muted) 55%, transparent);
-}
-
-/*
- * The Unarchive pill, matching the active row's Archive pill EXACTLY
- * (18px, gap 4, px 4 bleeding into the row's own padding via mr -4, radius
- * 5, wash 0.10 → 0.18) — two sizes of the same affordance. It is MOUNTED
- * only while the row is hovered: the row picks the slot at render
- * (`archivedRightSlot`), so there is no reveal CSS here.
- */
-.arch-row-unarchive {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 18px;
-  flex: none;
-  padding-inline: 4px;
-  margin-right: -4px;
-  border: none;
-  border-radius: 5px;
-  background: rgb(var(--rb-wash) / 0.1);
-  color: var(--rb-text-muted);
-  font-size: 10px;
-  cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-tailwind);
-}
-
-.arch-row-unarchive:hover {
-  background: rgb(var(--rb-wash) / 0.18);
 }
 
 /* "Show N more": 36px, gap 10, radius 6, muted at 55% until hovered. */

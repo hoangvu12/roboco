@@ -149,11 +149,21 @@ const NO_SENDS: readonly PendingSend[] = [];
  */
 export class EchoStore {
   #byChat = new Map<string, readonly PendingSend[]>();
+  #version = 0;
   readonly #listeners = new Set<() => void>();
 
   /** The sends awaiting confirmation in one chat, oldest first. */
   forChat(chatId: string): readonly PendingSend[] {
     return this.#byChat.get(chatId) ?? NO_SENDS;
+  }
+
+  /**
+   * The store's change counter — the stable `useSyncExternalStore`
+   * snapshot for list surfaces (the sidebar rows) that re-derive send
+   * truth on every change. Bumped exactly when listeners fire.
+   */
+  version(): number {
+    return this.#version;
   }
 
   get(messageId: string): PendingSend | null {
@@ -281,6 +291,7 @@ export class EchoStore {
   }
 
   #emit(): void {
+    this.#version += 1;
     for (const listener of this.#listeners) {
       listener();
     }

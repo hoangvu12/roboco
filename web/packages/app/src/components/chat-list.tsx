@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { parseScopedId } from "@roboco/engine-client";
@@ -10,6 +10,7 @@ import { useSidebar } from "../state/sidebar";
 import { sidebarNotice } from "../state/notice";
 import { cycleTarget, onShortcut } from "../state/shortcuts";
 import { useJumpHints, visibleJumpOrder } from "../state/jump-hints";
+import { echoStore, chatDeliveryDegraded } from "../state/transcript-store";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
 import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import {
@@ -74,6 +75,8 @@ const SIDEBAR_DISCLOSURE_BODY_INSET = 4;
  * a collapsed section's keyed height for the FLIP diff.
  */
 const SIDEBAR_DISCLOSURE_SECTION_HEIGHT = SIDEBAR_SECTION_GAP + 28;
+/** `spaces.rs::SIDEBAR_DISCLOSURE_HEADER_HEIGHT` — one disclosure header row. */
+const SIDEBAR_DISCLOSURE_HEADER_HEIGHT = 28;
 
 /**
  * `shell.rs::RESORT` — 260ms `cubic-bezier(0.22, 1, 0.36, 1)`. A UI-level
@@ -194,6 +197,14 @@ export function ChatList() {
         ? chats.rows
         : chats.rows.filter((chat) => chat.spaceId !== undefined && chat.spaceId === filter);
   const changeRequests = useFleetChatChangeRequests(sessions, visible);
+  // A pending send recolors its row the moment it starts: the echo store
+  // is app-wide, so the list subscribes to its version and re-derives the
+  // rows' send truth (in-flight → Working, Queued/Failed corner chips) on
+  // every overlay change — push, ack, failure cleanup, retry.
+  useSyncExternalStore(
+    (listener) => echoStore.subscribe(listener),
+    () => echoStore.version(),
+  );
 
   // The device-group collapse keys — in-memory only, exactly like the
   // desktop's `sidebar_collapsed_groups` (a reload re-expands every group).
@@ -214,6 +225,11 @@ export function ChatList() {
           // A dangling spaceId hides its chat only once the spaces frame
           // is in; until then the row renders with the "?" label (ticket 43).
           spacesLoaded: snapshot.spaces.loaded,
+          // The echo overlay's pending sends, keyed by the rows' scoped ids
+          // (the composer publishes under the page id — the same namespace);
+          // the chat's owning engine's connectivity decides degradation.
+          sendsFor: (chatId) => echoStore.forChat(chatId),
+          degradedFor: (chatId) => deliveryDegradedFor(sessions, chatId),
         })
       : [];
 
@@ -355,6 +371,16 @@ export function ChatList() {
     // The header (or a collapsed body) pins at the top.
     return 0;
   };
+  /**
+   * A release over the Sessions disclosure header (collapsed or not) — the
+   * desktop's `sessions-toggle` `on_drop`: the Regular arm, and the section
+   * re-opens to receive the row (`sessions_open = true` in the transfer's
+   * finish). The unpin drop target is always reachable, even collapsed.
+   */
+  const dropSessionsHeaderAt = (pointer: { clientX: number; clientY: number }): boolean => {
+    const hit = document.elementFromPoint?.(pointer.clientX, pointer.clientY);
+    return hit instanceof Element && hit.closest("[data-sidebar-sessions-header]") !== null;
+  };
   const finishTransferIn = (chatId: string, pointer: { clientX: number; clientY: number }): void => {
     // `finish_sidebar_session_transfer`'s target lattice, hit-tested at the
     // release point: a custom section element claims it first (header, body,
@@ -394,6 +420,17 @@ export function ChatList() {
       if (!open) {
         sidebarStore.setPinnedOpen(true);
       }
+      return;
+    }
+    if (dropSessionsHeaderAt(pointer)) {
+      const { sections: live, profileKey } = sectionsRef.current;
+      // The Regular arm on the Sessions header: membership clears, a pinned
+      // chat unpins — and the section re-opens to receive the row.
+      if (sectionMembership(live, chatId) !== null || pinnedInBuckets(chatId)) {
+        unpinEverywhere(chatId);
+        sidebarStore.assignSidebarSection(profileKey, chatId, null);
+      }
+      sidebarStore.setSessionsOpen(true);
       return;
     }
     const regularHit = dropRegularRowAt(pointer);
@@ -529,7 +566,8 @@ export function ChatList() {
   // jump-hint chips all read, so keyboard order never drifts from the screen.
   // A collapsed pinned section hides its rows, so they hold no slot here;
   // open custom sections' members slot between the pins and the unclaimed
-  // rows, a collapsed section's members hold no slot either.
+  // rows, a collapsed section's members hold no slot either, and a collapsed
+  // Sessions disclosure (inOneList) hides every regular row the same way.
   const order = sidebarVisibleOrder(
     rows,
     sidebar.organization,
@@ -537,6 +575,7 @@ export function ChatList() {
     displayedPins,
     pinnedOpen,
     sections,
+    sidebar.sessionsOpen,
   );
 
   // The chips: while the hints are visible, the first nine rows carry the
@@ -609,13 +648,17 @@ export function ChatList() {
 
   const keyed: SidebarKeyed[] = [];
   const entries: { key: string; element: React.ReactNode }[] = [];
+  // `show_pinned_section`: pins exist OR a pin transfer is in flight — the
+  // empty section still mounts so the FIRST pin can be made by dragging
+  // (the desktop mounts it for the transfer's drop target too).
+  const pinnedSectionMounted = pinnedRows.length > 0 || transferIn !== null;
   // The pinned section leads (`render_active_rows`'s pin split). The FLIP
   // diff's order vec carries the section's PHANTOM entries — the disclosure
   // header (28px + the open body's inset) and the divider — which hold no
   // element of their own; only the pinned ROWS carry elements so the resort
   // glide still reaches them. Collapsed, the pinned rows hold no slot at
   // all (the desktop's `if ix < pinned_count && !self.pinned_open` skip).
-  if (pinnedRows.length > 0) {
+  if (pinnedSectionMounted) {
     keyed.push({ key: SIDEBAR_PINNED_HEADER_KEY, height: pinnedHeaderKeyedHeight(pinnedOpen) });
   }
   for (const row of pinnedRows) {
@@ -677,8 +720,65 @@ export function ChatList() {
       ),
     });
   }
+  // The one-list mode wraps the regular rows in the Sessions disclosure
+  // (`render_sessions_section`): "Sessions" open, "Sessions (N)" collapsed,
+  // in-memory open state, the collapsed header a drop target that re-opens
+  // on drop. The ByDevice/ByProject organizations keep their own group
+  // disclosures instead — no Sessions section there (the desktop's
+  // `sidebar_organization != InOneList` early return).
+  const sessionsMode = sidebar.organization === "inOneList";
   for (const bucket of groups) {
     if (bucket.group === null) {
+      if (sessionsMode) {
+        const sessionsRows = bucket.rows;
+        if (sessionsRows.length > 0 || transferIn !== null) {
+          const collapsed = !sidebar.sessionsOpen;
+          // The 12px section band only when the pinned section or custom
+          // sections lead (the desktop's `follows_pinned` flag).
+          const follows = pinnedSectionMounted || sectionGroups.length > 0;
+          const sessionsKey = "s:sessions";
+          keyed.push({
+            key: sessionsKey,
+            height:
+              (follows ? SIDEBAR_SECTION_GAP : 0) +
+              SIDEBAR_DISCLOSURE_HEADER_HEIGHT +
+              (collapsed
+                ? 0
+                : SIDEBAR_DISCLOSURE_BODY_INSET +
+                  sessionsRows.reduce(
+                    (total, row) =>
+                      total + sidebarRowHeight(compact, showLabel, row.branch !== null, row.changeRequest !== null),
+                    0,
+                  ) +
+                  SIDEBAR_LIST_GAP * Math.max(sessionsRows.length - 1, 0)),
+          });
+          entries.push({
+            key: sessionsKey,
+            element: (
+              <SessionsSection
+                rows={collapsed ? [] : sessionsRows}
+                label={`Sessions`}
+                collapsed={collapsed}
+                count={sessionsRows.length}
+                follows={follows}
+                compact={compact}
+                showLabel={showLabel}
+                showProjectIcon={showProjectIcon}
+                localDeviceId={localDeviceId}
+                jumpLabelFor={jumpLabelFor}
+                onRowPointerDown={armTransferIn}
+                draggingChatId={transferIn}
+                shouldSuppressClick={suppressTransferClick}
+                onToggle={() => {
+                  setPinResetEpoch((epoch) => epoch + 1);
+                  sidebarStore.setSessionsOpen(collapsed);
+                }}
+              />
+            ),
+          });
+        }
+        continue;
+      }
       for (const row of bucket.rows) {
         const key = `c:${row.chat.id}`;
         keyed.push({
@@ -807,7 +907,7 @@ export function ChatList() {
   const visiblePinIds = pinnedRows.map((row) => row.chat.id);
   return (
     <div className="chat-list" ref={sidebarRef}>
-      {pinnedRows.length > 0 && (
+      {pinnedSectionMounted && (
         <PinnedSection
           rows={pinnedRows}
           items={pinnedItems}
@@ -855,6 +955,12 @@ export function ChatList() {
               commitSessionDrop(pinBuckets(), visiblePinIds, chatId, { kind: "regular" }),
             );
             sidebarStore.assignSidebarSection(sectionsRef.current.profileKey, chatId, null);
+            // A release over the Sessions header re-opens the section to
+            // receive the row (the collapsed header is the always-reachable
+            // unpin target).
+            if (dropSessionsHeaderAt(pointer)) {
+              sidebarStore.setSessionsOpen(true);
+            }
           }}
         />
       )}
@@ -866,6 +972,91 @@ export function ChatList() {
         transferIn !== null && <div className="sidebar-drop-unpin">Drop here to unpin</div>}
       <CreateSectionDialog profileKey={activeProfileKey} />
     </div>
+  );
+}
+
+/**
+ * The one-list mode's Sessions disclosure (`render_sessions_section`):
+ * the shared header ("Sessions" open, "Sessions (N)" collapsed) over the
+ * regular rows, in-memory open state, and the collapsed header a DROP
+ * TARGET — the parent routes a release over it to the Regular arm and the
+ * section re-opens to receive the row. The 12px section band rides
+ * `follows` (the pinned section or custom sections lead).
+ */
+function SessionsSection({
+  rows,
+  label,
+  collapsed,
+  count,
+  follows,
+  compact,
+  showLabel,
+  showProjectIcon,
+  localDeviceId,
+  jumpLabelFor,
+  onRowPointerDown,
+  draggingChatId,
+  shouldSuppressClick,
+  onToggle,
+}: {
+  rows: readonly ChatRow[];
+  label: string;
+  collapsed: boolean;
+  count: number;
+  follows: boolean;
+  compact: boolean;
+  showLabel: boolean;
+  showProjectIcon: boolean;
+  localDeviceId: string | null;
+  jumpLabelFor: (chatId: string) => string | null;
+  onRowPointerDown: (event: React.PointerEvent, chatId: string) => void;
+  draggingChatId: string | null;
+  shouldSuppressClick: () => boolean;
+  onToggle: () => void;
+}) {
+  const bodyHeight = sidebarGroupBodyHeight(rows, compact, showLabel);
+  const { bodyRef, chevronRef, toggle } = useSidebarDisclosure("sessions", !collapsed, bodyHeight);
+  return (
+    <section
+      className={follows ? "sidebar-group sidebar-sessions" : "sidebar-sessions"}
+      data-sidebar-sessions-header=""
+    >
+      <SidebarDisclosureHeader
+        id="sessions-toggle"
+        label={collapsed ? `${label} (${count})` : label}
+        open={!collapsed}
+        withRule={false}
+        chevronRef={chevronRef}
+        onToggle={() => {
+          // The motion begins on the CURRENT height before the flip — a
+          // rapid double-click reverses from mid-flight, not from rest.
+          toggle();
+          onToggle();
+        }}
+      />
+      <SidebarDisclosureBody bodyRef={bodyRef}>
+        <div className="sidebar-group-rows">
+          {rows.map((row) => (
+            <RegularRowDragArm
+              key={row.chat.id}
+              chatId={row.chat.id}
+              onArm={onRowPointerDown}
+              dragged={draggingChatId === row.chat.id}
+              shouldSuppressClick={shouldSuppressClick}
+            >
+              <ChatListRow
+                row={row}
+                jumpLabel={jumpLabelFor(row.chat.id)}
+                compact={compact}
+                showLabel={showLabel}
+                showProjectIcon={showProjectIcon}
+                localDeviceId={localDeviceId}
+              />
+            </RegularRowDragArm>
+          ))}
+        </div>
+      </SidebarDisclosureBody>
+    </section>
   );
 }
 
@@ -1052,7 +1243,7 @@ function DeviceGroupSection({
  * pixels around the label, not the label itself. Right mouse-down opens the
  * chat context menu at the pointer, exactly as the desktop does.
  */
-function ChatListRow({
+export function ChatListRow({
   row,
   jumpLabel = null,
   compact = false,
@@ -1078,6 +1269,8 @@ function ChatListRow({
   const rowRef = useRef<HTMLDivElement | null>(null);
   useStillPointerHover(rowRef, setHovered);
   const word = statusWord(row.status);
+  const sendState = row.sendState;
+  const sendWord = sendState === "failed" ? "Failed" : sendState === "queued" ? "Queued" : null;
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   const { menu, element } = useChatMenu(row.chat);
@@ -1168,11 +1361,16 @@ function ChatListRow({
                   <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
                   {archived ? "Unarchive" : "Archive"}
                 </button>
-              ) : word === null ? (
+              ) : word === null && sendWord === null ? (
                 <span className="chat-row-time">{row.timeAgo}</span>
+              ) : sendWord !== null ? (
+                <span className={`chat-row-status status-send-${sendState}`}>
+                  <StatusGlyph status={row.status} sendState={sendState} />
+                  {sendWord}
+                </span>
               ) : (
                 <span className={`chat-row-status status-${row.status}`}>
-                  <StatusGlyph status={row.status} />
+                  <StatusGlyph status={row.status} sendState={sendState} />
                   {word}
                 </span>
               )}
@@ -1181,8 +1379,11 @@ function ChatListRow({
         )}
         <div className="chat-row-title-line">
           {compact && (
-            <span className={`chat-row-status-compact status-${row.status}`} aria-label={word ?? "Idle"}>
-              <StatusGlyph status={row.status} />
+            <span
+              className={`chat-row-status-compact status-${row.status}`}
+              aria-label={sendWord ?? word ?? "Idle"}
+            >
+              <StatusGlyph status={row.status} sendState={sendState} />
             </span>
           )}
           {monogram}
@@ -1285,9 +1486,14 @@ function owningSession(
 
 /**
  * The corner's glyph slot (`render_chat_row`): Done wears the check, Working
- * the animated pixel glyph, everything else a compact 6px dot.
+ * the animated pixel glyph, everything else a compact 6px dot. A queued or
+ * failed send replaces the glyph with its own dot — the honest state is
+ * the word, never a fake spinner or a stale check.
  */
-function StatusGlyph({ status }: { status: ChatRow["status"] }) {
+function StatusGlyph({ status, sendState }: { status: ChatRow["status"]; sendState: ChatRow["sendState"] }) {
+  if (sendState !== null) {
+    return <span className={`dot dot-send-${sendState}`} />;
+  }
   if (status === "completed") {
     return <Icon name="check" size={11} />;
   }
@@ -1295,4 +1501,23 @@ function StatusGlyph({ status }: { status: ChatRow["status"] }) {
     return <GlyphSpinner size={11} />;
   }
   return <span className={`dot dot-${status}`} />;
+}
+
+/**
+ * Whether a (scoped) chat id's owning engine reports a degraded delivery
+ * path — the row's Queued rule (`chatDeliveryDegraded` over the owning
+ * session's WatchConnectivity slot; a missing session or unscoped id is
+ * not degraded).
+ */
+function deliveryDegradedFor(
+  sessions: ReadonlyMap<string, EngineSession>,
+  chatId: string,
+): boolean {
+  try {
+    const engine = parseScopedId(chatId).engine;
+    const session = engine === null ? null : sessions.get(engine) ?? null;
+    return chatDeliveryDegraded(session?.cache.getSnapshot().connectivity.value?.state);
+  } catch {
+    return false;
+  }
 }

@@ -1,20 +1,12 @@
-import { useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import { Icon, harnessBrandIcon } from "@roboco/icons";
-import { parseScopedId } from "@roboco/engine-client";
+import { useState } from "react";
+import { Icon } from "@roboco/icons";
 import { useEngineSessions } from "../state/session-provider";
-import type { EngineSession } from "../state/engine-session";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useFleetSnapshot } from "../state/fleet";
 import { useNow } from "../state/hooks";
 import { sidebarStore, useSidebar } from "../state/sidebar";
-import { sidebarNotice } from "../state/notice";
-import { describeMutateError, setChatArchived } from "../lib/chat-actions";
-import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import { healedSpaceFilter, archivedChatRows, sidebarRowHeight, type ChatRow } from "../lib/view";
-import { useChatMenu } from "./chat-menu";
-import { ProjectIconMark } from "./project-monogram";
-import { SidebarFadedLabel } from "./sidebar-faded-label";
+import { ChatListRow } from "./chat-list";
 import { SidebarDisclosureBody, SidebarDisclosureHeader, useSidebarDisclosure } from "./sidebar-disclosure";
 
 const INITIAL = 10;
@@ -146,15 +138,14 @@ export function ArchivedSection() {
 }
 
 /**
- * The archived row's right-slot choice (`spaces.rs:1669-1712`): exactly
- * ONE child, picked at render — the time-ago at rest, the Unarchive pill
- * while the row is hovered. Never both, and never pinned by focus or
- * touch: no CSS decides this, the row does.
+ * The archived row — the SAME card the active list draws (the desktop's
+ * archived shelf renders `render_chat_row` with `archived=true`): the
+ * shared `ChatListRow` carries the status corner, the project @ device
+ * line, the branch/PR metadata, the hover Unarchive pill, and the chat
+ * menu. The shelf's height model (`sidebarRowHeight`) and its row
+ * renderer finally agree — nothing is missing, and rows are sized for
+ * what they actually render.
  */
-export function archivedRightSlot(hovered: boolean): "time" | "pill" {
-  return hovered ? "pill" : "time";
-}
-
 function ArchivedRow({
   row,
   compact,
@@ -166,113 +157,14 @@ function ArchivedRow({
   showLabel: boolean;
   showProjectIcon: boolean;
 }) {
-  // Unarchive routes to the row's owning engine off its scoped id.
-  const sessions = useEngineSessions();
-  const session = archivedSession(sessions, row.chat.id);
-  const harness = row.harness;
-  const brand = harness === null ? null : harnessBrandIcon(harness);
-  const { menu, element } = useChatMenu(row.chat);
-  // Per-row hover state — the web equivalent of the desktop's row-hover
-  // listener, never a sidebar-store concern. The still-pointer resync
-  // (upstream f1ea80d7) shares it: an Unarchive click leaves the pointer
-  // put, and the shelf row that slides under it lights its own pill.
-  const [hovered, setHovered] = useState(false);
-  const rowRef = useRef<HTMLLIElement | null>(null);
-  useStillPointerHover(rowRef, setHovered);
-  const device = row.deviceName ?? "Unknown device";
-  const projectName = row.projectPath === null ? "Home" : row.project;
-  const projectSeed = row.projectPath ?? "home";
-
-  function unarchive(event: React.MouseEvent): void {
-    // The row's own click opens the chat; only the pill restores.
-    event.preventDefault();
-    event.stopPropagation();
-    // Arm the still-pointer resync ahead of the mutation (the desktop's
-    // pill click sets `chat_hover_resync` first, whatever the RPC does).
-    armStillPointer({ x: event.clientX, y: event.clientY });
-    if (session === null) {
-      sidebarNotice.set("Engine not connected");
-      return;
-    }
-    setChatArchived(session.client, row.chat.id, false).catch((error: unknown) => {
-      sidebarNotice.set(describeMutateError(error));
-    });
-  }
-
-  // Right slot: time at rest; the Unarchive affordance takes its place on
-  // row hover — ONE child, chosen at render the way the desktop does it
-  // and the way the active rows' corner already does, so no CSS pin can
-  // hold the pill on touch or after a click. The pill sits inside the
-  // row's Link, so hovering it keeps the row hovered — no flicker. `menu`
-  // wraps the Link so a right-click opens the SAME chat context menu the
-  // active rows use, at the pointer.
   return (
-    <li ref={rowRef} className="arch-row-item">
-      {menu(
-        <Link
-          to="/chat/$chatId"
-          params={{ chatId: row.chat.id}}
-          className="arch-row"
-          data-compact={compact ? "1" : undefined}
-          activeProps={{ className: "arch-row arch-row-active" }}
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
-        >
-          {showProjectIcon && (
-            <span className="arch-row-project">
-              <ProjectIconMark
-                name={projectName}
-                seed={projectSeed}
-                device={device}
-                spaceId={row.chat.spaceId ?? null}
-              />
-            </span>
-          )}
-          {brand !== null && (
-            <Icon
-              name={brand.name}
-              size={13}
-              className="arch-row-brand"
-              style={brand.tint === null ? undefined : { color: brand.tint }}
-            />
-          )}
-          <SidebarFadedLabel className="arch-row-title" fill>
-            {row.chat.title === null || row.chat.title.trim().length === 0
-              ? "New session"
-              : row.chat.title}
-          </SidebarFadedLabel>
-          {!compact && row.branch !== null && (
-            <SidebarFadedLabel className="arch-row-branch">{row.branch}</SidebarFadedLabel>
-          )}
-          {archivedRightSlot(hovered) === "pill" ? (
-            <button
-              type="button"
-              className="arch-row-unarchive"
-              aria-label="Unarchive chat"
-              onClick={unarchive}
-            >
-              <Icon name="archiveUpMinimalistic" size={11} />
-              Unarchive
-            </button>
-          ) : (
-            <span className="arch-row-time">{row.timeAgo}</span>
-          )}
-        </Link>,
-      )}
-      {element}
+    <li className="arch-row-item">
+      <ChatListRow
+        row={row}
+        compact={compact}
+        showLabel={showLabel}
+        showProjectIcon={showProjectIcon}
+      />
     </li>
   );
-}
-
-/** The session owning a scoped chat id — the unarchive router. */
-function archivedSession(
-  sessions: ReadonlyMap<string, EngineSession>,
-  chatId: string,
-): EngineSession | null {
-  try {
-    const engine = parseScopedId(chatId).engine;
-    return engine === null ? null : sessions.get(engine) ?? null;
-  } catch {
-    return null;
-  }
 }

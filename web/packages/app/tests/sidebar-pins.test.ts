@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   commitSessionDrop,
   commitVisiblePinReorder,
+  MAX_SIDEBAR_PINS,
   pinOrderedRows,
   pinnedDragScrollDelta,
   pinnedDragScrollStep,
@@ -20,6 +21,7 @@ import {
   sidebarSessionDropPins,
   SIDEBAR_PINNED_DIVIDER_FRAME_HEIGHT,
   SIDEBAR_SESSION_SLOT,
+  validateSidebarPinUpdate,
 } from "../src/lib/sidebar-pins";
 import type { ChatRow } from "../src/lib/view";
 
@@ -364,6 +366,37 @@ describe("pinOrderedRows", () => {
   });
 });
 
+
+// sidebar_pins.rs `validate_sidebar_pin_update`: the optimistic projection
+// gate — non-empty, unique ids, and the 200-pin admission limit for NEW
+// pins (spec: pin-limit rejections are surfaced, never silently dropped).
+describe("validateSidebarPinUpdate", () => {
+  it("accepts normal projections and rejects empty or duplicate ids", () => {
+    expect(validateSidebarPinUpdate([], ["a"])).toBeNull();
+    expect(validateSidebarPinUpdate(["a"], ["a", "b"])).toBeNull();
+    // Duplicates and empty ids never project a valid bucket.
+    expect(validateSidebarPinUpdate([], ["a", "a"])).toBe(
+      "Sidebar pins must be non-empty and unique",
+    );
+    expect(validateSidebarPinUpdate([], [""])).toBe(
+      "Sidebar pins must be non-empty and unique",
+    );
+  });
+
+  it("admits up to 200 pins; a NEW pin beyond the limit is refused", () => {
+    const full = Array.from({ length: MAX_SIDEBAR_PINS }, (_, ix) => `p${ix}`);
+    // A projection of the same 200 ids (reorders, no new members) is fine.
+    expect(validateSidebarPinUpdate(full, [...full].reverse())).toBeNull();
+    // The 201st NEW id is refused with the desktop's limit message.
+    expect(validateSidebarPinUpdate(full, [...full, "new"])).toBe(
+      "You can pin up to 200 sessions",
+    );
+    // Truncating is never the fix: the message says the limit, the caller
+    // keeps the pre-change bucket.
+    expect(validateSidebarPinUpdate(full, full.slice(0, 199))).toBeNull();
+  });
+});
+
 // ---- helpers ----
 
 function chatRows(ids: readonly string[]): ChatRow[] {
@@ -392,5 +425,6 @@ function chatRows(ids: readonly string[]): ChatRow[] {
     deviceName: null,
     deviceOffline: false,
     changeRequest: null,
+    sendState: null,
   }));
 }

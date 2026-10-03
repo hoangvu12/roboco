@@ -140,7 +140,6 @@ describe("sidebar label fade (upstream 01b705fe)", () => {
       ".chat-row-folder",
       ".chat-row-title",
       ".chat-row-branch",
-      ".arch-row-title",
       ".sidebar-disclosure-label",
       ".space-filter-name",
       ".space-filter-tag",
