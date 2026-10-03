@@ -10,6 +10,7 @@ import {
   offeredHarnessesImpl,
   REASONING_SETTING_ID,
   scopedModelRows,
+  selectedOnlyRow,
   settingGroups,
   visibleHarnessesImpl,
   workspaceFooterLayout,
@@ -316,6 +317,47 @@ describe("harness visibility", () => {
       descriptor("grok", "Grok", { enabled: false, installed: true }),
     ];
     expect(offeredHarnessesImpl(all, false)).toEqual([]);
+  });
+});
+
+describe("selected_only row (pickers.rs:1996-2033)", () => {
+  it("selected_only_row_builds_the_row_with_the_remembered_label_fallback", () => {
+    // The synthetic row names the chat's pick when the fresh catalog no
+    // longer lists it: the remembered label, else the raw id; the desktop's
+    // verbatim description rides the standard attribution slot, and the row
+    // carries no traits of its own (an absent model offers nothing).
+    const row = selectedOnlyRow("claude-code", "Claude", "gone-model", "Gone model");
+    expect(row.harness).toBe("claude-code");
+    expect(row.harnessName).toBe("Claude");
+    expect(row.selectedOnly).toBe(true);
+    expect(row.model.id).toBe("gone-model");
+    expect(row.model.label).toBe("Gone model");
+    // No remembered label: the raw id names the pick.
+    const bare = selectedOnlyRow("claude-code", "Claude", "gone-model", null);
+    expect(bare.model.label).toBe("gone-model");
+    for (const candidate of [row, bare]) {
+      expect(candidate.model.description).toBe(
+        "Selected in this chat; absent from the current model list",
+      );
+      expect(candidate.model.reasoningLevels).toEqual([]);
+      expect(candidate.model.options).toEqual([]);
+    }
+  });
+
+  it("scoped_model_rows_stays_pure_no_row_is_ever_selected_only", () => {
+    // The unshift is the identity card's job (it gates on rail/loaded/
+    // absent); the scoped catalog itself must never mint a synthetic row —
+    // otherwise every consumer (compact, favorites) would inherit it.
+    const models = [bareModel("haiku", "Haiku")];
+    const rows = scopedModelRows(
+      "",
+      "harness",
+      "claude-code",
+      [descriptor("claude-code", "Claude")],
+      () => models,
+      () => false,
+    );
+    expect(rows.map((entry) => entry.selectedOnly)).toEqual([false]);
   });
 });
 

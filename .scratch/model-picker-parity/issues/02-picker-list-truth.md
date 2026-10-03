@@ -21,7 +21,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §2 (W-item context);
 `.scratch/web-parity-next/research.md` points here.
@@ -85,8 +85,37 @@ Suppress the star button on the synthetic row.
 
 ## 4. Acceptance checklist
 
-- [ ] Retry row renders between search and list while stale rows persist
-- [ ] Compact models page no longer drops rows on refresh failure
-- [ ] `selected_only` row renders, is unclickable, anchors selection
-- [ ] Star suppressed on the synthetic row
-- [ ] Both test files green; full app suite green
+- [x] Retry row renders between search and list while stale rows persist
+- [x] Compact models page no longer drops rows on refresh failure
+- [x] `selected_only` row renders, is unclickable, anchors selection
+- [x] Star suppressed on the synthetic row
+- [x] Both test files green; full app suite green
+
+## Comments
+
+**Branch:** `ticket/mp-02-picker-list-truth` (base `f375fcb0`). Commit
+`7bc77bbc` (implementation) + review-pass commit (renames
+`selectedAbsent`→`selectedAbsentRow`, extracts the shared `useModelsFor`
+hook — the two cards' `modelsFor` drift was exactly this ticket's bug —
+and pins the `selected_model` no-fallback ripple). Verification (all from
+`web/packages/app`): named seams `tests/model-rows.test.ts` +
+`tests/composer-reasoning.test.ts` → 54/54; adjacent picker suites
+(picker-catalog, catalog-loading, traits-summary, picker-card-phone,
+model-picker-geometry, composer-draft, picker-search) → 99/99; full app
+suite `pnpm exec vitest run` → **146 files, 2199 tests, all passed**;
+`pnpm exec tsc --noEmit` clean. TDD red→green at both named seams (5
+failing first, none pre-existing broken).
+
+**Judgment calls:** the parent `selectedModel` no-fallback rewrite
+(`pickers.rs:982-991` mirror — an absent explicit pick stays absent, only
+a null `draft.model` follows `models[0]`) is wider than the file table's
+bullets but required by §3(b)'s "chip label equals the remembered label";
+pinned by the mounted suite (chip label + suffix "High", panel title, no
+traits tray/effort slider — desktop `trait_ladder`/`setting_groups` with a
+None model are empty, verified pickers.rs:1904-1948; no wrong-model
+controls leak). `onPickModel` now takes the row so `pickModel` guards on
+`row.selectedOnly` (desktop `activate_model_index` shape). The synthetic
+row is query-gated like the desktop block (:2004-2015). Residual,
+ticket-scoped: the desktop's compact models page for a LOCKED chat (rail
+Harness) also shows the selected_only row — the ticket's file table scopes
+the unshift to `IdentityCard`, so the web compact arm does not render it.

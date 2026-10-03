@@ -35,9 +35,11 @@ import {
   offeredHarnesses,
   REASONING_SETTING_ID,
   scopedModelRows,
+  selectedOnlyRow,
   settingGroups,
   type CompactEffort,
   type ModelRail,
+  type ModelRowData,
   type SettingGroup,
 } from "../lib/model-rows";
 import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
@@ -224,11 +226,21 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const descriptor = railDescriptors.find((row) => row.id === effectiveHarness) ?? null;
   const models: readonly Model[] = modelsList.rows;
 
-  // `selected_model`: the effective id's row if the loaded list still offers
-  // it, else the first row — never null with a non-empty catalog.
+  // `selected_model` (pickers.rs:982-991): the effective id's row when the
+  // loaded catalog still offers it. An explicit id ABSENT from the fresh
+  // catalog keeps its identity — selected_model resolves to none, so the
+  // chip falls to the remembered label and the harness tab's synthetic
+  // `selected_only` row carries the pick; it NEVER silently swaps to
+  // models[0] ("Only an implicit selection follows the harness default",
+  // pickers.rs:981). Only a null draft.model follows the catalog default.
   const selectedModel =
-    (modelsList.loaded ? models.find((model) => model.id === draft.model) : undefined) ??
-    (models.length > 0 ? models[0] : undefined);
+    draft.model === null
+      ? models.length > 0
+        ? models[0]
+        : undefined
+      : modelsList.loaded
+        ? models.find((model) => model.id === draft.model)
+        : undefined;
   // `trait_ladder`: the model's NONEMPTY ladder, else the descriptor's own —
   // an empty model list falls back (Haiku → Claude's advertised levels);
   // before any model resolves there is no effective ladder at all.
@@ -306,7 +318,13 @@ export function ComposerPickers(props: ComposerPickersProps) {
     });
   }
 
-  function pickModel(harness: HarnessId, model: Model): void {
+  function pickModel(row: ModelRowData): void {
+    if (row.selectedOnly) {
+      // The synthetic selected-absent row is a no-op (pickers.rs:2085-2087):
+      // the chat's pick stays as-is, never re-picked as a new choice.
+      return;
+    }
+    const { harness, model } = row;
     if (harness !== effectiveHarness) {
       if (locked) {
         return;
@@ -605,6 +623,27 @@ function useCatalogModels(
   return lists;
 }
 
+/**
+ * `models_for` — the `model_rows` closure both presentations share
+ * (pickers.rs:1976-1991): a loaded slot's rows, null otherwise. A latched
+ * refresh error KEEPS the stale rows (`listWithError` preserves rows+loaded),
+ * so a failed revalidation never blanks the list — the retry row carries the
+ * failure instead. ONE hook for both cards: the compact arm's extra
+ * `slot.error !== null` arm was exactly the drift that blanked its models
+ * page while the identity card kept its rows.
+ */
+function useModelsFor(
+  modelsLists: Map<HarnessId, LoadableList<Model>>,
+): (harness: HarnessId) => readonly Model[] | null {
+  return useCallback(
+    (harness: HarnessId): readonly Model[] | null => {
+      const slot = modelsLists.get(harness);
+      return slot === undefined || !slot.loaded ? null : slot.rows;
+    },
+    [modelsLists],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The one identity card
 // ---------------------------------------------------------------------------
@@ -632,7 +671,7 @@ interface IdentityCardProps {
   readonly onRetryHarnesses: () => void;
   readonly onRetryModels: () => void;
   readonly onPickHarness: (harness: HarnessId) => void;
-  readonly onPickModel: (harness: HarnessId, model: Model) => void;
+  readonly onPickModel: (row: ModelRowData) => void;
   readonly onPickReasoning: (level: ReasoningLevel | null) => void;
   readonly onPickOption: (model: Model, optionId: string, choiceId: string, isDefault: boolean) => void;
   readonly onToggleFavorite: (harness: HarnessId, model: Model) => void;
@@ -685,17 +724,48 @@ function IdentityCard(props: IdentityCardProps) {
     [favorites],
   );
 
-  const modelsFor = useCallback(
-    (harness: HarnessId): readonly Model[] | null => {
-      const slot = modelsLists.get(harness);
-      return slot === undefined || !slot.loaded ? null : slot.rows;
-    },
-    [modelsLists],
-  );
+  const modelsFor = useModelsFor(modelsLists);
 
-  const rows = useMemo(
+  const scopedRows = useMemo(
     () => scopedModelRows(query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite),
     [query, rail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
+  );
+
+  // `selected_only` (pickers.rs:1996-2033): on the harness tab, once the
+  // catalog is loaded and the chat's chosen model is absent from it, the
+  // synthetic row unshifts at index 0 — the remembered label naming the
+  // pick, unclickable, starless. The query gates it exactly like a catalog
+  // row (empty, or the id/label matches); its id is absent from the catalog
+  // by construction, so the row key stays unique.
+  const selectedAbsentRow = useMemo(() => {
+    if (rail !== "harness" || draft.model === null) {
+      return null;
+    }
+    const slot = modelsLists.get(effectiveHarness);
+    if (slot === undefined || !slot.loaded) {
+      return null;
+    }
+    if (slot.rows.some((model) => model.id === draft.model)) {
+      return null;
+    }
+    const descriptor = railDescriptors.find((entry) => entry.id === effectiveHarness);
+    if (descriptor === undefined) {
+      return null;
+    }
+    const remembered = rememberedLabelFor(draft.model);
+    const needle = query.trim().toLowerCase();
+    if (
+      needle.length > 0 &&
+      !draft.model.toLowerCase().includes(needle) &&
+      !(remembered ?? draft.model).toLowerCase().includes(needle)
+    ) {
+      return null;
+    }
+    return selectedOnlyRow(effectiveHarness, descriptor.name, draft.model, remembered);
+  }, [rail, draft.model, modelsLists, effectiveHarness, railDescriptors, query]);
+  const rows = useMemo(
+    () => (selectedAbsentRow === null ? scopedRows : [selectedAbsentRow, ...scopedRows]),
+    [scopedRows, selectedAbsentRow],
   );
 
   // `setting_groups` — the traits tray's trigger rows: the reasoning ladder
@@ -707,14 +777,25 @@ function IdentityCard(props: IdentityCardProps) {
   );
 
   // `selected_model_index`: the resolved model's index in the VISIBLE rows;
-  // 0 when the favorites/search view doesn't contain it.
+  // 0 when the favorites/search view doesn't contain it. The synthetic
+  // selected-absent row anchors the selection at index 0 when it renders
+  // (the desktop's position lookup finds the chat's id at 0 by construction).
   const selectedModelIndex = useMemo(() => {
+    if (selectedAbsentRow !== null) {
+      return 0;
+    }
     if (selectedModel === undefined || (rail === "favorites" && !isFavorite(effectiveHarness, selectedModel.id))) {
       return 0;
     }
     const index = rows.findIndex((row) => row.harness === effectiveHarness && row.model.id === selectedModel.id);
     return index < 0 ? 0 : index;
-  }, [rows, selectedModel, effectiveHarness, rail, isFavorite]);
+  }, [rows, selectedAbsentRow, selectedModel, effectiveHarness, rail, isFavorite]);
+
+  // `is_selected` (render_model_row, pickers.rs:4165-4170): the effective
+  // pick's id matches the row — the synthetic row IS the selected row when
+  // it renders (its id is the chat's pick); the resolved default paints it
+  // otherwise, and nothing paints while the catalog is still settling.
+  const selectedRowId = selectedAbsentRow !== null ? draft.model : (selectedModel?.id ?? null);
 
   const activateRow = (index: number): void => {
     if (index >= rows.length) {
@@ -730,9 +811,14 @@ function IdentityCard(props: IdentityCardProps) {
     if (row === undefined) {
       return;
     }
+    if (row.selectedOnly) {
+      // The synthetic row is unclickable (`activate_model_index`'s
+      // selected_only no-op, pickers.rs:2085-2087).
+      return;
+    }
     // A model pick closes any open nested menu (`pick_model`).
     setOpenSetting(null);
-    onPickModel(row.harness, row.model);
+    onPickModel(row);
   };
 
   // `open_setting` — land the submenu cursor on the group's selected choice
@@ -1057,6 +1143,15 @@ function IdentityCard(props: IdentityCardProps) {
                 aria-label="Search models"
               />
             </div>
+            {modelSlotError !== null && rows.length > 0 && (
+              // `model_refresh_errors` (pickers.rs:4056-4075): a refresh
+              // failure on a loaded slot keeps the stale rows and surfaces
+              // the retry row BETWEEN the search row and the list — the
+              // same ErrorRow the empty case uses, on the same retry
+              // callback, OUTSIDE the 216px list band so the virtualizer
+              // is untouched (the card grows ~28px while it shows).
+              <ErrorRow message={modelSlotError} onRetry={onRetryModels} />
+            )}
             <div className="model-list-scroll-host" id="model-list-scroll-host" style={{ height: listHeight }}>
               <div
                 ref={listRef}
@@ -1080,6 +1175,7 @@ function IdentityCard(props: IdentityCardProps) {
                   <div className="model-list-sizer" style={{ height: rows.length * rowHeight }}>
                     {slice.map((row, ixInSlice) => {
                       const ix = first + ixInSlice;
+                      const isSelected = row.harness === effectiveHarness && row.model.id === selectedRowId;
                       return (
                         <ModelRow
                           key={`${row.harness}/${row.model.id}`}
@@ -1087,16 +1183,8 @@ function IdentityCard(props: IdentityCardProps) {
                           row={row}
                           style={{ top: ix * rowHeight, height: rowHeight }}
                           twoLine={rail === "favorites"}
-                          selected={
-                            row.harness === effectiveHarness &&
-                            selectedModel !== undefined &&
-                            row.model.id === selectedModel.id
-                          }
-                          highlighted={ix === cursor && !(
-                            row.harness === effectiveHarness &&
-                            selectedModel !== undefined &&
-                            row.model.id === selectedModel.id
-                          )}
+                          selected={isSelected}
+                          highlighted={ix === cursor && !isSelected}
                           starred={isFavorite(row.harness, row.model.id)}
                           onActivate={() => activateRow(ix)}
                           onHover={() => setCursor(ix)}
@@ -1177,7 +1265,7 @@ interface CompactCardProps {
   readonly onRetryHarnesses: () => void;
   readonly onRetryModels: () => void;
   readonly onPickHarness: (harness: HarnessId) => void;
-  readonly onPickModel: (harness: HarnessId, model: Model) => void;
+  readonly onPickModel: (row: ModelRowData) => void;
   readonly onPickReasoning: (level: ReasoningLevel | null) => void;
   readonly onPickOption: (model: Model, optionId: string, choiceId: string, isDefault: boolean) => void;
   readonly onToggleFavorite: (harness: HarnessId, model: Model) => void;
@@ -1237,16 +1325,7 @@ function CompactCard(props: CompactCardProps) {
     [favorites],
   );
 
-  const modelsFor = useCallback(
-    (harness: HarnessId): readonly Model[] | null => {
-      const slot = modelsLists.get(harness);
-      if (slot === undefined || slot.error !== null || !slot.loaded) {
-        return null;
-      }
-      return slot.rows;
-    },
-    [modelsLists],
-  );
+  const modelsFor = useModelsFor(modelsLists);
 
   // `show_compact_models` (#749): browse every offered provider, just as
   // the standard picker's rail allows; a chat's fixed provider limits its
@@ -1353,7 +1432,7 @@ function CompactCard(props: CompactCardProps) {
       } else {
         const row = rows[index];
         if (row !== undefined) {
-          pickModelFromList(row.harness, row.model);
+          pickModelFromList(row);
         }
       }
     },
@@ -1361,8 +1440,8 @@ function CompactCard(props: CompactCardProps) {
     rowAttribute: "model-index",
   });
 
-  function pickModelFromList(harness: HarnessId, model: Model): void {
-    onPickModel(harness, model);
+  function pickModelFromList(row: ModelRowData): void {
+    onPickModel(row);
     // A pick lands back on the panel (`activate_model_index`, pickers.rs).
     setPage("panel");
     setQuery("");
@@ -1796,7 +1875,7 @@ function CompactCard(props: CompactCardProps) {
                     selected={selected}
                     highlighted={ix === cursor && !selected}
                     starred={isFavorite(row.harness, row.model.id)}
-                    onActivate={() => pickModelFromList(row.harness, row.model)}
+                    onActivate={() => pickModelFromList(row)}
                     onHover={() => setCursor(ix)}
                     onToggleFavorite={() => {
                       onToggleFavorite(row.harness, row.model);
@@ -1832,6 +1911,12 @@ function CompactCard(props: CompactCardProps) {
                 aria-label={page === "providers" ? "Search providers" : "Search models"}
               />
             </div>
+            {page === "models" && modelsListError !== null && rows.length > 0 && (
+              // The refresh-retry row at the top of the models page (the
+              // identity card's seam, mirrored): the stale rows STAY below
+              // it — outside the list band, so the virtualizer is untouched.
+              <ErrorRow message={modelsListError} onRetry={onRetryModels} />
+            )}
             <div
               className="model-list-scroll-host compact-list-host"
               style={{ height: pageBand }}
@@ -1903,7 +1988,7 @@ function ModelRow({
   onToggleFavorite,
 }: {
   ix: number;
-  row: { harness: HarnessId; harnessName: string; model: Model };
+  row: ModelRowData;
   style: CSSProperties;
   twoLine: boolean;
   selected: boolean;
@@ -1961,18 +2046,22 @@ function ModelRow({
           </span>
         )}
         {ix < 9 && <KbdHint>{`⌘${ix + 1}`}</KbdHint>}
-        <button
-          type="button"
-          className={`model-row-star ${starred ? "model-row-star-on" : ""}`}
-          aria-label={starred ? "Unstar model" : "Star model"}
-          title={starred ? "Unstar model" : "Star model"}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleFavorite();
-          }}
-        >
-          <Icon name={starred ? "starBold" : "star"} size={13} />
-        </button>
+        {row.selectedOnly ? null : (
+          // The synthetic selected-absent row carries no star: it belongs
+          // only to this chat's selection, never to the shared favorites.
+          <button
+            type="button"
+            className={`model-row-star ${starred ? "model-row-star-on" : ""}`}
+            aria-label={starred ? "Unstar model" : "Star model"}
+            title={starred ? "Unstar model" : "Star model"}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFavorite();
+            }}
+          >
+            <Icon name={starred ? "starBold" : "star"} size={13} />
+          </button>
+        )}
       </div>
     </div>
   );
