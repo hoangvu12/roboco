@@ -149,6 +149,8 @@ export type NewThreadBackgroundEffect = "none" | "dither" | "ascii" | "halftone"
  * one malformed slot heals on its own instead of taking the map with it.
  */
 export interface KeymapConfig {
+  /** Desktop-only (on-device dictation, upstream #591); reserved here so the shape stays whole. */
+  readonly toggleDictation: string;
   /** Desktop-only (appshots); reserved here so the shape stays whole. */
   readonly captureAppshot: string;
   /** Mod+U — shuffles the wallpaper pool (upstream #598). */
@@ -464,6 +466,7 @@ function isMacPlatform(): boolean {
 
 export function defaultKeymap(mac: boolean = isMacPlatform()): KeymapConfig {
   return {
+    toggleDictation: "mod-d",
     captureAppshot: mac ? "ctrl-alt-space" : "mod-alt-space",
     randomWallpaper: "mod-u",
     saveFile: "mod-s",
@@ -834,6 +837,7 @@ export function healKeymap(value: unknown): KeymapConfig {
     return stored === RESERVED_COMPOSER_COMBO ? defaults[key] : stored;
   };
   return {
+    toggleDictation: combo("toggleDictation"),
     captureAppshot: combo("captureAppshot"),
     randomWallpaper: combo("randomWallpaper"),
     saveFile: combo("saveFile"),

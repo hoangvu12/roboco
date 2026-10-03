@@ -116,10 +116,12 @@ describe("shortcut event bus", () => {
 // ---------------------------------------------------------------------------
 
 describe("SHORTCUT_IDS", () => {
-  it("has exactly 22 entries in settings.rs order", () => {
-    expect(SHORTCUT_IDS).toHaveLength(23);
+  it("has exactly 24 entries in settings.rs order", () => {
+    expect(SHORTCUT_IDS).toHaveLength(24);
     expect(SHORTCUT_IDS).toEqual([
+      "toggleDictation",
       "captureAppshot",
+      "randomWallpaper",
       "saveFile",
       "browserReload",
       "toggleSidebar",
@@ -146,6 +148,7 @@ describe("SHORTCUT_IDS", () => {
 
   it("labels every row verbatim, jump slots numbered from 1", () => {
     expect(shortcutLabel("captureAppshot")).toBe("Capture Appshot");
+    expect(shortcutLabel("toggleDictation")).toBe("Hold to dictate");
     expect(shortcutLabel("saveFile")).toBe("Save file");
     expect(shortcutLabel("browserReload")).toBe("Reload browser page");
     expect(shortcutLabel("toggleSidebar")).toBe("Toggle left sidebar");
@@ -175,7 +178,10 @@ describe("SHORTCUT_IDS", () => {
     expect(shortcutGroup("archiveSession")).toBe("Sessions");
     expect(shortcutGroup({ jumpSession: 3 })).toBe("Jump to session");
     expect(shortcutGroup("captureAppshot")).toBe("Appshots");
+    expect(shortcutGroup("randomWallpaper")).toBe("Appearance");
+    expect(shortcutGroup("toggleDictation")).toBe("Voice");
     expect(SHORTCUT_GROUPS).toEqual([
+      "Appearance",
       "Files",
       "Browser",
       "Panels",
@@ -183,14 +189,16 @@ describe("SHORTCUT_IDS", () => {
       "Projects",
       "Jump to session",
       "Appshots",
+      "Voice",
     ]);
   });
 
-  it("marks appshots and browser reload unavailable on web", () => {
+  it("marks appshots, browser reload, and dictation unavailable on web", () => {
     expect(shortcutAvailable("captureAppshot")).toBe(false);
     expect(shortcutAvailable("browserReload")).toBe(false);
+    expect(shortcutAvailable("toggleDictation")).toBe(false);
     for (const id of SHORTCUT_IDS) {
-      if (id !== "captureAppshot" && id !== "browserReload") {
+      if (id !== "captureAppshot" && id !== "browserReload" && id !== "toggleDictation") {
         expect(shortcutAvailable(id)).toBe(true);
       }
     }
@@ -372,8 +380,9 @@ describe("BROWSER_RESERVED", () => {
 describe("applyKeymap", () => {
   it("registers every available default and both fixed chords", () => {
     const table = applyKeymap(defaultKeymap(false), false);
-    // 11 available scalar ids + 9 jump slots + mod-k + mod-,.
-    expect(table.size).toBe(22);
+    // 12 available scalar ids (appshots, browser reload, and dictation are
+    // desktop-only) + 9 jump slots + mod-k + mod-,.
+    expect(table.size).toBe(23);
     expect(table.get("ctrl-s")?.event).toBe("save-file");
     expect(table.get("ctrl-b")?.event).toBe("toggle-sidebar");
     expect(table.get("ctrl-r")?.event).toBe("toggle-changes");

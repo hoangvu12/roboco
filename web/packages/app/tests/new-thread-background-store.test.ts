@@ -126,6 +126,7 @@ describe("cold_artwork_fades_in_once_and_warm_navigation_does_not_restart_it (ef
     expect(snapshot.departing).toBe("blob:wall.png");
     expect(snapshot.mix).toBe(0);
     clock.now += 90;
+    runFrame(frames);
     const blending = store.getSnapshot();
     expect(blending.mix).toBeCloseTo(0.875, 3);
     expect(blending.departing).toBe("blob:wall.png");

@@ -184,7 +184,7 @@ export function ShortcutsSettingsPage() {
       <CompletionSection />
 
       <div className="shortcut-groups">
-        {SHORTCUT_GROUPS.filter((name) => name !== "Appshots").map((name) => (
+        {SHORTCUT_GROUPS.filter((name) => name !== "Appshots" && name !== "Voice").map((name) => (
           <div key={name} className="shortcut-group">
             <span className="settings-field-label">{name}</span>
             <section className="settings-card">

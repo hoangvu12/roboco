@@ -4782,7 +4782,17 @@ mod tests {
         // and the update target are the same binary, so an explicit server
         // override is also the version-check target (Roboco manages the
         // pinned archive install; there is no separate vendor CLI).
-        let adapter = PathBuf::from("/test/managed-agy-server");
+        // Antigravity resolves through `resolve_launch`, which validates the
+        // override exists — unlike the env-override branch the Grok test
+        // uses — so the adapter must be a real file.
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = dir.path().join("managed-agy-server");
+        std::fs::write(&adapter, b"placeholder\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let antigravity = AcpHarness::antigravity();
         assert_eq!(antigravity.spec.cli_executable, "agy_acp_server");
         assert_eq!(

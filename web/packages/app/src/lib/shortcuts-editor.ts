@@ -121,6 +121,8 @@ export function shortcutDescription(id: ShortcutId): string {
     return "Open the session at this place in the sidebar list.";
   }
   switch (id) {
+    case "toggleDictation":
+      return "Hold to dictate speech into the composer; a quick tap toggles capture.";
     case "captureAppshot":
       return "Capture the focused application from anywhere on your desktop.";
     case "randomWallpaper":

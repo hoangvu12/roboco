@@ -30,7 +30,9 @@ describe("live arrival outlet wiring", () => {
     for (const body of css.matchAll(/\.chat-body\s*\{[^}]*\}/g)) {
       expect(body[0]).not.toMatch(/transition:/);
     }
-    expect(css).toMatch(/@media\s*\(prefers-reduced-motion: reduce\)\s*\{\s*\.chat-arrival-gate\s*\{\s*transition: none;/);
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion: reduce\)\s*\{\s*(?::root:not\(\[data-reduced-motion="off"\]\)\s*)?\.chat-arrival-gate\s*\{\s*transition: none;/,
+    );
   });
 });
 

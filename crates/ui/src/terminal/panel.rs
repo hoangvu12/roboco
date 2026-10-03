@@ -1933,9 +1933,11 @@ mod tests {
         panel.update(cx, |panel, cx| {
             assert_eq!(panel.active_tab(cx).unwrap().emulator.display_offset(), 11);
             assert_eq!(panel.active_tab(cx).unwrap().scroll_remainder, 0.25);
-            // The second tab — Roboco's tab keys count from 1, so this is
-            // `1` on upstream's zero-based scheme.
-            panel.select_tab_by_key(2, cx);
+            // Key 1 is the FIRST tab — the one that never scrolled. Reserve
+            // auto-selects each new tab, so the tab active all along is
+            // "Second" (key 2): switching to the fresh tab proves the
+            // remainder rides with the tab instead of leaking across.
+            panel.select_tab_by_key(1, cx);
         });
         cx.update(|window, cx| window.draw(cx).clear());
         cx.simulate_event(ScrollWheelEvent {

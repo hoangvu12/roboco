@@ -304,8 +304,11 @@ describe("readiness_frame (new_thread_background_effects.rs, upstream #598)", ()
     expect(snapped.mix).toBe(1);
     expect(snapped.previous).toBe(null);
     expect(snapped.active).toBe(false);
-    // Clearing (nothing enabled) removes the artwork.
-    expect(readiness.frame(null, false, false, 9100).current).toBe(null);
+    // Clearing (nothing enabled) removes the artwork. Upstream clears with
+    // reduce-motion on (wallpaper_crossfade_holds…, effects.rs:463-464): the
+    // removal is instant and the departing leg drops, so the next sighting
+    // starts a fresh blend at 0 instead of riding the removal's fade.
+    expect(readiness.frame(null, false, true, 9100).current).toBe(null);
     expect(readiness.frame("art-1", true, false, 9200).mix).toBe(0);
   });
 });

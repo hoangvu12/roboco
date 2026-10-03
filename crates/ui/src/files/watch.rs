@@ -247,9 +247,13 @@ mod tests {
             );
         });
         cx.run_until_parked();
+        // Engine-local adaptation: the registry's unary dispatch hops
+        // through `runtime.spawn`, so the request frame is only written once
+        // the current-thread runtime is driven — receive it through
+        // `block_on` instead of a channel poll.
         let request: serde_json::Value = serde_json::from_str(
-            &requests
-                .try_recv()
+            &runtime
+                .block_on(requests.recv())
                 .expect("Modified must reload the containing directory"),
         )
         .unwrap();

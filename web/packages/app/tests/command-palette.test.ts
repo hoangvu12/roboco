@@ -22,7 +22,9 @@ function chat(partial: Partial<Chat> & { readonly id: string }): Chat {
   return {
     deviceId: "local",
     spaceId: "project",
-    title: null,
+    // The desktop fixture's convention: the chat's title is its id
+    // (command_palette.rs:597-605), so id queries match by title.
+    title: partial.title ?? partial.id,
     archived: false,
     createdAt: "2026-09-01T00:00:00Z",
     lastMessageAt: null,

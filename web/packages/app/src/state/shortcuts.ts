@@ -50,6 +50,7 @@ export function isMacPlatform(): boolean {
 // ---------------------------------------------------------------------------
 
 export type ShortcutId =
+  | "toggleDictation"
   | "captureAppshot"
   | "randomWallpaper"
   | "saveFile"
@@ -66,8 +67,9 @@ export type ShortcutId =
   | "archiveSession"
   | { jumpSession: number };
 
-/** `ShortcutId::ALL` — 21 entries, in `settings.rs`'s order. */
+/** `ShortcutId::ALL` — 24 entries (15 scalar + 9 jump), in `settings.rs`'s order. */
 export const SHORTCUT_IDS: readonly ShortcutId[] = [
+  "toggleDictation",
   "captureAppshot",
   "randomWallpaper",
   "saveFile",
@@ -100,6 +102,8 @@ export function shortcutLabel(id: ShortcutId): string {
     return `Jump to session ${slot}`;
   }
   switch (id) {
+    case "toggleDictation":
+      return "Hold to dictate";
     case "captureAppshot":
       return "Capture Appshot";
     case "randomWallpaper":
@@ -137,6 +141,8 @@ export function shortcutGroup(id: ShortcutId): string {
     return "Jump to session";
   }
   switch (id) {
+    case "toggleDictation":
+      return "Voice";
     case "randomWallpaper":
       return "Appearance";
     case "captureAppshot":
@@ -175,6 +181,7 @@ export const SHORTCUT_GROUPS: readonly string[] = [
   "Projects",
   "Jump to session",
   "Appshots",
+  "Voice",
 ];
 
 /**
@@ -184,7 +191,7 @@ export const SHORTCUT_GROUPS: readonly string[] = [
  * excluded from conflict detection exactly as on the desktop.
  */
 export function shortcutAvailable(id: ShortcutId): boolean {
-  return id !== "captureAppshot" && id !== "browserReload";
+  return id !== "captureAppshot" && id !== "browserReload" && id !== "toggleDictation";
 }
 
 /** `ShortcutId::default_combo_on` — delegates to ticket 03's default table. */
@@ -759,6 +766,7 @@ export function healReservedComposerShortcuts(
   const heal = (combo: string, fallback: string): string =>
     combo === "mod-enter" ? fallback : combo;
   return {
+    toggleDictation: heal(config.toggleDictation, defaults.toggleDictation),
     captureAppshot: heal(config.captureAppshot, defaults.captureAppshot),
     randomWallpaper: heal(config.randomWallpaper, defaults.randomWallpaper),
     saveFile: heal(config.saveFile, defaults.saveFile),

@@ -112,7 +112,10 @@ async fn target_device_ids_must_name_this_engine() {
         .expect("local list");
     assert!(local.is_array());
 
-    // A foreign target fails closed — unary calls and watches alike.
+    // A foreign target fails closed — unary calls and watches alike. The
+    // guard lives in `EngineRpc::handle`, before every method dispatch, so it
+    // rejects watches too; only the ack-checked subscribe surfaces the
+    // rejection (the legacy subscribe returns before the server's reply).
     for method in [methods::LIST_HARNESSES, methods::LIST_MODELS] {
         let err = client
             .call(
@@ -125,7 +128,7 @@ async fn target_device_ids_must_name_this_engine() {
     }
     assert!(
         client
-            .subscribe(
+            .subscribe_checked(
                 methods::WATCH_DOC_MESSAGES,
                 json!({ "chatId": "solo-chat", "targetDeviceId": "device-elsewhere" }),
             )
@@ -268,13 +271,29 @@ async fn mcp_standalone_session_executes_on_this_engine() {
     assert_eq!(side["kind"], "side");
     assert_eq!(side["parentChatId"], "coordinator");
     let side_id = side["chatId"].as_str().unwrap().to_owned();
-    let side_tools = Tools::new(Arc::new(Roboco::with_client(
+    let side_roboco = Arc::new(Roboco::with_client(
         roboco_rpc::memory_client(core.rpc_service()),
         Origin {
             chat_id: Some(side_id.clone()),
             device_id: Some("smoke-device".into()),
         },
-    )));
+    ));
+    // WatchChats folds registry writes asynchronously: a real MCP server for
+    // a side chat starts after the row is long visible, and this test must
+    // meet the same bar before speaking for the chat — poll until the fresh
+    // row resolves instead of racing the publish task.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if side_roboco.resolve_chat(&side_id).await.is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "side chat {side_id} never became visible to WatchChats"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let side_tools = Tools::new(side_roboco);
     let err = side_tools
         .call("create_chat", json!({ "kind": "chat" }))
         .await

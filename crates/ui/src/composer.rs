@@ -7764,9 +7764,20 @@ impl Composer {
                     .as_ref()
                     .is_some_and(|w| w.request_id == request_id);
                 if !same {
-                    self.reset_mention(None, cx);
                     self.input.update(cx, |input, _| input.cancel_dictation());
+                    // The composed draft waits under the chat's key until the
+                    // question closes (upstream's `drafts.insert` + prefill
+                    // swap; our proto has no question prefill — ticket 30's
+                    // wave-5 finding — so the override starts empty).
+                    if self.wizard.is_none() {
+                        self.drafts.insert(
+                            self.current_key.clone(),
+                            self.input.read(cx).text().to_string(),
+                        );
+                    }
+                    self.reset_mention(None, cx);
                     self.wizard = Some(Wizard::new(request_id, questions));
+                    self.input.update(cx, |input, cx| input.set_text("", cx));
                     self.advance_task = None;
                     // The shared input becomes the panel's free-text override.
                     self.input.update(cx, |input, cx| {
@@ -7792,8 +7803,15 @@ impl Composer {
                     if released {
                         self.wizard = None;
                         self.advance_task = None;
-                        self.input
-                            .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                        let draft = self
+                            .drafts
+                            .get(&self.current_key)
+                            .cloned()
+                            .unwrap_or_default();
+                        self.input.update(cx, |input, cx| {
+                            input.set_text(draft, cx);
+                            input.set_placeholder("Do anything…", cx);
+                        });
                     }
                 }
             }
