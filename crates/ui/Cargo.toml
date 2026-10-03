@@ -52,6 +52,7 @@ name = "compact-picker-fixture"
 required-features = ["compact-picker-fixture"]
 
 [dependencies]
+roboco-voice = { path = "../voice" }
 url = "2"
 roboco-proto.workspace = true
 similar.workspace = true

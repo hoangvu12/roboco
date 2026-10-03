@@ -338,6 +338,8 @@ impl SettingsStore {
 }
 
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
+    let data_dir = data_dir.into();
+    crate::dictation::init(data_dir.clone(), cx);
     cx.set_global(SettingsStore {
         current: settings,
         data_dir: data_dir.into(),
@@ -711,6 +713,11 @@ pub const SKILL_COMPLETION_HARNESSES: [(roboco_proto::HarnessId, &str); 9] = [
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
+    pub dictation_enabled: bool,
+    /// Dictation microphone as a [`roboco_voice::InputDevice`] id; `None`
+    /// follows the system default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
     /// Submit using Enter or the platform modifier plus Enter.
@@ -891,6 +898,8 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
+            dictation_enabled: false,
+            dictation_input: None,
             window_geometry: None,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
@@ -994,6 +1003,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// rather than panicking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
+    ToggleDictation,
     CaptureAppshot,
     SaveFile,
     BrowserReload,
@@ -1011,7 +1021,8 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 13 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
+        ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::SaveFile,
         ShortcutId::BrowserReload,
@@ -1043,6 +1054,7 @@ impl ShortcutId {
     /// Row label (roboco lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
+            ShortcutId::ToggleDictation => "Hold to dictate",
             ShortcutId::CaptureAppshot => "Capture Appshot",
             ShortcutId::SaveFile => "Save file",
             ShortcutId::BrowserReload => "Reload browser page",
@@ -1069,6 +1081,7 @@ impl ShortcutId {
     /// this guards against only exists off macOS).
     pub fn default_combo_on(self, mac: bool) -> &'static str {
         match self {
+            ShortcutId::ToggleDictation => "mod-d",
             ShortcutId::CaptureAppshot if mac => "ctrl-alt-space",
             ShortcutId::CaptureAppshot => "mod-alt-space",
             ShortcutId::SaveFile => "mod-s",
@@ -1116,6 +1129,7 @@ impl ShortcutId {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KeymapConfig {
+    pub toggle_dictation: String,
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), serde(skip))]
     pub capture_appshot: String,
     pub save_file: String,
@@ -1140,6 +1154,7 @@ pub struct KeymapConfig {
 impl Default for KeymapConfig {
     fn default() -> Self {
         Self {
+            toggle_dictation: ShortcutId::ToggleDictation.default_combo().into(),
             capture_appshot: ShortcutId::CaptureAppshot.default_combo().into(),
             save_file: ShortcutId::SaveFile.default_combo().into(),
             browser_reload: ShortcutId::BrowserReload.default_combo().into(),
@@ -1182,6 +1197,7 @@ pub fn sidebar_pin_profile_key(
 impl KeymapConfig {
     pub fn get(&self, id: ShortcutId) -> &str {
         match id {
+            ShortcutId::ToggleDictation => &self.toggle_dictation,
             ShortcutId::CaptureAppshot => &self.capture_appshot,
             ShortcutId::SaveFile => &self.save_file,
             ShortcutId::BrowserReload => &self.browser_reload,
@@ -1205,6 +1221,7 @@ impl KeymapConfig {
 
     pub fn set(&mut self, id: ShortcutId, combo: String) {
         match id {
+            ShortcutId::ToggleDictation => self.toggle_dictation = combo,
             ShortcutId::CaptureAppshot => self.capture_appshot = combo,
             ShortcutId::SaveFile => self.save_file = combo,
             ShortcutId::BrowserReload => self.browser_reload = combo,
@@ -1468,6 +1485,97 @@ impl UiSettings {
                 crate::sound::Sound::Request => self.sound_input_enabled,
                 crate::sound::Sound::Attention => self.sound_attention_enabled,
             }
+    }
+
+    /// Three-way merge for a view that keeps a working copy of the settings:
+    /// fields `edited` changed since `base` win, every other field keeps
+    /// `current`. A stale copy therefore never reverts a choice another
+    /// surface saved meanwhile. The destructure is exhaustive, so a new field
+    /// does not compile until it is merged here too.
+    pub fn merge_changes(base: &Self, edited: &Self, mut current: Self) -> Self {
+        macro_rules! merge {
+            ($($field:ident),* $(,)?) => {{
+                let Self { $($field),* } = edited;
+                $(if *$field != base.$field {
+                    current.$field = $field.clone();
+                })*
+            }};
+        }
+        merge!(
+            dictation_enabled,
+            dictation_input,
+            window_geometry,
+            composer_send_behavior,
+            skills_in_slash_menu,
+            skill_completion_by_harness,
+            compact_model_picker,
+            sidebar_width,
+            sidebar_collapsed,
+            sidebar_grouped,
+            sidebar_organization,
+            sidebar_sort,
+            sidebar_show_project_label,
+            sidebar_compact,
+            sidebar_show_project_icon,
+            sidebar_show_harness,
+            sidebar_show_branch,
+            sidebar_show_pull_request,
+            github_star_banner_dismissed,
+            last_space_id,
+            last_project_action_by_space_id,
+            open_tabs,
+            space_filter,
+            sidebar_sections_by_profile,
+            sidebar_pinned_session_ids_by_profile,
+            tab_order,
+            space_order,
+            sound_enabled,
+            sound_completion_enabled,
+            sound_input_enabled,
+            sound_attention_enabled,
+            notifications_enabled,
+            notifications_background_only,
+            files_panel_width,
+            agent_update_notifications,
+            right_pane_width,
+            right_pane_open,
+            terminal_height,
+            terminal_open,
+            keymap,
+            appshots_enabled,
+            appshot_sound_enabled,
+            appshot_destination,
+            escape_stops_active_agent,
+            settings_section,
+            appearance,
+            git_history_columns,
+            git_history_column_widths,
+            git_history_column_order,
+            git_history_author_display,
+            ui_font_family,
+            ui_font_size,
+            terminal_font_family,
+            terminal_font_size,
+            code_font_family,
+            code_font_size,
+            theme_selection,
+            diff_split,
+            diff_wrap,
+            code_fences_fit_content,
+            transcript_width,
+            open_web_links_in_roboco,
+            transcript_compact_mode,
+            files_autosave_enabled,
+            files_autosave_delay_ms,
+            files_word_wrap,
+            files_show_all,
+            accent,
+            surface,
+            new_thread_composer_background,
+            new_thread_background_effect,
+            legacy_accent_color,
+        );
+        current
     }
 
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
@@ -1788,6 +1896,7 @@ mod tests {
             height: 800.0,
         };
         let settings = UiSettings {
+            dictation_enabled: false,
             window_geometry: Some(geometry),
             ..Default::default()
         };
@@ -2382,6 +2491,8 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
+            dictation_enabled: false,
+            dictation_input: Some("coreaudio:usb-mic".into()),
             window_geometry: None,
             sidebar_width: 300.0,
             sidebar_collapsed: true,

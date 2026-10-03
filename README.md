@@ -22,7 +22,7 @@ Manual option: download the portable release ZIP from the [releases page](https:
 
 ### Linux
 
-Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on.
+Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on. Linux requires the system ALSA runtime (`libasound.so.2`), including for headless mode because it shares the desktop executable. The installer checks that the binary starts before activating it and reports missing runtime libraries.
 
 ## Build from source
 

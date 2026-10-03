@@ -28,6 +28,7 @@ pub mod composer;
 mod composer_dock;
 mod composer_markdown;
 mod context_usage;
+mod dictation;
 pub mod edge_fade;
 pub mod engine_cache;
 pub mod engine_registry;

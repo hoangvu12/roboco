@@ -95,6 +95,7 @@ try {
     $licenses = Join-Path $stage 'licenses/fonts'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
     Copy-Item -Path 'crates/ui/assets/fonts/licenses/*' -Destination $licenses
+    Copy-Item -LiteralPath 'crates/voice/NOTICE.md' -Destination (Join-Path $stage 'licenses/parakeet-v3.txt')
     Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
     Copy-Item -LiteralPath './target/release/roboco.exe' -Destination "$stage.exe"
     # The per-user installer wraps the same staged directory (roboco-update.json

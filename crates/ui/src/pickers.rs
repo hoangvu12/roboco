@@ -5476,7 +5476,8 @@ impl Render for Pickers {
         // when the model has neither a ladder nor options (e.g. Hermes).
         // No traits suffix on the title-bound chip: titles run at minimal
         // reasoning and never show a tray to adjust.
-        // The composer places this model chip beside Send. Roboco's combined
+        // The composer places this model chip beside microphone and Send.
+        // Roboco's combined
         // chip keeps the joined traits summary (the effort is its first part;
         // upstream #498 simplified the chip to effort-only, which Roboco
         // never ported) — upstream #471's Cursor effort-option fallback is

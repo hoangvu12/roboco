@@ -47,6 +47,7 @@ Transcript subscriptions deliver an initial reset followed by deltas. Virtualize
 | `crates/doc` | Local Loro schemas, transcripts, registry, command data |
 | `crates/sync` | Local document store and snapshot compatibility; historical crate name |
 | `crates/harness` | Provider and agent adapters |
+| `crates/voice` | Desktop-local dictation: optional Parakeet model download and verify, capture, inference; no RPC/sync |
 | `crates/ui` | GPUI views, client state, settings |
 | `crates/preview` | Local application preview services |
 | `crates/update` | Release metadata and updates |
