@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "../components/ui/Dialog";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
+import { Tooltip } from "../components/ui/Tooltip";
 import {
   accountInitial,
   accountLabel,
@@ -381,7 +382,13 @@ function ProviderSection({
   );
 }
 
-function AccountRow({
+/**
+ * One provider account row (accounts.rs:1115-1193): the avatar, the email
+ * label and usage meters, badges, and the inactive-only actions — the
+ * icon-only Forget and the Switch button. Exported for the mounted row
+ * suite (tests/account-row.test.ts), like its `LoginDialog` sibling.
+ */
+export function AccountRow({
   account,
   busy,
   refreshing,
@@ -420,9 +427,23 @@ function AccountRow({
         </span>
         {!account.active && (
           <span className="account-actions">
-            <button type="button" className="btn btn-danger-ghost" disabled={busy} onClick={onForget}>
-              Forget
-            </button>
+            {/* The icon-only trash (accounts.rs:1147-1175): muted at rest,
+                wash + text on hover, the label riding the tooltip and the
+                aria — the text "Forget" button was the web-only drift. */}
+            <Tooltip
+              label="Forget account"
+              trigger={
+                <button
+                  type="button"
+                  className="account-forget"
+                  aria-label="Forget account"
+                  disabled={busy}
+                  onClick={onForget}
+                >
+                  <Icon name="trashBinMinimalistic" size={14} />
+                </button>
+              }
+            />
             {account.switchable && (
               <button type="button" className="btn btn-solid" disabled={busy} onClick={onSwitch}>
                 {busy ? "Switching…" : "Switch"}
