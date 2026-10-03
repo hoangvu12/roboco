@@ -48,6 +48,16 @@ export function SlashPopup(props: SlashPopupProps) {
       listRef.current.scrollTop = 0;
     }
   }, [props.filtered]);
+  // Every cursor step keeps the active row in view — `move_slash` →
+  // `scroll_to_item(active)` (composer.rs:7398-7406), with `block: "nearest"`
+  // as the repo-wide web substitute (CursorList.tsx:148-152): only the
+  // innermost ancestor that needs it scrolls, no `behavior: "smooth"`.
+  // Keyed on the ranking too, so a refilter re-pins the reset cursor
+  // (row 0) instead of holding a stale row index. `listRef` is null in the
+  // skeleton/empty states; `item(-1)` covers the null cursor.
+  useEffect(() => {
+    listRef.current?.children.item(props.active ?? -1)?.scrollIntoView({ block: "nearest" });
+  }, [props.active, props.filtered]);
 
   let body: ReactNode;
   if (props.loading && props.rows.length === 0) {
@@ -110,7 +120,7 @@ export function SlashPopup(props: SlashPopupProps) {
   );
 }
 
-/** One invocation row (composer.rs:7146-7181): the 14px glyph (command for
+/** One invocation row (composer.rs:7146-7181): the 16px glyph (command for
  * `/`, widget for `$`), the human-readable name (skills Title-case their
  * words, commands show `/{name}`), and the description (truncated). */
 function SlashRow({
@@ -134,7 +144,7 @@ function SlashRow({
       <span className="composer-completion-row-icon">
         <Icon
           name={skill ? "widget" : "command"}
-          size={14}
+          size={16}
           className={skill ? "slash-row-widget" : "slash-row-command"}
         />
       </span>

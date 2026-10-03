@@ -12,7 +12,7 @@ slash-popup.tsx:134-141).
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` (mention/slash items).
 
@@ -51,7 +51,43 @@ skeleton state no-ops. CSS-contract check for the 16×16 icon box.
 
 ## 3. Acceptance checklist
 
-- [ ] Arrow navigation keeps the highlight visible in both popups
-- [ ] Result-change reset behavior preserved
-- [ ] Icons 16px (box + prop)
-- [ ] Tests + full app suite green
+- [x] Arrow navigation keeps the highlight visible in both popups
+- [x] Result-change reset behavior preserved
+- [x] Icons 16px (box + prop)
+- [x] Tests + full app suite green
+
+## Comments
+
+**2026-10-03 — implemented and reviewed on `ticket/wpn-05-completion-popup-scroll`**
+(implementation commit `7a4b8461`, review pass on top). Landed exactly the prescribed shape:
+the step-scroll effect (`listRef.current?.children.item(props.active ??
+-1)?.scrollIntoView({ block: "nearest" })`) keyed `[props.active,
+props.results]` (mention) / `[props.active, props.filtered]` (slash),
+declared beside the untouched result-change reset; FileIcon/Icon `size 16`;
+the `.composer-completion-row-icon` box 16×16. New mounted suite
+`tests/completion-popup-scroll.test.ts` (10 tests) pins the per-step scroll
+call (element + `block: "nearest"`), the preserved reset (`scrollTop → 0` on
+a fresh row set, via an own-property recorder since jsdom's layout-less
+accessor drops writes), the skeleton no-op, the null-cursor no-op, and the
+16px glyphs (img/svg width+height attributes + the CSS-contract rule).
+
+Verification evidence (all from `web/packages/app`):
+- `pnpm exec vitest run tests/completion-popup-scroll.test.ts` — 10/10
+  (written first; 8/10 red before the implementation, only the skeleton
+  no-ops passing).
+- Focused neighbors (`composer-edit-failure`, `composer-reasoning`,
+  `composer-send`, `mentions`, `command-palette`, `menu-scrollbar`,
+  `section-menu`, `nested-menu`) — 152/152.
+- `pnpm exec vitest run` (full app suite) — 149 files / 2240 tests, all
+  green.
+- `pnpm exec tsc --noEmit` — clean.
+
+Adjudicated during review: the effect also fires on mount (pins row 0) — a
+no-op at `scrollTop 0` with `block: "nearest"`, matching the repo's other
+prop-derived scroll effects (file-tree-panel.tsx:335-346, CursorList.tsx:144-152,
+neither carries a first-run guard); no guard added. The host wiring was
+verified live: composer.tsx:2081-2088 steps `active` via `menuStep` on arrow
+keys while a token is open, and every results/refilter landing co-resets the
+cursor to 0 (composer.tsx mention `setMention`, invocations.ts
+`refilterSlash`), so the rows-keyed dep can never pin a stale index. The
+escape hatch (manual `list.scrollTop` from `row.offsetTop`) was not needed.
