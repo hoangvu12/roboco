@@ -371,8 +371,9 @@ describe("phone sheets render full width (mp-01, model-picker-parity §3)", () =
     // wins, painting a flush-left card instead of spanning the viewport.
     // The frame's `width: 100%` is equal specificity (0,1,0) but later in
     // source order than both victims — the frame owns the width the way it
-    // already owns placement, so the next fixed-width class to land on a
-    // sheet popup is covered too.
+    // already owns placement, covering every width class declared before
+    // it (a later one, like `.compact-card`, needs the descendant rule
+    // below).
     const rules = phoneRules("\\.rb-drawer-card");
     const frame = rules.find((body) => body.includes("position: fixed"));
     expect(frame).toBeDefined();

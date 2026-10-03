@@ -5876,8 +5876,9 @@ a:focus-visible,
      * model picker), `.section-menu-body`'s 180px (the sidebar section
      * menu) — over-constrains left+right+width and width wins, painting a
      * flush-left card instead of spanning the viewport. Equal
-     * specificity, later source order: one rule neutralizes both victims
-     * and whatever fixed-width class lands on a sheet popup next.
+     * specificity, later source order: the frame neutralizes every width
+     * class declared before it — the one declared after, the compact
+     * card below, gets its own rule.
      */
     width: 100%;
     transform: none;
