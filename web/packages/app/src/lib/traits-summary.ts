@@ -76,8 +76,10 @@ export function effectiveReasoningLadder(
  * The effective reasoning level plus every model option's effective choice
  * (the explicit pick when one is saved and the model still offers it, else the
  * option's default), joined with " · ": "High · 1M · Fast", or Cursor's
- * "Agent · Balance". Defaults are spelled out rather than hidden, so the run's
- * configuration reads without opening anything. `null` only when the model has
+ * "Agent · Balance". The serviceTier part drops when its effective choice
+ * is the quiet default (`default`/`standard`, pickers.rs:246-249 —
+ * maintainer-confirmed over the web's old spell-everything divergence);
+ * every other option's default reads. `null` only when the model has
  * nothing to describe — no ladder and no options.
  */
 export function traitsSummary(
@@ -95,6 +97,9 @@ export function traitsSummary(
       typeof saved === "string" && option.choices.some((choice) => choice.id === saved)
         ? saved
         : option.defaultChoice;
+    if (option.id === "serviceTier" && (picked === "default" || picked === "standard")) {
+      continue;
+    }
     const choice = option.choices.find((candidate) => candidate.id === picked);
     if (choice !== undefined) {
       parts.push(choice.label);

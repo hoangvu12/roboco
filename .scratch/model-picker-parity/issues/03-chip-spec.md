@@ -101,3 +101,10 @@ tier reads as absent on the desktop's suffix, while the web spells the
 off label ("Standard · Standard" on Codex defaults). This ticket's two
 verified drift items (padding, glyph) are done; the suffix-text drift
 was not in scope and is recorded here, not built.
+
+**2026-10-03 — CLOSED (maintainer: "do like upstream"):** the suffix-text
+drift is fixed in a follow-up commit — `traitsSummary` now skips the
+serviceTier part at its quiet default exactly like pickers.rs:246-249,
+pinned by `traits_summary_omits_the_service_tier_at_its_quiet_default`.
+**Quirk 1 (the palette reveal off-by-one) was explicitly SKIPPED by the
+maintainer (pre-existing web code).**

@@ -592,7 +592,45 @@ describe("ComposerPickers picker list truth (ticket 02)", () => {
         panel!.querySelector<HTMLElement>(".compact-model")!.click();
       });
       expect(document.querySelector(".compact-list-page")).not.toBeNull();
-      expect(document.querySelector(".model-row-selected")).toBeNull();
+      // The compact card reads the same rows the identity card does: a
+      // locked chat's models page unshifts the synthetic selected-absent
+      // row at index 0 (pickers.rs:1996-2033 — the desktop's compact page
+      // shares model_rows' construction; maintainer-confirmed over mp-02's
+      // identity-only scope). It IS the anchored selected row — the
+      // fallback catalog row never paints as the pick — with the
+      // remembered label, the verbatim description, no star, and a no-op
+      // activation that never picks and never leaves the models page.
+      const row0 = document.querySelector<HTMLElement>(
+        '.compact-list-page [data-model-index="0"]',
+      );
+      expect(row0).not.toBeNull();
+      expect(row0!.querySelector(".model-row-label")?.textContent).toBe("Gone model");
+      expect(row0!.querySelector(".model-row-attribution")?.textContent).toBe(
+        "Selected in this chat; absent from the current model list",
+      );
+      expect(row0!.querySelector(".model-row-star")).toBeNull();
+      expect(row0!.querySelector(".model-row")!.classList.contains("model-row-selected")).toBe(
+        true,
+      );
+      expect(row0!.querySelector(".model-row")!.getAttribute("aria-selected")).toBe("true");
+      const row1 = document.querySelector<HTMLElement>(
+        '.compact-list-page [data-model-index="1"]',
+      );
+      expect(row1!.querySelector(".model-row")).not.toBeNull();
+      expect(
+        row1!.querySelector(".model-row")!.classList.contains("model-row-selected"),
+      ).toBe(false);
+      expect(row1!.querySelector(".model-row-star")).not.toBeNull();
+      // Clicking the synthetic row is a no-op (pickers.rs:2085-2087) — no
+      // pick, no persist, and the page stays.
+      await act(async () => {
+        row0!.querySelector<HTMLElement>(".model-row")!.click();
+      });
+      pressKey("Enter");
+      expect(handle.drafts).toHaveLength(0);
+      expect(handle.persists).toHaveLength(0);
+      expect(handle.observed.current.model).toBe("gone-model");
+      expect(document.querySelector(".compact-list-page")).not.toBeNull();
     });
   });
 

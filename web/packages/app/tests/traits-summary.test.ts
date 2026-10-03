@@ -149,6 +149,49 @@ describe("traits", () => {
     expect(traitsSummary(undefined, null, {})).toBeNull();
   });
 
+  it("traits_summary_omits_the_service_tier_at_its_quiet_default (pickers.rs:246-249)", () => {
+    // The desktop's rule, maintainer-confirmed over the web's old
+    // "defaults are spelled out" divergence: the serviceTier part drops
+    // from the suffix when its EFFECTIVE choice (saved pick or default)
+    // is `default`/`standard` — Codex's real tier ids (catalog.rs:96-108)
+    // — while every other option's default still reads. `fast` stays
+    // visible, and a model whose only description was the quiet tier has
+    // no suffix at all.
+    const TIERED: Model = {
+      id: "gpt-5.4",
+      label: "GPT-5.4",
+      description: null,
+      reasoningLevels: [],
+      options: [
+        {
+          id: "context",
+          label: "Context window",
+          defaultChoice: "standard",
+          choices: [
+            { id: "standard", label: "Standard" },
+            { id: "1m", label: "1M" },
+          ],
+        },
+        {
+          id: "serviceTier",
+          label: "Service Tier",
+          defaultChoice: "default",
+          choices: [
+            { id: "default", label: "Standard" },
+            { id: "fast", label: "Fast" },
+          ],
+        },
+      ],
+    };
+    expect(traitsSummary(TIERED, null, {})).toBe("Standard");
+    expect(traitsSummary(TIERED, null, { serviceTier: "default" })).toBe("Standard");
+    expect(traitsSummary(TIERED, null, { serviceTier: "standard" })).toBe("Standard");
+    expect(traitsSummary(TIERED, null, { serviceTier: "fast" })).toBe("Standard · Fast");
+    const TIER_ONLY: Model = { ...TIERED, options: [TIERED.options[1]!] };
+    expect(traitsSummary(TIER_ONLY, null, {})).toBeNull();
+    expect(traitsSummary(TIER_ONLY, "high", {})).toBe("High");
+  });
+
   it("offered_options_keeps_only_picks_the_model_still_offers", () => {
     // Remembered picks drop what the model doesn't offer before sending.
     const remembered: Record<string, unknown> = {

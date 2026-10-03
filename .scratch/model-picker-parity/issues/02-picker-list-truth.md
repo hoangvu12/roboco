@@ -119,3 +119,9 @@ row is query-gated like the desktop block (:2004-2015). Residual,
 ticket-scoped: the desktop's compact models page for a LOCKED chat (rail
 Harness) also shows the selected_only row — the ticket's file table scopes
 the unshift to `IdentityCard`, so the web compact arm does not render it.
+
+**2026-10-03 — residual CLOSED (maintainer: upstream does it, do it too):**
+the compact arm now renders the synthetic row — the same `selectedAbsentRow`
+memo under the harness rail (locked), unshifted at index 0 with a no-op
+activation, pinned by the compact absent-pick test in
+composer-reasoning.test.ts.

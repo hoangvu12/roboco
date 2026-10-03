@@ -1385,7 +1385,7 @@ function CompactCard(props: CompactCardProps) {
   const modelsList = modelsLists.get(effectiveHarness);
   const models: readonly Model[] = modelsList?.rows ?? [];
   const selectedModelId = draft.model ?? selectedModel?.id ?? null;
-  const rows = useMemo(
+  const scopedRows = useMemo(
     () =>
       scopedModelRows(
         query,
@@ -1396,6 +1396,43 @@ function CompactCard(props: CompactCardProps) {
         isFavorite,
       ),
     [query, listRail, effectiveHarness, railDescriptors, modelsFor, isFavorite],
+  );
+  // `selected_only` (pickers.rs:1996-2033): the compact models page reads
+  // the same rows construction the identity card does — a locked chat's
+  // harness rail unshifts the synthetic row at index 0 once the catalog is
+  // loaded and the chat's pick is absent from it (maintainer-confirmed:
+  // the desktop's compact page shares `model_rows`, so mp-02's
+  // identity-only scope widened). The query gates it exactly like a
+  // catalog row; its id is absent from the catalog by construction.
+  const selectedAbsentRow = useMemo(() => {
+    if (listRail !== "harness" || draft.model === null) {
+      return null;
+    }
+    const slot = modelsLists.get(effectiveHarness);
+    if (slot === undefined || !slot.loaded) {
+      return null;
+    }
+    if (slot.rows.some((model) => model.id === draft.model)) {
+      return null;
+    }
+    const descriptor = railDescriptors.find((entry) => entry.id === effectiveHarness);
+    if (descriptor === undefined) {
+      return null;
+    }
+    const remembered = rememberedLabelFor(draft.model);
+    const needle = query.trim().toLowerCase();
+    if (
+      needle.length > 0 &&
+      !draft.model.toLowerCase().includes(needle) &&
+      !(remembered ?? draft.model).toLowerCase().includes(needle)
+    ) {
+      return null;
+    }
+    return selectedOnlyRow(effectiveHarness, descriptor.name, draft.model, remembered);
+  }, [listRail, draft.model, modelsLists, effectiveHarness, railDescriptors, query]);
+  const rows = useMemo(
+    () => (selectedAbsentRow === null ? scopedRows : [selectedAbsentRow, ...scopedRows]),
+    [scopedRows, selectedAbsentRow],
   );
 
   const groups = useMemo(() => {
@@ -1491,6 +1528,11 @@ function CompactCard(props: CompactCardProps) {
   });
 
   function pickModelFromList(row: ModelRowData): void {
+    if (row.selectedOnly) {
+      // The synthetic selected-absent row is unclickable
+      // (`activate_model_index`'s no-op, pickers.rs:2085-2087).
+      return;
+    }
     onPickModel(row);
     // A pick lands back on the panel (`activate_model_index`, pickers.rs).
     setPage("panel");
