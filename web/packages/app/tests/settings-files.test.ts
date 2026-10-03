@@ -23,7 +23,9 @@ import { uiSettings, UI_SETTINGS_STORAGE_KEY } from "../src/state/ui-settings";
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   // The desktop arm: nothing under 769px matches, so selects open as the
-  // floating card (the phone sheet arm is PickerCard's own suite).
+  // floating card (the phone sheet arm rides the sheet family's CSS
+  // contract suite — responsive-surface.test.ts — and the drawer family's
+  // own mounted suites).
   window.matchMedia = ((query: string) => ({
     matches: query.startsWith("(max-width") === false,
     media: query,
