@@ -6523,6 +6523,94 @@ a:focus-visible,
   animation: rb-att-sending-scrim var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
 }
 
+/*
+ * The Appshot card (transcript.rs:6159-6290): a 240px column — the
+ * screenshot in a 128px frame (contain, never cropped), the "{app} ·
+ * Appshot" meta line with the monitor mark, and the window title
+ * centered under it. The hover wash the desktop card carries.
+ */
+.user-attachments-appshot {
+  position: relative;
+  flex: none;
+  width: 240px;
+  max-width: 100%;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.user-attachments-appshot:hover {
+  background: rgb(var(--rb-ink) / 0.045);
+}
+
+.user-attachments-appshot-frame {
+  position: relative;
+  width: 100%;
+  height: 128px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  overflow: hidden;
+  color: var(--rb-text-muted);
+  font-size: 11px;
+}
+
+.user-attachments-appshot-img {
+  display: block;
+  width: 100%;
+  height: 126px;
+  border-radius: 5px;
+  object-fit: contain;
+}
+
+.user-attachments-appshot[data-state="loading"] {
+  cursor: default;
+  animation: rb-skeleton-pulse var(--rb-motion-roboco-pulse) var(--rb-ease-ease-in-out) infinite;
+}
+
+.user-attachments-appshot[data-state="error"] {
+  cursor: default;
+}
+
+.user-attachments-appshot-meta {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.user-attachments-appshot-icon {
+  flex: none;
+  color: var(--rb-text-muted);
+}
+
+.user-attachments-appshot-app {
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-muted);
+}
+
+.user-attachments-appshot-title {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 12px;
+  color: var(--rb-text);
+}
+
 @keyframes rb-att-sending-scrim {
   0% {
     background: rgb(0 0 0 / 0.38);
@@ -17445,7 +17533,7 @@ button.segmented-option:hover {
   color: var(--rb-success, #2f9e44);
 }
 .files-row[data-git="deleted"] .files-row-name,
-.files-row[data-git="conflicted"] .files-row-name {
+.files-row[data-git="conflict"] .files-row-name {
   color: var(--rb-danger, #d9480f);
 }
 .files-row[data-git="untracked"] .files-row-name {

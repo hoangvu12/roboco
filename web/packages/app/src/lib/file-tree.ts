@@ -68,74 +68,115 @@ export interface FileTreeSnapshot {
 
 /**
  * The row-level Git color kinds (`DecorationKind`): staged/unstaged edits
- * collapse to `modified`, adds to `added`, deletions and unmerged entries to
- * `deleted`, untracked to `untracked`, renames to `renamed`.
+ * collapse to `modified`, adds to `added`, deletions to `deleted`, renames
+ * to `renamed`, untracked to `untracked`, and the conflict states (unmerged,
+ * double-added, double-deleted) to `conflict` — the danger color, like
+ * deletions.
  */
-export type GitDecorationKind = "modified" | "added" | "deleted" | "renamed" | "untracked";
+export type GitDecorationKind =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflict";
+
+/** `git_status.rs::decoration` — the row's kind from its two columns. */
+function decorationKind(index: string, worktree: string): GitDecorationKind | null {
+  if (index === "unchanged" && worktree === "unchanged") {
+    return null;
+  }
+  const states = [index, worktree];
+  const conflict =
+    states.includes("unmerged") ||
+    (index === "added" && worktree === "added") ||
+    (index === "deleted" && worktree === "deleted");
+  if (conflict) {
+    return "conflict";
+  }
+  if (states.includes("deleted") && states.includes("untracked")) {
+    return "modified";
+  }
+  if (states.includes("deleted")) {
+    return "deleted";
+  }
+  if (states.some((state) => state === "renamed" || state === "copied")) {
+    return "renamed";
+  }
+  if (states.some((state) => state === "modified" || state === "typeChanged")) {
+    return "modified";
+  }
+  if (states.includes("untracked")) {
+    return "untracked";
+  }
+  return "added";
+}
+
+/** `git_status.rs::valid_path` — no leading slash, no empty/./.. segments. */
+function validTreePath(path: string): boolean {
+  return (
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+  );
+}
 
 /**
  * `Decorations::from_snapshot` (b25dd404, files/git_status.rs): join a
  * `CheckoutGitStatus` onto workspace paths — direct matches classify by
  * their combined columns, and every ANCESTOR directory of a touched path
  * aggregates its descendants (a directory row shows the union, preferring
- * the stronger signal). Partial/incomplete statuses still classify the
- * paths they carry: incomplete is never reported as clean, it simply
- * decorates less.
+ * the stronger signal — the kinds' Ord order). A rename's blast radius
+ * covers BOTH paths: the prior path's ancestors color too, so a directory
+ * holding only the renamed-AWAY file keeps its state. Partial/incomplete
+ * statuses still classify the paths they carry: incomplete is never
+ * reported as clean, it simply decorates less.
  */
 export function decorationsFromStatus(
-  files: readonly { readonly path: string; readonly index: string; readonly worktree: string }[],
+  files: readonly {
+    readonly path: string;
+    readonly oldPath?: string | null;
+    readonly index: string;
+    readonly worktree: string;
+  }[],
 ): Map<string, GitDecorationKind> {
+  // `DecorationKind`'s Ord, verbatim: untracked < added < modified <
+  // renamed < deleted < conflict.
   const rank: Record<GitDecorationKind, number> = {
     untracked: 1,
     added: 2,
-    renamed: 3,
-    modified: 4,
+    modified: 3,
+    renamed: 4,
     deleted: 5,
+    conflict: 6,
   };
   const out = new Map<string, GitDecorationKind>();
   const stronger = (a: GitDecorationKind, b: GitDecorationKind): GitDecorationKind =>
     rank[a] >= rank[b] ? a : b;
   for (const file of files) {
-    const index = stateKind(file.index);
-    const worktree = stateKind(file.worktree);
-    if (index === null && worktree === null) {
+    if (!validTreePath(file.path)) {
       continue;
     }
-    // Untracked dominates; otherwise the worktree column wins the row.
-    const kind =
-      file.worktree === "untracked" || file.index === "untracked"
-        ? "untracked"
-        : stronger(worktree ?? index ?? "modified", index ?? worktree ?? "modified");
+    const kind = decorationKind(file.index, file.worktree);
+    if (kind === null) {
+      continue;
+    }
     out.set(file.path, kind);
-    // Ancestor aggregation: every directory on the path inherits the row.
-    let slash = file.path.lastIndexOf("/");
-    while (slash > 0) {
-      const dir = file.path.slice(0, slash);
-      out.set(dir, stronger(out.get(dir) ?? kind, kind));
-      slash = dir.lastIndexOf("/");
+    // Ancestor aggregation over the row's path AND its rename source —
+    // the rename's blast radius is both trees.
+    for (const path of [file.path, file.oldPath ?? null]) {
+      if (path === null || !validTreePath(path)) {
+        continue;
+      }
+      let slash = path.lastIndexOf("/");
+      while (slash > 0) {
+        const dir = path.slice(0, slash);
+        out.set(dir, stronger(out.get(dir) ?? kind, kind));
+        slash = dir.lastIndexOf("/");
+      }
     }
   }
   return out;
-}
-
-function stateKind(state: string): GitDecorationKind | null {
-  switch (state) {
-    case "added":
-    case "copied":
-      return "added";
-    case "modified":
-    case "typeChanged":
-      return "modified";
-    case "deleted":
-    case "unmerged":
-      return "deleted";
-    case "renamed":
-      return "renamed";
-    case "untracked":
-      return "untracked";
-    default:
-      return null;
-  }
 }
 
 /** Watch outcomes the open document cares about (watch.rs parity). */
@@ -204,7 +245,12 @@ export class FileTreeModel {
    * reports clean, the rows simply stop carrying color.
    */
   applyGitStatus(
-    status: { readonly path: string; readonly index: string; readonly worktree: string }[] | null,
+    status: {
+      readonly path: string;
+      readonly oldPath?: string | null;
+      readonly index: string;
+      readonly worktree: string;
+    }[] | null,
   ): void {
     this.#gitStatus = status === null ? new Map() : decorationsFromStatus(status);
     this.#commit();

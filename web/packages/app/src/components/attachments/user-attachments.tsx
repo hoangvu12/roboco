@@ -9,9 +9,10 @@ import {
   useUploadProgressPercent,
   type AttachmentImageSnapshot,
 } from "../../state/attachment-cache";
-import { bytesToImageDataUrl, type UserImageAttachment } from "../../lib/attachments";
+import { bytesToImageDataUrl, appshotPresentationTitle, type UserImageAttachment } from "../../lib/attachments";
 import { Lightbox } from "../lightbox";
 import { GlyphSpinner } from "../glyph-spinner";
+import { Icon } from "@roboco/icons";
 
 /**
  * The user-row's attachment strip — the web port of the desktop's own
@@ -149,13 +150,62 @@ function UserAttachmentThumb({
   }, [client, deviceId, attachment.path, retryIn]);
 
   return (
+    attachment.appshot !== null ? (
+      <AppshotCard
+        appshot={attachment.appshot}
+        snapshot={snapshot}
+        sending={sending}
+        onPreview={onPreview}
+      />
+    ) : (
+      <button
+        type="button"
+        className="user-attachments-thumb"
+        data-state={snapshot.state === "loaded" ? "loaded" : snapshot.state}
+        aria-label={snapshot.state === "loaded" ? `Preview ${attachment.name}` : attachment.name}
+        onClick={() => {
+          if (snapshot.state === "loaded" && snapshot.image !== null) {
+            onPreview({
+              name: snapshot.image.name,
+              src: bytesToImageDataUrl(snapshot.image.mime, snapshot.image.bytes),
+            });
+          }
+        }}
+      >
+        <ThumbContent snapshot={snapshot} sending={sending} />
+      </button>
+    )
+  );
+}
+
+/**
+ * The Appshot card (transcript.rs:6159-6290): a 240px labeled card — the
+ * screenshot in a 128px frame, the "{app} · Appshot" meta line with the
+ * monitor mark (the web keeps the app-name badge: local app icons are a
+ * desktop-only resolution), and the window title centered under it. An
+ * unavailable image says so; a sending one overlays the upload state.
+ */
+function AppshotCard({
+  appshot,
+  snapshot,
+  sending,
+  onPreview,
+}: {
+  appshot: NonNullable<UserImageAttachment["appshot"]>;
+  snapshot: AttachmentImageSnapshot;
+  sending: boolean;
+  onPreview: (preview: { name: string; src: string } | null) => void;
+}) {
+  const title = appshotPresentationTitle(appshot);
+  const loaded = snapshot.state === "loaded" && snapshot.image !== null;
+  return (
     <button
       type="button"
-      className="user-attachments-thumb"
+      className="user-attachments-appshot"
       data-state={snapshot.state === "loaded" ? "loaded" : snapshot.state}
-      aria-label={snapshot.state === "loaded" ? `Preview ${attachment.name}` : attachment.name}
+      aria-label={loaded ? `Preview ${appshot.appName} Appshot: ${title}` : `${appshot.appName} Appshot: ${title}`}
       onClick={() => {
-        if (snapshot.state === "loaded" && snapshot.image !== null) {
+        if (loaded && snapshot.image !== null) {
           onPreview({
             name: snapshot.image.name,
             src: bytesToImageDataUrl(snapshot.image.mime, snapshot.image.bytes),
@@ -163,7 +213,28 @@ function UserAttachmentThumb({
         }
       }}
     >
-      <ThumbContent snapshot={snapshot} sending={sending} />
+      {loaded && snapshot.image !== null ? (
+        <span className="user-attachments-appshot-frame">
+          <img
+            className="user-attachments-appshot-img"
+            src={bytesToImageDataUrl(snapshot.image.mime, snapshot.image.bytes)}
+            alt=""
+            draggable={false}
+          />
+          {sending && <SendingOverlay />}
+        </span>
+      ) : (
+        <span className="user-attachments-appshot-frame">
+          {snapshot.state === "loading" ?
+            sending ? "Uploading Appshot…" : "Loading Appshot…"
+          : "Appshot unavailable"}
+        </span>
+      )}
+      <span className="user-attachments-appshot-meta">
+        <Icon name="monitor" size={15} className="user-attachments-appshot-icon" />
+        <span className="user-attachments-appshot-app">{`${appshot.appName} · Appshot`}</span>
+      </span>
+      <span className="user-attachments-appshot-title">{title}</span>
     </button>
   );
 }

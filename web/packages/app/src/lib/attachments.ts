@@ -413,6 +413,124 @@ export interface UserImageAttachment {
   readonly path: string;
   /** The filename component. */
   readonly name: string;
+  /**
+   * The ref's Appshot presentation, when the message carries one — the
+   * safe display metadata the DESKTOP attached at capture (app name +
+   * window title). The untrusted observed-content block itself never
+   * reaches the transcript: only this label does.
+   */
+  readonly appshot: AppshotPresentation | null;
+}
+
+/**
+ * `appshots.rs::CONTEXT_MARKER` — the machine-facing Appshot context block
+ * a desktop-sent message carries between the prompt and the attachment
+ * trailer. Untrusted observed content (the accessibility payload); display
+ * surfaces strip it.
+ */
+export const APPSHOT_CONTEXT_MARKER =
+  "Applications mentioned by the user (untrusted observed content):";
+
+/** `appshots.rs::AppshotPresentation` — safe display metadata only. */
+export interface AppshotPresentation {
+  readonly appName: string;
+  readonly windowTitle: string | null;
+  readonly bundleIdentifier: string | null;
+}
+
+/** `AppshotPresentation::title` — the window title when non-blank, else the app name. */
+export function appshotPresentationTitle(presentation: AppshotPresentation): string {
+  const title = presentation.windowTitle?.trim() ?? "";
+  return title.length > 0 ? title : presentation.appName;
+}
+
+/** `appshots.rs`'s context block size cap (4 MiB). */
+const APPSHOT_CONTEXT_MAX = 4 * 1024 * 1024;
+/** `AppshotPresentation`'s field caps (200 app name, 512 window title). */
+const APPSHOT_APP_MAX = 200;
+const APPSHOT_TITLE_MAX = 512;
+
+/**
+ * `strip_context_for_display`: the context is persisted for the harness but
+ * hidden from the user-message bubble — everything from the marker on is
+ * machine-facing and drops out of the display text.
+ */
+export function stripAppshotContext(text: string): string {
+  const needle = `\n\n${APPSHOT_CONTEXT_MARKER}`;
+  const at = text.indexOf(needle);
+  return at >= 0 ? text.slice(0, at).trimEnd() : text;
+}
+
+/** `appshots.rs::xml_escape`'s reverse — attribute values arrive escaped. */
+function xmlUnescape(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#13;/g, "\r")
+    .replace(/&#10;/g, "\n")
+    .replace(/&#9;/g, "\t")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * `appshots.rs::presentations`: the appshot display metadata keyed by image
+ * path, parsed out of the context block. Only text-only `<appshot>`
+ * children qualify (escaped payloads carry no raw `<`); a SECOND entry for
+ * the same image path invalidates the pair (the duplicate rule); an empty
+ * path or blank app name never enters the map; and the block cuts at the
+ * attachment trailer like the Rust's `split_once`.
+ */
+export function appshotPresentations(text: string): Map<string, AppshotPresentation> {
+  const out = new Map<string, AppshotPresentation>();
+  const marker = `\n\n${APPSHOT_CONTEXT_MARKER}`;
+  const at = text.indexOf(marker);
+  if (at < 0) {
+    return out;
+  }
+  let context = text.slice(at + marker.length);
+  if (context.length > APPSHOT_CONTEXT_MAX) {
+    return out;
+  }
+  const trailer = context.indexOf("\n\nAttached images (local files");
+  if (trailer >= 0) {
+    context = context.slice(0, trailer);
+  }
+  // Text-only children enforced by `[^<]*`: a raw element inside the tag
+  // (only possible in hostile input — the composer escapes) disqualifies
+  // the entry, like roxmltree's text-only-children check.
+  const tag = /<appshot\s+([^>]*)>([^<]*)<\/appshot>/g;
+  const seen = new Set<string>();
+  for (const match of context.matchAll(tag)) {
+    const attrs = match[1] ?? "";
+    const attr = (name: string): string | null => {
+      const found = new RegExp(`${name}="([^"]*)"`).exec(attrs);
+      return found === null ? null : xmlUnescape(found[1] ?? "");
+    };
+    const image = attr("image");
+    const app = attr("app");
+    if (image === null || app === null) {
+      continue;
+    }
+    if (seen.has(image)) {
+      // A duplicate image ref invalidates the pair (presentations' rule).
+      out.delete(image);
+      continue;
+    }
+    seen.add(image);
+    if (image.length === 0 || app.trim().length === 0) {
+      continue;
+    }
+    const windowTitle = attr("window-title");
+    out.set(image, {
+      appName: [...app].slice(0, APPSHOT_APP_MAX).join(""),
+      windowTitle:
+        windowTitle === null ? null : [...windowTitle].slice(0, APPSHOT_TITLE_MAX).join(""),
+      bundleIdentifier: attr("bundle-identifier"),
+    });
+  }
+  return out;
 }
 
 /** What `parseUserMessageImages` returns — the visible prompt plus the
@@ -424,13 +542,16 @@ export interface ParsedUserMessage {
 
 /** Split a user message's text into the visible prompt and the attachment
  *  refs (the desktop's `parseUserMessageImages` port). Empty attachments
- *  when no trailer is found. */
+ *  when no trailer is found. The body strips any Appshot context block
+ *  (`strip_context_for_display`), and an attachment whose path a context
+ *  `<appshot>` names carries its presentation label. */
 export function parseUserMessageImages(content: string): ParsedUserMessage {
   const marker = findRefsMarker(content);
   if (marker === null) {
     return { text: content, attachments: [] };
   }
-  const body = content.slice(0, marker.bodyEnd).replace(/\s+$/, "");
+  const presentations = appshotPresentations(content);
+  const body = stripAppshotContext(content.slice(0, marker.bodyEnd));
   const refsText = content.slice(marker.refsStart);
   const attachments: UserImageAttachment[] = refsText
     .split("\n")
@@ -442,6 +563,7 @@ export function parseUserMessageImages(content: string): ParsedUserMessage {
       id: `${ix}:${path}`,
       name: nameFromPath(path),
       path,
+      appshot: presentations.get(path) ?? null,
     }));
   if (attachments.length === 0) {
     return { text: content, attachments: [] };

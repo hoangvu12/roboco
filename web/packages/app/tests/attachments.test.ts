@@ -9,6 +9,7 @@ import {
   formatByBytes,
   formatByName,
   formatToMime,
+  appshotPresentationTitle,
   parseUserMessageImages,
   stageBytes,
   uploadAttachments,
@@ -140,7 +141,7 @@ describe("parseUserMessageImages", () => {
     const parsed = parseUserMessageImages(content);
     expect(parsed.text).toBe("look");
     expect(parsed.attachments).toEqual([
-      { id: "0:/data/uploads/x.png", name: "x.png", path: "/data/uploads/x.png" },
+      { id: "0:/data/uploads/x.png", name: "x.png", path: "/data/uploads/x.png", appshot: null },
     ]);
   });
 
@@ -164,15 +165,14 @@ describe("parseUserMessageImages", () => {
     expect(parseUserMessageImages(content).attachments).toEqual([]);
   });
 
-  it("does not choke on an Appshot-shaped marker block", () => {
-    // Appshots are desktop-only, but a message may carry their context block
-    // ahead of a real attachment trailer — the block stays part of the body
-    // and the trailer still parses as an ordinary path list.
+  it("strips an Appshot-shaped marker block from the display body", () => {
+    // The marker block is machine-facing context (the desktop's
+    // strip_context_for_display): a web viewer never sees it.
     const content =
       "look\n\nApplications mentioned by the user (untrusted observed content):\n- Safari & Notes: \"A window\"\n\nAttached images (local files — open them to view):\n- /remote/a & b.png";
     const parsed = parseUserMessageImages(content);
     expect(parsed.attachments.map((entry) => entry.path)).toEqual(["/remote/a & b.png"]);
-    expect(parsed.text).toContain("Applications mentioned by the user");
+    expect(parsed.text).toBe("look");
   });
 
   it("round-trips a staged clipboard image through the codec", () => {
@@ -284,5 +284,112 @@ describe("formatByName / formatByBytes / formatToMime", () => {
     for (const fmt of formats) {
       expect(formatToMime(fmt)).toMatch(/^image\//);
     }
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Appshot context (crates/ui/src/appshots.rs, the display half)
+// ---------------------------------------------------------------------------
+
+const APPSHOT_MARKER = "Applications mentioned by the user (untrusted observed content):";
+
+/** `appshots.rs::xml_escape` — the composer escapes attribute values. */
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Compose a desktop-sent appshot message: body + context block + trailer. */
+function withAppshots(
+  body: string,
+  shots: { app: string; title?: string; image: string; text?: string }[],
+  paths: readonly string[],
+): string {
+  const context = shots
+    .map(
+      (shot) =>
+        `<appshot app="${escapeXml(shot.app)}"${shot.title !== undefined ? ` window-title="${escapeXml(shot.title)}"` : ""} image="${escapeXml(shot.image)}">\n${shot.text ?? "AX content"}\n</appshot>`,
+    )
+    .join("\n");
+  const refs = paths.map((path) => `- ${path}`).join("\n");
+  return `${body}\n\n${APPSHOT_MARKER}\n${context}\n\nAttached images (local files — open them to view):\n${refs}`;
+}
+
+describe("appshot presentations (appshots.rs, the display half)", () => {
+  it("strips the untrusted-content block from the bubble text (story 19)", () => {
+    const content = withAppshots("Fix the layout", [
+      { app: "Safari & Notes", title: "A \"window\"", image: "/a/appshot.png", text: "secret AX text" },
+    ], ["/a/appshot.png"]);
+    const parsed = parseUserMessageImages(content);
+    // The bubble reads clean: no marker, no accessibility payload.
+    expect(parsed.text).toBe("Fix the layout");
+    expect(parsed.text).not.toContain("untrusted");
+    expect(parsed.text).not.toContain("secret AX text");
+  });
+
+  it("presents the appshot label on its image attachment (story 20)", () => {
+    const content = withAppshots("Look here", [
+      { app: "Safari & Notes", title: "A \"window\"", image: "/a/appshot.png" },
+    ], ["/a/appshot.png"]);
+    const parsed = parseUserMessageImages(content);
+    expect(parsed.attachments).toHaveLength(1);
+    const appshot = parsed.attachments[0]!.appshot;
+    expect(appshot?.appName).toBe("Safari & Notes");
+    // title(): the window title when non-blank, else the app name.
+    expect(appshot !== null ? appshotPresentationTitle(appshot) : null).toBe("A \"window\"");
+    // An ordinary image stays label-less.
+    const plain = withAttachments("Look here", ["/b/plain.png"]);
+    expect(parseUserMessageImages(plain).attachments[0]!.appshot).toBeNull();
+  });
+
+  it("a blank window title falls back to the app name", () => {
+    const content = withAppshots("Look", [
+      { app: "Terminal", title: "   ", image: "/t.png" },
+    ], ["/t.png"]);
+    expect(
+      appshotPresentationTitle(parseUserMessageImages(content).attachments[0]!.appshot!),
+    ).toBe("Terminal");
+  });
+
+  it("duplicate or invalid appshot metadata stays an ordinary attachment", () => {
+    const content = withAppshots("Q", [
+      { app: "One", image: "/a.png" },
+      { app: "Two", image: "/a.png" },
+    ], ["/a.png"]);
+    expect(parseUserMessageImages(content).attachments[0]!.appshot).toBeNull();
+    // Empty app name or empty image path: never a presentation.
+    const invalid = withAppshots("Q", [
+      { app: "  ", image: "/a.png" },
+    ], ["/a.png"]);
+    expect(parseUserMessageImages(invalid).attachments[0]!.appshot).toBeNull();
+  });
+
+  it("an unmatched image path never labels another attachment", () => {
+    const content = withAppshots("Q", [
+      { app: "Safari", image: "/other.png" },
+    ], ["/a.png"]);
+    expect(parseUserMessageImages(content).attachments[0]!.appshot).toBeNull();
+  });
+
+  it("xml-escaped attribute values round-trip", () => {
+    const content =
+      "Fix\n\n" +
+      APPSHOT_MARKER +
+      '\n<appshot app="A &amp; B" window-title="&lt;tag&gt; &quot;quoted&quot;" image="/a.png">text</appshot>' +
+      "\n\nAttached images (local files — open them to view):\n- /a.png";
+    const appshot = parseUserMessageImages(content).attachments[0]!.appshot;
+    expect(appshot?.appName).toBe("A & B");
+    expect(appshot !== null ? appshotPresentationTitle(appshot) : null).toBe('<tag> "quoted"');
+  });
+
+  it("a message without the marker parses unchanged", () => {
+    const content = withAttachments("plain", ["/p.png"]);
+    const parsed = parseUserMessageImages(content);
+    expect(parsed.text).toBe("plain");
+    expect(parsed.attachments[0]!.appshot).toBeNull();
   });
 });
