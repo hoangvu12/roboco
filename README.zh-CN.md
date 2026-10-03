@@ -20,7 +20,7 @@ irm https://github.com/hoangvu12/roboco/releases/latest/download/install.ps1 | i
 
 ### Linux
 
-从[发布页](https://github.com/hoangvu12/roboco/releases)下载压缩包并运行其中的 `install.sh`（免 root 安装到 `~/.local`）。
+从[发布页](https://github.com/hoangvu12/roboco/releases)下载压缩包并运行其中的 `install.sh`（免 root 安装到 `~/.local`）。它还会把 Roboco 加入应用启动器：在 `~/.local/share`（或 `$XDG_DATA_HOME`）下写入用户级的 `roboco.desktop` 和图标，每次运行安装脚本都会重写。
 
 ## 从源码运行
 

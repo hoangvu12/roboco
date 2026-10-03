@@ -348,6 +348,50 @@ impl Roboco {
         resolve_space_in(&spaces, key.trim())
     }
 
+    /// Resolve a creation target: the project (when given) within the selected
+    /// device, else the device, else the local engine. The host resolves FIRST
+    /// so repeated project names or paths cannot influence selection.
+    ///
+    /// Engine-local (ADR 0004): [`Self::resolve_device_id`] only ever resolves
+    /// this engine's device — `WatchDevices` reports exactly one row — so the
+    /// host scoping is a guard, not a remote dial: a project row that names
+    /// another device is rejected here instead of being silently re-hosted,
+    /// and the returned `device_id` is always this engine.
+    pub async fn resolve_target(
+        &self,
+        project: Option<&str>,
+        device: Option<&str>,
+    ) -> anyhow::Result<(Option<Space>, String)> {
+        let device = device.map(str::trim).filter(|d| !d.is_empty());
+        let host = match device {
+            Some(key) => Some(self.resolve_device_id(Some(key)).await?),
+            None => None,
+        };
+        if let Some(project) = project {
+            let mut spaces = self.spaces().await?;
+            if let Some(host) = &host {
+                if let Some(space) = spaces.iter().find(|s| s.id == project.trim()) {
+                    anyhow::ensure!(
+                        space.device_id == *host,
+                        "project {} belongs to device {}, not device {host}",
+                        space.id,
+                        space.device_id
+                    );
+                }
+                spaces.retain(|s| s.device_id == *host);
+            }
+            let space = resolve_space_in(&spaces, project.trim())?;
+            return Ok((Some(space.clone()), space.device_id));
+        }
+        Ok((
+            None,
+            match host {
+                Some(host) => host,
+                None => self.local_device_id().await?,
+            },
+        ))
+    }
+
     /// Device id or exact name; `None` means this engine's own device.
     pub async fn resolve_device_id(&self, key: Option<&str>) -> anyhow::Result<String> {
         let Some(key) = key.map(str::trim).filter(|k| !k.is_empty()) else {
@@ -531,17 +575,21 @@ pub fn resolve_space_in(spaces: &[Space], key: &str) -> anyhow::Result<Space> {
     if key.is_empty() {
         bail!("project is required");
     }
-    if let Some(space) = spaces.iter().find(|s| s.id == key || s.path == key) {
+    if let Some(space) = spaces.iter().find(|s| s.id == key) {
         return Ok(space.clone());
     }
     let normalized = key.trim_end_matches(['/', '\\']);
+    // An exact path match outranks a display-name match, and both outrank a
+    // suffix hit: a repeated path (two rows, one name each) must surface its
+    // ambiguity instead of resolving to whichever row came first.
+    let by_path: Vec<&Space> = spaces
+        .iter()
+        .filter(|s| s.path.trim_end_matches(['/', '\\']) == normalized)
+        .collect();
     let by_name: Vec<&Space> = spaces
         .iter()
         .filter(|s| s.display_name().eq_ignore_ascii_case(normalized))
         .collect();
-    if let [one] = by_name.as_slice() {
-        return Ok((*one).clone());
-    }
     let by_suffix: Vec<&Space> = spaces
         .iter()
         .filter(|s| {
@@ -549,21 +597,23 @@ pub fn resolve_space_in(spaces: &[Space], key: &str) -> anyhow::Result<Space> {
             path.ends_with(normalized) || path.contains(normalized)
         })
         .collect();
-    if let [one] = by_suffix.as_slice() {
-        return Ok((*one).clone());
-    }
-    let candidates = if by_name.len() > 1 {
+    let candidates = if !by_path.is_empty() {
+        &by_path
+    } else if !by_name.is_empty() {
         &by_name
     } else {
         &by_suffix
     };
+    if let [one] = candidates.as_slice() {
+        return Ok((*one).clone());
+    }
     if candidates.len() > 1 {
         bail!(
             "{} projects match {key:?}; use an id: {}",
             candidates.len(),
             candidates
                 .iter()
-                .map(|s| format!("{} ({})", s.path, s.id))
+                .map(|s| format!("{} (id {}, device {})", s.path, s.id, s.device_id))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -690,6 +740,25 @@ mod tests {
             checkout_id: None,
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn repeated_exact_paths_and_names_do_not_select_the_first_project() {
+        let mut remote = space("s2", "/repo/comet", None);
+        remote.device_id = "other-device".into();
+        let spaces = [space("s1", "/repo/comet", None), remote];
+        let err = resolve_space_in(&spaces, "/repo/comet/")
+            .unwrap_err()
+            .to_string();
+        for candidate in ["s1", "s2", "dev", "other-device"] {
+            assert!(err.contains(candidate), "{err}");
+        }
+        // A unique path suffix must not override ambiguous display names.
+        let spaces = [
+            space("s1", "/repo/comet", None),
+            space("s2", "/repo/other", Some("comet")),
+        ];
+        assert!(resolve_space_in(&spaces, "comet").is_err());
     }
 
     #[test]
