@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ATTACHMENT_ONLY_TEXT, withAttachments } from "../src/lib/attachments";
+import { invocationLink, localFileLink } from "../src/lib/mentions";
 import {
   QUEUE_ROW_SLOT,
   availableQueuePrimaryAction,
@@ -7,11 +8,12 @@ import {
   modifierSendLabel,
   oneLine,
   queueAttachmentLabels,
-  queueAttachmentSummary,
   queueDragOffsets,
   queueDropIndex,
+  queueHiddenAttachmentsLabel,
   queueLatestShortcutVisible,
   queuePreviewLimit,
+  queueRowText,
   queueVisibleText,
   visibleQueueRows,
 } from "../src/lib/queue-row-logic";
@@ -103,6 +105,27 @@ describe("queueVisibleText (queue.rs::legacy_attachment_trailers_are_hidden_from
   });
 });
 
+describe("queueRowText (queue.rs::queue_rows_label_commands_skills_and_files)", () => {
+  it("labels commands, skills and file mentions the way the transcript does", () => {
+    const command = invocationLink({ kind: "command", name: "compact" });
+    const skill = invocationLink({
+      kind: "skill",
+      name: "review-pr",
+      path: "/skills/review-pr/SKILL.md",
+    });
+    const file = localFileLink("src/queue.rs", false);
+    const text = `${command} then ${skill}\non ${file}`;
+    expect(queueRowText(text, [])).toBe("/compact then $review-pr on @queue.rs");
+  });
+
+  it("never shows raw links, and still hides attachment trailers", () => {
+    const command = invocationLink({ kind: "command", name: "compact" });
+    const path = "/tmp/image.png";
+    expect(queueRowText(withAttachments(command, [path]), [path])).toBe("/compact");
+    expect(queueRowText("plain  text", [])).toBe("plain text");
+  });
+});
+
 describe("queueAttachmentLabels (queue.rs::attachment_labels_…, appshot half dropped)", () => {
   it("labels every path with its bare filename", () => {
     expect(queueAttachmentLabels(["/tmp/shot & detail.png", "/tmp/reference.png"])).toEqual([
@@ -113,11 +136,13 @@ describe("queueAttachmentLabels (queue.rs::attachment_labels_…, appshot half d
   });
 });
 
-describe("queueAttachmentSummary", () => {
-  it("prefixes the count when there are several attachments", () => {
-    expect(queueAttachmentSummary(["a.png", "b.png"])).toBe("2 attachments · a.png · b.png");
-    expect(queueAttachmentSummary(["a.png"])).toBe("a.png");
-    expect(queueAttachmentSummary([])).toBe("");
+describe("queueHiddenAttachmentsLabel (queue.rs::overflow_chip_names_every_hidden_attachment)", () => {
+  it("names every attachment folded into the +N chip", () => {
+    const labels = ["a.png", "b.png", "c.png"];
+    expect(queueHiddenAttachmentsLabel(labels, 1)).toBe("2 more: b.png · c.png");
+    expect(queueHiddenAttachmentsLabel(labels, 3)).toBeNull();
+    expect(queueHiddenAttachmentsLabel(labels, 5)).toBeNull();
+    expect(queueHiddenAttachmentsLabel([], 2)).toBeNull();
   });
 });
 

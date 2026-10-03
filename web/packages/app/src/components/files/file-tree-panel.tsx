@@ -289,6 +289,44 @@ function TreeList({
 }) {
   const listRef = useRef<HTMLUListElement | null>(null);
 
+  // The tree's edge fades (tree.rs:212-221, `tree_scroll_overflow`): each
+  // edge fades only while content extends past it — read live from the
+  // scroll offset with the desktop's 0.5px dead-zone. The mask itself lives
+  // on `.files-tree` in app.css, gated by the two custom properties this
+  // effect sets; the search-results list never sets them, so it stays
+  // unfaded exactly as the desktop's search surface is.
+  useEffect(() => {
+    const list = listRef.current;
+    if (list === null) {
+      return;
+    }
+    let raf = 0;
+    const apply = (): void => {
+      raf = 0;
+      const top = list.scrollTop > 0.5;
+      const bottom =
+        list.scrollTop < list.scrollHeight - list.clientHeight - 0.5;
+      list.style.setProperty("--rb-files-fade-top", top ? "1" : "0");
+      list.style.setProperty("--rb-files-fade-bottom", bottom ? "1" : "0");
+    };
+    const schedule = (): void => {
+      if (raf === 0) {
+        raf = requestAnimationFrame(apply);
+      }
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(list);
+    list.addEventListener("scroll", schedule, { passive: true });
+    apply();
+    return () => {
+      observer.disconnect();
+      list.removeEventListener("scroll", schedule);
+      if (raf !== 0) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, []);
+
   // `reveal_tree_selection` — keep the selected row in view, both for the
   // keyboard walk and for the search reveal that lands on it.
   const selected = snapshot.selected;

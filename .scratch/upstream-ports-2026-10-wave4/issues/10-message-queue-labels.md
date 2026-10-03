@@ -19,8 +19,33 @@ there so desktop and web rows agree (its header already tracks upstream
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 `test(queue_row)`; web `pnpm -r build` + queue row-logic vitest.
 
-- [ ] Command/skill/file queue rows labeled correctly (desktop + web)
+- [x] Command/skill/file queue rows labeled correctly (desktop + web)
 - [ ] `queue_row_text` unit tests green; web row-logic tests updated
-- [ ] Port commit records upstream SHA
+      (tests written/ported on both sides; execution deferred to the wave-final
+      batched pass — user directive)
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `b3d7f48b` (#682) by intent into `crates/ui/src/queue.rs`: new
+  `queue_row_text(text, attachments)` helper — `queue_visible_text` (trailer
+  hiding, unchanged) then `composer::sent_mention_display`'s projection, so
+  `/compact`, `$skill` and `@file` chips label queue rows the way the
+  transcript does instead of showing raw `roboco-invoke:`/`roboco-file:`
+  links. The row's `_ =>` label arm calls it; editing/delivery arms and the
+  edit-seeding path still read the stored text (canonical links preserved).
+- Test `queue_rows_label_commands_skills_and_files` ported verbatim (rebrand:
+  `roboco-invoke:`/`roboco-file:`, `roboco_proto`/`roboco_rpc` crates):
+  command + skill + file links project to "/compact then $review-pr on
+  @queue.rs", the legacy trailer case still hides the filename list, plain
+  text collapses to one line.
+- Web parity: `src/lib/queue-row-logic.ts` gains `queueRowText` (the same
+  projection through `sentMentionDisplay` from `./mentions`) and
+  `components/queue-panel.tsx`'s row text uses it; the lib header's helper
+  list and line-range notes updated. `tests/queue-row-logic.test.ts` gains
+  the mirror describe (command/skill/file projection, trailer hiding).
+- Exclusions: none — upstream's diff is queue.rs only; the web side is the
+  ticket's named parity deliverable (upstream had no web change).
+- Verification: `pnpm -r build` from web/ (tsc --noEmit + vite, clean);
+  `cargo check -p roboco -j 3` at chunk end; test execution deferred to the
+  wave-final batched pass (user directive).

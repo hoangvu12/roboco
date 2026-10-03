@@ -1817,6 +1817,12 @@ pub struct ComposerInput {
     /// Key context for the binding map ("Composer", or "PaletteSearch" for
     /// palette filters whose navigation keys must bubble).
     key_context: &'static str,
+    /// Cmd+C with no input selection copies the transcript selection. Only
+    /// the message composer keeps focus while the user reads the transcript;
+    /// dialog and palette fields copy only their own selection. A flag rather
+    /// than `key_context`, which the question wizard swaps while it borrows
+    /// the message input.
+    copies_transcript_selection: bool,
     accessibility_role: Role,
     focus_handle: FocusHandle,
     content: String,
@@ -1929,6 +1935,7 @@ impl ComposerInput {
     ) -> Self {
         Self {
             key_context,
+            copies_transcript_selection: false,
             accessibility_role: Role::MultilineTextInput,
             focus_handle: cx.focus_handle(),
             content: String::new(),
@@ -3141,9 +3148,9 @@ impl ComposerInput {
                 text.clone(),
                 serde_json::json!({ "robocoComposerV1": raw, "text": text }),
             ));
-        } else if let Some(text) = crate::markdown::selection::selected_text() {
-            // The composer keeps focus while the user reads the transcript —
-            // Cmd+C with no input selection copies the markdown selection.
+        } else if self.copies_transcript_selection
+            && let Some(text) = crate::markdown::selection::selected_text()
+        {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -5821,6 +5828,7 @@ impl Composer {
             let mut input =
                 ComposerInput::with_context("Do anything…", MESSAGE_COMPOSER_CONTEXT, cx);
             input.enable_mentions();
+            input.copies_transcript_selection = true;
             input
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -9040,16 +9048,20 @@ impl Composer {
                 })
         });
 
-        div()
+        // Stands in for the composer pill, so it is the same frosted surface:
+        // without the backdrop blur the translucent fill let the transcript
+        // show through unblurred.
+        let panel = div()
             .id("question-panel")
             .track_focus(&self.wizard_focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_wizard_key(event, window, cx)
             }))
+            .occlude()
             .rounded(px(COMPOSER_RADIUS))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.input_glass_bg())
+            .bg(theme.composer_surface_bg())
             .when(!theme.is_frost(), |el| el.shadow_lg())
             .flex()
             .flex_col()
@@ -9154,8 +9166,12 @@ impl Composer {
                             .when(!can_advance, |el| el.opacity(0.4))
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
                     ),
-            )
-            .into_any_element()
+            );
+        // Frosted like the pill it stands in for, at the pill's own 16px blur
+        // (upstream's shared MENU_BLUR happens to equal the pill's there; our
+        // MENU_BLUR is the menu treatment's 44, which would not match the
+        // pill this panel replaces).
+        crate::frost::frosted(COMPOSER_RADIUS, 16.0, panel).into_any_element()
     }
 
     /// `refocus` returns focus to the editor afterwards. Enter/Space on the
@@ -10797,6 +10813,9 @@ impl Render for Composer {
 }
 
 #[cfg(test)]
+mod modal_selection_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -12353,6 +12372,32 @@ mod tests {
                 });
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn message_composer_still_copies_transcript_selection(cx: &mut gpui::TestAppContext) {
+        let _selection = crate::markdown::selection::test_state_lock();
+        with_composer_input(cx, |input, window, cx| {
+            let key = "message-composer-copy-test";
+            let text = "Selected transcript text";
+            input.set_text("Unselected draft", cx);
+            assert_eq!(input.key_context, MESSAGE_COMPOSER_CONTEXT);
+            assert!(input.selected_range.is_empty());
+            crate::markdown::selection::begin_with_span(key, text, 0..text.len());
+            crate::markdown::selection::end_active_drag();
+            input.copy(&Copy, window, cx);
+            let copied = cx.read_from_clipboard().and_then(|item| item.text());
+            // The question wizard borrows this input under the generic
+            // context; it is still the message composer.
+            cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+            input.set_key_context(message_input_context(true), cx);
+            input.copy(&Copy, window, cx);
+            let copied_in_wizard = cx.read_from_clipboard().and_then(|item| item.text());
+            input.set_key_context(MESSAGE_COMPOSER_CONTEXT, cx);
+            crate::markdown::selection::clear_if_owner(key);
+            assert_eq!(copied.as_deref(), Some(text));
+            assert_eq!(copied_in_wizard.as_deref(), Some(text));
+        });
     }
 
     #[gpui::test]

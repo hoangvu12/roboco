@@ -18,13 +18,13 @@ import {
   availableQueuePrimaryAction,
   modifierSendCompactLabel,
   modifierSendLabel,
-  oneLine,
   queueAttachmentLabels,
-  queueAttachmentSummary,
   queueDragOffsets,
   queueDropIndex,
+  queueHiddenAttachmentsLabel,
   queueLatestShortcutVisible,
   queuePreviewLimit,
+  queueRowText,
   queueVisibleText,
   visibleQueueRows,
 } from "../lib/queue-row-logic";
@@ -489,14 +489,14 @@ function QueueRow(props: QueueRowProps) {
     if (gate !== null && !beingEdited) {
       return gate.kind === "editing" ? `Editing on ${gate.ownerDeviceId}` : "Needs review";
     }
-    return oneLine(queueVisibleText(row.text, row.attachments ?? []));
+    return queueRowText(row.text, row.attachments ?? []);
   }, [gate, beingEdited, row.text, row.attachments]);
 
   const attachments = row.attachments ?? [];
   const labels = useMemo(() => queueAttachmentLabels(attachments), [attachments]);
-  const summary = queueAttachmentSummary(labels);
-  const onlyImages = text === ATTACHMENT_ONLY_TEXT;
-  const title = onlyImages ? summary : text;
+  // Filenames no longer print in the row: thumbnails and the +N chip carry
+  // the names as tooltip/a11y labels instead (queue.rs:570-614).
+  const hiddenLabel = queueHiddenAttachmentsLabel(labels, previewLimit);
 
   const dragMarker = (
     <div
@@ -561,26 +561,23 @@ function QueueRow(props: QueueRowProps) {
               client={client}
               deviceId={deviceId}
               path={path}
+              label={labels[ix] ?? path}
               visible={thumbnailVisible}
             />
           ))}
-          {attachments.length > previewLimit ? (
+          {hiddenLabel !== null ? (
             <div
               className="queue-row-overflow"
-              aria-label={`${attachments.length - previewLimit} more attachments; edit message to view all`}
+              title={hiddenLabel}
+              aria-label={`${hiddenLabel}; edit message to view all`}
             >
               +{attachments.length - previewLimit}
             </div>
           ) : null}
           <div className="queue-row-text">
-            <div className="queue-row-title" title={title}>
-              {title}
+            <div className="queue-row-title" title={text}>
+              {text}
             </div>
-            {labels.length > 0 && !onlyImages ? (
-              <div className="queue-row-summary" title={summary}>
-                {summary}
-              </div>
-            ) : null}
           </div>
           <div className="queue-row-actions">
             <QueueActionButton
@@ -626,11 +623,16 @@ function QueueThumbnail({
   client,
   deviceId,
   path,
+  label,
   visible,
 }: {
   readonly client: EngineClient;
   readonly deviceId: string;
   readonly path: string;
+  /** The row-label name (queue.rs: `queue_thumbnail`'s label param): the
+   * frame's tooltip and a11y label — the filename no longer prints in the
+   * row, so it stays discoverable here. */
+  readonly label: string;
   readonly visible: boolean;
 }) {
   const snapshot = useAttachmentImage(deviceId, path);
@@ -662,7 +664,8 @@ function QueueThumbnail({
       type="button"
       className="queue-thumb"
       data-state={snapshot.state}
-      aria-label={loaded ? `Preview ${snapshot.image?.name ?? path}` : "Open attachment preview"}
+      title={label}
+      aria-label={`Preview ${label}`}
       onClick={() => {
         const image = getAttachmentSnapshot(deviceId, path).image;
         if (image !== null) {

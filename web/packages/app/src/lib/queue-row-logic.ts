@@ -1,6 +1,7 @@
 /**
  * The queue row's pure logic — the web port of `crates/ui/src/queue.rs`'s
- * helper block (`one_line`, `queue_visible_text`, `queue_attachment_labels`,
+ * helper block (`one_line`, `queue_visible_text`, `queue_row_text`,
+ * `queue_attachment_labels`, `queue_hidden_attachments_label`,
  * `available_queue_primary_action`, `queue_latest_shortcut_visible`,
  * `queue_drop_index`, `queue_drag_offsets`, `visible_queue_rows`) plus
  * `queue_preview_limit` (composer.rs:4392) and the terminal panel's
@@ -16,6 +17,7 @@
 
 import { ATTACHMENT_ONLY_TEXT, parseUserMessageImages } from "./attachments";
 import { COMPOSER_MAX_WIDTH } from "./composer-flip";
+import { sentMentionDisplay } from "./mentions";
 
 /** `ROW_HEIGHT` (queue.rs:75). */
 export const QUEUE_ROW_HEIGHT = 36;
@@ -23,11 +25,13 @@ export const QUEUE_ROW_HEIGHT = 36;
 export const QUEUE_ROW_GAP = 0;
 /** `ROW_SLOT` (queue.rs:78) — one row's slot in the drag math. */
 export const QUEUE_ROW_SLOT = QUEUE_ROW_HEIGHT + QUEUE_ROW_GAP;
-/** `PANEL_PAD_TOP` (queue.rs:82) — zero; `panel_y` is already list-relative. */
+/** `PANEL_PAD_TOP` (queue.rs:84) — the tray's row inset is 4px, but the web
+ * panel-y is already list-relative (measured from the list's rect, below the
+ * pad), so the subtraction stays a no-op kept for the desktop's shape. */
 export const QUEUE_PANEL_PAD_TOP = 0;
 
 /**
- * `one_line` (queue.rs:174): collapse a multi-line message to one visual
+ * `one_line` (queue.rs:187): collapse a multi-line message to one visual
  * line — every newline and whitespace run becomes a single space. (The
  * pre-rewrite web panel called this `collapseWhitespace`; the desktop name
  * wins for greppability.)
@@ -37,7 +41,7 @@ export function oneLine(text: string): string {
 }
 
 /**
- * `queue_visible_text` (queue.rs:182-205), minus the Appshot halves: hides
+ * `queue_visible_text` (queue.rs:196-218), minus the Appshot halves: hides
  * the legacy attachment-refs trailer ONLY when its parsed paths exactly
  * match the row's `attachments` field (protects against a rolling-upgrade
  * mismatch), and falls back to `ATTACHMENT_ONLY_TEXT` when the remaining
@@ -63,6 +67,18 @@ export function queueVisibleText(text: string, attachments: readonly string[]): 
   return parsed.text;
 }
 
+/**
+ * `queue_row_text` (queue.rs:224-232): the row's one-line label. Commands,
+ * skills and file mentions show the same labels as the transcript
+ * (`sent_mention_display`'s projection); editing and delivery still read the
+ * stored text, which keeps their canonical links.
+ */
+export function queueRowText(text: string, attachments: readonly string[]): string {
+  const visible = queueVisibleText(text, attachments);
+  const display = sentMentionDisplay(visible)?.display ?? visible;
+  return oneLine(display);
+}
+
 /** `Path::file_name` — the path's final component, or `"Image"` when it has none. */
 function fileName(path: string): string {
   const parts = path.split(/[\\/]/).filter((part) => part.length > 0);
@@ -70,7 +86,7 @@ function fileName(path: string): string {
 }
 
 /**
- * `queue_attachment_labels` (queue.rs:208-221), Appshot half dropped: each
+ * `queue_attachment_labels` (queue.rs:234-247), Appshot half dropped: each
  * path becomes its bare filename.
  */
 export function queueAttachmentLabels(paths: readonly string[]): string[] {
@@ -78,14 +94,16 @@ export function queueAttachmentLabels(paths: readonly string[]): string[] {
 }
 
 /**
- * The row's second line (`queue_row`'s `summary`): `"{N} attachments · "`
- * prefixed when N>1, labels joined with `" · "`.
+ * `queue_hidden_attachments_label` (queue.rs:250-254): names the attachments
+ * folded into the "+N" chip — row filenames are gone, so the chip's tooltip
+ * keeps every hidden attachment discoverable.
  */
-export function queueAttachmentSummary(labels: readonly string[]): string {
-  if (labels.length > 1) {
-    return `${labels.length} attachments · ${labels.join(" · ")}`;
-  }
-  return labels.join(" · ");
+export function queueHiddenAttachmentsLabel(
+  labels: readonly string[],
+  shown: number,
+): string | null {
+  const hidden = labels.slice(shown);
+  return hidden.length > 0 ? `${hidden.length} more: ${hidden.join(" · ")}` : null;
 }
 
 /** `QueuePrimaryAction` (queue.rs:85-102) — the row's single primary action. */

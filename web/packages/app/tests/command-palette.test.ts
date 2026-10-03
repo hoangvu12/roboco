@@ -175,6 +175,62 @@ describe("paletteChats (command_entries)", () => {
     expect(byId.get("home")).toBe("~");
     expect(byId.get("dangling")).toBe("?");
   });
+
+  // Upstream #651 (`history_excludes_child_chats_with_and_without_search`
+  // and `child_chats_do_not_consume_history_result_slots`, command_palette.rs):
+  // child chats never enter the palette's global history, by title search or
+  // otherwise, and cannot consume the 30-row cap.
+  it("excludes child chats with and without a search", () => {
+    const mixed: Chat[] = [
+      chat({ id: "manual-sidechat", parentChatId: "main-session", createdAt: "2026-09-01T00:00:00Z" }),
+      chat({ id: "archived-sidechat", parentChatId: "main-session", archived: true, createdAt: "2026-09-01T00:00:01Z" }),
+      chat({ id: "orphan-sidechat", parentChatId: "deleted-parent", createdAt: "2026-09-01T00:00:02Z" }),
+      chat({ id: "main-session", createdAt: "2026-09-01T00:00:04Z" }),
+      chat({ id: "archived-session", archived: true, createdAt: "2026-09-01T00:00:03Z" }),
+    ];
+    const search = (query: string): string[] =>
+      paletteChats({
+        chats: mixed,
+        spaces,
+        statuses: [],
+        devices,
+        changeRequests: new Map(),
+        now: 0,
+        query,
+      }).map((row) => row.chat.id);
+    expect(search("")).toEqual(["main-session", "archived-session"]);
+    for (const query of ["manual-sidechat", "archived-sidechat", "orphan-sidechat"]) {
+      expect(search(query)).toEqual([]);
+    }
+    expect(search("main-session")).toEqual(["main-session"]);
+  });
+
+  it("child chats do not consume the 30-row cap", () => {
+    const T0 = Date.parse("2026-09-01T00:30:00Z");
+    // Seconds ago, mirroring the desktop test's ages: children are NEWER
+    // than every session, so without the exclusion they would own the top
+    // 30 slots entirely.
+    const iso = (secondsAgo: number): string =>
+      new Date(T0 - secondsAgo * 1000).toISOString();
+    const children: Chat[] = Array.from({ length: 30 }, (_, ix) =>
+      chat({ id: `child-${ix}`, parentChatId: "session-0", createdAt: iso(ix) }),
+    );
+    const sessions: Chat[] = Array.from({ length: 31 }, (_, ix) =>
+      chat({ id: `session-${ix}`, createdAt: iso(30 + ix) }),
+    );
+    const search = (query: string): string[] =>
+      paletteChats({
+        chats: [...children, ...sessions],
+        spaces,
+        statuses: [],
+        devices,
+        changeRequests: new Map(),
+        now: 0,
+        query,
+      }).map((row) => row.chat.id);
+    expect(search("")).toEqual(Array.from({ length: 30 }, (_, ix) => `session-${ix}`));
+    expect(search("session-30")).toEqual(["session-30"]);
+  });
 });
 
 describe("CommandPaletteStore (toggle/close/activate)", () => {

@@ -968,6 +968,10 @@ const SIDEBAR_LIST_GAP: f32 = 2.0;
 const SIDEBAR_SESSION_SLOT: f32 = 61.0 + SIDEBAR_LIST_GAP;
 /// Active and archived sessions share harness/title geometry.
 const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
+/// Compact-row time slot while a text jump hint ("Ctrl+9") stands in for the
+/// time: wide enough for the widest of them at 11px on one line. In
+/// default-size pixels; scaled with the UI font via `ui_rems`.
+const COMPACT_JUMP_HINT_WIDTH: f32 = 42.0;
 /// The sidebar footer's profile and settings buttons share one hit target.
 const SIDEBAR_FOOTER_BUTTON_SIZE: f32 = 28.0;
 const SIDEBAR_FOOTER_AVATAR_SIZE: f32 = 16.0;
@@ -1495,6 +1499,8 @@ pub struct Shell {
     pub(super) jump_hints: bool,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
+    /// Last resolved layout, for drag anchors and matching transcript clearance.
+    terminal_geometry: crate::terminal::dock::SharedGeometry,
     /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
@@ -2093,6 +2099,7 @@ impl Shell {
             viewport_width: 1280.0,
             viewport_height: 880.0,
             terminal_tween: None,
+            terminal_geometry: Default::default(),
             fullscreen: None,
             titlebar_tween: None,
             titlebar_island: None,
@@ -4002,7 +4009,7 @@ impl Shell {
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
     /// The flag is per chat (roboco `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from = self.terminal_target(cx);
+        let from = self.terminal_geometry.get().height;
         let key = self.panel_key(cx);
         let open = self.panels.toggle_terminal(&key);
         self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
@@ -4051,11 +4058,16 @@ impl Shell {
         let dy = anchor_y - f32::from(event.event.position.y);
         let viewport_h = f32::from(window.viewport_size().height);
         let requested = anchor_h + dy;
-        let max = (viewport_h * TERMINAL_MAX_VH).max(TERMINAL_MIN_HEIGHT);
-        self.settings.terminal_height = clamp_terminal_height(requested, viewport_h);
+        let max = self
+            .terminal_geometry
+            .get()
+            .limit
+            .min(viewport_h * TERMINAL_MAX_VH);
+        let min = TERMINAL_MIN_HEIGHT.min(max);
+        self.settings.terminal_height = clamp_terminal_height(requested.min(max), viewport_h);
         self.pane_resize_dragging = Some(PaneResizeKind::Terminal);
-        self.pane_resize_active = (requested > TERMINAL_MIN_HEIGHT && requested < max)
-            .then_some(PaneResizeKind::Terminal);
+        self.pane_resize_active =
+            (requested > min && requested < max).then_some(PaneResizeKind::Terminal);
         self.terminal_tween = None; // live drag tracks the pointer
         self.schedule_save(cx);
         cx.notify();
@@ -6234,6 +6246,7 @@ impl Shell {
                     .px(px(4.0))
                     .rounded(px(4.0))
                     .bg(tone.opacity(0.08))
+                    .whitespace_nowrap()
                     .text_size(crate::typography::ui_rems(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(tone.opacity(0.85))
@@ -6634,14 +6647,30 @@ impl Shell {
                         }))
                     })
                     .when(compact, |el| {
+                        // The time slot is 30px, which holds "17m" but not
+                        // "Ctrl+2": unwrapped, the hint broke after the `+`
+                        // and stacked two lines. A text-length hint keeps one
+                        // line in a wider slot — a floor, not content sized,
+                        // so "Ctrl+1" (a narrower glyph) doesn't nudge its
+                        // row's badge off the others'. The floor scales with
+                        // the UI font like the text does, and a longer
+                        // rebound combo grows the slot instead of spilling
+                        // over the title.
+                        let text_hint = compact_jump_label
+                            .as_ref()
+                            .is_some_and(|label| label.chars().count() > 3);
                         el.child(
                             div()
                                 .debug_selector({
                                     let id = id.clone();
                                     move || format!("chat-time-{id}")
                                 })
-                                .w(px(30.0))
+                                .when(text_hint, |el| {
+                                    el.min_w(crate::typography::ui_rems(COMPACT_JUMP_HINT_WIDTH))
+                                })
+                                .when(!text_hint, |el| el.w(px(30.0)))
                                 .flex_none()
+                                .whitespace_nowrap()
                                 .text_right()
                                 .text_size(crate::typography::ui_rems(11.0))
                                 .text_color(subline)
@@ -8638,7 +8667,16 @@ impl Shell {
         self.composer.update(cx, |composer, cx| {
             composer.set_available_width(composer_width, cx)
         });
-        let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+        let terminal_geometry =
+            std::rc::Rc::new(std::cell::Cell::new(crate::terminal::dock::Geometry::new(
+                self.eval_tween(self.terminal_tween, self.terminal_target(cx)),
+                self.settings.terminal_height,
+                (self.viewport_height * TERMINAL_MAX_VH).min(
+                    (self.viewport_height - Theme::TITLEBAR_HEIGHT - Theme::STATUS_STRIP_HEIGHT)
+                        .max(0.0),
+                ),
+            )));
+        let term_h = self.terminal_geometry.get().height;
         // Share the dock's choreography: release the bottom chip early on
         // departure, reveal it with the Home selectors on return. Absolute
         // mounting keeps it out of composer measurements and centering.
@@ -8825,22 +8863,56 @@ impl Shell {
                     // status strip above it is empty air), zero at the
                     // underlay's bottom edge.
                     let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
-                    div().absolute().inset_0().bottom(px(term_h)).child(
-                        crate::edge_fade::edge_faded(
-                            Theme::TRANSCRIPT_FADE_BAND,
-                            true,
-                            true,
-                            div().size_full().child(outlet),
-                        )
-                        // Fully faded BY the titlebar's bottom edge (the
-                        // title text is opaque — overlap read as collision),
-                        // ramping in the band just below it.
-                        .inset_top(Theme::TITLEBAR_HEIGHT)
-                        .band_top(Theme::TRANSCRIPT_FADE_BAND)
-                        .band_bottom(bottom_band),
-                    )
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(crate::terminal::dock::above_terminal(
+                            crate::edge_fade::edge_faded(
+                                Theme::TRANSCRIPT_FADE_BAND,
+                                true,
+                                true,
+                                div().size_full().child(outlet),
+                            )
+                            // Fully faded BY the titlebar's bottom edge (the
+                            // title text is opaque — overlap read as collision),
+                            // ramping in the band just below it.
+                            .inset_top(Theme::TITLEBAR_HEIGHT)
+                            .band_top(Theme::TRANSCRIPT_FADE_BAND)
+                            .band_bottom(bottom_band),
+                            terminal_geometry.clone(),
+                        ))
                 },
             )
+            .when_some(harness_update_card, |column, chip| {
+                // Home notices stay anchored to the window bottom, behind the
+                // dock. Clip paint and hitboxes at the same measured terminal
+                // edge as the transcript, including during open/close motion;
+                // draw order alone would show them through the terminal glass.
+                column.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(crate::terminal::dock::above_terminal(
+                            div().size_full().overflow_hidden().child(
+                                div().relative().w_full().h(px(self.viewport_height)).child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
+                                        .opacity(chip_opacity)
+                                        .flex()
+                                        .justify_center()
+                                        .child(chip)
+                                        .when(has_selection, |el| {
+                                            el.child(div().absolute().inset_0().occlude())
+                                        }),
+                                ),
+                            ),
+                            terminal_geometry.clone(),
+                        )),
+                )
+            })
             // The glass chrome stack, floating over the transcript's bottom:
             // reserved status strip (h-6, the WorkingIndicator — the composer
             // below never shifts), composer, terminal dock. A paint-time
@@ -8880,42 +8952,29 @@ impl Shell {
                     .child(status)
                     .when(has_spaces || no_project || has_appshots, |el| {
                         let composer_opacity = self.composer_dock.borrow().opacity();
-                        el.child(crate::composer_dock::docked_composer(
-                            div()
-                                .id("persistent-composer")
-                                .relative()
-                                .w(px(composer_width))
-                                .opacity(composer_opacity)
-                                .mx_auto()
-                                .child(self.composer.clone())
-                                .children(if has_selection {
-                                    self.render_jump_to_bottom(cx)
-                                } else {
-                                    None
-                                }),
-                            self.composer_dock.clone(),
-                            self.viewport_height,
-                            self.reduced_motion,
-                            frame_time,
-                        ))
+                        el.child(
+                            crate::composer_dock::docked_composer(
+                                div()
+                                    .id("persistent-composer")
+                                    .relative()
+                                    .w(px(composer_width))
+                                    .opacity(composer_opacity)
+                                    .mx_auto()
+                                    .child(self.composer.clone())
+                                    .children(if has_selection {
+                                        self.render_jump_to_bottom(cx)
+                                    } else {
+                                        None
+                                    }),
+                                self.composer_dock.clone(),
+                                self.viewport_height,
+                                self.reduced_motion,
+                                frame_time,
+                            )
+                            .reserve_terminal(terminal_geometry.clone()),
+                        )
                     })
-                    .child(self.render_terminal_container(window, cx))
-            })
-            .when_some(harness_update_card, |column, chip| {
-                column.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
-                        .opacity(chip_opacity)
-                        .flex()
-                        .justify_center()
-                        .child(chip)
-                        .when(has_selection, |el| {
-                            el.child(div().absolute().inset_0().occlude())
-                        }),
-                )
+                    .child(self.render_terminal_container(terminal_geometry, window, cx))
             })
             .child(Self::attachment_drop_overlay(theme))
             .into_any_element()
@@ -9024,10 +9083,17 @@ impl Shell {
 
     /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
     /// over the panel, the whole container height-animated 200 ms on toggle.
-    fn render_terminal_container(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_terminal_container(
+        &mut self,
+        geometry: crate::terminal::dock::SharedGeometry,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let target = self.terminal_target(cx);
         let tween = self.terminal_tween;
         if target <= 0.0 && tween.is_none() {
+            self.terminal_geometry
+                .set(crate::terminal::dock::Geometry::default());
             return gpui::Empty.into_any_element();
         }
         // Defensive: an open flag needs its entity (and set_open) even if
@@ -9066,7 +9132,6 @@ impl Shell {
         } else {
             handle_hover
         };
-        let height = self.settings.terminal_height;
 
         let handle = div()
             .id("terminal-resize")
@@ -9087,8 +9152,10 @@ impl Shell {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.terminal_drag_anchor =
-                        Some((f32::from(event.position.y), this.settings.terminal_height));
+                    this.terminal_drag_anchor = Some((
+                        f32::from(event.position.y),
+                        this.terminal_geometry.get().height,
+                    ));
                     this.pane_resize_dragging = Some(PaneResizeKind::Terminal);
                     this.pane_resize_active = Some(PaneResizeKind::Terminal);
                     cx.notify();
@@ -9125,24 +9192,27 @@ impl Shell {
         // FLOATS over the panel's top edge (painted after, so it wins hit
         // testing) instead of stacking above it — stacked, its hitbox would read as
         // dead air between the seam and the tab bar (user report).
-        let inner = div()
-            .h(px(height))
-            .w_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .child(div().flex_1().min_h_0().child(panel))
-            .child(handle.absolute().top_0().left_0().right_0());
+        crate::terminal::dock::terminal(geometry, self.terminal_geometry.clone(), move |geometry| {
+            let inner = div()
+                .h(px(geometry.content_height))
+                .w_full()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(div().flex_1().min_h_0().child(panel))
+                .child(handle.absolute().top_0().left_0().right_0());
 
-        div()
-            .w_full()
-            .flex_none()
-            .overflow_hidden()
-            .border_t_1()
-            .border_color(border)
-            .h(px(self.eval_tween(tween, target)))
-            .child(inner)
-            .into_any_element()
+            div()
+                .w_full()
+                .flex_none()
+                .overflow_hidden()
+                .when(geometry.height > 0.0, |el| el.border_t_1())
+                .border_color(border)
+                .h(px(geometry.height))
+                .child(inner)
+                .into_any_element()
+        })
+        .into_any_element()
     }
 
     /// Working indicator strip: gradient spinner + rotating flavour word (7s,
@@ -9595,9 +9665,9 @@ impl Shell {
                 }),
                 _ => false,
             };
-            // t3 tab hover: the surface icon swaps IN PLACE for the close ✕
-            // (same slot, no width jump) — the ✕ only shows while the tab is
-            // hovered (user request).
+            // t3 tab hover: the ✕ fades in on hover in a trailing slot at the
+            // tab's right edge — the surface icon stays put in the leading
+            // slot and the title takes the free space (upstream #587).
             let group: SharedString = format!("right-surface-tab-{ix}").into();
             let ghost_title = title.clone();
             let workspace_path = self.workspace_path_for_surface(surface, cx);
@@ -9614,8 +9684,7 @@ impl Shell {
                 .h(px(24.0))
                 .w(px(CHIP_W))
                 .flex_none()
-                .pl(px(4.0))
-                .pr(px(8.0))
+                .px(px(4.0))
                 .rounded(px(6.0))
                 .flex()
                 .flex_row()
@@ -9717,8 +9786,62 @@ impl Shell {
                     },
                 ))
                 .child(
-                    // Leading slot: icon normally, ✕ on tab hover — two
-                    // stacked layers opacity-swapped by the group hover.
+                    // Leading slot: the surface's icon.
+                    div()
+                        .flex_none()
+                        .size(px(18.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(if subagent_running {
+                            loaders::mini_glyph_spinner(
+                                format!("subagent-tab-{ix}"),
+                                2.0,
+                                theme.glyph,
+                                cx.entity_id(),
+                                cx,
+                            )
+                            .into_any_element()
+                        } else if let Some(favicon) = browser_favicon {
+                            gpui::img(favicon).size(px(12.0)).into_any_element()
+                        } else if matches!(surface, RightSurface::File(_)) {
+                            crate::file_icons::icon(
+                                crate::file_icons::FileIconIdentity::file(
+                                    file_identity_path.as_ref(),
+                                ),
+                                theme.appearance,
+                            )
+                            .size(px(14.0))
+                            .when(!is_active, |icon| icon.opacity(0.78))
+                            .into_any_element()
+                        } else {
+                            icon(icon_path)
+                                .size(px(12.0))
+                                .text_color(if is_active {
+                                    theme.text_muted
+                                } else {
+                                    theme.text_muted.opacity(0.7)
+                                })
+                                .into_any_element()
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(crate::typography::ui_rems(11.5))
+                        .text_color(if is_active {
+                            theme.text
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(title),
+                )
+                .child(
+                    // Trailing slot: the unsaved dot normally, ✕ on tab
+                    // hover — two stacked layers opacity-swapped by the
+                    // group hover.
                     div()
                         .id(("right-surface-close", ix))
                         .debug_selector(|| format!("right-surface-close-{ix}"))
@@ -9726,6 +9849,9 @@ impl Shell {
                         .size(px(18.0))
                         .rounded(px(4.0))
                         .relative()
+                        .role(gpui::Role::Button)
+                        .aria_label("Close tab")
+                        .tooltip(crate::settings::widgets::text_tooltip("Close tab"))
                         .hover(|s| s.bg(crate::theme::wash(0.12)))
                         // The tab owns a drag payload. Claim the close press
                         // before it reaches that parent or GPUI starts a tab
@@ -9738,46 +9864,18 @@ impl Shell {
                             cx.stop_propagation();
                             this.close_right_surface(surface, window, cx);
                         }))
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .group_hover(group.clone(), |s| s.opacity(0.0))
-                                .child(if subagent_running {
-                                    loaders::mini_glyph_spinner(
-                                        format!("subagent-tab-{ix}"),
-                                        2.0,
-                                        theme.glyph,
-                                        cx.entity_id(),
-                                        cx,
-                                    )
-                                    .into_any_element()
-                                } else if let Some(favicon) = browser_favicon {
-                                    gpui::img(favicon).size(px(12.0)).into_any_element()
-                                } else if matches!(surface, RightSurface::File(_)) {
-                                    crate::file_icons::icon(
-                                        crate::file_icons::FileIconIdentity::file(
-                                            file_identity_path.as_ref(),
-                                        ),
-                                        theme.appearance,
-                                    )
-                                    .size(px(14.0))
-                                    .when(!is_active, |icon| icon.opacity(0.78))
-                                    .into_any_element()
-                                } else {
-                                    icon(icon_path)
-                                        .size(px(12.0))
-                                        .text_color(if is_active {
-                                            theme.text_muted
-                                        } else {
-                                            theme.text_muted.opacity(0.7)
-                                        })
-                                        .into_any_element()
-                                }),
-                        )
+                        .when(dirty, |slot| {
+                            slot.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .group_hover(group.clone(), |s| s.opacity(0.0))
+                                    .child(div().size(px(6.0)).rounded_full().bg(theme.text_muted)),
+                            )
+                        })
                         .child(
                             div()
                                 .absolute()
@@ -9793,28 +9891,7 @@ impl Shell {
                                         .text_color(theme.text_muted),
                                 ),
                         ),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(crate::typography::ui_rems(11.5))
-                        .text_color(if is_active {
-                            theme.text
-                        } else {
-                            theme.text_muted
-                        })
-                        .child(title),
-                )
-                .when(dirty, |chip| {
-                    chip.child(
-                        div()
-                            .flex_none()
-                            .size(px(6.0))
-                            .rounded_full()
-                            .bg(theme.text_muted),
-                    )
-                });
+                );
             // Sliding transform while a sibling drags over (the terminal
             // drawer's exact recipe): animate 150ms between committed
             // offsets; the dragged tab leaves an invisible spacer — the
@@ -10915,7 +10992,7 @@ impl Render for Shell {
                 // Clearance excludes the terminal dock: the transcript
                 // viewport ends at the dock's top (see the underlay in
                 // `render_main`), so only the chrome above it overlaps.
-                let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
+                let term_h = self.terminal_geometry.get().height;
                 let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
                 let expected_has_composer = {
                     let state = self.state.read(cx);
@@ -13919,6 +13996,15 @@ mod right_tab_mouse_regressions {
             assert!(shell.subagent_tabs.contains_key(&2));
             assert_eq!(shell.resolved_right_active(cx), RightSurface::Subagent(2));
         });
+    }
+
+    #[gpui::test]
+    fn right_tab_close_sits_at_the_trailing_edge(cx: &mut TestAppContext) {
+        let (_shell, cx) = setup(cx);
+        let tab = cx.debug_bounds("right-surface-tab-0").unwrap();
+        let close = cx.debug_bounds("right-surface-close-0").unwrap();
+        assert!(close.left() > tab.center().x, "close is not after the title");
+        assert_eq!(close.right(), tab.right() - px(4.0));
     }
 
     #[gpui::test]

@@ -121,11 +121,12 @@ export interface PaletteChatRow {
 }
 
 /**
- * The palette's chat history: EVERY chat (archived included — the desktop's
- * global history deliberately ignores the sidebar's filters and collapsed
- * groups) whose metadata matches the query, sorted with the sidebar's
- * comparator and capped at [`HISTORY_RESULT_LIMIT`] after filtering and
- * sorting so every chat remains searchable.
+ * The palette's chat history: every TOP-LEVEL chat (archived included — the
+ * desktop's global history deliberately ignores the sidebar's filters and
+ * collapsed groups; child chats list under their parent and never here)
+ * whose metadata matches the query, sorted with the sidebar's comparator
+ * and capped at [`HISTORY_RESULT_LIMIT`] after filtering and sorting so
+ * every chat remains searchable.
  */
 export function paletteChats(input: {
   readonly chats: readonly Chat[];
@@ -142,6 +143,12 @@ export function paletteChats(input: {
   const statusByChat = new Map(input.statuses.map((row) => [row.chatId, row]));
   const rows: PaletteChatRow[] = [];
   for (const chat of input.chats) {
+    // Like the sidebar, only top-level sessions: child chats (side chats
+    // and agent-spawned workers) list under their parent, never in the
+    // palette's global history (upstream #651).
+    if (chat.parentChatId != null) {
+      continue;
+    }
     const space =
       chat.spaceId !== null && chat.spaceId !== undefined ? spaceById.get(chat.spaceId) : undefined;
     const project =

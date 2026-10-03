@@ -96,7 +96,7 @@ function entry(parts: MessagePart[], minutesAgo = 3): SessionMessageEntry {
 }
 
 describe("subagent_rows_list_only_stamped_spawn_chips", () => {
-  it("lists one row per genuine spawn chip, most recently updated first, updated in place", () => {
+  it("lists one row per genuine spawn chip, running ones leading, updated in place", () => {
     const rows = subagentRows([
       entry([
         spawn("t1", "Agent: verify", "main--sub--t1", "running"),
@@ -107,15 +107,15 @@ describe("subagent_rows_list_only_stamped_spawn_chips", () => {
         spawn("t4", "Agent: done", "main--sub--t4", "done"),
       ]),
     ]);
-    expect(rows.map((row) => row.docId)).toEqual(["main--sub--t4", "main--sub--t1"]);
+    expect(rows.map((row) => row.docId)).toEqual(["main--sub--t1", "main--sub--t4"]);
     // The bare task, genus stripped — the same title the tab wears.
-    expect(rows[1]!.title).toBe("verify");
-    expect(subagentFrozen(rows[0]!)).toBe(true);
-    expect(subagentFrozen(rows[1]!)).toBe(false);
-    expect(subagentIndicator(rows[0]!)).toBe("completed");
-    expect(subagentIndicator(rows[1]!)).toBe("working");
+    expect(rows[0]!.title).toBe("verify");
+    expect(subagentFrozen(rows[1]!)).toBe(true);
+    expect(subagentFrozen(rows[0]!)).toBe(false);
+    expect(subagentIndicator(rows[1]!)).toBe("completed");
+    expect(subagentIndicator(rows[0]!)).toBe("working");
     // Spawn time comes from the turn that carried the chip.
-    expect(Date.now() - rows[1]!.spawnedAt).toBeGreaterThanOrEqual(2 * 60_000);
+    expect(Date.now() - rows[0]!.spawnedAt).toBeGreaterThanOrEqual(2 * 60_000);
   });
 
   it("a reopened (steered) subagent updates its row in place", () => {
@@ -145,6 +145,29 @@ describe("subagent_rows_list_only_stamped_spawn_chips", () => {
     ]);
     expect(rows.map((row) => row.docId)).toEqual(["main--sub--a", "main--sub--c", "main--sub--b"]);
     expect(rows[0]!.status).toBe("running");
+  });
+
+  it("running_subagents_lead_longest_running_first (upstream #638)", () => {
+    const sub = (id: string, status: "running" | "done" | "failed") =>
+      spawn("c-" + id, `Agent: ${id}`, `main--sub--${id}`, status);
+    const rows = subagentRows([
+      entry([sub("old-run", "running")], 90),
+      entry([sub("old-done", "done")], 60),
+      entry([sub("mid-run", "running")], 30),
+      entry([sub("mid-fail", "failed")], 20),
+      entry([sub("new-done", "done")], 10),
+      entry([sub("new-run", "running")], 5),
+    ]);
+    // Running first, longest-running leading; the settled tail keeps the
+    // newest-first order it always had.
+    expect(rows.map((row) => row.docId)).toEqual([
+      "main--sub--old-run",
+      "main--sub--mid-run",
+      "main--sub--new-run",
+      "main--sub--new-done",
+      "main--sub--mid-fail",
+      "main--sub--old-done",
+    ]);
   });
 });
 

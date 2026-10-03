@@ -17,8 +17,34 @@ same scroll-position-conditional edge fades to the web tree panel.
 **Verification budget:** `cargo check -p roboco-ui -j 3`; targeted nextest
 files/tree tests; web `pnpm -r build`.
 
-- [ ] Edge fades conditional on scroll position (desktop + web)
-- [ ] Tests green
-- [ ] Port commit records upstream SHA
+- [x] Edge fades conditional on scroll position (desktop + web)
+- [ ] Tests green (gpui regression ported; execution deferred to the wave-final
+      batched pass — user directive)
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+- Ported `4aceec16` (#665) by intent into `crates/ui/src/files/tree.rs`:
+  `tree_scroll_overflow(list)` extracts the fade gate and NEGATES the list
+  state's offset — `ListState::scroll_px_offset_for_scrollbar().y` runs
+  NEGATIVE as content scrolls up, so the old inline `offset > 0.5` never
+  fired: the top fade failed at the scroll boundary (and the bottom edge
+  compared against the wrong sign too). The `.fade_overflow_y_with` closure
+  now calls the helper.
+- Regression test `tree_fades_only_at_edges_with_hidden_rows` ported
+  verbatim: a 10-row ListState fixture drawn at multiple viewport heights —
+  top-only at rest, both mid-scroll, bottom-only at the reveal, and neither
+  after the viewport grows or rows splice away (the clamp-during-layout
+  frame).
+- Web parity: `components/files/file-tree-panel.tsx`'s `TreeList` gains the
+  scroll-position listener (rAF-coalesced scroll + ResizeObserver, the
+  sidebar's established pattern) setting `--rb-files-fade-top`/-`bottom`
+  with the desktop's 0.5px dead-zone; `app.css`'s `.files-tree` gains the
+  gated 24px quadratic mask (same gated-stop shape as `.sidebar-scroll` —
+  `1 − gate × (1 − ramp)` so an unfaded edge stays fully opaque). The
+  vars default to 0, so the search-results list (which never sets them)
+  stays unfaded, matching the desktop where only the tree list is faded.
+- Exclusions: none — upstream's diff is tree.rs only.
+- Verification: `pnpm -r build` from web/ (tsc --noEmit + vite, clean);
+  `cargo check -p roboco -j 3` at chunk end; test execution deferred to the
+  wave-final batched pass (user directive).
