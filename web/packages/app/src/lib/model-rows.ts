@@ -1,4 +1,4 @@
-import type { HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, HarnessId, Model, ModelOption, ReasoningLevel } from "@roboco/proto";
 import { matchRank } from "./picker-search";
 import { defaultReasoning, reasoningLabel } from "./traits-summary";
 
@@ -78,7 +78,7 @@ export function offeredHarnesses(list: readonly HarnessDescriptor[]): HarnessDes
 // The scoped model list
 // ---------------------------------------------------------------------------
 
-export type ModelRail = "favorites" | "harness";
+export type ModelRail = "all" | "favorites" | "harness";
 
 /** One flattened row: the model plus the harness it came from (`ModelRowData`). */
 export interface ModelRowData {
@@ -113,9 +113,11 @@ export function scopedModelRows(
     model,
   });
   const inScope = (descriptor: HarnessDescriptor, model: Model): boolean =>
-    rail === "favorites"
-      ? isFavorite(descriptor.id, model.id)
-      : descriptor.id === effective;
+    rail === "all"
+      ? true
+      : rail === "favorites"
+        ? isFavorite(descriptor.id, model.id)
+        : descriptor.id === effective;
 
   if (query.trim().length > 0) {
     const ranked: { rank: number; unstarred: 0 | 1; inputIx: number; row: ModelRowData }[] = [];
@@ -144,8 +146,28 @@ export function scopedModelRows(
         inputIx += 1;
       }
     }
-    ranked.sort((a, b) => a.rank - b.rank || a.unstarred - b.unstarred || a.inputIx - b.inputIx);
+    ranked.sort((a, b) =>
+      rail === "all"
+        ? a.unstarred - b.unstarred || a.rank - b.rank || a.inputIx - b.inputIx
+        : a.rank - b.rank || a.unstarred - b.unstarred || a.inputIx - b.inputIx,
+    );
     return ranked.map((entry) => entry.row);
+  }
+
+  if (rail === "all") {
+    for (const descriptor of descriptors) {
+      const models = modelsFor(descriptor.id);
+      if (models === null) {
+        continue;
+      }
+      for (const model of models) {
+        rows.push(row(descriptor, model));
+      }
+    }
+    rows.sort((a, b) =>
+      (isFavorite(a.harness, a.model.id) ? 0 : 1) - (isFavorite(b.harness, b.model.id) ? 0 : 1),
+    );
+    return rows;
   }
 
   if (rail === "favorites") {
@@ -425,4 +447,107 @@ export function settingGroups(
     });
   }
   return groups;
+}
+
+// ---------------------------------------------------------------------------
+// The compact picker's effort + fast controls (upstream #471)
+// ---------------------------------------------------------------------------
+
+/**
+ * `fast_mode_values` (pickers.rs) — fast mode's `(on, off)` choices,
+ * whatever form a harness gives it: a `fastMode`/`fast_mode` on/off toggle
+ * (Claude), Cursor's `fast` true/false, or a tier/speed option offering
+ * `fast` (Codex, Devin). Off is the default when fast isn't, else the other
+ * choice — Cursor runs some models fast by default.
+ */
+export function fastModeValues(
+  option: ModelOption,
+): { on: string; off: string } | null {
+  const has = (id: string): boolean => option.choices.some((choice) => choice.id === id);
+  let on: string;
+  if ((option.id === "fastMode" || option.id === "fast_mode") && has("on")) {
+    on = "on";
+  } else if (option.id === "fast" && has("true")) {
+    on = "true";
+  } else if (has("fast")) {
+    on = "fast";
+  } else {
+    return null;
+  }
+  const off =
+    option.defaultChoice !== on && has(option.defaultChoice)
+      ? option.defaultChoice
+      : (option.choices.map((choice) => choice.id).find((id) => id !== on) ?? null);
+  return off === null ? null : { on, off };
+}
+
+/** Option ids Cursor uses for an effort ladder (its models carry none). */
+export const EFFORT_OPTION_IDS: readonly string[] = ["effort", "reasoning", "reasoning_effort"];
+
+/** The compact effort slider's stops: the ladder, else an effort option. */
+export type CompactEffort =
+  | { kind: "reasoning"; labels: readonly string[]; levels: readonly ReasoningLevel[]; selected: number }
+  | {
+      kind: "option";
+      labels: readonly string[];
+      optionId: string;
+      choiceIds: readonly string[];
+      defaultChoice: string;
+      selected: number;
+    };
+
+/**
+ * `compact_effort` (pickers.rs) — the slider's stops: the model's reasoning
+ * ladder, else an option shaped like one (Cursor's `effort`/`reasoning`
+ * choices), so every model with an effort gets the same slider.
+ */
+export function compactEffort(
+  model: Model | undefined,
+  ladder: readonly ReasoningLevel[],
+  reasoning: ReasoningLevel | null,
+  selections: Readonly<Record<string, unknown>>,
+): CompactEffort | null {
+  if (ladder.length > 0) {
+    return {
+      kind: "reasoning",
+      labels: ladder.map((level) => reasoningLabel(level)),
+      levels: ladder,
+      selected: Math.max(0, ladder.indexOf(reasoning ?? ladder[0])),
+    };
+  }
+  const option = (model?.options ?? []).find(
+    (candidate) => EFFORT_OPTION_IDS.includes(candidate.id) && candidate.choices.length > 1,
+  );
+  if (option === undefined) {
+    return null;
+  }
+  const saved = selections[option.id];
+  const current = typeof saved === "string" ? saved : option.defaultChoice;
+  return {
+    kind: "option",
+    labels: option.choices.map((choice) => choice.label),
+    optionId: option.id,
+    choiceIds: option.choices.map((choice) => choice.id),
+    defaultChoice: option.defaultChoice,
+    selected: Math.max(0, option.choices.findIndex((choice) => choice.id === current)),
+  };
+}
+
+/**
+ * `compact_hidden_options` (pickers.rs) — option ids the compact card draws
+ * as its own controls (fast toggle, effort slider) rather than rows.
+ */
+export function compactHiddenOptions(model: Model | undefined): readonly string[] {
+  const hidden: string[] = [];
+  for (const option of model?.options ?? []) {
+    if (fastModeValues(option) !== null) {
+      hidden.push(option.id);
+    }
+  }
+  for (const option of model?.options ?? []) {
+    if (EFFORT_OPTION_IDS.includes(option.id) && option.choices.length > 1) {
+      hidden.push(option.id);
+    }
+  }
+  return hidden;
 }

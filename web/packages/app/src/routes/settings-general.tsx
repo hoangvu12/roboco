@@ -99,6 +99,21 @@ export function GeneralSettingsPage() {
         </div>
         <div className="settings-row">
           <div className="settings-row-main">
+            <span className="settings-row-title">Compact model picker</span>
+            <span className="shortcuts-row-description">
+              Adjust effort with a slider, then open the model list when needed.
+            </span>
+          </div>
+          <RbSwitch
+            checked={settings.compactModelPicker}
+            onCheckedChange={() =>
+              uiSettings.updateImmediate({ compactModelPicker: !settings.compactModelPicker })
+            }
+            aria-label="Compact model picker"
+          />
+        </div>
+        <div className="settings-row">
+          <div className="settings-row-main">
             <span className="settings-row-title">Stop agent with Escape</span>
             <span className="shortcuts-row-description">When no dialog or menu is open.</span>
           </div>

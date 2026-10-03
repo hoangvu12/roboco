@@ -257,6 +257,12 @@ export interface UiSettings {
   /** Legacy global opt-in; per-harness preferences take precedence. */
   readonly skillsInSlashMenu: boolean;
   readonly skillCompletionByHarness: Readonly<Record<string, SkillCompletionPreferences>>;
+  /**
+   * Open model selection with an effort slider and a separate model list
+   * (`compact_model_picker`, settings.rs — upstream #471). On by default;
+   * the General page toggles it.
+   */
+  readonly compactModelPicker: boolean;
   readonly sidebarWidth: number;
   readonly sidebarCollapsed: boolean;
   /** Legacy on the desktop: persisted, never read. Kept for round-tripping. */
@@ -419,6 +425,7 @@ export function defaultUiSettings(): UiSettings {
     composerSendBehavior: "enter",
     skillsInSlashMenu: false,
     skillCompletionByHarness: {},
+    compactModelPicker: true,
     sidebarWidth: SIDEBAR_DEFAULT,
     sidebarCollapsed: false,
     sidebarGrouped: false,
@@ -768,6 +775,7 @@ export function healUiSettings(value: unknown): UiSettings {
     composerSendBehavior: oneOf(raw.composerSendBehavior, ["enter", "modEnter"], "enter"),
     skillsInSlashMenu: bool(raw.skillsInSlashMenu, false),
     skillCompletionByHarness: healSkillCompletion(raw.skillCompletionByHarness),
+    compactModelPicker: bool(raw.compactModelPicker, true),
     sidebarWidth: clampOr(raw.sidebarWidth, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT),
     sidebarCollapsed: bool(raw.sidebarCollapsed, false),
     sidebarGrouped: bool(raw.sidebarGrouped, false),
