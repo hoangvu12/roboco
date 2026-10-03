@@ -1,4 +1,4 @@
-import type { HarnessDescriptor, Model, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, Model, ModelOption, ReasoningLevel } from "@roboco/proto";
 
 /** `pickers.rs::reasoning_label` — the ladder's display names. */
 const REASONING_LABELS: Record<ReasoningLevel, string> = {
@@ -161,4 +161,56 @@ export function traitsActive(
   selections: Readonly<Record<string, unknown>>,
 ): boolean {
   return traitsCustomized(model, reasoning, model?.reasoningLevels ?? [], selections);
+}
+
+/**
+ * `fast_mode_values` (pickers.rs:5232) — fast mode's `(on, off)` choices,
+ * whatever form a harness gives it: a `fastMode`/`fast_mode` on/off toggle
+ * (Claude), Cursor's `fast` true/false, or a tier/speed option offering
+ * `fast` (Codex, Devin). Off is the default when fast isn't, else the other
+ * choice — Cursor runs some models fast by default.
+ */
+export function fastModeValues(
+  option: ModelOption,
+): { on: string; off: string } | null {
+  const has = (id: string): boolean => option.choices.some((choice) => choice.id === id);
+  let on: string;
+  if ((option.id === "fastMode" || option.id === "fast_mode") && has("on")) {
+    on = "on";
+  } else if (option.id === "fast" && has("true")) {
+    on = "true";
+  } else if (has("fast")) {
+    on = "fast";
+  } else {
+    return null;
+  }
+  const off =
+    option.defaultChoice !== on && has(option.defaultChoice)
+      ? option.defaultChoice
+      : (option.choices.map((choice) => choice.id).find((id) => id !== on) ?? null);
+  return off === null ? null : { on, off };
+}
+
+/**
+ * The chip's fast-tier flag — pickers.rs's `fast` local (:5493-5503): the
+ * selected model's fast-mode option (whatever form the harness gives it,
+ * per `fastModeValues`) resolved to its effective choice — the saved pick
+ * when one is a string, else the option's default — on exactly when that
+ * choice is the on value. Gates the FAST_TIER_BOLD accent glyph the chip
+ * appends after the suffix (pickers.rs:5523-5530), so the tier reads at a
+ * glance without opening the card.
+ */
+export function fastTierOn(
+  model: Model | undefined,
+  selections: Readonly<Record<string, unknown>>,
+): boolean {
+  return (model?.options ?? []).some((option) => {
+    const values = fastModeValues(option);
+    if (values === null) {
+      return false;
+    }
+    const saved = selections[option.id];
+    const effective = typeof saved === "string" ? saved : option.defaultChoice;
+    return effective === values.on;
+  });
 }

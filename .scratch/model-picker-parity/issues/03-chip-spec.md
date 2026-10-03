@@ -16,7 +16,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §2 (chip spec notes).
 
@@ -56,7 +56,48 @@ loading states).
 
 ## 3. Acceptance checklist
 
-- [ ] Chip padding 6px; visual check against the desktop's chip
-- [ ] Fast tier renders the accent glyph after the suffix
-- [ ] Width-animation deferral recorded in the commit message
-- [ ] Tests green; full app suite green
+- [x] Chip padding 6px; visual check against the desktop's chip
+- [x] Fast tier renders the accent glyph after the suffix
+- [x] Width-animation deferral recorded in the commit message
+- [x] Tests green; full app suite green
+
+## Comments
+
+**Branch:** `ticket/mp-03-chip-spec` (base `a485d5ce`). Commit `8ecb121b`
+(implementation) + review-pass commit (citation fix :5490-5510 →
+:5493-5503, and the mounted glyph test the review demanded). Verification
+(all from `web/packages/app`): focused suites (composer-reasoning,
+traits-summary, model-rows, composer-draft, harnesses) → 129/129; full
+app suite `pnpm exec vitest run` → **148 files, 2235 tests, all passed**;
+`pnpm exec tsc --noEmit` clean. Both named seams ran red→green during
+implementation; the mounted glyph test is mutation-checked (disabling the
+glyph render fails it).
+
+**"Visual check" reading:** no live visual was possible under the
+session's machine-safety rules (no dev server/engine spawn) — the padding
+is verified against the desktop's source (`pickers.rs:2931-2937`,
+`px(6.0)` for `PickerKind::HarnessModel`, px 10 for every other trigger)
+by the CSS-contract test plus the citation walk, and the glyph's geometry
+(FAST_TIER_BOLD, 13px, `theme.accent`, flex-none, appended after the
+suffix — pickers.rs:5493-5503, :5525-5536) matches value-for-value.
+
+**Judgment calls:** (1) `fastModeValues` moved from `model-rows.ts` to
+`traits-summary.ts` (verbatim, its every-encoding test moved with it) so
+the ticket-named file owns the flag without a `model-rows ↔
+traits-summary` import cycle — the desktop's own shape, where
+compact.rs consumes `fast_mode_values` from the pickers module. (2) The
+glyph is ported STATIC: the desktop wraps it in `motion::fast_tier`
+(a 700 ms activation sheen, motion.rs:1288) — motion work joins the
+deferred width-animation item. (3) The glyph is gated `!noAgents` like
+the suffix. (4) mp-02 preserved: an absent explicit pick leaves
+`selectedModel` undefined → no glyph (the desktop's `fast` local is
+`selected_model.is_some_and`, same shape); the mounted absent-pick test
+still passes.
+
+**Confirmed adjacent drift, out of scope (for a future ticket):** the
+desktop's `traits_summary` SKIPS the `serviceTier` part when its
+effective choice is `default`/`standard` (pickers.rs:246-249) — an off
+tier reads as absent on the desktop's suffix, while the web spells the
+off label ("Standard · Standard" on Codex defaults). This ticket's two
+verified drift items (padding, glyph) are done; the suffix-text drift
+was not in scope and is recorded here, not built.

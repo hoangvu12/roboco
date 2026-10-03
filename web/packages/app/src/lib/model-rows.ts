@@ -1,6 +1,6 @@
-import type { HarnessDescriptor, HarnessId, Model, ModelOption, ReasoningLevel } from "@roboco/proto";
+import type { HarnessDescriptor, HarnessId, Model, ReasoningLevel } from "@roboco/proto";
 import { matchRank } from "./picker-search";
-import { defaultReasoning, reasoningLabel } from "./traits-summary";
+import { defaultReasoning, fastModeValues, reasoningLabel } from "./traits-summary";
 
 /**
  * The model-list logic ported from `crates/ui/src/pickers.rs`:
@@ -496,34 +496,8 @@ export function settingGroups(
 // ---------------------------------------------------------------------------
 // The compact picker's effort + fast controls (upstream #471)
 // ---------------------------------------------------------------------------
-
-/**
- * `fast_mode_values` (pickers.rs) — fast mode's `(on, off)` choices,
- * whatever form a harness gives it: a `fastMode`/`fast_mode` on/off toggle
- * (Claude), Cursor's `fast` true/false, or a tier/speed option offering
- * `fast` (Codex, Devin). Off is the default when fast isn't, else the other
- * choice — Cursor runs some models fast by default.
- */
-export function fastModeValues(
-  option: ModelOption,
-): { on: string; off: string } | null {
-  const has = (id: string): boolean => option.choices.some((choice) => choice.id === id);
-  let on: string;
-  if ((option.id === "fastMode" || option.id === "fast_mode") && has("on")) {
-    on = "on";
-  } else if (option.id === "fast" && has("true")) {
-    on = "true";
-  } else if (has("fast")) {
-    on = "fast";
-  } else {
-    return null;
-  }
-  const off =
-    option.defaultChoice !== on && has(option.defaultChoice)
-      ? option.defaultChoice
-      : (option.choices.map((choice) => choice.id).find((id) => id !== on) ?? null);
-  return off === null ? null : { on, off };
-}
+// (`fastModeValues` lives in traits-summary.ts — the chip-side fast tier's
+// detection — imported here like compact.rs imports it from pickers.rs.)
 
 /** Option ids Cursor uses for an effort ladder (its models carry none). */
 export const EFFORT_OPTION_IDS: readonly string[] = ["effort", "reasoning", "reasoning_effort"];

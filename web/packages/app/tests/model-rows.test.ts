@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessDescriptor, HarnessId, Model } from "@roboco/proto";
-import type { ModelOption } from "@roboco/proto";
 import {
   compactEffort,
   compactHiddenOptions,
   defaultModel,
-  fastModeValues,
   normalizeModelRows,
   offeredHarnessesImpl,
   REASONING_SETTING_ID,
@@ -114,38 +112,6 @@ describe("compact model rows (upstream #471)", () => {
       const rows = scopedModelRows(query, "all", "codex", descriptors, modelsFor, isFavorite);
       expect(rows.map((row) => row.model.id)).toEqual(["star-a", "star-b", "plain-a", "plain-b"]);
     }
-  });
-
-  it("every_fast_mode_encoding_gets_the_same_controls", () => {
-    const option = (id: string, choices: readonly string[], defaultChoice: string): ModelOption => ({
-      id,
-      label: id,
-      choices: choices.map((choice) => ({ id: choice, label: choice })),
-      defaultChoice,
-    });
-    // Codex tier, Claude toggle, the speed option and the snake_case toggle.
-    expect(fastModeValues(option("serviceTier", ["default", "fast"], "default"))).toEqual({
-      on: "fast",
-      off: "default",
-    });
-    expect(fastModeValues(option("fastMode", ["off", "on"], "off"))).toEqual({ on: "on", off: "off" });
-    expect(fastModeValues(option("speed", ["standard", "fast"], "standard"))).toEqual({
-      on: "fast",
-      off: "standard",
-    });
-    // Cursor's true/false switch, off and on by default: both toggle.
-    expect(fastModeValues(option("fast", ["false", "true"], "false"))).toEqual({
-      on: "true",
-      off: "false",
-    });
-    expect(fastModeValues(option("fast", ["false", "true"], "true"))).toEqual({
-      on: "true",
-      off: "false",
-    });
-    // Not fast mode: other toggles, including Cursor's true/false ones.
-    expect(fastModeValues(option("thinking", ["off", "on"], "off"))).toBeNull();
-    expect(fastModeValues(option("thinking", ["false", "true"], "true"))).toBeNull();
-    expect(fastModeValues(option("contextWindow", ["200k", "1m"], "200k"))).toBeNull();
   });
 
   it("compact_effort_uses_the_ladder_else_an_effort_option", () => {
