@@ -46,8 +46,10 @@ export function reduceMotionLabel(preference: ReduceMotion): string {
 }
 
 /**
- * `motion::resolve` (upstream #642, web-shaped — no background pause): the
- * pin overrides the media query; `system` follows it.
+ * `motion::resolve`'s pin/media arm only (upstream #642, web-shaped): the
+ * pin overrides the media query; `system` follows it. The background-pause
+ * arm (wpn-07) folds in one level up — `effectiveReducedMotion` in
+ * lib/reduced-motion.ts — so this pure resolver stays three-armed.
  */
 export function resolveReducedMotion(preference: ReduceMotion, system: boolean): boolean {
   return preference === "on" ? true : preference === "off" ? false : system;

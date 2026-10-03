@@ -171,13 +171,23 @@ pages with the effort slider and F/Tab/Arrows/Esc-per-page (:1010-1290).
 
 Verified divergences from the desktop reference (web citations):
 
+**Deep-research corrections (verified against the code before ticketing):
+W3 and W4 below are STALE — the web already ports both. W3: `ModelRow`
+wires `onMouseEnter → setCursor` (one moving highlight, no hover wash —
+matches pickers.rs:4204-4210). W4: `loadHarnesses({force:true})` +
+`prefetchModels(true)` fire on every open (composer-pickers.tsx:384-390,
+re-firing on Error via catalog-loading.ts:85-95), with the idle-cadence and
+window-focus re-arm as supplements — exactly the desktop shape. The
+`selected_only` row, card-stays-open-after-pick, and search-per-tab scope
+(§1's W7 question — confirmed scoped) are also at parity; §1's
+`selected_only`/stays-open/open-only bullets describe the web correctly.
+W8's sheet-arm focus gap was ticketed (issue 06, landed).**
+
 | # | Divergence | Web | Desktop |
 |---|---|---|---|
 | W1 | Band math | Fixed 216 in-chat; new-chat clamp (space−82−tray).clamp(30,216), tray cap 236 (model-picker-geometry.ts:15-63) | 640-cap band with above/below flip + `model_menu_budgets` tray/list split (§1) |
 | W2 | Keyboard host | Capture-phase **window** listener (documented deviation — takeovers have no input) :803-810 | card-owned key routing (:2596-2746) |
-| W3 | Cursor+hover merge | separate hover styling implied by CSS | hover MOVES the cursor (:4180-4224) |
-| W4 | Refresh-on-open cadence | per-render `ensure_harnesses` effects (:380-390), window-focus re-arm (:396-410) | forced reload + prefetch on every open (:1180-1310) |
-| W5 | Chip padding | px 10 (CSS 4760) | px 6 (:2874-3010) |
+| W5 | Chip padding | px 10 (CSS 4760) | px 6 (:2874-3010) — **ticketed (issue 03, landed)** |
 | W6 | Exit grace | +20ms exit grace dropped (popover.tsx:35-40) | exit window per popover.rs:482-530 |
 | W7 | Search scope | (verify) query scoped per tab? | query never leaves the viewed tab (:4896-4900) |
 | W8 | Focus return | focus-out dismissal veto (popover.tsx:190-199); sheet arm drops `escapeFocusTarget` (PickerCard.tsx:107-110) | `ReturnComposerFocus` (:1130-1138) |

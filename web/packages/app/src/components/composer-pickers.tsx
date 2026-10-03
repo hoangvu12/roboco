@@ -1704,8 +1704,11 @@ function CompactCard(props: CompactCardProps) {
     } else {
       settingSectionsRef.current.set(id, element);
     }
-    const reach = element?.getBoundingClientRect().right ?? 0;
-    const left = reach + SETTING_MENU_FLYOUT_REACH > window.innerWidth;
+    const reach = element?.getBoundingClientRect();
+    // The shared probe shape is `flyoutOpensLeft` (lib/flyout-side.ts) — the
+    // compact arm measures at ref registration (its flyout mounts with the
+    // section), the identity arm at open; both spellings stay one shape.
+    const left = reach !== undefined && flyoutOpensLeft(reach, SETTING_MENU_FLYOUT_REACH);
     setSettingOnLeft((current) => (current === left ? current : left));
   }
 
