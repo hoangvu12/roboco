@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat, Device, Space } from "@roboco/proto";
+import { readFileSync } from "node:fs";
 import { actionsFor, matchesQuery, paletteChats } from "../src/lib/command-palette";
+import { actionBadge } from "../src/components/command-palette";
+import { defaultKeymap, type KeymapConfig } from "../src/state/ui-settings";
 import {
   commandPaletteStore,
   toggleCommandPalette,
@@ -11,11 +14,15 @@ import { addSpaceStore } from "../src/state/add-space";
  * Ports of the desktop's command palette tests
  * (`crates/ui/src/shell/command_palette.rs` test module) plus the store's
  * open/close/activate lifecycle: `action_search_hides_empty_section_and_
- * preserves_order`, `search_matches_words_across_chat_metadata`, the
- * global chat-history search (title/project/device/branch/PR targets,
- * archived included, the 30-row cap after sorting), and the activation
+ * preserves_order`, the action rows' shortcut badges (`actionBadge`,
+ * command_palette.rs:273-293), `search_matches_words_across_chat_metadata`,
+ * the global chat-history search (title/project/device/branch/PR targets,
+ * archived included, the 30-row cap after sorting), the activation
  * intents (chat rows carry the chat id they launch — upstream 62c52329's
- * argument fix, web shape).
+ * argument fix, web shape), `hover_command`'s highlight semantics
+ * (command_palette.rs:154-163), and the archived rows' icon muting
+ * (shell.rs:6154-6161, 6590-6598, guarded at the CSS level like
+ * sidebar-fade.test.ts).
  */
 
 function chat(partial: Partial<Chat> & { readonly id: string }): Chat {
@@ -70,6 +77,33 @@ describe("search_matches_words_across_chat_metadata (command_palette.rs)", () =>
   });
 });
 
+describe("action_badge (command_palette.rs:273-293)", () => {
+  it("new chat and new project badge their keymap binding, rebound or default", () => {
+    const rebound: KeymapConfig = { ...defaultKeymap(false), newSession: "mod-shift-p" };
+    expect(actionBadge("new-chat", rebound, true)).toBe("⇧⌘P");
+    expect(actionBadge("new-chat", rebound, false)).toBe("Ctrl+Shift+P");
+    const defaults = defaultKeymap(false);
+    expect(actionBadge("new-project", defaults, true)).toBe("⇧⌘N");
+    expect(actionBadge("new-project", defaults, false)).toBe("Ctrl+Shift+N");
+  });
+
+  it("an unparseable binding falls back to the default combo", () => {
+    const junk: KeymapConfig = { ...defaultKeymap(false), newSession: "nonsense-!!" };
+    expect(actionBadge("new-chat", junk, true)).toBe("⌘N");
+    expect(actionBadge("new-chat", junk, false)).toBe("Ctrl+N");
+    const unbound: KeymapConfig = { ...defaultKeymap(false), newSession: "" };
+    expect(actionBadge("new-chat", unbound, false)).toBe("Ctrl+N");
+  });
+
+  it("open settings badges the hardcoded mod-,; the theme action gets none", () => {
+    const keymap = defaultKeymap(false);
+    expect(actionBadge("settings", keymap, true)).toBe("⌘,");
+    expect(actionBadge("settings", keymap, false)).toBe("Ctrl+,");
+    expect(actionBadge("theme", keymap, true)).toBeNull();
+    expect(actionBadge("theme", keymap, false)).toBeNull();
+  });
+});
+
 describe("paletteChats (command_entries)", () => {
   const spaces: Space[] = [
     { id: "project", deviceId: "local", path: "/tmp/fieldnotes", name: null } as unknown as Space,
@@ -96,6 +130,9 @@ describe("paletteChats (command_entries)", () => {
     // "b" has no space and the "remote" device is unknown; only "a" matches.
     expect(rows.map((row) => row.chat.id)).toEqual(["a"]);
     expect(rows[0]!.folder).toBe("fieldnotes @ This device");
+    // Every row carries the archived flag the row component mutes from
+    // (lib/command-palette.ts:114 supplies it for archived and live alike).
+    expect(rows[0]!.archived).toBe(false);
   });
 
   it("archived chats remain searchable", () => {
@@ -265,6 +302,39 @@ describe("CommandPaletteStore (toggle/close/activate)", () => {
     expect(commandPaletteStore.getSnapshot().active).toBe(2);
   });
 
+  // `hover_command` (command_palette.rs:154-163): pointer motion moves the
+  // highlight so hover and the keyboard never light two rows.
+  it("hover moves the highlight; the keyboard continues from the hovered row", () => {
+    commandPaletteStore.open();
+    commandPaletteStore.move(1, 3);
+    expect(commandPaletteStore.getSnapshot().active).toBe(1);
+    commandPaletteStore.hover(2);
+    expect(commandPaletteStore.getSnapshot().active).toBe(2);
+    // Last-writer-wins with the keyboard: move steps from the hovered row.
+    commandPaletteStore.move(1, 3);
+    expect(commandPaletteStore.getSnapshot().active).toBe(0);
+  });
+
+  it("hovering the active row commits nothing; a closed store ignores hover", () => {
+    commandPaletteStore.open();
+    // The observable no-op contract is the store's own seam: no listener
+    // fires (and the highlight stays put) when the hovered row is already
+    // the active one.
+    const listener = vi.fn();
+    const unsubscribe = commandPaletteStore.subscribe(listener);
+    commandPaletteStore.hover(0);
+    expect(listener).not.toHaveBeenCalled();
+    expect(commandPaletteStore.getSnapshot().active).toBe(0);
+    unsubscribe();
+    commandPaletteStore.forceClose();
+    commandPaletteStore.hover(2);
+    expect(commandPaletteStore.getSnapshot()).toEqual({
+      status: "closed",
+      query: "",
+      active: 0,
+    });
+  });
+
   it("unmounted drops the query and highlight", () => {
     commandPaletteStore.open();
     commandPaletteStore.setQuery("auth");
@@ -323,5 +393,42 @@ describe("CommandPaletteStore (toggle/close/activate)", () => {
     expect(setTheme).toHaveBeenCalledTimes(1);
     // The palette stays open so the action updates to its next state.
     expect(commandPaletteStore.getSnapshot().status).toBe("open");
+  });
+});
+
+describe("archived rows mute their icons (shell.rs:6154-6161, 6590-6598)", () => {
+  const css = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+
+  /** One CSS rule block, asserted to exist (sidebar-fade.test.ts's idiom). */
+  const rule = (selector: string): string => {
+    const pattern = selector
+      .split(" ")
+      .map((part) => part.replace(/\./g, "\\."))
+      .join("\\s+");
+    const block = css.match(new RegExp(`${pattern}\\s*\\{[^}]*\\}`))?.[0];
+    expect(block, `${selector} rule`).toBeDefined();
+    return block!;
+  };
+
+  it("dims the harness icon to 40%; the active row restores it", () => {
+    // The desktop's `archived_muted` (icons at 40%, the harness mark's
+    // rest alpha being 0.8); selection is never muted, and hover =
+    // motion = the active row in the palette.
+    expect(rule(".command-chat-row-archived .command-chat-harness")).toMatch(/opacity:\s*0\.4;/);
+    expect(rule(".command-chat-row-archived.command-chat-row-active .command-chat-harness")).toMatch(
+      /opacity:\s*0\.8;/,
+    );
+  });
+
+  it("mirrors the sidebar's 55% archived title, restored under active", () => {
+    // No title muting on the desktop — the 55% dim is the web sidebar's
+    // own treatment (app.css's `.archived .chat-row-item .chat-row-title`),
+    // scoped to the title line so the muted folder/branch lines keep theirs.
+    expect(rule(".command-chat-row-archived .command-chat-line-2 .command-chat-label")).toMatch(
+      /color-mix\(in srgb, var\(--rb-text\) 55%, transparent\)/,
+    );
+    expect(
+      rule(".command-chat-row-archived.command-chat-row-active .command-chat-line-2 .command-chat-label"),
+    ).toMatch(/color:\s*var\(--rb-text\);/);
   });
 });
