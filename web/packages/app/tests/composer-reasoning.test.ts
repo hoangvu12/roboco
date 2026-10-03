@@ -1047,6 +1047,32 @@ describe("ComposerPickers nested model settings", () => {
     expect(settingTrigger("contextWindow")).not.toBeNull();
   });
 
+  it("the fast tier's glyph rides the chip after the suffix (mp-03)", async () => {
+    const handle = await mountGptPicker();
+    // The default tier carries no glyph: the suffix names the effective
+    // choices alone, no accent mark.
+    expect(handle.container.querySelector("#picker-model .identity-chip-fast")).toBeNull();
+
+    // Pick the fast tier through the real tray path.
+    await openSetting("serviceTier");
+    await act(async () => {
+      settingChoice("serviceTier", "fast")!.click();
+    });
+    expect(handle.observed.current.modelOptions.serviceTier).toBe("fast");
+
+    const chip = handle.container.querySelector("#picker-model")!;
+    // The summary spells the tier ("… · Fast"), and the FAST_TIER_BOLD mark
+    // in the accent color rides AFTER the suffix (pickers.rs:5523-5530) —
+    // the chip's trailing child, like the desktop's appended glyph.
+    const suffix = chip.querySelector(".identity-chip-suffix")!;
+    expect(suffix.textContent).toContain("Fast");
+    const glyph = chip.querySelector(".identity-chip-fast")!;
+    expect(glyph).not.toBeNull();
+    expect(
+      suffix.compareDocumentPosition(glyph) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("escape closes only the nested menu; the card stays open", async () => {
     const handle = await mountGptPicker();
     await openSetting("reasoning");

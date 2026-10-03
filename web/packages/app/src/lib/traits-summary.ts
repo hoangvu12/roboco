@@ -192,7 +192,7 @@ export function fastModeValues(
 }
 
 /**
- * The chip's fast-tier flag — pickers.rs's `fast` local (:5490-5510): the
+ * The chip's fast-tier flag — pickers.rs's `fast` local (:5493-5503): the
  * selected model's fast-mode option (whatever form the harness gives it,
  * per `fastModeValues`) resolved to its effective choice — the saved pick
  * when one is a string, else the option's default — on exactly when that
