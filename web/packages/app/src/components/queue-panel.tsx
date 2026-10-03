@@ -13,7 +13,7 @@ import type { EngineClient } from "@roboco/engine-client";
 import { Icon, type IconName } from "@roboco/icons";
 import type { QueuedMessage } from "@roboco/proto";
 import { ATTACHMENT_ONLY_TEXT, bytesToImageDataUrl } from "../lib/attachments";
-import { describeQueueError, mintEditorInstanceId } from "../lib/queue-actions";
+import { describeQueueError, describeBeginEditFailure, mintEditorInstanceId, QUEUE_EDIT_CONNECT_MESSAGE } from "../lib/queue-actions";
 import {
   availableQueuePrimaryAction,
   modifierSendCompactLabel,
@@ -79,6 +79,13 @@ interface QueuePanelProps {
   readonly onSaveEdit: () => void;
   /** Cancel the open edit (Escape / the row's inline Cancel / pre-action). */
   readonly onEditCancel: () => void;
+  /**
+   * Raise a queue edit-lease failure into the composer's red failure
+   * notice (ticket 06) — the desktop's `Composer::failure` placement
+   * (queue.rs:1458-1470) for the begin arm's locked/missing/transport
+   * failures, never a sidebar toast.
+   */
+  readonly onEditFailure: (message: string) => void;
 }
 
 /** `motion::FADE_QUICK` (150ms) — the JS mirror of `--rb-motion-fade-quick`. */
@@ -94,6 +101,7 @@ export function QueuePanel({
   hostSupportsActions,
   onSaveEdit,
   onEditCancel,
+  onEditFailure,
 }: QueuePanelProps) {
   const store = useQueueStore();
   const snapshot = useSyncExternalStore(
@@ -258,12 +266,11 @@ export function QueuePanel({
       try {
         const instanceId = mintEditorInstanceId();
         const outcome = await store.beginEdit(row.id, instanceId);
-        if (outcome.kind === "locked") {
-          sidebarNotice.set("That queued message is being edited on another device");
-          return;
-        }
-        if (outcome.kind === "missing") {
-          sidebarNotice.set("That queued message is no longer available");
+        // The begin failures land in the composer's red failure notice
+        // (the host's `Composer::failure` channel, ticket 06) — the
+        // desktop's queue.rs:1458-1470 arms, never a sidebar toast.
+        if (outcome.kind !== "acquired") {
+          onEditFailure(describeBeginEditFailure(outcome.kind));
           return;
         }
         // Pre-load the row's attachments so the composer's strip stages
@@ -281,12 +288,12 @@ export function QueuePanel({
         }
         onEditRow({ ...row, text: seedText, attachments: [...outcome.attachments] });
       } catch {
-        sidebarNotice.set("Connect to the chat host to edit this message");
+        onEditFailure(QUEUE_EDIT_CONNECT_MESSAGE);
       } finally {
         busy.current = false;
       }
     },
-    [store, client, editorDeviceId, onEditRow],
+    [store, client, editorDeviceId, onEditRow, onEditFailure],
   );
 
   const onRemove = useCallback(

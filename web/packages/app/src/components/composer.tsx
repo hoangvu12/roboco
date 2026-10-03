@@ -362,6 +362,15 @@ interface ComposerProps {
    */
   readonly editCommitRef?: React.MutableRefObject<(() => void) | null>;
   /**
+   * The queue edit-lease failure handle (ticket 06): assigned a raiser that
+   * lands each message in the chat-scoped failure notice — the desktop's
+   * `Composer::failure` arms (queue.rs:1458-1685) — so the host's
+   * long-lived closures (the lease finisher, the 20s renewal heartbeat)
+   * reach the composer without re-subscribing. The `editCommitRef`
+   * pattern; unassigned hosts keep whatever placement they had.
+   */
+  readonly editFailureRef?: React.MutableRefObject<((message: string) => void) | null>;
+  /**
    * The workspace commands' host surfaces (composer.rs's
    * `ComposerEvent::WorkspaceCommand` dispatch, web-shaped): the Roboco-local
    * `/new`, `/settings`, `/diff`, `/files`, `/terminal`, and `/rename` route
@@ -449,6 +458,7 @@ export function Composer({
   onEditFinish,
   onEditCancel,
   editCommitRef,
+  editFailureRef,
   activateLatestQueued,
   dockFrame = null,
   liveDockFrame,
@@ -2843,6 +2853,24 @@ export function Composer({
       editCommitRef.current = null;
     };
   }, [editCommitRef, commitQueueEdit]);
+
+  // The failure-ref assignment (ticket 06): every queue edit-lease failure
+  // the host raises lands in the composer's red failure notice —
+  // chat-scoped (`key: chat.id`, the `setFailure` precedents at :2297/:2481),
+  // so it renders only under its own chat and stands down on the route
+  // flip. Re-assigned per chat so the key always matches the chat the
+  // composer is currently editing in.
+  useEffect(() => {
+    if (editFailureRef === undefined) {
+      return;
+    }
+    editFailureRef.current = (message: string) => {
+      setFailure({ message, key: chat.id });
+    };
+    return () => {
+      editFailureRef.current = null;
+    };
+  }, [editFailureRef, chat.id]);
 
   const submit = useCallback(async () => {
     if (busy) {

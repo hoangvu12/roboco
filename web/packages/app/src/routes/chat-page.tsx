@@ -56,11 +56,17 @@ import {
 } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { ChangeRequestStore, type ChangeRequestTarget, changeRequestForChat } from "../state/change-requests-store";
-import { QueueStore } from "../state/queue-store";
+import { QueueStore, type FinishLeaseOutcome } from "../state/queue-store";
 import { QueueStoreProvider } from "../state/queue-store-context";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { availableQueuePrimaryAction } from "../lib/queue-row-logic";
+import {
+  describeFinishEditFailure,
+  describeRenewEditFailure,
+  QUEUE_EDIT_LEASE_LOST_MESSAGE,
+  QUEUE_EDIT_UNREACHABLE_MESSAGE,
+} from "../lib/queue-actions";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
@@ -485,6 +491,13 @@ export function ConversationPage() {
   // Save and the composer's submit share the one commit path.
   const editCommitRef = useRef<(() => void) | null>(null);
 
+  // The composer's `Composer::failure` handle (queue.rs:1458-1685) — the
+  // `editCommitRef` pattern, assigned by the Composer for the page's
+  // lifetime, so every queue edit-lease failure (begin / renewal / finish)
+  // lands in the composer's red failure notice, chat-scoped, instead of a
+  // sidebar toast (ticket 06 — the desktop's placement).
+  const editFailureRef = useRef<((message: string) => void) | null>(null);
+
   // If the queue store reports the row disappeared while we were editing
   // (another device removed/sent it), drop the edit state so the composer
   // doesn't carry stale text.
@@ -511,9 +524,12 @@ export function ConversationPage() {
       void queueStore
         .renewEdit()
         .then((result) => {
-          if (result.kind === "lost" || result.kind === "missing") {
+          const failure = describeRenewEditFailure(result.kind);
+          if (failure !== null) {
             setEditingRow(null);
-            sidebarNotice.set("Edit protection expired; review this message before sending");
+            // The composer's red failure notice (queue.rs:1680-1685) — the
+            // loop-break message the desktop posts on expiry.
+            editFailureRef.current?.(failure);
           }
         })
         .catch(() => {});
@@ -539,13 +555,21 @@ export function ConversationPage() {
       setEditFinishing(true);
       void (async () => {
         // Non-terminal outcomes keep the edit open with the user's text in
-        // the editor (`finish_queue_edit`'s failure arms, queue.rs:1550-1575).
+        // the editor (`finish_queue_edit`'s failure arms, queue.rs:1550-1575);
+        // every failure lands in the composer's red failure notice — the
+        // desktop's `Composer::failure` arms, never a sidebar toast (ticket 06).
         let keepRow = false;
         try {
           const lease = store.getSnapshot().editLease;
           if (lease === null || lease.messageId !== rowId) {
+            // queue.rs:1559 — the arm the web used to swallow silently: with
+            // no local lease state the finish can never run, the text stays
+            // in the editor, and the composer's notice says so.
+            editFailureRef.current?.(QUEUE_EDIT_LEASE_LOST_MESSAGE);
+            keepRow = true;
             return;
           }
+          let result: FinishLeaseOutcome;
           if (outcome.action === "commit") {
             // `finish_queue_edit("commit")`: the staged set uploads first
             // (queue.rs:1522-1539) — the row's own attachments were staged
@@ -558,29 +582,23 @@ export function ConversationPage() {
                 : ([] as readonly { path: string }[]);
             const body =
               outcome.text.trim().length > 0 ? outcome.text : ATTACHMENT_ONLY_TEXT;
-            const result = await store.finishEdit("commit", {
+            result = await store.finishEdit("commit", {
               text: body,
               attachments: uploaded.map((entry) => entry.path),
             });
-            if (result.kind === "conflict") {
-              sidebarNotice.set("This message changed on another device; your edit was kept locally");
-              keepRow = true;
-            } else if (result.kind === "missing") {
-              sidebarNotice.set("The queued message was removed; your edit was kept locally");
-              keepRow = true;
-            } else if (result.kind === "lost") {
-              sidebarNotice.set("The edit lease changed; your text is still in the editor");
-              keepRow = true;
-            }
           } else {
-            const result = await store.finishEdit(outcome.action);
-            if (result.kind === "conflict" || result.kind === "missing" || result.kind === "lost") {
-              sidebarNotice.set("The edit lease changed; your text is still in the editor");
-              keepRow = true;
-            }
+            result = await store.finishEdit(outcome.action);
+          }
+          // The outcome→copy match is action-independent, exactly like the
+          // desktop's post-RPC match (queue.rs:1609-1634): conflict/missing
+          // keep the edit locally for commit and cancel alike.
+          const failure = describeFinishEditFailure(result.kind);
+          if (failure !== null) {
+            editFailureRef.current?.(failure);
+            keepRow = true;
           }
         } catch (error) {
-          sidebarNotice.set("Couldn't reach the chat host; your edit is still in the editor");
+          editFailureRef.current?.(QUEUE_EDIT_UNREACHABLE_MESSAGE);
           keepRow = true;
         } finally {
           setEditFinishing(false);
@@ -1392,6 +1410,7 @@ export function ConversationPage() {
                 onEditFinish={onEditFinish}
                 onEditCancel={onEditCancel}
                 editCommitRef={editCommitRef}
+                editFailureRef={editFailureRef}
                 activateLatestQueued={activateLatestQueued}
                 dockFrame={dockFrame}
                 liveDockFrame={liveDockFrame}
@@ -1411,6 +1430,7 @@ export function ConversationPage() {
                         hostSupportsActions={hostSupportsActions}
                         onSaveEdit={() => editCommitRef.current?.()}
                         onEditCancel={onEditCancel}
+                        onEditFailure={(message) => editFailureRef.current?.(message)}
                       />
                     </QueueStoreProvider>
                   ) : null
