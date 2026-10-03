@@ -32,7 +32,7 @@ export interface DraftGitState {
 }
 
 /** The invalidation baseline: no pick, Local checkout, no rows (pickers.rs:712-736). */
-export function emptyDraftGitState(): DraftGitState {
+function emptyDraftGitState(): DraftGitState {
   return { branch: null, checkout: "local", refs: [] };
 }
 

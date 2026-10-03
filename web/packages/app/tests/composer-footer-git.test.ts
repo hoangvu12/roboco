@@ -14,10 +14,14 @@
  *   the invalidation, pickers.rs:700-737) and reloads the new repo's
  *   refs: stale rows may never block the load.
  * - The ref popover's cursor anchors on the current branch row
- *   (`selected_ref_index`, :2144-2158), not row 0.
+ *   (`selected_ref_index`, :2144-2158), not row 0 — and re-homes when
+ *   rows land late under an open popover (:1578-1585).
+ * - A late resolution of the previous space's in-flight load never lands
+ *   in the fresh draft (the remount drops its consumer — the cancel,
+ *   pickers.rs:721-722).
  */
 
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RepoRef, Space } from "@roboco/proto";
@@ -33,6 +37,9 @@ const h = vi.hoisted(() => {
   /** Every `SwitchRef` call's refName, in order. */
   const switchRefCalls: string[] = [];
   const refsByPath = new Map<string, RepoRef[]>();
+  /** Repos whose NEXT ListRefs stays pending until released (the race probes). */
+  const deferNext = new Set<string>();
+  const deferredResolvers = new Map<string, (rows: RepoRef[]) => void>();
   const session = {
     engine: { baseUrl: "eng-1" },
     client: {
@@ -41,6 +48,15 @@ const h = vi.hoisted(() => {
         if (method === "ListRefs") {
           const repoPath = params.repoPath as string;
           listRefsCalls.push(repoPath);
+          if (deferNext.has(repoPath)) {
+            deferNext.delete(repoPath);
+            return new Promise<T>((resolve) => {
+              deferredResolvers.set(
+                repoPath,
+                (rows) => resolve(rows as T),
+              );
+            });
+          }
           return (refsByPath.get(repoPath) ?? []) as T;
         }
         if (method === "SwitchRef") {
@@ -57,7 +73,7 @@ const h = vi.hoisted(() => {
     spaces: { rows: [] as Space[], loaded: true, error: null },
     devices: { rows: [] as Space[], loaded: true, error: null },
   };
-  return { listRefsCalls, switchRefCalls, refsByPath, session, snapshot };
+  return { listRefsCalls, switchRefCalls, refsByPath, deferNext, deferredResolvers, session, snapshot };
 });
 
 vi.mock("../src/state/session-provider", () => ({
@@ -152,19 +168,33 @@ interface FooterHandle {
   unmount(): void;
 }
 
-async function mountFooter(withChat: ComposerFooterProps["chat"]): Promise<FooterHandle> {
+async function mountFooter(
+  withChat: ComposerFooterProps["chat"],
+  options?: { readonly strict?: boolean },
+): Promise<FooterHandle> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root: Root = createRoot(container);
   const render = (current: ComposerFooterProps["chat"]): void => {
     act(() => {
       root.render(
-        createElement(ComposerFooter, {
-          chat: current,
-          crSummary: null,
-          contextUsage: null,
-          harness: null,
-        }),
+        options?.strict === true
+          ? createElement(
+              StrictMode,
+              null,
+              createElement(ComposerFooter, {
+                chat: current,
+                crSummary: null,
+                contextUsage: null,
+                harness: null,
+              }),
+            )
+          : createElement(ComposerFooter, {
+              chat: current,
+              crSummary: null,
+              contextUsage: null,
+              harness: null,
+            }),
       );
     });
   };
@@ -175,6 +205,14 @@ async function mountFooter(withChat: ComposerFooterProps["chat"]): Promise<Foote
       render(next);
     },
     unmount() {
+      // Dismiss any open card first: Base UI defers the portal's removal
+      // to the exit animation's end — unmounting mid-exit (or open) leaves
+      // a pending removal whose node the afterEach body wipe already took
+      // (a jsdom NotFoundError that lands in whichever test runs next).
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      });
+      act(() => {});
       act(() => {
         root.unmount();
       });
@@ -269,6 +307,13 @@ describe("ComposerFooter draft git chips (wpn-02)", () => {
     const handle = await mountFooter(chat("sp-a"));
     press(document.querySelector<HTMLElement>("#picker-branch")!);
     await act(async () => {});
+    // The anchor is the CURSOR, never the selection: the current branch
+    // row carries the keyboard highlight while nothing is picked (desktop
+    // marks only the pick `selected`, pickers.rs:3633 — "current" gets the
+    // tag, not the selection).
+    const main = document.querySelector<HTMLElement>('[data-rb-row-key="main"]')!;
+    expect(main.classList.contains("menu-row-highlighted")).toBe(true);
+    expect(main.getAttribute("aria-selected")).toBeNull();
     // One ↓ from the anchored current row ("main", the middle row) lands
     // on the LAST row — not the second, which a row-0 anchor would give.
     act(() => {
@@ -280,11 +325,68 @@ describe("ComposerFooter draft git chips (wpn-02)", () => {
     handle.unmount();
   });
 
+  it("rows landing late under an open popover re-home the cursor to the anchor row", async () => {
+    // The eager load for alpha stays pending while the popover opens —
+    // the open effect anchored against an EMPTY list.
+    h.deferNext.add("/repo/alpha");
+    const handle = await mountFooter(chat("sp-a"));
+    expect(h.listRefsCalls).toEqual(["/repo/alpha"]);
+    press(document.querySelector<HTMLElement>("#picker-branch")!);
+    await act(async () => {});
+    // The open's force reload is absorbed by the in-flight load (one RPC
+    // total — the desktop's Loading guard, pickers.rs:1531-1533).
+    expect(h.listRefsCalls).toEqual(["/repo/alpha"]);
+
+    // The rows land — the highlight re-homes to the anchor row (the
+    // current branch, :1578-1585), not row 0.
+    h.deferredResolvers.get("/repo/alpha")!(h.refsByPath.get("/repo/alpha")!);
+    await act(async () => {});
+    expect(document.querySelector<HTMLElement>('[data-rb-row-key="main"]')!.classList.contains("menu-row-highlighted")).toBe(true);
+    act(() => {
+      document
+        .querySelector<HTMLElement>(".picker-key-frame")!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    expect(highlightedRow()).toBe("wt/nav");
+    handle.unmount();
+  });
+
+  it("a late resolution of the previous space's in-flight load never lands in the fresh draft", async () => {
+    h.deferNext.add("/repo/alpha");
+    const handle = await mountFooter(chat("sp-a"));
+    // The chat moves mid-flight: the re-keyed chip loads beta while
+    // alpha's load is still pending.
+    handle.rerender(chat("sp-b"));
+    await act(async () => {});
+    expect(chipLabel("picker-branch")).toBe("trunk");
+    expect(h.listRefsCalls).toEqual(["/repo/alpha", "/repo/beta"]);
+
+    // Alpha's rows resolve AFTER the switch — the unmounted chip's
+    // consumer is dropped (the cancel, pickers.rs:721-722): the old
+    // space's rows never leak into the new draft's labels, and no
+    // re-kick fires for beta.
+    h.deferredResolvers.get("/repo/alpha")!(h.refsByPath.get("/repo/alpha")!);
+    await act(async () => {});
+    expect(chipLabel("picker-branch")).toBe("trunk");
+    expect(chipLabel("picker-checkout")).toBe("Current checkout");
+    expect(h.listRefsCalls).toEqual(["/repo/alpha", "/repo/beta"]);
+    handle.unmount();
+  });
+
+  it("the eager load fires once under StrictMode's double effects", async () => {
+    const handle = await mountFooter(chat("sp-a"), { strict: true });
+    // The in-flight latch holds across setup-cleanup-setup — the stale
+    // `loading` closure would race a second ListRefs.
+    expect(h.listRefsCalls).toEqual(["/repo/alpha"]);
+    expect(chipLabel("picker-branch")).toBe("main");
+    handle.unmount();
+  });
+
   it("opening the popover revalidates refs without double-loading on mount", async () => {
     const handle = await mountFooter(chat("sp-a"));
     press(document.querySelector<HTMLElement>("#picker-branch")!);
     await act(async () => {});
-    // The open's force reload (pickers.rs:1310-1317) is the ONLY extra
+    // The open's force reload (pickers.rs:1298-1301) is the ONLY extra
     // call — the eager load ran exactly once for the space.
     expect(h.listRefsCalls.filter((repoPath) => repoPath === "/repo/alpha").length).toBe(2);
     handle.unmount();

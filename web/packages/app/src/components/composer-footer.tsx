@@ -676,21 +676,29 @@ export function RefChip({
     };
   }, []);
 
+  // The load's in-flight latch — a ref, not the `loading` state: the guard
+  // must hold across the state-commit boundary, or React's StrictMode
+  // double-effects (and any double kick before the loading paint) would
+  // race the stale closure and fire two RPCs. The desktop's `refs_task`
+  // slot is the analogue (pickers.rs:1531-1533).
+  const inFlightRef = useRef(false);
+
   const loadRefs = useCallback(
     async (force: boolean): Promise<void> => {
       if (session === null || repoPath === null) {
         return;
       }
-      if (refs.loading) {
-        return;
+      if (inFlightRef.current) {
+        return; // a load is already in flight (force never bypasses it)
       }
       // Non-forced (the eager kick) only loads from a clean slate: rows
       // present means this space is loaded, and an Error waits for the
-      // open's force or the retry row (pickers.rs:1538-1544 — re-renders
+      // open's force or the retry row (pickers.rs:1535-1542 — re-renders
       // must never flip Error back to Loading).
       if (!force && (refs.rows.length > 0 || refs.error !== null)) {
         return;
       }
+      inFlightRef.current = true;
       setRefs((current) => ({ ...current, loading: true, error: null }));
       try {
         const params: Record<string, unknown> = { repoPath };
@@ -710,9 +718,11 @@ export function RefChip({
         }
         setRefs({ rows: [], loading: false, error: error instanceof Error ? error.message : String(error) });
         onRefs([]);
+      } finally {
+        inFlightRef.current = false;
       }
     },
-    [session, repoPath, refs.loading, refs.rows.length, refs.error, targetDeviceId, onRefs],
+    [session, repoPath, refs.rows.length, refs.error, targetDeviceId, onRefs],
   );
 
   // The eager kick (ensure_refs(false), pickers.rs:1524-1567): one
@@ -798,7 +808,8 @@ export function RefChip({
         repoPath={repoPath}
         switching={switching}
         switchError={switchError}
-        picked={picked}
+        anchor={picked}
+        selectedName={draftBranch}
         onRetry={() => void loadRefs(true)}
         onPick={(row) => void pickRef(row)}
       />
@@ -813,7 +824,8 @@ function BranchCard({
   repoPath,
   switching,
   switchError,
-  picked,
+  anchor,
+  selectedName,
   onRetry,
   onPick,
 }: {
@@ -823,7 +835,10 @@ function BranchCard({
   readonly repoPath: string | null;
   readonly switching: string | null;
   readonly switchError: string | null;
-  readonly picked: string | null;
+  /** The cursor's landing row: the effective ref (the picked, else the current branch) — `selected_ref_index`, pickers.rs:2144-2158. */
+  readonly anchor: string | null;
+  /** The row marked selected: the draft pick ONLY ("current" gets the tag, never the selection wash) — pickers.rs:3633. */
+  readonly selectedName: string | null;
   readonly onRetry: () => void;
   readonly onPick: (row: RepoRef) => void;
 }) {
@@ -849,6 +864,12 @@ function BranchCard({
     },
   });
 
+  /** The anchor's index in the filtered list, capped to the window — Branch → the current ref's row, capped to 299 (toggle step 5). */
+  const anchorIndex = (): number => {
+    const target = anchor === null ? 0 : filtered.findIndex((row) => row.name === anchor);
+    return Math.min(target < 0 ? 0 : target, Math.max(0, MAX_REF_ROWS - 1));
+  };
+
   // The walk spans the CAPPED row count while the rendered list is the
   // FILTERED one, so this card keeps its own scroll effect — keyed on the
   // rendered length, not the walk count (the hook's `listRef` effect
@@ -861,13 +882,22 @@ function BranchCard({
   useEffect(() => {
     if (open) {
       setQuery("");
-      // Branch → the current ref's row, capped to 299 (toggle step 5).
-      const target = picked === null ? 0 : filtered.findIndex((row) => row.name === picked);
-      setCursor(Math.min(target < 0 ? 0 : target, Math.max(0, MAX_REF_ROWS - 1)));
+      setCursor(anchorIndex());
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Rows landed under an open, un-searched popover: re-home the nav
+  // highlight to the anchor row (pickers.rs:1578-1585) — the open effect
+  // ran while the list was still empty, and the late resolution must
+  // still land the cursor on the current branch.
+  useEffect(() => {
+    if (open && query === "" && refs.rows.length > 0) {
+      setCursor(anchorIndex());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refs.rows]);
 
   return (
     <div className="picker-key-frame" onKeyDown={onKeyDown}>
@@ -899,7 +929,7 @@ function BranchCard({
               fadeKey={row.name}
               data-ref-index={ix}
               highlighted={ix === cursor}
-              selected={picked === row.name}
+              selected={selectedName === row.name}
               onClick={() => onPick(row)}
             >
               <span className="menu-row-label">{row.name}</span>
