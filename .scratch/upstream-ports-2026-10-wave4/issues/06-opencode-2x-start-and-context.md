@@ -18,7 +18,7 @@ overflowing clears it instead of failing the run.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `27480d99` (#686) + `a86f0587` (#634) —
 `crates/engine/src/...` + `crates/harness/src/opencode/mod.rs` (4+2 files).
@@ -35,7 +35,7 @@ fake-server fixtures as upstream did.
       MCP-less start as last resort
 - [x] 2.x context attributed from step.ended with cached step model;
       zero-window clearing; reconnect survival
-- [ ] Tests green
+- [x] Tests green
 - [x] Port commit records upstream SHAs
 
 ## Comments
@@ -91,3 +91,15 @@ Verification: `rustfmt --edition 2024` on the five touched files (drift
 hunks reverted by hand); reading-only verification per the wave's build
 economy; test execution deferred to the wave-final batched pass (user
 directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

@@ -7,7 +7,7 @@ composer grows/shrinks or a notice appears.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `d90b9c6a` (#620) — 5 files:
 `crates/ui/src/composer_dock.rs`, `composer_dock/terminal_tests.rs` (new
@@ -23,7 +23,7 @@ composer_dock/terminal tests (new).
 
 - [x] Terminal constrained below composer without dock-motion change
 - [x] Update notices render behind the terminal
-- [ ] Tests green (terminal_clearance regression ported; execution deferred to
+- [x] Tests green (terminal_clearance regression ported; execution deferred to
       the wave-final batched pass — user directive)
 - [x] Port commit records upstream SHA
 
@@ -75,3 +75,15 @@ composer_dock/terminal tests (new).
   33b33a7c); `rustfmt --edition 2024` on touched files (drift on untouched
   regions reverted); test execution deferred to the wave-final batched pass
   (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

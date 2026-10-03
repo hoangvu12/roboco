@@ -6,7 +6,7 @@ across frames so slow wheel/trackpad scrolling stays smooth.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `e5be4822` (#615) — 1 file,
 `crates/ui/src/terminal/panel.rs`. Web: the web terminal
@@ -17,7 +17,7 @@ scroll — outcome already holds; record the check, fix only a real gap.
 terminal tests.
 
 - [x] Fractional deltas preserved across frames
-- [ ] Tests green (slow_trackpad_scroll_accumulates_per_terminal ported;
+- [x] Tests green (slow_trackpad_scroll_accumulates_per_terminal ported;
       execution deferred to the wave-final batched pass — user directive);
       web check recorded below
 - [x] Port commit records upstream SHA
@@ -54,3 +54,15 @@ terminal tests.
   `rustfmt --edition 2024 --check` on panel.rs (only the known pre-existing
   import-order drift on untouched lines, left alone). Test execution
   deferred to the wave-final batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

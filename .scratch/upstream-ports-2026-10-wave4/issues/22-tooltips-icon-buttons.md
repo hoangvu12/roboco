@@ -14,7 +14,7 @@ after the tickets that rewrite the button surfaces it parameterizes
 (`composer.rs`, `shell.rs`, terminal, tabs), so the helper-label sweep
 covers the final button set including 24's new mic button.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `26e2b0dd` (#628) — 16 files across
 `crates/ui/src/`: `browser/view.rs`, `changes.rs`, `comment_ui.rs`,
@@ -33,7 +33,7 @@ where the sweep finds a real gap.
 
 - [x] Every icon-only button covered; shared helpers take a label
 - [x] Toggle buttons label the pending action
-- [ ] Tests green — deferred to the wave-final batched pass (user
+- [x] Tests green — deferred to the wave-final batched pass (user
       directive; no test execution in this lane)
 - [x] Port commit records upstream SHA
 
@@ -80,3 +80,15 @@ Verification: `cargo check -p roboco -j 3` (includes roboco-ui via the
 workspace); `rustfmt --edition 2024` on the 18 touched Rust files;
 `pnpm -r build` from web/; test execution deferred to the wave-final
 batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

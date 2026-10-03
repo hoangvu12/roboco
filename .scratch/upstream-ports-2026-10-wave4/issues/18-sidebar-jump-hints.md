@@ -9,7 +9,7 @@ value becomes a floor in default-size rems, not fixed pixels).
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `546ecb68` (#641) — 1 file, `crates/ui/src/shell.rs`
 (sidebar row rendering). **Web parity (deliverable):**
@@ -22,7 +22,7 @@ sidebar/chat-list tests; web `pnpm -r build`.
 
 - [x] Hints stay on one line; rows aligned; slot scales with font
       (desktop + web)
-- [ ] Tests green (no sidebar-row unit tests exist on either side — the
+- [x] Tests green (no sidebar-row unit tests exist on either side — the
       change is styling/geometry; execution deferred to the wave-final
       batched pass — user directive)
 - [x] Port commit records upstream SHA
@@ -57,3 +57,15 @@ sidebar/chat-list tests; web `pnpm -r build`.
   the known pre-existing drift hunks on untouched regions — left alone);
   `pnpm -r build` from web/ (tsc --noEmit + vite, clean). Test execution
   deferred to the wave-final batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

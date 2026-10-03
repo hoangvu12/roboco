@@ -17,7 +17,7 @@ selects the full logical column span.
 **Blocked by:** 14 — both touch `composer.rs` (14 is the small one;
 question-panel pill lands before the selection gating).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `366b3c9e` (#632) — `markdown/render.rs`,
 `markdown/selection.rs`, `transcript.rs`; `92be0f26` (#556) —
@@ -33,7 +33,7 @@ forced parity.
 - [x] Per-surface registry: drag anchored in any transcript resolves
 - [x] Modal drag/copy isolation; wizard-borrowed composer keeps Copy
 - [x] Table-column selection spans correctly
-- [ ] Selection tests green (all ported; execution deferred to the
+- [x] Selection tests green (all ported; execution deferred to the
       wave-final batched pass — user directive)
 - [x] Port commit records upstream SHAs
 
@@ -91,3 +91,15 @@ forced parity.
   all pre-existing dead code on main; `pnpm -r build` from web/ green
   (tickets 11/19's web side). Test execution deferred to the wave-final
   batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

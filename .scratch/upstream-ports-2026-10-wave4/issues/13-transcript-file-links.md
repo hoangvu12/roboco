@@ -25,7 +25,7 @@ code-span/bare-path labels disambiguate same-named files within a part;
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `2a38baa4` (#606, 18 files) + `bc136867` (#633, 4
 files). Path map: upstream `crates/markdown/src/parser.rs` → our
@@ -57,7 +57,7 @@ targeted nextest workspace_files + ui link tests; `pnpm -r build` after
       unchanged for authored links (desktop; web labels `[](dest)` links —
       same-name disambiguation is inert there, it only feeds the
       inline-code rewriter web does not have)
-- [ ] Wire types regenerated; engine + ui tests green — types regenerated
+- [x] Wire types regenerated; engine + ui tests green — types regenerated
       and `cargo check -p roboco` green; test execution deferred to the
       wave-final batched pass (user directive)
 - [x] Web: out-of-folder links open read-only; unlabeled links show file
@@ -147,3 +147,15 @@ introduced into untouched mod children); `cargo check -p roboco -j 3`
 batched pass (user directive). One wiregen run failed earlier with a
 transient ENOSPC (concurrent lane build, disk since recovered); the retry
 succeeded — the second run stayed within the 2-run budget.
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

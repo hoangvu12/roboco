@@ -21,7 +21,7 @@ file drag-and-drop through the same shared dropzone.
 contracts. (Wave 3 shipped the file tree, side chats and explorer
 sections this builds on.)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `c72c66d8` (#514) — 26 files: `proto/src/entities.rs`
 (contracts), `engine/src/workspace_files.rs` +
@@ -59,7 +59,7 @@ suites; `pnpm -r build` after wiregen.
 - [x] Editor/preview/syntax refresh after rename; revisions after saves
 - [x] Wire types regenerated; web file tree gains actions + DnD moves
       against the fresh types; engine-client vitest extended
-- [ ] Tests green
+- [x] Tests green
 - [x] Port commit records upstream SHAs
 
 ## Comments
@@ -138,3 +138,15 @@ from `web/` (green); targeted vitest before deferral: app
 `tests/file-tree.test.ts` + `tests/files-client.test.ts` (51/51), full app
 suite (2108/2108), engine-client unit project (35/35). Test execution
 defers to the wave-final batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

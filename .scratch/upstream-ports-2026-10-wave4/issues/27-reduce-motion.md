@@ -18,7 +18,7 @@ portal D-Bus thread otherwise wakes deterministic test schedulers).
 **Blocked by:** 26 — both rewrite `settings/appearance.rs` (shuffle
 surfaces first, Motion section on top).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `54b49949` (#642) — 7 files: `ui/src/{lib,motion,
 settings,shell,transcript}.rs`, `settings/appearance.rs`, `ui/Cargo.toml`
@@ -40,7 +40,7 @@ stay clean — the portal read is app-only).
       and on focus regain
 - [x] Pause-in-background toggle (off by default)
 - [x] Streaming veil baseline under reduced motion
-- [ ] Tests green (deferred: written + ported, execution deferred to the
+- [x] Tests green (deferred: written + ported, execution deferred to the
       wave-final batched pass per the verification-economy directive; also
       excludes the D-Bus-wake check, which needs the Linux test run)
 - [x] Web: Motion pin row in settings-appearance overriding
@@ -80,3 +80,15 @@ stay clean — the portal read is app-only).
   the ticket's named deliverable.
 - Verification: `pnpm -r build` from web/ (clean); test execution deferred
   to the wave-final batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

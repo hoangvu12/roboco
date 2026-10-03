@@ -5,7 +5,7 @@ as separate palette results — only their parents do.
 
 **Blocked by:** None. (Side chats + child-chat concept shipped in wave 3.)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `c74978ab` (#651) — 1 file,
 `crates/ui/src/shell/command_palette.rs`. **Web parity (deliverable):**
@@ -17,7 +17,7 @@ proto field already exists on web.
 command_palette tests; web `pnpm -r build`.
 
 - [x] Child chats excluded from palette results (desktop + web)
-- [ ] Tests green (both desktop gpui tests and the web vitest ports written;
+- [x] Tests green (both desktop gpui tests and the web vitest ports written;
       execution deferred to the wave-final batched pass — user directive)
 - [x] Port commit records upstream SHA
 
@@ -47,3 +47,15 @@ command_palette tests; web `pnpm -r build`.
   `pnpm -r build` from web/ after all four tickets' web edits (one build
   per chunk); `cargo check -p roboco -j 3` at chunk end; test execution
   deferred to the wave-final batched pass (user directive).
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

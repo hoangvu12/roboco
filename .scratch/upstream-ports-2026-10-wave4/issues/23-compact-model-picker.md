@@ -18,7 +18,7 @@ compact picker browsing across providers).
 **Blocked by:** None. (Composer + pickers substrate shipped; the effort
 ladder and model context exist on both desktop and web.)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Upstream SHAs:** `a73fa8fe` (#471) — 27 files incl. new `crates/ui/src/pickers/compact.rs`, `glass.rs` (mapped onto our `frost.rs` — the plate helpers live there, no parallel module), `edge_fade.rs` `fade_scroll_x` + per-edge bands (zui 667d0aa — landed as prerequisite commit c3a46253: branch `roboco/edge-fade-bands`, pin `1e1da65`), icons (fast-tier-bold), haptics (macOS cfg-gated, compile-only), popover, settings/composer.rs, settings/shortcuts.rs, state.rs, shell.rs, shell/tabs.rs, `examples/compact-picker-fixture.rs` (feature `compact-picker-fixture`), plus screenshot docs (the `docs/screenshots/compact-picker/` artifacts are skipped). `ae4181f5` (#721) — `pickers.rs`, `pickers/compact.rs`, `shell.rs`. Drift additions, all desktop-only (`crates/ui`, no edge/): `c14d4579` (#744) — `pickers.rs` (26+/7-); `542febc1` (#745) — `pickers.rs` + `pickers/compact.rs` (22+/2-); `e94c49ad` (#749) — `pickers.rs` + `pickers/compact.rs` (38+/10-). Port them on top of the #471/#721 surfaces this ticket builds — they are fixes to the picker this ticket creates, not independent work. **Web parity (deliverable):** `web/packages/app/src/components/composer-pickers.tsx` + `lib/model-rows.ts` + `lib/picker-search.ts` — port the compact layout (effort slider + fast toggle on the picker surface, per-model effort memory persisted through `state/ui-settings.ts`/`lib/composer-draft.ts`, starred-first provider page). Page-scoped shortcuts map onto the web keymap.
 
@@ -39,7 +39,7 @@ pickers/compact + composer tests; `pnpm -r build` for web parity.
       toggle (#745), provider browsing fix (#749)
 - [x] Settings-survive-navigation regression test
 - [x] Edge fades follow the picked approach (zui check recorded)
-- [ ] Tests green (written + ported; execution deferred — see Comments)
+- [x] Tests green (written + ported; execution deferred — see Comments)
 - [x] Web: compact picker layout + effort memory + starred-first page
 - [x] Port commit records upstream SHAs
 
@@ -118,3 +118,15 @@ are `compact_panel_shortcuts_…`, `compact_panel_lists_…`,
 and the web suites'
 `compact model rows`, `per_model_effort_memory`, and the mounted
 compact-card describe block.
+
+- Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
+  batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
+  failure is the documented pre-existing
+  `previews::preview_watch_follows_the_session_checkout_and_owning_device`
+  baseline); harness 504/509 (the five failures are the documented
+  environmental `#!/usr/bin/python3` fixture shebang and uid-1001
+  user-database quirks; CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+  `wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+  build` green, app vitest 2122/2122, engine-client vitest green. The
+  deferred test-execution criterion is demonstrated; closed by the
+  wave-final pass.

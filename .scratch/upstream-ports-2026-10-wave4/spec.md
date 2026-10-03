@@ -1,6 +1,6 @@
 # Upstream ports 2026-10 wave 4: zeron v0.2.97 → v0.2.102 (9782693b)
 
-Status: ready-for-agent
+Status: ready-for-human
 
 **Drift addendum (2026-10-02 23:54 UTC):** the window closed at
 `9782693b`; a post-window drift review (`git fetch upstream` → `69e64ef5`,
@@ -273,3 +273,19 @@ live in `issues/` (01–31). Decisions resolved up front:
   voice activation); macOS packaging and voice CI.
 - Upstream's `docs/design/desktop-parakeet-v3.md` research voice: ticket 24
   ports `docs/reference/desktop-dictation.md` behavior notes only.
+
+## Completion record (2026-10-03)
+
+All 31 tickets integrated on `main` (engine lane + six parallel lanes +
+tooltips wrap-up, one commit per ticket plus zui-prerequisite and
+compile-fixup commits; every ticket `ready-for-human` with criteria
+demonstrated). Wave-final batched verification over merged main: ui lib
+1521/1521; engine 529/530 (only the documented pre-existing
+`previews::preview_watch…` baseline); harness 504/509 (only the documented
+environmental `#!/usr/bin/python3` fixture shebang + uid-1001 user-database
+quirks — CI runs them); mcp 26/26; voice 18/18; theme 31/31;
+`wiregen --check` and `roboco-theme-export --check` fresh; web `pnpm -r
+build` green; app vitest 2122/2122; engine-client vitest green. Cross-lane
+integration fixes landed in `cf94f415` (question-takeover draft stash,
+shortcut-model union, five test adaptations). Windows parity rides
+`windows.yml` as designed.
