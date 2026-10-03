@@ -487,6 +487,27 @@ export function AppearanceSettingsPage() {
           </div>
         </div>
         <div className="settings-row">
+          <RowTile icon="tuning" />
+          <div className="settings-row-main">
+            <span className="settings-row-title">Pause animations in background</span>
+            <MetaLine
+              fragments={[
+                // The desktop's copy, adapted to the tab (appearance.rs:3877-
+                // 3917): "Hold animations still while Roboco isn't the focused
+                // window." — the web's "window" is this tab's document.
+                "Hold animations still while this tab isn't focused.",
+              ]}
+            />
+          </div>
+          <RbSwitch
+            checked={settings.pauseAnimationsInBackground}
+            aria-label="Pause animations in background"
+            onCheckedChange={(checked) => {
+              uiSettings.updateImmediate({ pauseAnimationsInBackground: checked });
+            }}
+          />
+        </div>
+        <div className="settings-row">
           <RowTile icon="folderWithFiles" />
           <div className="settings-row-main">
             <span className="settings-row-title">Theme library</span>

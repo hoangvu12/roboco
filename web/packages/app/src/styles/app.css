@@ -2161,6 +2161,34 @@ a:focus-visible,
 }
 
 /*
+ * Ticket wpn-07's pause scope: with "Pause animations in background" on and
+ * the document unfocused (the monitor in lib/reduced-motion.ts), the root
+ * carries `data-animations-paused` and every PERSISTENT animation holds
+ * mid-phase — `animation-play-state: paused`, NOT `animation: none` (the
+ * reduced-motion snap above, which lands the cells on their dim rest state —
+ * a visible jump on refocus): a paused loop resumes exactly where it stopped.
+ * Scope: the infinite loops only — the gspin cells, the pulse loaders, the
+ * skeleton waves, the attachment loading/sending states, the tool shimmer.
+ * One-shot entrances/exits, the streaming veil, the caret blink and the
+ * new-thread canvas stay out (wpn-07 §2's explicit list).
+ */
+:root[data-animations-paused] .glyph-spinner-cell,
+:root[data-animations-paused] .mark-loader-cell,
+:root[data-animations-paused] .roboco-loader-cell,
+:root[data-animations-paused] .mono-spinner,
+:root[data-animations-paused] .skeleton-row,
+:root[data-animations-paused] .skeleton-menu-row,
+:root[data-animations-paused] .skeleton-bar,
+:root[data-animations-paused] .skeleton-block,
+:root[data-animations-paused] .skeleton-account-inner,
+:root[data-animations-paused] .tool-shimmer,
+:root[data-animations-paused] .user-attachments-thumb[data-state="loading"],
+:root[data-animations-paused] .user-attachments-thumb-sending,
+:root[data-animations-paused] .user-attachments-appshot[data-state="loading"] {
+  animation-play-state: paused;
+}
+
+/*
  * The roboco pulse (`ROBOCO_PULSE` = 2400ms, proto/motion.rs): the cosine
  * `pulse_opacity` 0.08→1 / `pulse_scale` 0.9→1 over each half cycle —
  * ease-in-out between the keyframes approximates the sine shape. Per-cell
