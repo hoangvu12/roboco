@@ -18,7 +18,7 @@ The victims, verified today:
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `../research.md` §3 (the full phone-sheet audit table — every
 other sheet arm is already full-width; do not re-audit them).
@@ -73,9 +73,36 @@ file and follow its idiom). Extend it:
 
 ## 4. Acceptance checklist
 
-- [ ] `.rb-drawer-card` frame rule carries `width: 100%` in the phone block
-- [ ] `.rb-drawer-card .compact-card` rule added; compact sheet spans width
-- [ ] Model picker standard + compact, and the sidebar section menu, render
+- [x] `.rb-drawer-card` frame rule carries `width: 100%` in the phone block
+- [x] `.rb-drawer-card .compact-card` rule added; compact sheet spans width
+- [x] Model picker standard + compact, and the sidebar section menu, render
       full-width sheets at ≤768px (manual phone-width check)
-- [ ] No other sheet arm changed (dialog/select/`+`-menu/palettes)
-- [ ] `responsive-surface.test.ts` pins both rules; full app suite green
+- [x] No other sheet arm changed (dialog/select/`+`-menu/palettes)
+- [x] `responsive-surface.test.ts` pins both rules; full app suite green
+
+## Comments
+
+**Verification evidence** (commit `6d453ad6`, branch
+`ticket/mp-01-phone-sheet-full-width`):
+
+- Both rules landed in the existing phone block per §2; pinned by two new
+  `phoneRules` contracts in `tests/responsive-surface.test.ts` (written
+  red-first: 2 failed before the CSS, 13/13 after).
+- The phone-width render criterion is demonstrated by the deterministic
+  cascade, not a live browser run (no browser may run on this machine):
+  `PickerCard`'s phone arm drops `width`/`style` (PickerCard.tsx),
+  `RbDrawerSheet` puts `cardClassName` on the fixed popup
+  (responsive-surface.tsx:169), the frame rule (0,1,0) is later in source
+  order than `.identity-card` (:4821) and `.section-menu-body` (:2743),
+  `.rb-drawer-card .compact-card` (0,2,0) beats `.compact-card`'s (0,1,0),
+  and no other `width`/`max-width` rule matches any sheet-riding class
+  (grep-verified) — with universal `box-sizing: border-box`, `width: 100%`
+  spans exactly as `left: 0; right: 0` did. Every link is deterministic
+  CSS semantics or source-verified structure.
+- No other arm changed: grep over every `cardClassName` in the app finds no
+  other width-carrying class; the frame term is a no-op for arms already
+  spanning via `left: 0; right: 0`.
+- Verification: `pnpm exec vitest run tests/responsive-surface.test.ts`
+  (13/13), the adjacent phone suites (33/33 across 4 files),
+  `pnpm exec tsc --noEmit` (clean), and the full app suite
+  `pnpm exec vitest run` (146 files, 2195 tests, all green).
