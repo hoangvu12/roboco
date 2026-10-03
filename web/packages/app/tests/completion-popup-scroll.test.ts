@@ -44,7 +44,8 @@ import type { CompletionToken } from "../src/lib/mentions";
 // ── jsdom gaps the mounted popups hit ──────────────────────────────────────
 // matchMedia (useResolvedAppearance / useIsPhone), ResizeObserver
 // (MenuScrollbar), scrollIntoView (the cursor scroll effect under test —
-// installed as a spy), rAF (the skeleton pulse / scrollbar priming).
+// installed as a recorder), rAF (defensive, the mounted-suite idiom's
+// standard stub — no mounted component here needs it yet).
 
 // The popups' import graph resolves the new-thread artwork at module scope
 // and prewarms its decode (appearance.ts `defaultPrewarm`) — jsdom's Image
@@ -288,8 +289,10 @@ describe("the mention popup's keyboard cursor scroll (wpn-05)", () => {
     const handle = mountMention(manyFiles(), 0);
     const list = handle.list()!;
     expect(list).not.toBeNull();
-    // The mount itself pins row 0 (the effect runs on mount, like every
-    // scroll-effect mount in the repo); the navigation steps are the test.
+    // The mount itself pins row 0 (the effect runs on mount, like the
+    // other prop-derived scroll effects — file-tree-panel.tsx:335-346,
+    // CursorList.tsx:144-152; a no-op for row 0 at scrollTop 0); the
+    // navigation steps are the test.
     scrollCalls.length = 0;
     handle.setActive(1);
     expectScrolledTo(list.children.item(1)!);
