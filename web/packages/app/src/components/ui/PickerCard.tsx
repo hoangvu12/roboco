@@ -101,8 +101,11 @@ export function PickerCard(props: PickerCardProps) {
   // following the caller's controlled `open` flag. `placement`, `gap`, and
   // `width` are ignored (the sheet spans the viewport), as are
   // `openOnHover`/`hoverDelayMs` (no hover layer to arm under a modal
-  // sheet) and `escapeFocusTarget`/`motionSpeed` (the sheet's modal
-  // contract: Base UI's default focus return, no popover exit window).
+  // sheet) and `motionSpeed` (no popover exit window).
+  // `escapeFocusTarget` DOES thread through (ticket 06): the sheet forwards
+  // it as the Drawer's close-time focus return, so phone Escape hands
+  // focus back to the composer textarea — the sheet's form of the popover
+  // arm's reason-aware `finalFocus` (pickers.rs:871-890).
   // The card body itself renders unchanged — the sheet replaces
   // placement, not the card's inner layout.
   const isPhone = useIsPhone();
@@ -115,6 +118,7 @@ export function PickerCard(props: PickerCardProps) {
         role={props.role}
         ariaLabel={props.ariaLabel}
         initialFocus={props.initialFocus}
+        escapeFocusTarget={props.escapeFocusTarget}
         cardClassName={props.cardClassName ?? "popover-card"}
         overlaySource={props.overlaySource}
         onKeyDown={props.onKeyDown}
