@@ -11,6 +11,7 @@ import { useWatchSnapshot } from "./hooks";
 import { useUiSettings } from "./ui-settings";
 import { echoStore } from "./transcript-store";
 import {
+  AGENT_UPDATES_TARGET,
   ConnectivityNotificationState,
   chatBannerTexts,
   connectivityBannerTexts,
@@ -165,12 +166,17 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
   const baselines = useRef(new Map<string, ReturnType<typeof sessionNotificationState>>());
   const connectivity = useRef(new ConnectivityNotificationState());
 
-  // Banner click routing (open_notified_chat, lib.rs:241-262): focus the
-  // window (the browser focuses the tab) then open the chat through the
-  // sidebar's own path — the chat route.
+  // Banner click routing (open_notification_target, lib.rs:271-290): focus
+  // the window (the browser focuses the tab) then open the banner's target —
+  // a chat through the chat route, the agent-update banner's reserved target
+  // through the agents settings page (`open_settings(Harnesses)`).
   useEffect(() => {
-    return onChatNotificationClick((chatId) => {
-      void navigate({ to: "/chat/$chatId", params: { chatId } });
+    return onChatNotificationClick((target) => {
+      if (target === AGENT_UPDATES_TARGET) {
+        void navigate({ to: "/settings/harnesses" });
+        return;
+      }
+      void navigate({ to: "/chat/$chatId", params: { chatId: target } });
     });
   }, [navigate]);
 

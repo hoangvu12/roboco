@@ -291,6 +291,15 @@ export function resetPermissionRequestState(): void {
 /** The chat id a banner's `data` payload carries (notify.rs `CHAT_ID_KEY`). */
 export const CHAT_ID_KEY = "chatId";
 
+/**
+ * Reserved banner target routed to Settings → Agents rather than a
+ * conversation (notify.rs `AGENT_UPDATES_TARGET`): chat ids are generated
+ * UUIDs, so this cannot collide with a real chat. The agent-update banner
+ * posts under it; the click router recognizes it and opens the agents
+ * settings page instead of a chat route.
+ */
+export const AGENT_UPDATES_TARGET = "__roboco_agent_updates__";
+
 type ChatClickHandler = (chatId: string) => void;
 
 let chatClickHandler: ChatClickHandler | null = null;

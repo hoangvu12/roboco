@@ -362,6 +362,13 @@ export interface UiSettings {
   readonly soundAttentionEnabled: boolean;
   readonly notificationsEnabled: boolean;
   readonly notificationsBackgroundOnly: boolean;
+  /**
+   * The agent-CLI update banner's own row (desktop
+   * `agent_update_notifications`, settings/notifications.rs:318-324): show a
+   * banner when monitored agent CLIs have updates. Default on, healed like
+   * its siblings — an absent or non-boolean value keeps the default.
+   */
+  readonly agentUpdateNotifications: boolean;
   readonly rightPaneWidth: number;
   /** The docked explorer column's width (tickets 22/23 parity). */
   readonly filesPanelWidth: number;
@@ -515,6 +522,7 @@ export function defaultUiSettings(): UiSettings {
     soundAttentionEnabled: true,
     notificationsEnabled: true,
     notificationsBackgroundOnly: true,
+    agentUpdateNotifications: true,
     rightPaneWidth: RIGHT_PANE_DEFAULT,
     filesPanelWidth: FILES_PANEL_DEFAULT,
     terminalHeight: TERMINAL_DEFAULT_HEIGHT,
@@ -902,6 +910,7 @@ export function healUiSettings(value: unknown): UiSettings {
     soundAttentionEnabled: bool(raw.soundAttentionEnabled, true),
     notificationsEnabled: bool(raw.notificationsEnabled, true),
     notificationsBackgroundOnly: bool(raw.notificationsBackgroundOnly, true),
+    agentUpdateNotifications: bool(raw.agentUpdateNotifications, true),
     // No persisted ceiling: the live drag clamps against the window, which is
     // unavailable while loading.
     rightPaneWidth: minOr(raw.rightPaneWidth, RIGHT_PANE_MIN, RIGHT_PANE_DEFAULT),

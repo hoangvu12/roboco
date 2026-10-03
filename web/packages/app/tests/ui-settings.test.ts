@@ -58,6 +58,7 @@ describe("defaults", () => {
     expect(settings.soundEnabled).toBe(true);
     expect(settings.notificationsEnabled).toBe(true);
     expect(settings.notificationsBackgroundOnly).toBe(true);
+    expect(settings.agentUpdateNotifications).toBe(true);
     expect(settings.sidebarOrganization).toBe("inOneList");
     expect(settings.sidebarSort).toBe("lastUpdated");
     // Upstream 78e9e6ae/ffaa3102's display toggles: compact defaults ON,
@@ -93,6 +94,12 @@ describe("defaults", () => {
 });
 
 describe("clamp", () => {
+  it("agentUpdateNotifications — heals like its siblings (junk keeps the default, a stored off stays off)", () => {
+    expect(storedWith({ agentUpdateNotifications: "nope" }).agentUpdateNotifications).toBe(true);
+    expect(storedWith({ agentUpdateNotifications: 1 }).agentUpdateNotifications).toBe(true);
+    expect(storedWith({ agentUpdateNotifications: false }).agentUpdateNotifications).toBe(false);
+  });
+
   it("sidebarWidth — clamps into [224, 400] and heals junk to 256", () => {
     expect(storedWith({ sidebarWidth: 50 }).sidebarWidth).toBe(224);
     expect(storedWith({ sidebarWidth: 9999 }).sidebarWidth).toBe(400);

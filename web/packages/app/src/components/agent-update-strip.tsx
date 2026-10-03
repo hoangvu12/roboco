@@ -4,6 +4,13 @@ import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import type { HarnessUpdateStatus } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { methods } from "@roboco/engine-client";
+import { uiSettings } from "../state/ui-settings";
+import { AGENT_UPDATES_TARGET, postBanner } from "../lib/notifications";
+import {
+  AgentUpdateWaves,
+  agentUpdateBannerEnabled,
+  agentUpdateBannerTexts,
+} from "../lib/agent-update-notifications";
 import { agentName, showsUpdateNotice } from "../lib/harnesses";
 
 /**
@@ -75,10 +82,20 @@ export function agentUpdateStripLabel(
  * wherever it mounts and the store re-attaches per client. The engine
  * replays the current status list on subscribe, so the strip appears the
  * moment a notice exists.
+ *
+ * The store is also a NOTIFICATION source (shell.rs:2193-2250, the web peer
+ * of the desktop's `on_state_changed` block): an update wave — an
+ * available-phase status whose wave key nobody has seen — debounces for a
+ * second (discoveries finish independently), then posts ONE aggregate
+ * banner through the existing notification path, gated by the master,
+ * background-only, and agent-update preferences, deduped by the wave key
+ * (versionless keys re-arm on a confirmed Current/Updated — the rules live
+ * in `lib/agent-update-notifications`).
  */
 class AgentUpdatesStore {
   #statuses: readonly HarnessUpdateStatus[] | null = null;
   #handle: WatchHandle | null = null;
+  #bannerTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #listeners = new Set<() => void>();
 
   subscribe(listener: () => void): () => void {
@@ -102,6 +119,7 @@ class AgentUpdatesStore {
       {
         onItem: (statuses) => {
           this.#statuses = statuses;
+          this.#considerBannerWave();
           for (const listener of this.#listeners) {
             listener();
           }
@@ -121,9 +139,51 @@ class AgentUpdatesStore {
       }
     }
   }
+
+  /**
+   * shell.rs:2204-2250: a fresh wave (unseen available keys) with no timer
+   * running schedules the one-second aggregate delivery — discoveries that
+   * finish independently collapse into ONE banner, and only the debounced
+   * read decides what that banner counts. The wave keys are marked seen
+   * here (not at detection), so a status landing during the debounce joins
+   * the same banner instead of being silently consumed.
+   */
+  #considerBannerWave(): void {
+    if (this.#bannerTimer !== null || this.#statuses === null) {
+      return;
+    }
+    if (waves.unseenKeys(this.#statuses).length === 0) {
+      return;
+    }
+    this.#bannerTimer = setTimeout(() => {
+      this.#bannerTimer = null;
+      const statuses = this.#statuses;
+      if (statuses === null) {
+        return;
+      }
+      const fresh = waves.unseenKeys(statuses);
+      if (fresh.length === 0) {
+        return;
+      }
+      waves.markSeen(fresh);
+      if (!agentUpdateBannerEnabled(uiSettings.getSnapshot(), document.hasFocus())) {
+        return;
+      }
+      const texts = agentUpdateBannerTexts(fresh.length);
+      postBanner(texts.title, texts.body, AGENT_UPDATES_TARGET);
+    }, BANNER_DEBOUNCE_MS);
+  }
 }
 
 export const agentUpdatesStore = new AgentUpdatesStore();
+
+/** The update waves this page load has already bannered (the desktop's
+ *  `harness_update_seen` shell field: dedupe for the viewport lifetime,
+ *  reset rules in `AgentUpdateWaves`). */
+const waves = new AgentUpdateWaves();
+
+/** The wave-debounce window (shell.rs:2211: one aggregate banner per wave). */
+const BANNER_DEBOUNCE_MS = 1_000;
 
 /** The strip's read of the engine's update lifecycle, as one value. */
 function useAgentUpdates(): readonly HarnessUpdateStatus[] | null {

@@ -6,12 +6,13 @@ import { requestNotificationPermission } from "../lib/notifications";
 
 /**
  * Notifications settings (desktop settings/notifications.rs parity): the
- * sound master + its three event rows, and the desktop-banner master + its
- * background-only row. Dependent rows render dimmed and inert while their
- * master is off (still named switches in the a11y tree, with the
- * "Unavailable while its parent setting is off" description); every flip
- * persists the COMPLETE set immediately — not a delta write. Ticket 30 owns
- * wiring these into actual chimes and banners.
+ * sound master + its three event rows, and the desktop-banner master with
+ * its background-only row and the agent-CLI update row (the agent-update
+ * banner's own mute, shell.rs:2193-2250's gate). Dependent rows render
+ * dimmed and inert while their master is off (still named switches in the
+ * a11y tree, with the "Unavailable while its parent setting is off"
+ * description); every flip persists the COMPLETE set immediately — not a
+ * delta write. Ticket 30 owns wiring these into actual chimes and banners.
  */
 
 interface NotificationRow {
