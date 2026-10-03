@@ -611,7 +611,7 @@ fn is_google_release_url(url: &str) -> bool {
             && url.host_str() == Some("dl.google.com")
             && url.port().is_none()
             && url.username().is_empty()
-            && url.password().is_empty()
+            && url.password().is_none_or(str::is_empty)
             && url.path().starts_with("/agy-extensions/releases/")
     })
 }
@@ -2972,7 +2972,6 @@ fn handle_server_request_live(
     session_id: &str,
 ) -> Vec<AgentEvent> {
     if params.get("sessionId").and_then(Value::as_str).is_some_and(|id| id != session_id) {
-    {
         client.respond(&id, json!({"outcome": {"outcome": "cancelled"}}));
         return Vec::new();
     }
@@ -3077,7 +3076,7 @@ async fn unless_sign_in_prompted<T>(
 fn noop_browser() -> Result<String, HarnessError> {
     unix_noop_browser(
         &[Path::new("/usr/bin/true"), Path::new("/bin/true")],
-        crate::adapter_install::adapters_root(),
+        crate::adapter_install::adapters_root().as_deref(),
     )
 }
 
