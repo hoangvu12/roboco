@@ -16,12 +16,22 @@
  * are doubled narrowly (exactly the rows the identity resolution reads),
  * and the router's navigate is a recording double. No JSX (createElement),
  * per-file jsdom pragma only.
+ *
+ * wpn-09 adds the OTHER AccountRow — the settings page's account row
+ * (routes/settings-accounts.tsx, exported for this suite like its
+ * LoginDialog sibling): the Forget affordance's port from the text danger
+ * button to the desktop's icon-only trash with the "Forget account"
+ * tooltip (accounts.rs:1147-1175). The page's imports widen the mock
+ * surface (fleet's registry exports, the session's useEngineSession,
+ * hooks' useNow) — never called on the row's path, only satisfied.
  */
 
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AgentAccount } from "@roboco/proto";
 import { AccountRow } from "../src/components/account-row";
+import { AccountRow as SettingsAccountRow } from "../src/routes/settings-accounts";
 import { PHONE_QUERY } from "../src/state/media";
 
 // ── Controllable doubles ──────────────────────────────────────────────────
@@ -80,20 +90,30 @@ const h = vi.hoisted(() => {
 
 vi.mock("../src/state/fleet", () => ({
   // Exactly what AccountRow reads: the active engine (the routing key) and
-  // the registry rows the label fallback resolves from.
+  // the registry rows the label fallback resolves from. The registry/store
+  // exports exist for settings-accounts' import graph
+  // (settings-engine-indicator) — the row suite never calls them.
   useFleet: () => ({ active: "local", engines: h.engines, configurationError: null }),
+  useFleetRegistry: () => ({ engines: h.engines }),
+  fleetStore: { setActive: () => {} },
 }));
 
 vi.mock("../src/state/session-provider", () => ({
   // The active engine's session — only `client.engineInfo.deviceId` is read
   // on this path; the real provider's notification machinery is unrelated
-  // to the clipping contract under test.
+  // to the clipping contract under test. `useEngineSession` exists for the
+  // settings page's import graph (its row mounts standalone below) — the
+  // page itself is never mounted here.
   useEngineSessions: () => new Map([["local", h.session]]),
+  useEngineSession: () => null,
 }));
 
 vi.mock("../src/state/hooks", () => ({
   // The device row the identity resolves from — a real snapshot's shape.
+  // `useNow` exists for the settings page's import graph; the row suite
+  // passes its own `now`.
   useWatchSnapshot: () => h.snapshot,
+  useNow: () => 0,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -173,6 +193,9 @@ interface MountedAccountRow {
 
 const mounted: Array<() => void> = [];
 
+/** The settings row's `onForget` presses — reset per test. */
+const settingsForgetCalls: AgentAccount[] = [];
+
 afterEach(() => {
   while (mounted.length > 0) {
     mounted.pop()!();
@@ -183,6 +206,7 @@ afterEach(() => {
   h.check.calls.length = 0;
   h.check.release = null;
   h.check.verdict = { kind: "resolve", status: { updateAvailable: false } };
+  settingsForgetCalls.length = 0;
 });
 
 function mountAccountRow(): MountedAccountRow {
@@ -469,5 +493,127 @@ describe("AccountRow — the check-for-updates row", () => {
     await act(async () => {
       h.settle();
     });
+  });
+});
+
+// ── The settings page's AccountRow: the Forget affordance (wpn-09) ─────────
+
+/**
+ * wpn-09: the desktop's icon-only Forget (accounts.rs:1147-1175) — a 14px
+ * trash at muted with the "Forget account" tooltip label, inactive rows
+ * only, disabled while the row is busy. The row mounts standalone with
+ * plain props (the page's `accountAction` seam is one `onForget` call).
+ */
+describe("AccountRow (settings) — the Forget affordance (wpn-09)", () => {
+  /** One inactive Claude account (accounts-view.test.ts's shape). */
+  function settingsAccount(fields: Partial<AgentAccount> = {}): AgentAccount {
+    return {
+      id: "a1",
+      harness: "claude-code",
+      email: "user@example.com",
+      planLabel: null,
+      active: false,
+      usageWindows: [],
+      switchable: true,
+      ...fields,
+    };
+  }
+
+  interface MountedSettingsRow {
+    readonly container: HTMLDivElement;
+    /** The Forget affordance, by its stable aria label. */
+    forget(): HTMLButtonElement;
+    unmount(): void;
+  }
+
+  function mountSettingsRow(account: AgentAccount, busy = false): MountedSettingsRow {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        createElement(SettingsAccountRow, {
+          account,
+          busy,
+          refreshing: false,
+          now: 0,
+          onSwitch: () => {},
+          onForget: () => {
+            settingsForgetCalls.push(account);
+          },
+        }),
+      );
+    });
+    const unmount = (): void => {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    };
+    mounted.push(unmount);
+    return {
+      container,
+      forget: () => {
+        const button = container.querySelector<HTMLButtonElement>("[aria-label='Forget account']");
+        if (button === null) {
+          throw new Error("the Forget affordance did not render");
+        }
+        return button;
+      },
+      unmount,
+    };
+  }
+
+  it("is the icon-only trash with the tooltip's label — the text button is gone", () => {
+    const handle = mountSettingsRow(settingsAccount());
+    const forget = handle.forget();
+    expect(forget.getAttribute("aria-label")).toBe("Forget account");
+    // The glyph is the whole affordance: a bare svg, no text.
+    expect(forget.querySelector("svg")).not.toBeNull();
+    expect(forget.textContent).toBe("");
+    // The old text danger button is gone.
+    expect(handle.container.querySelector(".btn-danger-ghost")).toBeNull();
+    expect(handle.container.textContent).not.toContain("Forget");
+    // Inactive-only (accounts.rs:1153): an active row carries no affordance.
+    handle.unmount();
+    const active = mountSettingsRow(settingsAccount({ active: true }));
+    expect(active.container.querySelector("[aria-label='Forget account']")).toBeNull();
+  });
+
+  it("shows the 'Forget account' tooltip label on hover", async () => {
+    const handle = mountSettingsRow(settingsAccount());
+    const forget = handle.forget();
+    // The jsdom hover recipe (base-tooltip.test.ts): a bubbling mouseenter
+    // resets the move gate, a bubbling mousemove arms the rest timer, then
+    // the rest window elapses and the label shows.
+    await act(async () => {
+      forget.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      forget.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const popup = document.querySelector<HTMLElement>(".rb-tooltip-popup");
+    expect(popup).not.toBeNull();
+    expect(popup!.textContent).toBe("Forget account");
+  });
+
+  it("busy disables the affordance and swallows the press", async () => {
+    const handle = mountSettingsRow(settingsAccount(), true);
+    const forget = handle.forget();
+    expect(forget.disabled).toBe(true);
+    await act(async () => {
+      forget.click();
+    });
+    expect(settingsForgetCalls).toHaveLength(0);
+  });
+
+  it("a press fires onForget for the row's account", async () => {
+    const account = settingsAccount();
+    const handle = mountSettingsRow(account);
+    await act(async () => {
+      handle.forget().click();
+    });
+    expect(settingsForgetCalls).toEqual([account]);
   });
 });

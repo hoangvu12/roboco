@@ -1,17 +1,26 @@
+import { Icon } from "@roboco/icons";
 import { RowTile } from "../components/settings-widgets";
+import {
+  RbSelect,
+  RbSelectItem,
+  RbSelectPopup,
+  RbSelectPortal,
+  RbSelectPositioner,
+  RbSelectTrigger,
+} from "../components/base/select";
 import { RbSwitch } from "../components/base/switch";
 import { uiSettings, useUiSettings } from "../state/ui-settings";
 
 /**
  * Files settings (desktop settings/files.rs parity): local preferences for
- * workspace-file editing — autosave and its delay pills, word wrap, and
+ * workspace-file editing — autosave and its delay dropdown, word wrap, and
  * show-all. Every control commits immediately through ticket 03's settings
  * store; the live-apply side (file surfaces reading the store) already
  * rides `useUiSettings` in the viewers. The editor font size moved to
  * Appearance when the code font became its own setting (upstream #374).
  */
 
-/** `DELAY_OPTIONS` (files.rs:8) — the autosave delay pills, in ms. */
+/** `DELAY_OPTIONS` (files.rs:8) — the autosave delay choices, in ms. */
 const DELAY_OPTIONS: readonly number[] = [300, 600, 900, 1_500, 3_000];
 
 function delayLabel(ms: number): string {
@@ -39,22 +48,17 @@ export function FilesSettingsPage() {
           />
         </div>
         {settings.filesAutosaveEnabled && (
-          <div className="settings-row settings-files-row settings-files-nosep settings-files-pills">
+          <div className="settings-row settings-files-row settings-files-nosep">
             <RowTile icon="folder" />
             <div className="settings-row-main">
               <span className="settings-row-title">Autosave delay</span>
               <span className="settings-row-meta">Save files after editing has been idle for this long.</span>
-              <div className="pill-row" role="radiogroup" aria-label="Autosave delay">
-                {DELAY_OPTIONS.map((ms) => (
-                  <Pill
-                    key={ms}
-                    label={delayLabel(ms)}
-                    selected={settings.filesAutosaveDelayMs === ms}
-                    onSelect={() => uiSettings.updateImmediate({ filesAutosaveDelayMs: ms })}
-                  />
-                ))}
-              </div>
             </div>
+            <DelaySelect
+              value={settings.filesAutosaveDelayMs}
+              ariaLabel="Autosave delay"
+              onCommit={(ms) => uiSettings.updateImmediate({ filesAutosaveDelayMs: ms })}
+            />
           </div>
         )}
         <div className="settings-row settings-files-row settings-files-nosep">
@@ -72,13 +76,13 @@ export function FilesSettingsPage() {
         <div className="settings-row">
           <RowTile icon="eye" />
           <div className="settings-row-main">
-            <span className="settings-row-title">Show all files</span>
+            <span className="settings-row-title">Show hidden and ignored files</span>
             <span className="settings-row-meta">Include hidden and ignored files in every file tree.</span>
           </div>
           <RbSwitch
             checked={settings.filesShowAll}
             onCheckedChange={() => uiSettings.updateImmediate({ filesShowAll: !settings.filesShowAll })}
-            aria-label="Show all files"
+            aria-label="Show hidden and ignored files"
           />
         </div>
       </section>
@@ -86,17 +90,44 @@ export function FilesSettingsPage() {
   );
 }
 
-/** One pill button (files.rs:73-107): 28px tall, 10px sides, radius 7. */
-function Pill(props: { readonly label: string; readonly selected: boolean; readonly onSelect: () => void }) {
+/**
+ * The autosave-delay dropdown (files.rs:88-112): the in-settings `RbSelect`
+ * precedent (settings-appearance's font pickers) at the desktop's 112px —
+ * the row's layout contract caps the trigger there (`.delay-trigger`).
+ */
+function DelaySelect(props: {
+  readonly value: number;
+  readonly ariaLabel: string;
+  readonly onCommit: (ms: number) => void;
+}) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={props.selected}
-      className={`pill ${props.selected ? "pill-selected" : ""}`}
-      onClick={props.onSelect}
+    <RbSelect<number>
+      value={props.value}
+      onValueChange={(next) => {
+        if (next !== null) {
+          props.onCommit(next);
+        }
+      }}
+      overlaySource="settings-files-autosave-delay"
     >
-      {props.label}
-    </button>
+      <RbSelectTrigger className="settings-select-trigger delay-trigger" aria-label={props.ariaLabel}>
+        <span className="settings-select-label">{delayLabel(props.value)}</span>
+        <Icon name="altArrowDown" size={14} className="settings-select-caret" />
+      </RbSelectTrigger>
+      <RbSelectPortal>
+        <RbSelectPositioner>
+          <RbSelectPopup className="popover-card settings-select-menu delay-menu">
+            {DELAY_OPTIONS.map((ms) => (
+              <RbSelectItem key={ms} value={ms} className="settings-select-item">
+                <span className="settings-select-item-label">{delayLabel(ms)}</span>
+                <span className="settings-select-check">
+                  {ms === props.value && <Icon name="check" size={14} />}
+                </span>
+              </RbSelectItem>
+            ))}
+          </RbSelectPopup>
+        </RbSelectPositioner>
+      </RbSelectPortal>
+    </RbSelect>
   );
 }

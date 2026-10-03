@@ -11824,6 +11824,34 @@ button.files-save-pill:hover {
   gap: 6px;
 }
 
+/* The icon-only Forget (accounts.rs:1147-1158): a 14px trash at muted,
+   rounded 6 with px 6/py 4 — hover lifts the wash (ink/6) and the color;
+   busy reads at half opacity like the desktop's disabled state. */
+.account-forget {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
+    color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
+}
+
+.account-forget:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+  color: var(--rb-text);
+}
+
+.account-forget:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Usage meters: label · bar · "NN% used" · reset. */
 .usage-list {
   margin-top: 6px;
@@ -12603,6 +12631,12 @@ button.files-save-pill:hover {
   width: 128px;
 }
 
+/* The autosave-delay trigger (files.rs:111 `.width(112.0)`): the row's
+   layout contract — the trigger must not grow past 112px. */
+.delay-trigger {
+  width: 112px;
+}
+
 .settings-select-label {
   flex: 1;
   min-width: 0;
@@ -12635,6 +12669,10 @@ button.files-save-pill:hover {
 
 .size-menu {
   width: 128px;
+}
+
+.delay-menu {
+  width: 112px;
 }
 
 .settings-select-menu[data-open] {
@@ -13702,54 +13740,11 @@ button.files-save-pill:hover {
 /* ── Files (settings/files.rs) ─────────────────────────────────────── */
 
 /* files.rs:146-300 gives the first four rows no separators; the LAST row
-   ("Show all files") is the only one carrying a top border. The classes
-   carry the `settings-files-` stem — the bare `files-row` name belongs to
-   the Files pane's tree rows (27px tall) and must not leak here. */
+   ("Show hidden and ignored files") is the only one carrying a top border.
+   The classes carry the `settings-files-` stem — the bare `files-row` name
+   belongs to the Files pane's tree rows (27px tall) and must not leak here. */
 .settings-files-nosep + .settings-files-nosep {
   border-top: none;
-}
-
-/* The pill rows sit under the copy, aligned with the tile (items_start). */
-.settings-files-pills {
-  align-items: flex-start;
-}
-
-/* The pill row (files.rs:197-204): mt 12, flex-wrap, 7px gaps. */
-.pill-row {
-  margin-top: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-/* One pill (files.rs:73-96): 28px tall, px 10, radius 7, 11.5px text;
-   active = accent border 70% + wash 11%; inactive = border + wash 2.5%,
-   hover wash 8%. */
-.pill {
-  height: 28px;
-  padding: 0 10px;
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--rb-border);
-  border-radius: 7px;
-  background: rgb(var(--rb-wash) / 0.025);
-  color: var(--rb-text-muted);
-  font-size: 11.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out),
-    border-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
-}
-
-.pill:not(.pill-selected):hover {
-  background: rgb(var(--rb-wash) / 0.08);
-}
-
-.pill-selected,
-.pill-selected:hover {
-  border-color: color-mix(in srgb, var(--rb-accent) 70%, transparent);
-  background: color-mix(in srgb, var(--rb-accent) 11%, transparent);
-  color: var(--rb-text);
 }
 
 /* ── Shortcuts (settings/shortcuts.rs) ─────────────────────────────── */
