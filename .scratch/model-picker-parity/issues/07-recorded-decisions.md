@@ -9,7 +9,7 @@ copied into the web code's own doc comments where the divergence lives.
 
 **Blocked by:** None.
 
-**Status:** needs-triage
+**Status:** done
 
 **Research:** `../research.md` §2 (the full divergence table).
 
@@ -47,6 +47,22 @@ copied into the web code's own doc comments where the divergence lives.
 
 ## Acceptance checklist
 
-- [ ] Each decision confirmed or overridden in `## Comments`
-- [ ] Confirmed decisions copied into the owning files' doc comments
-- [ ] `../research.md` §2 marked with the outcomes
+- [x] Each decision confirmed or overridden in `## Comments`
+- [x] Confirmed decisions copied into the owning files' doc comments
+- [x] `../research.md` §2 marked with the outcomes
+
+## Comments
+
+**2026-10-03 — maintainer triage: all five recommendations confirmed**
+("keep our" — the web shapes stand). Recordings landed:
+
+1. No-agents copy: divergence comment at the takeover site
+   (composer-pickers.tsx, the `model-no-agents-body` arm).
+2. Fixed 216 band: recorded-deviation note in
+   `lib/model-picker-geometry.ts`'s header (revisit only on
+   short-viewport overlap reports).
+3. Window keyboard listener: rationale already documented in-file
+   (composer-pickers.tsx:920, :1553) — verified, no edit needed.
+4. Search-scope docstring: no action (verified at parity).
+5. Chip width animation: deferral already recorded in ticket 03's
+   commit message and file.

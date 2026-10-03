@@ -453,6 +453,16 @@ function LinkChrome({
             aria-label="Link actions"
             style={{ width: LINK_MENU_WIDTH }}
           >
+            {/*
+             * Deliberately absent desktop rows (wpn-10, maintainer-
+             * confirmed exclusions): "Open with default app" / "Show in
+             * folder" (link_interaction.rs:443-458) — a browser cannot
+             * open/reveal OS windows, and an engine RPC would pop the file
+             * manager on the ENGINE's screen (wrong machine when remote);
+             * and the "Open links in Roboco" toggle row (:493-521) — the
+             * web has no embedded browser, so the setting would toggle
+             * nothing (a new tab is already the only destination).
+             */}
             <MenuRow
               fadeKey="md-link-open"
               onClick={() => {

@@ -6,6 +6,14 @@
  * Everywhere else the band is the fixed 216 and the card opens above-end.
  * Pure math only, so the placement/height computation stays unit-testable
  * in the node vitest environment.
+ *
+ * Recorded deviation (mp-07, maintainer-confirmed): the desktop sizes the
+ * band dynamically per open — `model_menu_budgets` (pickers.rs:5178-5203)
+ * splits a measured room (640 cap, above/below flip at a 180px floor)
+ * between the list and the tray, which resolves to exactly 216 with room
+ * to spare. The web pins that resting value (plus the new-chat clamp) and
+ * lets the tray scroll internally instead — revisit only if short-viewport
+ * overlap reports arrive.
  */
 
 import type { AnchorHelperId } from "../components/base/positioning";

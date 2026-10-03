@@ -7,7 +7,7 @@ implementation ticket (or an exclusion note in code) is filed.
 
 **Blocked by:** None.
 
-**Status:** needs-triage
+**Status:** done
 
 **Research:** `.scratch/web-parity-next/research.md` (wiring items 4-5,
 cosmetic 15).
@@ -62,9 +62,20 @@ parity checklist so future audits stop flagging it.
 
 ## Acceptance checklist
 
-- [ ] Decision 1 recorded (exclusion note in markdown.tsx's menu comment
+- [x] Decision 1 recorded (exclusion note in markdown.tsx's menu comment
       unless overridden)
-- [ ] Decision 2 recorded (same file, one line)
-- [ ] Decision 3 recorded as sanctioned
-- [ ] Follow-up tickets filed only where a decision overrides a
+- [x] Decision 2 recorded (same file, one line)
+- [x] Decision 3 recorded as sanctioned
+- [x] Follow-up tickets filed only where a decision overrides a
       recommendation
+
+## Comments
+
+**2026-10-03 — maintainer triage: all three recommendations confirmed.**
+Recordings landed as one comment block on the link menu
+(markdown.tsx, above the menu rows): the OS open/reveal exclusion
+(browser cannot; an engine RPC would be wrong-machine), the "Open links
+in Roboco" row exclusion (no embedded browser — a new tab is already the
+only destination), and the web-only terminal chip stays sanctioned (its
+in-file rationale at new-thread-selectors.tsx was already present —
+verified, no edit needed). No overrides, so no follow-up tickets.

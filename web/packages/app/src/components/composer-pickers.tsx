@@ -1107,6 +1107,10 @@ function IdentityCard(props: IdentityCardProps) {
               <Icon name="terminal" size={20} className="model-no-agents-icon" />
               <span className="model-no-agents-title">No agents available</span>
               <span className="model-no-agents-body">
+                {/* Deliberate divergence from the desktop's "Settings →
+                  Providers" (pickers.rs:3872-3875): the web's settings page
+                  is named Agents (picker-catalog.ts:9), so this copy stays
+                  navigation-accurate — maintainer-confirmed (mp-07). */}
                 Enable an installed agent in Settings → Agents, or install an agent CLI.
               </span>
             </div>
