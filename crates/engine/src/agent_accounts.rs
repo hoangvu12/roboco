@@ -4425,6 +4425,24 @@ mod tests {
         assert_eq!(ensure_noop_browser(root.path()), Some(path));
     }
 
+    /// The browser-suppression contract: handed a sign-in url exactly as
+    /// python's `webbrowser` would invoke it, the script exits successfully
+    /// without opening anything or printing a word (the antigravity server
+    /// hands it to `webbrowser` via `$BROWSER`).
+    #[cfg(unix)]
+    #[test]
+    fn noop_browser_swallows_the_sign_in_url_silently() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = ensure_noop_browser(root.path()).expect("script");
+        let output = std::process::Command::new(&path)
+            .arg("https://accounts.google.com/o/oauth2/auth?client_id=fake&state=test")
+            .output()
+            .expect("suppression process");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+
     #[test]
     fn urlencode_matches_encode_uri_component() {
         assert_eq!(

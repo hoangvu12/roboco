@@ -32,12 +32,76 @@ targeted nextest `-p roboco-harness acp` + fake-antigravity fixtures;
 windows cross-check for `windows_process.rs` stdio types (upstream noted
 import fixes).
 
-- [ ] Detection + registry-checked updates with pinned sha-512 and
+- [x] Detection + registry-checked updates with pinned sha-512 and
       windows signature verification
-- [ ] Newest trusted install launched; superseded versions pruned
-- [ ] Sign-in prompt stops probes/turns without retries; browser
+- [x] Newest trusted install launched; superseded versions pruned
+- [x] Sign-in prompt stops probes/turns without retries; browser
       suppressed via noop-browser
 - [ ] Fake-antigravity fixture tests green
-- [ ] Port commit records upstream SHA
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+**Port mapping (upstream d1dc29f6, #617):**
+
+- `antigravity_archive()` → new 1.2.1 pin (upstream URL shape
+  `agy-acp-server-1.2.1-*`, adds the darwin-x86_64 platform); the previous
+  1.1.1 pin moved to `antigravity_legacy_archive()` verbatim.
+- `code_signature.rs` created (google authenticode leaf on windows,
+  macOS cfg blocks carried verbatim per upstream — compile-gated, no macOS
+  ship; Linux stays digest-only). `Cargo.toml` windows-sys features
+  (`Win32_Security_Cryptography*`, `Win32_Security_WinTrust`,
+  `Win32_System_Diagnostics_ToolHelp`) follow upstream; ToolHelp is also
+  used by the windows `running_command_lines()` prune scan.
+- `archive_install.rs` → `Source`/`VerifiedRelease` refactor (digest optional
+  post-extraction verification, `install_verified`, `installed_versions`,
+  `installed_entry_with_marker`); `entry_path` removed as upstream.
+- `acp/mod.rs` → `Launch::Archive { entry }`, `installed_archive_entry`,
+  registry release parsing (`antigravity_release`, google-hosted-url
+  validation), `install_antigravity_release` (pinned digest → signature +
+  `confirm_reported_version`), newest-trusted-install launch resolution,
+  `prune_superseded_antigravity_installs`, sign-in prompt cancellation on
+  stdout (`with_stdout_observer`) and stderr watchers feeding
+  `CancellationToken` that stops `discover_commands`/`discover_models`/
+  chat turns (`unless_sign_in_prompted`, single errored Done). Antigravity
+  `executable_path`/`is_installed` resolve through the launch path now.
+- `catalog.rs` cooldown list gains "isn't signed in" so a stale-login probe
+  never retries into another prompt.
+- engine `harness_updates.rs` → `LatestSource::AntigravityAcp` (registry
+  manifest fetch, release memoized for apply), `UpdatePlan::AntigravityArchive`
+  guarded by `is_managed_antigravity_server`, build-label version parsing
+  (`antigravity_build_version`), `manual_update_command` (managed-but-
+  unpinable releases say "Update Roboco to install this release"), post-update
+  prune under the update lease, verification re-resolves the executable
+  (newest install after an archive update).
+- Rebrand: `zeron_harness::acp` → `roboco_harness::acp`, env/test vars
+  `ROBOCO_TEST_AGY_*`, `ROBOCO_ADAPTERS_DIR`, `ROBOCO_NO_LOGIN_SHELL`,
+  `ROBOCO_TEST_GOOGLE_SIGNED_DIR`, "update Zeron" → "update Roboco".
+
+**Deliberate deviations/exclusions:**
+
+- Upstream's `apps/zeron/src/main.rs` `--noop-browser` app mode +
+  `apps/zeron/tests/noop_browser.rs` are skipped (ticket): Roboco has no
+  such app CLI mode. The noop-browser fallback instead maps to our
+  engine-side `ensure_noop_browser` DESIGN — the harness writes the same
+  `#!/bin/sh\nexit 0` no-op script into its adapters state dir where no
+  `true` binary exists (unix). On windows (and other platforms)
+  `noop_browser()` returns an error and `spawn_agent` logs a warning:
+  the browser is not suppressed there, matching the engine's
+  `quiet_cli_browser` windows posture ("on Windows the CLI's own open can
+  never be suppressed"); the sign-in prompt watchers still stop probes and
+  turns, which is the correctness-critical half. The upstream app-binary
+  suppression assertion is carried into an engine-side test
+  (`noop_browser_swallows_the_sign_in_url_silently` in agent_accounts.rs).
+- Upstream's `windows_noop_browser` (app exe + `--noop-browser %s`, with
+  backslash doubling) and its quoting unit test are not ported — they exist
+  only to serve the skipped app mode.
+- Windows cross-check for `windows_process.rs` stdio types: recorded, not
+  run (no reliable cross-compile on this box; CI's windows.yml covers it).
+  The upstream-noted import fix (`use crate::process::{ChildStdin,
+  ChildStdout}`) is carried so the harness builds on windows.
+
+Verification: `rustfmt --edition 2024` over the touched files (reverted
+rustfmt's module recursion into untouched files); reading-only verification
+per the wave's build economy; test execution deferred to the wave-final
+batched pass (user directive).
