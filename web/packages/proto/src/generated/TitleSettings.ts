@@ -5,11 +5,11 @@ import type { HarnessId } from "./HarnessId";
 /**
  * Per-device automatic session title preferences.
  */
-export type TitleSettings = { 
+export type TitleSettings = {
 /**
  * None follows the session harness, using a supported installed fallback.
  */
-harness: HarnessId | null, 
+harness: HarnessId | null,
 /**
  * None selects the cheapest model offered by the selected harness.
  */

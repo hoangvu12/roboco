@@ -8,7 +8,7 @@ import type { SessionStatus } from "./SessionStatus";
  * Staleness-checked client-side against `updated_at` so a crashed backend never shows
  * an eternal "Working".
  */
-export type Session = { 
+export type Session = {
 /**
  * Last successfully completed assistant turn. Retained while the next turn
  * runs so coalesced status watches do not lose normal queue completions.

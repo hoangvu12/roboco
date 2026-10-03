@@ -160,6 +160,8 @@ import { AttachmentStrip } from "./attachments/attachment-strip";
 import { CommentsChip } from "./review-comments/comments-chip";
 import { MentionPopup } from "./composer/mention-popup";
 import { SlashPopup } from "./composer/slash-popup";
+import { commandSendsNow, configAuthority, configSlotLabel, nativeInvocationRows, nativeRunDraft, nativeWorking, receiptView, rowUnavailable } from "../lib/native";
+import { getNativeCatalog, sendNativeControl } from "../lib/native-actions";
 import { ComposerWizard } from "./composer/wizard";
 import { reviewCommentStore, useReviewComments } from "../state/review-comments";
 import { commentStripHeight, withComments } from "../lib/review-comments";
@@ -538,6 +540,25 @@ export function Composer({
     useCallback(() => transcript?.getSnapshot() ?? null, [transcript]),
     useCallback(() => transcript?.getSnapshot() ?? null, [transcript]),
   );
+  // A native (Mimir) chat: the host owns mode/model/reasoning and the questions.
+  const nativeState = transcriptSnapshot?.native ?? null;
+  const nativeStateRef = useRef(nativeState);
+  nativeStateRef.current = nativeState;
+  const nativeBusy = nativeState !== null && nativeWorking(nativeState);
+  const nativeBusyRef = useRef(nativeBusy);
+  nativeBusyRef.current = nativeBusy;
+  // Who decides this chat's next model and reasoning: the draft, the host's
+  // confirmed configuration, or nobody yet (an existing Mimir chat whose host
+  // state has not arrived since it was opened).
+  const nativeAuthority = configAuthority({
+    nativeChat: nativeState !== null || chat.config?.harness === "mimir",
+    fresh: chat.id === "" || isUnsavedSideChat(chat.id),
+    projected: transcriptSnapshot?.nativeProjected === true,
+    state: nativeState,
+  });
+  const nativeAuthorityRef = useRef(nativeAuthority);
+  nativeAuthorityRef.current = nativeAuthority;
+  const nativeSlotLabel = configSlotLabel(nativeAuthority);
 
   // Live status: the desktop's `run_live` is Working OR AwaitingInput.
   const statusRow = snapshot.statuses.rows.find((row) => row.chatId === chat.id);
@@ -1683,6 +1704,36 @@ export function Composer({
           const request = slashRequestRef.current;
           setSlash((current) => ({ ...current, loading: true }));
           refilterSlashFor(slashTokenNow.query);
+          if (harness === "mimir" && chat.id !== "") {
+            // The host's own catalog for this chat's conversation, identities preserved.
+            void getNativeCatalog(session.client, chat.id)
+              .then((catalog) => {
+                if (slashRequestRef.current !== request || slashRef.current.context !== context) {
+                  return;
+                }
+                const rows = nativeInvocationRows(catalog).filter(
+                  (row) =>
+                    (trigger.includeSkills || row.invocation.kind === "command") &&
+                    (trigger.skill ? row.invocation.kind === "skill" : trigger.commandsAllowed || row.invocation.kind === "skill"),
+                );
+                slashCacheRef.current.set(context, rows);
+                setSlash((current) => ({ ...current, loading: false, supported: true, error: null }));
+                refilterSlashFor(slashTokenNow.query);
+              })
+              .catch((error: unknown) => {
+                if (slashRequestRef.current !== request || slashRef.current.context !== context) {
+                  return;
+                }
+                slashCacheRef.current.delete(context);
+                setSlash((current) => ({
+                  ...current,
+                  loading: false,
+                  error: slashErrorMessage(rpcErrorKind(error), trigger.skill),
+                }));
+                refilterSlashFor(slashTokenNow.query);
+              });
+            return;
+          }
           const fetchCatalog = async (): Promise<{
             commands: { ok: true; value: readonly SlashCommand[] } | { ok: false; kind: RpcErrorKind };
             skills: { ok: true; value: readonly Skill[] | null } | { ok: false; kind: RpcErrorKind };
@@ -1915,7 +1966,7 @@ export function Composer({
         commandIx === undefined
           ? undefined
           : slashCacheRef.current.get(state.context)?.[commandIx];
-      if (row === undefined) {
+      if (row === undefined || rowUnavailable(row, nativeBusyRef.current) !== null) {
         return;
       }
       const replacement = invocationInsertion(row.invocation, referenceDeliverySupported());
@@ -2258,6 +2309,11 @@ export function Composer({
     if (editingMessage !== null && editingMessage !== undefined) {
       return;
     }
+    // A native question is answered from the dock with its full option detail,
+    // freeform and none-of-above; the legacy wizard would drop all three.
+    if (nativeStateRef.current !== null) {
+      return;
+    }
     const entries = transcriptSnapshot?.entries ?? [];
     const pending = pendingInputRequest(entries);
     const answered = answeredRef.current;
@@ -2366,7 +2422,17 @@ export function Composer({
       return;
     }
     try {
-      await sendInterrupt(session.client, chat.id);
+      const active = nativeStateRef.current?.activeRequest ?? null;
+      if (active !== null) {
+        const receipt = await sendNativeControl(session.client, chat.id, { control: "cancelRequest", requestId: active }, { onReceipt: () => undefined });
+        const view = receiptView(receipt);
+        if (view.attention) {
+          interruptingRef.current.delete(chat.id);
+          setFailure({ message: `Stop: ${view.text}`, key: chat.id });
+        }
+      } else {
+        await sendInterrupt(session.client, chat.id);
+      }
     } catch (error) {
       interruptingRef.current.delete(chat.id);
       setFailure({ message: `Stop failed: ${describeSendError(error)}`, key: chat.id });
@@ -2572,7 +2638,9 @@ export function Composer({
           const sendResult = await sendRun(
             session.client,
             chatId,
-            draft,
+            // A host-configured native chat keeps its confirmed model and reasoning;
+            // stale per-chat draft values must not reconfigure it.
+            nativeRunDraft(draft, nativeAuthorityRef.current),
             trimmed,
             sendCwd,
             { mintMessageId: () => messageId },
@@ -2723,14 +2791,24 @@ export function Composer({
         // LOADED catalog that reports no agents — offline/loading must not
         // block.
         newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
+        nativeAwaitingHost: nativeAuthority.kind === "awaitingHost",
       })
     ) {
       // A blocked send is a no-op — no failure, no wire call
       // (composer.rs:6002, `_ if self.send_blocked(cx) => {}`).
       return;
     }
-    await send(text, mode === "queue");
-  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit]);
+    // A host command typed while Mimir works goes now: the engine routes it
+    // into the running request. Only an idle-only one waits in the queue.
+    const commandNow =
+      nativeStateRef.current !== null &&
+      commandSendsNow(text, (name) =>
+        [...slashCacheRef.current.values()].some((rows) =>
+          rows.some((row) => row.idleOnly === true && row.name === name && row.invocation.kind === "command"),
+        ),
+      );
+    await send(text, mode === "queue" && !commandNow);
+  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit, nativeAuthority.kind]);
 
   // ── Key policy: completions → phone newline → wizard → Enter (§2.7) ────
   // `resolveEnterAction` (lib/composer-send.ts) is the Enter branch's single
@@ -3072,6 +3150,7 @@ export function Composer({
       requestTargetDisconnected: session.client.state !== "connected",
       reviewCommentFlushPending: false,
       newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
+      nativeAwaitingHost: nativeAuthority.kind === "awaitingHost",
     });
 
   // ── The queue-degraded caption (§2.3) ───────────────────────────────────
@@ -3457,17 +3536,23 @@ export function Composer({
                       feeds `model_travel` (the desktop's `model_bounds`
                       canvas). The card's new-chat placement is ticket 04's.
                     */}
-                    <ComposerPickers
-                      catalog={catalog}
-                      draft={draft}
-                      chatConfig={chat.config}
-                      sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
-                      newChat={newChat}
-                      onDraft={applyDraft}
-                      onPersist={persistDraft}
-                      escapeFocusTarget={() => textareaRef.current}
-                      onOpenChange={setPickersOpen}
-                    />
+                    {nativeSlotLabel !== null ? (
+                      <span className="composer-native-config" data-testid="composer-native-config" title="Set from the Mimir panel">
+                        {nativeSlotLabel}
+                      </span>
+                    ) : (
+                      <ComposerPickers
+                        catalog={catalog}
+                        draft={draft}
+                        chatConfig={chat.config}
+                        sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
+                        newChat={newChat}
+                        onDraft={applyDraft}
+                        onPersist={persistDraft}
+                        escapeFocusTarget={() => textareaRef.current}
+                        onOpenChange={setPickersOpen}
+                      />
+                    )}
                   </div>
                   {/*
                     A 28px filled circle — up-arrow to send or queue, a dark
@@ -3536,6 +3621,7 @@ export function Composer({
                 skill={slash.skill}
                 supported={slash.supported}
                 separateFromSlash={completionPreferences.separateFromSlash}
+                busy={nativeBusy}
                 onAccept={(rowIx) => {
                   setSlash((current) => (current.active === rowIx ? current : { ...current, active: rowIx }));
                   acceptSlash(rowIx);

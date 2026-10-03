@@ -241,6 +241,28 @@ pub enum FinishQueueEditOutcome {
     Missing,
 }
 
+/// How a [`ToolBlobWindow`]'s `text` carries the blob's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolBlobEncoding {
+    /// The blob is UTF-8; windows end on character boundaries.
+    Utf8,
+    /// The blob is not UTF-8; `text` is base64 of the window's raw bytes.
+    Base64,
+}
+
+/// One window of a stored tool blob (`FetchToolBlob` with an offset).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolBlobWindow {
+    pub encoding: ToolBlobEncoding,
+    pub text: String,
+    pub offset: u64,
+    pub total_bytes: u64,
+    /// Where the next window starts; absent at the end.
+    pub next_offset: Option<u64>,
+}
+
 /// Content and its historical presentation cutoff travel atomically, even
 /// when the watch coalesces several backfill and live commits.
 #[derive(Clone, Default)]
@@ -989,6 +1011,19 @@ impl DocHost {
         }
     }
 
+    /// Read a command's durable status without dispatching or retrying it.
+    pub fn command(
+        &self,
+        chat_id: &str,
+        command_id: &str,
+    ) -> Result<Option<SessionCommandEntry>, EngineError> {
+        Ok(self
+            .open(chat_id)?
+            .doc
+            .read_commands()?
+            .into_iter()
+            .find(|command| command.id == command_id))
+    }
     /// Composer path: append an immutable pending command entry (rule 1). Durable by
     /// construction — the change subscription kicks the drain, so a local host executes
     /// immediately and an offline doc simply holds the entry until it syncs.
@@ -1032,6 +1067,7 @@ impl DocHost {
             expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
             status: SessionCommandStatus::Pending,
             resolution: None,
+            outcome: None,
         };
         handle.doc.queue_command(&entry)?;
         // Sending a message revives an archived chat: the user is acting in it
@@ -1763,6 +1799,10 @@ impl DocHost {
                 .await?
             {
                 SteerOutcome::Accepted => return Ok(()),
+                // The host decided (or its answer was lost); the transcript
+                // shows the message with that delivery, and it is never sent
+                // again from the queue.
+                SteerOutcome::Refused(_) | SteerOutcome::Unknown(_) => return Ok(()),
                 SteerOutcome::DeferredByUpdate => {
                     return Err(EngineError::Other(
                         "agent update pending; the message remains queued".into(),
@@ -1898,6 +1938,7 @@ impl DocHost {
                 expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
                 status: SessionCommandStatus::Pending,
                 resolution: None,
+                outcome: None,
             };
             tracing::info!(chat = %chat_id, old = %old.id, new = %reissue.id,
                 "retry re-issues a dead send attempt");
@@ -1999,6 +2040,71 @@ impl DocHost {
         }
     }
 
+    /// Keep a native tool detail, output or display payload on this engine.
+    pub fn store_native_blob(&self, chat_id: &str, name: &str, bytes: &[u8]) {
+        if let Err(err) = self
+            .inner
+            .store
+            .save_snapshot(&format!("blob/{chat_id}/{name}"), bytes)
+        {
+            tracing::warn!(%err, "native blob save failed");
+        }
+    }
+
+    pub fn load_native_blob(&self, blob_ref: &str) -> Option<Vec<u8>> {
+        self.inner
+            .store
+            .load_snapshot(&format!("blob/{blob_ref}"))
+            .ok()
+            .flatten()
+    }
+
+    /// A window of a stored blob, so a 10 MiB tool result never needs one
+    /// 10 MiB reply. UTF-8 blobs window on character boundaries; any other
+    /// blob windows on bytes and travels as base64.
+    pub async fn fetch_tool_blob_range(
+        &self,
+        blob_ref: &str,
+        offset: usize,
+        max_bytes: usize,
+    ) -> Result<ToolBlobWindow, EngineError> {
+        let bytes = self
+            .inner
+            .store
+            .load_snapshot(&format!("blob/{blob_ref}"))?
+            .ok_or_else(|| EngineError::Other("tool output is not stored on this engine".into()))?;
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            use base64::Engine as _;
+            if offset > bytes.len() {
+                return Err(EngineError::Other("offset is past the end".into()));
+            }
+            let end = offset.saturating_add(max_bytes.max(1)).min(bytes.len());
+            return Ok(ToolBlobWindow {
+                encoding: ToolBlobEncoding::Base64,
+                text: base64::engine::general_purpose::STANDARD.encode(&bytes[offset..end]),
+                offset: offset as u64,
+                total_bytes: bytes.len() as u64,
+                next_offset: (end < bytes.len()).then_some(end as u64),
+            });
+        };
+        if offset > text.len() || !text.is_char_boundary(offset) {
+            return Err(EngineError::Other(
+                "offset is not a character boundary".into(),
+            ));
+        }
+        let mut end = offset.saturating_add(max_bytes.max(4)).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(ToolBlobWindow {
+            encoding: ToolBlobEncoding::Utf8,
+            text: text[offset..end].to_owned(),
+            offset: offset as u64,
+            total_bytes: text.len() as u64,
+            next_offset: (end < text.len()).then_some(end as u64),
+        })
+    }
+
     pub async fn fetch_tool_blob(&self, blob_ref: &str) -> Result<String, EngineError> {
         let bytes = self
             .inner
@@ -2067,6 +2173,21 @@ impl DocHost {
                     && is_processed(&c.id)
                     && !lock(&self.inner.executing).contains(&c.id)
                 {
+                    // A native host may already hold what this command sent:
+                    // its effect is unknown, and only the chat's own delivery
+                    // state (reconciled by key on reattach) can settle it.
+                    if self.harness_for(&handle.chat_id) == HarnessId::Mimir {
+                        tracing::warn!(chat = %handle.chat_id, command = %c.id,
+                            "command consumed but never resolved (crash mid-execute?); effect unknown");
+                        self.resolve_command(
+                            handle,
+                            &c.id,
+                            SessionCommandStatus::Unknown,
+                            Some("the engine stopped before Mimir confirmed this"),
+                        );
+                        skipped.insert(c.id.clone());
+                        continue;
+                    }
                     tracing::warn!(chat = %handle.chat_id, command = %c.id,
                         "command consumed but never resolved (crash mid-execute?); rejecting");
                     self.resolve_command(
@@ -2157,6 +2278,36 @@ impl DocHost {
                     self.resolve_command(handle, &entry.id, SessionCommandStatus::Superseded, None);
                 }
                 CommandDisposition::Execute => {
+                    if let Some(control) = self.native_control_for(&handle.chat_id, &entry.payload)
+                    {
+                        let outcome = match sessions.native_control(&handle.chat_id, control).await
+                        {
+                            Ok(outcome) => outcome,
+                            Err(err) => roboco_proto::NativeControlOutcome::Refused {
+                                kind: roboco_proto::NativeErrorKind::Failed,
+                                message: err.to_string(),
+                            },
+                        };
+                        let (status, resolution) = match &outcome {
+                            roboco_proto::NativeControlOutcome::Refused { message, .. } => {
+                                (SessionCommandStatus::Rejected, Some(message.clone()))
+                            }
+                            roboco_proto::NativeControlOutcome::Unknown { message } => {
+                                (SessionCommandStatus::Unknown, Some(message.clone()))
+                            }
+                            _ => (SessionCommandStatus::Applied, None),
+                        };
+                        if let Err(err) = handle.doc.set_command_outcome(
+                            &entry.id,
+                            status,
+                            resolution.as_deref(),
+                            Some(&outcome),
+                        ) {
+                            tracing::warn!(chat = %handle.chat_id, command = %entry.id, error = %err, "native control outcome write failed");
+                        }
+                        lock(&self.inner.executing).remove(&entry.id);
+                        continue;
+                    }
                     let (status, resolution) = match self.execute(&sessions, handle, &entry).await {
                         Ok(outcome) => outcome,
                         Err(err) => (SessionCommandStatus::Rejected, Some(err.to_string())),
@@ -2299,6 +2450,38 @@ impl DocHost {
         out
     }
 
+    /// The typed control a command carries for the native path: its own, or
+    /// a Mimir chat's answer, which is answered exactly or not at all and
+    /// never becomes a prompt. Its outcome lands in the ledger as it is, so a
+    /// lost reply stays unknown and only the host's refusal rejects.
+    fn native_control_for(
+        &self,
+        chat_id: &str,
+        payload: &SessionCommandPayload,
+    ) -> Option<roboco_proto::NativeControl> {
+        match payload {
+            SessionCommandPayload::Native { control } => Some(control.clone()),
+            SessionCommandPayload::RespondInput {
+                request_id,
+                answers,
+            } if self.harness_for(chat_id) == HarnessId::Mimir => {
+                Some(roboco_proto::NativeControl::Answer {
+                    request_id: request_id.clone(),
+                    answers: answers
+                        .iter()
+                        .map(|a| roboco_proto::NativeAnswer {
+                            question_id: a.question_id.clone(),
+                            selected_options: a.labels.clone(),
+                            freeform_text: None,
+                            none_of_above: false,
+                        })
+                        .collect(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Host-only outcome write (ledger rule 2).
     fn resolve_command(
         &self,
@@ -2426,6 +2609,9 @@ impl DocHost {
                 // thaws a queue frozen by Cancel. Clear only after dispatch
                 // succeeds so a failed send cannot silently unfreeze it.
                 handle.queue_paused.store(false, Ordering::Release);
+                if let Some(unknown) = native_unknown(sessions, chat_id, Some(message_id)) {
+                    return Ok(unknown);
+                }
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
@@ -2441,6 +2627,9 @@ impl DocHost {
             SessionCommandPayload::Interrupt {} => {
                 self.interrupt_and_pause_queue(sessions, handle).await?;
                 Ok((SessionCommandStatus::Applied, None))
+            }
+            SessionCommandPayload::Native { .. } => {
+                unreachable!("native controls resolve through execute_native")
             }
             SessionCommandPayload::RespondInput {
                 request_id,
@@ -2557,6 +2746,8 @@ impl DocHost {
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
+            SteerOutcome::Refused(message) => Ok((SessionCommandStatus::Rejected, Some(message))),
+            SteerOutcome::Unknown(message) => Ok((SessionCommandStatus::Unknown, Some(message))),
             SteerOutcome::NotSteerable => {
                 if let Some(message_id) = message_id.as_deref() {
                     handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;
@@ -2576,9 +2767,18 @@ impl DocHost {
                 // images; this prompt's own refs (if any) ride its text.
                 request.attachments = Vec::new();
                 let harness = self.harness_for_request(chat_id, &request);
-                self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
-                    .await?;
+                self.dispatch_with_source_context(
+                    sessions,
+                    chat_id,
+                    harness,
+                    request,
+                    message_id.clone(),
+                )
+                .await?;
                 handle.queue_paused.store(false, Ordering::Release);
+                if let Some(unknown) = native_unknown(sessions, chat_id, message_id.as_deref()) {
+                    return Ok(unknown);
+                }
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("queued as new turn".into()),
@@ -2910,12 +3110,68 @@ impl DocHost {
         }
     }
 
+    /// Persist this chat's doc now, reporting failure: the barrier before a
+    /// native send, so a restart finds the mapping and the pending message.
+    pub(crate) fn persist_chat(&self, chat_id: &str) -> Result<(), EngineError> {
+        let handle = self.open(chat_id)?;
+        match &handle.persistence {
+            Some(persistence) => persistence.flush_checked().map_err(EngineError::Other),
+            None => self.persist_fork(&handle),
+        }
+    }
+
+    /// What the user sent to a native conversation, kept engine-local (never
+    /// synced) until the host's answer settles it.
+    pub(crate) fn save_native_intent(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), EngineError> {
+        Ok(self
+            .inner
+            .store
+            .save_snapshot(&format!("intent/{chat_id}/{message_id}"), bytes)?)
+    }
+
+    pub(crate) fn load_native_intent(&self, chat_id: &str, message_id: &str) -> Option<Vec<u8>> {
+        self.inner
+            .store
+            .load_snapshot(&format!("intent/{chat_id}/{message_id}"))
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn forget_native_intent(&self, chat_id: &str, message_id: &str) {
+        if let Err(err) = self
+            .inner
+            .store
+            .delete_snapshot(&format!("intent/{chat_id}/{message_id}"))
+        {
+            tracing::warn!(chat = %chat_id, %err, "native intent delete failed");
+        }
+    }
+
     /// Persist every open doc now (shutdown path; bypasses the debounce).
     pub fn flush_all(&self) {
         let handles: Vec<_> = lock(&self.inner.handles).values().cloned().collect();
         for handle in handles {
             self.save_snapshot(&handle);
         }
+    }
+}
+
+/// A native send whose host answer was lost settles its command as unknown.
+fn native_unknown(
+    sessions: &SessionsEngine,
+    chat_id: &str,
+    message_id: Option<&str>,
+) -> Option<(SessionCommandStatus, Option<String>)> {
+    match sessions.native_delivery(chat_id, message_id?)? {
+        roboco_proto::NativeDelivery::Unknown { message } => {
+            Some((SessionCommandStatus::Unknown, Some(message)))
+        }
+        _ => None,
     }
 }
 
@@ -3144,5 +3400,52 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                 host.evict_over_budget();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_blob_tests {
+    use super::{DocHost, DocHostConfig, ToolBlobEncoding};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn blob_windows_carry_text_as_text_and_other_bytes_as_base64() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store,
+            DocHostConfig {
+                device_id: "device-a".into(),
+                default_harness: roboco_proto::HarnessId::Mock,
+            },
+        );
+        host.store_native_blob("chat", "text", "aé☃".as_bytes());
+        let window = host.fetch_tool_blob_range("chat/text", 0, 4).await.unwrap();
+        assert_eq!(window.encoding, ToolBlobEncoding::Utf8);
+        assert_eq!((window.text.as_str(), window.next_offset), ("aé", Some(3)));
+
+        let binary = [0xff_u8, 0x00, 0xfe, 0x41, 0x80];
+        host.store_native_blob("chat", "binary", &binary);
+        let mut rebuilt = Vec::new();
+        let mut offset = 0;
+        loop {
+            let window = host
+                .fetch_tool_blob_range("chat/binary", offset, 2)
+                .await
+                .unwrap();
+            assert_eq!(window.encoding, ToolBlobEncoding::Base64);
+            assert_eq!(window.total_bytes, 5);
+            rebuilt.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&window.text)
+                    .unwrap(),
+            );
+            match window.next_offset {
+                Some(next) => offset = next as usize,
+                None => break,
+            }
+        }
+        assert_eq!(rebuilt, binary);
     }
 }

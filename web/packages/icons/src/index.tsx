@@ -71,6 +71,7 @@ export type HarnessId =
   | "pi"
   | "opencode"
   | "antigravity"
+  | "mimir"
   | "mock";
 
 /**

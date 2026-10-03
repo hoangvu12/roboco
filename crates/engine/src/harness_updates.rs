@@ -275,6 +275,13 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "Update the configured Antigravity ACP server",
         },
+        // Mimir CLI and bridge plugin updates stay with Mimir's own tooling.
+        HarnessId::Mimir => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Manual,
+            update_args: None,
+            manual_command: "Update Mimir with its installer, then reinstall the matching sh.roboco.bridge package",
+        },
         HarnessId::Mock => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::Manual,

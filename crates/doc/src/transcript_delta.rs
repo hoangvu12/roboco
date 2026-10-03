@@ -25,6 +25,9 @@ pub struct TranscriptUpdate {
     pub frame: TranscriptFrame,
     #[serde(default)]
     pub context_usage: Option<roboco_proto::ContextUsage>,
+    /// Host-confirmed state of a native conversation (Mimir chats only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<roboco_proto::NativeChatState>,
     /// Historical content included in this update, independent of reset/delta
     /// encoding. Omitted on ordinary live updates and by older engines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -518,6 +521,7 @@ mod context_update_tests {
                 tokens: Some(0),
                 window: Some(200000),
             }),
+            native: None,
         })
         .unwrap();
         assert_eq!(value["contextUsage"]["tokens"], 0);

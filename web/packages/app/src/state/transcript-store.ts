@@ -1,4 +1,4 @@
-import type { ConnectivityState, ContextUsage, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
+import type { ConnectivityState, ContextUsage, NativeChatState, SessionMessageEntry, TranscriptFrame, TranscriptUpdate } from "@roboco/proto";
 import type { EngineClient, WatchHandle } from "@roboco/engine-client";
 import { methods, RpcError } from "@roboco/engine-client";
 import { mintId } from "../lib/id";
@@ -51,6 +51,13 @@ export interface TranscriptSnapshot {
   readonly entries: readonly SessionMessageEntry[];
   /** The host-owned context snapshot riding the stream (null on older engines). */
   readonly contextUsage: ContextUsage | null;
+  /** Host-confirmed native (Mimir) state riding the stream; null for every other harness. */
+  readonly native: NativeChatState | null;
+  /**
+   * A live frame has arrived, so `native` is the doc's truth: null then means
+   * no native state, not "not yet". A cache seed never sets it.
+   */
+  readonly nativeProjected: boolean;
   /** A first frame has arrived on the current stream. */
   readonly loaded: boolean;
   /** The last entry is streaming (drives the live-end anchor). */
@@ -367,6 +374,8 @@ export class TranscriptStore {
   #saveTimer: ReturnType<typeof setTimeout> | undefined;
   #entries: readonly SessionMessageEntry[] = EMPTY_ENTRIES;
   #contextUsage: ContextUsage | null = null;
+  #native: NativeChatState | null = null;
+  #nativeProjected = false;
   #loaded = false;
   #error: string | null = null;
   #generation = 0;
@@ -547,6 +556,12 @@ export class TranscriptStore {
     if (update.contextUsage !== undefined) {
       this.#contextUsage = update.contextUsage;
     }
+    // Every update carries the full current state for a native chat and omits it otherwise.
+    const native = update.native ?? null;
+    if (JSON.stringify(native) !== JSON.stringify(this.#native)) {
+      this.#native = native;
+    }
+    this.#nativeProjected = true;
     this.#loaded = true;
     // The replay state: a reset decides authoritatively (empty vs populated);
     // any delta means real rows exist.
@@ -581,6 +596,8 @@ export class TranscriptStore {
     return {
       entries: this.#entries,
       contextUsage: this.#contextUsage,
+      native: this.#native,
+      nativeProjected: this.#nativeProjected,
       loaded: this.#loaded,
       streaming: last?.status === "streaming",
       error: this.#error,

@@ -23,6 +23,7 @@ import {
   isAgentTool,
   isSpawnLink,
   noteChipDetail,
+  singleLine,
   subagentModel,
   subagentTabTitle,
   toolChipContent,
@@ -45,6 +46,8 @@ import {
   ToolGroupMotionStore,
   type FoldState,
 } from "../lib/tool-motion";
+import { nativeChipTitle } from "../lib/native";
+import { useNativeToolActions } from "./native-tool-detail";
 import { ActivityRail } from "./activity-rail";
 import { FileBodyUpto, FilePlaneScroll } from "./diff-view";
 import { FileIcon } from "./files/file-icon";
@@ -638,6 +641,18 @@ function ChipHeaderRow({
       : tool.kind === "note"
         ? { label: "Wrote", detail: noteChipDetail(tool) }
         : toolChipContent(tool.call);
+  const nativeViews = tool.native;
+  const nativeActions = useNativeToolActions();
+  // A native call shows the host's running title while it runs and the latest
+  // public progress line; the host's words, never a guess from the tool name.
+  const nativeView = nativeViews !== null && nativeViews.length === 1 ? nativeViews[0]! : null;
+  const chipDetail =
+    nativeView !== null
+      ? singleLine(
+          `${nativeChipTitle(nativeView, tool.resolved)}${!tool.resolved && nativeView.progress !== null ? ` · ${nativeView.progress}` : ""}`,
+        )
+      : detail;
+  const hasNativeDetail = nativeViews !== null && nativeViews.some((view) => view.detailRef !== null);
   const filePath =
     tool.call.kind === "readFile" || tool.call.kind === "writeFile" || tool.call.kind === "editFile"
       ? tool.call.path
@@ -682,11 +697,26 @@ function ChipHeaderRow({
       <span className="tool-chip-label">{label}</span>
       {filePath !== null ? (
         <FileBadge path={filePath} failed={failed} appearance={appearance} />
-      ) : activity && detail.length === 0 ? null : (
-        <span className="tool-chip-detail">{detail}</span>
+      ) : activity && chipDetail.length === 0 ? null : (
+        <span className="tool-chip-detail">{chipDetail}</span>
       )}
       {model !== null && <span className="tool-chip-model">{model}</span>}
       {running && <GlyphSpinner size={8} className="tool-chip-spinner" />}
+      {hasNativeDetail && nativeViews !== null && (
+        <button
+          type="button"
+          className="tool-chip-details"
+          aria-label="Open tool call details"
+          title="Details"
+          onClick={(event) => {
+            event.stopPropagation();
+            nativeActions.openDetail(nativeViews);
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <Icon name="arrowUpRight" size={11} />
+        </button>
+      )}
       {trail !== null && (
         <span className={`tool-chip-trail ${activity ? "" : "tool-chip-trail-card"} ${trail === "openArrow" ? "tool-chip-trail-open" : ""}`}>
           {trail === "chevron" ? (

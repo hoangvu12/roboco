@@ -4,7 +4,7 @@
 /**
  * An open PTY session on the owning device (`OpenTerminal` reply).
  */
-export type TerminalSession = { id: string, cwd: string, 
+export type TerminalSession = { id: string, cwd: string,
 /**
  * Shell basename (`zsh`, `bash`, …) for the tab label.
  */

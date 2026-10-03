@@ -711,6 +711,14 @@ impl WorkspaceHost {
         self.inner.save_snapshot();
     }
 
+    /// Persist the snapshot now and report failure: the barrier before an
+    /// irreversible send that a restart must be able to find.
+    pub fn persist(&self) -> Result<(), EngineError> {
+        let bytes = lock(&self.inner.reg).to_bytes()?;
+        self.inner.store.save_snapshot(REGISTRY_DOC_ID, &bytes)?;
+        Ok(())
+    }
+
     /// Shutdown: stamp our `lastSeenAt` (the only periodic-ish row write besides
     /// boot) and flush the snapshot.
     pub fn shutdown(&self) {

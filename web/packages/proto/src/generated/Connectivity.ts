@@ -9,18 +9,18 @@ import type { ConnectivityState } from "./ConnectivityState";
  * Derived engine-side from the registry room's reconnect state, the OS
  * network-path monitor, and each open chat room's stats.
  */
-export type Connectivity = { state: ConnectivityState, 
+export type Connectivity = { state: ConnectivityState,
 /**
  * Epoch ms of the next scheduled registry dial while reconnecting
  * (0 = none pending / dialing right now). The countdown renders
  * client-side from this.
  */
-retryAtMs: number, 
+retryAtMs: number,
 /**
  * The failure that started the current outage — sticky through the next
  * attempt (no flicker back to a bare "connecting…"), cleared on rejoin.
  */
-lastFailure?: string | null, 
+lastFailure?: string | null,
 /**
  * Per-OPEN-chat room state; a chat absent here is unknown (consumers
  * fall back to the global state).

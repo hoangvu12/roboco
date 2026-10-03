@@ -603,6 +603,7 @@ async fn batched_remote_steers_preserve_every_message_in_order_exactly_once() {
                 expires_at: None,
                 status: roboco_doc::SessionCommandStatus::Pending,
                 resolution: None,
+                outcome: None,
             })
             .unwrap();
     }

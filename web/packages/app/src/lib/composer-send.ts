@@ -56,6 +56,11 @@ export interface SendBlockedConditions {
    * agents — offline/loading must not block.
    */
   readonly newChatNoAgents: boolean;
+  /**
+   * Condition 5: an existing native chat opened a moment ago. Until its host
+   * state lands, a send could carry stale per-chat settings into the host.
+   */
+  readonly nativeAwaitingHost: boolean;
 }
 
 /**
@@ -67,7 +72,8 @@ export function sendBlocked(conditions: SendBlockedConditions): boolean {
     conditions.queueEditFinishing ||
     conditions.requestTargetDisconnected ||
     conditions.reviewCommentFlushPending ||
-    conditions.newChatNoAgents
+    conditions.newChatNoAgents ||
+    conditions.nativeAwaitingHost
   );
 }
 

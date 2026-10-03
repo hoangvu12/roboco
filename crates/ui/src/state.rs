@@ -677,6 +677,15 @@ pub struct AppState {
     /// chat's doc holds them (every device sees the same queue).
     pub queue: Vec<roboco_doc::QueuedMessage>,
     pub context_usage: Option<roboco_proto::ContextUsage>,
+    /// Host-confirmed state of the selected chat when it is a native (Mimir)
+    /// conversation. The engine sends it whole with every transcript update,
+    /// so the latest update is always the truth; it is never cached across
+    /// chat switches.
+    pub native: Option<roboco_proto::NativeChatState>,
+    /// The selected chat's live watch has delivered an update since the chat
+    /// was selected, so `native` is the doc's truth: `None` then means the
+    /// chat has no native state yet, not that it has not arrived.
+    pub native_projected: bool,
     /// The selected chat has a transcript from a `WatchDocMessages` reset
     /// (including a retained reset from an earlier visit). An
     /// empty transcript is otherwise indistinguishable from the pre-replay
@@ -784,6 +793,8 @@ impl AppState {
             transcript: Vec::new(),
             queue: Vec::new(),
             context_usage: None,
+            native: None,
+            native_projected: false,
             transcript_replayed: false,
             transcript_baselines: HashMap::new(),
             transcript_cache: Default::default(),
@@ -1004,6 +1015,8 @@ impl AppState {
             self.restore_canvas_target();
             self.transcript.clear();
             self.context_usage = None;
+            self.native = None;
+            self.native_projected = false;
             self.transcript_revision = self.transcript_revision.wrapping_add(1);
             self.transcript_replayed = false;
             self.transcript_task = None;
@@ -1390,6 +1403,11 @@ impl AppState {
         }
         if self.context_usage != update.context_usage {
             self.context_usage = update.context_usage;
+            cx.notify();
+        }
+        if self.native != update.native || !self.native_projected {
+            self.native = update.native;
+            self.native_projected = true;
             cx.notify();
         }
         Ok(())
@@ -2001,6 +2019,8 @@ impl AppState {
         self.transcript_cache.clear();
         self.prepared_transcripts.clear();
         self.context_usage = None;
+        self.native = None;
+        self.native_projected = false;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.echoes.clear();
@@ -2048,6 +2068,25 @@ impl AppState {
     /// This is a side chat's state whose chat its first send has yet to mint.
     pub(crate) fn side_chat_unsaved(&self) -> bool {
         self.unsaved_side_chat
+    }
+
+    /// Who decides the selected chat's next model, reasoning and mode. With
+    /// nothing selected the send creates the chat, so the draft decides.
+    pub(crate) fn native_config_authority(&self) -> crate::native::ConfigAuthority {
+        let Some(chat_id) = self.selected_chat.as_deref() else {
+            return crate::native::ConfigAuthority::Draft;
+        };
+        let native_chat = self.native.is_some()
+            || self
+                .selected_chat_row()
+                .and_then(|chat| chat.config.as_ref())
+                .is_some_and(|config| config.harness == roboco_proto::HarnessId::Mimir);
+        crate::native::config_authority(
+            native_chat,
+            self.is_unsaved_side_chat(chat_id),
+            self.native_projected,
+            self.native.as_ref(),
+        )
     }
 
     /// The harness can change until the first send snapshots it.
@@ -2384,6 +2423,8 @@ impl AppState {
         self.auto_selected = true;
         self.transcript.clear();
         self.context_usage = None;
+        self.native = None;
+        self.native_projected = false;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         if let Some(cached) = cached {
@@ -4191,6 +4232,7 @@ mod tests {
             let update = |id: &str| roboco_doc::TranscriptUpdate {
                 frame: TranscriptFrame::reset(&[user_entry(id)]),
                 context_usage: None,
+                native: None,
                 replay_baseline: None,
             };
             state.select_chat(Some("whale".into()), cx);

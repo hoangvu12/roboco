@@ -4,7 +4,7 @@
  * A slash command advertised by the agent (ACP `availableCommands`): typed as
  * `/name` at the start of the composer, sent to the agent as prompt text.
  */
-export type SlashCommand = { name: string, description: string, 
+export type SlashCommand = { name: string, description: string,
 /**
  * Placeholder hint for the command's argument, when it takes one.
  */

@@ -484,7 +484,11 @@ describe("topGapFor / diffRows", () => {
               ? { kind, header: "", resolved: false }
               : kind === "forkMarker"
                 ? { kind, sourceChatId: "", sourceTitle: "" }
-                : { kind, message: "" };
+                : kind === "notice"
+                  ? { kind, notice: { notice: "status", text: "" } }
+                  : kind === "quietCalls"
+                    ? { kind, count: 0, shown: false }
+                    : { kind, message: "" };
     return {
       id,
       version: 0,
@@ -1650,6 +1654,7 @@ function toolItem(fields: Partial<ToolItem> = {}): ToolItem {
     subagentRef: null,
     subagentStatus: null,
     subagentTail: null,
+    native: null,
     kind: "call",
     ...fields,
   };

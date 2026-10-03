@@ -116,6 +116,9 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
                 }
             }
             MessagePart::Image { name, .. } => tools.push(format!("image: {name}")),
+            MessagePart::Notice { notice, .. } => {
+                tools.push(format!("notice: {}", roboco_doc::notice_text(notice)))
+            }
             MessagePart::Reasoning { text, .. } => {
                 if options.include_reasoning && !text.trim().is_empty() {
                     reasoning_parts.push(text.as_str());
@@ -191,6 +194,7 @@ fn tool_line(call: &ToolCall, is_error: bool, resolved: bool, output: Option<&st
         }
         ToolCall::Mcp { server, tool, .. } => format!("mcp: {server}/{tool}"),
         ToolCall::Unknown { name, .. } => name.clone(),
+        ToolCall::Native { view } => view.title.clone(),
     };
     if let Some(output) = output.map(str::trim).filter(|o| !o.is_empty()) {
         let first = output.lines().next().unwrap_or_default();

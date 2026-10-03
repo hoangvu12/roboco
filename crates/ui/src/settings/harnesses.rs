@@ -59,6 +59,7 @@ pub fn blurb(harness: HarnessId) -> &'static str {
         HarnessId::Pi => "The pi coding agent (pi CLI).",
         HarnessId::Opencode => "SST's opencode agent (opencode CLI).",
         HarnessId::Antigravity => "Google's Antigravity agent (Antigravity ACP server).",
+        HarnessId::Mimir => "The Mimir agent, through the Roboco bridge plugin (mimir CLI).",
         HarnessId::Mock => "Scripted test harness.",
     }
 }
@@ -79,6 +80,7 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::Pi => "pi",
         HarnessId::Opencode => "opencode",
         HarnessId::Antigravity => "Antigravity",
+        HarnessId::Mimir => "mimir",
         HarnessId::Mock => "mock",
     }
 }
@@ -190,6 +192,9 @@ pub struct HarnessesPage {
     policy_selects: std::collections::HashMap<HarnessId, widgets::SelectState>,
     update_task: Option<Task<()>>,
     update_action_task: Option<Task<()>>,
+    /// Mimir's native readiness on the target device; setup is always by hand.
+    mimir_readiness: Loadable<roboco_proto::NativeReadiness>,
+    readiness_task: Option<Task<()>>,
 }
 
 struct SignIn {
@@ -294,6 +299,8 @@ impl HarnessesPage {
             policy_selects: Default::default(),
             update_task: None,
             update_action_task: None,
+            mimir_readiness: Loadable::Idle,
+            readiness_task: None,
         };
         page.load(cx);
         page
@@ -324,6 +331,8 @@ impl HarnessesPage {
         self.installing = None;
         self.install_task = None;
         self.target_device = target;
+        self.mimir_readiness = Loadable::Idle;
+        self.readiness_task = None;
         self.error = None;
         self.sign_in_failure = None;
         self.harnesses = Loadable::Idle;
@@ -450,8 +459,89 @@ impl HarnessesPage {
             self.expanded_harness = None;
         } else {
             self.expanded_harness = Some(harness);
+            if harness == HarnessId::Mimir && matches!(self.mimir_readiness, Loadable::Idle) {
+                self.load_readiness(false, cx);
+            }
         }
         cx.notify();
+    }
+
+    /// `GetNativeReadiness` on the target device. `force` re-probes instead of reading the cache.
+    fn load_readiness(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Ok(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        ) else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({ "force": force }));
+        self.mimir_readiness = Loadable::Loading;
+        self.readiness_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.call(methods::GET_NATIVE_READINESS, params).await;
+            this.update(cx, |page, cx| {
+                page.mimir_readiness = match result {
+                    Ok(value) => match serde_json::from_value(value) {
+                        Ok(readiness) => Loadable::Ready(readiness),
+                        Err(err) => Loadable::Error(err.to_string()),
+                    },
+                    Err(err) => Loadable::Error(err.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn render_mimir_readiness(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .pb(px(8.0))
+            .text_size(px(12.0));
+        match &self.mimir_readiness {
+            Loadable::Idle | Loadable::Loading => {
+                section = section
+                    .text_color(theme.text_muted)
+                    .child("Checking Mimir…");
+            }
+            Loadable::Error(message) => {
+                section = section.text_color(theme.danger).child(SharedString::from(
+                    format!("Could not check Mimir. {message}"),
+                ));
+            }
+            Loadable::Ready(readiness) => {
+                let (view, manual) = crate::native_dock::readiness_lines(readiness);
+                section = section.child(
+                    div()
+                        .text_color(if view.ready { theme.success } else { theme.warning })
+                        .child(SharedString::from(view.title)),
+                );
+                if let Some(detail) = view.detail {
+                    section = section.child(
+                        div()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(detail)),
+                    );
+                }
+                if let Some(manual) = manual {
+                    section = section.child(
+                        div()
+                            .font_family(theme.font_mono.clone())
+                            .text_color(theme.text)
+                            .child(SharedString::from(manual)),
+                    );
+                }
+            }
+        }
+        section
+            .child(
+                widgets::text_action(theme, widgets::ActionTone::Quiet, "Check again")
+                    .id("mimir-readiness-check")
+                    .on_click(cx.listener(|this, _, _, cx| this.load_readiness(true, cx))),
+            )
+            .into_any_element()
     }
 
     fn load_titles(&mut self, save: Option<TitleSettings>, cx: &mut Context<Self>) {
@@ -1216,6 +1306,7 @@ impl HarnessesPage {
             .flex_col()
             .ml(px(DETAILS_INSET))
             .pb(px(10.0))
+            .children((harness == HarnessId::Mimir).then(|| self.render_mimir_readiness(theme, cx)))
             .children(self.render_updates_for(harness, theme, cx));
         Some(
             motion::menu_in(format!("agent-details-{harness:?}"), content).into_any_element(),

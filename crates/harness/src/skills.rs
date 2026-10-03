@@ -121,7 +121,8 @@ fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
         HarnessId::Devin => &[".agents/skills"],
         HarnessId::Antigravity => &[".agents/skills", ".gemini/skills"],
         HarnessId::Codex => &[".agents/skills", ".codex/skills"],
-        HarnessId::Mock => &[],
+        // Mimir reports its effective, folder-aware catalog itself.
+        HarnessId::Mimir | HarnessId::Mock => &[],
     }
 }
 

@@ -2,7 +2,7 @@
 
 import type { WorkspaceFileChangeKind } from "./WorkspaceFileChangeKind";
 
-export type WorkspaceFileChange = { 
+export type WorkspaceFileChange = {
 /**
  * The mutation RPC that produced this change, when the host published
  * it (external filesystem events never carry one). Lets the UI match

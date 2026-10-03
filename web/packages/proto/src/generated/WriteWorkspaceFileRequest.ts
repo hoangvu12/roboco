@@ -3,7 +3,7 @@
 import type { WorkspaceWritableEncoding } from "./WorkspaceWritableEncoding";
 import type { WorkspaceWritableLineEnding } from "./WorkspaceWritableLineEnding";
 
-export type WriteWorkspaceFileRequest = { 
+export type WriteWorkspaceFileRequest = {
 /**
  * Must match the read snapshot, even if the chat has since changed cwd.
  */

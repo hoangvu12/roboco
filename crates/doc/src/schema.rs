@@ -127,6 +127,9 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// Typed native notice (`kind: "notice"`, additive); `text` holds its summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notice: Option<serde_json::Value>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -225,6 +228,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
+        MessagePart::Notice { id, notice } => DocPartJson {
+            id: id.clone(),
+            kind: "notice".into(),
+            text: Some(crate::parts::notice_text(notice)),
+            notice: Some(serde_json::to_value(notice)?),
+            ..Default::default()
+        },
     })
 }
 
@@ -279,6 +289,13 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             source_chat_id: p.source_chat_id.unwrap_or_default(),
             source_title: p.source_title.unwrap_or_default(),
+        },
+        "notice" => match p.notice.and_then(|n| serde_json::from_value(n).ok()) {
+            Some(notice) => MessagePart::Notice { id: p.id, notice },
+            None => MessagePart::Text {
+                id: p.id,
+                text: p.text.unwrap_or_default(),
+            },
         },
         _ => MessagePart::Text {
             id: p.id,
@@ -565,6 +582,17 @@ impl SessionDoc {
         status: SessionCommandStatus,
         resolution: Option<&str>,
     ) -> Result<(), DocError> {
+        self.set_command_outcome(command_id, status, resolution, None)
+    }
+
+    /// [`Self::set_command_status`] plus a native control's typed result.
+    pub fn set_command_outcome(
+        &self,
+        command_id: &str,
+        status: SessionCommandStatus,
+        resolution: Option<&str>,
+        outcome: Option<&roboco_proto::NativeControlOutcome>,
+    ) -> Result<(), DocError> {
         let commands = self.doc.get_list("commands");
         for i in 0..commands.len() {
             if let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) =
@@ -583,6 +611,12 @@ impl SessionDoc {
                     )?;
                     if let Some(r) = resolution {
                         map.insert("resolution", r)?;
+                    }
+                    if let Some(outcome) = outcome {
+                        map.insert(
+                            "outcome",
+                            loro_value_from_json(&serde_json::to_value(outcome)?),
+                        )?;
                     }
                     self.doc.commit();
                     return Ok(());
@@ -794,7 +828,10 @@ impl SessionDoc {
     }
 }
 
-fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Result<(), DocError> {
+pub(crate) fn write_entry_scalar_fields(
+    map: &LoroMap,
+    entry: &SessionMessageEntry,
+) -> Result<(), DocError> {
     map.insert("id", entry.id.as_str())?;
     map.insert(
         "role",
@@ -827,7 +864,7 @@ fn status_str(status: MessageStatus) -> &'static str {
 }
 
 /// Append one part map to a parts list; text bodies become LoroText containers.
-fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
+pub(crate) fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     let map = parts.push_container(LoroMap::new())?;
     let doc_part = to_doc_part(part)?;
     map.insert("id", doc_part.id.as_str())?;
@@ -895,7 +932,15 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(notice) = &doc_part.notice {
+        map.insert("notice", loro_value_from_json(notice))?;
+    }
     Ok(())
+}
+
+/// One entry map, read the same way [`SessionDoc::read_entries`] reads the list.
+pub(crate) fn entry_from_map(map: &LoroMap) -> Option<SessionMessageEntry> {
+    entry_from_json(map.get_deep_value().to_json_value()).ok()
 }
 
 fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError> {
@@ -1120,9 +1165,21 @@ impl<'a> SegmentWriter<'a> {
         device_id: &str,
         created_at: i64,
     ) -> Result<Self, DocError> {
+        let at = doc.doc.get_list("messages").len();
+        Self::begin_at(doc, entry_id, device_id, created_at, at)
+    }
+
+    /// [`Self::begin`] at list position `at`: ahead of entries that must stay last.
+    pub fn begin_at(
+        doc: &'a SessionDoc,
+        entry_id: &str,
+        device_id: &str,
+        created_at: i64,
+        at: usize,
+    ) -> Result<Self, DocError> {
         let messages = doc.doc.get_list("messages");
-        let entry_index = messages.len();
-        let map = messages.push_container(LoroMap::new())?;
+        let entry_index = at.min(messages.len());
+        let map = messages.insert_container(entry_index, LoroMap::new())?;
         write_entry_scalar_fields(
             &map,
             &SessionMessageEntry {
@@ -1336,6 +1393,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     }
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
+    }
+    if let Some(notice) = &doc_part.notice {
+        map.insert("notice", loro_value_from_json(notice))?;
     }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
@@ -1999,6 +2059,7 @@ mod tests {
             expires_at: None,
             status: SessionCommandStatus::Pending,
             resolution: None,
+            outcome: None,
         };
         doc.queue_command(&entry).unwrap();
         doc.set_command_status("c1", SessionCommandStatus::Applied, None)

@@ -93,6 +93,8 @@ import type { ChatIndicator } from "../lib/view";
 import type { MessageBadge } from "../lib/badges";
 import { MarkdownBlockView, MarkdownSurfaceProvider, CodeBlock, InlineRunView, type MarkdownSurface, type VeilChunk } from "./markdown";
 import { MessageBadges } from "./badges";
+import { NativeNoticeRow } from "./native-notice";
+import { NativeToolProvider, QuietCallsRow } from "./native-tool-detail";
 import { MessageRail } from "./message-rail";
 import { StickController } from "./stick-controller";
 import { ToolGroupRow, type SubagentOpen } from "./tool-group";
@@ -291,8 +293,10 @@ function TranscriptSurface({
   // for settled trees. Bounded like the entry cache below.
   const parseStateRef = useRef(new Map<string, { text: string; live: boolean; tree: ReturnType<typeof parseMarkdown> }>());
   const entryRowsCacheRef = useRef(
-    new Map<string, { entry: SessionMessageEntry; compact: boolean; rows: TranscriptRow[] }>(),
+    new Map<string, { entry: SessionMessageEntry; compact: boolean; quiet: boolean; rows: TranscriptRow[] }>(),
   );
+  const [showQuiet, setShowQuiet] = useState(false);
+  const toggleQuiet = useCallback(() => setShowQuiet((shown) => !shown), []);
 
   // Rows are rebuilt per entry only when the entry's identity changes; the
   // parse state keeps settled markdown trees shared across stream ticks. A
@@ -313,13 +317,15 @@ function TranscriptSurface({
     const out: TranscriptRow[] = [];
     for (const entry of snapshot.entries) {
       let hit = cache.get(entry.id);
-      if (hit === undefined || hit.entry !== entry || hit.compact !== compactMode) {
+      if (hit === undefined || hit.entry !== entry || hit.compact !== compactMode || hit.quiet !== showQuiet) {
         hit = {
           entry,
           compact: compactMode,
+          quiet: showQuiet,
           rows: rowsForEntry(entry, {
             parse: (key, text, live) => parseForRow(parseState, key, text, live).tree,
             compact: compactMode,
+            showQuiet,
           }),
         };
         cache.set(entry.id, hit);
@@ -327,7 +333,7 @@ function TranscriptSurface({
       out.push(...hit.rows);
     }
     return out;
-  }, [snapshot.entries, compactMode]);
+  }, [snapshot.entries, compactMode, showQuiet]);
 
   // The optimistic echo overlay (`AppState.echoes`). Each still-unconfirmed
   // send renders as an ORDINARY user bubble at the end of the list — the
@@ -536,6 +542,7 @@ function TranscriptSurface({
   }, [alignTop, subagentLive, lastEntry, now, docId, pendingSends, indicator, turnStartedAt, onRetryDelivery, deliveryDegraded]);
 
   return (
+    <NativeToolProvider client={client} quietShown={showQuiet} onToggleQuiet={toggleQuiet} entries={snapshot.entries}>
     <MarkdownSurfaceProvider
       value={
         markdownSurface ?? { workspaceRoot: null, openWorkspaceFile: () => {} }
@@ -559,6 +566,7 @@ function TranscriptSurface({
         chatArrival={chatArrival}
       />
     </MarkdownSurfaceProvider>
+    </NativeToolProvider>
   );
 }
 
@@ -1987,6 +1995,11 @@ export function estimateRowHeight(
       // + gap(6) + the 13px title line — an estimate the measurement
       // corrects on mount.
       return 67;
+    case "quietCalls":
+      return 32;
+    case "notice":
+      // Variable by variant; the measurement corrects it on mount.
+      return kind.notice.notice === "subagentCompletions" ? 80 + 120 * kind.notice.completions.length : 72;
   }
 }
 
@@ -2165,6 +2178,8 @@ function RowContent({
       {kind.kind === "inputChip" && <InputChipRow header={kind.header} resolved={kind.resolved} />}
       {kind.kind === "errorChip" && <ErrorChipRow message={kind.message} />}
       {kind.kind === "forkMarker" && <ForkMarkerRow sourceTitle={kind.sourceTitle} />}
+      {kind.kind === "quietCalls" && <QuietCallsRow count={kind.count} shown={kind.shown} />}
+      {kind.kind === "notice" && <NativeNoticeRow notice={kind.notice} client={client} />}
       {row.timestamp !== null && <RowMeta row={row} visible={hovered} isUserRow={kind.kind === "user"} />}
     </>
   );

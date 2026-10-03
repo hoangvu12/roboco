@@ -12,6 +12,7 @@ import type {
   TitleSettings,
 } from "@roboco/proto";
 import { RbSwitch } from "../components/base/switch";
+import { MimirReadinessCard } from "../components/native-readiness";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
 import { MenuRow } from "../components/ui/MenuRows";
@@ -587,6 +588,14 @@ export function AgentsSettingsPage() {
           </button>
         </div>
       ) : (
+        <>
+        {client !== null && harnesses.value.some((descriptor) => descriptor.id === "mimir") && (
+          target === null || target === localDeviceId ? (
+            <MimirReadinessCard client={client} />
+          ) : (
+            <p className="native-option-text">Mimir setup is checked on the engine you are connected to.</p>
+          )
+        )}
         <section className="settings-card">
           <HarnessRows
             list={harnesses.value}
@@ -610,6 +619,7 @@ export function AgentsSettingsPage() {
             onCancelInstall={cancelInstall}
           />
         </section>
+        </>
       )}
 
       <TitleSettingsCard

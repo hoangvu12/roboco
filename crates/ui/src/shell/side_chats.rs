@@ -4,6 +4,9 @@ pub(super) struct SideChatTab {
     pub state: Entity<AppState>,
     transcript: Entity<Transcript>,
     pub(super) composer: Entity<Composer>,
+    /// The side chat's own Mimir dock, over its own state: its questions,
+    /// plan, goal and controls target this chat, never the main one.
+    pub(super) native_dock: Entity<crate::native_dock::NativeDock>,
     _events: Vec<Subscription>,
 }
 
@@ -210,8 +213,10 @@ impl Shell {
             composer.set_side_chat(cx);
             composer
         });
+        let native_dock = cx.new(|cx| crate::native_dock::NativeDock::new(state.clone(), cx));
         let events = vec![
             cx.subscribe(&transcript, Self::on_transcript_event),
+            cx.subscribe(&native_dock, Self::on_native_dock_event),
             cx.subscribe(&composer, {
                 let transcript = transcript.clone();
                 move |this: &mut Self, _, event, cx| {
@@ -255,6 +260,7 @@ impl Shell {
                 state,
                 transcript,
                 composer,
+                native_dock,
                 _events: events,
             },
         );
@@ -312,6 +318,8 @@ impl Shell {
         };
         let transcript = tab.transcript.clone();
         let composer = tab.composer.clone();
+        let native_dock = crate::native_dock::NativeDock::visible(tab.state.read(cx))
+            .then(|| tab.native_dock.clone());
         // Share the main chat's docked width cap and responsive padding.
         let width = composer_target_width(
             self.right_visible_width(cx),
@@ -359,6 +367,7 @@ impl Shell {
                     )
                     .children(pill),
             )
+            .children(native_dock.map(|dock| div().flex_none().w(px(width)).mx_auto().child(dock)))
             .child(div().flex_none().child(composer))
             .child(Self::attachment_drop_overlay(Theme::of(cx)))
             .into_any_element()
@@ -667,6 +676,126 @@ mod tests {
                 let other = shell.side_chat_seq;
                 shell.close_right_surface(RightSurface::SideChat(other), window, cx);
                 assert!(!shell.side_chats.contains_key(&other));
+            })
+            .unwrap();
+    }
+
+    /// A Mimir side chat has its own dock over its own state: its question is
+    /// answered there with the exact request id and lands on the side chat, and
+    /// a delegated agent it opens reads the side chat's host facts, never the
+    /// main conversation's.
+    #[gpui::test]
+    fn native_side_chat_dock_and_child_panes_belong_to_the_side_chat(cx: &mut TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let dir = tempfile::tempdir().unwrap();
+        let window = shell_window(dir.path(), cx);
+        let side = window
+            .update(cx, |shell, _, cx| {
+                shell.active_chat = "main".into();
+                let main: roboco_proto::Chat = serde_json::from_value(serde_json::json!({
+                    "id": "main", "deviceId": "local", "cwd": "/tmp/main",
+                    "archived": false, "createdAt": Utc::now(),
+                    "config": { "harness": "mimir", "sandbox": "workspace-write" },
+                }))
+                .unwrap();
+                shell.state.update(cx, |state, _| {
+                    state.chats = vec![main];
+                    state.selected_chat = Some("main".into());
+                });
+                shell.toggle_right_pane(cx);
+                let chat = serde_json::from_value(serde_json::json!({
+                    "id": "side", "parentChatId": "main", "deviceId": "local",
+                    "archived": false, "createdAt": Utc::now(),
+                    "config": { "harness": "mimir", "sandbox": "workspace-write" },
+                }))
+                .unwrap();
+                shell.open_side_chat(chat, shell.panel_key(cx), cx);
+                shell.side_chats[&shell.side_chat_seq].state.clone()
+            })
+            .unwrap();
+        let mut wire = crate::native_dock::scripted::attach(&side, cx);
+        let child: roboco_proto::NativeChild = serde_json::from_value(serde_json::json!({
+            "handle": "agent-1", "attempt": 2, "status": "running", "completionPending": false,
+            "docId": "side--sub--agent-1", "description": "Map the auth module",
+        }))
+        .unwrap();
+        side.update(cx, |state, cx| {
+            state.native = Some(roboco_proto::NativeChatState {
+                link: roboco_proto::NativeLink::Attached,
+                user_request: Some(roboco_proto::NativeUserRequest {
+                    id: "ur-7".into(),
+                    questions: Vec::new(),
+                }),
+                children: vec![child],
+                ..Default::default()
+            });
+            state.native_projected = true;
+            cx.notify();
+        });
+        let dock = window
+            .update(cx, |shell, _, cx| {
+                assert!(crate::native_dock::NativeDock::visible(side.read(cx)));
+                assert!(
+                    !crate::native_dock::NativeDock::visible(shell.state.read(cx)),
+                    "the main conversation has no host state of its own here"
+                );
+                shell.side_chats[&shell.side_chat_seq].native_dock.clone()
+            })
+            .unwrap();
+        dock.update(cx, |dock, cx| {
+            assert_eq!(
+                dock.selected(cx).map(|(chat, _)| chat).as_deref(),
+                Some("side")
+            );
+            dock.send(
+                roboco_proto::NativeControl::Answer {
+                    request_id: "ur-7".into(),
+                    answers: Vec::new(),
+                },
+                cx,
+            );
+        });
+        crate::native_dock::scripted::pump(&runtime, cx);
+        let frames = wire.drain();
+        let queued = crate::native_dock::scripted::only(&frames, methods::QUEUE_COMMAND);
+        assert_eq!(queued.params["chatId"], "side");
+        assert_eq!(queued.params["command"]["control"]["requestId"], "ur-7");
+
+        dock.update(cx, |_, cx| {
+            cx.emit(crate::native_dock::NativeDockEvent::OpenChild {
+                chat_id: "side".into(),
+                doc_id: "side--sub--agent-1".into(),
+                title: "Map the auth module".into(),
+            })
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |shell, _, cx| {
+                let tab = shell
+                    .subagent_tabs
+                    .values()
+                    .find(|tab| tab.doc_id == "side--sub--agent-1")
+                    .expect("the child opened a pane");
+                assert_eq!(
+                    tab.state.entity_id(),
+                    side.entity_id(),
+                    "it reads the side chat's state"
+                );
+                let (chat, child) = tab.native_panel.read(cx).current(cx).expect("host facts");
+                assert_eq!(chat, "side");
+                assert_eq!(child.handle, "agent-1");
+                assert_eq!(child.attempt, 2);
+                shell.state.update(cx, |state, _| {
+                    state.native = Some(roboco_proto::NativeChatState::default());
+                });
+                assert!(
+                    tab.native_panel.read(cx).current(cx).is_some(),
+                    "main chat state changes do not touch the side chat's child"
+                );
             })
             .unwrap();
     }

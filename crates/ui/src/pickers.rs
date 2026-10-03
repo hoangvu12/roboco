@@ -1170,7 +1170,20 @@ impl Pickers {
         true
     }
 
+    /// A native chat whose host owns (or may own) its configuration shows
+    /// what the host confirmed instead of the model menu: a pick here would
+    /// write per-chat settings its prompts never carry. The dock changes it.
+    fn host_config_label(&self, cx: &App) -> Option<String> {
+        if self.title.is_some() {
+            return None;
+        }
+        crate::native::config_slot_label(&self.state.read(cx).native_config_authority())
+    }
+
     pub fn open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.host_config_label(cx).is_some() {
+            return;
+        }
         if self.open_kind() != Some(PickerKind::HarnessModel) {
             self.toggle(PickerKind::HarnessModel, window, cx);
         }
@@ -1189,6 +1202,9 @@ impl Pickers {
                 cx.emit(ReturnComposerFocus);
             }
             cx.notify();
+            return;
+        }
+        if kind == PickerKind::HarnessModel && self.host_config_label(cx).is_some() {
             return;
         }
         if kind == PickerKind::HarnessModel {
@@ -5112,6 +5128,8 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
         // The pixel-"o" from opencode's wordmark (their favicon), monochrome.
         HarnessId::Opencode => (crate::icons::OPENCODE_MARK, None),
         HarnessId::Antigravity => (crate::icons::ANTIGRAVITY_MARK, None),
+        // No brand asset ships for Mimir; the generic agent glyph stands in.
+        HarnessId::Mimir => (crate::icons::BOT, None),
     }
 }
 
@@ -5312,6 +5330,23 @@ fn attach_overlay_end(
 impl Render for Pickers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        if let Some(label) = self.host_config_label(cx) {
+            if self.open_kind() == Some(PickerKind::HarnessModel) {
+                self.dismiss(cx);
+            }
+            return div().flex().flex_row().items_center().min_w_0().child(
+                div()
+                    .id("composer-native-config")
+                    .h(px(28.0))
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .px(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(div().min_w_0().truncate().child(SharedString::from(label))),
+            );
+        }
         // A ROBOCO_OPEN_PICKER popover never went through `toggle`, so claim
         // its keyboard focus here (re-claim until it sticks — the shell's
         // first-paint fallback focuses the composer after our first render).
@@ -5817,6 +5852,73 @@ mod tests {
                 assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::ClaudeCode));
             });
         });
+    }
+
+    /// A Mimir chat's host owns its model: the chip states what the host
+    /// confirmed (or that its state is still on the way) and the menu that
+    /// would write per-chat picks the prompt never carries stays shut.
+    #[gpui::test]
+    fn a_native_chat_shows_the_host_configuration_and_keeps_the_model_menu_shut(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.chats = vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "m", "deviceId": "local", "archived": false,
+                    "createdAt": chrono::Utc::now(),
+                    "config": { "harness": "mimir", "model": "stale/old", "sandbox": "workspace-write" },
+                }))
+                .unwrap(),
+            ];
+            state.selected_chat = Some("m".into());
+        });
+        let window = cx.add_window(|_, cx| Pickers::new(state.clone(), cx));
+        window
+            .update(cx, |pickers, window, cx| {
+                assert_eq!(
+                    pickers.host_config_label(cx).as_deref(),
+                    Some("Waiting for Mimir")
+                );
+                pickers.open_model_menu(window, cx);
+                assert!(!pickers.is_open());
+            })
+            .unwrap();
+        state.update(cx, |state, _| {
+            state.native = Some(roboco_proto::NativeChatState {
+                configuration: Some(roboco_proto::NativeConfiguration {
+                    provider: Some("anthropic".into()),
+                    model: Some("claude-sonnet".into()),
+                    reasoning: Some("low".into()),
+                    mode: roboco_proto::NativeMode::Plan,
+                }),
+                ..Default::default()
+            });
+            state.native_projected = true;
+        });
+        window
+            .update(cx, |pickers, window, cx| {
+                assert_eq!(
+                    pickers.host_config_label(cx).as_deref(),
+                    Some("Plan · anthropic/claude-sonnet · low")
+                );
+                pickers.toggle(PickerKind::HarnessModel, window, cx);
+                assert!(!pickers.is_open());
+            })
+            .unwrap();
+        state.update(cx, |state, _| {
+            state.native = Some(roboco_proto::NativeChatState::default());
+        });
+        window
+            .update(cx, |pickers, _, cx| {
+                assert_eq!(
+                    pickers.host_config_label(cx),
+                    None,
+                    "before the host has any configuration the picker is the user's choice"
+                );
+            })
+            .unwrap();
     }
 
     #[gpui::test]

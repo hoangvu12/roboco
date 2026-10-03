@@ -9,6 +9,7 @@ pub mod file_mentions;
 pub mod invocation;
 pub mod layout;
 pub mod motion;
+pub mod native;
 pub mod preview;
 pub mod remote;
 pub mod view;
@@ -16,6 +17,7 @@ pub mod workspace;
 
 pub use agent::*;
 pub use entities::*;
+pub use native::*;
 pub use preview::*;
 pub use remote::*;
 pub use workspace::*;

@@ -7,15 +7,15 @@
  * frame can't wedge the composer on "Sending…" while the session runs anyway
  * (2026-08-18 user report).
  */
-export type WorktreeSpec = { 
+export type WorktreeSpec = {
 /**
  * The repo whose worktree to create (the space's folder on the host).
  */
-repoPath: string, 
+repoPath: string,
 /**
  * Base ref the fresh `roboco/<name>` branch is created off.
  */
-base: string, 
+base: string,
 /**
  * The space whose setup Action (if any) runs in the fresh worktree.
  * Additive + serde-defaulted for wire compat — an old host ignores it.

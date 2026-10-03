@@ -297,6 +297,7 @@ export const SKILL_COMPLETION_HARNESSES: readonly (readonly [HarnessId, string])
   ["devin", "Devin"],
   ["grok", "Grok"],
   ["hermes", "Hermes"],
+  ["mimir", "Mimir"],
   ["pi", "Pi"],
   ["opencode", "OpenCode"],
 ];

@@ -3,11 +3,11 @@
 /**
  * A browse root beyond home: a mounted drive/volume (or the system root).
  */
-export type DriveEntry = { 
+export type DriveEntry = {
 /**
  * Display name (volume label / mount folder name; "System" for `/`).
  */
-name: string, 
+name: string,
 /**
  * Absolute mount point.
  */

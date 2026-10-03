@@ -822,7 +822,7 @@ impl SkillCompletionSettings {
     }
 }
 
-pub const SKILL_COMPLETION_HARNESSES: [(roboco_proto::HarnessId, &str); 9] = [
+pub const SKILL_COMPLETION_HARNESSES: [(roboco_proto::HarnessId, &str); 10] = [
     (roboco_proto::HarnessId::Antigravity, "Antigravity"),
     (roboco_proto::HarnessId::ClaudeCode, "Claude Code"),
     (roboco_proto::HarnessId::Codex, "Codex"),
@@ -830,6 +830,7 @@ pub const SKILL_COMPLETION_HARNESSES: [(roboco_proto::HarnessId, &str); 9] = [
     (roboco_proto::HarnessId::Devin, "Devin"),
     (roboco_proto::HarnessId::Grok, "Grok"),
     (roboco_proto::HarnessId::Hermes, "Hermes"),
+    (roboco_proto::HarnessId::Mimir, "Mimir"),
     (roboco_proto::HarnessId::Pi, "Pi"),
     (roboco_proto::HarnessId::Opencode, "OpenCode"),
 ];

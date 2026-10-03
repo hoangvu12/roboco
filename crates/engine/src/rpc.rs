@@ -245,6 +245,12 @@ struct QueueCommandParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GetCommandParams {
+    chat_id: String,
+    command_id: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RelayCommandParams {
     chat_id: String,
     /// The full command entry, client-minted id included — the exactly-once
@@ -451,6 +457,7 @@ fn tool_file_path(call: &ToolCall) -> Option<&str> {
         | ToolCall::Todo { .. }
         | ToolCall::Mcp { .. }
         | ToolCall::Unknown { .. } => None,
+        ToolCall::Native { view } => view.locations.first().map(|l| l.path.as_str()),
     }
 }
 
@@ -604,9 +611,32 @@ struct ReadAttachmentChunkParams {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FetchToolBlobParams {
-    /// Doc-resident sidecar ref (`{chatId}/{partId}` or `…​.diff`).
+    /// Doc-resident sidecar ref (`{chatId}/{partId}`, `….diff` or `….native`).
     blob_ref: String,
+    /// Read a window instead of the whole blob; the reply is a `ToolBlobWindow`.
+    #[serde(default)]
+    offset: Option<u64>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeReadinessParams {
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeChildParams {
+    chat_id: String,
+    handle: String,
+    attempt: u32,
+}
+
+/// Largest window one `FetchToolBlob` reply carries.
+const TOOL_BLOB_WINDOW_MAX: u64 = 1 << 20;
 
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
 #[derive(Debug, Deserialize, ts_rs::TS)]
@@ -1143,8 +1173,9 @@ fn doc_messages_stream(
             doc,
             None,
             roboco_doc::TranscriptBaseline::default(),
+            None::<roboco_proto::NativeChatState>,
         ),
-        |(mut rx, mut prev, doc, mut previous_usage, mut opening_baseline)| async move {
+        |(mut rx, mut prev, doc, mut previous_usage, mut opening_baseline, mut previous_native)| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
@@ -1189,17 +1220,27 @@ fn doc_messages_stream(
                 // No-op commits (a second watcher attaching, command-only
                 // changes) produce empty deltas — skip the frame entirely.
                 let usage = doc.context_usage();
-                if frame.is_empty_delta() && usage == previous_usage && replay_baseline.is_none() {
+                let native = doc.native_state();
+                if frame.is_empty_delta()
+                    && usage == previous_usage
+                    && native == previous_native
+                    && replay_baseline.is_none()
+                {
                     continue;
                 }
                 previous_usage = usage;
+                previous_native = native.clone();
                 let value = serde_json::to_value(roboco_doc::TranscriptUpdate {
                     frame,
                     context_usage: usage,
+                    native,
                     replay_baseline,
                 })
                 .ok()?;
-                return Some((value, (rx, prev, doc, previous_usage, opening_baseline)));
+                return Some((
+                    value,
+                    (rx, prev, doc, previous_usage, opening_baseline, previous_native),
+                ));
             }
         },
     )
@@ -1218,6 +1259,7 @@ async fn opening_doc_messages_stream(
         let mut preview = serde_json::to_value(roboco_doc::TranscriptUpdate {
             frame: roboco_doc::TranscriptFrame::reset(&entries),
             context_usage: handle.doc().context_usage(),
+            native: handle.doc().native_state(),
             replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
         })
         .map_err(|e| crate::EngineError::Other(e.to_string()))?;
@@ -1387,6 +1429,14 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&commands)
+            }
+            methods::GET_COMMAND => {
+                let p: GetCommandParams = parse_params(params)?;
+                let command = self
+                    .doc_host
+                    .command(&p.chat_id, &p.command_id)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&command)
             }
             methods::QUEUE_COMMAND => {
                 let p: QueueCommandParams = parse_params(params)?;
@@ -2902,12 +2952,68 @@ impl RpcService for EngineRpc {
             }
             methods::FETCH_TOOL_BLOB => {
                 let p: FetchToolBlobParams = parse_params(params)?;
+                if p.offset.is_some() || p.max_bytes.is_some() {
+                    let max = p
+                        .max_bytes
+                        .unwrap_or(TOOL_BLOB_WINDOW_MAX)
+                        .min(TOOL_BLOB_WINDOW_MAX);
+                    let window = self
+                        .doc_host
+                        .fetch_tool_blob_range(
+                            &p.blob_ref,
+                            p.offset.unwrap_or(0) as usize,
+                            max as usize,
+                        )
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    return RpcReply::value(&window);
+                }
                 let text = self
                     .doc_host
                     .fetch_tool_blob(&p.blob_ref)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "text": text }))
+            }
+            methods::GET_NATIVE_READINESS => {
+                let p: NativeReadinessParams = parse_params(params)?;
+                RpcReply::value(&self.sessions.native_readiness(p.force).await)
+            }
+            methods::GET_NATIVE_CATALOG => {
+                let p: ChatParams = parse_params(params)?;
+                let catalog = self
+                    .sessions
+                    .native_catalog(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&catalog)
+            }
+            methods::GET_NATIVE_PLAN => {
+                let p: ChatParams = parse_params(params)?;
+                let plan = self
+                    .sessions
+                    .native_plan(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&plan)
+            }
+            methods::LIST_NATIVE_CHILDREN => {
+                let p: ChatParams = parse_params(params)?;
+                let children = self
+                    .sessions
+                    .native_children(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&children)
+            }
+            methods::GET_NATIVE_CHILD_OUTCOME => {
+                let p: NativeChildParams = parse_params(params)?;
+                let outcome = self
+                    .sessions
+                    .native_child_outcome(&p.chat_id, &p.handle, p.attempt)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&outcome)
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }
@@ -3363,6 +3469,40 @@ mod context_usage_tests {
     use super::*;
     use futures::StreamExt;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn native_state_changes_reach_the_transcript_stream_without_entries() {
+        use crate::doc_host::{DocHost, DocHostConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(roboco_sync::DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store,
+            DocHostConfig {
+                device_id: "host".into(),
+                default_harness: roboco_proto::HarnessId::Mimir,
+            },
+        );
+        let handle = host.open("native-chat").unwrap();
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let first: roboco_doc::TranscriptUpdate =
+            serde_json::from_value(stream.next().await.unwrap()).unwrap();
+        assert!(first.native.is_none());
+        let state = roboco_proto::NativeChatState {
+            link: roboco_proto::NativeLink::Busy {
+                message: "open in the TUI".into(),
+            },
+            ..Default::default()
+        };
+        handle.doc().set_native_state(&state).unwrap();
+        let next: roboco_doc::TranscriptUpdate = serde_json::from_value(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(next.native, Some(state));
+    }
 
     // Upstream drives these imports through the chat2 `EngineChatSink`; roboco
     // has no chat2, so replay/live rows are imported straight through the

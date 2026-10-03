@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import type { Chat, ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
+import type { Chat, ContextUsage, FetchToolBlobReply, NativeChild, SessionMessageEntry } from "@roboco/proto";
 import { methods, type ChatStatus } from "@roboco/engine-client";
 import type { IconName } from "@roboco/icons";
 import type { StagedAttachment } from "../lib/attachments";
@@ -40,6 +40,11 @@ import { ChatTranscriptOutlet } from "./chat-transcript-outlet";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
 import { JumpPill, TranscriptView, type JumpButtonState } from "./transcript";
 import type { SubagentOpen } from "./tool-group";
+import { NativeChildPanel } from "./native-child";
+import { InventoryNotice, NativeDock, useChildInventory } from "./native-dock";
+import { useNativeState } from "../state/native-state";
+import { childByDoc, hydrateChildren } from "../lib/native";
+import type { NativeCaller } from "../lib/native-actions";
 
 /**
  * The right pane's surface registry — the seam between the pane HOST (this
@@ -210,14 +215,44 @@ function SubagentSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
     };
   }, [frozen, client, docId, blobChatId, store]);
 
+  // The chat that delegated this child owns its host facts: the side chat for
+  // a child a side chat opened, never whichever chat the pane belongs to.
+  const ownerChatId = blobChatId ?? chatId;
+  const parentStore = useMemo(() => session?.transcripts.get(ownerChatId) ?? null, [session, ownerChatId]);
+  const nativeChild = childByDoc(useNativeState(parentStore), docId ?? "");
+
   if (client === null || store === null) {
     return null;
   }
   const onOpenSubagent = (payload: SubagentOpen): void => {
     rightPaneStore.addSubagentSurface(chatId, payload);
   };
-  return (
+  const transcript = (
     <TranscriptView client={client} docId={store.docId} deviceId={deviceId} store={store} alignTop onOpenSubagent={onOpenSubagent} />
+  );
+  if (nativeChild === null) {
+    return transcript;
+  }
+  return (
+    <div className="native-child-surface">
+      <NativeChildHeader client={client} chatId={ownerChatId} projected={nativeChild} />
+      <div className="native-child-transcript">{transcript}</div>
+    </div>
+  );
+}
+
+/**
+ * The child pane's header from the owning chat's host facts. A header-only
+ * child reads that chat's canonical inventory for its task and attempts.
+ */
+function NativeChildHeader({ client, chatId, projected }: { client: NativeCaller; chatId: string; projected: NativeChild }) {
+  const inventory = useChildInventory(client, chatId, [projected]);
+  const [child] = hydrateChildren([projected], inventory.children);
+  return (
+    <>
+      <InventoryNotice inventory={inventory} children={[child!]} />
+      <NativeChildPanel client={client} chatId={chatId} child={child!} />
+    </>
   );
 }
 
@@ -304,6 +339,7 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   // mint flips `unsaved` — this effect re-runs and the fresh store attaches
   // the deferred watch (`side_chat_saved` → `start_chat_watches`).
   const [store, setStore] = useState<TranscriptStore | null>(null);
+  const sideNative = useNativeState(store);
   useEffect(() => {
     if (session === null || sideChatId === null) {
       return;
@@ -377,6 +413,28 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const availableWidth =
     width === null ? null : Math.min(Math.max(width, 0), COMPOSER_MAX_WIDTH);
 
+  // Every hook runs before the picker fallbacks below: the store arrives one
+  // render after mount, and a hook first called then would break React's order.
+  const sideChatCwd = effectiveChat?.cwd ?? null;
+  const markdownSurface = useMemo(
+    () => ({
+      workspaceRoot: sideChatCwd,
+      // A side chat's file link opens an editor keyed to the SIDE CHAT (one
+      // tab per (chat, path)), docked into this pane's strip — the desktop's
+      // `activate_session_link` binding the editor to the side chat's own
+      // checkout.
+      openWorkspaceFile: (path: string, line: number | null, column: number | null) => {
+        rightPaneStore.addFileSurface(
+          chatId,
+          path,
+          sideChatId ?? undefined,
+          line !== null ? { line, column } : null,
+        );
+      },
+    }),
+    [sideChatCwd, chatId, sideChatId],
+  );
+
   if (session === null || sideChatId === null) {
     return <SurfacePicker chatId={chatId} />;
   }
@@ -416,24 +474,6 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const statusRow = snapshot.statuses.rows.find((row) => row.chatId === sideChatId);
   const indicator = displayStatusFor(effectiveChat, statusRow, now);
   const turnStartedAt = startedAtOf(statusRow);
-  const markdownSurface = useMemo(
-    () => ({
-      workspaceRoot: effectiveChat.cwd,
-      // A side chat's file link opens an editor keyed to the SIDE CHAT (one
-      // tab per (chat, path)), docked into this pane's strip — the desktop's
-      // `activate_session_link` binding the editor to the side chat's own
-      // checkout.
-      openWorkspaceFile: (path: string, line: number | null, column: number | null) => {
-        rightPaneStore.addFileSurface(
-          chatId,
-          path,
-          sideChatId,
-          line !== null ? { line, column } : null,
-        );
-      },
-    }),
-    [effectiveChat.cwd, chatId, sideChatId],
-  );
 
   return (
     <div className="side-chat-surface" ref={hostRef}>
@@ -462,6 +502,27 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
           </div>
         )}
       </div>
+      {/*
+        The side chat's own Mimir dock: its question, plan, goal and controls
+        name this side chat, and its agents open as this chat's children.
+      */}
+      {sideNative !== null && (
+        <NativeDock
+          key={sideChatId}
+          client={session.client}
+          chatId={sideChatId}
+          state={sideNative}
+          connectivity={sessionWatch?.connectivity.value?.state}
+          onOpenChild={(child) =>
+            rightPaneStore.addSubagentSurface(chatId, {
+              chatId: sideChatId,
+              docId: child.docId,
+              title: child.description.length > 0 ? child.description : child.handle,
+              frozen: false,
+            })
+          }
+        />
+      )}
       <div className="side-chat-composer">
         <Composer
           session={session}

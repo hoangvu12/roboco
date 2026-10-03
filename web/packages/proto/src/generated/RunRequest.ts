@@ -6,22 +6,22 @@ import type { ReasoningLevel } from "./ReasoningLevel";
 import type { SandboxLevel } from "./SandboxLevel";
 import type { WorktreeSpec } from "./WorktreeSpec";
 
-export type RunRequest = { prompt: string, 
+export type RunRequest = { prompt: string,
 /**
  * The harness picked at send time. Rides the command plane so
  * claim-on-first-command (chat row still in flight on the registry
  * channel) dispatches — and records — the picked harness instead of the
  * engine default. Additive + serde-defaulted for wire compat.
  */
-harness?: HarnessId | null, model: string | null, reasoning: ReasoningLevel | null, 
+harness?: HarnessId | null, model: string | null, reasoning: ReasoningLevel | null,
 /**
  * Harness-specific option selections (option id -> choice id), JSON round-tripped.
  */
-modelOptions: Record<string, unknown>, cwd: string, sandbox: SandboxLevel, autoApprove: boolean, 
+modelOptions: Record<string, unknown>, cwd: string, sandbox: SandboxLevel, autoApprove: boolean,
 /**
  * Harness-native session id to resume, if any.
  */
-resume: string | null, 
+resume: string | null,
 /**
  * Absolute paths of image attachments already staged on the run device
  * (composer uploads: UploadChunk/UploadCommit → durable path). The same
@@ -30,14 +30,14 @@ resume: string | null,
  * doc); this field additionally lets a harness inline the bytes as image
  * content blocks. Additive + serde-defaulted for wire compat.
  */
-attachments?: Array<string>, 
+attachments?: Array<string>,
 /**
  * Host-side isolated-worktree creation (see [`WorktreeSpec`]): when set,
  * the HOST materializes the worktree at command-drain time and runs there
  * instead of `cwd`. Additive + serde-defaulted for wire compat — an old
  * host ignores it and runs in `cwd` (the repo's main checkout).
  */
-worktree?: WorktreeSpec | null, 
+worktree?: WorktreeSpec | null,
 /**
  * Roboco's own MCP server, injected by the HOST engine as it starts the
  * run: the `roboco mcp` subcommand of this same binary, pointed at the

@@ -39,6 +39,8 @@ use crate::registry::{HarnessDescriptor, HarnessRegistry};
 use crate::run_journal::RunJournal;
 use crate::{EngineError, new_id, now_ms};
 
+mod native;
+
 /// One journaled event: the durable seq plus the event, as broadcast to subscribers.
 #[derive(Debug, Clone)]
 pub struct JournaledEvent {
@@ -47,7 +49,7 @@ pub struct JournaledEvent {
 }
 
 /// Outcome of a steer attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SteerOutcome {
     /// Delivered into the live run's steering mailbox.
     Accepted,
@@ -56,6 +58,11 @@ pub enum SteerOutcome {
     DeferredByUpdate,
     /// No live steerable run — the caller should dispatch the prompt as a new turn.
     NotSteerable,
+    /// The receiving host refused it outright; it is not delivered as a new turn.
+    Refused(String),
+    /// The receiving host's answer was lost. It may have been delivered, so it
+    /// is never delivered again on its own.
+    Unknown(String),
 }
 
 type PendingInputs = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<UserInputAnswer>>>>>;
@@ -172,6 +179,8 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// Chats whose harness owns a native conversation (Mimir).
+    native: native::NativeChats,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -209,6 +218,7 @@ impl SessionsEngine {
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                native: native::NativeChats::default(),
             }),
         }
     }
@@ -339,6 +349,7 @@ impl SessionsEngine {
         lock(&self.inner.runs)
             .get(chat_id)
             .is_some_and(|h| h.steerable)
+            || self.native_chat_active(chat_id)
     }
 
     /// Whether an accepted agent-CLI update gates the chat's live run, so a
@@ -346,7 +357,8 @@ impl SessionsEngine {
     pub fn live_run_update_pending(&self, chat_id: &str) -> bool {
         let harness = lock(&self.inner.runs)
             .get(chat_id)
-            .map(|h| h.runtime_config.harness_id);
+            .map(|h| h.runtime_config.harness_id)
+            .or_else(|| self.native_chat_active(chat_id).then_some(HarnessId::Mimir));
         harness.is_some_and(|harness| self.inner.registry.update_pending(harness))
     }
 
@@ -428,6 +440,9 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         roboco_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        if harness_id == HarnessId::Mimir {
+            return self.native_dispatch(chat_id, request, message_id).await;
+        }
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.run_id.clone(),
@@ -696,6 +711,11 @@ impl SessionsEngine {
         message_id: Option<String>,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
+        if self.native_chat_active(chat_id) {
+            return self
+                .native_steer(chat_id, prompt, message_id, issued_at)
+                .await;
+        }
         let target = lock(&self.inner.runs)
             .get(chat_id)
             .filter(|h| h.steerable)
@@ -784,6 +804,9 @@ impl SessionsEngine {
     /// `Done{interrupted}` and its streaming entry stamped `aborted`; this waits
     /// (bounded) for that settlement so callers observe a consistent doc.
     pub async fn interrupt(&self, chat_id: &str) -> Result<bool, EngineError> {
+        if self.native_chat_active(chat_id) {
+            return self.native_interrupt(chat_id).await;
+        }
         let target = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.run_id.clone(),
@@ -977,6 +1000,7 @@ impl SessionsEngine {
 
     /// Graceful shutdown: interrupt every live run so streaming entries settle.
     pub async fn shutdown(&self) {
+        self.native_shutdown().await;
         let chats: Vec<String> = lock(&self.inner.runs).keys().cloned().collect();
         for chat_id in chats {
             if let Err(err) = self.interrupt(&chat_id).await {

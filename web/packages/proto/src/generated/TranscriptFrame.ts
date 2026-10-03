@@ -7,7 +7,7 @@ import type { TranscriptUpsert } from "./TranscriptUpsert";
 /**
  * One `WatchDocMessages` stream item.
  */
-export type TranscriptFrame = { reset: Array<SessionMessageEntry>, } | { upsert: Array<TranscriptUpsert>, append: Array<TextAppend>, remove: Array<string>, 
+export type TranscriptFrame = { reset: Array<SessionMessageEntry>, } | { upsert: Array<TranscriptUpsert>, append: Array<TextAppend>, remove: Array<string>,
 /**
  * Expected transcript length after applying this frame — the desync
  * tripwire: a consumer that lands elsewhere resubscribes for a reset.

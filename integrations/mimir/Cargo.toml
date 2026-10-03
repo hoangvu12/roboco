@@ -1,0 +1,34 @@
+[package]
+name = "roboco-mimir-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Roboco-owned Mimir headless frontend: framed JSON-RPC over stdio for native Mimir sessions"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mimir-plugin-sdk = "=0.13.0"
+base64 = "0.22"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+wasip3 = "=0.9.0"
+
+# Unoptimized wasm codegen of the SDK's generated bindings needs several times
+# the memory and time with these checks on. This crate keeps its own.
+[profile.dev.package.mimir-plugin-sdk]
+debug-assertions = false
+overflow-checks = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

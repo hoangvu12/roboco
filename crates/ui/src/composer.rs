@@ -590,6 +590,23 @@ fn interrupt_params(chat_id: &str) -> serde_json::Value {
     })
 }
 
+/// A native chat's Stop names the exact admitted root request, so it can never cancel a
+/// newer one. Without an admitted request there is nothing to name and the legacy interrupt applies.
+fn interrupt_request_params(state: &AppState, chat_id: &str) -> serde_json::Value {
+    if state.selected_chat.as_deref() == Some(chat_id)
+        && let Some(request_id) = state
+            .native
+            .as_ref()
+            .and_then(|native| native.active_request.clone())
+    {
+        return crate::native::control_params(
+            chat_id,
+            &roboco_proto::NativeControl::CancelRequest { request_id },
+        );
+    }
+    interrupt_params(chat_id)
+}
+
 fn escape_dismisses_completion(key: &str, completion_open: bool) -> bool {
     key == "escape" && completion_open
 }
@@ -5378,6 +5395,7 @@ fn with_workspace_commands(
             description: description.into(),
             input_hint: None,
             workspace_command: Some(command),
+            idle_only: false,
         });
     }
     rows
@@ -5404,6 +5422,8 @@ struct InvocationCandidate {
     description: String,
     input_hint: Option<String>,
     invocation: roboco_proto::invocation::Invocation,
+    /// A native host command that is rejected while the conversation has active work.
+    idle_only: bool,
 }
 
 fn invocation_insertion(
@@ -5527,6 +5547,7 @@ fn invocation_candidates(
             name: c.name.clone(),
             description: c.description,
             invocation: roboco_proto::invocation::Invocation::Command { name: c.name },
+            idle_only: false,
         })
         .chain(
             skills
@@ -5546,9 +5567,57 @@ fn invocation_candidates(
                         path: s.path,
                         command: s.command,
                     },
+                    idle_only: false,
                 }),
         )
         .collect()
+}
+
+/// A native host command as the shared slash row; the argument hint and description are the host's.
+fn native_slash_commands(catalog: &roboco_proto::NativeChatCatalog) -> Vec<SlashCommand> {
+    catalog
+        .commands
+        .iter()
+        .map(|command| SlashCommand {
+            name: command.name.clone(),
+            description: command.description.clone(),
+            input_hint: command.argument.clone(),
+        })
+        .collect()
+}
+
+/// A lazy plugin skill has no file; its `harness-skill:` identity is the one the engine maps back.
+fn native_catalog_skills(
+    catalog: &roboco_proto::NativeChatCatalog,
+) -> Vec<roboco_proto::invocation::Skill> {
+    catalog
+        .skills
+        .iter()
+        .map(|skill| roboco_proto::invocation::Skill {
+            name: skill.name.clone(),
+            path: skill
+                .path
+                .clone()
+                .unwrap_or_else(|| format!("harness-skill:{}", skill.name)),
+            description: skill.description.clone(),
+            enabled: true,
+            command: None,
+        })
+        .collect()
+}
+
+fn mark_idle_only(rows: &mut [InvocationCandidate], catalog: &roboco_proto::NativeChatCatalog) {
+    for row in rows {
+        if matches!(
+            row.invocation,
+            roboco_proto::invocation::Invocation::Command { .. }
+        ) {
+            row.idle_only = catalog
+                .commands
+                .iter()
+                .any(|command| command.name == row.name && command.idle_only);
+        }
+    }
 }
 
 fn merge_invocation_results(
@@ -7301,17 +7370,50 @@ impl Composer {
         self.slash.loading = true;
         self.slash.error = None;
         self.refilter_slash(cx);
+        // A native chat's commands and skills are the host's own catalog, read
+        // for this exact conversation (the engine's generic lists are empty for Mimir).
+        let native_chat = {
+            let state = self.state.read(cx);
+            state.native.as_ref().and(state.selected_chat.clone())
+        };
         self.slash_task = Some(cx.spawn(async move |this, cx| {
             let result = async {
+                let native_catalog = match &native_chat {
+                    Some(chat_id) => Some(
+                        engine
+                            .call(
+                                methods::GET_NATIVE_CATALOG,
+                                serde_json::json!({ "chatId": chat_id }),
+                            )
+                            .await
+                            .and_then(|value| {
+                                serde_json::from_value::<roboco_proto::NativeChatCatalog>(value)
+                                    .map_err(|e| RpcError::Failed(e.to_string()))
+                            }),
+                    ),
+                    None => None,
+                };
                 let commands = async {
                     if skill || !commands_allowed {
                         return Ok(Vec::new());
+                    }
+                    if let Some(catalog) = &native_catalog {
+                        return match catalog {
+                            Ok(catalog) => Ok(native_slash_commands(catalog)),
+                            Err(error) => Err(RpcError::Failed(error.to_string())),
+                        };
                     }
                     let value = engine.call(methods::LIST_COMMANDS, params.clone()).await?;
                     serde_json::from_value::<Vec<SlashCommand>>(value)
                         .map_err(|e| RpcError::Failed(e.to_string()))
                 };
                 let skills = async {
+                    if let Some(catalog) = &native_catalog {
+                        return match catalog {
+                            Ok(catalog) => Ok(Some(native_catalog_skills(catalog))),
+                            Err(error) => Err(RpcError::Failed(error.to_string())),
+                        };
+                    }
                     // Even separated slash menus need this metadata to exclude
                     // provider commands that are actually skill aliases.
                     let value = engine.call(methods::LIST_SKILLS, params.clone()).await?;
@@ -7323,6 +7425,9 @@ impl Composer {
                     |(mut rows, supported, warning)| {
                         if !include_skills {
                             rows.retain(|row| row.invocation.prefix() == '/');
+                        }
+                        if let Some(Ok(catalog)) = &native_catalog {
+                            mark_idle_only(&mut rows, catalog);
                         }
                         (rows, supported, warning)
                     },
@@ -7436,6 +7541,10 @@ impl Composer {
         };
         if let Some(action) = command.workspace_command {
             self.execute_workspace_command(action, token.range, cx);
+            return;
+        }
+        if command.idle_only && self.native_working(cx) {
+            // Mimir would refuse it; keep the row visible and unselectable instead.
             return;
         }
         let insertion =
@@ -7564,10 +7673,16 @@ impl Composer {
                         description = format!("{description} · <{hint}>");
                     }
                 }
-                let description: SharedString = description.into();
+                let unavailable = command.idle_only && self.native_working(cx);
+                let description: SharedString = if unavailable {
+                    crate::native::IDLE_ONLY_COPY.into()
+                } else {
+                    description.into()
+                };
                 rows.push(
                     crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
                         .id(("slash-result", row_ix))
+                        .when(unavailable, |row| row.opacity(0.55))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.slash.active = Some(row_ix);
                             this.accept_slash(cx);
@@ -7653,7 +7768,10 @@ impl Composer {
             let s = self.state.read(cx);
             (
                 s.selected_chat.clone().unwrap_or_default(),
-                pending_input_request(&s.transcript),
+                // A native question is answered from the dock with the exact
+                // host request id: the wizard's labels-only reply would drop
+                // freeform text, none-of-above and the option descriptions.
+                pending_input_request(&s.transcript).filter(|_| s.native.is_none()),
                 editing_id
                     .as_ref()
                     .is_none_or(|id| s.queue.iter().any(|item| item.id == *id)),
@@ -7872,6 +7990,11 @@ impl Composer {
         if state.review_comment_flush_pending(&self.current_key) {
             return true;
         }
+        // An existing native chat opened a moment ago: until its host state
+        // lands, a send could carry stale per-chat settings into the host.
+        if state.native_config_authority() == crate::native::ConfigAuthority::AwaitingHost {
+            return true;
+        }
         if state.selected_chat.is_some() {
             return false;
         }
@@ -7957,8 +8080,12 @@ impl Composer {
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
             SendButtonMode::Send => self.send(text, false, cx),
-            // Busy: keep the message queued until the current turn ends.
-            SendButtonMode::Queue => self.send(text, true, cx),
+            // Busy: keep the message queued until the current turn ends. A
+            // native host command goes now; the host routes it into the run.
+            SendButtonMode::Queue => {
+                let now = self.native_command_now(&text, cx);
+                self.send(text, !now, cx)
+            }
         }
     }
 
@@ -8019,7 +8146,19 @@ impl Composer {
         let plan = self.pickers.read(cx).checkout_plan();
         // Fully-resolved model/reasoning/options — concrete values (chat config
         // or defaults), so the engine never has to guess a "default".
-        let resolved = self.pickers.read(cx).resolved(cx);
+        let mut resolved = self.pickers.read(cx).resolved(cx);
+        match self.state.read(cx).native_config_authority() {
+            crate::native::ConfigAuthority::Draft => {}
+            // The host's confirmed model, reasoning and mode win. Per-chat picker
+            // values may be stale, and sending them would silently reconfigure Mimir.
+            crate::native::ConfigAuthority::Host(_) => {
+                resolved.model = None;
+                resolved.reasoning = None;
+                resolved.model_options.clear();
+            }
+            // `send_blocked` holds the draft until the chat's host state lands.
+            crate::native::ConfigAuthority::AwaitingHost => return,
+        }
         let existing_cwd = self
             .state
             .read(cx)
@@ -8790,6 +8929,32 @@ impl Composer {
         }));
     }
 
+    /// A host command typed while the native conversation works is sent now,
+    /// unless the host's catalog (as last listed here) marks it idle-only.
+    fn native_command_now(&self, text: &str, cx: &App) -> bool {
+        if self.state.read(cx).native.is_none() {
+            return false;
+        }
+        crate::native::command_sends_now(text, |name| {
+            self.slash_cache.values().flatten().any(|row| {
+                row.idle_only
+                    && row.name == name
+                    && matches!(
+                        row.invocation,
+                        roboco_proto::invocation::Invocation::Command { .. }
+                    )
+            })
+        })
+    }
+
+    fn native_working(&self, cx: &App) -> bool {
+        self.state
+            .read(cx)
+            .native
+            .as_ref()
+            .is_some_and(|native| native.working())
+    }
+
     pub(crate) fn interrupt_selected(&mut self, cx: &mut Context<Self>) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
@@ -8804,7 +8969,7 @@ impl Composer {
         if !begin_interrupt(&mut self.interrupting, &chat_id) {
             return;
         }
-        let params = interrupt_params(&chat_id);
+        let params = interrupt_request_params(self.state.read(cx), &chat_id);
         let task_chat_id = chat_id.clone();
         let failure_chat = chat_id.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -11560,6 +11725,7 @@ mod tests {
                             input_hint: None,
                             workspace_command: None,
                             invocation: invocation.clone(),
+                            idle_only: false,
                         }],
                     );
                     composer.refilter_slash(cx);
@@ -15064,6 +15230,177 @@ mod tests {
         let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
         assert!(input_request_resolved(&t, "r1"));
         assert!(!input_request_resolved(&t, "other"));
+    }
+
+    fn mimir_chat(id: &str) -> roboco_proto::Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "deviceId": "local", "cwd": "/work", "archived": false,
+            "createdAt": chrono::Utc::now(),
+            "config": { "harness": "mimir", "model": "stale/old-model", "reasoning": "high",
+                "sandbox": "workspace-write" },
+        }))
+        .unwrap()
+    }
+
+    fn host_configured(active_request: Option<&str>) -> roboco_proto::NativeChatState {
+        roboco_proto::NativeChatState {
+            link: roboco_proto::NativeLink::Attached,
+            configuration: Some(roboco_proto::NativeConfiguration {
+                provider: Some("anthropic".into()),
+                model: Some("claude-sonnet".into()),
+                reasoning: Some("low".into()),
+                mode: roboco_proto::NativeMode::Build,
+            }),
+            active_request: active_request.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn submit(composer: &Entity<Composer>, text: &str, cx: &mut gpui::TestAppContext) {
+        composer.update(cx, |composer, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.set_text(text, cx));
+            composer.on_submit(cx);
+        });
+    }
+
+    /// An existing Mimir chat opened a moment ago has no host state yet. A
+    /// send then could carry the chat row's stale model into the host, so it
+    /// waits; once the host's configuration lands the prompt goes without
+    /// any per-chat model, reasoning or options.
+    #[gpui::test]
+    fn native_sends_wait_for_the_host_state_then_never_carry_stale_chat_settings(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let state = cx.new(|_| AppState::new());
+        let mut wire = crate::native_dock::scripted::attach(&state, cx);
+        state.update(cx, |state, cx| {
+            state.chats = vec![mimir_chat("m")];
+            state.select_chat(Some("m".into()), cx);
+        });
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        crate::native_dock::scripted::pump(&runtime, cx);
+        wire.drain();
+        assert_eq!(
+            state.read_with(cx, |state, _| state.native_config_authority()),
+            crate::native::ConfigAuthority::AwaitingHost
+        );
+        submit(&composer, "hello", cx);
+        crate::native_dock::scripted::pump(&runtime, cx);
+        assert!(
+            wire.drain()
+                .iter()
+                .all(|frame| frame.method.as_deref() != Some(methods::QUEUE_COMMAND)),
+            "nothing is sent before the chat's host state arrives"
+        );
+        composer.read_with(cx, |composer, cx| {
+            assert_eq!(composer.input.read(cx).text(), "hello", "the draft is kept");
+            assert!(composer.send_blocked(cx));
+        });
+
+        state.update(cx, |state, cx| {
+            state
+                .receive_transcript_update(
+                    roboco_doc::TranscriptUpdate {
+                        replay_baseline: None,
+                        frame: roboco_doc::TranscriptFrame::Reset { reset: Vec::new() },
+                        context_usage: None,
+                        native: Some(host_configured(None)),
+                    },
+                    cx,
+                )
+                .unwrap();
+        });
+        composer.update(cx, |composer, cx| composer.on_submit(cx));
+        crate::native_dock::scripted::pump(&runtime, cx);
+        let frames = wire.drain();
+        let run = crate::native_dock::scripted::only(&frames, methods::QUEUE_COMMAND);
+        assert_eq!(run.params["chatId"], "m");
+        let request = &run.params["command"]["request"];
+        assert_eq!(request["prompt"], "hello");
+        assert_eq!(request["model"], serde_json::Value::Null, "{request}");
+        assert_eq!(request["reasoning"], serde_json::Value::Null, "{request}");
+        assert_eq!(request["modelOptions"], serde_json::json!({}), "{request}");
+    }
+
+    /// A host command typed while Mimir works goes now, as a prompt the engine
+    /// routes into the running request. An idle-only one waits in the queue.
+    #[gpui::test]
+    fn native_host_commands_go_now_while_mimir_works(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let state = cx.new(|_| AppState::new());
+        let mut wire = crate::native_dock::scripted::attach(&state, cx);
+        state.update(cx, |state, _| {
+            state.chats = vec![mimir_chat("m")];
+            state.selected_chat = Some("m".into());
+            state.native = Some(host_configured(Some("req-1")));
+            state.native_projected = true;
+            state.begin_pending_send("m", "earlier", chrono::Utc::now());
+        });
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        composer.update(cx, |composer, cx| {
+            assert_eq!(composer.button_mode(cx), SendButtonMode::Stop);
+            composer.slash_cache.insert(
+                "native".into(),
+                vec![InvocationCandidate {
+                    workspace_command: None,
+                    name: "compact".into(),
+                    description: "Compact".into(),
+                    input_hint: None,
+                    invocation: roboco_proto::invocation::Invocation::Command {
+                        name: "compact".into(),
+                    },
+                    idle_only: true,
+                }],
+            );
+        });
+        submit(&composer, "/goal ship the retry work", cx);
+        crate::native_dock::scripted::pump(&runtime, cx);
+        let frames = wire.drain();
+        let run = crate::native_dock::scripted::only(&frames, methods::QUEUE_COMMAND);
+        assert_eq!(run.params["chatId"], "m");
+        assert_eq!(
+            run.params["command"]["request"]["prompt"],
+            "/goal ship the retry work"
+        );
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.method.as_deref() != Some(methods::QUEUE_MESSAGE)),
+            "a host command never waits in the message queue"
+        );
+
+        composer.update(cx, |composer, _| composer.send_task = None);
+        state.update(cx, |state, _| {
+            state.begin_pending_send("m", "later", chrono::Utc::now())
+        });
+        submit(&composer, "/compact", cx);
+        crate::native_dock::scripted::pump(&runtime, cx);
+        let frames = wire.drain();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.method.as_deref() != Some(methods::QUEUE_COMMAND)),
+            "an idle-only command is not sent into the running request: {frames:?}"
+        );
+        composer.read_with(cx, |composer, _| {
+            assert!(
+                composer
+                    .failure()
+                    .is_some_and(|failure| failure.contains("queue messages")),
+                "it took the queue path, which this test engine does not offer"
+            );
+        });
     }
 }
 

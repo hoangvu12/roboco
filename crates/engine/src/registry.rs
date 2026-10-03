@@ -793,6 +793,31 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| roboco_harness::AcpHarness::antigravity().installed()),
         Box::new(|| Ok(Arc::new(roboco_harness::AcpHarness::antigravity()) as Arc<dyn Harness>)),
     );
+    // Mimir through the Roboco bridge plugin, same lazy pattern: the static
+    // descriptor mirrors MimirHarness. One shared bridge per agent directory
+    // serves every Mimir chat and holds this harness's execution gate until
+    // its process tree is reaped. Reasoning levels live on each model.
+    let mimir_gate = registry.gate(HarnessId::Mimir);
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Mimir,
+            name: "Mimir".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::StepBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| roboco_harness::MimirHarness::new().installed()),
+        Box::new(move || {
+            Ok(
+                Arc::new(
+                    roboco_harness::MimirHarness::new().with_execution_gate(mimir_gate.clone()),
+                ) as Arc<dyn Harness>,
+            )
+        }),
+    );
     registry
 }
 
@@ -929,7 +954,8 @@ mod tests {
                 HarnessId::Hermes,
                 HarnessId::Pi,
                 HarnessId::Opencode,
-                HarnessId::Antigravity
+                HarnessId::Antigravity,
+                HarnessId::Mimir
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());

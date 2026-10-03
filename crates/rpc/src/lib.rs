@@ -54,6 +54,8 @@ pub mod methods {
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
+    /// `{chatId, commandId}` → `SessionCommandEntry | null`, read-only.
+    pub const GET_COMMAND: &str = "GetCommand";
     /// Peer-to-peer delivery fallback: the SENDER's engine forwards a queued
     /// command entry (client-minted id and all) straight over the device-room
     /// link when its chat2 rows can't reach the edge but the host's peer link
@@ -206,6 +208,19 @@ pub mod methods {
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";
+    // Native conversations (Mimir). Reads only; controls travel as `native`
+    // commands through QueueCommand so each executes at most once.
+    /// `{force?}` → `NativeReadiness` for this device.
+    pub const GET_NATIVE_READINESS: &str = "GetNativeReadiness";
+    /// `{chatId}` → `NativeChatCatalog` from the chat's attached conversation.
+    pub const GET_NATIVE_CATALOG: &str = "GetNativeCatalog";
+    /// `{chatId}` → `NativePlanArtifact | null` with the plan's Markdown.
+    pub const GET_NATIVE_PLAN: &str = "GetNativePlan";
+    /// `{chatId}` → `[NativeChild]`, the canonical inventory (never claims a completion).
+    pub const LIST_NATIVE_CHILDREN: &str = "ListNativeChildren";
+    /// `{chatId, handle, attempt}` → that attempt's `NativeChildOutcome`, or
+    /// `null` while it runs; read without delivering it.
+    pub const GET_NATIVE_CHILD_OUTCOME: &str = "GetNativeChildOutcome";
     // Updates (ControlRpc, relay-forwardable — a device reports/applies its own
     // binary's update). Stream: current UpdateStatus, then every change.
     pub const UPDATE_STATUS: &str = "UpdateStatus";

@@ -5,26 +5,26 @@ import type { ChatConfig } from "./ChatConfig";
 /**
  * The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
  */
-export type MutateParams = { "op": "createChat", chatId: string, 
+export type MutateParams = { "op": "createChat", chatId: string,
 /**
  * The project the chat is created in — fixes host device + base cwd.
  * `None` mints a project-less chat: `deviceId` picks the host and the
  * cwd defaults to `~` (expanded on the host at run time).
  */
-spaceId?: string, 
+spaceId?: string,
 /**
  * Host device for a project-less chat; ignored when `spaceId` is set.
  */
-deviceId?: string, config?: ChatConfig, 
+deviceId?: string, config?: ChatConfig,
 /**
  * The picked ref, named on the row from the first frame (the footer
  * read "Select ref" until the diff reconciler stamped it).
  */
-branch?: string, 
+branch?: string,
 /**
  * Cwd override (isolated-worktree path); default = the space's folder.
  */
-cwd?: string, 
+cwd?: string,
 /**
  * The chat this one hangs off: the conversation a side chat was
  * forked from, or the chat whose agent is creating this one (Roboco

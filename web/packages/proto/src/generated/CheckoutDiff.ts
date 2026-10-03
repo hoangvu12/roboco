@@ -5,7 +5,7 @@ import type { DiffFileSummary } from "./DiffFileSummary";
 /**
  * Working-tree diff for a checkout — latest-only sidecar, 3MiB patch cap.
  */
-export type CheckoutDiff = { checkoutId: string, deviceId: string, cwd: string, patch: string, files: Array<DiffFileSummary>, additions: number, deletions: number, 
+export type CheckoutDiff = { checkoutId: string, deviceId: string, cwd: string, patch: string, files: Array<DiffFileSummary>, additions: number, deletions: number,
 /**
  * True when the patch was truncated at the byte cap ("Partial snapshot").
  */

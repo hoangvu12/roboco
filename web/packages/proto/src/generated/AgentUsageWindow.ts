@@ -3,7 +3,7 @@
 /**
  * CLI plan rate-limit window (accounts settings meters) — NOT app token accounting.
  */
-export type AgentUsageWindow = { label: string, 
+export type AgentUsageWindow = { label: string,
 /**
  * 0.0..=1.0
  */

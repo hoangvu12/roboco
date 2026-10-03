@@ -6,7 +6,7 @@
  * reply is the whole reply again (continuations re-join before the watch);
  * this carries only the new tokens.
  */
-export type TextAppend = { entry: string, part: string, text: string, 
+export type TextAppend = { entry: string, part: string, text: string,
 /**
  * Total text length of the part after the append (desync tripwire).
  */

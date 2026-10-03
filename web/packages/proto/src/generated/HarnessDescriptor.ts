@@ -7,17 +7,17 @@ import type { SteeringMode } from "./SteeringMode";
 /**
  * What `ListHarnesses` reports per harness.
  */
-export type HarnessDescriptor = { id: HarnessId, name: string, supportsSteering: boolean, steeringMode: SteeringMode, reasoningLevels: Array<ReasoningLevel>, 
+export type HarnessDescriptor = { id: HarnessId, name: string, supportsSteering: boolean, steeringMode: SteeringMode, reasoningLevels: Array<ReasoningLevel>,
 /**
  * Whether the agent's CLI is present on the listing device (the settings
  * enable-gate). Defaults true so catalogs from engines predating the
  * field never read as uninstallable.
  */
-installed: boolean, 
+installed: boolean,
 /**
  * Explicit CLI installation is available on the listing device.
  */
-canInstall: boolean, 
+canInstall: boolean,
 /**
  * Whether the listing device offers this harness (Settings → Providers).
  * `None` — the catalog came from an engine predating the setting — means
