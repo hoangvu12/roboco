@@ -74,7 +74,7 @@ dialect and leaves the user's configured servers alone:
 | ACP (Devin, Grok, Hermes, Antigravity) | `session/new` and `session/load` → `mcpServers: [{name, command, args, env}]` |
 | OpenCode | Child-only `OPENCODE_CONFIG_CONTENT`: `mcp.roboco` on 1.x, `mcp.servers.roboco` on 2.x |
 | Codex   | `thread/start` config overrides `mcp_servers.roboco.{command,args,env}` |
-| Cursor  | SDK `Agent.create` / `Agent.resume` → inline `mcpServers.roboco` |
+| Cursor  | SDK `Agent.create` / `Agent.resume` → inline `mcpServers.roboco`, plus `local.settingSources: ["user", "team", "mdm", "plugins"]` so `~/.cursor/mcp.json` and plugin servers load (not `project`: the SDK skips MCP approvals, so repo-defined servers would run unprompted) |
 | Pi      | `--extension <bridge>` + the server spec in `ROBOCO_MCP_SERVER` |
 
 OpenCode preserves inherited inline configuration and other servers. Its config

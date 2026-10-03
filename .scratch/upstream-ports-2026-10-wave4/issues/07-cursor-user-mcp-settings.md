@@ -24,10 +24,31 @@ with `tests/cursor.rs` — keep them in sync.
 nextest cursor suites; run the cursor path in the fake SDK fixture to
 assert `settingSources`.
 
-- [ ] `~/.cursor/mcp.json` and plugin servers reach the agent
-- [ ] Project source excluded (no unapproved repo servers/commands)
-- [ ] Fake SDK asserts the setting source list
+- [x] `~/.cursor/mcp.json` and plugin servers reach the agent
+- [x] Project source excluded (no unapproved repo servers/commands)
+- [x] Fake SDK asserts the setting source list
 - [ ] Tests green
-- [ ] Port commit records upstream SHA
+- [x] Port commit records upstream SHA
 
 ## Comments
+
+**Port mapping (upstream a7e505e6, #616):** all four upstream files map
+1:1 onto ours — `crates/harness/src/cursor/shim.mjs` (the `local`
+object gains `settingSources: ["user", "team", "mdm", "plugins"]` with
+upstream's approval-gating rationale comment; rebranded "zeron server" →
+"roboco server" in the comment),
+`crates/harness/tests/fixtures/fake-cursor-sdk.mjs` (records
+`{mcpServers, settingSources: local.settingSources}` beside the server
+map, not inside it — create and resume),
+`crates/harness/tests/cursor_shim.rs` (assertions re-pathed under
+`options["mcpServers"]["roboco"]` plus the settingSources list assertion
+with the never-"project" comment), and `docs/mcp.md` (Cursor table row,
+`mcpServers.roboco` spelling kept).
+
+**Exclusions:** none — upstream's #616 is exactly these four files; no
+CI/edge/iOS hunks existed.
+
+Verification: `rustfmt --edition 2024 crates/harness/tests/cursor_shim.rs`
+(clean — no drift); reading-only verification otherwise per the wave's
+build economy; test execution deferred to the wave-final batched pass
+(user directive).

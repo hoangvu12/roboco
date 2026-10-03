@@ -119,15 +119,13 @@ fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedS
                 Some(latest) => format!("{installed} · v{latest} available"),
                 None => format!("{installed} · Update available"),
             };
-            if status.can_apply {
-                available
-            } else {
-                status
-                    .manual_command
-                    .as_deref()
-                    .map(|instruction| format!("{available} · {instruction}"))
-                    .unwrap_or(available)
-            }
+            // Applicable Homebrew updates still name the brew command when the
+            // cask or formula has not published the upstream release yet.
+            status
+                .manual_command
+                .as_deref()
+                .map(|instruction| format!("{available} · {instruction}"))
+                .unwrap_or(available)
         }
         HarnessUpdatePhase::WaitingForIdle => format!("{installed} · Waiting for agent to be idle"),
         HarnessUpdatePhase::Preparing => format!("{installed} · Preparing update…"),
@@ -1879,6 +1877,13 @@ mod tests {
             label.as_ref(),
             "v1.0.0 · npm install -g @openai/codex"
         );
+        // Applicable Homebrew updates still name the brew command when the
+        // cask or formula has not published the upstream release yet.
+        let mut brew = fixture_status(roboco_proto::HarnessId::Codex, Phase::Available);
+        brew.can_apply = true;
+        brew.manual_command = Some("brew upgrade --cask codex".into());
+        let (label, _) = super::harness_update_label(&brew, &theme);
+        assert_eq!(label.as_ref(), "v1.0.0 · v2.0.0 available · brew upgrade --cask codex");
     }
 
     #[gpui::test]
