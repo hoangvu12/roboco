@@ -11,7 +11,7 @@ library, no lazy loading.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Research:** `.scratch/web-parity-next/research.md` §1; the per-language
 token specs below are implementation-ready.
@@ -80,8 +80,18 @@ for an unknown label stays untouched.
 
 ## 5. Acceptance checklist
 
-- [ ] All 8 languages tokenized; markdown lights up the markup roles
-- [ ] Aliases mirror the desktop table (incl. console→bash, python3)
-- [ ] json stays comment-free; jsonc comments
-- [ ] `tests/syntax.test.ts` covers every category per language
-- [ ] Full app suite green
+- [x] All 8 languages tokenized; markdown lights up the markup roles
+- [x] Aliases mirror the desktop table (incl. console→bash, python3)
+- [x] json stays comment-free; jsonc comments
+- [x] `tests/syntax.test.ts` covers every category per language
+- [x] Full app suite green
+
+## Comments
+
+**Implemented and reviewed** (branch `ticket/wpn-01-syntax-language-coverage`, commits `d33ce339` → review fixes on top):
+
+- All eight languages registered in `web/packages/app/src/lib/syntax.ts` — toml/lua/nix as `LANGUAGES` specs (new `longStrings`/`configKeys`/`numberWords` knobs), css/markdown/dockerfile/make as dedicated functions, jsonc as a comment-aware sibling of json. Zero renderer edits, zero imports added.
+- Verification: `tests/syntax.test.ts` 11/11 (one block per language exercising every §2 category, alias mirror, jsonc-vs-json, untouched generic fallback); `pnpm exec tsc --noEmit` clean; full app suite `pnpm exec vitest run` → **147 files / 2204 tests green**; consumer suites (markdown, markdown-doc, diff, diff-file-open, files, files-line-reveal, file-document) green.
+- Regression proof: old (f375fcb0) vs new `highlightCode` compared across every pre-existing label — byte-identical everywhere; only `md`/`htm` (new dispatch) and `json` literals (boolean fix, required by the jsonc row) differ. 86 spec-table probes + all 31 desktop aliases probed as resolving identically to their canonical labels.
+- Two-axis code review passed (Standards: stale SyntaxRole contract comment fixed, duplicated string scanner extracted, `tokenizeMakeText`'s fallback param renamed; Spec: nothing missing). Documented deviations, desktop-faithful by design: Lua `nil`/`true` color as boolean (not keyword), make assignment LHS → constant, `!=`/`::=` operators included, css pseudo-classes → attribute and units → type per the desktop's css query.
+- Known residual edges (conservative tokenizer, cosmetic only): css context heuristics on rare constructs (keyframes names render tag, media-feature values attribute), nix `'''` escapes and Lua `[=[` levels unhandled, TOML literal string ending in a backslash over-scans, markdown `***both***` renders plain.

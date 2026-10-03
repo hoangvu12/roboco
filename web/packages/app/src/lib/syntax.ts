@@ -25,24 +25,25 @@ export type SyntaxRole =
   | "tag"
   | "attribute"
   | "macro"
-  // The roles the desktop's `HighlightKind` (crates/syntax/src/lib.rs:60-92)
-  // carries that this tokenizer never emits: the union stays complete so a
-  // future tokenizer upgrade maps one-for-one, and every member already has
-  // its `.tk-*` CSS rule.
+  // The remaining desktop `HighlightKind` roles (crates/syntax/src/lib.rs:60-92)
+  // this tokenizer never emits: the union stays complete so a future
+  // tokenizer upgrade maps one-for-one, and every member already has its
+  // `.tk-*` CSS rule.
   | "typeBuiltin"
   | "constructor"
   | "functionBuiltin"
   | "variable"
   | "parameter"
   | "label"
+  | "embedded"
+  | "invalid"
+  // The markup roles the markdown tokenizer emits.
   | "markupHeading"
   | "markupRaw"
   | "markupLink"
   | "markupReference"
   | "markupEmphasis"
-  | "markupStrong"
-  | "embedded"
-  | "invalid";
+  | "markupStrong";
 
 export interface SyntaxToken {
   readonly text: string;
@@ -216,6 +217,20 @@ function push(tokens: SyntaxToken[], text: string, role: SyntaxRole | null): voi
     return;
   }
   tokens.push({ text, role });
+}
+
+/**
+ * Scans a quoted string from `start` (the opening quote) — backslash
+ * escapes inside, and a missing closer dies at the newline so it can't
+ * swallow the rest of the block. Returns the end index, exclusive.
+ */
+function scanLineString(code: string, start: number): number {
+  const quote = code[start]!;
+  let j = start + 1;
+  while (j < code.length && code[j] !== quote && code[j] !== "\n") {
+    j += code[j] === "\\" ? 2 : 1;
+  }
+  return j < code.length && code[j] === quote ? j + 1 : j;
 }
 
 /**
@@ -614,15 +629,9 @@ function highlightDockerfile(code: string): SyntaxToken[] {
     }
 
     if (c === '"' || c === "'") {
-      let j = i + 1;
-      while (j < n && code[j] !== c && code[j] !== "\n") {
-        j += code[j] === "\\" ? 2 : 1;
-      }
-      if (j < n && code[j] === c) {
-        j++;
-      }
-      push(tokens, code.slice(i, j), "string");
-      i = j;
+      const end = scanLineString(code, i);
+      push(tokens, code.slice(i, end), "string");
+      i = end;
       continue;
     }
 
@@ -717,12 +726,12 @@ function highlightMake(code: string): SyntaxToken[] {
 /**
  * Scans a make fragment: variable references `$(VAR)` read as constants,
  * `$@`-style automatic variables as variableSpecial; identifiers resolve
- * against the directive keywords. Everything else carries `rest` — plain
- * for make syntax, string inside recipes.
+ * against the directive keywords. Everything else carries `fallback` —
+ * plain for make syntax, string inside recipes.
  */
 function tokenizeMakeText(
   text: string,
-  rest: SyntaxRole | null,
+  fallback: SyntaxRole | null,
   keywords: boolean,
   tokens: SyntaxToken[],
 ): void {
@@ -752,7 +761,7 @@ function tokenizeMakeText(
       IDENT_RE.lastIndex = i;
       const ident = IDENT_RE.exec(text);
       if (ident !== null && ident[0].length > 0) {
-        push(tokens, ident[0], MAKE_KW.has(ident[0]) ? "keyword" : rest);
+        push(tokens, ident[0], MAKE_KW.has(ident[0]) ? "keyword" : fallback);
         i += ident[0].length;
         continue;
       }
@@ -768,7 +777,7 @@ function tokenizeMakeText(
         continue;
       }
     }
-    push(tokens, c, rest);
+    push(tokens, c, fallback);
     i++;
   }
 }
@@ -813,15 +822,9 @@ function highlightCss(code: string): SyntaxToken[] {
     }
 
     if (c === '"' || c === "'") {
-      let j = i + 1;
-      while (j < n && code[j] !== c && code[j] !== "\n") {
-        j += code[j] === "\\" ? 2 : 1;
-      }
-      if (j < n && code[j] === c) {
-        j++;
-      }
-      push(tokens, code.slice(i, j), "string");
-      i = j;
+      const end = scanLineString(code, i);
+      push(tokens, code.slice(i, end), "string");
+      i = end;
       continue;
     }
 
