@@ -215,6 +215,8 @@ struct Entry {
     snapshot: EngineSnapshot,
     client: Option<Arc<RpcClient>>,
     saved: Option<SavedEngine>,
+    /// Keeps a Tailcat `connect` forwarder alive for this registry entry.
+    tailcat: Option<roboco_engine::tailcat::TailcatClient>,
 }
 struct RegistryState {
     entries: BTreeMap<EngineKey, Entry>,
@@ -391,7 +393,12 @@ fn call_deadline(method: &str) -> Duration {
 fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value.lock().unwrap_or_else(|e| e.into_inner())
 }
-fn entry(key: EngineKey, info: EngineInfo, saved: Option<SavedEngine>) -> Entry {
+fn entry(
+    key: EngineKey,
+    info: EngineInfo,
+    saved: Option<SavedEngine>,
+    tailcat: Option<roboco_engine::tailcat::TailcatClient>,
+) -> Entry {
     Entry {
         snapshot: EngineSnapshot {
             key,
@@ -408,6 +415,7 @@ fn entry(key: EngineKey, info: EngineInfo, saved: Option<SavedEngine>) -> Entry 
         },
         client: None,
         saved,
+        tailcat,
     }
 }
 impl EngineRegistry {
@@ -435,7 +443,7 @@ impl EngineRegistry {
         let mut entries = BTreeMap::new();
         entries.insert(
             EngineKey::local(),
-            entry(EngineKey::local(), local_info, None),
+            entry(EngineKey::local(), local_info, None, None),
         );
         for saved in saved.engines {
             if saved.key.is_local() || saved.key.0.is_empty() || entries.contains_key(&saved.key) {
@@ -444,7 +452,7 @@ impl EngineRegistry {
             }
             entries.insert(
                 saved.key.clone(),
-                entry(saved.key.clone(), saved.info.clone(), Some(saved)),
+                entry(saved.key.clone(), saved.info.clone(), Some(saved), None),
             );
         }
         let cache = crate::engine_cache::EngineCache::new(
@@ -519,7 +527,7 @@ impl EngineRegistry {
     pub(crate) fn test_local(info: EngineInfo, client: Arc<RpcClient>) -> Self {
         let (updates, _) = watch::channel(RegistrySnapshot::default());
         let mut entries = BTreeMap::new();
-        let mut local = entry(EngineKey::local(), info, None);
+        let mut local = entry(EngineKey::local(), info, None, None);
         local.snapshot.state = EngineConnectionState::Connected;
         local.client = Some(client);
         entries.insert(EngineKey::local(), local);
@@ -570,7 +578,12 @@ impl EngineRegistry {
             self.inner.configuration_error.is_none(),
             "Saved engine configuration needs repair before pairing"
         );
-        let (base, code) = parse_pairing_url(pairing_url)?;
+        let tailcat_dir = self
+            .inner
+            .path
+            .parent()
+            .map(|parent| parent.join("tailcat-forwarders"));
+        let (base, code, tailcat) = resolve_pairing_input(pairing_url, tailcat_dir.as_deref())?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
@@ -612,7 +625,7 @@ impl EngineRegistry {
         };
         lock(&self.inner.state)
             .entries
-            .insert(key.clone(), entry(key.clone(), info, Some(saved)));
+            .insert(key.clone(), entry(key.clone(), info, Some(saved), tailcat));
         if let Err(err) = self.persist() {
             lock(&self.inner.state).entries.remove(&key);
             return Err(err);
@@ -735,6 +748,35 @@ fn update(weak: &Weak<Inner>, key: &EngineKey, f: impl FnOnce(&mut Entry)) -> bo
     }
     publish(&inner);
     true
+}
+fn resolve_pairing_input(
+    input: &str,
+    tailcat_dir: Option<&std::path::Path>,
+) -> anyhow::Result<(String, String, Option<roboco_engine::tailcat::TailcatClient>)> {
+    if input.trim_start().starts_with(roboco_engine::tailcat::INVITE_PREFIX) {
+        let invite = roboco_engine::tailcat::TailcatInvite::decode(input)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        anyhow::ensure!(
+            !invite.expired(now),
+            "that tailcat invite has expired; mint a new one"
+        );
+        let data_dir = tailcat_dir
+            .map(|path| {
+                let session = path.join(uuid::Uuid::new_v4().to_string());
+                std::fs::create_dir_all(&session)?;
+                Ok::<_, anyhow::Error>(session)
+            })
+            .transpose()?
+            .unwrap_or_else(std::env::temp_dir);
+        let client =
+            roboco_engine::tailcat::TailcatClient::start(&data_dir, &invite.address, None)?;
+        let base = client.url().trim_end_matches('/').to_string();
+        return Ok((base, invite.token, Some(client)));
+    }
+    let (base, code) = parse_pairing_url(input)?;
+    Ok((base, code, None))
 }
 fn parse_pairing_url(input: &str) -> anyhow::Result<(String, String)> {
     let mut url =

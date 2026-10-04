@@ -1,4 +1,9 @@
-import { parsePairingUrl, redeemPairingCode } from "@roboco/engine-client";
+import {
+  isTailcatInvite,
+  parsePairingUrl,
+  redeemPairingCode,
+  redeemTailcatInviteViaHelper,
+} from "@roboco/engine-client";
 
 /**
  * The engine registry for the web client — the browser-side peer of the
@@ -77,17 +82,49 @@ function defaultStorage(): StorageLike {
   return candidate ?? memoryStorage();
 }
 
-/** Canonical engine origin key: `http://host:port`, host lowercased. */
+/** Canonical engine registry key. Relay engines keep their `/tailcat-relay/{id}` path. */
 export function canonicalBaseUrl(baseUrl: string): string {
-  return new URL(baseUrl).origin;
+  const url = new URL(baseUrl);
+  if (url.pathname.startsWith("/tailcat-relay/")) {
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  }
+  return url.origin;
 }
 
-/** The engine's WebSocket endpoint: the remote listener serves RPC at `/`. */
+/** The engine's WebSocket endpoint. Relay engines connect on their relay path. */
 export function engineWsEndpoint(baseUrl: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/";
+  if (!url.pathname.startsWith("/tailcat-relay/")) {
+    url.pathname = "/";
+  } else if (!url.pathname.endsWith("/")) {
+    url.pathname = `${url.pathname}/`;
+  }
   return url.toString();
+}
+
+/** True when the registry key is a same-origin tailcat relay path. */
+export function isTailcatRelayEngineKey(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).pathname.startsWith("/tailcat-relay/");
+  } catch {
+    return false;
+  }
+}
+
+/** The direct (non-relay) engine on this page origin, if paired. */
+export function directOriginEngineKey(fleet: FleetState, pageOrigin: string): string | null {
+  for (const engine of fleet.engines) {
+    try {
+      const url = new URL(engine.baseUrl);
+      if (url.origin === pageOrigin && !url.pathname.startsWith("/tailcat-relay/")) {
+        return engine.baseUrl;
+      }
+    } catch {
+      // ignore malformed stored urls
+    }
+  }
+  return null;
 }
 
 /** The host[:port] fragment shown for an engine. */
@@ -133,6 +170,25 @@ export class EngineStore {
   async redeemPairingUrl(pairingUrl: string, label: string): Promise<StoredEngine> {
     if (this.#configurationError !== null) {
       throw new Error("Saved engine configuration needs repair before pairing");
+    }
+    if (isTailcatInvite(pairingUrl)) {
+      const grant = await redeemTailcatInviteViaHelper(pairingUrl, label);
+      const baseUrl = canonicalBaseUrl(grant.baseUrl);
+      const engine: StoredEngine = {
+        baseUrl,
+        credential: grant.credential,
+        label: grant.session.label,
+        sessionId: grant.session.id,
+        pairedAt: this.#now(),
+        deviceId: null,
+      };
+      const others = this.#state.engines.filter((entry) => entry.baseUrl !== baseUrl);
+      this.#setState({
+        active: baseUrl,
+        engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)),
+        configurationError: null,
+      });
+      return engine;
     }
     const parsed = parsePairingUrl(pairingUrl);
     const baseUrl = canonicalBaseUrl(parsed.baseUrl);

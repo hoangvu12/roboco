@@ -95,9 +95,15 @@ vi.mock("../src/state/session-provider", () => ({
   useEngineSessions: () => new Map(),
 }));
 
-vi.mock("../src/state/fleet", () => ({
-  useFleetSnapshot: () => h.snapshot,
-}));
+vi.mock("../src/state/fleet", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/state/fleet")>();
+  return {
+    ...actual,
+    useFleetSnapshot: () => h.snapshot,
+    useFleetRegistry: () => ({ engines: [] }),
+    useFleet: () => ({ active: "eng-1", engines: [], configurationError: null }),
+  };
+});
 
 // ── jsdom gaps the mounted card hits ────────────────────────────────────────
 

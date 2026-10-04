@@ -4,7 +4,7 @@ import { encodeScopedId, methods } from "@roboco/engine-client";
 import type { ChangeRequestSummary, ContextUsage, Device, HarnessId, RepoRef, Space } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
-import { useFleetSnapshot } from "../state/fleet";
+import { useFleetSnapshot, useFleetRegistry, engineStatesOf } from "../state/fleet";
 import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
@@ -16,6 +16,7 @@ import {
   useDraftGitState,
   type CheckoutKind,
 } from "../lib/footer-git-draft";
+import { targetForDevicePick, targetForProjectPick } from "../lib/new-chat-target";
 import { sidebarStore } from "../state/sidebar";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
 import { AccountUsageIndicator } from "./account-usage";
@@ -238,26 +239,24 @@ export function DeviceChip({
   effectiveDevice,
   ownDeviceId,
   now,
-  fallbackLabel = "Select device",
+  fallbackLabel = "Select engine",
   placement = "anchorAbove",
 }: DeviceChipProps) {
   const [open, setOpen] = useState(false);
+  const registry = useFleetRegistry();
+  const engineStates = useMemo(() => engineStatesOf(registry), [registry]);
 
-  // Device order: this device first, then by lowercased name, then by id.
+  // Engine hosts first (one row per paired engine), then by name.
   const rows = useMemo(() => {
     return [...devices].sort((a, b) => {
-      const aLocal = a.id === ownDeviceId ? 0 : 1;
-      const bLocal = b.id === ownDeviceId ? 0 : 1;
-      if (aLocal !== bLocal) {
-        return aLocal - bLocal;
-      }
       const byName = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
       return byName !== 0 ? byName : a.id.localeCompare(b.id);
     });
-  }, [devices, ownDeviceId]);
+  }, [devices]);
 
   const label = effectiveDevice?.name ?? fallbackLabel;
-  const offline = effectiveDevice !== null && !deviceOnline(effectiveDevice, now);
+  const offline =
+    effectiveDevice !== null && !deviceOnline(effectiveDevice, now, engineStates);
 
   return (
     <PickerCard
@@ -283,9 +282,9 @@ export function DeviceChip({
         open={open}
         onClose={() => setOpen(false)}
         rows={rows}
-        ownDeviceId={ownDeviceId}
         effectiveDeviceId={effectiveDevice?.id ?? null}
         now={now}
+        engineStates={engineStates}
       />
     </PickerCard>
   );
@@ -295,16 +294,16 @@ function DeviceCard({
   open,
   onClose,
   rows,
-  ownDeviceId,
   effectiveDeviceId,
   now,
+  engineStates,
 }: {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly rows: readonly Device[];
-  readonly ownDeviceId: string | null;
   readonly effectiveDeviceId: string | null;
   readonly now: number;
+  readonly engineStates: ReturnType<typeof engineStatesOf>;
 }) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -314,7 +313,8 @@ function DeviceCard({
 
   function pick(device: Device): void {
     const snapshot = composerDefaults.getSnapshot();
-    rememberTarget(device.id, snapshot.project, snapshot.noProject);
+    const next = targetForDevicePick(snapshot, device.id);
+    rememberTarget(next.device, next.project, next.noProject);
     onClose();
   }
 
@@ -365,8 +365,12 @@ function DeviceCard({
               onClick={() => pick(device)}
             >
               <span className="menu-row-label">{device.name}</span>
-              {device.id === ownDeviceId && <span className="picker-row-tag">You</span>}
-              {!deviceOnline(device, now) && <Icon name="wifiOff" size={12} className="picker-row-offline" />}
+              {device.id === effectiveDeviceId && (
+                <span className="picker-row-tag">Selected engine</span>
+              )}
+              {!deviceOnline(device, now, engineStates) && (
+                <Icon name="wifiOff" size={12} className="picker-row-offline" />
+              )}
             </MenuRowNav>
           ))}
         </div>
@@ -426,8 +430,8 @@ function ProjectCard({
   const filtered = filterIndices(query, labels).map((ix) => spaces[ix]!);
 
   function pickSpace(space: Space): void {
-    const snapshot = composerDefaults.getSnapshot();
-    rememberTarget(snapshot.device, space.id, false);
+    const next = targetForProjectPick(space.id, space.deviceId);
+    rememberTarget(next.device, next.project, next.noProject);
     onClose();
   }
 

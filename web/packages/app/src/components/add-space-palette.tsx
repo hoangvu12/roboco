@@ -1,11 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon, type IconName } from "@roboco/icons";
 import type { Device, FolderEntry } from "@roboco/proto";
-import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
-import { deviceOnline } from "../lib/view";
+import { useEngineSession, useEngineSessions } from "../state/session-provider";
+import { useNow } from "../state/hooks";
+import { useFleetRegistry, useFleetSnapshot } from "../state/fleet";
+import { deviceOnline, type EnginePresence } from "../lib/view";
+import { engineStatesOf } from "../state/fleet";
 import {
   addSpaceCompletion,
   breadcrumbs,
@@ -84,18 +86,19 @@ function readyListing(flow: AddSpaceFlow): { path: string; entries: FolderEntry[
 
 export function AddSpacePalette() {
   const session = useEngineSession();
-  const snapshot = useWatchSnapshot(session);
+  const sessions = useEngineSessions();
+  const registry = useFleetRegistry();
+  const fleetSnapshot = useFleetSnapshot();
+  const engineStates = useMemo(() => engineStatesOf(registry), [registry]);
   const now = useNow(30_000);
   const state = useAddSpaceSnapshot();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // The store is module-level; the mounted card is its window onto the
-  // active session, re-attached on engine switches WITHOUT closing — the
-  // shell never keys the sidebar tree to engines, so an open palette
-  // survives a switch (ticket 43). The canvas hop rides a ref so the
-  // binding only re-runs when the session does.
+  // The module-level store closes an open flow when its engine changes,
+  // dropping in-flight responses. The canvas hop rides a ref so this binding
+  // only re-runs when the session changes.
   const goToCanvasRef = useRef(() => {
     void navigate({ to: "/" });
   });
@@ -105,14 +108,14 @@ export function AddSpacePalette() {
   useEffect(() => {
     addSpaceStore.attach({
       session,
+      sessions,
+      registry,
       goToCanvas: () => {
         goToCanvasRef.current();
       },
     });
-  }, [session]);
-  // Only a true host unmount force-closes — nothing is left to paint, so
-  // no exit window either. A session change re-runs the effect above; it
-  // is not an unmount, and an open flow stays open.
+  }, [session, sessions, registry]);
+  // On a true host unmount there is nothing left to paint; drain the flow.
   useEffect(() => () => addSpaceStore.forceClose(), []);
 
   // The shell's Escape ladder owns Escape at the reserved addSpace
@@ -144,7 +147,7 @@ export function AddSpacePalette() {
     return null;
   }
 
-  const devices = snapshot?.devices.rows ?? [];
+  const devices = fleetSnapshot.devices.rows;
   const device = flow.deviceId !== null ? devices.find((row) => row.id === flow.deviceId) ?? null : null;
 
   // The scrim press is Base UI's dismissal now (modal Dialog, pointer
@@ -176,7 +179,7 @@ export function AddSpacePalette() {
       <div className="add-space-card">
         <Header flow={flow} inputRef={inputRef} />
         <Crumbs flow={flow} device={device} />
-        <Results flow={flow} devices={devices} now={now} listRef={listRef} />
+        <Results flow={flow} devices={devices} now={now} engineStates={engineStates} listRef={listRef} />
         {flow.error !== null && <div className="add-space-error">{flow.error}</div>}
         <Footer flow={flow} />
       </div>
@@ -380,9 +383,10 @@ function Results(props: {
   readonly flow: AddSpaceFlow;
   readonly devices: readonly Device[];
   readonly now: number;
+  readonly engineStates: EnginePresence;
   readonly listRef: RefObject<HTMLDivElement | null>;
 }) {
-  const { flow, devices, now, listRef } = props;
+  const { flow, devices, now, engineStates, listRef } = props;
   const listing = readyListing(flow);
   const loadError = typeof flow.listing === "object" && "error" in flow.listing ? flow.listing.error : null;
   const listingPath = flow.step === "folders" ? (listing?.path ?? null) : null;
@@ -417,7 +421,7 @@ function Results(props: {
               <Highlighted text={device.name} query={flow.query} />
               <span className="add-space-row-rest" />
               <span
-                className={`add-space-presence ${deviceOnline(device, now) ? "add-space-presence-online" : ""}`}
+                className={`add-space-presence ${deviceOnline(device, now, engineStates) ? "add-space-presence-online" : ""}`}
               />
             </MenuRowNav>
           ))}

@@ -4784,9 +4784,15 @@ mod tests {
         // pinned archive install; there is no separate vendor CLI).
         // Antigravity resolves through `resolve_launch`, which validates the
         // override exists — unlike the env-override branch the Grok test
-        // uses — so the adapter must be a real file.
+        // uses — so the adapter must be a real file. `validate_native_override`
+        // also rejects extensionless paths on Windows (only .exe/.cmd/.bat/
+        // .com launch there), so the fixture carries an extension there.
         let dir = tempfile::tempdir().unwrap();
-        let adapter = dir.path().join("managed-agy-server");
+        let adapter = dir.path().join(if cfg!(windows) {
+            "managed-agy-server.exe"
+        } else {
+            "managed-agy-server"
+        });
         std::fs::write(&adapter, b"placeholder\n").unwrap();
         #[cfg(unix)]
         {

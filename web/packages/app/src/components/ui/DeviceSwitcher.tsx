@@ -24,6 +24,8 @@ export interface DeviceSwitcherProps {
   readonly target: string | null;
   /** Retarget the page (set_target_device). `null` returns to the local device. */
   readonly onTargetChange: (target: string | null) => void;
+  /** When plural, the menu heading reads "Engines" (one row per paired engine). */
+  readonly engineCount?: number;
 }
 
 export function DeviceSwitcher(props: DeviceSwitcherProps) {
@@ -62,8 +64,11 @@ export function DeviceSwitcher(props: DeviceSwitcherProps) {
       overlaySource="device-switcher"
       trigger={trigger}
     >
-      <MenuHeading>Devices</MenuHeading>
-      {props.devices.map((device, ix) => {
+      <MenuHeading>{(props.engineCount ?? 0) > 1 ? "Engines" : "Devices"}</MenuHeading>
+      {props.devices.length === 0 ? (
+        <p className="picker-empty-note">No paired engines yet.</p>
+      ) : (
+        props.devices.map((device, ix) => {
         const isActive = device.id === effective;
         const deviceIsLocal = device.id === props.localDeviceId;
         return (
@@ -83,7 +88,8 @@ export function DeviceSwitcher(props: DeviceSwitcherProps) {
             <span className={`device-switcher-dot ${deviceIsLocal ? "device-switcher-dot-local" : ""}`} />
           </MenuRow>
         );
-      })}
+      })
+      )}
     </PickerCard>
   );
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { encodeScopedId } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
 import {
   chatRowHeight,
+  engineDisplayName,
   compareSidebarChats,
   promoteLocalDeviceGroup,
   resortOffsets,
@@ -190,6 +192,23 @@ describe("resort glide spec", () => {
 });
 
 describe("sidebarGroups / sidebarVisibleOrder", () => {
+  it("shows the paired engine label and host in settings", () => {
+    expect(
+      engineDisplayName({
+        label: "Remote engine",
+        baseUrl: "https://remote.example:8443/",
+        deviceId: "deadbeefcafe",
+      }),
+    ).toBe("remote.example:8443 · deadbeef");
+  });
+  it("disambiguates matching device names on different engines", () => {
+    const a = encodeScopedId("https://a.test", "device");
+    const b = encodeScopedId("https://b.test", "device");
+    const rows = chatRows([chat("a", { deviceId: a }), chat("b", { deviceId: b })])
+      .map((row) => ({ ...row, deviceName: "Studio" }));
+    expect(sidebarGroups(rows, "byDevice", null).map((bucket) => bucket.group?.label))
+      .toEqual(["Studio · a.test", "Studio · b.test"]);
+  });
   it("groups by device in first-seen order and promotes the local group", () => {
     const rows = chatRows([
       chat("r1", { deviceId: "remote-1" }),

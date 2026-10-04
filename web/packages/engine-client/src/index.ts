@@ -40,6 +40,17 @@ export {
   type ParsedPairingUrl,
   type RedeemOptions,
 } from "./pairing";
+export {
+  TAILCAT_INVITE_PREFIX,
+  isTailcatInvite,
+  parseTailcatInvite,
+  type ParsedTailcatInvite,
+} from "./tailcat-invite";
+export {
+  DEFAULT_TAILCAT_BROWSER_HELPER,
+  redeemTailcatInviteViaHelper,
+  type TailcatHelperOptions,
+} from "./tailcat-helper";
 export { RpcError, wireError, type RpcErrorKind } from "./rpc-error";
 export {
   browserWebSocket,

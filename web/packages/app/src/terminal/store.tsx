@@ -39,10 +39,9 @@ import {
  *   them by key (`Terminal(tab)` surfaces). No auto-collapse: the SHELL owns
  *   emptiness (it falls back to the surface picker).
  *
- * Lifetime: one store per host, bound to the current engine session. A
- * session swap (engine switch, re-pair) closes every tab — the PTYs belong
- * to the old connection's watches; the desktop never faces this because its
- * panel's targets float across devices.
+ * Lifetime: one store per host, retaining a tab map per engine. Switching
+ * routes swaps the visible map without closing the other engine's PTYs;
+ * replacing a connection closes only that engine's tabs.
  *
  * React reads the store through a version counter (useSyncExternalStore);
  * tab records hold the mutable xterm instances and are never recreated.
@@ -154,7 +153,8 @@ function terminalFonts(): { family: string; size: number } {
 export class TerminalStore {
   readonly #mode: "drawer" | "embedded";
   #session: EngineSession | null = null;
-  readonly #chats = new Map<string, ChatTerminals>();
+  #chats = new Map<string, ChatTerminals>();
+  readonly #engineChats = new Map<string, { session: EngineSession; chats: Map<string, ChatTerminals> }>();
   readonly #listeners = new Set<TerminalStoreListener>();
   #version = 0;
   #fonts: { family: string; size: number };
@@ -173,12 +173,14 @@ export class TerminalStore {
         return;
       }
       this.#fonts = next;
-      for (const chat of this.#chats.values()) {
-        for (const tab of chat.tabs) {
-          tab.term.options.fontFamily = next.family;
-          tab.term.options.fontSize = next.size;
-          tab.term.options.lineHeight = terminalLineHeight(next.size);
-          tab.fitter.fit();
+      for (const { chats } of this.#engineChats.values()) {
+        for (const chat of chats.values()) {
+          for (const tab of chat.tabs) {
+            tab.term.options.fontFamily = next.family;
+            tab.term.options.fontSize = next.size;
+            tab.term.options.lineHeight = terminalLineHeight(next.size);
+            if (chats === this.#chats) tab.fitter.fit();
+          }
         }
       }
     });
@@ -193,25 +195,50 @@ export class TerminalStore {
 
   getVersion = (): number => this.#version;
 
-  /** Bind to a new engine session, closing everything the old one owned. */
+  /** Switch the visible engine's tabs without closing another engine's PTYs. */
   bindSession(session: EngineSession | null): void {
     if (session === this.#session) {
       return;
     }
+    const key = session?.engine.baseUrl ?? null;
+    const saved = key === null ? undefined : this.#engineChats.get(key);
+    // A re-pair replaces the client: only tabs tied to that old connection die.
+    if (saved !== undefined && (saved.session.client !== session?.client || saved.session.cache !== session?.cache)) {
+      this.#closeChats(saved.chats);
+      this.#engineChats.delete(key!);
+    }
     this.#session = session;
-    for (const chat of this.#chats.values()) {
+    if (session !== null) {
+      const retained = this.#engineChats.get(key!);
+      this.#chats = retained?.chats ?? new Map();
+      if (retained === undefined) {
+        this.#engineChats.set(key!, { session, chats: this.#chats });
+      } else if (retained.session !== session) {
+        this.#engineChats.set(key!, { session, chats: retained.chats });
+      }
+    } else {
+      this.#chats = new Map();
+    }
+    this.#bump();
+  }
+
+  #closeChats(chats: Map<string, ChatTerminals>): void {
+    for (const chat of chats.values()) {
       for (const tab of chat.tabs) {
         tab.controller.close();
         tab.term.dispose();
       }
     }
-    this.#chats.clear();
-    this.#bump();
+    chats.clear();
   }
 
   dispose(): void {
     this.#unsubscribeFonts();
     this.bindSession(null);
+    for (const { chats } of this.#engineChats.values()) {
+      this.#closeChats(chats);
+    }
+    this.#engineChats.clear();
     this.#listeners.clear();
   }
 
@@ -458,9 +485,11 @@ export class TerminalStore {
     if (theme === undefined) {
       return;
     }
-    for (const chat of this.#chats.values()) {
-      for (const tab of chat.tabs) {
-        tab.term.options.theme = theme;
+    for (const { chats } of this.#engineChats.values()) {
+      for (const chat of chats.values()) {
+        for (const tab of chat.tabs) {
+          tab.term.options.theme = theme;
+        }
       }
     }
   }
@@ -569,7 +598,7 @@ export const paneTerminalStore = new TerminalStore("embedded");
 /**
  * Binds both terminal hosts to the engine session above the route outlet
  * (mirroring the desktop's shell-level panel entities): chat navigation
- * keeps tabs alive, a session swap closes every tab, and a theme-variant
+ * keeps tabs alive, an engine switch preserves the other engine's tabs, and a theme-variant
  * change on `<html>` re-themes every emulator.
  */
 export function TerminalProvider({ children }: { children: ReactNode }) {

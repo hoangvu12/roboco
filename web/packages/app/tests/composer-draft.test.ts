@@ -4,6 +4,8 @@ import type { DraftConfig } from "../src/lib/composer-actions";
 import { SidebarStore } from "../src/lib/sidebar-store";
 import {
   applyDraftUpdate,
+  chatDraftKey,
+  ChatDraftStore,
   composerDefaults,
   defaultDraft,
   draftFromChat,
@@ -51,6 +53,19 @@ const MODELS: readonly Model[] = [
   { id: "sonnet", label: "Sonnet", reasoningLevels: ["low", "medium", "high"], options: [] },
 ];
 
+describe("new-thread draft ownership", () => {
+  it("restores A's unsent canvas text after switching to B and back", () => {
+    const drafts = new ChatDraftStore();
+    const a = chatDraftKey("", "https://a.test");
+    const b = chatDraftKey("", "https://b.test");
+    drafts.set(a, "A's unsent text");
+    expect(drafts.get(b)).toBe("");
+    drafts.set(b, "B's unsent text");
+    expect(drafts.get(a)).toBe("A's unsent text");
+    expect(drafts.get(b)).toBe("B's unsent text");
+    expect(chatDraftKey("scoped-chat", "https://a.test")).toBe("scoped-chat");
+  });
+});
 describe("defaultDraft", () => {
   // Ticket 77 intentional correction: the old seed was the model's FIRST
   // level ("low") or a synthetic "medium", bypassing native default

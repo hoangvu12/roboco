@@ -206,6 +206,7 @@ export function addSpaceCompletion(
  *  ListDrives), exactly the desktop's `Option<u64>`. */
 export interface StaleGuard {
   readonly identity: string;
+  readonly engineKey: string | null;
   readonly revision: number | null;
   readonly deviceId: string | null;
 }
@@ -213,6 +214,7 @@ export interface StaleGuard {
 /** The flow fields the guard compares against. */
 export interface StaleFlowFields {
   readonly identity: string;
+  readonly engineKey: string | null;
   readonly revision: number;
   readonly deviceId: string | null;
 }
@@ -226,6 +228,7 @@ export interface StaleFlowFields {
 export function isStaleResponse(flow: StaleFlowFields, request: StaleGuard): boolean {
   return (
     flow.identity !== request.identity ||
+    flow.engineKey !== request.engineKey ||
     (request.revision !== null && flow.revision !== request.revision) ||
     flow.deviceId !== request.deviceId
   );

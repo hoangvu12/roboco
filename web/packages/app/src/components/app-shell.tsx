@@ -1103,6 +1103,9 @@ function Welcome() {
       <Icon name="robocoLogo" size={44} className="empty-state-mark" />
       <h1>Roboco</h1>
       <p>This browser has no paired engine yet.</p>
+      <p className="empty-state-detail">
+        Pair with an HTTPS link or a <code>roboco-tailcat:…</code> invite from any engine.
+      </p>
       <Link className="btn btn-solid" to="/pair">
         Pair an engine
       </Link>

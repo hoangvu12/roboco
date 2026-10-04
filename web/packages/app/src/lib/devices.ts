@@ -1,5 +1,6 @@
 import type { IconName } from "@roboco/icons";
 import type { Device } from "@roboco/proto";
+import { encodeScopedId, parseScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import { DEVICE_ONLINE_WINDOW_SECS } from "./view";
 
 /**
@@ -15,6 +16,37 @@ import { DEVICE_ONLINE_WINDOW_SECS } from "./view";
  */
 
 export { DEVICE_ONLINE_WINDOW_SECS };
+
+/**
+ * One host device row per supervised engine — the composer/footer engine picker
+ * lists these, not every paired browser client (zeron PR #526 / `5cd23bd7`).
+ */
+export function fleetDeviceRows(
+  registry: EngineRegistrySnapshot,
+  projected: readonly Device[],
+): readonly Device[] {
+  return registry.engines.flatMap((engine) => {
+    const hostRaw = engine.info?.deviceId;
+    if (hostRaw === null || hostRaw === undefined) {
+      return [];
+    }
+    const ownId = encodeScopedId(engine.key, hostRaw);
+    const own = projected.find((device) => device.id === ownId);
+    return own === undefined ? [] : [own];
+  });
+}
+
+/** Drop mirrored/synced project rows that are not owned by their engine host. */
+export function fleetHostDeviceIds(registry: EngineRegistrySnapshot): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const engine of registry.engines) {
+    const hostRaw = engine.info?.deviceId;
+    if (hostRaw !== null && hostRaw !== undefined) {
+      ids.add(encodeScopedId(engine.key, hostRaw));
+    }
+  }
+  return ids;
+}
 
 /**
  * The engine connection state behind a device row's presence dot

@@ -1,7 +1,7 @@
 //! Settings controls the real remote bind; every assertion goes through HTTP/RPC.
 use roboco_engine::{
     EngineCore, EngineProfile, HarnessId, HarnessRegistry,
-    remote_access::{NetworkOptions, RemoteAccessSettings},
+    remote_access::{NetworkOptions, NetworkTransport, RemoteAccessSettings},
 };
 use roboco_rpc::methods;
 use serde_json::{Value, json};
@@ -172,4 +172,105 @@ async fn conflicting_and_malformed_configuration_stays_local() {
         server.abort();
         core.shutdown().await;
     }
+}
+
+#[test]
+fn tailcat_transport_round_trips_and_legacy_files_default_to_network() {
+    let dir = tempfile::tempdir().unwrap();
+    roboco_engine::remote_access::save(
+        dir.path(),
+        &RemoteAccessSettings {
+            transport: NetworkTransport::Tailcat,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        roboco_engine::remote_access::load(dir.path())
+            .settings
+            .transport,
+        NetworkTransport::Tailcat
+    );
+    // A settings file written before transports existed loads as the network
+    // listener it was written for.
+    std::fs::write(
+        dir.path().join("remote-access.json"),
+        r#"{"enabled":true,"bindAddress":"127.0.0.1:27655","publicUrl":null}"#,
+    )
+    .unwrap();
+    let legacy = roboco_engine::remote_access::load(dir.path());
+    assert!(legacy.error.is_none(), "{:?}", legacy.error);
+    assert_eq!(legacy.settings.transport, NetworkTransport::Network);
+}
+
+#[tokio::test]
+async fn conflicting_transport_settings_stay_local() {
+    let dir = tempfile::tempdir().unwrap();
+    roboco_engine::remote_access::save(
+        dir.path(),
+        &RemoteAccessSettings {
+            enabled: true,
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            transport: NetworkTransport::Tailcat,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (core, rpc, server) = engine(
+        dir.path(),
+        NetworkOptions {
+            flag: Some(true),
+            transport: Some(NetworkTransport::Network),
+            ..Default::default()
+        },
+    )
+    .await;
+    let snapshot = rpc
+        .call(methods::GET_REMOTE_ACCESS, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(snapshot["status"]["enabled"], false);
+    assert!(snapshot["status"]["address"].is_null());
+    assert!(
+        snapshot["status"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("transport")),
+        "{}",
+        snapshot["status"]["error"]
+    );
+    server.abort();
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn tailcat_transport_without_an_adapter_stays_local() {
+    // No adapter sits beside the test binary, so the route cannot come up: the
+    // engine must refuse to serve instead of leaving an unpublishable listener.
+    let dir = tempfile::tempdir().unwrap();
+    roboco_engine::remote_access::save(
+        dir.path(),
+        &RemoteAccessSettings {
+            enabled: true,
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            transport: NetworkTransport::Tailcat,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (core, rpc, server) = engine(dir.path(), NetworkOptions::default()).await;
+    let snapshot = rpc
+        .call(methods::GET_REMOTE_ACCESS, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(snapshot["status"]["enabled"], false);
+    assert!(snapshot["status"]["address"].is_null());
+    assert!(
+        snapshot["status"]["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("Tailcat route unavailable")),
+        "{}",
+        snapshot["status"]["error"]
+    );
+    server.abort();
+    core.shutdown().await;
 }

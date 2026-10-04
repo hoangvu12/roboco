@@ -13,6 +13,9 @@ export function describeRedeemError(error: unknown): string {
       return "That pairing link did not work — it may have expired or already have been used.";
     }
     if (error.kind === "transport") {
+      if (error.message.length > 0 && error.message !== "Could not reach the pairing endpoint") {
+        return error.message;
+      }
       return "Could not reach that engine. Check the URL and that the engine is running.";
     }
     return error.message;

@@ -6,6 +6,7 @@
 mod daemon;
 mod paths;
 mod pairing_cli;
+mod tailcat_browser_helper;
 mod update_cli;
 
 use clap::{Parser, Subcommand};
@@ -45,6 +46,12 @@ enum Command {
         /// URL clients use through a tunnel, or an explicit LAN address.
         #[arg(long)]
         pairing_base_url: Option<String>,
+        /// How clients reach this engine: `network` (default) or `tailcat`.
+        #[arg(long)]
+        network_transport: Option<String>,
+        /// DERP map URL for a Tailcat route (default: the adapter's own map).
+        #[arg(long)]
+        tailcat_derp_map: Option<String>,
     },
     /// Show the local engine status.
     Status,
@@ -207,11 +214,32 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Some(Command::Engine { command }) => pairing_cli::run(command, &paths::data_dir()),
-        Some(Command::Headless { network, network_address, pairing_base_url }) => {
+        Some(Command::Headless {
+            network,
+            network_address,
+            pairing_base_url,
+            network_transport,
+            tailcat_derp_map,
+        }) => {
+            let transport = match network_transport
+                .as_deref()
+                .map(roboco_engine::remote_access::NetworkTransport::parse)
+            {
+                Some(None) => anyhow::bail!("--network-transport must be network or tailcat"),
+                Some(Some(transport)) => Some(transport),
+                None => None,
+            };
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(async {
                 let engine = roboco_engine::Engine::new(engine_config_from_env()).with_network(
-                    roboco_engine::remote_access::NetworkOptions::from_environment(network, network_address, pairing_base_url));
+                    roboco_engine::remote_access::NetworkOptions::from_environment(
+                        network,
+                        network_address,
+                        pairing_base_url,
+                        transport,
+                        tailcat_derp_map,
+                    ),
+                );
                 engine.run().await
             })
         }
