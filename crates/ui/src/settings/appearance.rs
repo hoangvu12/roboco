@@ -4175,7 +4175,7 @@ mod tests {
     #[test]
     fn background_row_state_sees_the_default_and_keeps_unavailable_distinct() {
         let default_background = crate::settings::NewThreadComposerBackground {
-            path: "/data/new-thread-backgrounds/default-new-thread-background.png".into(),
+            path: "/data/new-thread-backgrounds/default-new-thread-background.jpg".into(),
             name: "Roboco".into(),
             adjustment: crate::settings::NewThreadBackgroundAdjustment::default(),
         };
@@ -4208,7 +4208,7 @@ mod tests {
     #[test]
     fn background_row_meta_names_the_default_and_keeps_the_stored_copy() {
         let default_background = crate::settings::NewThreadComposerBackground {
-            path: "/data/new-thread-backgrounds/default-new-thread-background.png".into(),
+            path: "/data/new-thread-backgrounds/default-new-thread-background.jpg".into(),
             name: "Roboco".into(),
             adjustment: crate::settings::NewThreadBackgroundAdjustment::default(),
         };

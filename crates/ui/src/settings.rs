@@ -63,13 +63,15 @@ pub const FILES_AUTOSAVE_DELAY_MAX_MS: u64 = 10_000;
 
 const FILE_NAME: &str = "ui-settings.json";
 const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
-const DEFAULT_NEW_THREAD_BACKGROUND_FILE: &str = "default-new-thread-background.png";
+const DEFAULT_NEW_THREAD_BACKGROUND_FILE: &str = "default-new-thread-background.jpg";
 const DEFAULT_NEW_THREAD_BACKGROUND_BYTES: &[u8] =
-    include_bytes!("../assets/backgrounds/default-new-thread-background.png");
+    include_bytes!("../assets/backgrounds/default-new-thread-background.jpg");
 const DEFAULT_NEW_THREAD_BACKGROUND_NAME: &str = "Roboco";
 
 /// Path of the bundled default new-thread background, materialized into the
-/// managed backgrounds directory on first use. It backs the new-thread canvas
+/// managed backgrounds directory on first use and refreshed whenever it no
+/// longer matches the bundled bytes, so an asset swap reaches installs that
+/// already materialized an older default. It backs the new-thread canvas
 /// whenever no user background is installed; installing a custom one replaces
 /// it on screen, and removing the custom one falls back to it again. The file
 /// is never referenced by `ui-settings.json`, so the managed-file retirement
@@ -80,10 +82,22 @@ pub fn default_new_thread_background(cx: &App) -> Option<std::path::PathBuf> {
         .data_dir
         .join(NEW_THREAD_BACKGROUND_DIR)
         .join(DEFAULT_NEW_THREAD_BACKGROUND_FILE);
-    if !destination.is_file() {
+    // Length is a cheap staleness signal: the materialized copy is a cache of
+    // the bundled asset, never user data, so a mismatch means an older
+    // bundle's default and is safe to overwrite in place.
+    let stale = std::fs::metadata(&destination)
+        .map(|metadata| metadata.len() != DEFAULT_NEW_THREAD_BACKGROUND_BYTES.len() as u64)
+        .unwrap_or(true);
+    if stale {
         let parent = destination.parent()?;
         std::fs::create_dir_all(parent).ok()?;
         std::fs::write(&destination, DEFAULT_NEW_THREAD_BACKGROUND_BYTES).ok()?;
+        // Older bundles materialized the default under a `.png` name; retire
+        // that legacy copy so the managed directory holds one default.
+        let legacy = destination.with_extension("png");
+        if legacy != destination {
+            let _ = std::fs::remove_file(&legacy);
+        }
     }
     Some(destination)
 }
@@ -2720,6 +2734,49 @@ mod tests {
             assert_eq!(
                 UiSettings::load(dir.path()).new_thread_composer_background,
                 None
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn default_background_materialization_overwrites_stale_copies_and_legacy_names(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            init(UiSettings::default(), dir.path(), cx);
+            // Fresh install: the bundled bytes land in the managed dir and
+            // actually decode — the same contract `install` enforces for
+            // user-chosen files.
+            let fresh = default_new_thread_background(cx).unwrap();
+            assert_eq!(
+                fresh.file_name().unwrap(),
+                DEFAULT_NEW_THREAD_BACKGROUND_FILE
+            );
+            assert_eq!(
+                std::fs::read(&fresh).unwrap(),
+                DEFAULT_NEW_THREAD_BACKGROUND_BYTES
+            );
+            crate::new_thread_background_image::decode(DEFAULT_NEW_THREAD_BACKGROUND_BYTES)
+                .unwrap();
+            // An install from an older bundle left a shorter copy and a
+            // `.png` legacy sibling behind; resolution refreshes the cache
+            // instead of serving the stale artwork forever.
+            std::fs::write(&fresh, b"stale").unwrap();
+            let legacy = fresh.with_extension("png");
+            std::fs::write(&legacy, b"legacy").unwrap();
+            let refreshed = default_new_thread_background(cx).unwrap();
+            assert_eq!(refreshed, fresh);
+            assert_eq!(
+                std::fs::read(&refreshed).unwrap(),
+                DEFAULT_NEW_THREAD_BACKGROUND_BYTES
+            );
+            assert!(!legacy.exists(), "the legacy `.png` default is retired");
+            assert_eq!(
+                std::fs::read_dir(dir.path().join(NEW_THREAD_BACKGROUND_DIR))
+                    .unwrap()
+                    .count(),
+                1
             );
         });
     }

@@ -378,7 +378,7 @@ export class Readiness {
 // ---------------------------------------------------------------------------
 
 /** The bundled fallback's public URL — served from the app bundle. */
-export const DEFAULT_NEW_THREAD_BACKGROUND_URL = "/backgrounds/default-new-thread-background.png";
+export const DEFAULT_NEW_THREAD_BACKGROUND_URL = "/backgrounds/default-new-thread-background.jpg";
 
 /**
  * A background is only "available" when one is installed AND its file still
