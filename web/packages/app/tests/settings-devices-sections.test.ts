@@ -1,26 +1,6 @@
 // @vitest-environment jsdom
 
-/**
- * Ticket 08 (web-parity-next): the Devices page's two-section split
- * (desktop devices.rs:517-557) — "This device" / "Other devices" labeled
- * sections (the `settings-section-header` + `settings-card` idiom the
- * page's "Engines" fold already uses), local first, and the per-row
- * "This device" badge dropped (the header is the marker, as on desktop).
- *
- * The REAL DevicesSettingsPage mounts here (the mounted-suite idiom of
- * tests/settings-dialogs.test.ts and account-row.test.ts: no JSX,
- * per-file jsdom pragma, Base UI components run for real in jsdom). The
- * fleet/session/snapshot layers are doubled narrowly — exactly the rows
- * the partition reads — and the router's navigate is a recording double.
- *
- * The scope gate lands as ALWAYS-RENDER for the "Other devices" section:
- * the web's `WatchCacheSnapshot` (engine-client watch-cache.ts:73) does
- * not expose the workspace scope, and the browser can pair remote synced
- * engines, so the desktop's hide-when-Local gate (devices.rs:554-557)
- * has nothing to read — recorded here and in the route's comments. The
- * empty state carries the desktop copy instead
- * ("Pair another device to see it here.", devices.rs:525-536).
- */
+/** Mounted coverage for fleet host rows, local/other grouping, and the pre-identity fallback. */
 
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -69,19 +49,30 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("../src/state/session-provider", () => ({
-  // The page reads exactly `session?.client.engineInfo?.deviceId` — the
-  // engine's own device, not a fleet field.
+  // The session owns the rename RPC; fleet identity controls grouping.
   useEngineSession: () => h.session,
 }));
 
-vi.mock("../src/state/fleet", () => ({
-  // No engines paired: the ticket-45 "Engines" fold renders its empty
-  // copy and stays out of the way of the devices split under test.
-  useFleet: () => ({ active: null, engines: [], configurationError: null }),
-  useFleetRegistry: () => ({ engines: [] }),
-  fleetStore: { redeemPairingUrl: vi.fn(), remove: vi.fn() },
-  forgetEngine: vi.fn(),
-}));
+vi.mock("../src/state/fleet", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/state/fleet")>();
+  return {
+    ...actual,
+    useFleet: () => ({ active: "https://engine.test", engines: [], configurationError: null }),
+    useFleetRegistry: () => ({
+      engines: [{
+        key: "https://engine.test",
+        state: "connected",
+        info: h.localDeviceId === null ? null : { deviceId: h.localDeviceId, capabilities: [] },
+        chats: { rows: [] },
+        spaces: { rows: [] },
+        sessions: { rows: [] },
+        devices: { rows: h.devices },
+      }],
+    }),
+    fleetStore: { redeemPairingUrl: vi.fn(), remove: vi.fn() },
+    forgetEngine: vi.fn(),
+  };
+});
 
 vi.mock("../src/state/hooks", () => ({
   // The local row's presence is the live connection; the snapshot carries
@@ -173,7 +164,7 @@ function device(id: string, name: string): Device {
   };
 }
 
-/** Every section header's title, in DOM order (incl. the Engines fold's). */
+/** Every section header's title, in DOM order. */
 function sectionTitles(): string[] {
   return Array.from(document.querySelectorAll<HTMLHeadingElement>(".settings-section-header h2")).map(
     (header) => header.textContent ?? "",
@@ -205,20 +196,20 @@ function rowNames(card: HTMLElement): string[] {
 // ── The two-section split ──────────────────────────────────────────────────
 
 describe("DevicesSettingsPage — the This device / Other devices split (ticket 08)", () => {
-  it("renders both labeled sections, local first, and drops the per-row badge", () => {
+  it("renders the engine host once in the local section, with other clients below", () => {
     h.devices = [device("dev-b", "Vu's Phone"), device("dev-a", "Vu's Studio")];
     mountDevicesPage();
 
-    // Two labeled sections join the page's, after the ticket-45 Engines
-    // fold: the "This device" / "Other devices" headers of devices.rs
-    // :517-523 and :554-557 (local first).
-    expect(sectionTitles()).toEqual(["Engines", "This device", "Other devices"]);
+    // Engine actions live on the host row, within the existing two sections.
+    expect(sectionTitles()).toEqual(["This device", "Other devices"]);
     // Exactly the engine's own device under "This device"…
     expect(rowNames(sectionCard("This device"))).toEqual(["Vu's Studio"]);
     // …the rest, in registry order, under "Other devices".
     expect(rowNames(sectionCard("Other devices"))).toEqual(["Vu's Phone"]);
-    // The badge is gone — the header is the marker, as on desktop.
-    expect(document.querySelector(".badge")).toBeNull();
+    expect(document.querySelectorAll(".device-row")).toHaveLength(2);
+    expect(sectionCard("This device").querySelector(".badge")?.textContent).toBe("Active engine");
+    // The section heading replaces the old This device badge.
+    expect(Array.from(document.querySelectorAll(".badge")).some((badge) => badge.textContent === "This device")).toBe(false);
   });
 
   it("empty others renders the desktop empty copy, and the section stays up", () => {
@@ -230,14 +221,14 @@ describe("DevicesSettingsPage — the This device / Other devices split (ticket 
     h.devices = [device("dev-a", "Vu's Studio")];
     mountDevicesPage();
 
-    expect(sectionTitles()).toEqual(["Engines", "This device", "Other devices"]);
+    expect(sectionTitles()).toEqual(["This device", "Other devices"]);
     expect(rowNames(sectionCard("This device"))).toEqual(["Vu's Studio"]);
     const others = sectionCard("Other devices");
     expect(rowNames(others)).toEqual([]);
     expect(others.querySelector(".settings-empty")?.textContent).toBe(
       "Pair another device to see it here.",
     );
-    expect(document.querySelector(".badge")).toBeNull();
+    expect(Array.from(document.querySelectorAll(".badge")).some((badge) => badge.textContent === "This device")).toBe(false);
   });
 
   it("a known local id missing from the registry hides the This device section", () => {
@@ -248,9 +239,9 @@ describe("DevicesSettingsPage — the This device / Other devices split (ticket 
     h.localDeviceId = "dev-a";
     mountDevicesPage();
 
-    expect(sectionTitles()).toEqual(["Engines", "Other devices"]);
+    expect(sectionTitles()).toEqual(["Other devices"]);
     expect(rowNames(sectionCard("Other devices"))).toEqual(["Vu's Phone"]);
-    expect(document.querySelector(".badge")).toBeNull();
+    expect(Array.from(document.querySelectorAll(".badge")).some((badge) => badge.textContent === "This device")).toBe(false);
   });
 
   it("before engineInfo loads, the flat list stays — no section headers, no badge", () => {
@@ -261,9 +252,9 @@ describe("DevicesSettingsPage — the This device / Other devices split (ticket 
     h.localDeviceId = null;
     mountDevicesPage();
 
-    expect(sectionTitles()).toEqual(["Engines"]);
+    expect(sectionTitles()).toEqual([]);
     const rows = Array.from(document.querySelectorAll<HTMLElement>(".device-row .settings-row-title"));
     expect(rows.map((title) => title.textContent)).toEqual(["Vu's Studio", "Vu's Phone"]);
-    expect(document.querySelector(".badge")).toBeNull();
+    expect(Array.from(document.querySelectorAll(".badge")).some((badge) => badge.textContent === "This device")).toBe(false);
   });
 });
