@@ -35,6 +35,50 @@ access, `--network` cannot override that choice. Change the saved setting first.
 Conflicts between the flag and environment also disable the remote bind. The
 engine logs the configuration source and the reason for any refusal.
 
+## Tailcat transport
+
+Tailcat publishes the same listener over Tailscale's data plane — WireGuard with
+NAT traversal and public DERP relays — with no account and no control plane. It
+needs the app-owned adapter (`kratos-tailcat`) on both machines: beside the
+Roboco binary, or wherever `ROBOCO_TAILCAT_ADAPTER` points.
+
+```sh
+roboco headless --network --network-transport tailcat
+```
+
+Saved settings and the startup flag must agree, exactly like `--network`; a saved
+`network` with a `tailcat` flag (or the reverse) keeps the engine local and logs
+why. `ROBOCO_NETWORK_TRANSPORT=tailcat` is the environment equivalent. With the
+route up, startup prints an invite instead of a URL:
+
+```
+Tailcat invite: roboco-tailcat:eyJhZGRyZXNzIjoi4oCm
+```
+
+An invite carries the route and a short-lived, single-use pairing code — the
+client's listener port exists only on the client, so there is nothing to put in a
+link. The address inside it can embed a pre-shared key: it is a secret, written
+0600 to `tailcat-address.json` and never logged. `--tailcat-derp-map URL` (or
+`ROBOCO_TAILCAT_DERP_MAP`) points the adapter at your own DERP relay instead of
+its default map. If the route cannot come up, remote access stays off and the
+engine reports why.
+
+### Administering a Tailcat route
+
+```sh
+roboco engine tailcat address          # the address this engine published
+roboco engine tailcat invite --json    # a fresh invite, code included
+roboco engine tailcat connect --invite roboco-tailcat:…
+```
+
+The first two run beside the engine. `connect` runs on the *client* machine: it
+dials the invite and prints that engine's loopback pairing URL, for example
+`http://127.0.0.1:43627/pair#token=…`. Paste it where a pairing link goes — a
+browser tab, or **Settings → Devices** — and keep the forwarder running; it
+dialled out through Tailcat, so there is no inbound port and no tunnel account.
+Everything after the redeem is unchanged: sessions live until revoked, and
+`roboco engine pairing list` / `revoke` work the same over either transport.
+
 ## Pairing administration
 
 These commands work while the engine is running and use its normal data directory
@@ -58,7 +102,8 @@ timestamps, and revocation state. Revocation rejects the session's next connecti
 {
   "enabled": true,
   "bindAddress": "0.0.0.0:27655",
-  "publicUrl": null
+  "publicUrl": null,
+  "transport": "network"
 }
 ```
 
@@ -66,8 +111,9 @@ The Settings toggle takes effect immediately. Manual file edits are read at the
 next startup or Settings change. Invalid files keep remote access off.
 
 The engine serves plain HTTP/WebSocket on trusted networks. For internet access,
-use your own TLS tunnel. Pairing links carry the code in a URL fragment; the
-native client submits it in the Authorization header, never in a request URL.
+use your own TLS tunnel (or Tailcat, above). Pairing links carry the code in a
+URL fragment; the native client submits it in the Authorization header, never in
+a request URL.
 
 ## Using several engines
 

@@ -38,6 +38,8 @@ pub mod sidebar_state;
 pub mod source_control;
 pub mod space_paths;
 pub mod spaces;
+pub mod tailcat;
+pub mod tailcat_relay;
 pub mod terminals;
 pub mod titles;
 mod transcript_history;
@@ -568,7 +570,16 @@ impl Engine {
         runtime.core().sessions.set_ipc_port(config.ipc_port);
         if runtime.core().remote_access.snapshot().await?["status"]["enabled"] == true {
             match runtime.core().remote_access.create_link().await {
-                Ok(link) => println!("Pairing URL: {}", link["url"].as_str().unwrap_or_default()),
+                Ok(link) => {
+                    // A Tailcat link is an invite — route plus pair code — because
+                    // the client's local listener port exists only on the client.
+                    let url = link["url"].as_str().unwrap_or_default();
+                    if url.starts_with(crate::tailcat::INVITE_PREFIX) {
+                        println!("Tailcat invite: {url}");
+                    } else {
+                        println!("Pairing URL: {url}");
+                    }
+                }
                 Err(error) => tracing::warn!(%error, "pairing URL unavailable; configure --pairing-base-url"),
             }
         }
@@ -671,12 +682,29 @@ pub async fn serve_engine_remote(
     let pairing = pairing::PairingStore::open(data_dir)?;
     let socket = tokio::net::TcpListener::bind(address).await?;
     let address = socket.local_addr()?;
+    let tailcat_relays = tailcat_relay::TailcatRelayRegistry::new();
+    let data_dir_buf = data_dir.to_path_buf();
+    let paired = Arc::new(tailcat_relay::PairedListenerContext {
+        data_dir: data_dir_buf.clone(),
+        tailcat_relays: tailcat_relays.clone(),
+    });
     let task = tokio::spawn(listener::serve_listener_with_policy(
         socket,
         service,
         pairing,
         listener::AccessPolicy::Paired,
+        Some(paired.clone()),
     ));
+    let relays = tailcat_relays.clone();
+    tokio::spawn(async move {
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            tailcat_relay::TailcatRelayRegistry::restore_from_disk(&data_dir_buf, &relays)
+        })
+        .await
+        {
+            tracing::warn!(%error, "tailcat relay restore task failed");
+        }
+    });
     Ok(EngineListener { address, task })
 }
 

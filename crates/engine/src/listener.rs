@@ -3,6 +3,7 @@
 //! and authenticates browser WebSockets with a first-frame `Auth` envelope
 //! (ADR 0006); local IPC keeps its native-only boundary.
 use crate::pairing::PairingStore;
+use crate::tailcat_relay::{self, PairedListenerContext};
 use base64::Engine as _;
 use bytes::Bytes;
 use futures::{SinkExt as _, StreamExt as _};
@@ -37,7 +38,7 @@ pub async fn serve_listener(
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
 ) {
-    serve_listener_with_policy(listener, service, pairing, AccessPolicy::Local).await;
+    serve_listener_with_policy(listener, service, pairing, AccessPolicy::Local, None).await;
 }
 
 pub async fn serve_listener_with_policy(
@@ -45,18 +46,21 @@ pub async fn serve_listener_with_policy(
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
     policy: AccessPolicy,
+    paired: Option<Arc<PairedListenerContext>>,
 ) {
     let cancel = tokio_util::sync::CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
     if let Ok(address) = listener.local_addr() {
         tracing::info!(%address, paired = policy == AccessPolicy::Paired, "engine listener serving");
     }
+    let paired_state = paired;
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let service = service.clone();
                 let pairing = pairing.clone();
                 let connection_cancel = cancel.clone();
+                let paired = paired_state.clone();
                 tokio::spawn(async move {
                     let request_cancel = connection_cancel.clone();
                     let handler = service_fn(move |request| {
@@ -65,6 +69,7 @@ pub async fn serve_listener_with_policy(
                             service.clone(),
                             pairing.clone(),
                             policy,
+                            paired.clone(),
                             request_cancel.clone(),
                         )
                     });
@@ -92,6 +97,7 @@ async fn handle(
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
     policy: AccessPolicy,
+    paired: Option<Arc<PairedListenerContext>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<Reply, Infallible> {
     // Preserve the native-only local IPC boundary for HTTP as well as
@@ -110,8 +116,8 @@ async fn handle(
             "query parameters are not supported",
         ));
     }
-    let path = request.uri().path();
-    if path == "/pairing/redeem"
+    let path = request.uri().path().to_owned();
+    if (path == "/pairing/redeem" || path == "/pairing/tailcat-redeem")
         && request.method() == hyper::Method::OPTIONS
         && request.headers().contains_key("origin")
     {
@@ -133,11 +139,35 @@ async fn handle(
     if path == "/pairing/redeem" && request.method() == hyper::Method::POST {
         return Ok(cors_open(redeem(request, pairing).await));
     }
-    // A browser WebSocket upgrade carries no Authorization header; validate
-    // the upgrade shape once so the session gate can let it through for
-    // first-frame authentication.
+    if path == "/pairing/tailcat-redeem" && request.method() == hyper::Method::POST {
+        let Some(context) = paired.as_ref() else {
+            return Ok(reply(StatusCode::NOT_FOUND, "not found"));
+        };
+        return Ok(cors_open(
+            tailcat_relay::tailcat_redeem(request, context.as_ref()).await,
+        ));
+    }
+    let websocket_key = websocket_key(&request).map(str::to_owned);
+    if policy == AccessPolicy::Paired {
+        if let Some(relay_id) = tailcat_relay::relay_id_from_path(&path) {
+            if request.method() == hyper::Method::GET && websocket_key.is_some() {
+                let Some(context) = paired.as_ref() else {
+                    return Ok(reply(StatusCode::NOT_FOUND, "not found"));
+                };
+                if let Some(response) = tailcat_relay::serve_relay_websocket(
+                    relay_id,
+                    request,
+                    context.tailcat_relays.clone(),
+                    cancel,
+                ) {
+                    return Ok(response);
+                }
+            }
+            return Ok(reply(StatusCode::NOT_FOUND, "not found"));
+        }
+    }
     let upgrade_key = if path == "/" && request.method() == hyper::Method::GET {
-        websocket_key(&request).map(str::to_owned)
+        websocket_key
     } else {
         None
     };
@@ -161,13 +191,16 @@ async fn handle(
         if path == "/" {
             return Ok(web_page("index.html"));
         }
-        if let Some(reply) = web_static_asset(path) {
+        if let Some(reply) = web_static_asset(&path) {
             return Ok(reply);
         }
         // SPA fallback: any non-extension path is a client-side route and
         // gets the app shell. Reserved paths still fall through to the
         // credential gate below.
-        if !RESERVED_API_PATHS.contains(&path) && !path.contains('.') {
+        if !RESERVED_API_PATHS.contains(&path.as_str())
+            && !path.contains('.')
+            && tailcat_relay::relay_id_from_path(&path).is_none()
+        {
             return Ok(web_page("index.html"));
         }
     }
@@ -402,7 +435,11 @@ fn static_asset_cache_control(name: &str) -> &'static str {
 /// Paths that must NOT fall through to the SPA shell. They are real
 /// engine routes (credential-gated health, the redeem endpoint) and
 /// returning the app shell for them would mask a 401 / 404.
-const RESERVED_API_PATHS: &[&str] = &["/health", "/pairing/redeem"];
+const RESERVED_API_PATHS: &[&str] = &[
+    "/health",
+    "/pairing/redeem",
+    "/pairing/tailcat-redeem",
+];
 
 /// Allow any origin to read a redeem response; the bearer pair code is the
 /// credential, never the origin. No other route gets CORS headers.
