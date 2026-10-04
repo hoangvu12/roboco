@@ -14,7 +14,7 @@ Produces `target/package/roboco-<version>-linux-<arch>.tar.gz` containing:
   the installer rewrites `Exec`, `TryExec`, and `Icon` to absolute paths under
   `~/.roboco/app/current`, since `~/.local/bin` is often not on a desktop
   session's `PATH`)
-- `roboco.png` — 1024×1024 Roboco app icon
+- `roboco.png` — 512×512 Roboco app icon
 - `install.sh` — installs into `~/.roboco/app/<version>` behind a `current`
   symlink (the layout the in-app updater manages), links `~/.local/bin/roboco`
   to it, and writes the desktop entry and icon under `$XDG_DATA_HOME`

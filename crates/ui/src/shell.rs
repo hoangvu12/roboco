@@ -8779,7 +8779,7 @@ impl Shell {
                         .items_center()
                         .child(
                             icon(icons::ROBOCO_LOGO)
-                                .w(px(41.9))
+                                .w(px(48.0))
                                 .h(px(48.0))
                                 .text_color(theme.text.opacity(0.09)),
                         )
