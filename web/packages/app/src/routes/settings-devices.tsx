@@ -228,7 +228,7 @@ export function DevicesSettingsPage() {
           <input
             className="input mono"
             type="text"
-            placeholder="Paste a pairing URL"
+            placeholder="Paste a pairing URL or roboco-tailcat:… invite"
             value={pairingUrl}
             onChange={(event) => setPairingUrl(event.target.value)}
             autoComplete="off"
@@ -239,7 +239,8 @@ export function DevicesSettingsPage() {
           </button>
         </form>
         <p className="settings-pairing-hint">
-          Create a pairing link in the engine's Remote access settings, then paste it here.
+          Paste an HTTPS pairing link or a <code>roboco-tailcat:…</code> invite. Tailcat pairing
+          runs on the server that serves this page.
         </p>
       </section>
 

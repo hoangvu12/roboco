@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { parseScopedId } from "@roboco/engine-client";
+import { directOriginEngineKey, isTailcatRelayEngineKey } from "../lib/engine-store";
 import { engineRegistry, useFleet, useFleetRegistry } from "./fleet";
 import { fleetStore } from "./fleet";
 import { useSidebar } from "./sidebar";
@@ -87,6 +88,42 @@ export function EngineSessionProvider({ children }: { children: ReactNode }) {
       setSessions(plan.sessions);
     }
   }, [fleet.engines, registry]);
+
+  // After a server restart, tailcat relay paths die while the direct origin
+  // engine on this site still works. If active points at a dead relay, route
+  // the UI to the direct engine so the app is not stuck on "Connecting…".
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const { active } = fleet;
+    if (active === null || !isTailcatRelayEngineKey(active)) {
+      return;
+    }
+    let activeOrigin: string;
+    try {
+      activeOrigin = new URL(active).origin;
+    } catch {
+      return;
+    }
+    if (activeOrigin !== window.location.origin) {
+      return;
+    }
+    const direct = directOriginEngineKey(fleet, window.location.origin);
+    if (direct === null || direct === active) {
+      return;
+    }
+    const relayEntry = registry.engines.find((entry) => entry.key === active);
+    if (relayEntry?.state === "connected") {
+      return;
+    }
+    const directEntry = registry.engines.find((entry) => entry.key === direct);
+    if (directEntry === undefined || directEntry.state === "off") {
+      return;
+    }
+    fleetStore.setActive(direct);
+  }, [fleet, registry]);
+
 
   useEffect(
     () => () => {

@@ -48,7 +48,15 @@ function GateAndPage() {
   const paired = fleet.engines.length > 0;
   const allOff = paired && engines.length > 0 && engines.every((engine) => engine.state === "off");
   const anythingLive =
-    engines.some((engine) => engine.state === "connected" || engine.chats.loaded || engine.spaces.loaded);
+    engines.some(
+      (engine) =>
+        engine.state === "connected" ||
+        engine.state === "reconnecting" ||
+        engine.chats.loaded ||
+        engine.spaces.loaded ||
+        engine.chats.rows.length > 0 ||
+        engine.spaces.rows.length > 0,
+    );
 
   const phase = paired && !onPair ? (allOff ? "failed" : anythingLive ? "ready" : "loading") : "ready";
 

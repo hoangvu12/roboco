@@ -6,35 +6,59 @@ import { describeRedeemError } from "../lib/pairing-errors";
 
 type PairPhase = { kind: "idle" } | { kind: "redeeming" } | { kind: "error"; message: string };
 
+function hashParam(name: string): string | null {
+  const raw = new URLSearchParams(window.location.hash.slice(1)).get(name);
+  if (raw === null) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /**
  * The pairing landing: the engine's pairing link points here with the
  * token in the fragment (never sent to the engine as a URL part). The
- * token auto-redeems; a paste field covers manual pairing and the re-pair
- * flow after a revoked Session. Pairing goes through the fleet layer so a
- * damaged configuration refuses here too, and the registry starts
- * supervising the new engine immediately.
+ * token auto-redeems; `#invite=` carries a URL-encoded Tailcat invite the
+ * same way (avoids copy corruption). A paste field covers manual pairing
+ * and the re-pair flow after a revoked Session. Pairing goes through the
+ * fleet layer so a damaged configuration refuses here too, and the registry
+ * starts supervising the new engine immediately.
  */
 export function PairPage() {
-  const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get("token"));
+  const [token] = useState(() => hashParam("token"));
+  const [tailcatInvite] = useState(() => hashParam("invite"));
+  const autoPair =
+    token !== null
+      ? ({ kind: "https-token" } as const)
+      : tailcatInvite !== null
+        ? ({ kind: "tailcat-invite", invite: tailcatInvite } as const)
+        : null;
   const started = useRef(false);
-  const [phase, setPhase] = useState<PairPhase>(token !== null ? { kind: "redeeming" } : { kind: "idle" });
+  const [phase, setPhase] = useState<PairPhase>(autoPair !== null ? { kind: "redeeming" } : { kind: "idle" });
   const [url, setUrl] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (token === null || started.current) {
+    if (autoPair === null || started.current) {
       return;
     }
     started.current = true;
     void (async () => {
       try {
-        await pairEngine(window.location.href, webDeviceLabel());
+        if (autoPair.kind === "https-token") {
+          await pairEngine(window.location.href, webDeviceLabel());
+        } else {
+          await pairEngine(autoPair.invite, webDeviceLabel());
+        }
         void navigate({ to: "/", replace: true });
       } catch (error) {
         setPhase({ kind: "error", message: describeRedeemError(error) });
       }
     })();
-  }, [token, navigate]);
+  }, [autoPair, navigate]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -58,13 +82,13 @@ export function PairPage() {
       {phase.kind === "error" ? <p className="form-error">{phase.message}</p> : null}
       <form className="pair-form" onSubmit={submit}>
         <label className="add-engine-label" htmlFor="pair-url">
-          Pairing URL
+          Pairing link or Tailcat invite
         </label>
         <input
           id="pair-url"
           className="input"
           type="text"
-          placeholder="http://engine-host:27699/pair#token=…"
+          placeholder="https://…/pair#token=… or roboco-tailcat:…"
           value={url}
           onChange={(event) => setUrl(event.target.value)}
           autoComplete="off"
@@ -74,7 +98,10 @@ export function PairPage() {
           {phase.kind === "redeeming" ? "Pairing…" : "Pair engine"}
         </button>
       </form>
-      <p className="pair-hint">Mint a fresh pairing link from the engine's remote access settings, then open or paste it here.</p>
+      <p className="pair-hint">
+        Paste an HTTPS pairing link, or a <code>roboco-tailcat:…</code> invite from any engine.
+        Tailcat invites are redeemed through this site automatically — no local helper required.
+      </p>
     </main>
   );
 }
