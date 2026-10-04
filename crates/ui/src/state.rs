@@ -116,7 +116,13 @@ pub enum EngineMode {
 /// teardown.
 #[async_trait]
 trait EngineBackend: Send + Sync {
-    fn client(&self) -> &Arc<RpcClient>;
+    /// The current client. The in-process engine swaps its transport on
+    /// reconnect, so request loops must re-fetch this per attempt instead of
+    /// caching the result.
+    fn client(&self) -> Arc<RpcClient>;
+    /// How the registry's supervise loop rebuilds this connection after a
+    /// drop: a URL to dial, or a factory minting a fresh in-process transport.
+    fn reconnect(&self) -> Option<crate::engine_registry::Reconnect>;
     fn mode(&self) -> EngineMode;
     /// The engine's release-checker handle — only an in-process engine can
     /// hand it out (a remote engine's checker is its own, describing ITS
@@ -133,13 +139,34 @@ struct InProcessEngine {
     /// Serves this engine to other viewports over the IPC port. `None` when the
     /// port was already taken — the window still works over its own transport.
     ipc_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    client: Arc<RpcClient>,
+    deferred: Arc<DeferredEngineRpc>,
+    /// The current in-memory transport. A memory server task that dies leaves
+    /// its client permanently closed; [`EngineBackend::reconnect`] mints a
+    /// fresh one and swaps it into this slot, so standing `client()` callers
+    /// heal together with the registry entry.
+    client: Arc<std::sync::RwLock<Arc<RpcClient>>>,
 }
 
 #[async_trait]
 impl EngineBackend for InProcessEngine {
-    fn client(&self) -> &Arc<RpcClient> {
-        &self.client
+    fn client(&self) -> Arc<RpcClient> {
+        self.client
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn reconnect(&self) -> Option<crate::engine_registry::Reconnect> {
+        let deferred: Arc<dyn RpcService> = self.deferred.clone();
+        let slot = self.client.clone();
+        Some(crate::engine_registry::Reconnect::Factory(Arc::new(
+            move || {
+                let client = Arc::new(roboco_rpc::memory_client(deferred.clone()));
+                if let Ok(mut current) = slot.write() {
+                    *current = client.clone();
+                }
+                client
+            },
+        )))
     }
     fn mode(&self) -> EngineMode {
         EngineMode::InProcess
@@ -243,8 +270,11 @@ struct RemoteEngine {
 
 #[async_trait]
 impl EngineBackend for RemoteEngine {
-    fn client(&self) -> &Arc<RpcClient> {
-        &self.client
+    fn client(&self) -> Arc<RpcClient> {
+        self.client.clone()
+    }
+    fn reconnect(&self) -> Option<crate::engine_registry::Reconnect> {
+        Some(crate::engine_registry::Reconnect::Url(self.url.clone()))
     }
     fn mode(&self) -> EngineMode {
         EngineMode::Remote {
@@ -325,11 +355,12 @@ impl EngineHandle {
         let engine_info = Engine::engine_info(&engine_config, WorkspaceScope::Local)?;
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
         let assembled_service = Arc::new(tokio::sync::OnceCell::new());
-        let service: Arc<dyn RpcService> = Arc::new(DeferredEngineRpc {
+        let deferred: Arc<DeferredEngineRpc> = Arc::new(DeferredEngineRpc {
             engine_info: engine_info.clone(),
             state: state_rx.clone(),
             service: assembled_service.clone(),
         });
+        let service: Arc<dyn RpcService> = deferred.clone();
         let client = Arc::new(memory_client(service.clone()));
 
         // Serve the same service on the IPC port so a terminal viewport can
@@ -393,7 +424,8 @@ impl EngineHandle {
                 runtime,
                 boot_task,
                 ipc_task: tokio::sync::Mutex::new(ipc_task),
-                client,
+                deferred,
+                client: Arc::new(std::sync::RwLock::new(client)),
             }),
             engine_info,
             deferred_state: Some(state_rx.clone()),
@@ -474,8 +506,17 @@ impl EngineHandle {
         }
     }
 
-    pub fn client(&self) -> &RpcClient {
+    /// The engine's current client. Re-fetch per request loop: the in-process
+    /// engine swaps its transport on reconnect, so a cached reference pins a
+    /// possibly-dead client.
+    pub fn client(&self) -> Arc<RpcClient> {
         self.inner.client()
+    }
+
+    /// The registry's reconnect path for this engine (see
+    /// [`EngineBackend::reconnect`]).
+    pub(crate) fn reconnect(&self) -> Option<crate::engine_registry::Reconnect> {
+        self.inner.reconnect()
     }
 
     pub fn mode(&self) -> EngineMode {
@@ -1944,7 +1985,7 @@ impl AppState {
         // visible on the client's own channel.
         self.registry = Some(EngineRegistry::test_local(
             handle.engine_info.clone(),
-            handle.inner.client().clone(),
+            handle.inner.client(),
         ));
         self.engine = Some(handle);
     }
@@ -2544,11 +2585,12 @@ fn spawn_registry_watch(
         .unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"))
         .join("paired-engines-v1.json");
     let info = handle.engine_info().clone();
-    let client = handle.inner.client().clone();
-    let reconnect = match handle.mode() {
-        EngineMode::Remote { url } => Some(url),
-        EngineMode::InProcess => None,
-    };
+    let client = handle.inner.client();
+    // Both modes reconnect: a remote engine redials its URL, an embedded one
+    // mints a fresh in-memory transport over the same service. Without this,
+    // a single transport failure left the local entry "Engine is offline"
+    // for the rest of the process's life.
+    let reconnect = handle.reconnect();
     let open = Tokio::spawn(cx, async move {
         EngineRegistry::open(path, info, client, reconnect).await
     });

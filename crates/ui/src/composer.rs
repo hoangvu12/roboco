@@ -6770,7 +6770,7 @@ impl Composer {
         let state = self.state.read(cx);
         let engine = state
             .engine()
-            .map(|engine| engine.client() as *const _ as usize);
+            .map(|engine| std::sync::Arc::as_ptr(&engine.client()) as usize);
         let target = state
             .selected_chat_row()
             .map(|chat| chat.device_id.clone())

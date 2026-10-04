@@ -240,3 +240,102 @@ async fn damaged_pairing_config_preserves_local_access_and_original_bytes() {
     registry.shutdown().await;
     local.shutdown().await;
 }
+
+/// A service that fails every call while `down` is set — a stand-in for the
+/// wedged-engine / dead-transport conditions that end a `drive` loop
+/// mid-session.
+struct WedgedEngine {
+    engine: Arc<dyn roboco_rpc::RpcService>,
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl roboco_rpc::RpcService for WedgedEngine {
+    async fn handle(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<roboco_rpc::RpcReply, RpcError> {
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RpcError::Failed("engine wedged".into()));
+        }
+        self.engine.handle(method, params).await
+    }
+}
+
+fn local_entry(
+    snapshot: &RegistrySnapshot,
+    state: EngineConnectionState,
+) -> Option<&EngineSnapshot> {
+    snapshot
+        .engines
+        .iter()
+        .find(|e| e.key.is_local() && e.state == state)
+}
+
+/// The local entry must survive its transport failing mid-session. Without
+/// the in-process reconnect factory, `supervise` had no reconnect path for
+/// the local engine: the first `drive` failure ended supervision
+/// permanently, every UI call failed as "Engine is offline; reconnecting"
+/// while the engine itself kept running, and only an app restart recovered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_engine_reconnects_after_its_transport_fails() {
+    let engine_dir = tempfile::tempdir().unwrap();
+    let ui_dir = tempfile::tempdir().unwrap();
+    let engine = core(engine_dir.path());
+    let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let service: Arc<dyn roboco_rpc::RpcService> = Arc::new(WedgedEngine {
+        engine: engine.rpc_service(),
+        down: down.clone(),
+    });
+    let client = Arc::new(roboco_rpc::memory_client(service.clone()));
+    let info: EngineInfo = client
+        .call_as(methods::ENGINE_INFO, json!({}))
+        .await
+        .unwrap();
+    // The factory mirrors InProcessEngine::reconnect: a fresh memory
+    // transport over the same service per attempt.
+    let minted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reconnect = {
+        let service = service.clone();
+        let minted = minted.clone();
+        Reconnect::Factory(Arc::new(move || {
+            minted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Arc::new(roboco_rpc::memory_client(service.clone()))
+        }))
+    };
+    let registry = EngineRegistry::open(
+        ui_dir.path().join("paired-engines.json"),
+        info,
+        client,
+        Some(reconnect),
+    )
+    .await
+    .unwrap();
+    wait_for(&registry, |snapshot| {
+        local_entry(snapshot, EngineConnectionState::Connected).is_some()
+    })
+    .await;
+
+    // Wedge the engine: every call fails, so the 5s health check in `drive`
+    // drops the connection.
+    down.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for(&registry, |snapshot| {
+        local_entry(snapshot, EngineConnectionState::Reconnecting).is_some()
+    })
+    .await;
+    // The entry answers offline while wedged — the symptom users saw.
+    assert!(registry.local().call(methods::ENGINE_INFO, json!({})).await.is_err());
+
+    // Unwedge: supervision mints a fresh transport and recovers.
+    down.store(false, std::sync::atomic::Ordering::SeqCst);
+    wait_for(&registry, |snapshot| {
+        local_entry(snapshot, EngineConnectionState::Connected)
+            .is_some_and(|e| e.generation >= 2)
+    })
+    .await;
+    assert!(registry.local().call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert!(minted.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    registry.shutdown().await;
+    engine.shutdown().await;
+}

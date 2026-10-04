@@ -67,6 +67,25 @@ pub enum EngineConnectionState {
     Reconnecting,
     Off,
 }
+
+/// How the supervise loop rebuilds a dead connection for the local registry
+/// entry: dial a URL, or mint a fresh in-process client over the engine's
+/// shared service. Remote entries reconnect through their saved credentials;
+/// this covers the rest.
+///
+/// Without the in-process factory, a single transport failure (an
+/// `ENGINE_INFO` health-check timeout, a dead memory-transport server task)
+/// ended supervision for the embedded engine permanently: `supervise` had
+/// nothing to reconnect with, every UI call failed as "Engine is offline;
+/// reconnecting" forever, and only an app restart recovered — while the
+/// engine itself kept running in-process the whole time.
+#[derive(Clone)]
+pub enum Reconnect {
+    Url(String),
+    /// Infallible: `memory_client` only needs the service and a runtime
+    /// context (supervise runs inside one).
+    Factory(Arc<dyn Fn() -> Arc<RpcClient> + Send + Sync>),
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub key: EngineKey,
@@ -392,12 +411,14 @@ fn entry(key: EngineKey, info: EngineInfo, saved: Option<SavedEngine>) -> Entry 
     }
 }
 impl EngineRegistry {
-    /// Adopt the local bootstrap's client; remote entries reconnect independently.
+    /// Adopt the local bootstrap's client. `reconnect` revives the local entry
+    /// when its transport dies (a URL to dial, or an in-process client factory);
+    /// remote entries reconnect independently through their saved credentials.
     pub async fn open(
         path: PathBuf,
         local_info: EngineInfo,
         client: Arc<RpcClient>,
-        reconnect_url: Option<String>,
+        reconnect: Option<Reconnect>,
     ) -> anyhow::Result<Self> {
         let loaded = match std::fs::read(&path) {
             Ok(bytes) => {
@@ -474,7 +495,7 @@ impl EngineRegistry {
             }),
         };
         registry.publish();
-        registry.spawn(EngineKey::local(), Some(client), reconnect_url);
+        registry.spawn(EngineKey::local(), Some(client), reconnect);
         let remotes: Vec<_> = lock(&registry.inner.state)
             .entries
             .keys()
@@ -679,11 +700,11 @@ impl EngineRegistry {
     fn publish(&self) {
         publish(&self.inner);
     }
-    fn spawn(&self, key: EngineKey, client: Option<Arc<RpcClient>>, local_url: Option<String>) {
+    fn spawn(&self, key: EngineKey, client: Option<Arc<RpcClient>>, reconnect: Option<Reconnect>) {
         let weak = Arc::downgrade(&self.inner);
         let task_key = key.clone();
         let task = tokio::spawn(async move {
-            supervise(weak, task_key, client, local_url).await;
+            supervise(weak, task_key, client, reconnect).await;
         });
         if let Some(old) = lock(&self.inner.state).tasks.insert(key, task) {
             old.abort();
@@ -749,7 +770,7 @@ async fn supervise(
     weak: Weak<Inner>,
     key: EngineKey,
     mut initial: Option<Arc<RpcClient>>,
-    local_url: Option<String>,
+    reconnect: Option<Reconnect>,
 ) {
     let mut delay = Duration::from_millis(500);
     loop {
@@ -767,9 +788,14 @@ async fn supervise(
             roboco_rpc::connect_ws_authenticated(&saved.endpoint, &saved.credential)
                 .await
                 .map(Arc::new)
-        } else if let Some(url) = &local_url {
-            roboco_rpc::connect_ws(url).await.map(Arc::new)
+        } else if let Some(reconnect) = &reconnect {
+            match reconnect {
+                Reconnect::Url(url) => roboco_rpc::connect_ws(url).await.map(Arc::new),
+                Reconnect::Factory(factory) => Ok(factory()),
+            }
         } else {
+            // No reconnect path was provided (test-local clients): the
+            // entry stays offline for the registry's lifetime.
             return;
         };
         let started = std::time::Instant::now();
@@ -781,6 +807,11 @@ async fn supervise(
             .err()
             .map(|e| e.to_string())
             .unwrap_or_else(|| "Engine connection closed".into());
+        // The drop reason was previously stored in `last_error` but never
+        // logged, so an engine going silent left the log showing only
+        // downstream symptoms ("Engine is offline" retries). One line per
+        // drop; retries are bounded by the backoff below.
+        tracing::warn!(engine = %key.0, error = %error, "engine connection dropped");
         let refused =
             error.contains("401") || error.contains("403") || error.contains("identity changed");
         if !update(&weak, &key, |entry| {

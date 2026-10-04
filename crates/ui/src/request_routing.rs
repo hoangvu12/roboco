@@ -124,7 +124,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_real_engines_keep_colliding_ids_and_uploads_separate() {
-        use crate::engine_registry::EngineRegistry;
+        use crate::engine_registry::{EngineRegistry, Reconnect};
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing};
         use roboco_rpc::methods;
@@ -172,7 +172,7 @@ mod tests {
             a.path().join("client-engines.json"),
             info,
             client,
-            Some(url),
+            Some(Reconnect::Url(url)),
         )
         .await
         .unwrap();
