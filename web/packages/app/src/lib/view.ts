@@ -4,6 +4,7 @@ import { parseScopedId } from "@roboco/engine-client";
 import { pendingSendStatus, type PendingSend } from "../state/transcript-store";
 import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
 import { projectPinnedFirst } from "./sidebar-pins";
+import { engineHost } from "./engine-store";
 
 const NO_SENDS: readonly PendingSend[] = [];
 
@@ -16,6 +17,19 @@ const NO_SENDS: readonly PendingSend[] = [];
  */
 
 export const SESSION_STALE_MS = 45_000;
+
+/** Keep project rows on the engine that owns the space's host device (drops sync mirrors). */
+export function fleetSpaceRows(spaces: readonly Space[]): readonly Space[] {
+  return spaces.filter((space) => {
+    try {
+      const spaceEngine = parseScopedId(space.id).engine;
+      const deviceEngine = parseScopedId(space.deviceId).engine;
+      return spaceEngine === null || spaceEngine === deviceEngine;
+    } catch {
+      return true;
+    }
+  });
+}
 
 export type { SidebarOrganization, SidebarSort };
 
@@ -422,7 +436,18 @@ export function sidebarGroups(
   for (const row of rows) {
     let group: SidebarGroup | null = null;
     if (organization === "byDevice") {
-      group = { key: row.deviceId, label: row.deviceName ?? "Unknown device", kind: "device" };
+      const name = row.deviceName ?? "Unknown device";
+      const duplicate = rows.some((other) => other.deviceId !== row.deviceId && (other.deviceName ?? "Unknown device") === name);
+      let label = name;
+      if (duplicate) {
+        try {
+          const engine = parseScopedId(row.deviceId).engine;
+          if (engine !== null) label = `${name} · ${engineHost(engine)}`;
+        } catch {
+          label = `${name} · ${row.deviceId}`;
+        }
+      }
+      group = { key: row.deviceId, label, kind: "device" };
     } else if (organization === "byProject") {
       group = {
         key: row.chat.spaceId ?? `home:${row.deviceId}`,

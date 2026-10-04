@@ -12,8 +12,10 @@ import {
   effectiveRefWorktree,
   useDraftGitState,
 } from "../../lib/footer-git-draft";
+import { resolveNewChatTarget } from "../../lib/new-chat-target";
 import { spacesSorted } from "../../lib/view";
 import { useSidebar } from "../../state/sidebar";
+import { useFleet } from "../../state/fleet";
 import { drawerTerminalStore } from "../../terminal/store";
 import { canvasTerminalKey, terminalOpenCwd } from "../../terminal/session";
 import { CheckoutChip, DeviceChip, ProjectChip, RefChip } from "../composer-footer";
@@ -72,9 +74,7 @@ export interface NewThreadTarget {
  */
 export function useNewThreadTarget(): NewThreadTarget {
   const session = useEngineSession();
-  // The MERGED fleet snapshot: the canvas's device/space pickers span every
-  // engine's scoped rows; the composer's calls go through the routed
-  // session (the picked space's engine, else the active engine).
+  const fleet = useFleet();
   const snapshot = useFleetSnapshot();
   const defaults = useSyncExternalStore(subscribeDefaults, getDefaults, getDefaults);
   const sidebar = useSidebar();
@@ -82,17 +82,15 @@ export function useNewThreadTarget(): NewThreadTarget {
   return useMemo(() => {
     const devices = snapshot?.devices.rows ?? EMPTY_DEVICES;
     const spaces = spacesSorted(snapshot?.spaces.rows ?? EMPTY_SPACES);
-    // `restore_composer_target`: the pick survives only while the row does.
-    const fallback = sidebar.spaceFilter ?? sidebar.lastSpaceId;
-    const projectId = defaults.noProject ? null : (defaults.project ?? fallback);
+    const resolved = resolveNewChatTarget(defaults, sidebar, fleet.active);
+    const projectId = resolved.projectId;
     const space = projectId === null ? null : spaces.find((row) => row.id === projectId) ?? null;
-    // The routed engine's own device, SCOPED to match the merged rows.
     const ownRawDeviceId = session?.client.engineInfo?.deviceId ?? null;
     const own =
       session !== null && ownRawDeviceId !== null
         ? encodeScopedId(session.engine.baseUrl, ownRawDeviceId)
         : null;
-    const effectiveDeviceId = space?.deviceId ?? defaults.device ?? own;
+    const effectiveDeviceId = space?.deviceId ?? resolved.deviceId ?? own;
     const effectiveDevice = devices.find((device) => device.id === effectiveDeviceId) ?? null;
     const targetDeviceId =
       space !== null && own !== null && space.deviceId !== own ? space.deviceId : null;
@@ -106,10 +104,16 @@ export function useNewThreadTarget(): NewThreadTarget {
       effectiveDeviceId,
       targetDeviceId,
     };
-    // `defaults` is a cached snapshot object; the memo keys on its identity,
-    // which changes only when a pick lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot?.devices.rows, snapshot?.spaces.rows, defaults, ownDeviceKey(session), sidebar.spaceFilter, sidebar.lastSpaceId]);
+  }, [
+    snapshot?.devices.rows,
+    snapshot?.spaces.rows,
+    defaults,
+    fleet.active,
+    ownDeviceKey(session),
+    sidebar.spaceFilter,
+    sidebar.lastSpaceId,
+  ]);
 }
 
 /** The routed session's own (scoped) device id as a memo key. */
@@ -142,7 +146,7 @@ export function NewThreadTargetSelectors() {
         effectiveDevice={target.effectiveDevice}
         ownDeviceId={target.ownDeviceId}
         now={now}
-        fallbackLabel="This device"
+        fallbackLabel="Select engine"
         // End-aligned on the canvas (wpn-03 — the desktop's
         // `attach_overlay_end`, pickers.rs:3175); the footer's Layer B
         // keeps the start default.

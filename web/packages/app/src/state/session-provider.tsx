@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { parseScopedId } from "@roboco/engine-client";
+import { encodeScopedId, parseScopedId } from "@roboco/engine-client";
 import { directOriginEngineKey, isTailcatRelayEngineKey } from "../lib/engine-store";
 import { engineRegistry, useFleet, useFleetRegistry } from "./fleet";
 import { fleetStore } from "./fleet";
@@ -24,6 +24,8 @@ import {
 } from "../lib/notifications";
 import { playSound, sessionSoundEnabled } from "../lib/sounds";
 import { appAttentionGate } from "./attention-gate";
+import { composerDefaults, type ComposerDefaults } from "../lib/composer-draft";
+import { resolveNewChatTarget, type NewChatSidebarTarget } from "../lib/new-chat-target";
 
 /**
  * The registry-backed session layer (ticket 31): one `EngineSession` alive
@@ -124,7 +126,6 @@ export function EngineSessionProvider({ children }: { children: ReactNode }) {
     fleetStore.setActive(direct);
   }, [fleet, registry]);
 
-
   useEffect(
     () => () => {
       for (const session of sessionsRef.current.values()) {
@@ -137,14 +138,21 @@ export function EngineSessionProvider({ children }: { children: ReactNode }) {
 
   // ── Routing: which engine is "the" engine for this route ──────────────
   const sidebar = useSidebar();
-  const sidebarFilter = sidebar.spaceFilter ?? sidebar.lastSpaceId;
-  const routedKey = useMemo(
-    () => routedEngineKey(pathname, sidebarFilter, fleet.active),
-    [pathname, sidebarFilter, fleet.active],
+  const defaults = useSyncExternalStore(
+    (listener) => composerDefaults.subscribe(listener),
+    () => composerDefaults.getSnapshot(),
   );
-  const routed =
-    (routedKey !== null ? sessions.get(routedKey) ?? null : null) ??
-    (fleet.active !== null ? sessions.get(fleet.active) ?? null : null);
+  const sidebarTarget: NewChatSidebarTarget = {
+    spaceFilter: sidebar.spaceFilter,
+    lastSpaceId: sidebar.lastSpaceId,
+  };
+  const routedKey = useMemo(
+    () => routedEngineKey(pathname, sidebarTarget, fleet.active, defaults),
+    [pathname, sidebarTarget.spaceFilter, sidebarTarget.lastSpaceId, fleet.active, defaults],
+  );
+  // Never fall through to A when a scoped chip targets B but B's session
+  // has not mounted yet: the composer must not issue a foreign-ID request.
+  const routed = routedKey !== null ? sessions.get(routedKey) ?? null : null;
 
   const retry = useCallback(() => {
     const snapshot = engineRegistry.getSnapshot();
@@ -259,7 +267,7 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
       }
       if (settings.notificationsEnabled && !(settings.notificationsBackgroundOnly && appFocused)) {
         const texts = chatBannerTexts(sound, titleByChat.get(status.chatId) ?? null);
-        postBanner(texts.title, texts.body, status.chatId);
+        postBanner(texts.title, texts.body, encodeScopedId(session.engine.baseUrl, status.chatId));
       }
     }
 
@@ -285,15 +293,18 @@ function SessionNotificationDriver({ session }: { session: EngineSession }) {
 }
 
 /** The engine this route routes to, per `selected_target`'s precedence. */
-function routedEngineKey(pathname: string, spaceFilter: string | null, active: string | null): string | null {
+export function routedEngineKey(
+  pathname: string,
+  sidebar: NewChatSidebarTarget,
+  active: string | null,
+  defaults: Pick<ComposerDefaults, "project" | "device" | "noProject">,
+): string | null {
   const chatId = chatIdOfPath(pathname);
   if (chatId !== null) {
     return scopedEngine(chatId, active);
   }
-  // The new-thread canvas (`/`): the picked space's engine, else the active
-  // engine — the composer targets the space's host when one is picked.
-  if (spaceFilter !== null && (pathname === "/" || pathname === "")) {
-    return scopedEngine(spaceFilter, active);
+  if (pathname === "/" || pathname === "") {
+    return resolveNewChatTarget(defaults, sidebar, active).engineKey;
   }
   return active;
 }

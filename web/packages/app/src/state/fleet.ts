@@ -10,6 +10,8 @@ import {
 } from "@roboco/engine-client";
 import type { ChatStatus, ConnectivitySlot, WatchCacheSnapshot } from "@roboco/engine-client";
 import { EngineStore, engineWsEndpoint, type FleetState, type StoredEngine } from "../lib/engine-store";
+import { fleetDeviceRows } from "../lib/devices";
+import { fleetSpaceRows } from "../lib/view";
 
 /**
  * The origin-scoped engine fleet. `fleetStore` is the pairing storage
@@ -121,13 +123,15 @@ export function useFleetSnapshot(): WatchCacheSnapshot {
       return EMPTY_SNAPSHOT;
     }
     const projected = projectRegistrySnapshot(registry);
+    const devices = fleetDeviceRows(registry, projected.devices);
+    const spaces = fleetSpaceRows(projected.spaces);
     return {
       generation: registry.engines.reduce((total, engine) => total + engine.generation, 0),
       capabilities:
         registry.engines.find((engine) => engine.key === active)?.info?.capabilities ?? [],
       chats: mergedRowSet(registry.engines.map((engine) => engine.chats), projected.chats),
-      spaces: mergedRowSet(registry.engines.map((engine) => engine.spaces), projected.spaces),
-      devices: mergedRowSet(registry.engines.map((engine) => engine.devices), projected.devices),
+      spaces: mergedRowSet(registry.engines.map((engine) => engine.spaces), spaces),
+      devices: mergedRowSet(registry.engines.map((engine) => engine.devices), devices),
       statuses: mergedRowSet(registry.engines.map((engine) => engine.sessions), projected.sessions as ChatStatus[]),
       connectivity: NEVER_CONNECTED_SLOT,
     };

@@ -381,22 +381,21 @@ describe("the Notification wrapper", () => {
     resetPermissionRequestState();
   });
 
-  test("posts with the chat id payload and routes clicks to the chat handler", () => {
+  test("banners for identical raw chat ids retain their engine owner on click", () => {
     const api = installNotificationApi("granted");
     const clicks: string[] = [];
     const uninstall = onChatNotificationClick((chatId) => clicks.push(chatId));
-
-    postBanner("Fix the parser", "Run finished", "chat-42");
-    expect(api.banners).toHaveLength(1);
-    expect(api.banners[0]!.title).toBe("Fix the parser");
-    expect(api.banners[0]!.options.body).toBe("Run finished");
-    expect(api.banners[0]!.options.data).toEqual({ chatId: "chat-42" });
-
-    // Simulate the banner click: the banner closes, the app focuses, and the
-    // click routes to the chat handler.
+    const a = encodeScopedId("https://engine-a.test", "chat-42");
+    const b = encodeScopedId("https://engine-b.test", "chat-42");
+    postBanner("Fix the parser", "Run finished", a);
+    postBanner("Fix the parser", "Run finished", b);
+    expect(api.banners).toHaveLength(2);
+    expect(api.banners[0]!.options.data).toEqual({ chatId: a });
+    expect(api.banners[1]!.options.data).toEqual({ chatId: b });
+    api.banners[1]!.fireClick();
     api.banners[0]!.fireClick();
     expect(api.banners[0]!.closed.value).toBe(true);
-    expect(clicks).toEqual(["chat-42"]);
+    expect(clicks).toEqual([b, a]);
     uninstall();
   });
 

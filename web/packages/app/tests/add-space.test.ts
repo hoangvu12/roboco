@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
-import { methods } from "@roboco/engine-client";
+import { methods, encodeScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import type { EngineSession } from "../src/state/engine-session";
 import { addSpaceStore, toggleAddSpace } from "../src/state/add-space";
 import {
@@ -186,16 +186,17 @@ describe("browserRows + filteredFolders + completion (spaces.rs)", () => {
 });
 
 describe("is_stale (spaces.rs:238-247)", () => {
-  const flow = { identity: "id-1", revision: 3, deviceId: "device-a" };
+  const flow = { identity: "id-1", engineKey: "engine-a", revision: 3, deviceId: "device-a" };
 
-  it("drops responses from another open, a superseded browse, or another device", () => {
-    expect(isStaleResponse(flow, { identity: "id-1", revision: null, deviceId: "device-a" })).toBe(false);
-    expect(isStaleResponse(flow, { identity: "id-2", revision: null, deviceId: "device-a" })).toBe(true);
-    expect(isStaleResponse(flow, { identity: "id-1", revision: 4, deviceId: "device-a" })).toBe(true);
-    expect(isStaleResponse(flow, { identity: "id-1", revision: null, deviceId: "device-b" })).toBe(true);
-    // A null revision (path-keyed loads) never trips the revision check.
-    expect(isStaleResponse(flow, { identity: "id-1", revision: 99, deviceId: "device-a" })).toBe(true);
-    expect(isStaleResponse({ ...flow, revision: 99 }, { identity: "id-1", revision: 99, deviceId: "device-a" })).toBe(false);
+  it("drops responses from another open, engine, superseded browse, or device", () => {
+    const request = { identity: "id-1", engineKey: "engine-a", revision: null, deviceId: "device-a" };
+    expect(isStaleResponse(flow, request)).toBe(false);
+    expect(isStaleResponse(flow, { ...request, identity: "id-2" })).toBe(true);
+    expect(isStaleResponse(flow, { ...request, engineKey: "engine-b" })).toBe(true);
+    expect(isStaleResponse(flow, { ...request, revision: 4 })).toBe(true);
+    expect(isStaleResponse(flow, { ...request, deviceId: "device-b" })).toBe(true);
+    expect(isStaleResponse(flow, { ...request, revision: 99 })).toBe(true);
+    expect(isStaleResponse({ ...flow, revision: 99 }, { ...request, revision: 99 })).toBe(false);
   });
 });
 
@@ -303,6 +304,47 @@ describe("addSpaceStore + toggleAddSpace (shell.rs)", () => {
 });
 
 describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
+  const ENGINE = "https://engine.test";
+
+  function attachAddSpace(
+    session: EngineSession | null,
+    devices: Device[],
+    localRaw: string | null,
+  ): void {
+    if (session === null) {
+      addSpaceStore.attach({
+        session: null,
+        sessions: new Map(),
+        registry: { engines: [], configurationError: null },
+        goToCanvas: () => {},
+      });
+      return;
+    }
+    const key = session.engine.baseUrl;
+    const registry = {
+      configurationError: null,
+      engines: [
+        {
+          key,
+          info: { deviceId: localRaw, workspaceScope: null },
+          state: "connected",
+          lastError: null,
+          generation: 1,
+          chats: { rows: [], loaded: true, error: null },
+          spaces: { rows: [], loaded: true, error: null },
+          devices: { rows: devices, loaded: true, error: null },
+          sessions: { rows: [], loaded: true, error: null },
+        },
+      ],
+    } as unknown as EngineRegistrySnapshot;
+    const sessions = new Map<string, EngineSession>([[key, session]]);
+    addSpaceStore.attach({ session, sessions, registry, goToCanvas: () => {} });
+  }
+
+  function scopedId(raw: string): string {
+    return encodeScopedId(ENGINE, raw);
+  }
+
   /**
    * The fake routed session: a fixed device list, a recording client whose
    * calls resolve instantly (ListFolders echoes the requested path), and an
@@ -316,7 +358,7 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
     localDeviceId: string | null = null,
   ): EngineSession {
     return {
-      engine: { baseUrl: "https://engine.test", credential: "cred" },
+      engine: { baseUrl: ENGINE, credential: "cred" },
       client: {
         engineInfo: { deviceId: localDeviceId },
         call: (method: string, params: Record<string, unknown>): Promise<unknown> => {
@@ -339,6 +381,19 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
     } as unknown as EngineSession;
   }
 
+  it("closes an open flow when its owning engine changes", () => {
+    const sessionA = fakeSession([], []);
+    const devices = [device("d-local", "Studio")];
+    addSpaceStore.forceClose();
+    attachAddSpace(sessionA, devices, "d-local");
+    addSpaceStore.open();
+    addSpaceStore.pickDevice(scopedId("d-local"));
+    expect(addSpaceStore.getSnapshot().flow?.engineKey).toBe(ENGINE);
+    const sessionB = { ...sessionA, engine: { ...sessionA.engine, baseUrl: "https://other.test" } };
+    attachAddSpace(sessionB, devices, "d-local");
+    expect(addSpaceStore.getSnapshot().status).toBe("closed");
+    expect(addSpaceStore.getSnapshot().flow).toBe(null);
+  });
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
   const device = (id: string, name: string): Device => ({
@@ -357,8 +412,9 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
   it("devices → locations → folders and back clear stale state", async () => {
     try {
       const devices = [device("d-local", "Studio"), device("d-remote", "Server")];
+      const scopedDevices = devices.map((row) => ({ ...row, id: scopedId(row.id) }));
       const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-      addSpaceStore.attach({ session: fakeSession(devices, calls, "d-local"), goToCanvas: () => {} });
+      attachAddSpace(fakeSession(devices, calls, "d-local"), devices, "d-local");
 
       // The Devices step: no pick, no loads — the query filters the list.
       addSpaceStore.open();
@@ -368,11 +424,11 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
       expect(calls).toEqual([]);
 
       addSpaceStore.setQuery("server");
-      expect(deviceRows(devices, addSpaceStore.getSnapshot().flow!.query)).toHaveLength(1);
+      expect(deviceRows(scopedDevices, addSpaceStore.getSnapshot().flow!.query)).toHaveLength(1);
       addSpaceStore.openActive();
       flow = addSpaceStore.getSnapshot().flow!;
       expect(flow.step).toBe("locations");
-      expect(flow.deviceId).toBe("d-remote");
+      expect(flow.deviceId).toBe(scopedId("d-remote"));
       expect(flow.query).toBe("");
       await flush();
       flow = addSpaceStore.getSnapshot().flow!;
@@ -424,10 +480,10 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
     try {
       const devices = [device("d-local", "Studio")];
       const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-      addSpaceStore.attach({ session: fakeSession(devices, calls, "d-local"), goToCanvas: () => {} });
+      attachAddSpace(fakeSession(devices, calls, "d-local"), devices, "d-local");
 
       addSpaceStore.open();
-      addSpaceStore.pickDevice("d-local");
+      addSpaceStore.pickDevice(scopedId("d-local"));
       addSpaceStore.gotoLocation("Projects", "/projects");
       await flush();
       // Descend one level in; ← climbs back to the location root…
@@ -451,7 +507,7 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
   it("a deviceless folders load surfaces the error row instead of a forever-skeleton", async () => {
     try {
       // No session attached: the routed engine is gone mid-flow.
-      addSpaceStore.attach({ session: null, goToCanvas: () => {} });
+      attachAddSpace(null, [], null);
       addSpaceStore.open();
       addSpaceStore.pickDevice("d-gone");
       addSpaceStore.gotoLocation("Home", null);

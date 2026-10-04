@@ -36,7 +36,7 @@ import {
   noticeToneForMessage,
 } from "../lib/notice-chip";
 import { NoticeChip } from "./notice-chip";
-import { chatDrafts, composerDefaults, draftFromChat, rememberedModelFor, rememberedReasoningFor } from "../lib/composer-draft";
+import { chatDraftKey, chatDrafts, composerDefaults, draftFromChat, rememberedModelFor, rememberedReasoningFor } from "../lib/composer-draft";
 import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
 import {
@@ -497,7 +497,8 @@ export function Composer({
   // The paperclip lives in the actions cluster (composer.rs), so the strip
   // hands its picker up here rather than drawing its own attach button.
   const attachRef = useRef<(() => void) | null>(null);
-  const lastChatIdRef = useRef(chat.id);
+  const textDraftKey = chatDraftKey(chat.id, session.engine.baseUrl);
+  const lastChatIdRef = useRef(textDraftKey);
   // Focus returns to the draft after the native file dialog closes (both
   // Attach and Cancel — the web's cancelled input fires no event, so the
   // window regaining focus is the signal, composer.rs::open_file_picker).
@@ -608,7 +609,7 @@ export function Composer({
     useCallback(() => catalog.getHarnesses(), [catalog]),
   );
 
-  const [text, setText] = useState(() => chatDrafts.get(chat.id));
+  const [text, setText] = useState(() => chatDrafts.get(textDraftKey));
   // The flip decision reads the live text through a ref (the evaluate pass
   // stays identity-stable so the ResizeObserver never re-binds).
   const textRef = useRef(text);
@@ -704,19 +705,19 @@ export function Composer({
   // un-animated (composer.rs:7290, ROUTE_SNAP_MS).
   const routeSnapUntilRef = useRef<number | null>(null);
   useEffect(() => {
-    if (lastChatIdRef.current === chat.id) {
+    if (lastChatIdRef.current === textDraftKey) {
       return;
     }
     chatDrafts.set(lastChatIdRef.current, textRef.current);
-    lastChatIdRef.current = chat.id;
+    lastChatIdRef.current = textDraftKey;
     // A programmatic draft swap is a new document: the full value assignment
     // resets the browser's own undo stack (the desktop's `set_text` clears
     // its stacks — the accepted undo-coalescing divergence).
-    setText(chatDrafts.get(chat.id));
+    setText(chatDrafts.get(textDraftKey));
     setExpanded(false);
     setFailure(null);
     routeSnapUntilRef.current = performance.now() + ROUTE_SNAP_MS;
-  }, [chat.id]);
+  }, [textDraftKey]);
 
   // When the edit row changes (the chat page started/cancelled editing a
   // queued row), seed the textarea with the row's text so the user can type
@@ -2275,7 +2276,7 @@ export function Composer({
       clearAdvanceTimer();
       answeredRef.current.add(requestId);
       setText("");
-      chatDrafts.clear(chat.id);
+      chatDrafts.clear(textDraftKey);
       if (safetyTimerRef.current !== null) {
         clearTimeout(safetyTimerRef.current);
       }
@@ -2785,7 +2786,7 @@ export function Composer({
           echoStore.removeEcho(pushedEchoId);
         }
         setText(typed);
-        chatDrafts.set(pageChatId, typed);
+        chatDrafts.set(chatDraftKey(pageChatId, session.engine.baseUrl), typed);
         // The taken comments stage back under the chat's key
         // (`add_review_comment(&restore_key, …)`, composer.rs:6663-6667).
         reviewCommentStore.restoreComments(pageChatId, takenComments);

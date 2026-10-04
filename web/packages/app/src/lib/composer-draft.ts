@@ -483,6 +483,10 @@ export function rememberNoProject(
  * A cleared draft leaves the map (no empty-string tombstones): `get` returns
  * "" either way, and the map stays the size of the user's actual drafts.
  */
+/** Blank-canvas text belongs to its routed engine, not the global empty chat id. */
+export function chatDraftKey(chatId: string, engineKey: string): string {
+  return chatId === "" ? `canvas:${engineKey}` : chatId;
+}
 export class ChatDraftStore {
   readonly #drafts = new Map<string, string>();
 

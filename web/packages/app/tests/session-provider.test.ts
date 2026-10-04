@@ -16,9 +16,13 @@ import { createRoot } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessDescriptor, Model } from "@roboco/proto";
 import { EngineStore, type StoredEngine, type StorageLike } from "../src/lib/engine-store";
+import { encodeScopedId } from "@roboco/engine-client";
+import { rememberTarget } from "../src/lib/composer-draft";
+import { createChat } from "../src/lib/chat-actions";
 import type { EngineSession } from "../src/state/engine-session";
 import {
   EngineSessionProvider,
+  routedEngineKey,
   useEngineRetry,
   useEngineSession,
   useEngineSessions,
@@ -451,6 +455,39 @@ function sessionOf(handle: Mounted, baseUrl: string): EngineSession {
 
 // ── The ticket-67 ownership regressions ───────────────────────────────────
 
+describe("new-thread target routing", () => {
+  it("routes chip-picked engine B's device and space before the active/sidebar engine A", () => {
+    const a = "https://engine-a.test";
+    const b = "https://engine-b.test";
+    const sidebarTarget = { spaceFilter: encodeScopedId(a, "space-a"), lastSpaceId: null };
+    const device = encodeScopedId(b, "device-b");
+    const project = encodeScopedId(b, "space-b");
+    const defaults = { project: null, device, noProject: true };
+    expect(routedEngineKey("/", sidebarTarget, a, defaults)).toBe(b);
+    expect(routedEngineKey("/", sidebarTarget, a, { ...defaults, project, noProject: false })).toBe(b);
+    expect(routedEngineKey(`/chat/${encodeURIComponent(encodeScopedId(a, "chat-a"))}`, sidebarTarget, b, defaults)).toBe(a);
+    expect(routedEngineKey("/", sidebarTarget, a, { project: null, device: null, noProject: false })).toBe(a);
+  });
+
+  it("updates the mounted session as the composer chip remembers engine B", async () => {
+    const a = await pairWithResources(ENGINE_ONE_URL);
+    const b = await pairWithResources(ENGINE_TWO_URL);
+    store().setActive(a.engine.baseUrl);
+    const handle = mountProvider();
+    expect(handle.observed.current.session?.engine.baseUrl).toBe(a.engine.baseUrl);
+    act(() => rememberTarget(encodeScopedId(b.engine.baseUrl, "device-b"), null, true));
+    expect(handle.observed.current.session?.engine.baseUrl).toBe(b.engine.baseUrl);
+    // The composer sends through the routed session; creating a new chat
+    // must reach B alone, carrying B's device rather than A's sidebar target.
+    const selected = handle.observed.current.session!;
+    void createChat(selected.client, { deviceId: encodeScopedId(b.engine.baseUrl, "device-b"), mintId: () => "new-chat" });
+    expect(b.client.calls.filter((call) => call.method === "Mutate")).toEqual([
+      { method: "Mutate", params: { op: "createChat", chatId: "new-chat", deviceId: encodeScopedId(b.engine.baseUrl, "device-b") } },
+    ]);
+    expect(a.client.calls.filter((call) => call.method === "Mutate")).toEqual([]);
+    act(() => rememberTarget(null, null, false));
+  });
+});
 describe("EngineSessionProvider resource lifetime", () => {
   it("first identity pin preserves the live mounted picker catalog", async () => {
     const { engine, client, cache } = await pairWithResources(ENGINE_ONE_URL);

@@ -8,7 +8,7 @@ import type {
   PrepareSpacePathReply,
   Space,
 } from "@roboco/proto";
-import { methods, encodeScopedId } from "@roboco/engine-client";
+import { methods, encodeScopedId, parseScopedId, projectRegistrySnapshot, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import { classifyKey, menuStep } from "../lib/picker-search";
 import {
   addSpaceCompletion,
@@ -26,6 +26,8 @@ import {
   type StaleGuard,
 } from "../lib/add-space";
 import type { EngineSession } from "./engine-session";
+import { fleetDeviceRows, fleetHostDeviceIds } from "../lib/devices";
+import { fleetStore } from "./fleet";
 import { mintId } from "../lib/id";
 import { commandPaletteStore } from "./command-palette";
 import { sidebarStore } from "./sidebar";
@@ -75,6 +77,7 @@ export interface AddSpaceManualPath {
 export interface AddSpaceFlow {
   /** Stamped once per open; responses from a prior open are dropped. */
   readonly identity: string;
+  readonly engineKey: string | null;
   /** Bumped on every browse/device-switch; drops superseded in-flight work. */
   readonly revision: number;
   /** The step the card renders: devices, then locations, then folders. */
@@ -119,6 +122,8 @@ export interface AddSpaceSnapshot {
 /** What the mounted palette component supplies each session. */
 export interface AddSpaceContext {
   readonly session: EngineSession | null;
+  readonly sessions: ReadonlyMap<string, EngineSession>;
+  readonly registry: EngineRegistrySnapshot;
   /** Route to the blank canvas — the desktop's `Route::Chat` landing. */
   readonly goToCanvas: () => void;
 }
@@ -167,6 +172,7 @@ export class AddSpaceStore {
     this.#pending = [];
     this.#flow = {
       identity: mintId(),
+      engineKey: null,
       revision: 0,
       step: "devices",
       location: null,
@@ -224,6 +230,14 @@ export class AddSpaceStore {
 
   /** The component's session binding — re-called on engine switches. */
   attach(context: AddSpaceContext): void {
+    if (
+      this.#flow !== null &&
+      this.#flow.deviceId !== null &&
+      this.#flow.engineKey !== null &&
+      this.#flow.engineKey !== (context.session?.engine.baseUrl ?? null)
+    ) {
+      this.forceClose();
+    }
     this.#context = context;
   }
 
@@ -325,9 +339,20 @@ export class AddSpaceStore {
     if (flow === null) {
       return;
     }
+    let engineKey: string | null = null;
+    try {
+      const scoped = parseScopedId(deviceId);
+      engineKey = scoped.engine;
+      if (engineKey !== null && engineKey !== fleetStore.getSnapshot().active) {
+        fleetStore.setActive(engineKey);
+      }
+    } catch {
+      engineKey = this.#session()?.engine.baseUrl ?? null;
+    }
     this.#manualInFlight = false;
     this.#flow = {
       ...flow,
+      engineKey,
       step: "locations",
       location: null,
       revision: flow.revision + 1,
@@ -600,7 +625,7 @@ export class AddSpaceStore {
    */
   #submitBrowsed(): void {
     const flow = this.#aliveFlow();
-    const session = this.#session();
+    const session = this.#sessionForDevice(flow?.deviceId ?? null);
     if (
       flow === null ||
       session === null ||
@@ -616,13 +641,14 @@ export class AddSpaceStore {
     }
     const path = listing.path;
     const deviceId = flow.deviceId;
+    const rawDeviceId = this.#deviceRawId(deviceId);
     const gitDetected = flow.browserRepo;
     const identity = flow.identity;
     const existing = session.cache
       .getSnapshot()
       .spaces.rows.find((row) => row.deviceId === deviceId && row.path === path);
     if (existing !== undefined) {
-      this.#land(this.#scope(existing.id));
+      this.#land(this.#scope(existing.id, flow.engineKey));
       return;
     }
     const spaceId = mintId();
@@ -632,8 +658,8 @@ export class AddSpaceStore {
         // The optimistic row lives in the MERGED (scoped) sidebar view —
         // its ids are scoped to the routed engine so the confirming watch
         // frame replaces the twin by id (ticket 31).
-        id: this.#scope(spaceId),
-        deviceId: this.#scope(deviceId),
+        id: this.#scope(spaceId, flow.engineKey),
+        deviceId: this.#scope(deviceId, flow.engineKey),
         path,
         name: null,
         gitDetected,
@@ -646,12 +672,12 @@ export class AddSpaceStore {
     this.#flow = { ...flow, submitBusy: true, error: null };
     this.#commit();
     void session.client
-      .call(methods.MUTATE, { op: "createSpace", spaceId, deviceId, path, gitDetected })
+      .call(methods.MUTATE, { op: "createSpace", spaceId, deviceId: rawDeviceId, path, gitDetected })
       .then(() => {
         this.#submitInFlight = false;
         // The optimistic row STAYS — the watch frame replaces it by id.
         if (this.#aliveFlow()?.identity === identity) {
-          this.#land(this.#scope(spaceId));
+          this.#land(this.#scope(spaceId, flow.engineKey));
         } else {
           this.#commit();
         }
@@ -698,9 +724,9 @@ export class AddSpaceStore {
     if (flow === null) {
       return;
     }
-    const session = this.#session();
     const deviceId = flow.deviceId;
-    const request: StaleGuard = { identity: flow.identity, revision: null, deviceId };
+    const session = this.#sessionForDevice(deviceId);
+    const request: StaleGuard = { identity: flow.identity, engineKey: flow.engineKey, revision: null, deviceId };
     const query = flow.query;
     const hiddenQuery = query.startsWith(".");
     this.#manualInFlight = false;
@@ -723,9 +749,9 @@ export class AddSpaceStore {
     if (path !== null) {
       params.path = path;
     }
-    // Only target remote devices — local calls skip the relay.
-    if (this.#localDeviceId() !== deviceId) {
-      params.targetDeviceId = deviceId;
+    const passthrough = this.#rpcTargetDeviceId(session, deviceId);
+    if (passthrough !== null) {
+      params.targetDeviceId = passthrough;
     }
     void session.client
       .call<FolderListing>(methods.LIST_FOLDERS, params)
@@ -762,7 +788,7 @@ export class AddSpaceStore {
    */
   #loadDrives(): void {
     const flow = this.#flow;
-    const session = this.#session();
+    const session = this.#sessionForDevice(flow?.deviceId ?? null);
     if (flow === null || session === null || flow.deviceId === null) {
       if (flow !== null && flow.drivesLoading) {
         this.#flow = { ...flow, drivesLoading: false };
@@ -770,10 +796,11 @@ export class AddSpaceStore {
       }
       return;
     }
-    const request: StaleGuard = { identity: flow.identity, revision: null, deviceId: flow.deviceId };
+    const request: StaleGuard = { identity: flow.identity, engineKey: flow.engineKey, revision: null, deviceId: flow.deviceId };
     const params: Record<string, unknown> = {};
-    if (this.#localDeviceId() !== flow.deviceId) {
-      params.targetDeviceId = flow.deviceId;
+    const passthrough = this.#rpcTargetDeviceId(session, flow.deviceId);
+    if (passthrough !== null) {
+      params.targetDeviceId = passthrough;
     }
     void session.client
       .call<DriveListing>(methods.LIST_DRIVES, params)
@@ -802,11 +829,11 @@ export class AddSpaceStore {
    */
   #prepareManual(create: boolean, submit: boolean): void {
     const flow = this.#aliveFlow();
-    const session = this.#session();
+    const session = this.#sessionForDevice(flow?.deviceId ?? null);
     if (flow === null || session === null || flow.submitBusy || flow.deviceId === null) {
       return;
     }
-    const request: StaleGuard = { identity: flow.identity, revision: flow.revision, deviceId: flow.deviceId };
+    const request: StaleGuard = { identity: flow.identity, engineKey: flow.engineKey, revision: flow.revision, deviceId: flow.deviceId };
     const path = flow.query.trim();
     this.#manualInFlight = true;
     this.#flow = { ...flow, submitBusy: submit, error: null };
@@ -817,7 +844,7 @@ export class AddSpaceStore {
         createIfMissing: create,
         // Required here, unlike the two loads: path syntax resolves on the
         // owning device, never assumed local.
-        targetDeviceId: flow.deviceId,
+        targetDeviceId: this.#deviceRawId(flow.deviceId),
       })
       .then((result) => {
         this.#manualInFlight = false;
@@ -868,14 +895,81 @@ export class AddSpaceStore {
     return this.#context?.session ?? null;
   }
 
-  /** Scope an id to the routed engine — the merged sidebar's id namespace. */
-  #scope(id: string): string {
-    const session = this.#session();
-    return session === null ? id : encodeScopedId(session.engine.baseUrl, id);
+  #sessionForDevice(deviceId: string | null): EngineSession | null {
+    if (deviceId === null) {
+      return this.#session();
+    }
+    try {
+      const scoped = parseScopedId(deviceId);
+      if (scoped.engine !== null) {
+        return this.#context?.sessions.get(scoped.engine) ?? null;
+      }
+    } catch {
+      // Unscoped id on the routed session.
+    }
+    return this.#session();
+  }
+
+  #deviceRawId(deviceId: string): string {
+    try {
+      return parseScopedId(deviceId).rawId;
+    } catch {
+      return deviceId;
+    }
+  }
+
+  #rpcTargetDeviceId(session: EngineSession | null, deviceId: string | null): string | null {
+    if (session === null || deviceId === null) {
+      return null;
+    }
+    const raw = this.#deviceRawId(deviceId);
+    const localRaw = session.client.engineInfo?.deviceId ?? null;
+    if (localRaw === null || localRaw === raw) {
+      return null;
+    }
+    return raw;
+  }
+
+  /** Scope an id to the flow's owning engine — the merged sidebar's id namespace. */
+  #scope(id: string, engineKey: string | null = this.#flow?.engineKey ?? null): string {
+    if (engineKey === null) {
+      return id;
+    }
+    try {
+      parseScopedId(id);
+      return id;
+    } catch {
+      return encodeScopedId(engineKey, id);
+    }
   }
 
   #devices(): readonly Device[] {
-    return this.#session()?.cache.getSnapshot().devices.rows ?? [];
+    const registry = this.#context?.registry;
+    if (registry === undefined) {
+      return [];
+    }
+    const projected = projectRegistrySnapshot(registry);
+    const hosts = fleetDeviceRows(registry, projected.devices);
+    const active = this.#session()?.engine.baseUrl ?? null;
+    const hostIds = fleetHostDeviceIds(registry);
+    const extra =
+      active === null
+        ? []
+        : projected.devices.filter((device) => {
+            if (hostIds.has(device.id)) {
+              return false;
+            }
+            try {
+              return parseScopedId(device.id).engine === active;
+            } catch {
+              return false;
+            }
+          });
+    const byId = new Map<string, Device>();
+    for (const row of [...hosts, ...extra]) {
+      byId.set(row.id, row);
+    }
+    return [...byId.values()];
   }
 
   /** The Devices step's filtered rows (`add_space_devices`). */
@@ -894,10 +988,6 @@ export class AddSpaceStore {
       return [];
     }
     return locationRows(flow.drives, flow.query);
-  }
-
-  #localDeviceId(): string | null {
-    return this.#session()?.client.engineInfo?.deviceId ?? null;
   }
 
   #readyListing(): { path: string; entries: FolderEntry[]; truncated: boolean } | null {
