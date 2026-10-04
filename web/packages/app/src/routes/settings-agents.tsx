@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
 import { HARNESS_UPDATES_V1 } from "@roboco/proto";
@@ -18,7 +18,13 @@ import { MenuRow } from "../components/ui/MenuRows";
 import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
 import { useEngineSession } from "../state/session-provider";
-import { useWatchSnapshot } from "../state/hooks";
+import { useFleet, useFleetRegistry } from "../state/fleet";
+import {
+  applySettingsTargetChange,
+  settingsDeviceSwitcherRows,
+  settingsRpcTargetDeviceId,
+  settingsSwitcherLocalDeviceId,
+} from "../lib/settings-device-switcher";
 import { TitlePickerRow } from "../components/settings-widgets";
 import {
   applyHarnessUpdate,
@@ -92,7 +98,8 @@ interface SignInFailure {
 export function AgentsSettingsPage() {
   const session = useEngineSession();
   const client = session?.client ?? null;
-  const snapshot = useWatchSnapshot(session);
+  const fleet = useFleet();
+  const registry = useFleetRegistry();
   const [target, setTarget] = useState<string | null>(null);
   const [harnesses, setHarnesses] = useState<Loadable<readonly HarnessDescriptor[]>>({ kind: "loading" });
   const [titleSettings, setTitleSettings] = useState<Loadable<TitleSettings>>({ kind: "loading" });
@@ -126,10 +133,15 @@ export function AgentsSettingsPage() {
   /** Invalidates stale update-action replies on retarget. */
   const updateSeq = useRef(0);
 
-  const devices = (snapshot?.devices.rows ?? [])
-    .slice()
-    .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
-  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  const devices = useMemo(() => settingsDeviceSwitcherRows(registry, fleet), [registry, fleet]);
+  const localDeviceId = settingsSwitcherLocalDeviceId(session);
+
+  // Engine switch elsewhere — drop stale passthrough target ids.
+  useEffect(() => {
+    setTarget(null);
+  }, [fleet.active]);
+
+  const rpcTarget = useMemo(() => settingsRpcTargetDeviceId(target, session), [target, session]);
   const supportsUpdates =
     client !== null && (client.engineInfo?.capabilities ?? []).includes(HARNESS_UPDATES_V1);
 
@@ -143,15 +155,15 @@ export function AgentsSettingsPage() {
       setTitleSaving(saving);
       try {
         const settings = saving
-          ? await saveTitleSettings(client, save, target)
-          : await getTitleSettings(client, target);
+          ? await saveTitleSettings(client, save, rpcTarget)
+          : await getTitleSettings(client, rpcTarget);
         setTitleSettings({ kind: "ready", value: settings });
         setTitleSaving(false);
         setError(null);
         if (settings.harness !== null) {
           setTitleModels({ kind: "loading" });
           try {
-            setTitleModels({ kind: "ready", value: await listModels(client, settings.harness, target) });
+            setTitleModels({ kind: "ready", value: await listModels(client, settings.harness, rpcTarget) });
           } catch (cause) {
             setTitleModels({ kind: "error", message: describe(cause) });
           }
@@ -169,7 +181,7 @@ export function AgentsSettingsPage() {
         }
       }
     },
-    [client, target],
+    [client, rpcTarget],
   );
 
   const load = useCallback(async () => {
@@ -182,13 +194,13 @@ export function AgentsSettingsPage() {
     setTitleModels({ kind: "loading" });
     setTitleMenu(null);
     try {
-      setHarnesses({ kind: "ready", value: await listHarnesses(client, target) });
+      setHarnesses({ kind: "ready", value: await listHarnesses(client, rpcTarget) });
     } catch (cause) {
       setHarnesses({ kind: "error", message: describe(cause) });
       return;
     }
     await loadTitles(null);
-  }, [client, target, loadTitles]);
+  }, [client, rpcTarget, loadTitles]);
 
   // Mount load, and a full drop-and-reload on every retarget (set_target_device).
   useEffect(() => {
@@ -234,12 +246,12 @@ export function AgentsSettingsPage() {
           }
         },
       },
-      target,
+      rpcTarget,
     );
     return () => {
       handle.cancel();
     };
-  }, [client, supportsUpdates, target]);
+  }, [client, supportsUpdates, rpcTarget]);
 
   /**
    * One update-lifecycle action on the selected engine (harnesses.rs
@@ -275,7 +287,7 @@ export function AgentsSettingsPage() {
     void (async () => {
       setError(null);
       try {
-        const statuses = await checkHarnessUpdates(client, null, target);
+        const statuses = await checkHarnessUpdates(client, null, rpcTarget);
         setUpdates({ kind: "ready", value: statuses });
       } catch (cause) {
         setError(describe(cause));
@@ -284,15 +296,15 @@ export function AgentsSettingsPage() {
   }
 
   function applyUpdate(harness: HarnessId) {
-    runUpdateAction(harness, (client) => applyHarnessUpdate(client, harness, target));
+    runUpdateAction(harness, (client) => applyHarnessUpdate(client, harness, rpcTarget));
   }
 
   function cancelUpdate(harness: HarnessId) {
-    runUpdateAction(harness, (client) => cancelHarnessUpdate(client, harness, target));
+    runUpdateAction(harness, (client) => cancelHarnessUpdate(client, harness, rpcTarget));
   }
 
   function choosePolicy(harness: HarnessId, policy: HarnessUpdatePolicy) {
-    runUpdateAction(harness, (client) => setHarnessUpdatePolicy(client, harness, policy, target));
+    runUpdateAction(harness, (client) => setHarnessUpdatePolicy(client, harness, policy, rpcTarget));
   }
 
   function toggle(harness: HarnessId, enabled: boolean) {
@@ -306,7 +318,7 @@ export function AgentsSettingsPage() {
     setError(null);
     void (async () => {
       try {
-        const fresh = await setHarnessEnabled(client, harness, enabled, target);
+        const fresh = await setHarnessEnabled(client, harness, enabled, rpcTarget);
         setHarnesses({ kind: "ready", value: fresh });
         bumpHarnessCatalog(session);
       } catch (cause) {
@@ -324,7 +336,7 @@ export function AgentsSettingsPage() {
     if (client === null) {
       return;
     }
-    if (target !== null) {
+    if (rpcTarget !== null) {
       // The sign-in redirect lands on a loopback port of the device running
       // the agent, which a browser here can't reach.
       setError("Turn this agent on from its own device to sign in.");
@@ -348,7 +360,7 @@ export function AgentsSettingsPage() {
     void (async () => {
       let loginId: string;
       try {
-        const start = await startAgentLogin(client, harness, target);
+        const start = await startAgentLogin(client, harness, rpcTarget);
         if (signInSeq.current !== seq) {
           return;
         }
@@ -376,7 +388,7 @@ export function AgentsSettingsPage() {
         }
         let poll;
         try {
-          poll = await pollAgentLoginOnce(client, loginId, target);
+          poll = await pollAgentLoginOnce(client, loginId, rpcTarget);
         } catch (cause) {
           tab?.close();
           failure(describe(cause));
@@ -415,7 +427,7 @@ export function AgentsSettingsPage() {
               : { ...current, phase, message: null },
           );
           try {
-            const fresh = await setHarnessEnabled(client, harness, true, target);
+            const fresh = await setHarnessEnabled(client, harness, true, rpcTarget);
             if (signInSeq.current !== seq) {
               return;
             }
@@ -444,7 +456,7 @@ export function AgentsSettingsPage() {
     setSignIn(null);
     if (current.loginId !== null) {
       // Best-effort; the desktop only debug-logs a failure.
-      void cancelAgentLogin(client, current.loginId, target).catch(() => undefined);
+      void cancelAgentLogin(client, current.loginId, rpcTarget).catch(() => undefined);
     }
   }
 
@@ -465,7 +477,7 @@ export function AgentsSettingsPage() {
     installSeq.current = seq;
     void (async () => {
       try {
-        const fresh = await installHarness(client, harness, target);
+        const fresh = await installHarness(client, harness, rpcTarget);
         if (installSeq.current !== seq) {
           return;
         }
@@ -495,7 +507,7 @@ export function AgentsSettingsPage() {
       return;
     }
     const seq = installSeq.current;
-    void cancelInstallRpc(client, current, target).catch((cause: unknown) => {
+    void cancelInstallRpc(client, current, rpcTarget).catch((cause: unknown) => {
       if (installSeq.current === seq && installingRef.current === current) {
         setError(`Cancellation failed — ${describe(cause)}`);
       }
@@ -503,7 +515,8 @@ export function AgentsSettingsPage() {
   }
 
   function setTargetDevice(next: string | null) {
-    if (next === target) {
+    const { target: nextTarget, switchedEngine } = applySettingsTargetChange(next, fleet);
+    if (nextTarget === target && !switchedEngine) {
       return;
     }
     // A retarget drops any in-flight sign-in (set_target_device cancels) and
@@ -519,7 +532,7 @@ export function AgentsSettingsPage() {
     setExpanded(null);
     setPolicyMenu(null);
     setUpdates({ kind: "loading" });
-    setTarget(next);
+    setTarget(nextTarget);
     setTitleMenu(null);
     setTitleSaving(false);
     setError(null);
@@ -544,6 +557,7 @@ export function AgentsSettingsPage() {
             devices={devices}
             localDeviceId={localDeviceId}
             target={target}
+            engineCount={fleet.engines.length}
             onTargetChange={setTargetDevice}
           />
         </div>

@@ -3,6 +3,7 @@ import { encodeScopedId } from "@roboco/engine-client";
 import type { Chat } from "@roboco/proto";
 import {
   chatRowHeight,
+  engineDisplayName,
   compareSidebarChats,
   promoteLocalDeviceGroup,
   resortOffsets,
@@ -191,6 +192,15 @@ describe("resort glide spec", () => {
 });
 
 describe("sidebarGroups / sidebarVisibleOrder", () => {
+  it("shows the paired engine label and host in settings", () => {
+    expect(
+      engineDisplayName({
+        label: "Remote engine",
+        baseUrl: "https://remote.example:8443/",
+        deviceId: "deadbeefcafe",
+      }),
+    ).toBe("remote.example:8443 · deadbeef");
+  });
   it("disambiguates matching device names on different engines", () => {
     const a = encodeScopedId("https://a.test", "device");
     const b = encodeScopedId("https://b.test", "device");

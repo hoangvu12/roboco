@@ -1,8 +1,7 @@
 import { useState } from "react";
 import type { ReactElement } from "react";
 import { Icon } from "@roboco/icons";
-import { engineHost } from "../lib/engine-store";
-import { engineConnection, settingsEngineLabel } from "../lib/settings-engine";
+import { engineConnection, settingsDeviceName, settingsEngineLabel } from "../lib/settings-engine";
 import { fleetStore, useFleet, useFleetRegistry } from "../state/fleet";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuRow } from "./ui/MenuRows";
@@ -30,7 +29,7 @@ export function SettingsEngineIndicator() {
   const fleet = useFleet();
   const registry = useFleetRegistry();
   const [open, setOpen] = useState(false);
-  const label = settingsEngineLabel(fleet);
+  const label = settingsEngineLabel(fleet, registry);
   if (label === null) {
     return null;
   }
@@ -43,7 +42,7 @@ export function SettingsEngineIndicator() {
       aria-haspopup="menu"
       aria-expanded={open}
     >
-      <span className="settings-engine-indicator-label">{`Engine ${label}`}</span>
+      <span className="settings-engine-indicator-label">{label}</span>
       <Icon name="sortVertical" size={12} className="settings-engine-indicator-caret" />
     </button>
   );
@@ -74,7 +73,7 @@ export function SettingsEngineIndicator() {
             }}
           >
             <span className={`dot ${engineConnection(byKey.get(engine.baseUrl) ?? null).dot}`} />
-            <span className="settings-engine-row-host">{engineHost(engine.baseUrl)}</span>
+            <span className="settings-engine-row-host">{settingsDeviceName(engine.baseUrl, registry)}</span>
             {isActive && <Icon name="check" size={12} className="settings-engine-row-check" />}
           </MenuRow>
         );

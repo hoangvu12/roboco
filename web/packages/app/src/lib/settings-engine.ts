@@ -1,5 +1,6 @@
-import type { EngineEntrySnapshot } from "@roboco/engine-client";
-import { engineHost, type FleetState } from "./engine-store";
+import type { EngineEntrySnapshot, EngineRegistrySnapshot } from "@roboco/engine-client";
+import { engineDisplayName } from "./view";
+import type { FleetState } from "./engine-store";
 
 /**
  * The engine-addressing settings vocabulary (ticket 45): which engine
@@ -18,8 +19,31 @@ import { engineHost, type FleetState } from "./engine-store";
  * else null — the single-engine case is unambiguous and shows no
  * indicator at all.
  */
-export function settingsEngineLabel(fleet: FleetState): string | null {
-  return fleet.engines.length > 1 && fleet.active !== null ? engineHost(fleet.active) : null;
+export function settingsEngineLabel(fleet: FleetState, registry: EngineRegistrySnapshot): string | null {
+  if (fleet.engines.length <= 1 || fleet.active === null) {
+    return null;
+  }
+  return settingsDeviceName(fleet.active, registry);
+}
+
+/** Live host device name for the settings engine switcher (not the pair-session label). */
+export function settingsDeviceName(engineKey: string, registry: EngineRegistrySnapshot): string {
+  const entry = registry.engines.find((engine) => engine.key === engineKey);
+  const hostRaw = entry?.info?.deviceId;
+  if (entry !== undefined && hostRaw !== null && hostRaw !== undefined) {
+    const host = entry.devices.rows.find((row) => row.id === hostRaw);
+    if (host !== undefined) {
+      return host.name;
+    }
+  }
+  const stored = registry.engines.find((engine) => engine.key === engineKey);
+  return stored !== undefined
+    ? engineDisplayName({ baseUrl: engineKey, label: "", deviceId: stored.info?.deviceId ?? null })
+    : engineKey;
+}
+
+export function settingsEngineKey(fleet: FleetState): string | null {
+  return fleet.active;
 }
 
 /** One paired engine's connection view off its registry entry state. */

@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Icon } from "@roboco/icons";
-import { methods, type EngineEntrySnapshot } from "@roboco/engine-client";
+import { methods, parseScopedId, projectRegistrySnapshot } from "@roboco/engine-client";
+import type { EngineEntrySnapshot, EngineRegistrySnapshot } from "@roboco/engine-client";
 import type { Device } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { forgetEngine, useFleet, useFleetRegistry, fleetStore } from "../state/fleet";
-import { useEngineStatus, useNow, useWatchSnapshot } from "../state/hooks";
+import {
+  forgetEngine,
+  useFleet,
+  useFleetRegistry,
+  fleetStore,
+  engineStatesOf,
+  fleetLocalDeviceId,
+} from "../state/fleet";
+import { useNow } from "../state/hooks";
 import {
   BtnGhost,
   BtnPrimary,
@@ -14,13 +22,15 @@ import {
   DialogField,
   DialogTitle,
 } from "../components/ui/Dialog";
-import { webDeviceLabel, engineHost, type StoredEngine } from "../lib/engine-store";
+import { webDeviceLabel, type StoredEngine } from "../lib/engine-store";
+import { deviceOnline, type EnginePresence } from "../lib/view";
 import { describeRedeemError } from "../lib/pairing-errors";
-import { engineConnection } from "../lib/settings-engine";
+import { engineConnection, settingsDeviceName } from "../lib/settings-engine";
 import {
-  lastSeenOnline,
   formatLastSeenAt,
   partitionDevices,
+  fleetDeviceRows,
+  fleetHostDeviceIds,
   platformGlyph,
   platformLabel,
   presenceDot,
@@ -59,10 +69,8 @@ interface RenameDialog {
 export function DevicesSettingsPage() {
   const session = useEngineSession();
   const client = session?.client ?? null;
-  const status = useEngineStatus(session);
   const fleet = useFleet();
   const registry = useFleetRegistry();
-  const snapshot = useWatchSnapshot(session);
   const now = useNow(15_000);
   const [pairingUrl, setPairingUrl] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -86,46 +94,61 @@ export function DevicesSettingsPage() {
     };
   }, []);
 
-  const devices = snapshot?.devices.rows ?? [];
-  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
-  // The desktop's two-section split (devices.rs:372-375): local first,
-  // everything else under "Other devices". Before engineInfo loads the
-  // split is unknowable — the flat single card stays until it is (the
-  // helper's `unknown` arm).
-  const partition = partitionDevices(devices, localDeviceId);
-  const activeEngine = fleet.engines.find((engine) => engine.baseUrl === fleet.active) ?? null;
-  // One registry entry per stored engine, keyed by its baseUrl.
+  const projected = useMemo(() => projectRegistrySnapshot(registry), [registry]);
+  const engineHostDevices = useMemo(
+    () => fleetDeviceRows(registry, projected.devices),
+    [registry, projected.devices],
+  );
+  const hostDeviceIds = useMemo(() => fleetHostDeviceIds(registry), [registry]);
+  const clientDevices = useMemo(
+    () => projected.devices.filter((device) => !hostDeviceIds.has(device.id)),
+    [projected.devices, hostDeviceIds],
+  );
+  const engineStates = useMemo(() => engineStatesOf(registry), [registry]);
   const registryByEngine = new Map(registry.engines.map((entry) => [entry.key, entry]));
+  const localDeviceId = fleetLocalDeviceId(registry, fleet.active);
+  const devices = [...engineHostDevices, ...clientDevices];
+  const partition = partitionDevices(devices, localDeviceId);
 
-  /** The live engine connection behind a row, or null (last-seen fallback). */
+  /** Live connection for a merged device row (scoped id → supervising engine). */
   function rowConnection(deviceId: string): EngineConnection | null {
+    try {
+      const scoped = parseScopedId(deviceId);
+      if (scoped.engine !== null) {
+        const live = engineStates.get(scoped.engine);
+        if (live === undefined) {
+          return null;
+        }
+        return live === "connected" ? "connected" : live === "reconnecting" ? "reconnecting" : "off";
+      }
+    } catch {
+      // Unscoped id — fall through.
+    }
     if (deviceId === localDeviceId) {
-      if (status === null) {
+      const live = fleet.active !== null ? engineStates.get(fleet.active) : undefined;
+      if (live === undefined) {
         return null;
       }
-      switch (status.state) {
-        case "connected":
-          return "connected";
-        case "connecting":
-        case "reconnecting":
-          return "reconnecting";
-        default:
-          return "off";
-      }
+      return live === "connected" ? "connected" : live === "reconnecting" ? "reconnecting" : "off";
     }
-    // A row backed by a parked engine this client knows: engine-backed, off.
-    const parked = fleet.engines.find(
-      (engine) => engine.deviceId === deviceId && engine.baseUrl !== fleet.active,
-    );
-    return parked === undefined ? null : "off";
+    return null;
   }
 
-  /** The fleet engine a non-local engine-backed row forgets from, if any. */
+  function rowOnline(device: Device): boolean {
+    return deviceOnline(device, now, engineStates as EnginePresence);
+  }
+
+  /** Forget a parked engine when its host row is shown off-engine. */
   function forgetTarget(deviceId: string): string | null {
-    const parked = fleet.engines.find(
-      (engine) => engine.deviceId === deviceId && engine.baseUrl !== fleet.active,
-    );
-    return parked?.baseUrl ?? null;
+    try {
+      const scoped = parseScopedId(deviceId);
+      if (scoped.engine !== null && scoped.engine !== fleet.active) {
+        return scoped.engine;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   }
 
   function pair() {
@@ -180,34 +203,55 @@ export function DevicesSettingsPage() {
     copyTimer.current = setTimeout(() => setCopied(null), 1500);
   }
 
-  const count = devices.length;
+  const deviceCount = engineHostDevices.length + clientDevices.length;
 
-  /** One device row at its section position (same props every section). */
-  const renderDeviceRow = (device: Device, ix: number) => (
-    <DeviceRow
-      key={device.id}
-      device={device}
-      first={ix === 0}
-      connection={rowConnection(device.id)}
-      online={lastSeenOnline(device.lastSeenAt, now)}
-      copied={copied === device.id}
-      now={now}
-      forgetBaseUrl={forgetTarget(device.id)}
-      onCopyId={() => copyId(device.id)}
-      onForget={() => {
-        const target = forgetTarget(device.id);
-        if (target !== null) {
-          forget(target);
-        }
-      }}
-      onRename={() => setRename({ deviceId: device.id, name: device.name })}
-    />
-  );
+  /** Render each device once, keeping engine actions on its host row. */
+  const renderDeviceRow = (device: Device, ix: number) => {
+    if (hostDeviceIds.has(device.id)) {
+      const engineKey = parseScopedId(device.id).engine;
+      const entry = engineKey !== null ? (registryByEngine.get(engineKey) ?? null) : null;
+      const stored = fleet.engines.find((engine) => engine.baseUrl === engineKey);
+      return (
+        <EngineHostDeviceRow
+          key={device.id}
+          device={device}
+          entry={entry}
+          stored={stored ?? null}
+          first={ix === 0}
+          isActive={engineKey !== null && engineKey === fleet.active}
+          connection={rowConnection(device.id)}
+          online={rowOnline(device)}
+          copied={copied === device.id}
+          now={now}
+          onCopyId={() => copyId(device.id)}
+          registry={registry}
+        />
+      );
+    }
+    return (
+      <DeviceRow
+        key={device.id}
+        device={device}
+        first={ix === 0}
+        connection={rowConnection(device.id)}
+        online={rowOnline(device)}
+        copied={copied === device.id}
+        now={now}
+        forgetBaseUrl={forgetTarget(device.id)}
+        onCopyId={() => copyId(device.id)}
+        onForget={() => {
+          const target = forgetTarget(device.id);
+          if (target !== null) forget(target);
+        }}
+        onRename={() => setRename({ deviceId: device.id, name: device.name })}
+      />
+    );
+  };
 
   return (
     <div className="settings-page">
       <h1 className="settings-title">
-        Devices{count > 0 && <span className="settings-title-count">{count}</span>}
+        Devices{deviceCount > 0 && <span className="settings-title-count">{deviceCount}</span>}
       </h1>
       <p className="settings-subtitle">Connect and manage engines.</p>
 
@@ -244,29 +288,10 @@ export function DevicesSettingsPage() {
         </p>
       </section>
 
-      <div className="settings-section-header">
-        <h2>Engines</h2>
-      </div>
-      <section className="settings-card">
-        {fleet.engines.length === 0 ? (
-          <p className="settings-empty">No engines paired yet. Pair one above.</p>
-        ) : (
-          fleet.engines.map((engine) => (
-            <EngineRow
-              key={engine.baseUrl}
-              engine={engine}
-              entry={registryByEngine.get(engine.baseUrl) ?? null}
-            />
-          ))
-        )}
-      </section>
-
       {partition.kind === "unknown" ? (
-        // engineInfo not loaded yet — the split is unknowable, so the flat
-        // single card stays until the local device id is known.
         <section className="settings-card">
-          {count === 0 ? (
-            <p className="settings-empty settings-empty-devices">No devices registered</p>
+          {deviceCount === 0 ? (
+            <p className="settings-empty settings-empty-devices">No engines or devices yet. Pair one above.</p>
           ) : (
             devices.map(renderDeviceRow)
           )}
@@ -275,24 +300,11 @@ export function DevicesSettingsPage() {
         <>
           {partition.local.length > 0 && (
             <>
-              <div className="settings-section-header">
-                <h2>This device</h2>
-              </div>
-              <section className="settings-card">
-                {partition.local.map(renderDeviceRow)}
-              </section>
+              <div className="settings-section-header"><h2>This device</h2></div>
+              <section className="settings-card">{partition.local.map(renderDeviceRow)}</section>
             </>
           )}
-          {/* The scope gate: the desktop hides this section for local-scope
-              workspaces (devices.rs:554-557 — "a local-only workspace never
-              has other devices to list") off its state.workspace_scope. The
-              web's `WatchCacheSnapshot` does not expose the workspace scope,
-              and the browser can pair remote synced engines, so the section
-              always renders here; its empty state is the desktop's pair copy
-              (devices.rs:525-536). */}
-          <div className="settings-section-header">
-            <h2>Other devices</h2>
-          </div>
+          <div className="settings-section-header"><h2>Other devices</h2></div>
           <section className="settings-card">
             {partition.others.length === 0 ? (
               <p className="settings-empty">Pair another device to see it here.</p>
@@ -310,40 +322,74 @@ export function DevicesSettingsPage() {
   );
 }
 
-interface EngineRowProps {
-  readonly engine: StoredEngine;
+interface EngineHostDeviceRowProps {
+  readonly device: Device;
   readonly entry: EngineEntrySnapshot | null;
+  readonly stored: StoredEngine | null;
+  readonly first: boolean;
+  readonly isActive: boolean;
+  readonly connection: EngineConnection | null;
+  readonly online: boolean;
+  readonly copied: boolean;
+  readonly now: number;
+  readonly onCopyId: () => void;
+  readonly registry: EngineRegistrySnapshot;
 }
 
-/**
- * One paired engine's row — the drawer's per-engine row folded here
- * (ticket 45), minus the urgent-chat dot (the sidebar owns urgency).
- * The meta line is the connection label · identity (`Engine {shortId}`,
- * or "Identity unverified" before the first verified connect); "Pair
- * again" appears only on a parked engine and re-enters the pairing flow
- * at `/pair`, where a fresh URL redeems into a new Session.
- */
-function EngineRow({ engine, entry }: EngineRowProps) {
+/** One paired engine host — device tile styling, engine actions on the row. */
+function EngineHostDeviceRow(props: EngineHostDeviceRowProps) {
   const navigate = useNavigate();
-  const connection = engineConnection(entry);
+  const { device, entry, stored, registry } = props;
+  const registryConnection = engineConnection(entry);
+  const version =
+    device.version !== null && device.version !== undefined && device.version.length > 0 ? device.version : null;
+  const dot = presenceDot(props.connection, props.online);
+  const engineKey = stored?.baseUrl ?? entry?.key ?? null;
+  const displayTitle =
+    engineKey !== null ? settingsDeviceName(engineKey, registry) : device.name;
 
   return (
-    <div className="settings-row">
-      <span className={`dot ${connection.dot}`} />
+    <div className={`settings-row device-row ${props.first ? "settings-row-first" : ""}`}>
+      <div className="row-tile device-tile" aria-hidden="true">
+        <Icon name={platformGlyph(device.platform)} size={16} className="row-tile-icon" />
+        <span className={`presence-dot presence-${dot}`} />
+      </div>
       <div className="settings-row-main">
-        <span className="settings-row-title">{engineHost(engine.baseUrl)}</span>
+        <span className="settings-row-title">{displayTitle}</span>
         <span className="settings-meta-line">
-          {connection.label}
+          {platformLabel(device.platform)}
+          {version !== null && (
+            <>
+              <span className="settings-meta-dot" aria-hidden="true">·</span>
+              {`v${version}`}
+            </>
+          )}
           <span className="settings-meta-dot" aria-hidden="true">·</span>
-          {engine.deviceId !== null ? `Engine ${engine.deviceId.slice(0, 8)}` : "Identity unverified"}
+          {registryConnection.label}
+          {!props.online && (
+            <>
+              <span className="settings-meta-dot" aria-hidden="true">·</span>
+              {`Last seen ${formatLastSeenAt(device.lastSeenAt, props.now)}`}
+            </>
+          )}
+          <span className="settings-meta-dot" aria-hidden="true">·</span>
+          <button
+            type="button"
+            className={`id-chip ${props.copied ? "id-chip-copied" : ""}`}
+            onClick={props.onCopyId}
+            aria-label={`Copy device id ${device.id}`}
+          >
+            {props.copied ? "Copied" : shortId(device.id)}
+          </button>
         </span>
       </div>
-      {connection.pairable && (
+      {props.isActive ? <span className="badge">Active engine</span> : null}
+      {registryConnection.pairable && (
         <button type="button" className="btn btn-ghost" onClick={() => void navigate({ to: "/pair" })}>
           Pair again
         </button>
       )}
-      <RemoveEngineButton engine={engine} />
+      {stored !== null && <RemoveEngineButton engine={stored} />}
     </div>
   );
 }

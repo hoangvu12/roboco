@@ -4,7 +4,7 @@ import { parseScopedId } from "@roboco/engine-client";
 import { pendingSendStatus, type PendingSend } from "../state/transcript-store";
 import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
 import { projectPinnedFirst } from "./sidebar-pins";
-import { engineHost } from "./engine-store";
+import { engineHost, type StoredEngine } from "./engine-store";
 
 const NO_SENDS: readonly PendingSend[] = [];
 
@@ -16,6 +16,19 @@ const NO_SENDS: readonly PendingSend[] = [];
  * Rust cases.
  */
 
+/** Paired-engine identity in settings and engine switchers (host + disambiguator, not the pair-session label). */
+export function engineDisplayName(engine: Pick<StoredEngine, "label" | "baseUrl" | "deviceId">): string {
+  const host = engineHost(engine.baseUrl);
+  const url = new URL(engine.baseUrl);
+  const relay = url.pathname.match(/^\/tailcat-relay\/([^/]+)/);
+  if (relay !== null) {
+    return `${host} · relay ${relay[1]!.slice(0, 8)}`;
+  }
+  if (engine.deviceId !== null) {
+    return `${host} · ${engine.deviceId.slice(0, 8)}`;
+  }
+  return host;
+}
 export const SESSION_STALE_MS = 45_000;
 
 /** Keep project rows on the engine that owns the space's host device (drops sync mirrors). */

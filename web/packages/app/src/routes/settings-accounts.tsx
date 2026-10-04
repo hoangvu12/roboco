@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
 import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { useNow, useWatchSnapshot } from "../state/hooks";
+import { useNow } from "../state/hooks";
+import { useFleet, useFleetRegistry } from "../state/fleet";
+import {
+  applySettingsTargetChange,
+  settingsDeviceSwitcherRows,
+  settingsRpcTargetDeviceId,
+  settingsSwitcherLocalDeviceId,
+} from "../lib/settings-device-switcher";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import {
   BtnGhost,
@@ -67,13 +74,21 @@ type LoginFlow =
 export function AccountsSettingsPage() {
   const session = useEngineSession();
   const client = session?.client ?? null;
-  const snapshot = useWatchSnapshot(session);
+  const fleet = useFleet();
+  const registry = useFleetRegistry();
   const [target, setTarget] = useState<string | null>(null);
   const [snapshotState, setSnapshot] = useState<Loadable>({ kind: "loading" });
   const [busyAccount, setBusyAccount] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [login, setLogin] = useState<LoginFlow | null>(null);
   const now = useNow(30_000);
+
+  // Engine switch elsewhere (composer / settings indicator) — drop stale passthrough.
+  useEffect(() => {
+    setTarget(null);
+  }, [fleet.active]);
+
+  const rpcTarget = useMemo(() => settingsRpcTargetDeviceId(target, session), [target, session]);
 
   const load = useCallback(
     async (trigger: LoadTrigger) => {
@@ -83,12 +98,12 @@ export function AccountsSettingsPage() {
       }
       setSnapshot({ kind: "loading" });
       try {
-        setSnapshot({ kind: "ready", snapshot: await listAgentAccounts(client, forceUsageFor(trigger), target) });
+        setSnapshot({ kind: "ready", snapshot: await listAgentAccounts(client, forceUsageFor(trigger), rpcTarget) });
       } catch (cause) {
         setSnapshot({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
       }
     },
-    [client, target],
+    [client, rpcTarget],
   );
 
   // Mount load (forced usage probe), a retarget, or an engine switch.
@@ -114,7 +129,7 @@ export function AccountsSettingsPage() {
             setLogin((current) => (current?.kind === "browser" ? { ...current, message } : current));
           }
         },
-      }, target);
+      }, rpcTarget);
       if (!active || poll === null) {
         return;
       }
@@ -130,7 +145,7 @@ export function AccountsSettingsPage() {
     return () => {
       active = false;
     };
-  }, [client, browserLoginId, load, target]);
+  }, [client, browserLoginId, load, rpcTarget]);
 
   function accountAction(action: "activate" | "forget", account: AgentAccount) {
     if (client === null || busyAccount !== null) {
@@ -141,9 +156,9 @@ export function AccountsSettingsPage() {
     void (async () => {
       try {
         if (action === "activate") {
-          await activateAgentAccount(client, account, target);
+          await activateAgentAccount(client, account, rpcTarget);
         } else {
-          await forgetAgentAccount(client, account, target);
+          await forgetAgentAccount(client, account, rpcTarget);
         }
         void load("postAction");
       } catch (cause) {
@@ -167,7 +182,7 @@ export function AccountsSettingsPage() {
     setLogin({ kind: "starting", harness, provider });
     void (async () => {
       try {
-        const start = await startAgentLogin(client, harness, target, provider);
+        const start = await startAgentLogin(client, harness, rpcTarget, provider);
         if (start.cliOpensBrowser) {
           // The engine machine's CLI already opened the page — one tab total.
           tab?.close();
@@ -203,7 +218,7 @@ export function AccountsSettingsPage() {
     setLogin({ ...login, submitting: true, error: null });
     void (async () => {
       try {
-        await completeAgentLogin(client, loginId, trimmed, target);
+        await completeAgentLogin(client, loginId, trimmed, rpcTarget);
         setLogin(null);
         void load("postLogin");
       } catch (cause) {
@@ -220,7 +235,7 @@ export function AccountsSettingsPage() {
     const loginId = login?.kind === "paste-code" || login?.kind === "browser" ? login.start.loginId : null;
     setLogin(null);
     if (client !== null && loginId !== null) {
-      void cancelAgentLogin(client, loginId, target).catch(() => {});
+      void cancelAgentLogin(client, loginId, rpcTarget).catch(() => {});
     }
   }
 
@@ -231,19 +246,18 @@ export function AccountsSettingsPage() {
    * is cold).
    */
   function setTargetDevice(next: string | null) {
-    if (next === target) {
+    const { target: nextTarget, switchedEngine } = applySettingsTargetChange(next, fleet);
+    if (nextTarget === target && !switchedEngine) {
       return;
     }
-    setTarget(next);
+    setTarget(nextTarget);
     setLogin(null);
     setBusyAccount(null);
     setActionError(null);
   }
 
-  const devices = (snapshot?.devices.rows ?? [])
-    .slice()
-    .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "") || a.id.localeCompare(b.id));
-  const localDeviceId = session?.client.engineInfo?.deviceId ?? null;
+  const devices = useMemo(() => settingsDeviceSwitcherRows(registry, fleet), [registry, fleet]);
+  const localDeviceId = settingsSwitcherLocalDeviceId(session);
   const refreshing = snapshotState.kind === "loading";
   const accountCount = snapshotState.kind === "ready" && snapshotState.snapshot.accounts.length > 0 ? snapshotState.snapshot.accounts.length : null;
 
@@ -266,6 +280,7 @@ export function AccountsSettingsPage() {
             devices={devices}
             localDeviceId={localDeviceId}
             target={target}
+            engineCount={fleet.engines.length}
             onTargetChange={setTargetDevice}
           />
         </div>
