@@ -230,6 +230,7 @@ impl PreviewService {
                             .filter(|l| {
                                 l.address.port() != roboco_proto::PREVIEW_PROXY_PORT
                                     && l.pid != std::process::id()
+                                    && !l.is_authentication_command()
                             })
                             .filter_map(|listener| {
                                 roots

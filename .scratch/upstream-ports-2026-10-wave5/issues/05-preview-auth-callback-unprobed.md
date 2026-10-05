@@ -30,7 +30,7 @@ coupling, no web surface.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Upstream SHAs:** `612df512` (#763) — `crates/preview/src/discovery.rs`
 (+75), `crates/preview/src/service.rs` (+1),
@@ -43,9 +43,46 @@ crate is un-prefixed). Source: `.scratch/upstream-drift/2026-10-05.md`
 `cargo nextest run -p roboco-preview` (discovery tests; covered by
 `preview-tests.yml` in CI).
 
-- [ ] Registered callback listeners are never probed
-- [ ] ProbeMemory semantics preserved (no re-planning churn for
+- [x] Registered callback listeners are never probed
+- [x] ProbeMemory semantics preserved (no re-planning churn for
       skipped listeners)
-- [ ] Callback-port exclusion test added to `tests/discovery.rs`
-- [ ] `docs/preview-networking.md` updated
-- [ ] Port commit records the upstream SHA
+- [x] Callback-port exclusion test added to `tests/discovery.rs`
+- [x] `docs/preview-networking.md` updated
+- [x] Port commit records the upstream SHA
+
+## Comments
+
+Ported upstream `612df512` (#763) — diff stat identical
+(+202/−4, same four files). Adaptation was smaller than the ticket's
+notes expected: the ACTUAL upstream fix is command-argument-based, not
+`CallbackRoutes`-registry-based — the drift note's "ports snapshot"
+idea was pre-commit speculation, superseded by the real patch:
+
+- `crates/preview/src/discovery.rs`: `Listener::is_authentication_
+  command()` — matches WHOLE arguments (`login`, `auth`,
+  `authenticate`, `signin`, `sign-in`, `sso`, `oauth`, `oauth2`)
+  after argv[0], stopping at `--`; paths/URLs/source strings never
+  match. Module doc updated. Test
+  `authentication_commands_are_not_preview_candidates` (infisical/gh/
+  aws/gcloud/codex/login-posix variants vs dev servers, ---guarded
+  subcommands, source strings).
+- `crates/preview/src/service.rs`: one filter line in the scan
+  closure — `&& !l.is_authentication_command()` — BEFORE the
+  ownership join, so callback listeners never enter the probe
+  pipeline at all: ProbeMemory semantics preserved trivially
+  (excluded listeners are never planned, so no per-2s churn).
+- `crates/preview/tests/discovery.rs`: the Infisical-style
+  integration test ported in full — a python one-shot callback
+  listener (argv carries `login --domain`) that aborts on a HEAD,
+  proving discovery never even connects (no `callback-connections`
+  file), the real browser POST still completes the login, and the
+  ordinary dev server in the same project keeps being discovered.
+  Rebrand adaptation: our `service.start(projects)` takes no
+  upstream `signaling: Option<Config>` param (cloud signaling removed
+  per ADR 0003) — the test calls it with one argument.
+- `docs/preview-networking.md`: both upstream hunks folded by intent
+  ("Zeron terminal" -> "Roboco terminal"); the existing
+  probe-once/backoff sentences already matched our behavior.
+
+Surface stays fully engine-local (ADR 0004). Verification deferred to
+the wave-final batched pass (`cargo nextest run -p roboco-preview`).
