@@ -45,7 +45,7 @@ work) and already exists on `hoangvu12/gpui-component`.
 
 **Blocked by:** None. First ticket.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Verification budget:** deferred — wave-final batched pass: `cargo
 check --workspace --examples` (first compile; a pin-rule violation
@@ -53,11 +53,52 @@ shows up as ~50 GPUI type mismatches — two GPUI copies in the graph).
 Source: `.scratch/upstream-drift/2026-10-05.md` (§ #799 blockers, pin
 analysis).
 
-- [ ] `roboco/sync-2026-10` branch on hoangvu12/zui at `0966d065`
-- [ ] All zui pin revs (top-level + `[patch]`) == `0966d065…` — one GPUI copy
-- [ ] `gpui-base` at `4764fd00…` (hoangvu12/gpui-component)
-- [ ] `Cargo.lock` refreshed (or deferred, recorded)
-- [ ] `edge_fade.rs` consumer verified against upstream `667d0aa` API
-- [ ] `AGENTS.md` GPUI section updated to the new revs
-- [ ] Commit records the fork-state rationale (all prior fork work
+- [x] `roboco/sync-2026-10` branch on hoangvu12/zui at `0966d065`
+- [x] All zui pin revs (top-level + `[patch]`) == `0966d065…` — one GPUI copy
+- [x] `gpui-base` at `4764fd00…` (hoangvu12/gpui-component)
+- [x] `Cargo.lock` refreshed (or deferred, recorded)
+- [x] `edge_fade.rs` consumer verified against upstream `667d0aa` API
+- [x] `AGENTS.md` GPUI section updated to the new revs
+- [x] Commit records the fork-state rationale (all prior fork work
       upstream-merged; only `0966d06` is new)
+
+## Comments
+
+Ported as ticket 01 (prep), upstream refs: zeronsh/zui `0966d065`
+(via branch `roboco/sync-2026-10` pushed to hoangvu12/zui) and
+zeronsh/gpui-component `4764fd00` (on hoangvu12/gpui-component).
+
+- Pushed `0966d065b23e0b7c9b53c2e186705b8bce16fe2d` from the blobless
+  analysis clone to `hoangvu12/zui` as `roboco/sync-2026-10`; verified
+  via ls-remote. Old `roboco/edge-fade-bands` branch left for history.
+- Fork-state rationale verified by reading zui history: `0966d065` =
+  `c2d273dc` (backdrop, merged via zui#10) + `18a89af` (drag threshold)
+  + `667d0aa` (per-edge fade bands — the original of our `1e1da652`
+  cherry-pick) + exactly one new commit `0966d06` (transformed/blurred
+  monochrome glyphs, the ticket-11 rolling-label enabler). Zero
+  divergence remains between fork and upstream.
+- Cargo.toml: all 20 zui rev occurrences (3 workspace deps + 16
+  `[patch."https://github.com/zeronsh/zui"]` entries + spillover) and
+  the single `gpui-base` rev updated; zero old revs remain.
+- Cargo.lock refreshed lock-only via `cargo update -p gpui-base` (no
+  build ran): 20 zui packages + gpui-base re-locked, 148 other
+  dependencies unchanged. Verified no rev other than the pins moved.
+  Note for future runs: piping cargo through `head` SIGPIPEs it before
+  the lock write.
+- `4764fd00` on hoangvu12/gpui-component is present in the object
+  store but unreachable from branch tips (same state as the previous
+  pin `94c1bbaf`); cargo fetched it fine during the lock update.
+- Compatibility check by reading (no build): `EdgeFade` at `0966d065`
+  is field-identical to the struct `crates/ui/src/edge_fade.rs`
+  constructs (bounds, band, band_top/bottom/left/right, top/bottom/
+  left/right); `Window::with_edge_fade` unchanged at window.rs:3520;
+  `0966d06` only ADDS `paint_glyph_transformed` + MonochromeSprite
+  `blur` plumbing. `fade_scroll_x` consumer needs no adaptation.
+- gpui-component `4764fd00` pins zeronsh/zui `0966d065` in its own
+  Cargo.toml, so the `[patch]` redirect still yields exactly one GPUI
+  copy (pin rule satisfied).
+- AGENTS.md GPUI-fork section updated to the new revs (it was stale at
+  `c2d273dc`/`94c1bbaf` while the manifest pinned `1e1da652`).
+- Verification deferred to the wave-final batched pass per spec
+  decision 2 (no cargo check ran here; the lock update is resolution
+  only).
