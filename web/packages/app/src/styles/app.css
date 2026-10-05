@@ -2139,13 +2139,34 @@ a:focus-visible,
 }
 
 /*
- * Reduced motion snaps every cell to its rest state (the desktop's
- * `pulse_delta` returns 0, motion.rs): the gspin cell rests at full
- * brightness (gspin_opacity(0) = 1), the pulse cells below carry their rest
+ * Reduced motion (upstream #754): SYSTEM-derived reduced motion keeps the
+ * activity grids alive — the gspin cells (the mini and matrix spinners, the
+ * desktop's `activity_pulse` subtle mode) get a gentle, uniform 2.4s
+ * brightness pulse (0.6 → 0.8 → 0.6 — the desktop's `0.6 + 0.2 · pulse_wave`
+ * cosine, approximated by ease-in-out), with the inline per-cell chase delay
+ * zeroed so no wave travels. The pulse loaders below keep the desktop's
+ * `pulse_delta` snap (`animation: none`). The gspin cell otherwise rests at
+ * full brightness (gspin_opacity(0) = 1), the pulse cells carry their rest
  * styles inline in their class rules.
  */
+@keyframes rb-activity-pulse {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  :root:not([data-reduced-motion="off"]) .glyph-spinner-cell,
+  :root:not([data-reduced-motion="off"]) .glyph-spinner-cell {
+    animation: rb-activity-pulse 2400ms ease-in-out infinite;
+    animation-delay: 0s !important;
+  }
+
   :root:not([data-reduced-motion="off"]) .mark-loader-cell,
   :root:not([data-reduced-motion="off"]) .roboco-loader-cell {
     animation: none;

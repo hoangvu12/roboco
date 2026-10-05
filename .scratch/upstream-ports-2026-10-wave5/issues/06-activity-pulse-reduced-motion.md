@@ -43,7 +43,7 @@ pin-to-On web users stay frozen.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Upstream SHAs:** `e96eccb1` (#754) — `crates/ui/src/motion.rs`
 (+220), `crates/ui/src/loaders.rs` (±12),
@@ -55,9 +55,60 @@ actual `activity_pulse_every` source excerpt).
 **Verification budget:** deferred — wave-final batched pass:
 `cargo nextest run -p roboco-ui --lib`.
 
-- [ ] Loaders pulse gently under system-derived reduced motion
-- [ ] Explicit On and background pause keep loaders frozen
-- [ ] `ZERON_PULSE` renamed per rebrand (`ROBOCO_PULSE`)
-- [ ] Appearance helper text updated
-- [ ] Web CSS decision recorded and applied
-- [ ] Port commit records the upstream SHA
+- [x] Loaders pulse gently under system-derived reduced motion
+- [x] Explicit On and background pause keep loaders frozen
+- [x] `ZERON_PULSE` renamed per rebrand (`ROBOCO_PULSE`)
+- [x] Appearance helper text updated
+- [x] Web CSS decision recorded and applied
+- [x] Port commit records the upstream SHA
+
+## Comments
+
+Ported upstream `e96eccb1` (#754) near 1:1 — diff stat matches
+(motion.rs +220, loaders.rs ±12, appearance.rs +4,
+windows-development.md +6) plus the web CSS decision.
+
+- `crates/ui/src/motion.rs`: `pulse_delta_every` factored
+  (`pulse_phase` extraction), `pulse_lease_every` factored
+  (`schedule_pulse_every`, the reduced-motion gate stays on the lease
+  wrapper only), new `ActivityPulse` struct +
+  `activity_pulse`/`activity_pulse_slow`/`activity_pulse_every`.
+  Semantics exactly as upstream: subtle mode animates only when
+  `MotionState` says system-derived (`preference == System && system
+  && !(pause_in_background && !active)`), reads directly from
+  `MotionState` (never the folded `resolve()`), drives
+  `ROBOCO_PULSE` (2.4s) at stride 2; subtle opacity = `0.6 + 0.2 *
+  pulse_wave(phase)` — no chase, no size change.
+- **`ZERON_PULSE` → `ROBOCO_PULSE`: no rename needed** — our proto
+  motion catalog already ships it rebranded (wave-4 #642 port); the
+  spec's "only new identifier rename this wave" was already done.
+- `crates/ui/src/loaders.rs`: `gradient_spinner` (3×3 matrix) and
+  `mini_spinner_cells` (2×3 glyph/mono) swap
+  `pulse_delta*(&GRADIENT_SPIN, ..)` → `activity_pulse*(..)`; the
+  pulse loaders (`roboco_loader`, `roboco_mark_loader`) stay on
+  `pulse_delta` (decorative, frozen) — matching upstream. All the
+  drift-note call sites (shell status strip, transcript, changes,
+  history, accounts) route through these two loaders and are covered
+  automatically.
+- All 4 upstream tests ported (subtle uniformity + brightness span;
+  the 8-case preference/system/pause matrix against lease presence;
+  cached-loader renewal at stride 2 incl. our identical MiniSpinner
+  entity structure; system-RM loader keeps ticking).
+- `crates/ui/src/settings/appearance.rs`: `reduce_motion_helper`
+  System+true text updated per upstream.
+- `docs/reference/windows-development.md`: upstream's +6 hunk folded
+  by intent into our diverged doc ("Zeron's" → "Roboco's"), placed
+  after the existing transparency/backdrop paragraph.
+- **Web CSS decision (recorded):** match the desktop. Under
+  `prefers-reduced-motion: reduce` with the pin not Off,
+  `.glyph-spinner-cell` (the web twins of BOTH activity grids — mini
+  2×3 and matrix 3×3) now runs a gentle uniform 2.4s brightness pulse
+  (`rb-activity-pulse`: opacity 0.6 → 0.8 → 0.6, cosine ≈
+  ease-in-out), with the inline per-cell chase delay zeroed
+  (`animation-delay: 0s !important`) so no wave travels — exactly the
+  desktop's subtle mode. `.mark-loader-cell`/`.roboco-loader-cell`
+  (the pulse loaders the desktop keeps frozen) keep `animation: none`
+  under reduced motion; pinned-On (`data-reduced-motion="on"`) and
+  background pause keep everything frozen. Applied in
+  `web/packages/app/src/styles/app.css`.
+- Verification deferred to the wave-final batched pass.
