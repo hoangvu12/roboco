@@ -17,6 +17,7 @@ import {
   deviceRows,
   filteredFolders,
   isStaleResponse,
+  isTypedPath,
   locationRows,
   manualPathQuery,
   parentPath,
@@ -285,11 +286,11 @@ export class AddSpaceStore {
   }
 
   /**
-   * `add_space_slash_descend` (spaces.rs:2080-2129): a trailing `/` on a
-   * typed full path jumps there directly; on a folder-naming query it
-   * resolves the segment against the listing (exact case, exact
-   * case-insensitive, unique prefix) and descends. Returns whether it
-   * fired — descending clears the query.
+   * `add_space_slash_descend` (spaces.rs): a trailing separator on a
+   * typed full path (absolute, drive-rooted or home-relative) jumps there
+   * directly; on a folder-naming query it resolves the segment against the
+   * listing (exact case, exact case-insensitive, unique prefix) and
+   * descends. Returns whether it fired — descending clears the query.
    */
   #slashDescend(text: string): boolean {
     const flow = this.#flow;
@@ -297,7 +298,7 @@ export class AddSpaceStore {
     if (flow === null || flow.step !== "folders") {
       return false;
     }
-    if (text.endsWith("/") && (text.startsWith("/") || text.startsWith("~"))) {
+    if (isTypedPath(text) && (text.endsWith("/") || text.endsWith("\\"))) {
       const target = typedPathTarget(text, flow.home);
       if (target === null) {
         return false;
@@ -449,11 +450,9 @@ export class AddSpaceStore {
     }
     const rows = filteredFolders(listing.entries, flow.query);
     if (rows.length === 0) {
-      if (flow.query.startsWith("/") || flow.query.startsWith("~")) {
-        const target = typedPathTarget(flow.query, flow.home);
-        if (target !== null) {
-          this.#descend(target, false);
-        }
+      const target = typedPathTarget(flow.query, flow.home);
+      if (target !== null) {
+        this.#descend(target, false);
       }
       return;
     }

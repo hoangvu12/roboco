@@ -1,17 +1,40 @@
 /**
  * The add-space palette's pure path/search logic — line-for-line ports of the
- * desktop's folder-browser helpers (`crates/ui/src/pickers.rs:296-401`,
- * `crates/ui/src/shell/spaces.rs:254-260` and `:497-500`) plus the
- * filter/completion derivations the flow renders from
- * (`spaces.rs:2011-2166`). No engine dependency anywhere in this file.
+ * desktop's folder-browser helpers (`crates/ui/src/pickers.rs`, including
+ * its Windows drive-path handling, and `crates/ui/src/shell/spaces.rs`
+ * `manual_path_query`/`path_under`) plus the filter/completion derivations
+ * the flow renders from (`spaces.rs` `add_space_*`). No engine dependency
+ * anywhere in this file.
  */
 
 import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
 import { filterIndices } from "./picker-search";
 
-/** `parent_path` (pickers.rs:296-306): the parent of an absolute path; `null`
- *  at the filesystem root. All trailing `/` are trimmed first. */
+/** `is_windows_path` (pickers.rs): whether `path` is drive-rooted (`C:`,
+ *  `C:\…`, `C:/…`). Judged by shape, not platform: the device being browsed
+ *  may be a Windows machine reached from any client. */
+export function isWindowsPath(path: string): boolean {
+  return (
+    path.length >= 2 &&
+    /^[a-z]$/i.test(path.charAt(0)) &&
+    path.charAt(1) === ":" &&
+    (path.length === 2 || path.charAt(2) === "/" || path.charAt(2) === "\\")
+  );
+}
+
+/** `parent_path` (pickers.rs): the parent of an absolute path; `null`
+ *  at the filesystem root (or a Windows drive root). All trailing
+ *  separators are trimmed first; drive paths use `\\`. */
 export function parentPath(path: string): string | null {
+  if (isWindowsPath(path)) {
+    const drive = path.slice(0, 2);
+    const rest = path.slice(2).replace(/^[\\/]+/, "").replace(/[\\/]+$/, "");
+    if (rest.length === 0) {
+      return null; // drive root
+    }
+    const at = Math.max(rest.lastIndexOf("/"), rest.lastIndexOf("\\"));
+    return `${drive}\\${at === -1 ? "" : rest.slice(0, at)}`;
+  }
   const trimmed = path.replace(/\/+$/, "");
   if (trimmed.length === 0) {
     return null;
@@ -26,9 +49,15 @@ export function parentPath(path: string): string | null {
   return trimmed.slice(0, at);
 }
 
-/** `child_path` (pickers.rs:309-315): join a listing path and an entry name. */
+/** `child_path` (pickers.rs): join a listing path and an entry name. */
 export function childPath(base: string, name: string): string {
-  return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+  if (base.endsWith("/") || base.endsWith("\\")) {
+    return `${base}${name}`;
+  }
+  if (isWindowsPath(base)) {
+    return `${base}\\${name}`;
+  }
+  return `${base}/${name}`;
 }
 
 /**
@@ -81,14 +110,27 @@ export function segmentTarget(names: readonly string[], query: string): number |
   return hits.length === 1 ? (hits[0] as number) : null;
 }
 
+/** `is_typed_path` (pickers.rs): whether a palette query is path-shaped
+ *  (absolute, home-relative or drive-rooted) rather than a folder name. */
+export function isTypedPath(query: string): boolean {
+  return query.startsWith("/") || query.startsWith("~") || isWindowsPath(query);
+}
+
 /**
- * `typed_path_target` (pickers.rs:361-384): interpret a query as a typed
- * path jump — absolute (`/disk2`) or home-relative (`~`, `~/github`) — and
- * return the absolute path to browse, trailing `/` trimmed. `~` cannot
- * expand before home is known (null); `~foo` is a folder name, not a path.
+ * `typed_path_target` (pickers.rs): interpret a query as a typed path jump —
+ * absolute (`/disk2`), drive-rooted (`D:\projects`) or home-relative (`~`,
+ * `~/github`) — and return the absolute path to browse, trailing separator
+ * trimmed (drive queries normalise to `\\`). `~` cannot expand before home
+ * is known (null); `~foo` is a folder name, not a path.
  */
 export function typedPathTarget(query: string, home: string | null): string | null {
   const trimmed = query.trim();
+  if (isWindowsPath(trimmed)) {
+    const path = trimmed.split("/").join("\\");
+    const trimmedPath = path.replace(/\\+$/, "");
+    // `D:` and `D:\` both mean the drive root.
+    return trimmedPath.length === 2 ? `${trimmedPath}\\` : trimmedPath;
+  }
   if (trimmed.startsWith("~")) {
     if (home === null) {
       return null;
@@ -111,16 +153,23 @@ export function typedPathTarget(query: string, home: string | null): string | nu
   return null;
 }
 
-/** `breadcrumbs` (pickers.rs:387-396): `(label, full path)` pairs for a path,
- *  root first, accumulating the full path as segments are walked. */
+/** `breadcrumbs` (pickers.rs): `(label, full path)` pairs for a path, root
+ *  first, accumulating the full path as segments are walked. Drive-rooted
+ *  paths root at `D:\` with `\\` separators; drive roots get no duplicate
+ *  crumb. */
 export function breadcrumbs(path: string): Array<[string, string]> {
-  const out: Array<[string, string]> = [["/", "/"]];
-  let acc = "";
-  for (const segment of path.split("/")) {
+  const windows = isWindowsPath(path);
+  const drive = windows ? path.slice(0, 2) : "";
+  const sep = windows ? "\\" : "/";
+  const rest = windows ? path.slice(2) : path;
+  const root = `${drive}${sep}`;
+  const out: Array<[string, string]> = [[root, root]];
+  let acc = drive;
+  for (const segment of rest.split(/[\\/]/)) {
     if (segment.length === 0) {
       continue;
     }
-    acc += `/${segment}`;
+    acc += `${sep}${segment}`;
     out.push([segment, acc]);
   }
   return out;
@@ -132,12 +181,20 @@ export function browserRows(entries: readonly FolderEntry[]): FolderEntry[] {
   return entries.filter((entry) => entry.isDir);
 }
 
-/** `path_under` (spaces.rs:497-500): segment-aware "is `path` at or under
- *  `base`" — `/media/a` is under `/media` but not under `/media/ab`. An
- *  empty/root base covers everything. */
+/** `path_under` (spaces.rs): segment-aware "is `path` at or under `base`"
+ *  — `/media/a` is under `/media` but not under `/media/ab`. An empty/root
+ *  base covers everything; either separator counts, so Windows drive paths
+ *  (`D:\` under `D:\`) work too. */
 export function pathUnder(path: string, base: string): boolean {
-  const trimmed = base.replace(/\/+$/, "");
-  return trimmed.length === 0 || path === trimmed || path.startsWith(`${trimmed}/`);
+  const trimmed = base.replace(/[\\/]+$/, "");
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (!path.startsWith(trimmed)) {
+    return false;
+  }
+  const rest = path.slice(trimmed.length);
+  return rest.length === 0 || rest.charAt(0) === "/" || rest.charAt(0) === "\\";
 }
 
 /** `manual_path_query` (spaces.rs:254-260): true when the trimmed text reads

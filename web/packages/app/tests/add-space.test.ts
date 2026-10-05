@@ -13,6 +13,8 @@ import {
   filteredFolders,
   highlightRanges,
   isStaleResponse,
+  isTypedPath,
+  isWindowsPath,
   locationRows,
   manualPathQuery,
   parentPath,
@@ -52,6 +54,23 @@ describe("folder_paths_and_breadcrumbs (pickers.rs)", () => {
     expect(crumbs.map(([label]) => label)).toEqual(["/", "home", "w", "dev"]);
     expect(crumbs[2]![1]).toBe("/home/w");
     expect(breadcrumbs("/")).toHaveLength(1);
+  });
+
+  it("windows_folder_paths_and_breadcrumbs (pickers.rs)", () => {
+    expect(parentPath("D:\\Random\\roboco")).toBe("D:\\Random");
+    expect(parentPath("D:\\Random")).toBe("D:\\");
+    expect(parentPath("D:\\Random\\")).toBe("D:\\");
+    expect(parentPath("D:\\")).toBe(null);
+    expect(parentPath("D:")).toBe(null);
+    expect(childPath("D:\\", "Random")).toBe("D:\\Random");
+    expect(childPath("D:\\Random", "roboco")).toBe("D:\\Random\\roboco");
+    const crumbs = breadcrumbs("D:\\Random\\roboco");
+    expect(crumbs.map(([label]) => label)).toEqual(["D:\\", "Random", "roboco"]);
+    expect(crumbs[0]![1]).toBe("D:\\");
+    expect(crumbs[1]![1]).toBe("D:\\Random");
+    expect(breadcrumbs("D:\\")).toHaveLength(1);
+    expect(isWindowsPath("/D:/x")).toBe(false);
+    expect(isWindowsPath("ab:/x")).toBe(false);
   });
 });
 
@@ -113,6 +132,21 @@ describe("typed_path_target_expands_absolute_and_home_paths (pickers.rs)", () =>
     expect(typedPathTarget("src", home)).toBe(null);
     expect(typedPathTarget("~/github", null)).toBe(null);
   });
+
+  it("typed_path_target_accepts_windows_drive_paths (pickers.rs)", () => {
+    const windowsHome = "C:\\Users\\wing";
+    expect(typedPathTarget("D:\\", windowsHome)).toBe("D:\\");
+    expect(typedPathTarget("D:", windowsHome)).toBe("D:\\");
+    expect(typedPathTarget("D:/", windowsHome)).toBe("D:\\");
+    expect(typedPathTarget("D:\\Random\\roboco\\", windowsHome)).toBe("D:\\Random\\roboco");
+    // Forward slashes normalise so the crumb trail can match the path.
+    expect(typedPathTarget("D:/Random/roboco", null)).toBe("D:\\Random\\roboco");
+    expect(isTypedPath("D:\\x")).toBe(true);
+    expect(isTypedPath("/x")).toBe(true);
+    expect(isTypedPath("~")).toBe(true);
+    expect(isTypedPath("src")).toBe(false);
+    expect(isTypedPath("ab:/x")).toBe(false);
+  });
 });
 
 describe("manual_path_query (spaces.rs:254-260)", () => {
@@ -128,7 +162,7 @@ describe("manual_path_query (spaces.rs:254-260)", () => {
   });
 });
 
-describe("path_under (spaces.rs:497-500)", () => {
+describe("path_under (spaces.rs)", () => {
   it("is segment-aware — a sibling prefix is not a parent", () => {
     expect(pathUnder("/media/a", "/media")).toBe(true);
     expect(pathUnder("/media", "/media")).toBe(true);
@@ -136,6 +170,17 @@ describe("path_under (spaces.rs:497-500)", () => {
     expect(pathUnder("/media/a", "/media/ab")).toBe(false);
     expect(pathUnder("/anything", "/")).toBe(true);
     expect(pathUnder("/anything", "")).toBe(true);
+  });
+
+  it("path_under_handles_posix_and_windows_drive_paths (spaces.rs)", () => {
+    expect(pathUnder("/media/a", "/")).toBe(true);
+    expect(pathUnder("/media/a", "/media")).toBe(true);
+    expect(pathUnder("/media/ab", "/media/a")).toBe(false);
+    // A drive-root crumb hides itself, not a sibling drive.
+    expect(pathUnder("D:\\", "D:\\")).toBe(true);
+    expect(pathUnder("D:\\Random", "D:\\")).toBe(true);
+    expect(pathUnder("D:\\Random2", "D:\\Random")).toBe(false);
+    expect(pathUnder("C:\\Random", "D:\\")).toBe(false);
   });
 });
 
