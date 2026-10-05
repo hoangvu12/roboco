@@ -6,8 +6,7 @@ import { MESSAGE_QUEUE_ACTIONS_V1 } from "@roboco/proto";
 import type { Chat, QueuedMessage } from "@roboco/proto";
 import type { ChangeRequestSummary, ContextUsage } from "@roboco/proto";
 import { useEngineSession } from "../state/session-provider";
-import { renameChat, describeMutateError } from "../lib/chat-actions";
-import { RenameChatDialog } from "../components/rename-chat-dialog";
+import { chatRenameStore } from "../state/chat-rename";
 import type { WorkspaceCommandActions } from "../components/composer";
 import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } from "../state/fleet";
 import { useNow, useWatchSnapshot } from "../state/hooks";
@@ -399,8 +398,7 @@ export function ConversationPage() {
     storeRef.current = transcriptStore;
   }
   // The workspace commands' host surfaces (composer.rs's dispatch, the
-  // chat page's targets): `/rename` opens the shared dialog for THIS chat.
-  const [renaming, setRenaming] = useState(false);
+  // chat page's targets): `/rename` edits THIS chat's sidebar row in place.
   const workspaceCommands = useMemo<WorkspaceCommandActions>(
     () => ({
       newChat: () => {
@@ -413,7 +411,7 @@ export function ConversationPage() {
         rightPaneStore.revealSurface(chatId, kind);
       },
       renameChat: () => {
-        setRenaming(true);
+        chatRenameStore.begin(chatId);
       },
     }),
     [chatId, navigate],
@@ -1450,19 +1448,8 @@ export function ConversationPage() {
           <TerminalDock store={drawerTerminalStore} chatId={terminalSessionKey} />
         </div>
       </div>
-      {/* `/rename`'s dialog (the chat menu's Rename row uses the same
-          shared component): the host owns the mutation and its notice. */}
-      {renaming && session !== null && (
-        <RenameChatDialog
-          chat={effectiveChat}
-          onSubmit={(title) => {
-            void renameChat(session.client, chatId, title).catch((error: unknown) => {
-              sidebarNotice.set(describeMutateError(error));
-            });
-          }}
-          onClose={() => setRenaming(false)}
-        />
-      )}
+      {/* `/rename` edits the sidebar row's title in place now — the field
+          lives on the row (chat-list.tsx), no dialog. */}
     </div>
   );
 }

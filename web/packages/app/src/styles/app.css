@@ -3127,6 +3127,30 @@ a:focus-visible,
   overflow: hidden;
 }
 
+/*
+ * The chat row's inline title editor (`chat_title_editor`, shell.rs): the
+ * title slot swaps for a single-line field in the title's 13/17 type with
+ * an accent ring — clicks place the caret instead of opening the chat
+ * (the component stops the row's propagation).
+ */
+.chat-row-title-editor {
+  flex: 1;
+  min-width: 0;
+  height: 21px;
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 17px;
+  color: var(--rb-text);
+  background: var(--rb-input-plate);
+  border: 1px solid var(--rb-accent);
+  border-radius: 4px;
+  cursor: text;
+}
+
+.chat-row-title-editor:focus {
+  outline: none;
+}
+
 /* Line 3 is structural, not reserved whitespace. */
 .chat-row-meta {
   width: 100%;
@@ -17543,6 +17567,26 @@ button.segmented-option:hover {
   min-width: 0;
   font-size: 13px;
   line-height: 17px;
+}
+
+/* The Chats row's inline title editor — the sidebar row's field, on the
+   explorer's compact row (`ChatRenameSurface::Explorer`). */
+.files-section-row-title-editor {
+  flex: 1;
+  min-width: 0;
+  height: 21px;
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 17px;
+  color: var(--rb-text);
+  background: var(--rb-input-plate);
+  border: 1px solid var(--rb-accent);
+  border-radius: 4px;
+  cursor: text;
+}
+
+.files-section-row-title-editor:focus {
+  outline: none;
 }
 
 .files-section-row-time {

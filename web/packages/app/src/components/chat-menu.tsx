@@ -11,9 +11,9 @@ import { useFleetRegistry } from "../state/fleet";
 import { sidebarPinProfileKey } from "../lib/sidebar-pins";
 import { reviewCommentStore } from "../state/review-comments";
 import { chatCopyPath } from "../lib/chat-copy-path";
-import { deleteChat, describeMutateError, renameChat, setChatArchived, type MutateCaller } from "../lib/chat-actions";
+import { deleteChat, describeMutateError, setChatArchived, type MutateCaller } from "../lib/chat-actions";
 import { chatMenuRows } from "../lib/chat-menu";
-import { RenameChatDialog } from "./rename-chat-dialog";
+import { chatRenameStore } from "../state/chat-rename";
 import { singleLine } from "../lib/view";
 import {
   RbContextMenu,
@@ -31,7 +31,8 @@ import { MenuRow, MenuSeparator } from "./ui/MenuRows";
  * active list and the archived shelf reuse it), positioned clamp-only at
  * the pointer (`menu_at` — no flip) by `RbContextMenu`, 216px wide. The
  * Copy row swaps the card's content to a Copy page IN PLACE — no second
- * floating layer. Rename and delete open modal dialogs; mutation failures
+ * floating layer. Rename edits the row's title in place (the inline field,
+ * `chatRenameStore`); delete opens a modal dialog; mutation failures
  * surface in the sidebar notice strip.
  *
  * There is no kebab: the right-click is the only affordance (the ticket
@@ -52,7 +53,7 @@ export function useChatMenu(chat: Chat) {
   const sessions = useEngineSessions();
   const session = chatMenuSession(sessions, chat.id);
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"delete" | null>(null);
 
   function run(mutation: (caller: MutateCaller) => Promise<unknown>): void {
     if (session === null) {
@@ -85,7 +86,8 @@ export function useChatMenu(chat: Chat) {
                 chat={chat}
                 onRename={() => {
                   setOpen(false);
-                  setDialog("rename");
+                  // The row's title edits in place now — no dialog.
+                  chatRenameStore.begin(chat.id);
                 }}
                 onArchive={() => {
                   setOpen(false);
@@ -106,13 +108,6 @@ export function useChatMenu(chat: Chat) {
 
   const element = (
     <>
-      {dialog === "rename" && (
-        <RenameChatDialog
-          chat={chat}
-          onSubmit={(title) => run((caller) => renameChat(caller, chat.id, title))}
-          onClose={() => setDialog(null)}
-        />
-      )}
       {dialog === "delete" && (
         <DeleteChatDialog
           chat={chat}
@@ -204,7 +199,7 @@ function ChatMenuPages({
       {rows.includes("rename") && (
         <MenuRow fadeKey="rename" onClick={onRename}>
           <Icon name="pen" size={16} className="chat-menu-row-icon" />
-          <span className="menu-row-label">Rename…</span>
+          <span className="menu-row-label">Rename</span>
         </MenuRow>
       )}
       {rows.includes("pin") && (

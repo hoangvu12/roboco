@@ -27,9 +27,9 @@ import { chatDrafts } from "../lib/composer-draft";
 import { dockFrameSettled } from "../lib/composer-dock";
 import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { sidebarNotice } from "../state/notice";
-import { describeMutateError, markChatSeen, renameChat } from "../lib/chat-actions";
+import { markChatSeen } from "../lib/chat-actions";
 import { childChatTitle } from "../lib/explorer-sections";
-import { RenameChatDialog } from "./rename-chat-dialog";
+import { chatRenameStore } from "../state/chat-rename";
 import type { WorkspaceCommandActions } from "./composer";
 import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
 import { HistoryPane } from "./history/history-pane";
@@ -394,9 +394,10 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
       current?.shown === state.shown && state.shown === false ? current : state,
     );
   }, []);
-  // `/rename`'s dialog for THIS side chat (the chat page's target shape,
-  // side-chat-shaped): the host owns the mutation and its notice.
-  const [renaming, setRenaming] = useState(false);
+  // `/rename` edits THIS side chat's row in the explorer's Chats footer
+  // (`ChatRenameSurface::Explorer`): the field lives on that row, and the
+  // explorer is docked when it is not showing — the field must never sit
+  // on a hidden row.
 
   // The pane's width, measured live — the composer's `set_available_width`
   // feed (the desktop's `right_visible_width`).
@@ -473,10 +474,11 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
         rightPaneStore.revealSurface(chatId, kind);
       },
       renameChat: () => {
-        setRenaming(true);
+        rightPaneStore.revealSurface(chatId, "files");
+        chatRenameStore.begin(sideChatId);
       },
     }),
-    [chatId, navigate],
+    [chatId, navigate, sideChatId],
   );
   const markdownSurface = useMemo(
     () => ({
@@ -540,17 +542,6 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
           }
         />
       </div>
-      {renaming && (
-        <RenameChatDialog
-          chat={effectiveChat}
-          onSubmit={(title) => {
-            void renameChat(session.client, sideChatId, title).catch((error: unknown) => {
-              sidebarNotice.set(describeMutateError(error));
-            });
-          }}
-          onClose={() => setRenaming(false)}
-        />
-      )}
     </div>
   );
 }

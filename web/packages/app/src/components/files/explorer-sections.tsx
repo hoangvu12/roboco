@@ -37,10 +37,13 @@ import {
   type SubagentRow,
 } from "../../lib/explorer-sections";
 import { timeAgo } from "../../lib/view";
+import type { MutateCaller } from "../../lib/chat-actions";
 import { StatusDot } from "../status-dot";
 import { ChangeRequestBadge } from "../change-request-badge";
 import { useChatMenu } from "../chat-menu";
 import { SidebarFadedLabel } from "../sidebar-faded-label";
+import { InlineChatTitleEditor } from "../inline-chat-title-editor";
+import { chatRenameStore, useChatRenameId } from "../../state/chat-rename";
 import { useSidebarDisclosure } from "../sidebar-disclosure";
 import type { SubagentOpen } from "../tool-group";
 
@@ -313,6 +316,7 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
         <ChatRows
           rows={childrenWithRequests}
           shown={chatShown}
+          caller={session === null ? null : session.client}
           onOpen={openChildChat}
           onShowMore={() => setShown((current) => ({ ...current, chats: pageShown(current.chats) }))}
           onFork={forkChat}
@@ -512,6 +516,7 @@ function SubagentRows({
 function ChatRows({
   rows,
   shown,
+  caller,
   onOpen,
   onShowMore,
   onFork,
@@ -522,6 +527,8 @@ function ChatRows({
     chat: Chat;
   })[];
   shown: number;
+  /** The chat's owning engine client — the rename mutation's router. */
+  caller: MutateCaller | null;
   onOpen: (row: ChildChatRow) => void;
   onShowMore: () => void;
   onFork: () => void;
@@ -569,7 +576,7 @@ function ChatRows({
       data-fade-bottom={fades.bottom ? "1" : "0"}
     >
       {visible.map((row) => (
-        <ChatRowItem key={row.chatId} row={row} onOpen={onOpen} />
+        <ChatRowItem key={row.chatId} row={row} caller={caller} onOpen={onOpen} />
       ))}
       {remaining > 0 && (
         <li>
@@ -585,19 +592,23 @@ function ChatRows({
 /**
  * One Chats row — the compact row, right-clickable into the SAME chat
  * context menu the sidebar rows open (`ChildChatContextMenu`,
- * files_panel.rs:209-217 → the chat menu at the pointer).
+ * files_panel.rs:209-217 → the chat menu at the pointer). A double-click
+ * edits the title in place (`ChatRenameSurface::Explorer`'s row).
  */
 function ChatRowItem({
   row,
+  caller,
   onOpen,
 }: {
   row: ChildChatRow & {
     changeRequest: NonNullable<ChildChatRow["changeRequest"]> | null;
     chat: Chat;
   };
+  caller: MutateCaller | null;
   onOpen: (row: ChildChatRow) => void;
 }) {
   const { menu, element } = useChatMenu(row.chat);
+  const renaming = useChatRenameId() === row.chatId;
   return (
     <li>
       {menu(
@@ -606,11 +617,27 @@ function ChatRowItem({
           className="files-section-row"
           aria-label={`Open side chat ${row.title}`}
           onClick={() => onOpen(row)}
+          onDoubleClick={(event) => {
+            // The first click opened the tab; the second edits the title
+            // in place.
+            event.preventDefault();
+            chatRenameStore.begin(row.chatId);
+          }}
         >
           <StatusDot status={row.status} />
-          <SidebarFadedLabel className="files-section-row-title" fill>
-            {row.title}
-          </SidebarFadedLabel>
+          {renaming ? (
+            <InlineChatTitleEditor
+              chatId={row.chatId}
+              initial={row.chat.title ?? row.title}
+              caller={caller}
+              className="files-section-row-title-editor"
+              onDone={() => chatRenameStore.end()}
+            />
+          ) : (
+            <SidebarFadedLabel className="files-section-row-title" fill>
+              {row.title}
+            </SidebarFadedLabel>
+          )}
           {row.changeRequest !== null && <ChangeRequestBadge summary={row.changeRequest} />}
           <span className="files-section-row-time">{row.timeAgo}</span>
         </button>,

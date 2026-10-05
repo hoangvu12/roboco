@@ -30,6 +30,8 @@ import {
 import { rightPaneStore } from "../state/right-pane";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
+import { InlineChatTitleEditor } from "./inline-chat-title-editor";
+import { chatRenameStore, useChatRenameId } from "../state/chat-rename";
 import { PinnedSection } from "./pinned-section";
 import {
   commitSessionDrop,
@@ -1297,6 +1299,7 @@ export function ChatListRow({
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   const { menu, element } = useChatMenu(row.chat);
+  const renaming = useChatRenameId() === row.chat.id;
   const remote = localDeviceId !== null && row.deviceId !== localDeviceId;
   const device = row.deviceName ?? "Unknown device";
   const projectName = row.projectPath === null ? "Home" : row.project;
@@ -1365,6 +1368,12 @@ export function ChatListRow({
         data-status={row.status}
         data-compact={compact ? "1" : undefined}
         activeProps={{ className: "chat-row chat-row-active" }}
+        onDoubleClick={(event) => {
+          // The first click already opened the chat; the double-click
+          // edits the title in place (the desktop's row behavior).
+          event.preventDefault();
+          chatRenameStore.begin(row.chat.id);
+        }}
       >
         {!compact && (
           <div className="chat-row-line">
@@ -1418,9 +1427,19 @@ export function ChatListRow({
               style={brand.tint === null ? undefined : { color: brand.tint }}
             />
           )}
-          <SidebarFadedLabel className="chat-row-title" fill>
-            {row.chat.title ?? "New session"}
-          </SidebarFadedLabel>
+          {renaming ? (
+            <InlineChatTitleEditor
+              chatId={row.chat.id}
+              initial={row.chat.title ?? ""}
+              caller={owning === null ? null : owning.client}
+              className="chat-row-title-editor"
+              onDone={() => chatRenameStore.end()}
+            />
+          ) : (
+            <SidebarFadedLabel className="chat-row-title" fill>
+              {row.chat.title ?? "New session"}
+            </SidebarFadedLabel>
+          )}
           {/* Detailed rows carry the remote Earth glyph only while the
               project label is hidden (78e9e6ae's slot rule). */}
           {!compact && !showLabel && remote && (
