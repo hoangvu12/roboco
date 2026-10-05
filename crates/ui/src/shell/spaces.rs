@@ -1530,6 +1530,7 @@ pub(super) fn sidebar_separator(theme: &Theme) -> gpui::Div {
 fn sidebar_disclosure_header(
     theme: &Theme,
     label: SharedString,
+    action: Option<AnyElement>,
     chevron: AnyElement,
     with_rule: bool,
 ) -> gpui::Div {
@@ -1554,6 +1555,7 @@ fn sidebar_disclosure_header(
             el.child(sidebar_separator(theme).flex_1())
         })
         .when(!with_rule, |el| el.child(div().flex_1()))
+        .children(action)
         .child(chevron)
 }
 
@@ -4633,8 +4635,53 @@ impl Shell {
             let chevron = self.sidebar_disclosure_chevron(&motion_key, !collapsed, theme);
             let toggle_key = collapse_key.clone();
             let toggle_motion_key = motion_key.clone();
-            let header = sidebar_disclosure_header(theme, visible_label, chevron, true)
-                .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
+            // A real project's group gets a hover-revealed `+` that opens a new
+            // chat homed on it.
+            let group_name = SharedString::from(format!("sidebar-group-hover-{collapse_key}"));
+            let new_chat_button = (self.settings.sidebar_organization
+                == SidebarOrganization::ByProject
+                && self.state.read(cx).space_row(&key).is_some())
+            .then(|| {
+                let project = key.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "sidebar-group-new-chat-{collapse_key}"
+                    )))
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .role(gpui::Role::Button)
+                    .aria_label("New chat in project")
+                    .opacity(0.0)
+                    .group_hover(group_name.clone(), |style| style.opacity(1.0))
+                    .hover(|el| el.bg(theme.glass_hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_new_session(Some(project.clone()), cx);
+                    }))
+                    .tooltip(crate::settings::widgets::text_tooltip_above(
+                        "New chat in project",
+                    ))
+                    .child(
+                        icon(icons::PLUS)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .into_any_element()
+            });
+            let header = sidebar_disclosure_header(
+                theme,
+                visible_label,
+                new_chat_button,
+                chevron,
+                true,
+            )
+            .group(group_name)
+            .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
                     this.begin_sidebar_disclosure_motion(
@@ -4693,7 +4740,7 @@ impl Shell {
             format!("Pinned ({})", items.len()).into()
         };
         let chevron = self.sidebar_disclosure_chevron("pinned", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
             .id("pinned-toggle")
             .debug_selector(|| "pinned-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -4774,7 +4821,7 @@ impl Shell {
             format!("Sessions ({count})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("sessions", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
             .id("sessions-toggle")
             .debug_selector(|| "sessions-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -4924,7 +4971,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;

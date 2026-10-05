@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { ReactElement } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Icon, harnessBrandIcon } from "@roboco/icons";
+import type { Space } from "@roboco/proto";
 import { parseScopedId } from "@roboco/engine-client";
 import { useEngineSession, useEngineSessions } from "../state/session-provider";
 import type { EngineSession } from "../state/engine-session";
@@ -12,6 +14,7 @@ import { cycleTarget, onShortcut } from "../state/shortcuts";
 import { useJumpHints, visibleJumpOrder } from "../state/jump-hints";
 import { echoStore, chatDeliveryDegraded } from "../state/transcript-store";
 import { describeMutateError, setChatArchived } from "../lib/chat-actions";
+import { rememberTarget } from "../lib/composer-draft";
 import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import {
   chatListRows,
@@ -28,6 +31,7 @@ import {
   type SidebarKeyed,
 } from "../lib/view";
 import { rightPaneStore } from "../state/right-pane";
+import { Tooltip } from "./ui/Tooltip";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { InlineChatTitleEditor } from "./inline-chat-title-editor";
@@ -854,6 +858,11 @@ export function ChatList() {
           showLabel={showLabel}
           showProjectIcon={showProjectIcon}
           localDeviceId={localDeviceId}
+          space={
+            bucket.group.kind === "project"
+              ? (snapshot.spaces.rows.find((row) => row.id === bucket.group.key) ?? null)
+              : null
+          }
           jumpLabelFor={jumpLabelFor}
           onRowPointerDown={armTransferIn}
           draggingChatId={transferIn}
@@ -1172,6 +1181,7 @@ function DeviceGroupSection({
   showLabel,
   showProjectIcon,
   localDeviceId,
+  space,
   jumpLabelFor,
   onRowPointerDown,
   draggingChatId,
@@ -1186,6 +1196,8 @@ function DeviceGroupSection({
   showLabel: boolean;
   showProjectIcon: boolean;
   localDeviceId: string | null;
+  /** A real project group's space row — drives the per-project `+`. */
+  space: Space | null;
   jumpLabelFor: (chatId: string) => string | null;
   /** The parent's transfer-in gesture arm (one per regular row). */
   onRowPointerDown: (event: React.PointerEvent, chatId: string) => void;
@@ -1193,17 +1205,43 @@ function DeviceGroupSection({
   shouldSuppressClick: () => boolean;
   onToggle: () => void;
 }) {
+  const navigate = useNavigate();
   const bodyHeight = sidebarGroupBodyHeight(rows, compact, showLabel);
   const { bodyRef, chevronRef, toggle } = useSidebarDisclosure(
     `group:${collapseKey}`,
     !collapsed,
     bodyHeight,
   );
+  // A real project's group gets a hover-revealed `+` that opens a new
+  // chat homed on it (upstream #737) — the remembered target wins over
+  // the sidebar filter, exactly like `open_new_session(Some(project))`.
+  const newChatAction =
+    space === null ? null : (
+      <Tooltip
+        label="New chat in project"
+        trigger={
+          <button
+            type="button"
+            className="sidebar-group-new-chat"
+            aria-label="New chat in project"
+            onClick={(event) => {
+              // The header is the toggle; the `+` is its own action.
+              event.stopPropagation();
+              rememberTarget(space.deviceId, space.id, false);
+              void navigate({ to: "/" });
+            }}
+          >
+            <Icon name="plus" size={14} />
+          </button>
+        }
+      />
+    );
   return (
     <section className="sidebar-group" id={`sidebar-group-${collapseKey}`}>
       <SidebarDisclosureHeader
         label={collapsed ? `${label} (${rows.length})` : label}
         open={!collapsed}
+        action={newChatAction}
         chevronRef={chevronRef}
         onToggle={() => {
           // The motion begins on the CURRENT height before the flip — a
@@ -1335,17 +1373,24 @@ export function ChatListRow({
 
   // The corner's compact body: the remote glyph at rest (the Archive pill
   // takes the slot on hover — deaf2c4e's compact corner); nothing for a
-  // local row until hover.
+  // local row until hover. The pill carries the archive tooltip (upstream
+  // #737); the family tooltip already places above the trigger, where the
+  // desktop needs its explicit above-anchored chip.
+  const archiveTooltip = (pill: ReactElement) => (
+    <Tooltip label={archived ? "Unarchive session" : "Archive session"} trigger={pill} />
+  );
   const compactCornerBody = hovered ? (
-    <button
-      type="button"
-      className="chat-row-archive"
-      aria-label={archived ? "Unarchive chat" : "Archive chat"}
-      onClick={toggleArchive}
-    >
-      <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
-      {archived ? "Unarchive" : "Archive"}
-    </button>
+    archiveTooltip(
+      <button
+        type="button"
+        className="chat-row-archive"
+        aria-label={archived ? "Unarchive chat" : "Archive chat"}
+        onClick={toggleArchive}
+      >
+        <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
+        {archived ? "Unarchive" : "Archive"}
+      </button>,
+    )
   ) : remote ? (
     <Tooltip label={device} delay={TOOLTIP_VIEW_OPTIONS_MS} trigger={<Icon name="global" size={13} className="chat-row-remote" />} />
   ) : null;
@@ -1384,15 +1429,17 @@ export function ChatListRow({
               {jumpLabel !== null ? (
                 <span className="chat-row-jump mono">{jumpLabel}</span>
               ) : hovered ? (
-                <button
-                  type="button"
-                  className="chat-row-archive"
-                  aria-label={archived ? "Unarchive chat" : "Archive chat"}
-                  onClick={toggleArchive}
-                >
-                  <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
-                  {archived ? "Unarchive" : "Archive"}
-                </button>
+                archiveTooltip(
+                  <button
+                    type="button"
+                    className="chat-row-archive"
+                    aria-label={archived ? "Unarchive chat" : "Archive chat"}
+                    onClick={toggleArchive}
+                  >
+                    <Icon name={archived ? "archiveUpMinimalistic" : "archiveMinimalistic"} size={11} />
+                    {archived ? "Unarchive" : "Archive"}
+                  </button>,
+                )
               ) : word === null && sendWord === null ? (
                 <span className="chat-row-time">{row.timeAgo}</span>
               ) : sendWord !== null ? (

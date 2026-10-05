@@ -11180,6 +11180,33 @@ button.files-save-pill:hover {
   color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
 }
 
+/*
+ * The per-project new-chat `+` (upstream #737): hover-revealed before the
+ * chevron on real project groups. Hidden at rest (opacity, never display —
+ * the header's flex row must not reflow as it appears).
+ */
+.sidebar-group-new-chat {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--rb-text-muted) 50%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.sidebar-disclosure-header:hover .sidebar-group-new-chat,
+.sidebar-group-new-chat:hover {
+  opacity: 1;
+}
+
+.sidebar-group-new-chat:hover {
+  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+}
+
 /* The clipping wrapper: height/opacity/top are tweened inline. */
 .sidebar-disclosure-body {
   width: 100%;

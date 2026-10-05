@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "@roboco/icons";
 import { SidebarFadedLabel } from "./sidebar-faded-label";
 
@@ -271,12 +271,19 @@ export function useSidebarDisclosureDivider(
  * (device groups only — `with_rule`; Pinned and Archived go bare, matching
  * the desktop's 38a8f013/adc290e3 polish) filling the middle, the chevron
  * at the end. 28px tall, 8px inline padding.
+ *
+ * `action` (upstream #737: the per-project new-chat `+`) places an icon
+ * action between the rule and the chevron — hover-revealed by the group.
+ * With an action the header renders as a `role=button` div, not a
+ * `<button>`: nested interactive elements are invalid (the explorer's
+ * section headers use the same shape).
  */
 export function SidebarDisclosureHeader({
   id,
   label,
   open,
   withRule = true,
+  action,
   chevronRef,
   onToggle,
 }: {
@@ -285,11 +292,13 @@ export function SidebarDisclosureHeader({
   open: boolean;
   /** Whether the hairline rule fills the middle (adc290e3: device groups only). */
   withRule?: boolean;
+  /** An icon action beside the chevron (the per-project `+`). */
+  action?: ReactNode;
   chevronRef: React.RefObject<HTMLSpanElement | null>;
   onToggle: () => void;
 }) {
-  return (
-    <button type="button" id={id} className="sidebar-disclosure-header" aria-expanded={open} onClick={onToggle}>
+  const content = (
+    <>
       <SidebarFadedLabel className="sidebar-disclosure-label">{label}</SidebarFadedLabel>
       {withRule ? (
         <span className="sidebar-disclosure-rule" />
@@ -298,10 +307,36 @@ export function SidebarDisclosureHeader({
         // (7c7b574b — the rule did that job on the device-group headers).
         <span className="sidebar-disclosure-spacer" />
       )}
+      {action}
       <span ref={chevronRef} className="sidebar-disclosure-chevron">
         <Icon name="altArrowRight" size={12} />
       </span>
-    </button>
+    </>
+  );
+  if (action === undefined) {
+    return (
+      <button type="button" id={id} className="sidebar-disclosure-header" aria-expanded={open} onClick={onToggle}>
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div
+      id={id}
+      className="sidebar-disclosure-header"
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={onToggle}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle();
+        }
+      }}
+    >
+      {content}
+    </div>
   );
 }
 
