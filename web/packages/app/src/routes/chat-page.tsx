@@ -19,6 +19,7 @@ import type { SubagentOpen } from "../components/tool-group";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
 import { Composer } from "../components/composer";
 import { QueuePanel } from "../components/queue-panel";
+import { TodoPanel } from "../components/todo-panel";
 import { ComposerFooter } from "../components/composer-footer";
 import { useNewThreadTarget } from "../components/composer/new-thread-selectors";
 import { NewThreadCanvas } from "./index-page";
@@ -1415,6 +1416,15 @@ export function ConversationPage() {
                 dockEvaluateRef={dockEvaluateRef}
                 onNewThreadLaunched={onNewThreadLaunched}
                 dockCorrectionRef={dockCorrectionRef}
+                todoSlot={
+                  liveTranscript !== null && hasSelection ? (
+                    <TodoPanel
+                      store={liveTranscript}
+                      chatId={chatId}
+                      live={row?.status === "working"}
+                    />
+                  ) : null
+                }
                 queueSlot={
                   queueStore !== null && deviceId !== null ? (
                     <QueueStoreProvider value={queueStore}>

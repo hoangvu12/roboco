@@ -335,6 +335,12 @@ interface ComposerProps {
    * tray slot — tucked 18px behind the pill per `QUEUE_COMPOSER_OVERLAP`.
    */
   readonly queueSlot?: ReactNode;
+  /**
+   * The agent's checklist tray (the todo panel), rendered ABOVE the queue
+   * tray — one step narrower, tucked behind whatever follows it (the queue
+   * tray, or the pill itself). `render_todo_panel`'s slot seam.
+   */
+  readonly todoSlot?: ReactNode;
   /** The session footer row (the 24px slot under the pill). */
   readonly footerSlot?: ReactNode;
   /**
@@ -453,6 +459,7 @@ export function Composer({
   availableWidth,
   liveAvailableWidth,
   queueSlot,
+  todoSlot,
   footerSlot,
   editingMessage,
   onEditFinish,
@@ -3508,6 +3515,9 @@ export function Composer({
           <span className="composer-queue-dot" />
           <div className="composer-queue-text">{queueNotice}</div>
         </div>
+      )}
+      {todoSlot !== undefined && todoSlot !== null && (
+        <div className="composer-todo-tray">{todoSlot}</div>
       )}
       {queueSlot !== undefined && queueSlot !== null && (
         <div className="composer-queue-tray">{queueSlot}</div>

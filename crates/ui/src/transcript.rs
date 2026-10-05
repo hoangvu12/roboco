@@ -877,7 +877,14 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
         ToolCall::WebSearch { query } => query.clone(),
         ToolCall::Todo { items } => items
             .iter()
-            .map(|i| format!("{} {}", if i.done { "[x]" } else { "[ ]" }, i.text))
+            .map(|i| {
+                let mark = match i.status() {
+                    roboco_proto::TodoStatus::Completed => "[x]",
+                    roboco_proto::TodoStatus::InProgress => "[~]",
+                    roboco_proto::TodoStatus::Pending => "[ ]",
+                };
+                format!("{mark} {}", i.text)
+            })
             .collect::<Vec<_>>()
             .join("\n"),
         ToolCall::Mcp {
@@ -15115,14 +15122,8 @@ mod tests {
         );
         let todo = ToolCall::Todo {
             items: vec![
-                roboco_proto::TodoItem {
-                    text: "a".into(),
-                    done: true,
-                },
-                roboco_proto::TodoItem {
-                    text: "b".into(),
-                    done: false,
-                },
+                roboco_proto::TodoItem::new("a", roboco_proto::TodoStatus::Completed),
+                roboco_proto::TodoItem::new("b", roboco_proto::TodoStatus::Pending),
             ],
         };
         assert_eq!(tool_chip_content(&todo), ("Todo", "1/2 done".to_string()));
@@ -15202,21 +15203,16 @@ mod tests {
         // Todos list one item per line with checkbox state.
         let Some(ToolDetail::Output { lines, .. }) = call_block(&ToolCall::Todo {
             items: vec![
-                roboco_proto::TodoItem {
-                    text: "a".into(),
-                    done: true,
-                },
-                roboco_proto::TodoItem {
-                    text: "b".into(),
-                    done: false,
-                },
+                roboco_proto::TodoItem::new("a", roboco_proto::TodoStatus::Completed),
+                roboco_proto::TodoItem::new("b", roboco_proto::TodoStatus::InProgress),
+                roboco_proto::TodoItem::new("c", roboco_proto::TodoStatus::Pending),
             ],
         }) else {
             panic!("expected an output block")
         };
         assert_eq!(
             lines.iter().map(|l| l.as_ref()).collect::<Vec<_>>(),
-            vec!["[x] a", "[ ] b"]
+            vec!["[x] a", "[~] b", "[ ] c"]
         );
 
         // Blank invocation → no block; the chip stays a plain card.

@@ -14,7 +14,7 @@ use roboco_harness::{
     CancellationToken, CodexHarness, Harness, HarnessError, RunControls, SteerMessage,
 };
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoItem,
+    AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoStatus,
     ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
@@ -293,14 +293,8 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
         id: "td1".into(),
         call: ToolCall::Todo {
             items: vec![
-                TodoItem {
-                    text: "a".into(),
-                    done: true
-                },
-                TodoItem {
-                    text: "b".into(),
-                    done: false
-                },
+                TodoItem::new("a", TodoStatus::Completed),
+                TodoItem::new("b", TodoStatus::Pending),
             ]
         },
     }));
