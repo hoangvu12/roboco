@@ -35,7 +35,7 @@ desktop staging-side.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Upstream SHAs:** `f9a4a18b` (#739) — `crates/ui/src/attachments.rs`
 (+113), `crates/ui/src/composer.rs` (+115),
@@ -45,10 +45,43 @@ paths here. Source: `.scratch/upstream-drift/2026-10-05.md` § #739.
 **Verification budget:** deferred — wave-final batched pass:
 `cargo nextest run -p roboco-ui --lib` (staging/conversion tests).
 
-- [ ] BMP files and clipboard images become PNG at staging
+- [x] BMP files and clipboard images become PNG at staging
       (`pending://` refs, upload, transcript all see PNG)
-- [ ] Undecodable file refused; undecodable paste kept as pasted
-- [ ] Wallpapers verbatim via `stage_file_verbatim`
-- [ ] Staging off the UI thread; result lands in the draft current at
+- [x] Undecodable file refused; undecodable paste kept as pasted
+- [x] Wallpapers verbatim via `stage_file_verbatim`
+- [x] Staging off the UI thread; result lands in the draft current at
       arrival
-- [ ] Port commit records the upstream SHA
+- [x] Port commit records the upstream SHA
+
+## Comments
+
+Ported upstream `f9a4a18b` (#739) near 1:1 — same four files, no
+exclusions, no rebrand needed (identifiers unchanged).
+
+- `crates/ui/src/attachments.rs`: `stage_file` now converts BMP->PNG
+  (via new `bmp_to_png`, image 0.25.10 with bmp already a ui dep) and
+  renames `.bmp`->`.png`; new `stage_file_verbatim` stages bytes as
+  stored (wallpapers); `stage_clipboard_image` converts BMP pastes but
+  keeps undecodable ones as pasted; undecodable BMP FILES are refused
+  with "{name} is not a valid image.".
+- `crates/ui/src/composer.rs`: `add_staged` replaced by
+  `stage_in_background` (background executor; the draft current when
+  the image arrived owns the result — key captured at spawn; failures
+  surface in that draft's failure notice; queue-edit finishing still
+  gates the insert). `PastedImages` and `add_paths` route through it;
+  the file-drop regression test gained `cx.run_until_parked()`, and
+  the new `staged_files_land_in_the_draft_they_were_added_to` test
+  covers the navigate-mid-convert semantics (BMP -> "shot.png" in
+  chat-a, nothing in chat-b, notes.txt filtered).
+- `crates/ui/src/settings.rs` +
+  `crates/ui/src/settings/wallpaper.rs`: background/wallpaper
+  consumers switched to `stage_file_verbatim` (exact bytes + name).
+- Roboco-specific `stage_file` callers (dev knobs
+  `ROBOCO_DEMO_UPLOAD` in shell.rs, `ROBOCO_ATTACH` boot staging in
+  composer.rs) intentionally keep the CONVERTING `stage_file`: they
+  simulate user staging, not wallpaper reads.
+- All four upstream tests ported verbatim (clipboard BMP fixture,
+  pasted/file/verbatim, non-BMP untouched, undecodable refused/kept).
+
+Web: N/A per ticket (web uploads already accept bmp). Verification
+deferred to the wave-final batched pass.
