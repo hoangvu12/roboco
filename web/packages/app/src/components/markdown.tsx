@@ -760,7 +760,11 @@ function measureCanvas(): CanvasRenderingContext2D | null {
  * Mermaid fences render as their source, deliberately: the desktop's
  * diagram closure lives in the files preview, and shipping Mermaid.js
  * (megabytes of bundle) into the engine-embedded app for a diagram renderer
- * is judged too heavy — see the ticket's Comments.
+ * is judged too heavy — see the ticket's Comments. The desktop now renders
+ * mermaid fences as diagrams in CHAT replies too (upstream #760, the
+ * files-preview engine reused on the transcript); the web keeps the
+ * source-only rendering there as well — the divergence record in
+ * `.scratch/web-parity-fixes/spec.md` covers chat replies explicitly.
  */
 export function CodeBlock({
   code,

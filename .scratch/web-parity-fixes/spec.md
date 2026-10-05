@@ -300,7 +300,7 @@ Filtered out of this spec deliberately, with reasons:
   deviation).
 - **Documented intentional divergences** (recorded in web code or tickets —
   changing them is a separate decision, not a parity fix): Steer/send-next
-  queue actions (spec decision: no steer anywhere); mermaid rendering;
+  queue actions (spec decision: no steer anywhere); mermaid rendering (files preview AND chat replies — upstream #760 ported the desktop transcript renderer; the web stays source-only, no Mermaid.js);
   per-line diff tokenization; MRU right-tab restore (accepted
   desktop-only); tab context menus and session-header side-chat/fork
   buttons (deferred — they need new web chrome-contract hosts); fork error
