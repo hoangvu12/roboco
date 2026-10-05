@@ -22,7 +22,7 @@ inputs.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Upstream SHAs:** `2a884777` (#757) — `crates/ui/src/composer.rs` →
 same path here (ui crate un-prefixed). Source:
@@ -32,7 +32,26 @@ same path here (ui crate un-prefixed). Source:
 `cargo nextest run -p roboco-ui --lib` (the new regression test beside
 the existing input tests at `composer.rs:12070+`).
 
-- [ ] `shift-backspace` bound in the composer input bindings
-- [ ] `shift-backspace` bound in the palette search bindings
-- [ ] Regression test added next to the existing `input.backspace` tests
-- [ ] Port commit records the upstream SHA
+- [x] `shift-backspace` bound in the composer input bindings
+- [x] `shift-backspace` bound in the palette search bindings
+- [x] Regression test added next to the existing `input.backspace` tests
+- [x] Port commit records the upstream SHA
+
+## Comments
+
+Ported upstream `2a884777` (#757) 1:1 — no adaptation needed beyond
+file placement (same path, ui crate un-prefixed).
+
+- `shift-backspace` -> `Backspace` added to `input_bindings` (composer
+  input, `crates/ui/src/composer.rs:1494`) and to the palette-search
+  bindings (`composer.rs:1614`), beside the bare `backspace` entries,
+  mirroring the existing `cmd-backspace` neighbors.
+- Regression test `shift_backspace_deletes_text_and_selection_in_all_
+  input_contexts` ported verbatim (minus a non-ASCII literal spelling),
+  placed beside the existing `input.backspace` tests (`crlf_navigation_
+  deletion_and_newlines_keep_the_pair_intact`); covers all three key
+  contexts (generic composer, message composer, palette search),
+  deletion of a char, a selection, and on empty text.
+- Web: nothing to do (browsers handle Shift+Backspace natively), per
+  the ticket.
+- Verification deferred to the wave-final batched pass per spec.
