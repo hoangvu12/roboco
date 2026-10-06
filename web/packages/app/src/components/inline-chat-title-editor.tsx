@@ -76,7 +76,7 @@ export function InlineChatTitleEditor({
       ref={inputRef}
       // The field is not the row: clicks place the caret instead of
       // opening the chat or starting a drag.
-      className={className}}
+      className={className}
       type="text"
       aria-label="Session title"
       value={title}

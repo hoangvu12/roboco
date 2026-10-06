@@ -32,4 +32,11 @@ gitCheckedAt?: string | null,
  * Owner-stamped when git: canonical checkout identity of the space root
  * (sha256(deviceId ‖ NUL ‖ git_dir)) — diff grouping key for root sessions.
  */
-checkoutId?: string | null, createdAt: string, };
+checkoutId?: string | null, 
+/**
+ * Owner-stamped when git: identity shared by every clone and worktree of
+ * one repository — the normalized origin remote (`host/owner/repo`), else
+ * `local:` + a device-scoped hash of the common git dir. Opaque to
+ * readers: projects with equal ids group together.
+ */
+repositoryId?: string | null, createdAt: string, };

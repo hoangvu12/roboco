@@ -401,6 +401,8 @@ describe("validateSidebarPinUpdate", () => {
 
 function chatRows(ids: readonly string[]): ChatRow[] {
   return ids.map((id) => ({
+    projectKey: `home:device-${id}`,
+    projectLabel: "~",
     chat: {
       id,
       deviceId: "device-1",

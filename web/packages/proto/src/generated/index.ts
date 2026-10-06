@@ -115,6 +115,7 @@ export * from "./TerminalSession";
 export * from "./TextAppend";
 export * from "./TitleSettings";
 export * from "./TodoItem";
+export * from "./TodoStatus";
 export * from "./ToolCall";
 export * from "./ToolDiff";
 export * from "./ToolDiffStat";

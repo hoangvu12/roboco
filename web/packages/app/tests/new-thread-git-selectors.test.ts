@@ -203,7 +203,14 @@ async function mountCanvasTarget(): Promise<CanvasHandle> {
 
 /** A chip trigger's label. */
 function chipLabel(id: string): string {
-  return document.querySelector<HTMLElement>(`#${id} .footer-menu-chip-label`)?.textContent ?? "";
+  // During a label roll the span holds the outgoing copy too (roll-text);
+  // the current value is the in/still span.
+  const label = document.querySelector<HTMLElement>(`#${id} .footer-menu-chip-label`);
+  return (
+    label?.querySelector<HTMLElement>(".roll-text-in, .roll-text-still")?.textContent ??
+    label?.textContent ??
+    ""
+  );
 }
 
 /** A real press pair on `target`: pointerdown (marks the press) then click. */

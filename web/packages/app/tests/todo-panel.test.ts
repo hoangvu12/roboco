@@ -101,15 +101,22 @@ describe("todoSummary and folds (todo_panel.rs)", () => {
   it("rows place fold toggles at the edges they stand for", () => {
     const items = Array.from({ length: 12 }, (_, ix) => item(`i${ix}`, ix < 4));
     const collapsed = todoRows(items, false, false);
-    expect(collapsed[0]).toEqual({ row: "fold", side: "earlier", count: 4, open: false });
-    expect(collapsed.filter((r) => r.row === "item")).toHaveLength(3 + 5);
-    expect(collapsed[collapsed.length - 1]).toEqual({ row: "fold", side: "later", count: 5, open: false });
+    // The first unfinished item (4) centers the window: 3..6 — three
+    // visible items, three folded off each end.
+    expect(collapsed[0]).toEqual({ row: "fold", side: "earlier", count: 3, open: false });
+    expect(collapsed.filter((r) => r.row === "item")).toHaveLength(3);
+    expect(collapsed[collapsed.length - 1]).toEqual({ row: "fold", side: "later", count: 6, open: false });
+    // Opening the earlier fold reveals its three items; the later six stay
+    // folded behind their own toggle.
     const opened = todoRows(items, true, false);
-    expect(opened.filter((r) => r.row === "item")).toHaveLength(12);
-    expect(opened[0]).toEqual({ row: "fold", side: "earlier", count: 4, open: true });
-    // No fold rows when everything is visible on both ends.
+    expect(opened.filter((r) => r.row === "item")).toHaveLength(3 + 3);
+    expect(opened[0]).toEqual({ row: "fold", side: "earlier", count: 3, open: true });
+    // Both open: the whole list, in order, and each toggle still present
+    // so it can be closed again (rows() keeps the fold rows).
     const openedAll = todoRows(items, true, true);
-    expect(openedAll.filter((r) => r.row === "fold")).toHaveLength(0);
+    expect(openedAll.filter((r) => r.row === "item")).toHaveLength(12);
+    expect(openedAll[0]).toEqual({ row: "fold", side: "earlier", count: 3, open: true });
+    expect(openedAll[openedAll.length - 1]).toEqual({ row: "fold", side: "later", count: 6, open: true });
   });
 
   it("a dismissal signature covers text and effective status", () => {

@@ -32,7 +32,6 @@ import {
   type SidebarKeyed,
 } from "../lib/view";
 import { rightPaneStore } from "../state/right-pane";
-import { Tooltip } from "./ui/Tooltip";
 import { useFleetChatChangeRequests } from "../state/change-requests-store";
 import { useChatMenu } from "./chat-menu";
 import { InlineChatTitleEditor } from "./inline-chat-title-editor";

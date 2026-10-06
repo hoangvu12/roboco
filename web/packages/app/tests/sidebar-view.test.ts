@@ -431,6 +431,8 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     chat: entry,
     status: "idle" as const,
     project: "~",
+    projectKey: entry.spaceId ?? `home:${entry.deviceId}`,
+    projectLabel: "~",
     projectPath: null,
     folder: "~",
     harness: null,
