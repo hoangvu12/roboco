@@ -41,6 +41,7 @@ Transcript subscriptions deliver an initial reset followed by deltas. Virtualize
 | Path | Responsibility |
 | --- | --- |
 | `apps/roboco` | Binary, CLI, daemon integration, application startup |
+| `adapters/roboco-tailcat` | Vendored Go Tailcat transport adapter, built against pinned upstream `tailscale/tailcat` and bundled beside the binary in releases |
 | `crates/engine` | Engine lifecycle, agent execution, local storage services, RPC handlers |
 | `crates/rpc` | Request/stream envelopes and transports |
 | `crates/proto` | Shared domain and protocol types |

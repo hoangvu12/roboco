@@ -39,28 +39,57 @@ engine logs the configuration source and the reason for any refusal.
 
 Tailcat publishes the same listener over Tailscale's data plane — WireGuard with
 NAT traversal and public DERP relays — with no account and no control plane. It
-needs the app-owned adapter (`kratos-tailcat`) on both machines: beside the
-Roboco binary, or wherever `ROBOCO_TAILCAT_ADAPTER` points.
+uses the app-owned `roboco-tailcat` adapter, bundled beside Roboco in releases.
+Source builds need to [build that adapter too](../../adapters/roboco-tailcat/README.md);
+`ROBOCO_TAILCAT_ADAPTER` can point to a development build.
+
+On each VM, run just:
+
+```sh
+roboco engine tailcat invite
+```
+
+This command starts a detached background engine if none owns the data directory,
+explicitly enables and saves Tailcat remote access, waits for a live route, and
+prints a `roboco-tailcat:…` invite. It switches previously disabled or `network`
+settings to Tailcat; the remote listener is loopback-only. The command exits while
+the engine stays running. Running it again issues a new invite without restarting
+a healthy route. `--json` prints `{id, url, expiresAt}`; `--ttl-seconds` accepts
+1–3600 (default 300). Use the same `ROBOCO_DATA_DIR` to target a custom engine.
+An auto-started engine lasts until stopped or the VM reboots; install a daemon
+with `roboco daemon install` separately if you need boot persistence.
+
+On another **native desktop**, paste the invite into **Settings → Devices**.
+The desktop owns its Tailcat connection; no `connect` command is required.
+
+For the **browser**, run this on the machine running the browser:
+
+```sh
+roboco engine tailcat browser-helper
+```
+
+Then paste the invite into the web client's **Settings → Devices**. Keep the helper
+running. Alternatively, use the explicit forwarder described below.
+
+Advanced foreground/service setup still supports:
 
 ```sh
 roboco headless --network --network-transport tailcat
 ```
 
-Saved settings and the startup flag must agree, exactly like `--network`; a saved
-`network` with a `tailcat` flag (or the reverse) keeps the engine local and logs
-why. `ROBOCO_NETWORK_TRANSPORT=tailcat` is the environment equivalent. With the
-route up, startup prints an invite instead of a URL:
-
-```
-Tailcat invite: roboco-tailcat:eyJhZGRyZXNzIjoi4oCm
-```
+Unlike `invite`, these startup flags do not change saved settings: they must
+agree with them. `ROBOCO_NETWORK_TRANSPORT=tailcat` is the environment equivalent.
+In Tailcat mode the engine binds its remote listener to loopback: an unspecified
+bind narrows to `127.0.0.1`, and a non-loopback `--network-address` is refused —
+the network transport is the LAN-serving path.
 
 An invite carries the route and a short-lived, single-use pairing code — the
 client's listener port exists only on the client, so there is nothing to put in a
 link. The address inside it can embed a pre-shared key: it is a secret, written
 0600 to `tailcat-address.json` and never logged. `--tailcat-derp-map URL` (or
 `ROBOCO_TAILCAT_DERP_MAP`) points the adapter at your own DERP relay instead of
-its default map. If the route cannot come up, remote access stays off and the
+its default map. For one-command setup, export `ROBOCO_TAILCAT_DERP_MAP` before
+starting the engine. If the route cannot come up, remote access stays off and the
 engine reports why.
 
 ### Administering a Tailcat route

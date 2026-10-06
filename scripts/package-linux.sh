@@ -17,6 +17,8 @@ command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
 PROFILE="${PROFILE:-release}"
 ARCH="$(uname -m)"
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
+BUILD_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+[[ "$BUILD_DIR" = /* ]] || BUILD_DIR="$ROOT/$BUILD_DIR"
 OUT_DIR="$ROOT/target/package"
 STAGE="$OUT_DIR/roboco-$VERSION-linux-$ARCH"
 TARBALL="$STAGE.tar.gz"
@@ -34,21 +36,36 @@ fi
 
 if [[ "$PROFILE" == "release" ]]; then
   cargo build --release -p roboco
-  BIN="$ROOT/target/release/roboco"
+  BIN="$BUILD_DIR/release/roboco"
 else
   cargo build -p roboco
-  BIN="$ROOT/target/debug/roboco"
+  BIN="$BUILD_DIR/debug/roboco"
 fi
+
+# Build the managed transport from pinned Go sources for this host architecture.
+case "$ARCH" in
+  x86_64) GO_ARCH=amd64 ;;
+  aarch64|arm64) GO_ARCH=arm64 ;;
+  *) echo "unsupported Linux package architecture: $ARCH" >&2; exit 1 ;;
+esac
+ADAPTER="$ROOT/target/roboco-tailcat-linux-$ARCH"
+( cd "$ROOT/adapters/roboco-tailcat" && GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" go build -mod=readonly -trimpath -o "$ADAPTER" ./cmd/roboco-tailcat )
 
 rm -rf "$STAGE" "$TARBALL"
 mkdir -p "$STAGE"
 install -m 755 "$BIN" "$STAGE/roboco"
+install -m 755 "$ADAPTER" "$STAGE/roboco-tailcat"
 install -m 644 "$ROOT/dist/roboco.desktop" "$STAGE/roboco.desktop"
 install -m 644 "$ROOT/dist/roboco.png" "$STAGE/roboco.png"
 mkdir -p "$STAGE/licenses/fonts"
 cp "$ROOT/crates/ui/assets/fonts/licenses/"* "$STAGE/licenses/fonts/"
 cp "$ROOT/crates/voice/NOTICE.md" "$STAGE/licenses/parakeet-v3.txt"
 
+mkdir -p "$STAGE/licenses/tailcat"
+cp -R "$ROOT/adapters/roboco-tailcat/licenses/bundle/." "$STAGE/licenses/tailcat/"
+cp "$ROOT/adapters/roboco-tailcat/LICENSE.kratos" "$STAGE/licenses/tailcat/LICENSE.kratos"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.md"
+cp "$ROOT/LICENSE" "$STAGE/LICENSE"
 cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
 # Install Roboco for this user (no root needed), in the layout the in-app
@@ -61,7 +78,7 @@ VERSION="__VERSION__"
 APP_ROOT="$HOME/.roboco/app"
 DEST="$APP_ROOT/$VERSION"
 mkdir -p "$APP_ROOT"
-if [ ! -x "$DEST/roboco" ]; then
+if [ ! -x "$DEST/roboco" ] || [ ! -x "$DEST/roboco-tailcat" ]; then
   # Copy beside the final name, then rename: an interrupted install never
   # leaves a half-copied version the updater would trust.
   STAGE="$(mktemp -d "$APP_ROOT/.install-$VERSION-XXXXXX")"

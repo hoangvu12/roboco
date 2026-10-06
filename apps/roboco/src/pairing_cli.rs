@@ -1,4 +1,4 @@
-//! Pairing administration opens SQLite directly and never takes the engine lock.
+//! Pairing administration uses SQLite; Tailcat setup talks to the owning engine.
 use anyhow::Context as _;
 use clap::Subcommand;
 use roboco_engine::pairing::{DEFAULT_TTL_SECONDS, PairingStore, pairing_url};
@@ -48,7 +48,7 @@ pub enum TailcatCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Mint a short-lived, single-use invite for this engine's route.
+    /// Start the engine if needed, enable Tailcat, and print a single-use invite.
     Invite {
         #[arg(long, default_value_t = DEFAULT_TTL_SECONDS)]
         ttl_seconds: u64,
@@ -96,26 +96,15 @@ fn tailcat(command: TailcatCommand, data_dir: &std::path::Path) -> anyhow::Resul
             Ok(())
         }
         TailcatCommand::Invite { ttl_seconds, json } => {
-            let address = read_recorded_address(data_dir)?.with_context(|| {
-                format!(
-                    "no tailcat address recorded for {}; start the engine with --network-transport tailcat",
-                    data_dir.display()
-                )
-            })?;
-            let store = PairingStore::open(data_dir)?;
-            let code = store.create_code("", ttl_seconds)?;
-            let invite = TailcatInvite::new(&address, &code.credential, code.expires_at)?;
-            let url = invite.encode()?;
+            let invite = crate::tailcat_setup::invite(data_dir, ttl_seconds)?;
+            let url = invite["url"].as_str().context("engine returned no Tailcat invite")?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"id": code.id, "url": url, "expiresAt": code.expires_at})
-                );
+                println!("{invite}");
             } else {
                 println!("{url}");
                 println!(
                     "Expires at {} (Unix milliseconds). Paste it where a pairing link goes.",
-                    code.expires_at
+                    invite["expiresAt"]
                 );
             }
             Ok(())

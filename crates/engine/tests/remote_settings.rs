@@ -35,6 +35,20 @@ async fn engine(
 }
 
 #[tokio::test]
+async fn tailcat_invite_rejects_invalid_ttl_before_changing_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, rpc, server) = engine(dir.path(), NetworkOptions::default()).await;
+    for ttl in [0, 3601] {
+        let error = rpc.call(methods::CREATE_TAILCAT_INVITE, json!({"ttlSeconds": ttl})).await.unwrap_err();
+        assert!(error.to_string().contains("from 1 to 3600"), "{error}");
+    }
+    assert!(!dir.path().join("remote-access.json").exists());
+    assert_eq!(rpc.call(methods::GET_REMOTE_ACCESS, json!({})).await.unwrap()["status"]["enabled"], false);
+    server.abort();
+    core.shutdown().await;
+}
+
+#[tokio::test]
 async fn settings_toggle_pairing_and_revocation_control_live_listener() {
     let dir = tempfile::tempdir().unwrap();
     roboco_engine::remote_access::save(

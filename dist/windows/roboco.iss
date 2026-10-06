@@ -70,6 +70,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#PackageDir}\roboco.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\roboco-tailcat.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\roboco-update.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion

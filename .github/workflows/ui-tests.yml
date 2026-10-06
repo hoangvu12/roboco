@@ -7,6 +7,8 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - 'apps/**'
+      - 'adapters/roboco-tailcat/**'
       - 'scripts/test-linux-browser.sh'
       - '.github/workflows/ui-tests.yml'
   push:
@@ -16,6 +18,8 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - 'apps/**'
+      - 'adapters/roboco-tailcat/**'
       - 'scripts/test-linux-browser.sh'
       - '.github/workflows/ui-tests.yml'
   workflow_dispatch:
@@ -55,7 +59,22 @@ jobs:
         run: |
           cargo test --locked -p roboco-sync --lib
           cargo test --locked -p roboco-update --lib
-          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote
+          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings
+
+  tailcat-adapter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Managed Tailcat transport regressions
+        working-directory: adapters/roboco-tailcat
+        env:
+          CGO_ENABLED: '0'
+        run: go test -mod=readonly -count=1 ./...
 
   ui-tests:
     runs-on: ubuntu-24.04
@@ -76,6 +95,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: UI and headless layout regressions
         run: cargo test --release --locked -p roboco-ui --lib -- --test-threads=1
+      - name: One-command engine pairing regressions
+        run: cargo test --release --locked -p roboco --test pairing_cli --test tailcat_invite_cli
 
   linux-browser:
     runs-on: ubuntu-24.04

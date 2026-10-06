@@ -54,6 +54,12 @@ Linux installs from the release tarball's `install.sh` use the self-updating `~/
 
 Remote access uses direct engine pairing. Each engine owns its data; the desktop client connects to each paired engine separately. There is no account service, cloud relay, or cross-engine synchronization. The [remote access specification](.scratch/remote-access/spec.md) and its tickets track the implementation.
 
+For account-free Tailcat access, run `roboco engine tailcat invite` on each VM
+and paste the invite into desktop **Settings → Devices**. The command starts the
+engine if needed and enables Tailcat; releases bundle the `roboco-tailcat`
+adapter. See [remote access](docs/reference/remote-access.md) for browser pairing,
+source-build prerequisites, and service setup.
+
 See the [development notes](docs/reference/windows-development.md) for Windows source builds.
 
 ---

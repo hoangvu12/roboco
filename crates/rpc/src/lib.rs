@@ -32,6 +32,7 @@ pub mod methods {
     pub const GET_REMOTE_ACCESS: &str = "GetRemoteAccess";
     pub const SET_REMOTE_ACCESS: &str = "SetRemoteAccess";
     pub const CREATE_PAIRING_LINK: &str = "CreatePairingLink";
+    pub const CREATE_TAILCAT_INVITE: &str = "CreateTailcatInvite";
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";

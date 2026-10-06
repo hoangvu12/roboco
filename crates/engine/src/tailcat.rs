@@ -1,8 +1,8 @@
 //! Tailcat transport: this engine's paired listener, published over Tailscale's
 //! data plane with no control plane and no account.
 //!
-//! The adapter is an application-owned Go executable (`kratos-tailcat`, pinned by
-//! the Kratos line at `github.com/tailscale/tailcat`). `serve` publishes one
+//! The adapter is the application-owned Go executable `roboco-tailcat`, built
+//! against `github.com/tailscale/tailcat`. `serve` publishes one
 //! numeric IPv4 loopback target and reports a `tc…` address; `connect` pulls that
 //! address to a local loopback listener and reports its URL. Tailcat carries
 //! bytes — pairing, session credentials, and revocation stay Roboco's (ADR 0006),
@@ -36,7 +36,7 @@ pub const LEGACY_ADAPTER_ENV: &str = "ZERON_TAILCAT_ADAPTER";
 /// Operator-managed DERP map, for fleets that do not use the public relays.
 pub const DERP_MAP_ENV: &str = "ROBOCO_TAILCAT_DERP_MAP";
 /// The managed adapter's file name, installed beside the application binary.
-pub const ADAPTER_BINARY: &str = "kratos-tailcat";
+pub const ADAPTER_BINARY: &str = "roboco-tailcat";
 /// Prefix of a single-paste tailcat handle carrying route plus pair code.
 pub const INVITE_PREFIX: &str = "roboco-tailcat:";
 /// Where a running engine records the address its adapter published.
@@ -65,7 +65,7 @@ pub fn resolve_adapter(explicit: Option<&str>, executable_dir: Option<&Path>) ->
 
 fn adapter_file_name() -> &'static str {
     if cfg!(windows) {
-        "kratos-tailcat.exe"
+        "roboco-tailcat.exe"
     } else {
         ADAPTER_BINARY
     }
@@ -264,6 +264,10 @@ impl TailcatServer {
         })
     }
 
+    /// Readiness must not be reused after the managed adapter exits.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self._child.child.try_wait(), Ok(None))
+    }
     pub fn address(&self) -> &str {
         &self.address
     }
@@ -451,7 +455,7 @@ impl AdapterChild {
             .stderr(Stdio::inherit());
         // Ends the adapter even when native app termination or a crash bypasses
         // destructors; the adapter documents this variable.
-        command.env("KRATOS_TAILCAT_PARENT_PIPE", "1");
+        command.env("ROBOCO_TAILCAT_PARENT_PIPE", "1");
         let mut child = command
             .spawn()
             .with_context(|| format!("cannot start the tailcat {role} adapter at {}", adapter.display()))?;
