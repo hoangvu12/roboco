@@ -46,7 +46,7 @@ record to cover chat replies; no Mermaid.js, no web diagram engine.
 **Blocked by:** None (no lane overlap — wave 4 merged; the transcript
 machinery is the work).
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `9e1a1115` (#760) — 11 files, +1399/−142:
 `transcript.rs` (+512), `markdown/mermaid_cache.rs` (NEW, 366),

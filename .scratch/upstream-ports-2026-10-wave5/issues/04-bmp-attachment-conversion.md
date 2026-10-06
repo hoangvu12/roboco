@@ -35,7 +35,7 @@ desktop staging-side.
 
 **Blocked by:** None.
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `f9a4a18b` (#739) — `crates/ui/src/attachments.rs`
 (+113), `crates/ui/src/composer.rs` (+115),

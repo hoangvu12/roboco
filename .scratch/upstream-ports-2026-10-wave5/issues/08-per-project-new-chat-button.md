@@ -37,7 +37,7 @@ on `web/packages/app/src/components/chat-list.tsx` and
 **Blocked by:** 07 (same sidebar row/header surfaces; upstream merged
 #751 first, then #737).
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `e2a7706f` (#737) —
 `crates/ui/src/settings/widgets.rs` (+48), `shell.rs` (+83),

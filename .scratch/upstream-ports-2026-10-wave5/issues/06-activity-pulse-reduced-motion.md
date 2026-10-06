@@ -43,7 +43,7 @@ pin-to-On web users stay frozen.
 
 **Blocked by:** None.
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `e96eccb1` (#754) — `crates/ui/src/motion.rs`
 (+220), `crates/ui/src/loaders.rs` (±12),

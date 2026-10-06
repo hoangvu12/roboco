@@ -47,7 +47,7 @@ changes.
 **Blocked by:** 01 (rolling labels ride the `0966d06` glyph work the
 pin sync brings).
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `dbb639be` (#799, squash-merge) — 58 files,
 +2702/−701 total; the subset above. The unmerged

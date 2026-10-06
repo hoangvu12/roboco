@@ -42,7 +42,7 @@ the same inline treatment in this ticket.
 **Blocked by:** None (upstream merged #751 before #737; run this
 before ticket 08).
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `c78bb1c1` (9 files, +1023/−121: `shell.rs` +358,
 `chat_rename_tests.rs` new, `spaces.rs` +193, `files/sections.rs`

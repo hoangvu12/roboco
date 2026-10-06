@@ -30,7 +30,7 @@ coupling, no web surface.
 
 **Blocked by:** None.
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `612df512` (#763) — `crates/preview/src/discovery.rs`
 (+75), `crates/preview/src/service.rs` (+1),

@@ -22,7 +22,7 @@ inputs.
 
 **Blocked by:** None.
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `2a884777` (#757) — `crates/ui/src/composer.rs` →
 same path here (ui crate un-prefixed). Source:

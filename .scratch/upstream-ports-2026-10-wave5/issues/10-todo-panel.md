@@ -31,7 +31,7 @@ regenerate — at the wave-final pass only (`wiregen --check` +
 time for the six normalizers; they share one shape (parse checklist
 items → doc rows → panel state).
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `1f7b74a7` (#707) — proto `agent.rs`, doc schema +
 `registry.rs`/`registry/tests.rs`/`workspace.rs`, six harness

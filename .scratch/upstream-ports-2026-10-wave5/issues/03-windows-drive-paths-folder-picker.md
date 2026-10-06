@@ -34,7 +34,7 @@ drive cases (typed `D:`, `D:\x`, `D:/x`; crumb trails; parent of
 
 **Blocked by:** None.
 
-**Status:** claimed
+**Status:** ready-for-human
 
 **Upstream SHAs:** `edac0d7d` (#727) — `crates/ui/src/pickers.rs`
 (+107), `crates/ui/src/shell/spaces.rs` (+40) → same paths here; web
