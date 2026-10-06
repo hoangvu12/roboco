@@ -86,16 +86,31 @@ try {
         $version = $versionMatch.Groups[1].Value
     } finally { $process.Dispose() }
     $out = Join-Path $root 'target/package'
+    New-Item -ItemType Directory -Force -Path $out | Out-Null
     $arch = Get-WindowsPackageArch $probe.FileName
+    $goArch = if ($arch -eq 'aarch64') { 'arm64' } else { 'amd64' }
+    $adapter = Join-Path $out 'roboco-tailcat.exe'
+    Push-Location (Join-Path $root 'adapters/roboco-tailcat')
+    try {
+        $env:CGO_ENABLED = '0'
+        $env:GOOS = 'windows'
+        $env:GOARCH = $goArch
+        & go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
+        if ($LASTEXITCODE -ne 0) { throw 'Tailcat adapter build failed' }
+    } finally { Pop-Location }
     $stage = Join-Path $out "roboco-$version-windows-$arch"
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath './target/release/roboco.exe' -Destination (Join-Path $stage 'roboco.exe')
+    Copy-Item -LiteralPath $adapter -Destination (Join-Path $stage 'roboco-tailcat.exe')
     @{ releases_url = $ReleasesUrl } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $stage 'roboco-update.json')
     Copy-Item -LiteralPath 'LICENSE','THIRD_PARTY_NOTICES.md' -Destination $stage
     $licenses = Join-Path $stage 'licenses/fonts'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
     Copy-Item -Path 'crates/ui/assets/fonts/licenses/*' -Destination $licenses
     Copy-Item -LiteralPath 'crates/voice/NOTICE.md' -Destination (Join-Path $stage 'licenses/parakeet-v3.txt')
+    Copy-Item -Path 'adapters/roboco-tailcat/licenses/bundle' -Destination (Join-Path $stage 'licenses/tailcat') -Recurse
+    Copy-Item -LiteralPath 'adapters/roboco-tailcat/LICENSE.kratos' -Destination (Join-Path $stage 'licenses/tailcat/LICENSE.kratos')
     Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
     Copy-Item -LiteralPath './target/release/roboco.exe' -Destination "$stage.exe"
     # The per-user installer wraps the same staged directory (roboco-update.json

@@ -1259,7 +1259,7 @@ impl RpcService for EngineRpc {
             )));
         }
         match method {
-            methods::GET_REMOTE_ACCESS | methods::SET_REMOTE_ACCESS | methods::CREATE_PAIRING_LINK | methods::REVOKE_PAIRING_SESSION => {
+            methods::GET_REMOTE_ACCESS | methods::SET_REMOTE_ACCESS | methods::CREATE_PAIRING_LINK | methods::CREATE_TAILCAT_INVITE | methods::REVOKE_PAIRING_SESSION => {
                 let controller = self.remote_access.upgrade().ok_or_else(|| RpcError::Failed("remote access unavailable".into()))?;
                 let result = match method {
                     methods::SET_REMOTE_ACCESS => {
@@ -1267,6 +1267,10 @@ impl RpcService for EngineRpc {
                         controller.set_enabled(enabled).await
                     }
                     methods::CREATE_PAIRING_LINK => controller.create_link().await,
+                    methods::CREATE_TAILCAT_INVITE => {
+                        let ttl = params.get("ttlSeconds").and_then(|value| value.as_u64()).ok_or_else(|| RpcError::BadParams("ttlSeconds must be an integer".into()))?;
+                        controller.create_tailcat_invite(ttl).await
+                    }
                     methods::REVOKE_PAIRING_SESSION => {
                         let id = params.get("sessionId").and_then(|value| value.as_str()).ok_or_else(|| RpcError::BadParams("sessionId is required".into()))?;
                         controller.revoke(id).map_err(|error| RpcError::Failed(error.to_string()))?;

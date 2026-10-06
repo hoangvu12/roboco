@@ -7,6 +7,7 @@ mod daemon;
 mod paths;
 mod pairing_cli;
 mod tailcat_browser_helper;
+mod tailcat_setup;
 mod update_cli;
 
 use clap::{Parser, Subcommand};
@@ -130,7 +131,9 @@ fn spawn_malloc_trimmer() {
 
 fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
-    attach_parent_console();
+    if std::env::var_os("ROBOCO_BACKGROUND_ENGINE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        attach_parent_console();
+    }
     let cli = Cli::parse();
     #[cfg(windows)]
     if let Some(pid) = cli.wait_for_exit {

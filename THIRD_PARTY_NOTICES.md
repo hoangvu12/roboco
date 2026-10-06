@@ -22,6 +22,17 @@ Roboco also uses the following editor foundations from the pinned `zeronsh/gpui-
 | Ropey | 2.0.0-beta.1 | MIT | https://github.com/cessen/ropey |
 
 Roboco's own source code is licensed under the terms in `LICENSE`. Bundled third-party components retain their respective licenses and notices.
+## Tailcat transport adapter
+
+`roboco-tailcat` is derived from the managed serve/connect adapter in
+[wasimysaid/Kratos](https://github.com/wasimysaid/Kratos/tree/9c31b48221d42bcecd3f3fb8cb19fcd89d8a07d9/connectivity/tailcat)
+(commit `9c31b48221d42bcecd3f3fb8cb19fcd89d8a07d9`), MIT licensed;
+its copyright and license are included in `adapters/roboco-tailcat/LICENSE.kratos`.
+The Tailcat dependency is pinned at `v0.6.1-0.20260913000754-fd101889796a`.
+The complete pinned Go dependency list, licenses and patent notices shipped with
+Linux and Windows packages are under `licenses/tailcat/` (source:
+`adapters/roboco-tailcat/licenses/bundle/`).
+
 
 ## Symbols
 

@@ -58,6 +58,10 @@ jobs:
       - name: build web bundle (engine embeds it at compile time)
         working-directory: web
         run: pnpm --filter "@roboco/app" run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: package
         run: scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
@@ -134,6 +138,10 @@ jobs:
       - name: build web bundle (engine embeds it at compile time)
         working-directory: web
         run: pnpm --filter "@roboco/app" run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: package installer and portable app
         run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - uses: actions/upload-artifact@v4

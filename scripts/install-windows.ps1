@@ -94,6 +94,12 @@ try {
         throw 'The archive did not contain roboco.exe.'
     }
 
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'roboco-tailcat.exe'))) {
+        throw 'The archive did not contain roboco-tailcat.exe.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'licenses/tailcat/DEPENDENCIES.txt'))) {
+        throw 'The archive did not contain Tailcat licenses.'
+    }
     # Version probe (same contract as scripts/package-windows.ps1): proves the
     # payload runs on this machine and matches the manifest before anything
     # existing is touched.

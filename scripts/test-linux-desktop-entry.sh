@@ -24,6 +24,8 @@ PKG="roboco-$VERSION-linux-x86_64"
 mkdir -p "$WORK/pkg/$PKG"
 printf '#!/bin/sh\nexit 0\n' >"$WORK/pkg/$PKG/roboco"
 chmod 755 "$WORK/pkg/$PKG/roboco"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/pkg/$PKG/roboco-tailcat"
+chmod 755 "$WORK/pkg/$PKG/roboco-tailcat"
 cp "$ROOT/dist/roboco.desktop" "$WORK/pkg/$PKG/roboco.desktop"
 printf 'not-really-a-png' >"$WORK/pkg/$PKG/roboco.png"
 
@@ -47,6 +49,7 @@ run_tarball() {
 # check HOME DATA_HOME
 check() {
   local home="$1" data="$2" entry="$2/applications/roboco.desktop"
+  [ -x "$home/.roboco/app/current/roboco-tailcat" ] || fail "missing executable Tailcat adapter"
   [ -f "$entry" ] || fail "missing $entry"
   [ -f "$data/icons/hicolor/1024x1024/apps/roboco.png" ] || fail "missing hicolor icon"
   # `$(...)` strips nothing needed here: paths in these tests have no newlines.
@@ -74,6 +77,10 @@ run_tarball "$home"
 check "$home" "$home/.local/share"
 [ "$before" = "$(cat "$home/.local/share/applications/roboco.desktop")" ] || fail "re-run changed the entry"
 
+# Repair a pre-adapter install of the same version on reinstallation.
+rm "$home/.roboco/app/$VERSION/roboco-tailcat"
+run_tarball "$home"
+check "$home" "$home/.local/share"
 # XDG_DATA_HOME wins when absolute; a relative value is ignored per the spec.
 home="$WORK/tarball-b/home"; mkdir -p "$home"
 run_tarball "$home" XDG_DATA_HOME="$WORK/tarball-b/xdg"

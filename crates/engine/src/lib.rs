@@ -648,6 +648,16 @@ pub async fn serve_engine_ipc(
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let pairing = pairing::PairingStore::open(data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    // Discover the owning engine even when its IPC port was assigned dynamically.
+    // Callers still validate EngineInfo against this directory's device identity;
+    // the file alone is not a liveness or authorization signal.
+    let endpoint = serde_json::json!({"port": listener.local_addr()?.port(), "pid": std::process::id()});
+    let temporary = data_dir.join(format!("engine-ipc-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec(&endpoint)?)?;
+    if let Err(error) = std::fs::rename(&temporary, data_dir.join("engine-ipc.json")) {
+        let _ = std::fs::remove_file(temporary);
+        return Err(error.into());
+    }
     tracing::info!(address = %listener.local_addr()?, "engine local listener ready");
     Ok(tokio::spawn(listener::serve_listener(
         listener, service, pairing,
