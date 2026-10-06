@@ -68,7 +68,7 @@ For the **browser**, run this on the machine running the browser:
 roboco engine tailcat browser-helper
 ```
 
-Then paste the invite into the web app's **Settings → Devices**. Keep the helper
+Then paste the invite into the web client's **Settings → Devices**. Keep the helper
 running. Alternatively, use the explicit forwarder described below.
 
 Advanced foreground/service setup still supports:
@@ -79,6 +79,9 @@ roboco headless --network --network-transport tailcat
 
 Unlike `invite`, these startup flags do not change saved settings: they must
 agree with them. `ROBOCO_NETWORK_TRANSPORT=tailcat` is the environment equivalent.
+In Tailcat mode the engine binds its remote listener to loopback: an unspecified
+bind narrows to `127.0.0.1`, and a non-loopback `--network-address` is refused —
+the network transport is the LAN-serving path.
 
 An invite carries the route and a short-lived, single-use pairing code — the
 client's listener port exists only on the client, so there is nothing to put in a

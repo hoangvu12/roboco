@@ -221,6 +221,18 @@ pub fn effective_transport(loaded: &LoadedSettings, options: &NetworkOptions) ->
     }
 }
 
+/// The address the remote listener binds. `Network` serves whatever the operator
+/// configured. `Tailcat` binds the adapter's serve target — loopback only — so
+/// no unencrypted LAN surface is left beside the route (ADR 0008); a
+/// non-loopback bind is refused rather than silently narrowed, because the
+/// network transport is the LAN-serving path.
+fn listener_bind(requested: SocketAddr, transport: NetworkTransport) -> anyhow::Result<SocketAddr> {
+    match transport {
+        NetworkTransport::Network => Ok(requested),
+        NetworkTransport::Tailcat => crate::tailcat::serve_target(requested),
+    }
+}
+
 pub struct RemoteAccessController {
     directory: PathBuf,
     service: Mutex<Option<Arc<dyn roboco_rpc::RpcService>>>,
@@ -286,17 +298,27 @@ impl RemoteAccessController {
         if state.status.enabled {
             let service = self.service.lock().unwrap().clone();
             if let Some(service) = service {
-                let address = state
+                let requested = state
                     .options
                     .bind_address
                     .unwrap_or(loaded.settings.bind_address);
-                match crate::serve_engine_remote(address, service, &self.directory).await {
+                let transport = effective_transport(&loaded, &state.options);
+                state.transport = transport;
+                // In Tailcat mode the listener is the adapter's serve target:
+                // loopback only, so no second unencrypted LAN surface is left
+                // beside the route (ADR 0008).
+                let started = match listener_bind(requested, transport) {
+                    Ok(address) => {
+                        crate::serve_engine_remote(address, service, &self.directory).await
+                    }
+                    Err(error) => Err(error),
+                };
+                match started {
                     Ok(listener) => {
                         let address = listener.address;
                         state.status.address = Some(address);
-                        state.transport = effective_transport(&loaded, &state.options);
                         state.listener = Some(listener);
-                        if state.transport == NetworkTransport::Tailcat {
+                        if transport == NetworkTransport::Tailcat {
                             // `serve` publishes the listener over Tailscale's data
                             // plane; what clients paste becomes an invite carrying the
                             // address on the wire and never in a log.
@@ -485,4 +507,43 @@ fn advertised_url(address: SocketAddr) -> anyhow::Result<String> {
         );
     }
     Ok(format!("http://{address}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn socket(address: &str) -> SocketAddr {
+        address.parse().unwrap()
+    }
+
+    #[test]
+    fn listener_bind_follows_the_transport() {
+        let bind = |address: &str, transport: NetworkTransport| {
+            listener_bind(address.parse().unwrap(), transport)
+        };
+
+        // The network transport serves whatever the operator configured.
+        assert_eq!(
+            bind("0.0.0.0:27655", NetworkTransport::Network).unwrap(),
+            socket("0.0.0.0:27655")
+        );
+        assert_eq!(
+            bind("10.0.0.5:27655", NetworkTransport::Network).unwrap(),
+            socket("10.0.0.5:27655")
+        );
+        // Tailcat narrows an unspecified bind to the loopback target it serves.
+        assert_eq!(
+            bind("0.0.0.0:27655", NetworkTransport::Tailcat).unwrap(),
+            socket("127.0.0.1:27655")
+        );
+        assert_eq!(
+            bind("127.0.0.1:0", NetworkTransport::Tailcat).unwrap(),
+            socket("127.0.0.1:0")
+        );
+        // A LAN or IPv6 bind is refused, not narrowed: the network transport
+        // is the LAN-serving path, and the adapter targets IPv4 loopback only.
+        assert!(bind("10.0.0.5:27655", NetworkTransport::Tailcat).is_err());
+        assert!(bind("[::1]:27655", NetworkTransport::Tailcat).is_err());
+    }
 }

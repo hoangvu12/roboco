@@ -27,9 +27,12 @@ a live route before minting. It starts a background engine when necessary.
   which prints `http://127.0.0.1:<port>/pair#token=…`; the engine serves its own
   web client there, so no WASM dialer is needed. Cloudflare remains the option
   that needs no client software at all.
-- The adapter is an external, pinned binary (upstream
-  `fd101889796a947ac514e9d86ec731af2965fad3`); per-platform packaging and its
-  license follow the release-packaging ticket.
+- The adapter is app-owned and vendored: `adapters/roboco-tailcat` builds the
+  `roboco-tailcat` binary against upstream `tailscale/tailcat` (pinned at
+  `fd101889796a947ac514e9d86ec731af2965fad3`). Linux tarballs, Windows ZIPs, and
+  the Windows installer bundle it beside the Roboco binary; redistribution
+  notices live under `adapters/roboco-tailcat/licenses/` and in
+  THIRD_PARTY_NOTICES.md.
 - DERP defaults to the adapter's own map; `--tailcat-derp-map` (or
   `ROBOCO_TAILCAT_DERP_MAP`) points a fleet at a relay it owns.
 - A route that cannot come up disables remote access instead of leaving an
