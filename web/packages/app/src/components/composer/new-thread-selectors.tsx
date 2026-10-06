@@ -141,6 +141,14 @@ export function NewThreadTargetSelectors() {
 
   return (
     <div className="new-thread-target-selectors">
+      {/* The project (repository) first, then the device it runs on
+          (upstream #799: pick the project, then the device among its
+          checkouts). */}
+      <ProjectChip
+        spaces={target.spaces}
+        currentSpaceId={target.space?.id ?? null}
+        fallbackLabel="No project"
+      />
       <DeviceChip
         devices={target.devices}
         effectiveDevice={target.effectiveDevice}
@@ -151,11 +159,6 @@ export function NewThreadTargetSelectors() {
         // `attach_overlay_end`, pickers.rs:3175); the footer's Layer B
         // keeps the start default.
         placement="anchorAboveEnd"
-      />
-      <ProjectChip
-        spaces={target.spaces}
-        currentSpaceId={target.space?.id ?? null}
-        fallbackLabel="No project"
       />
       <NewThreadTerminalAction
         projectId={target.projectId}

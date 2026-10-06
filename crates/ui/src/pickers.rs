@@ -13,8 +13,28 @@
 
 mod compact;
 
+use crate::roll_text::{roll_text, rolling};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// One project-picker row: every space of a project
+/// ([`roboco_proto::view::project_key`]), named for its representative.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProjectRow {
+    key: String,
+    name: String,
+}
+
+/// One device-picker row: a device, and the picked project's checkout on it.
+#[derive(Clone, Debug, PartialEq)]
+struct DeviceRow {
+    device_id: String,
+    name: String,
+    /// The project's space on this device; `None` when no project is picked.
+    space: Option<Space>,
+    /// The checkout's path, when the device holds several of the project.
+    detail: Option<String>,
+}
 use std::time::Duration;
 
 use gpui::{
@@ -1294,7 +1314,7 @@ impl Pickers {
             },
             PickerKind::Branch => self.selected_ref_index(cx),
             PickerKind::HarnessModel => self.selected_model_index(cx),
-            PickerKind::Space => self.selected_space_index(cx),
+            PickerKind::Space => self.selected_project_index(cx),
             PickerKind::Device => self.selected_device_index(cx),
         };
         if kind == PickerKind::HarnessModel {
@@ -2268,54 +2288,84 @@ impl Pickers {
 
     // ---- the space picker (new-session canvas) ----
 
-    /// The picker's project rows: scoped to the canvas's device — the device
-    /// switcher narrows the list, projects on other devices don't show
-    /// (pick the device first, then its project). Unscoped only while the
-    /// device is still unknown (pre-probe boot).
-    fn scoped_space_rows(&self, cx: &App) -> Vec<Space> {
+    /// The picker's project rows: one per project across every device —
+    /// clones and worktrees sharing a repository identity are one row, named
+    /// for their representative. The device chip then picks which checkout.
+    fn project_rows(&self, cx: &App) -> Vec<ProjectRow> {
         let state = self.state.read(cx);
-        let device = state.effective_device_id();
-        state
-            .spaces_sorted()
-            .into_iter()
-            .filter(|s| match device.as_deref() {
-                Some(d) => s.device_id == d,
-                None => true,
-            })
-            .cloned()
-            .collect()
+        let mut rows: Vec<ProjectRow> = Vec::new();
+        for space in &state.spaces {
+            let key = roboco_proto::view::project_key(space);
+            if rows.iter().any(|row| row.key == key) {
+                continue;
+            }
+            rows.push(ProjectRow {
+                key,
+                name: state.representative_space(space).display_name().to_string(),
+            });
+        }
+        rows.sort_by_key(|row| (row.name.to_lowercase(), row.key.clone()));
+        rows
     }
 
-    /// [`Self::scoped_space_rows`] matching the search query, ranked
+    /// [`Self::project_rows`] matching the search query, ranked
     /// (`popover::filter_indices`).
-    fn filtered_space_rows(&self, cx: &App) -> Vec<Space> {
+    fn filtered_project_rows(&self, cx: &App) -> Vec<ProjectRow> {
         let query = self.search.read(cx).text().to_string();
-        let spaces = self.scoped_space_rows(cx);
-        let names: Vec<String> = spaces
-            .iter()
-            .map(|s| s.display_name().to_string())
-            .collect();
+        let rows = self.project_rows(cx);
+        let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
         popover::filter_indices(&query, &names)
             .into_iter()
-            .map(|ix| spaces[ix].clone())
+            .map(|ix| rows[ix].clone())
             .collect()
     }
 
     /// Current project row on an unsearched open, or the final opt-out row.
     /// An implicit empty selection has no highlight until the user navigates.
-    fn selected_space_index(&self, cx: &App) -> usize {
+    fn selected_project_index(&self, cx: &App) -> usize {
         if self.state.read(cx).no_project {
-            return self.scoped_space_rows(cx).len();
+            return self.project_rows(cx).len();
         }
         let selected = self
             .state
             .read(cx)
             .selected_space_row()
-            .map(|s| s.id.clone());
+            .map(roboco_proto::view::project_key);
         selected
-            .as_deref()
-            .and_then(|id| self.scoped_space_rows(cx).iter().position(|s| s.id == id))
+            .and_then(|key| self.project_rows(cx).iter().position(|row| row.key == key))
             .unwrap_or(NO_ACTIVE_ROW)
+    }
+
+    /// Pick a project, keeping the device when it has a checkout of it:
+    /// the current checkout, else one on the current device, else this
+    /// device's, else the first.
+    fn pick_project(&mut self, key: String, cx: &mut Context<Self>) {
+        let space_id = {
+            let state = self.state.read(cx);
+            let Some(member) = state
+                .spaces
+                .iter()
+                .find(|s| roboco_proto::view::project_key(s) == key)
+            else {
+                return;
+            };
+            let members = state.project_members(member);
+            let selected = state.selected_space_row().map(|s| s.id.clone());
+            let device = state.effective_device_id();
+            members
+                .iter()
+                .find(|s| selected.as_deref() == Some(s.id.as_str()))
+                .or_else(|| {
+                    members
+                        .iter()
+                        .find(|s| device.as_deref() == Some(s.device_id.as_str()))
+                })
+                .or(members.first())
+                .map(|s| s.id.clone())
+        };
+        if let Some(space_id) = space_id {
+            self.pick_space(space_id, cx);
+        }
     }
 
     /// Re-home the canvas onto another project. The state observer does the
@@ -2367,10 +2417,38 @@ impl Pickers {
         }
     }
 
-    /// Devices in picker order: this device first, then by name.
-    fn device_rows(&self, cx: &App) -> Vec<roboco_proto::Device> {
+    /// The device picker's rows. With a project picked: its checkouts, one
+    /// row per device (this device first), with the path when a device holds
+    /// several. Without one: every device — project-less sessions run in its
+    /// home.
+    fn device_rows(&self, cx: &App) -> Vec<DeviceRow> {
         let state = self.state.read(cx);
         let local = state.local_device_id.clone();
+        let device_name = |id: &str| {
+            state
+                .device_name(id)
+                .unwrap_or("Unknown device")
+                .to_string()
+        };
+        if let Some(space) = state.selected_space_row() {
+            let members = state.project_members(space);
+            return members
+                .iter()
+                .map(|member| {
+                    let shared = members
+                        .iter()
+                        .filter(|other| other.device_id == member.device_id)
+                        .count()
+                        > 1;
+                    DeviceRow {
+                        device_id: member.device_id.clone(),
+                        name: device_name(&member.device_id),
+                        space: Some((*member).clone()),
+                        detail: shared.then(|| member.path.clone()),
+                    }
+                })
+                .collect();
+        }
         let mut devices: Vec<roboco_proto::Device> = state.devices.clone();
         devices.sort_by_key(|d| {
             (
@@ -2380,14 +2458,28 @@ impl Pickers {
             )
         });
         devices
+            .into_iter()
+            .map(|device| DeviceRow {
+                device_id: device.id.clone(),
+                name: device.name.clone(),
+                space: None,
+                detail: None,
+            })
+            .collect()
     }
 
     /// [`Self::device_rows`] filtered by the search box (same ranked
     /// substring match as the project rows).
-    fn filtered_device_rows(&self, cx: &App) -> Vec<roboco_proto::Device> {
+    fn filtered_device_rows(&self, cx: &App) -> Vec<DeviceRow> {
         let query = self.search.read(cx).text().to_string();
         let rows = self.device_rows(cx);
-        let names: Vec<String> = rows.iter().map(|d| d.name.clone()).collect();
+        let names: Vec<String> = rows
+            .iter()
+            .map(|row| match &row.detail {
+                Some(detail) => format!("{} {detail}", row.name),
+                None => row.name.clone(),
+            })
+            .collect();
         popover::filter_indices(&query, &names)
             .into_iter()
             .map(|ix| rows[ix].clone())
@@ -2395,26 +2487,51 @@ impl Pickers {
     }
 
     fn selected_device_index(&self, cx: &App) -> usize {
-        let effective = self.state.read(cx).effective_device_id();
+        let (selected, effective) = {
+            let state = self.state.read(cx);
+            (
+                state.selected_space_row().map(|s| s.id.clone()),
+                state.effective_device_id(),
+            )
+        };
         self.device_rows(cx)
             .iter()
-            .position(|d| Some(d.id.as_str()) == effective.as_deref())
+            .position(|row| match &row.space {
+                Some(space) => selected.as_deref() == Some(space.id.as_str()),
+                None => effective.as_deref() == Some(row.device_id.as_str()),
+            })
             .unwrap_or(0)
     }
 
-    /// The device popover: search + one row per device (name, muted "offline"
-    /// tag, check on the canvas's effective device).
+    /// A device row picks the project's checkout there, or — without a
+    /// project — the device itself.
+    fn pick_device_row(&mut self, row: DeviceRow, cx: &mut Context<Self>) {
+        match row.space {
+            Some(space) => self.pick_space(space.id, cx),
+            None => self.pick_device(row.device_id, cx),
+        }
+    }
+
+    /// The device popover: search + one row per device (name, muted path when
+    /// a device holds several checkouts of the project, offline glyph, check
+    /// on the canvas's target).
     fn render_device_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).for_popup();
         let now = chrono::Utc::now();
         let rows = self.filtered_device_rows(cx);
-        let (effective, local, online): (Option<String>, Option<String>, Vec<bool>) = {
+        let (selected_space, effective, local, online): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Vec<bool>,
+        ) = {
             let state = self.state.read(cx);
             (
+                state.selected_space_row().map(|s| s.id.clone()),
                 state.effective_device_id(),
                 state.local_device_id.clone(),
                 rows.iter()
-                    .map(|d| state.device_online(&d.id, now))
+                    .map(|row| state.device_online(&row.device_id, now))
                     .collect(),
             )
         };
@@ -2438,11 +2555,16 @@ impl Pickers {
                         .gap(px(2.0))
                         .max_h(px(self.list_budget(64.0)))
                         .children(rows.into_iter().zip(online).enumerate().map(
-                            |(ix, (device, online))| {
-                                let is_local = local.as_deref() == Some(device.id.as_str());
-                                let label: SharedString = device.name.clone().into();
-                                let is_selected = effective.as_deref() == Some(device.id.as_str());
-                                let pick_id = device.id.clone();
+                            |(ix, (row, online))| {
+                                let is_local = local.as_deref() == Some(row.device_id.as_str());
+                                let label: SharedString = row.name.clone().into();
+                                let is_selected = match &row.space {
+                                    Some(space) => {
+                                        selected_space.as_deref() == Some(space.id.as_str())
+                                    }
+                                    None => effective.as_deref() == Some(row.device_id.as_str()),
+                                };
+                                let detail = row.detail.clone().map(SharedString::from);
                                 popover::menu_row_nav(
                                     &theme,
                                     is_selected,
@@ -2451,9 +2573,28 @@ impl Pickers {
                                 )
                                 .id(("device-row", ix))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.pick_device(pick_id.clone(), cx);
+                                    this.pick_device_row(row.clone(), cx);
                                 }))
-                                .child(div().flex_1().min_w_0().truncate().child(label))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_baseline()
+                                        .gap(px(6.0))
+                                        .child(div().flex_none().child(label))
+                                        .when_some(detail, |el, detail| {
+                                            el.child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(crate::typography::ui_rems(10.0))
+                                                    .text_color(theme.text_muted)
+                                                    .child(detail),
+                                            )
+                                        }),
+                                )
                                 // The local device wears a muted right-aligned "You"
                                 // instead of a "(this device)" suffix in the name.
                                 .when(is_local, |el| {
@@ -2488,26 +2629,24 @@ impl Pickers {
             .into_any_element()
     }
 
-    /// The project popover: search + one row per project on the picked device
-    /// (check on the current pick), then "New project…" and the opt-out rows. Rows
-    /// are device-scoped, so no per-row `@ device` tag — the device chip next
-    /// door names the host.
+    /// The project popover: search + one row per project across devices
+    /// (check on the current pick), then "New project…" and the opt-out rows.
+    /// No per-row `@ device` tag — the device chip next door picks the host.
     fn render_space_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).for_popup();
-        let rows = self.filtered_space_rows(cx);
+        let rows = self.filtered_project_rows(cx);
         let selected = self
             .state
             .read(cx)
             .selected_space_row()
-            .map(|s| s.id.clone());
+            .map(roboco_proto::view::project_key);
         let active = self.active;
         let no_project_index = rows.len();
         let scrollbar = popover::rail(self, "space-scrollbar", &theme, cx);
         let body: AnyElement = if rows.is_empty() {
-            // Distinguish "the filter ate everything" from "this device has
-            // no projects yet" — the scoped list makes the latter common.
+            // Distinguish "the filter ate everything" from "no projects yet".
             let empty: &str = if self.search.read(cx).text().is_empty() {
-                "No projects on this device."
+                "No projects yet."
             } else {
                 "No projects match."
             };
@@ -2527,10 +2666,10 @@ impl Pickers {
                         .flex_col()
                         .gap(px(2.0))
                         .max_h(px(self.list_budget(152.0)))
-                        .children(rows.into_iter().enumerate().map(|(ix, space)| {
-                            let label: SharedString = space.display_name().to_string().into();
-                            let is_selected = selected.as_deref() == Some(space.id.as_str());
-                            let pick_id = space.id.clone();
+                        .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                            let label: SharedString = row.name.into();
+                            let is_selected = selected.as_deref() == Some(row.key.as_str());
+                            let key = row.key;
                             popover::menu_row_nav(
                                 &theme,
                                 is_selected,
@@ -2539,7 +2678,7 @@ impl Pickers {
                             )
                             .id(("space-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_space(pick_id.clone(), cx);
+                                this.pick_project(key.clone(), cx);
                             }))
                             .child(div().flex_1().min_w_0().truncate().child(label))
                         })),
@@ -2618,17 +2757,17 @@ impl Pickers {
             self.pick_ref(row, cx);
         }
         if self.open_kind() == Some(PickerKind::Space) {
-            let rows = self.filtered_space_rows(cx);
-            if let Some(space) = rows.get(self.active) {
-                self.pick_space(space.id.clone(), cx);
+            let rows = self.filtered_project_rows(cx);
+            if let Some(row) = rows.get(self.active) {
+                self.pick_project(row.key.clone(), cx);
             } else if self.active == rows.len() {
                 self.pick_no_project(cx);
             }
         }
         if self.open_kind() == Some(PickerKind::Device)
-            && let Some(device) = self.filtered_device_rows(cx).into_iter().nth(self.active)
+            && let Some(row) = self.filtered_device_rows(cx).into_iter().nth(self.active)
         {
-            self.pick_device(device.id, cx);
+            self.pick_device_row(row, cx);
         }
         // Palette-search Enter submits the highlighted model or setting.
         if self.open_kind() == Some(PickerKind::HarnessModel) {
@@ -2749,7 +2888,7 @@ impl Pickers {
                                 self.setting_groups(cx).len()
                             }
                     }
-                    Some(PickerKind::Space) => self.filtered_space_rows(cx).len() + 1,
+                    Some(PickerKind::Space) => self.filtered_project_rows(cx).len() + 1,
                     Some(PickerKind::Device) => self.filtered_device_rows(cx).len(),
                     None => 0,
                 };
@@ -3017,13 +3156,21 @@ impl Pickers {
                 },
             )
             .when(label_loading, |el| {
+                // Nothing is named on screen: the label rolls in from empty.
+                rolling(format!("{id}-label"), SharedString::default(), true);
                 el.child(popover::skeleton_bar(56.0, cx.entity_id(), cx))
             })
             .when(!label_loading, |el| {
-                el.child(if resizing {
-                    resizing_chip_text(format!("{id}-label").into(), 1.0, None, label)
-                } else {
-                    div().min_w_0().truncate().child(label).into_any_element()
+                // A changing label rolls (Scritto-style); at rest it is the
+                // plain truncating label, or the clip-don't-ellipsize variant
+                // while the model chip's width glides.
+                let rolling = rolling(format!("{id}-label"), label.clone(), cx.reduce_motion());
+                el.child(match rolling {
+                    Some(rolling) => rolling,
+                    None if resizing => {
+                        resizing_chip_text(format!("{id}-label").into(), 1.0, None, label)
+                    }
+                    None => div().min_w_0().truncate().child(label).into_any_element(),
                 })
             })
             // The effort half of the combined model+effort chip (and the space
@@ -3033,7 +3180,16 @@ impl Pickers {
             // model name — the run's identity — truncates last.
             .when_some(suffix, |el, (suffix, tint)| {
                 let color = tint.unwrap_or(theme.text_muted.opacity(0.7));
-                el.child(if resizing {
+                let rolling = rolling(format!("{id}-suffix"), suffix.clone(), cx.reduce_motion());
+                el.child(if let Some(rolling) = rolling {
+                    div()
+                        .flex()
+                        .flex_shrink(1000.0)
+                        .min_w_0()
+                        .text_color(color)
+                        .child(rolling)
+                        .into_any_element()
+                } else if resizing {
                     resizing_chip_text(format!("{id}-suffix").into(), 1000.0, Some(color), suffix)
                 } else {
                     div()
@@ -3101,7 +3257,7 @@ impl Pickers {
                     .flex_none()
                     .text_color(theme.text_muted.opacity(0.7)),
             )
-            .child(div().min_w_0().truncate().child(label))
+            .child(roll_text(format!("{id}-label"), label, cx.reduce_motion()))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
                     .size(px(12.0))
@@ -3158,8 +3314,9 @@ impl Pickers {
             )
     }
 
-    /// New-session destination controls. Machine and project form the
-    /// original chip-only cluster floating above the composer's trailing edge.
+    /// New-session destination controls: the project, then the device it
+    /// runs on, as a chip-only cluster floating above the composer's trailing
+    /// edge.
     pub fn render_new_thread_target_selectors(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let closing = (self.open.closing_since(), self.menu_geometry().below);
@@ -3188,7 +3345,7 @@ impl Pickers {
                 .is_some_and(|id| !state.device_online(id, chrono::Utc::now()));
             let project_label: SharedString = state
                 .selected_space_row()
-                .map(|s| s.display_name().to_string())
+                .map(|s| state.representative_space(s).display_name().to_string())
                 .unwrap_or_else(|| "No project".to_string())
                 .into();
             (device_label, project_label, offline)
@@ -3218,17 +3375,17 @@ impl Pickers {
             .items_center()
             .gap(px(4.0))
             .child(attach_overlay_end(
-                device_chip,
-                &mut overlay,
-                PickerKind::Device,
-                "device-popover",
-                closing,
-            ))
-            .child(attach_overlay_end(
                 project_chip,
                 &mut overlay,
                 PickerKind::Space,
                 "project-popover",
+                closing,
+            ))
+            .child(attach_overlay_end(
+                device_chip,
+                &mut overlay,
+                PickerKind::Device,
+                "device-popover",
                 closing,
             ))
             .into_any_element()
@@ -6476,6 +6633,114 @@ mod tests {
     }
 
     #[gpui::test]
+    fn project_picker_lists_repositories_then_their_devices(cx: &mut gpui::TestAppContext) {
+        let space = |id: &str, device: &str, name: &str, repository: Option<&str>, minutes| Space {
+            id: id.into(),
+            device_id: device.into(),
+            path: format!("/{device}/{id}"),
+            name: Some(name.into()),
+            git_detected: repository.is_some(),
+            git_checked_at: None,
+            checkout_id: None,
+            repository_id: repository.map(str::to_string),
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH
+                + chrono::TimeDelta::minutes(minutes),
+        };
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("mac".into());
+            state.devices = ["mac", "vps"]
+                .into_iter()
+                .map(|id| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "name": id.to_uppercase(), "platform": "macos", "lastSeenAt": null
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            state.apply_spaces(vec![
+                space("notes", "mac", "notes", None, 0),
+                space("server", "vps", "comet", Some("github.com/o/comet"), 1),
+                space(
+                    "laptop",
+                    "mac",
+                    "comet-laptop",
+                    Some("github.com/o/comet"),
+                    2,
+                ),
+                space(
+                    "server-wt",
+                    "vps",
+                    "comet-worktree",
+                    Some("github.com/o/comet"),
+                    3,
+                ),
+            ]);
+            state.selected_space = Some("notes".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            // One row per repository, named for its oldest checkout.
+            let rows: Vec<(String, String)> = pickers
+                .project_rows(cx)
+                .into_iter()
+                .map(|row| (row.name, row.key))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("comet".into(), "repo:github.com/o/comet".into()),
+                    ("notes".into(), "notes".into())
+                ]
+            );
+            // Picking it keeps the canvas on this device's checkout.
+            pickers.pick_project("repo:github.com/o/comet".into(), cx);
+            assert_eq!(
+                pickers.state.read(cx).selected_space.as_deref(),
+                Some("laptop")
+            );
+            assert_eq!(pickers.selected_project_index(cx), 0);
+            // The device picker offers only the project's checkouts; a device
+            // holding two is told apart by path.
+            let devices: Vec<(String, Option<String>)> = pickers
+                .device_rows(cx)
+                .into_iter()
+                .map(|row| (row.device_id, row.detail))
+                .collect();
+            assert_eq!(
+                devices,
+                [
+                    ("mac".into(), None),
+                    ("vps".into(), Some("/vps/server".into())),
+                    ("vps".into(), Some("/vps/server-wt".into())),
+                ]
+            );
+            let server = pickers.device_rows(cx).remove(1);
+            pickers.pick_device_row(server, cx);
+            assert_eq!(
+                pickers.state.read(cx).selected_space.as_deref(),
+                Some("server")
+            );
+            assert_eq!(pickers.selected_device_index(cx), 1);
+            // Without a project, every device is offered.
+            pickers.pick_no_project(cx);
+            let devices: Vec<(String, bool)> = pickers
+                .device_rows(cx)
+                .into_iter()
+                .map(|row| (row.device_id, row.space.is_some()))
+                .collect();
+            assert_eq!(devices, [("mac".into(), false), ("vps".into(), false)]);
+        });
+        // A device switch keeps the project when the device has a checkout.
+        state.update(cx, |state, cx| {
+            state.select_space(Some("laptop".into()), cx);
+            state.select_device("vps".into(), cx);
+            assert_eq!(state.selected_space.as_deref(), Some("server"));
+        });
+    }
+
+    #[gpui::test]
     fn projectless_picker_clears_checkout_and_supports_keyboard_selection(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -6490,6 +6755,7 @@ mod tests {
                 git_detected: true,
                 git_checked_at: None,
                 checkout_id: None,
+                repository_id: None,
                 created_at: chrono::Utc::now(),
             }]);
             state
@@ -6509,13 +6775,14 @@ mod tests {
             assert!(pickers.defaults.no_project);
             assert!(pickers.state.read(cx).auto_selected);
             assert!(pickers.defaults.project.is_none());
-            assert_eq!(pickers.selected_space_index(cx), 1);
+            assert_eq!(pickers.selected_project_index(cx), 1);
         });
         state.update(cx, |state, cx| state.select_device("remote".into(), cx));
         cx.run_until_parked();
         pickers.update(cx, |pickers, cx| {
             assert_eq!(pickers.space_target(cx).as_deref(), Some("remote"));
-            assert_eq!(pickers.selected_space_index(cx), 0); // empty device
+            // Projects list across devices; the opt-out row stays picked.
+            assert_eq!(pickers.selected_project_index(cx), 1);
             assert!(pickers.target_generation >= 2);
         });
     }

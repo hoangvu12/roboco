@@ -1288,6 +1288,66 @@ async fn diff_capture_truncates_at_patch_cap() {
 // Spaces sync (git presence stamping + orphan sweep) via EngineCore
 // ---------------------------------------------------------------------------
 
+#[tokio::test]
+async fn repository_identity_spans_worktrees_and_clones() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repos = test_repos(&temp.path().join("data"));
+    let repo = temp.path().join("repo");
+    init_repo(&repo).await;
+    let linked = temp.path().join("linked");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    )
+    .await;
+
+    // Remote-less: a repository's worktrees share a device-scoped identity.
+    let local = repos.repository_identity(&repo).await.expect("identity");
+    assert!(local.starts_with("local:"), "{local}");
+    assert_eq!(repos.repository_identity(&linked).await.unwrap(), local);
+    let clone = temp.path().join("clone");
+    init_repo(&clone).await;
+    assert_ne!(repos.repository_identity(&clone).await.unwrap(), local);
+
+    // A remote makes it portable: origin wins, else the first remote, and
+    // transport, case and `.git` don't matter.
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:Hoangvu12/Roboco.git",
+        ],
+    )
+    .await;
+    git(
+        &clone,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/hoangvu12/roboco",
+        ],
+    )
+    .await;
+    assert_eq!(
+        repos.repository_identity(&linked).await.unwrap(),
+        "github.com/hoangvu12/roboco"
+    );
+    assert_eq!(
+        repos.repository_identity(&clone).await.unwrap(),
+        "github.com/hoangvu12/roboco"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spaces_sync_stamps_git_presence_and_reacts_to_git_init() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1326,6 +1386,7 @@ async fn spaces_sync_stamps_git_presence_and_reacts_to_git_init() {
     };
     assert!(!space.git_detected, "plain folder must read as non-git");
     assert!(space.checkout_id.is_none());
+    assert!(space.repository_id.is_none());
 
     // `git init` later flips the stamp (watcher and/or explicit recheck).
     git(&folder, &["init", "-b", "main"]).await;
@@ -1344,6 +1405,14 @@ async fn spaces_sync_stamps_git_presence_and_reacts_to_git_init() {
             .expect("watch alive");
     };
     assert!(space.checkout_id.is_some(), "git space gains a checkout id");
+    assert!(
+        space
+            .repository_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("local:")),
+        "remote-less git space gains a local repository id: {:?}",
+        space.repository_id
+    );
     core.shutdown().await;
 }
 
@@ -2119,17 +2188,15 @@ async fn rpc_dispatch_for_m5_methods() {
     // A legacy CreateWorktree caller does not trigger setup, even when one is
     // configured for the project.
     let setup_command = if cfg!(windows) {
-        format!(
-            concat!(
-                "ping -n 3 127.0.0.1>nul&& ",
-                "echo ROOT=%ROBOCO_PROJECT_ROOT%> .roboco-setup-env&& ",
-                "echo WT=%ROBOCO_WORKTREE_PATH%>> .roboco-setup-env&& ",
-                "echo CWD=%CD%>> .roboco-setup-env&& ",
-                "echo ROOT=%ROBOCO_PROJECT_ROOT%&& ",
-                "echo WT=%ROBOCO_WORKTREE_PATH%&& ",
-                "echo CWD=%CD%"
-            )
-        )
+        format!(concat!(
+            "ping -n 3 127.0.0.1>nul&& ",
+            "echo ROOT=%ROBOCO_PROJECT_ROOT%> .roboco-setup-env&& ",
+            "echo WT=%ROBOCO_WORKTREE_PATH%>> .roboco-setup-env&& ",
+            "echo CWD=%CD%>> .roboco-setup-env&& ",
+            "echo ROOT=%ROBOCO_PROJECT_ROOT%&& ",
+            "echo WT=%ROBOCO_WORKTREE_PATH%&& ",
+            "echo CWD=%CD%"
+        ))
     } else {
         concat!(
             "sleep 2; ",

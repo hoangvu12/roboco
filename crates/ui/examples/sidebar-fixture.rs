@@ -1,4 +1,5 @@
-//! Isolated native sidebar review fixture. ROBOCO_SIDEBAR_COMPACT / ROBOCO_SIDEBAR_HIDE_LABEL select layout.
+//! Isolated native sidebar review fixture. ROBOCO_SIDEBAR_COMPACT / ROBOCO_SIDEBAR_HIDE_LABEL select
+//! layout; ROBOCO_SIDEBAR_BY_PROJECT groups by project, with a remote clone of the local repository.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 use roboco_ui::*;
 
@@ -14,7 +15,8 @@ fn main() -> anyhow::Result<()> {
         settings.sidebar_show_branch = true;
         settings.sidebar_compact = std::env::var_os("ROBOCO_SIDEBAR_COMPACT").is_some();
         settings.sidebar_show_project_label = std::env::var_os("ROBOCO_SIDEBAR_HIDE_LABEL").is_none();
-        settings.sidebar_organization = settings::SidebarOrganization::InOneList;
+        let by_project = std::env::var_os("ROBOCO_SIDEBAR_BY_PROJECT").is_some();
+        settings.sidebar_organization = if by_project { settings::SidebarOrganization::ByProject } else { settings::SidebarOrganization::InOneList };
         settings.sidebar_width = 310.0;
         settings.sidebar_pins_mut("local".into()).extend(["chat-0".into(), "chat-1".into()]);
         let project_path = data.join("fieldnotes");
@@ -55,6 +57,13 @@ fn main() -> anyhow::Result<()> {
                 s.chats.push(chat);
             }
             s.devices.push(serde_json::from_value(serde_json::json!({"id":"remote","name":"Build server","platform":"linux","lastSeenAt":chrono::Utc::now()})).unwrap());
+            if by_project {
+                s.spaces[0].repository_id = Some("github.com/hoangvu12/roboco".into());
+                s.spaces.push(serde_json::from_value(serde_json::json!({"id":"fieldnotes-remote","deviceId":"remote","path":"/projects/fieldnotes","repositoryId":"github.com/hoangvu12/roboco","createdAt":chrono::Utc::now()})).unwrap());
+                for ix in [3, 7] {
+                    s.chats[ix].space_id = Some("fieldnotes-remote".into());
+                }
+            }
             s.spaces.push(serde_json::from_value(serde_json::json!({"id":"backend","deviceId":"remote","name":"API server","path":"/projects/backend","createdAt":chrono::Utc::now()})).unwrap());
             for ix in [2, 3, 5, 7, 8] {
                 s.chats[ix].device_id = "remote".into();

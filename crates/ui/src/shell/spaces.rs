@@ -1527,9 +1527,11 @@ pub(super) fn sidebar_separator(theme: &Theme) -> gpui::Div {
     div().h(px(1.0)).bg(theme.border.opacity(0.6))
 }
 
+/// `icon` leads the label — a project group's icon, which its rows then omit.
 fn sidebar_disclosure_header(
     theme: &Theme,
     label: SharedString,
+    icon: Option<AnyElement>,
     action: Option<AnyElement>,
     chevron: AnyElement,
     with_rule: bool,
@@ -1555,6 +1557,7 @@ fn sidebar_disclosure_header(
             el.child(sidebar_separator(theme).flex_1())
         })
         .when(!with_rule, |el| el.child(div().flex_1()))
+        .children(icon)
         .children(action)
         .child(chevron)
 }
@@ -1884,6 +1887,22 @@ mod manual_path_interactions {
         }
         drop(listener);
         runtime.block_on(remote.shutdown());
+    }
+}
+
+/// Project-mode group of a chat as (key, label). Projects sharing a
+/// repository identity fold into one group named for their representative
+/// space; project-less sessions group per device and read as `~`.
+fn sidebar_project_group(state: &AppState, chat: &roboco_proto::Chat) -> (String, String) {
+    match state.space_for_chat(chat) {
+        Some(space) => (
+            roboco_proto::view::project_key(space),
+            state.representative_space(space).display_name().to_string(),
+        ),
+        None => match chat.space_id.clone() {
+            Some(space_id) => (space_id, "?".to_string()),
+            None => (format!("home:{}", chat.device_id), "~".to_string()),
+        },
     }
 }
 
@@ -3276,9 +3295,7 @@ impl Shell {
             for chat in chats {
                 let key = Some((
                     if self.settings.sidebar_organization == SidebarOrganization::ByProject {
-                        chat.space_id
-                            .clone()
-                            .unwrap_or_else(|| format!("home:{}", chat.device_id))
+                        sidebar_project_group(state, &chat).0
                     } else {
                         chat.device_id.clone()
                     },
@@ -3975,14 +3992,10 @@ impl Shell {
 
     /// The group a chat's row sits under when the sidebar groups by device or
     /// by project; `None` in one list.
-    fn sidebar_group_key(&self, chat: &roboco_proto::Chat) -> Option<String> {
+    fn sidebar_group_key(&self, state: &AppState, chat: &roboco_proto::Chat) -> Option<String> {
         match self.settings.sidebar_organization {
             SidebarOrganization::ByDevice => Some(chat.device_id.clone()),
-            SidebarOrganization::ByProject => Some(
-                chat.space_id
-                    .clone()
-                    .unwrap_or_else(|| format!("home:{}", chat.device_id)),
-            ),
+            SidebarOrganization::ByProject => Some(sidebar_project_group(state, chat).0),
             SidebarOrganization::InOneList => None,
         }
     }
@@ -4053,7 +4066,7 @@ impl Shell {
                     self.push_sidebar_state(cx);
                     self.queue_sidebar_reveal(&format!("custom:{}", section.id));
                 }
-            } else if let Some(group) = self.sidebar_group_key(chat) {
+            } else if let Some(group) = self.sidebar_group_key(self.state.read(cx), chat) {
                 let collapse_key = self.sidebar_group_collapse_key(&group);
                 if self.sidebar_collapsed_groups.remove(&collapse_key) {
                     self.queue_sidebar_reveal(&format!("group:{collapse_key}"));
@@ -4137,13 +4150,11 @@ impl Shell {
             .change_request_for_chat(&chat)
             .cloned()
             .filter(|_| self.settings.sidebar_show_pull_request);
-        let group = self.sidebar_group_key(&chat).map(|key| {
-            let label = match self.settings.sidebar_organization {
-                SidebarOrganization::ByDevice => device,
-                _ => project,
-            };
-            (key, label)
-        });
+        let group = match self.settings.sidebar_organization {
+            SidebarOrganization::ByDevice => Some((chat.device_id.clone(), device)),
+            SidebarOrganization::ByProject => Some(sidebar_project_group(state, &chat)),
+            SidebarOrganization::InOneList => None,
+        };
         ActiveChatRow {
             status,
             chat: chat.clone(),
@@ -4400,6 +4411,16 @@ impl Shell {
             let section_group = group
                 .as_ref()
                 .is_some_and(|(key, _)| key.starts_with("section:"));
+            // A project group wears the project icon on its header instead
+            // of repeating it on every row.
+            let project_group = self.settings.sidebar_organization
+                == SidebarOrganization::ByProject
+                && group
+                    .as_ref()
+                    .is_some_and(|(key, _)| !key.starts_with("section:"));
+            let header_icon_chat = (project_group && self.settings.sidebar_show_project_icon)
+                .then(|| rows.first().map(|row| row.chat.id.clone()))
+                .flatten();
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for (group_index, row) in rows.into_iter().enumerate() {
                 let ActiveChatRow {
@@ -4484,6 +4505,7 @@ impl Shell {
                     is_moving,
                     if is_moving { None } else { drag },
                     jump_label,
+                    self.settings.sidebar_show_project_icon && !project_group,
                     None,
                     theme,
                     cx,
@@ -4673,9 +4695,13 @@ impl Shell {
                     )
                     .into_any_element()
             });
+            let icon = header_icon_chat.map(|chat_id| {
+                self.render_project_group_icon(&chat_id, SIDEBAR_ACTIVE_HARNESS_ICON_SIZE, cx)
+            });
             let header = sidebar_disclosure_header(
                 theme,
                 visible_label,
+                icon,
                 new_chat_button,
                 chevron,
                 true,
@@ -4740,7 +4766,7 @@ impl Shell {
             format!("Pinned ({})", items.len()).into()
         };
         let chevron = self.sidebar_disclosure_chevron("pinned", open, theme);
-        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, None, chevron, false)
             .id("pinned-toggle")
             .debug_selector(|| "pinned-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -4821,7 +4847,7 @@ impl Shell {
             format!("Sessions ({count})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("sessions", open, theme);
-        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, None, chevron, false)
             .id("sessions-toggle")
             .debug_selector(|| "sessions-toggle".into())
             .on_drag_move::<SidebarSessionDrag>(cx.listener(
@@ -4971,7 +4997,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, None, chevron, false)
+        let header = sidebar_disclosure_header(theme, label, None, None, chevron, false)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;
@@ -5019,6 +5045,7 @@ impl Shell {
                         false,
                         None,
                         None,
+                        true,
                         None,
                         theme,
                         cx,
@@ -5736,6 +5763,7 @@ impl Shell {
             git_detected,
             git_checked_at: None,
             checkout_id: None,
+            repository_id: None,
             created_at: Utc::now(),
         };
         self.state.update(cx, |s, cx| {

@@ -796,6 +796,7 @@ impl RegistryDoc {
             ("gitDetected", json!(space.git_detected)),
             ("gitCheckedAt", opt_ms(space.git_checked_at)),
             ("checkoutId", opt_str(space.checkout_id.as_deref())),
+            ("repositoryId", opt_str(space.repository_id.as_deref())),
             ("createdAt", json!(space.created_at.timestamp_millis())),
         ]);
         self.write(KIND_SPACES, &space.id.clone(), OpKind::Upsert, set);
@@ -841,6 +842,7 @@ impl RegistryDoc {
         space_id: &str,
         detected: bool,
         checkout_id: Option<&str>,
+        repository_id: Option<&str>,
         checked_at: DateTime<Utc>,
     ) -> Result<bool, DocError> {
         if !self.row_exists(KIND_SPACES, space_id) {
@@ -853,6 +855,7 @@ impl RegistryDoc {
             fields([
                 ("gitDetected", json!(detected)),
                 ("checkoutId", opt_str(checkout_id)),
+                ("repositoryId", opt_str(repository_id)),
                 ("gitCheckedAt", json!(checked_at.timestamp_millis())),
             ]),
         );
@@ -1244,14 +1247,14 @@ impl RegistryDoc {
                     ("platform", json!(device.platform)),
                     ("lastSeenAt", opt_ms(device.last_seen_at)),
                     ("createdAt", opt_ms(device.created_at)),
-                     ("version", opt_str(device.version.as_deref())),
-                     (
-                         "cursorSdkVersion",
-                         opt_str(device.cursor_sdk_version.as_deref()),
-                     ),
-                     ("cursorSdkEngineVersion", opt_str(device.version.as_deref())),
-                     ("capabilities", json!(device.capabilities)),
-                 ]),
+                    ("version", opt_str(device.version.as_deref())),
+                    (
+                        "cursorSdkVersion",
+                        opt_str(device.cursor_sdk_version.as_deref()),
+                    ),
+                    ("cursorSdkEngineVersion", opt_str(device.version.as_deref())),
+                    ("capabilities", json!(device.capabilities)),
+                ]),
             );
         }
         for space in &state.spaces {

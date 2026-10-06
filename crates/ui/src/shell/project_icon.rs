@@ -287,12 +287,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let state = self.state.read(cx);
-        // The chat's owning engine resolves the connection for remote artwork;
-        // local icons never touch it.
-        let engine = state.target_for_id(chat_id).ok();
         let chat = state.chats.iter().find(|chat| chat.id == chat_id);
-        let space = chat.and_then(|chat| state.space_for_chat(chat));
-        let name = space
+        // The tooltip names this row's own project; the artwork is shared.
+        let name = chat
+            .and_then(|chat| state.space_for_chat(chat))
             .map(|space| space.display_name().to_string())
             .unwrap_or_else(|| "Home".into());
         // Same fallback as the row's "@ device" fragment.
@@ -300,10 +298,58 @@ impl Shell {
             .and_then(|chat| state.device_name(&chat.device_id))
             .unwrap_or("Unknown device")
             .to_string();
-        let seed = space
+        let art = self.project_icon_art(chat_id, selected, cx);
+        project_icon_frame(chat_id, &name, &device, size, art)
+    }
+
+    /// A project group header's icon: the same artwork its rows would wear,
+    /// without the tooltip — the label beside it already names the project.
+    pub(super) fn render_project_group_icon(
+        &self,
+        chat_id: &str,
+        size: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .size(px(size))
+            .flex_none()
+            .child(self.project_icon_art(chat_id, false, cx))
+            .into_any_element()
+    }
+
+    /// Artwork for a chat's project, shared by every space of the project:
+    /// the representative's name and color, read from this device's checkout
+    /// when there is one (no round trip), else from the representative.
+    fn project_icon_art(
+        &self,
+        chat_id: &str,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = self.state.read(cx);
+        // The chat's owning engine resolves the connection for remote artwork;
+        // local icons never touch it.
+        let engine = state.target_for_id(chat_id).ok();
+        let space = state
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .and_then(|chat| state.space_for_chat(chat));
+        let representative = space.map(|space| state.representative_space(space));
+        let name = representative
+            .map(|space| space.display_name().to_string())
+            .unwrap_or_else(|| "Home".into());
+        let seed = representative
             .map(|space| space.path.clone())
             .unwrap_or_else(|| "home".into());
-        let context = space.map(|space| FilesRequestContext {
+        let artwork = space.map(|space| {
+            state
+                .project_members(space)
+                .into_iter()
+                .find(|member| state.local_device_id.as_deref() == Some(&member.device_id))
+                .unwrap_or_else(|| state.representative_space(space))
+        });
+        let context = artwork.map(|space| FilesRequestContext {
             engine: engine
                 .as_ref()
                 .map(|target| target.key().clone())
@@ -319,13 +365,7 @@ impl Shell {
             checkout_id: space.checkout_id.clone(),
         });
         let Some(context) = context else {
-            return project_icon_frame(
-                chat_id,
-                &name,
-                &device,
-                size,
-                monogram(&name, &seed, selected, Theme::of(cx)),
-            );
+            return monogram(&name, &seed, selected, Theme::of(cx));
         };
         let key = format!(
             "{:?}:{:?}:{}:{:?}:{}",
@@ -337,13 +377,7 @@ impl Shell {
         );
         // Don't cache a remote miss before a connection exists.
         if context.target_device_id.is_some() && engine.is_none() {
-            return project_icon_frame(
-                chat_id,
-                &name,
-                &device,
-                size,
-                monogram(&name, &seed, selected, Theme::of(cx)),
-            );
+            return monogram(&name, &seed, selected, Theme::of(cx));
         }
         let mut cache = self.project_icons.borrow_mut();
         cache.retain(|_, entity| entity.read(cx).refreshed.elapsed() < Duration::from_secs(300));
@@ -361,15 +395,9 @@ impl Shell {
             .clone();
         drop(cache);
         if entity.read(cx).media.is_none() {
-            return project_icon_frame(
-                chat_id,
-                &name,
-                &device,
-                size,
-                monogram(&name, &seed, selected, Theme::of(cx)),
-            );
+            return monogram(&name, &seed, selected, Theme::of(cx));
         }
-        project_icon_frame(chat_id, &name, &device, size, entity)
+        entity.into_any_element()
     }
 }
 

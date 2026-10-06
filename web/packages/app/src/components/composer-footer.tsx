@@ -5,7 +5,12 @@ import type { ChangeRequestSummary, ContextUsage, Device, HarnessId, RepoRef, Sp
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
 import { useFleetSnapshot, useFleetRegistry, engineStatesOf } from "../state/fleet";
-import { deviceOnline, spaceDisplayName, spacesSorted } from "../lib/view";
+import {
+  deviceOnline,
+  representativeSpace,
+  spaceDisplayName,
+  spacesSorted,
+} from "../lib/view";
 import { filterIndices } from "../lib/picker-search";
 import { addSpaceStore } from "../state/add-space";
 import { composerDefaults, rememberNoProject, rememberTarget } from "../lib/composer-draft";
@@ -394,7 +399,11 @@ export function ProjectChip({ spaces, currentSpaceId, fallbackLabel = "All proje
   const [open, setOpen] = useState(false);
 
   const pickedSpace = currentSpaceId === null ? null : spaces.find((space) => space.id === currentSpaceId) ?? null;
-  const label = pickedSpace === null ? fallbackLabel : spaceDisplayName(pickedSpace);
+  // A repository group is named for its oldest checkout (upstream #799).
+  const label =
+    pickedSpace === null
+      ? fallbackLabel
+      : spaceDisplayName(representativeSpace(spaces, pickedSpace));
 
   return (
     <PickerCard

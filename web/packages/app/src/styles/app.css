@@ -9194,6 +9194,8 @@ button.files-save-pill:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
 }
 
 .footer-menu-chip-caret {
@@ -18415,4 +18417,81 @@ button.segmented-option:hover {
 
 .compact-brand-icon {
   flex: none;
+}
+
+/*
+ * The rolling label (roll_text.rs, upstream #799): a keyed label change
+ * rolls — the old value rises out (fading, sliding up ~0.35em) while the new
+ * one rises in from below, on Scritto's cubic-bezier(.22,1,.36,1) over
+ * ~550ms. The outgoing copy is absolutely positioned so the container sizes
+ * to the incoming label at once (the desktop's width settles early on the
+ * 200ms resize clock; the web never moves what follows the label twice).
+ */
+.roll-text {
+  position: relative;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.roll-text-out,
+.roll-text-in,
+.roll-text-still {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roll-text-out {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  animation: rb-roll-out var(--rb-roll-ms) cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  pointer-events: none;
+}
+
+.roll-text-in {
+  animation: rb-roll-in var(--rb-roll-ms) cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes rb-roll-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-0.35em) scale(0.6);
+  }
+}
+
+@keyframes rb-roll-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Reduced motion: the plain label (roll_text.rs renders plain text). */
+:root[data-reduced-motion="on"] .roll-text-out,
+:root:not([data-reduced-motion="off"]) .roll-text-out {
+  /* governed by the media query below */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-reduced-motion="off"]) .roll-text-out,
+  :root:not([data-reduced-motion="off"]) .roll-text-in {
+    animation: none;
+  }
+}
+
+:root[data-reduced-motion="on"] .roll-text-out,
+:root[data-reduced-motion="on"] .roll-text-in {
+  animation: none;
 }

@@ -122,6 +122,19 @@ export interface ChatRow {
   /** Line 1 left — the space's display name, or the cwd label, or "~". */
   readonly project: string;
   /**
+   * The project GROUP key (`proto::view::project_key` + the desktop's
+   * `sidebar_project_group`): `repo:<repositoryId>` when the space carries
+   * one (clones and worktrees of one repository fold together), else the
+   * space id, else `home:<deviceId>`. The by-project sidebar groups on it.
+   */
+  readonly projectKey: string;
+  /**
+   * The project group's label — the representative space's name when the
+   * project spans devices (`proto::view::representative_space`), else the
+   * row's own project label ("?" / "~" for dangling/project-less).
+   */
+  readonly projectLabel: string;
+  /**
    * The space's path — the monogram's stable seed (project_icon.rs).
    * Null for project-less sessions (seed "home", name "Home").
    */
@@ -463,8 +476,8 @@ export function sidebarGroups(
       group = { key: row.deviceId, label, kind: "device" };
     } else if (organization === "byProject") {
       group = {
-        key: row.chat.spaceId ?? `home:${row.deviceId}`,
-        label: row.project,
+        key: row.projectKey,
+        label: row.projectLabel,
         kind: "project",
       };
     }
@@ -708,6 +721,21 @@ function toChatRow(
   const rawBranch = chat.sourceContext?.branch ?? null;
   const branch = rawBranch !== null && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
   const project = space !== undefined ? spaceDisplayName(space) : dangling ? "?" : "~";
+  // The project group's representative (`representative_space`): the oldest
+  // space sharing the repository id — its name stands for every checkout.
+  let projectLabel = project;
+  if (space !== undefined && space.repositoryId != null) {
+    const members = [...spaceById.values()].filter(
+      (candidate) => candidate.repositoryId === space.repositoryId,
+    );
+    const representative = members.reduce((oldest, candidate) =>
+      candidate.createdAt < oldest.createdAt ||
+      (candidate.createdAt === oldest.createdAt && candidate.id < oldest.id)
+        ? candidate
+        : oldest,
+    );
+    projectLabel = spaceDisplayName(representative);
+  }
   const device = deviceById.get(chat.deviceId);
   // The send overlay (state.rs `display_status_for` + render_chat_row's
   // corner overrides): an in-flight send reads as Working, and a
@@ -720,6 +748,11 @@ function toChatRow(
     chat,
     status: sendAwareStatus(chat, statusByChat.get(chat.id), now, sends, degraded),
     project,
+    projectKey:
+      space !== undefined && space.repositoryId != null
+        ? `repo:${space.repositoryId}`
+        : chat.spaceId ?? `home:${chat.deviceId}`,
+    projectLabel,
     projectPath: space?.path ?? null,
     folder: device !== undefined ? `${project} @ ${device.name}` : project,
     harness,
@@ -741,6 +774,41 @@ export function spaceDisplayName(space: Space): string {
     return name;
   }
   return basename(space.path) ?? space.path;
+}
+
+/**
+ * The space driving a project group's affordances: any member of the group
+ * (the `+` opens the new-chat canvas homed on the project; the space row
+ * carries the device). `repo:<id>` keys match any checkout, plain keys are
+ * space ids.
+ */
+export function spaceForProjectKey(spaces: readonly Space[], key: string): Space | undefined {
+  if (key.startsWith("repo:")) {
+    const repositoryId = key.slice("repo:".length);
+    return spaces.find((space) => space.repositoryId === repositoryId);
+  }
+  return spaces.find((space) => space.id === key);
+}
+
+/**
+ * `proto::view::representative_space` — the space that speaks for
+ * `space`'s whole project: the oldest member sharing its repository id,
+ * id tiebreak. Its name stands for every member on every device.
+ */
+export function representativeSpace(spaces: readonly Space[], space: Space): Space {
+  if (space.repositoryId == null) {
+    return space;
+  }
+  return (
+    spaces
+      .filter((candidate) => candidate.repositoryId === space.repositoryId)
+      .reduce((oldest, candidate) =>
+        candidate.createdAt < oldest.createdAt ||
+        (candidate.createdAt === oldest.createdAt && candidate.id < oldest.id)
+          ? candidate
+          : oldest,
+      )
+  );
 }
 
 /**

@@ -19,6 +19,7 @@ import { armStillPointer, useStillPointerHover } from "../lib/still-pointer";
 import {
   chatListRows,
   chatRowHeight,
+  spaceForProjectKey,
   displayStatus,
   healedSpaceFilter,
   resortOffsets,
@@ -860,7 +861,7 @@ export function ChatList() {
           localDeviceId={localDeviceId}
           space={
             bucket.group.kind === "project"
-              ? (snapshot.spaces.rows.find((row) => row.id === bucket.group.key) ?? null)
+              ? (spaceForProjectKey(snapshot.spaces.rows, bucket.group.key) ?? null)
               : null
           }
           jumpLabelFor={jumpLabelFor}

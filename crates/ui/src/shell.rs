@@ -6314,6 +6314,9 @@ impl Shell {
         // nine chips appear together instead of leaving a hole on whichever
         // row is busy or under the pointer.
         jump_label: Option<SharedString>,
+        // Whether the row wears its project icon. Rows inside a project
+        // group leave it to the group header.
+        project_icon: bool,
         // The command palette's search query: matching runs highlight inside
         // the row's labels, and its presence namespaces every row id so the
         // palette's copy never animates the sidebar copy (see below).
@@ -6345,9 +6348,7 @@ impl Shell {
             .is_some_and(|chat| {
                 self.state.read(cx).local_device_id.as_deref() != Some(chat.device_id.as_str())
             });
-        let project_icon = self
-            .settings
-            .sidebar_show_project_icon
+        let project_icon = (project_icon && search_query.is_none())
             .then(|| self.render_project_icon(&id, SIDEBAR_ACTIVE_HARNESS_ICON_SIZE, selected, cx));
         let corner_hovered = !preview && self.chat_status_hover.as_deref() == Some(row_id.as_str());
         let archived_muted = archived && !selected && !corner_hovered;
@@ -12398,6 +12399,7 @@ mod exit_regressions {
             git_detected: false,
             git_checked_at: None,
             checkout_id: None,
+            repository_id: None,
             created_at: Utc::now(),
         };
         window
@@ -13363,6 +13365,7 @@ mod exit_regressions {
                         git_detected: false,
                         git_checked_at: None,
                         checkout_id: None,
+                        repository_id: None,
                         created_at: Utc::now(),
                     }]);
                     // Boot opened an existing project session after loading defaults.
@@ -13427,6 +13430,7 @@ mod exit_regressions {
             git_detected: false,
             git_checked_at: None,
             checkout_id: None,
+            repository_id: None,
             created_at: Utc::now(),
         };
         window
@@ -13691,6 +13695,7 @@ mod exit_regressions {
                         git_detected: false,
                         git_checked_at: None,
                         checkout_id: None,
+                        repository_id: None,
                         created_at: Utc::now(),
                     }]);
                 });

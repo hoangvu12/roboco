@@ -25,7 +25,7 @@ use roboco_proto::{TodoItem, TodoStatus, ToolCall};
 
 use crate::composer::{Composer, QUEUE_COMPOSER_OVERLAP};
 use crate::icons::{self, icon};
-use crate::motion::{self, AnimationExt as _};
+use crate::motion::{self, AnimationExt as _, MotionSpecExt as _};
 use crate::theme::Theme;
 
 /// Lists longer than this fold to a [`FOCUS_WINDOW`] around the current item.

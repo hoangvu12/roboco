@@ -8,6 +8,8 @@
  */
 
 import { Icon, type IconName } from "@roboco/icons";
+import { RollText } from "../roll-text";
+import { useEffectiveReducedMotion } from "../../lib/reduced-motion";
 
 export interface FooterChipProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   readonly id: string;
@@ -29,6 +31,7 @@ export interface FooterChipProps extends React.ButtonHTMLAttributes<HTMLButtonEl
  */
 export function FooterChip(props: FooterChipProps) {
   const { id, icon, label, open, offline, title, className, ...rest } = props;
+  const reduced = useEffectiveReducedMotion();
   return (
     <button
       type="button"
@@ -40,7 +43,10 @@ export function FooterChip(props: FooterChipProps) {
       {...rest}
     >
       <Icon name={icon} size={12} className="footer-menu-chip-icon" />
-      <span className="footer-menu-chip-label">{label}</span>
+      {/* A changing label rolls (roll_text.rs); at rest the plain label. */}
+      <span className="footer-menu-chip-label">
+        <RollText rollKey={`${id}-label`} label={label} reduced={reduced} />
+      </span>
       <Icon name="altArrowDown" size={12} className="footer-menu-chip-caret" />
     </button>
   );
