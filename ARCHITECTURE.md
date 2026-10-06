@@ -40,6 +40,7 @@ Transcript subscriptions deliver an initial reset followed by deltas. Virtualize
 
 | Path | Responsibility |
 | --- | --- |
+| `apps/mobile` | Experimental Expo Android client; native Tailcat, engine pairing, shared web RPC client |
 | `apps/roboco` | Binary, CLI, daemon integration, application startup |
 | `crates/engine` | Engine lifecycle, agent execution, local storage services, RPC handlers |
 | `crates/rpc` | Request/stream envelopes and transports |

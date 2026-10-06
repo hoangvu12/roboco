@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Roboco",
+    "slug": "roboco-mobile",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "sh.roboco.mobile"
+    },
+    "platforms": [
+      "android"
+    ],
+    "scheme": "roboco",
+    "plugins": [
+      "./plugins/android-connection.cjs"
+    ]
+  }
+}

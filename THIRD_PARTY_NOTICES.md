@@ -158,3 +158,15 @@ Attribution is retained in the pinned Zui dependency’s `NOTICE`.
 Parakeet TDT 0.6B v3 model weights are by NVIDIA under CC BY 4.0. The optional download uses Ivan Stupakov's INT8 ONNX conversion, pinned to revision `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`, with per-file SHA-256 verification. Original: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3. Conversion: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx. License: https://creativecommons.org/licenses/by/4.0/.
 
 Native runtime dependencies: parakeet-rs 0.3.8 (MIT OR Apache-2.0), ort/ort-sys 2.0.0-rc.13 (MIT OR Apache-2.0), ONNX Runtime 1.28.0 (MIT), cpal 0.17.3 (Apache-2.0), and rubato 0.16.2 (MIT). See `crates/voice/NOTICE.md` for exact conversion provenance, changes, runtime/platform limitations and supported languages. Models are not included in the application bundle.
+
+## Recovered Expo Android client
+
+`apps/mobile` is derived from the Kratos `feat/mobile-ui-parity` experiment,
+recovered from the retained `kratos-mobile-e2e-f550f836` source snapshot. The
+original MIT license is retained as `apps/mobile/LICENSE.kratos`; Expo scaffold
+licensing is retained in `apps/mobile/LICENSE`. Android Tailcat uses the existing
+`adapters/roboco-tailcat` dependency pins and redistribution notices.
+
+The mobile client's bundled Geist and Geist Mono fonts are Copyright (c) 2023
+Vercel, in collaboration with basement.studio, under the SIL Open Font License
+1.1; the license is retained in `apps/mobile/assets/fonts/OFL.txt`.

@@ -24,6 +24,12 @@ Manual option: download the portable release ZIP from the [releases page](https:
 
 Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on. The installer rewrites the per-user `roboco.desktop` and icon under `~/.local/share` (or `$XDG_DATA_HOME`) each time it runs, checks that the binary starts before activating it, and reports missing runtime libraries. Linux requires the system ALSA runtime (`libasound.so.2`), including for headless mode because it shares the desktop executable.
 
+## Android development
+
+The experimental native Expo Android client lives in [apps/mobile](apps/mobile/README.md).
+It connects to Roboco engines through direct pairing or native Tailcat. Build and
+validation commands are in its README; Android is not yet a published release.
+
 ## Build from source
 
 ```bash

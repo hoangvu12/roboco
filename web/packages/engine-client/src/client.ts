@@ -239,6 +239,22 @@ export class EngineClient {
     this.#dial();
   }
 
+  /** Refresh a possibly stale socket after a native app returns to foreground.
+   * Keeps watches and the pinned engine identity; parked sessions stay parked.
+   */
+  reconnect(): void {
+    if (this.#runState !== "running") return;
+    clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = undefined;
+    clearTimeout(this.#dialTimer);
+    this.#dialTimer = undefined;
+    const socket = this.#socket;
+    const dial = this.#currentDial;
+    if (dial !== null) this.#teardown(dial, new RpcError("transport", "Refreshing engine connection"));
+    socket?.close(1000, "client foreground refresh");
+    this.#dial();
+  }
+
   onStatus(listener: (status: EngineStatus) => void): () => void {
     this.#statusListeners.add(listener);
     return () => this.#statusListeners.delete(listener);

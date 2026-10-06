@@ -25,3 +25,9 @@ The release scripts cross-build the same pinned source for native Linux and
 Windows architectures and install it beside the Roboco executable. Windows
 in-app updates currently replace `roboco.exe` only, not this companion;
 installing a new ZIP or installer upgrades the adapter too.
+
+The Expo Android client binds the same Go package into
+`target/tailcat/RobocoTailcat.aar`; see `apps/mobile/Native/build-aar.sh`.
+`netmon_android.go` is carried from the recovered Kratos mobile experiment and
+uses bionic interface discovery where Android refuses netlink route queries.
+It is compiled only for Android with cgo; native desktop builds are unchanged.

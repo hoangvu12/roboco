@@ -97,7 +97,7 @@ not built yet).
 
 ## Deferred (cross-cutting)
 
-- **Mobile app** — out of scope for the native rewrite so far.
+- **Mobile app** — experimental Expo Android client in `apps/mobile`; full mobile parity remains in progress.
 - **E2EE** — transport is TLS + WorkOS bearers; end-to-end encryption of doc
   contents not designed.
 - **macOS packaging execution** — config + steps in `dist/` only (needs a Mac).

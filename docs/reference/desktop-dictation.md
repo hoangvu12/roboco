@@ -30,4 +30,4 @@ For native startup timing, launch a development bundle with `RUST_LOG=info,roboc
 
 Real-model verification is an explicit development check using the `verify` example and external synthetic/public WAV files. Routine CI does not download the model or retain speech fixtures in the repository.
 
-Upstream's mobile handoff (native capture, lifecycle cancellation, mobile inference benchmarks, UTF-16/UTF-8 selection handling) is scoped in [PR #591](https://github.com/zeronsh/zeron/pull/591#issuecomment-5869764738); Roboco has no mobile target.
+Upstream's mobile handoff (native capture, lifecycle cancellation, mobile inference benchmarks, UTF-16/UTF-8 selection handling) is scoped in [PR #591](https://github.com/zeronsh/zeron/pull/591#issuecomment-5869764738); Roboco’s experimental Expo Android client (`apps/mobile`) does not yet port desktop dictation.

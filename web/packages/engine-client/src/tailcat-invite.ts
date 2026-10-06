@@ -13,7 +13,10 @@ export function isTailcatInvite(input: string): boolean {
 }
 
 /** Decode a `roboco-tailcat:` invite (route + pairing code + expiry). */
-export function parseTailcatInvite(input: string): ParsedTailcatInvite {
+export function parseTailcatInvite(
+  input: string,
+  decodeUtf8: (bytes: Uint8Array) => string = bytes => new TextDecoder().decode(bytes),
+): ParsedTailcatInvite {
   const trimmed = input.trim();
   if (!trimmed.startsWith(TAILCAT_INVITE_PREFIX)) {
     throw new RpcError("transport", "Tailcat invite must start with roboco-tailcat:");
@@ -27,7 +30,7 @@ export function parseTailcatInvite(input: string): ParsedTailcatInvite {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
+    parsed = JSON.parse(decodeUtf8(bytes));
   } catch {
     throw new RpcError("transport", "Tailcat invite payload is malformed");
   }
