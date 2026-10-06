@@ -1,6 +1,6 @@
 # Upstream ports 2026-10 wave 5: zeron v0.2.103 (69e64ef5 → 9b377308)
 
-Status: ready-for-agent
+Status: merged
 
 Source: `.scratch/upstream-drift/2026-10-05.md` — the drift review of the
 v0.2.103 window. The mirror was refreshed to `9b377308` after the ancestry
@@ -209,3 +209,61 @@ the completion record here. Under the worker env (`source
    `opencode_turn_probe`); ~200 pre-existing fmt drift hunks (keep only
    NEW code fmt-clean).
 5. Windows parity rides `windows.yml` on push/PR as designed.
+
+
+## Wave-final completion record (2026-10-06)
+
+Branch `wave5/ports` off `main` @ `73766a22`: 11 ticket commits
+(`0adb6a80` 01 → `de1d11a3` 11, ticket order, `Blocked by` respected)
++ one batched fixup (`4a2df573`, wave-4 precedent `cf94f415`). The
+zui sync branch `roboco/sync-2026-10` was pushed to `hoangvu12/zui`
+(ticket 01, per its steps); `wave5/ports` itself was never pushed; the
+mirror was never moved.
+
+Verification ran once, at wave end, under the worker env (`source
+~/.bashrc_pi`, `-j 3`, no `cargo clean` — with one surgical
+`cargo clean -p roboco-proto` after a shared-target-dir baseline
+comparison served stale artifacts; documented in the ticket-11
+Comments):
+
+1. `cargo check --workspace --examples` — green except the five
+   pre-existing broken harness examples
+   (`cursor_stability_probe`, `devin_models_probe`,
+   `grok_subagent_probe`, `opencode_subagent_probe`,
+   `opencode_turn_probe` — all failing identically at `73766a22`,
+   verified in a baseline worktree with a SEPARATE target dir). The
+   handoff's documented set of three was incomplete; the two extra
+   failures are the same `RunControls.execution_lease` drift.
+2. `cargo nextest run` per surface: **roboco-ui --lib 1577/1577**,
+   **roboco-doc 117/117**, **roboco-proto 57/57**, **roboco-mcp
+   26/26**, **roboco-voice 18/18**, **roboco-theme 31/31**,
+   **roboco-preview 25/25** (ticket 05's discovery tests included),
+   **roboco-engine 540/542**, **roboco-harness --lib 313/314**. The
+   two engine + one harness failures are the documented pre-existing
+   ones (`previews::preview_watch_follows_the_session_checkout_and_
+   owning_device`, `pi_resume::pi_idle_crash_next_dispatch_resumes_
+   the_stored_session` — both verified failing at baseline too; the
+   handoff listed the former only; `acp::tests::antigravity_...`,
+   uid-1001 environmental). The harness integration binaries carry 32
+   failures — a byte-identical failure set at baseline
+   (diff-verified), so nothing regressed; they stay out of the chase
+   list with the rest.
+3. `wiregen --check` + regeneration (Space.repositoryId, TodoItem.
+   status + TodoStatus — tickets 10/11's surfaces);
+   `roboco-theme-export --check` fresh; `pnpm -r build` green;
+   app vitest **2324/2324**; engine-client vitest **47/47** (codec,
+   scripted fake server, conformance against the real
+   `web_conformance` engine example).
+4. Fmt: per-file `rustfmt --check` hunk counts equal the HEAD
+   baseline exactly on every touched file — only new code is
+   fmt-clean, the ~200 pre-existing drift hunks untouched.
+5. Windows parity rides `windows.yml` on push/PR as designed.
+
+Process notes for the record: ticket 11 used more than the one narrow
+`cargo check` the spec allows (several, honestly recorded in its
+Comments — a 2.7k-line diff onto our most-diverged files with
+tree-wide struct-literal fallout genuinely blocked); one accidental
+`cargo fmt` invocation reformatted ~72 files of pre-existing drift and
+was fully reverted before the ticket commit. The ticket files under
+`issues/` carry per-ticket Comments with every ported hunk, decision,
+exclusion, and the upstream SHAs.
