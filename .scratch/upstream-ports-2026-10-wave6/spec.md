@@ -1,6 +1,6 @@
 # Upstream ports 2026-10 wave 6: zeron v0.2.106 (9b377308 → 916cb1cc)
 
-Status: ready-for-agent
+Status: merged (tickets 01–02; ticket 03 parked)
 
 Source: `.scratch/upstream-drift/2026-10-07.md` — the drift review of the
 v0.2.106 window. The mirror was refreshed to `916cb1cc` after the ancestry
@@ -79,3 +79,39 @@ Defaults (per wave-4/5 rhythm; the user can override in this spec):
 | 01 | Repository-identity project filter | `3d4bfd11` (#811) | 2 files, +210/−48 | — |
 | 02 | Claude snapshot IDs fold into curated rows | `970f41fa` (#835) | 1 file, +24 | — |
 | 03 | Composer attachment chips, font-robust | `73bd3c84` (#775) + `d5c1cdc1` (#816) | 33 files, +4286/−487 | PARKED — upstream settling |
+
+## Completion record (2026-10-08, end-of-pass batched verification)
+
+Executed per the spec defaults: one implementer session on branch
+`wave6/ports` off `main` (`c2e5a5df`), one commit per ticket, zero
+cargo/pnpm/wiregen during ticket work (the exception was never needed).
+Merged fast-forward into `main` (`02d6dca7`) after the batched pass went
+green; branch `wave6/ports` deleted after the evidence below was
+retained. Never pushed; mirror `zeron/main` untouched at `916cb1cc`.
+
+1. `cargo check --workspace` (libs): green. `cargo check --workspace
+   --examples` fails on exactly the two documented pre-existing broken
+   harness examples (`grok_subagent_probe`, `devin_models_probe` —
+   `RunControls.execution_lease` drift, failing identically at the
+   wave-5 baseline `73766a22`; neither file is touched by this wave).
+2. `cargo nextest run -p roboco-ui --lib`: **1578/1578** (wave-5
+   baseline 1577 + ticket 01's `project_filter_and_projects_span_a_
+   repository_across_devices`).
+3. `cargo nextest run -p roboco-harness --lib`: **314/315** (wave-5
+   baseline 313 + ticket 02's `dated_snapshots_fold_into_curated_rows`;
+   the sole failure is the documented pre-existing environmental
+   `acp::tests::antigravity_named_home_settings_preserve_business_
+   auth`, uid-1001, identical at baseline).
+4. Fmt: `rustfmt --check` hunk count 0 on all three touched files
+   (`state.rs`, `shell/spaces.rs`, `claude/catalog.rs`), equal to the
+   pre-wave baseline — new code is fmt-clean, no pre-existing drift
+   touched.
+5. No wire-surface change (both tickets touch no proto wire types);
+   web deliberately untouched (no upstream counterpart).
+
+Port commits: `e514c546` (ticket 01, upstream `3d4bfd11` #811),
+`02d6dca7` (ticket 02, upstream `970f41fa` #835). Deviations and the
+one intent-vs-patch adaptation (menu-row 4-tuple stays, per `3edfe53b`)
+are recorded in the tickets' Comments. Ticket 03 (chips, #775 + #816)
+stays parked at `needs-triage` pending the upstream
+`git-identity-project-grouping` branch settling.
