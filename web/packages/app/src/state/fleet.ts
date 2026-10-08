@@ -124,7 +124,7 @@ export function useFleetSnapshot(): WatchCacheSnapshot {
     }
     const projected = projectRegistrySnapshot(registry);
     const devices = fleetDeviceRows(registry, projected.devices);
-    const spaces = fleetSpaceRows(projected.spaces);
+    const spaces = fleetSpaceRows(registry, projected.spaces);
     return {
       generation: registry.engines.reduce((total, engine) => total + engine.generation, 0),
       capabilities:

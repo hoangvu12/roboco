@@ -1,15 +1,77 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
+import { encodeScopedId, projectRegistrySnapshot, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import {
   archivedRows,
   chatPageRow,
+  fleetSpaceRows,
   healedSpaceFilter,
   singleLine,
   spacesSorted,
 } from "../src/lib/view";
 
 const NOW = Date.parse("2026-09-16T12:00:00Z");
+
+describe("fleetSpaceRows", () => {
+  const OVH = "http://ovh.local";
+  const THREADRIPPER = "http://threadripper.local";
+
+  /** One supervised engine: baseUrl key, host device (null until info loads), and its row sets. */
+  function fleetEngine(key: string, hostDeviceId: string | null, spaces: readonly Space[]): unknown {
+    return {
+      key,
+      info: hostDeviceId === null ? null : { deviceId: hostDeviceId, workspaceScope: null },
+      state: "connected",
+      lastError: null,
+      generation: 1,
+      chats: { rows: [], loaded: true, error: null },
+      spaces: { rows: spaces, loaded: true, error: null },
+      devices: { rows: [], loaded: true, error: null },
+      sessions: { rows: [], loaded: true, error: null },
+    };
+  }
+
+  function fleetRegistry(...engines: readonly unknown[]): EngineRegistrySnapshot {
+    return { configurationError: null, engines } as unknown as EngineRegistrySnapshot;
+  }
+
+  it("shows a shared project only on its host engine, leaving distinct projects intact", () => {
+    // The upstream case (zeron `5cd23bd7`), adapted to roboco's fleet keys:
+    // two engines in one synced workspace, each advertising BOTH projects,
+    // the `deviceId` field naming the owning device. `useFleetSnapshot()`
+    // renders exactly these rows — one per project, on the owner's engine.
+    const ovh = { ...space("shared", "OVH project"), deviceId: "ovh" };
+    const threadripper = { ...space("local", "Threadripper project"), deviceId: "threadripper" };
+    const registry = fleetRegistry(
+      fleetEngine(OVH, "ovh", [ovh, threadripper]),
+      fleetEngine(THREADRIPPER, "threadripper", [ovh, threadripper]),
+    );
+    const projected = projectRegistrySnapshot(registry);
+    expect(projected.spaces).toHaveLength(4);
+    expect(fleetSpaceRows(registry, projected.spaces).map((row) => row.id)).toEqual([
+      encodeScopedId(OVH, "shared"),
+      encodeScopedId(THREADRIPPER, "local"),
+    ]);
+  });
+
+  it("keeps a row whose engine host is not known yet — seeded offline rows must not blank projects", () => {
+    // An engine entry starts `info: null` and seeds its offline cache
+    // before the first handshake (registry.ts `#seed`), so rows can exist
+    // while the host device id is still unknown. The mirror cannot be
+    // proven then; a project shown twice beats a project vanished.
+    const owned = { ...space("seeded", "Seeded project"), deviceId: "ovh" };
+    const registry = fleetRegistry(fleetEngine(OVH, null, [owned]));
+    const projected = projectRegistrySnapshot(registry);
+    expect(fleetSpaceRows(registry, projected.spaces)).toHaveLength(1);
+  });
+
+  it("keeps unscoped rows verbatim — a lone engine's ids carry no scope to check", () => {
+    const registry = fleetRegistry(fleetEngine(OVH, "ovh", []));
+    const rows = [space("bare", "Bare project")];
+    expect(fleetSpaceRows(registry, rows)).toEqual(rows);
+  });
+});
 
 function chat(fields: Partial<Chat>): Chat {
   return {
