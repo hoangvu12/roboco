@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Device, DriveEntry, FolderEntry } from "@roboco/proto";
-import { methods, encodeScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
+import type { Device, DriveEntry, FolderEntry, Space } from "@roboco/proto";
+import { methods, encodeScopedId, parseScopedId } from "@roboco/engine-client";
 import type { EngineSession } from "../src/state/engine-session";
 import { addSpaceStore, toggleAddSpace } from "../src/state/add-space";
 import {
@@ -350,62 +350,36 @@ describe("addSpaceStore + toggleAddSpace (shell.rs)", () => {
 
 describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
   const ENGINE = "https://engine.test";
+  const REMOTE = "https://remote.test";
 
-  function attachAddSpace(
-    session: EngineSession | null,
-    devices: Device[],
-    localRaw: string | null,
-  ): void {
-    if (session === null) {
-      addSpaceStore.attach({
-        session: null,
-        sessions: new Map(),
-        registry: { engines: [], configurationError: null },
-        goToCanvas: () => {},
-      });
-      return;
-    }
-    const key = session.engine.baseUrl;
-    const registry = {
-      configurationError: null,
-      engines: [
-        {
-          key,
-          info: { deviceId: localRaw, workspaceScope: null },
-          state: "connected",
-          lastError: null,
-          generation: 1,
-          chats: { rows: [], loaded: true, error: null },
-          spaces: { rows: [], loaded: true, error: null },
-          devices: { rows: devices, loaded: true, error: null },
-          sessions: { rows: [], loaded: true, error: null },
-        },
-      ],
-    } as unknown as EngineRegistrySnapshot;
-    const sessions = new Map<string, EngineSession>([[key, session]]);
-    addSpaceStore.attach({ session, sessions, registry, goToCanvas: () => {} });
+  function scopedId(key: string, raw: string): string {
+    return encodeScopedId(key, raw);
   }
 
-  function scopedId(raw: string): string {
-    return encodeScopedId(ENGINE, raw);
+  /** The merged fleet row for one engine's host device (ticket 87). */
+  function hostRow(key: string, raw: string, name: string): Device {
+    return { ...device(raw, name), id: scopedId(key, raw) };
   }
 
   /**
-   * The fake routed session: a fixed device list, a recording client whose
-   * calls resolve instantly (ListFolders echoes the requested path), and an
-   * optional local device id. The store only reads
-   * `cache.getSnapshot().devices.rows`, `client.engineInfo`, and
+   * The fake engine session: one engine key, one host device (the engine's
+   * own machine — the merged fleet lists exactly that row), a recording
+   * client whose calls resolve instantly (ListFolders echoes the requested
+   * path), and optional pre-existing spaces in its watch cache. The store
+   * only reads `cache.getSnapshot()`, `client.engineInfo`, and
    * `client.call`, so that is the whole surface.
    */
   function fakeSession(
+    key: string,
+    host: string | null,
     devices: Device[],
     calls: Array<{ method: string; params: Record<string, unknown> }>,
-    localDeviceId: string | null = null,
+    extra: { spaces?: Space[]; failMutate?: boolean } = {},
   ): EngineSession {
     return {
-      engine: { baseUrl: ENGINE, credential: "cred" },
+      engine: { baseUrl: key, credential: "cred" },
       client: {
-        engineInfo: { deviceId: localDeviceId },
+        engineInfo: { deviceId: host },
         call: (method: string, params: Record<string, unknown>): Promise<unknown> => {
           calls.push({ method, params });
           if (method === methods.LIST_FOLDERS) {
@@ -415,30 +389,91 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
           if (method === methods.LIST_DRIVES) {
             return Promise.resolve({ drives: [{ name: "Projects", path: "/projects" }] });
           }
+          if (method === methods.MUTATE) {
+            return extra.failMutate === true ? Promise.reject(new Error("engine refused")) : Promise.resolve({});
+          }
           return Promise.resolve({});
         },
       },
       cache: {
         getSnapshot: () => ({
           devices: { rows: devices, loaded: devices.length > 0, error: null },
+          spaces: { rows: extra.spaces ?? [], loaded: true, error: null },
         }),
       },
     } as unknown as EngineSession;
   }
 
-  it("closes an open flow when its owning engine changes", () => {
-    const sessionA = fakeSession([], []);
-    const devices = [device("d-local", "Studio")];
-    addSpaceStore.forceClose();
-    attachAddSpace(sessionA, devices, "d-local");
-    addSpaceStore.open();
-    addSpaceStore.pickDevice(scopedId("d-local"));
-    expect(addSpaceStore.getSnapshot().flow?.engineKey).toBe(ENGINE);
-    const sessionB = { ...sessionA, engine: { ...sessionA.engine, baseUrl: "https://other.test" } };
-    attachAddSpace(sessionB, devices, "d-local");
-    expect(addSpaceStore.getSnapshot().status).toBe("closed");
-    expect(addSpaceStore.getSnapshot().flow).toBe(null);
+  /** The single-engine attach: the routed session, its map entry, its host rows. */
+  function attachAddSpace(session: EngineSession | null, devices: Device[]): void {
+    if (session === null) {
+      addSpaceStore.attach({
+        session: null,
+        sessions: new Map(),
+        devices: [],
+        goToCanvas: () => {},
+      });
+      return;
+    }
+    const key = session.engine.baseUrl;
+    const sessions = new Map<string, EngineSession>([[key, session]]);
+    addSpaceStore.attach({ session, sessions, devices, goToCanvas: () => {} });
+  }
+
+  it("resets an open flow in place when the picked engine's connection is replaced", () => {
+    try {
+      const sessionA = fakeSession(ENGINE, "d-local", [device("d-local", "Studio")], []);
+      addSpaceStore.forceClose();
+      attachAddSpace(sessionA, [hostRow(ENGINE, "d-local", "Studio")]);
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId(ENGINE, "d-local"));
+      expect(addSpaceStore.getSnapshot().flow?.engineKey).toBe(ENGINE);
+      // A re-pair replaces the engine's client: the flow it was browsing is
+      // dead, but the palette stays open and says so — no silent close.
+      const sessionB = fakeSession(ENGINE, "d-local", [device("d-local", "Studio")], []);
+      attachAddSpace(sessionB, [hostRow(ENGINE, "d-local", "Studio")]);
+      const snapshot = addSpaceStore.getSnapshot();
+      expect(snapshot.status).toBe("open");
+      expect(snapshot.flow?.step).toBe("locations");
+      expect(snapshot.flow?.deviceId).toBe(scopedId(ENGINE, "d-local"));
+      expect(snapshot.flow?.listing).toEqual({ error: "Device connection changed. Browse again to continue." });
+      expect(snapshot.flow?.submitBusy).toBe(false);
+    } finally {
+      cleanup();
+    }
   });
+
+  it("keeps an open flow alive through attach churn while the picked engine holds", () => {
+    try {
+      const localCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const remoteCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], localCalls);
+      const remote = fakeSession(REMOTE, "ovh", [device("ovh", "OVH")], remoteCalls);
+      const sessions = new Map<string, EngineSession>([
+        [ENGINE, local],
+        [REMOTE, remote],
+      ]);
+      const devices = [hostRow(ENGINE, "threadripper", "Threadripper"), hostRow(REMOTE, "ovh", "OVH")];
+      addSpaceStore.forceClose();
+      addSpaceStore.attach({ session: local, sessions, devices, goToCanvas: () => {} });
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId(REMOTE, "ovh"));
+      expect(addSpaceStore.getSnapshot().flow?.step).toBe("locations");
+      // The routed engine stays local; registry ticks re-run attach with a
+      // fresh context (the palette's effect). The picked engine's client is
+      // unchanged, so the flow must survive — the routed engine never owned it.
+      addSpaceStore.attach({ session: local, sessions, devices, goToCanvas: () => {} });
+      const snapshot = addSpaceStore.getSnapshot();
+      expect(snapshot.status).toBe("open");
+      expect(snapshot.flow?.step).toBe("locations");
+      expect(snapshot.flow?.deviceId).toBe(scopedId(REMOTE, "ovh"));
+      expect(snapshot.flow?.listing).toBe("idle");
+      expect(localCalls).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
   const device = (id: string, name: string): Device => ({
@@ -456,10 +491,10 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
 
   it("devices → locations → folders and back clear stale state", async () => {
     try {
-      const devices = [device("d-local", "Studio"), device("d-remote", "Server")];
-      const scopedDevices = devices.map((row) => ({ ...row, id: scopedId(row.id) }));
+      const devices = [device("d-remote", "Server")];
+      const merged = [hostRow(ENGINE, "d-remote", "Server")];
       const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-      attachAddSpace(fakeSession(devices, calls, "d-local"), devices, "d-local");
+      attachAddSpace(fakeSession(ENGINE, "d-remote", devices, calls), merged);
 
       // The Devices step: no pick, no loads — the query filters the list.
       addSpaceStore.open();
@@ -469,11 +504,11 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
       expect(calls).toEqual([]);
 
       addSpaceStore.setQuery("server");
-      expect(deviceRows(scopedDevices, addSpaceStore.getSnapshot().flow!.query)).toHaveLength(1);
+      expect(deviceRows(merged, addSpaceStore.getSnapshot().flow!.query)).toHaveLength(1);
       addSpaceStore.openActive();
       flow = addSpaceStore.getSnapshot().flow!;
       expect(flow.step).toBe("locations");
-      expect(flow.deviceId).toBe(scopedId("d-remote"));
+      expect(flow.deviceId).toBe(scopedId(ENGINE, "d-remote"));
       expect(flow.query).toBe("");
       await flush();
       flow = addSpaceStore.getSnapshot().flow!;
@@ -525,10 +560,12 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
     try {
       const devices = [device("d-local", "Studio")];
       const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-      attachAddSpace(fakeSession(devices, calls, "d-local"), devices, "d-local");
+      attachAddSpace(fakeSession(ENGINE, "d-local", devices, calls), [
+        hostRow(ENGINE, "d-local", "Studio"),
+      ]);
 
       addSpaceStore.open();
-      addSpaceStore.pickDevice(scopedId("d-local"));
+      addSpaceStore.pickDevice(scopedId(ENGINE, "d-local"));
       addSpaceStore.gotoLocation("Projects", "/projects");
       await flush();
       // Descend one level in; ← climbs back to the location root…
@@ -552,7 +589,7 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
   it("a deviceless folders load surfaces the error row instead of a forever-skeleton", async () => {
     try {
       // No session attached: the routed engine is gone mid-flow.
-      attachAddSpace(null, [], null);
+      attachAddSpace(null, []);
       addSpaceStore.open();
       addSpaceStore.pickDevice("d-gone");
       addSpaceStore.gotoLocation("Home", null);
@@ -560,6 +597,166 @@ describe("device-first New project flow (spaces.rs project_flow_tests)", () => {
       const flow = addSpaceStore.getSnapshot().flow!;
       expect(flow.step).toBe("folders");
       expect(flow.listing).toEqual({ error: "Device is not connected" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  // ── Engine-routed browsing (zeron 3e14656f / 460b7c89, ticket 89) ───────
+
+  it("browses and creates on the selected engine, not the routed one", async () => {
+    try {
+      const localCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const remoteCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], localCalls);
+      const remote = fakeSession(REMOTE, "ovh", [device("ovh", "OVH")], remoteCalls);
+      const sessions = new Map<string, EngineSession>([
+        [ENGINE, local],
+        [REMOTE, remote],
+      ]);
+      addSpaceStore.attach({
+        session: local,
+        sessions,
+        devices: [hostRow(ENGINE, "threadripper", "Threadripper"), hostRow(REMOTE, "ovh", "OVH")],
+        goToCanvas: () => {},
+      });
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId(REMOTE, "ovh"));
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      expect(localCalls).toEqual([]);
+      expect(remoteCalls.map((call) => call.method)).toEqual([methods.LIST_DRIVES, methods.LIST_FOLDERS]);
+      expect(addSpaceStore.getSnapshot().flow?.listing).toMatchObject({ path: "/home/studio" });
+      addSpaceStore.submit();
+      await flush();
+      expect(localCalls).toEqual([]);
+      expect(remoteCalls[2]?.method).toBe(methods.MUTATE);
+      expect(remoteCalls[2]?.params).toMatchObject({
+        op: "createSpace",
+        deviceId: "ovh",
+        path: "/home/studio",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not browse a missing scoped engine through the routed engine", async () => {
+    try {
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], calls);
+      addSpaceStore.attach({
+        session: local,
+        sessions: new Map([[ENGINE, local]]),
+        devices: [hostRow(ENGINE, "threadripper", "Threadripper")],
+        goToCanvas: () => {},
+      });
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId("https://missing.test", "ovh"));
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      expect(calls).toEqual([]);
+      expect(addSpaceStore.getSnapshot().flow?.listing).toEqual({ error: "Device is not connected" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a device id that is not the engine's own host, even when scoped", async () => {
+    try {
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], calls);
+      addSpaceStore.attach({
+        session: local,
+        sessions: new Map([[ENGINE, local]]),
+        devices: [hostRow(ENGINE, "threadripper", "Threadripper")],
+        goToCanvas: () => {},
+      });
+      addSpaceStore.open();
+      // Scoped to the connected engine, but the device is not its host —
+      // the merged fleet never lists such a row, and the store must not
+      // fall back to routing it through that engine's client.
+      addSpaceStore.pickDevice(scopedId(ENGINE, "ovh"));
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      expect(calls).toEqual([]);
+      expect(addSpaceStore.getSnapshot().flow?.listing).toEqual({ error: "Device is not connected" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lands in an existing space matched by raw device id on the owning engine", async () => {
+    try {
+      const remoteCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const existing: Space = {
+        id: "space-1",
+        deviceId: "ovh",
+        path: "/home/studio",
+        name: "Studio",
+        gitDetected: false,
+        gitCheckedAt: null,
+        checkoutId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      };
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], []);
+      const remote = fakeSession(REMOTE, "ovh", [device("ovh", "OVH")], remoteCalls, { spaces: [existing] });
+      addSpaceStore.attach({
+        session: local,
+        sessions: new Map([
+          [ENGINE, local],
+          [REMOTE, remote],
+        ]),
+        devices: [hostRow(ENGINE, "threadripper", "Threadripper"), hostRow(REMOTE, "ovh", "OVH")],
+        goToCanvas: () => {},
+      });
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId(REMOTE, "ovh"));
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      addSpaceStore.submit();
+      await flush();
+      // No createSpace — the owning engine's cache already carries the
+      // space for this raw device id and path, so submit lands in it.
+      expect(remoteCalls.map((call) => call.method)).toEqual([methods.LIST_DRIVES, methods.LIST_FOLDERS]);
+      expect(addSpaceStore.getSnapshot().pendingSpaces).toEqual([]);
+      expect(addSpaceStore.getSnapshot().status).toBe("closing");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rolls the optimistic space row back when createSpace fails on the owning engine", async () => {
+    try {
+      const remoteCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const local = fakeSession(ENGINE, "threadripper", [device("threadripper", "Threadripper")], []);
+      const remote = fakeSession(REMOTE, "ovh", [device("ovh", "OVH")], remoteCalls, { failMutate: true });
+      addSpaceStore.attach({
+        session: local,
+        sessions: new Map([
+          [ENGINE, local],
+          [REMOTE, remote],
+        ]),
+        devices: [hostRow(ENGINE, "threadripper", "Threadripper"), hostRow(REMOTE, "ovh", "OVH")],
+        goToCanvas: () => {},
+      });
+      addSpaceStore.open();
+      addSpaceStore.pickDevice(scopedId(REMOTE, "ovh"));
+      addSpaceStore.gotoLocation("Home", null);
+      await flush();
+      addSpaceStore.submit();
+      // The optimistic row is minted under the OWNING engine's scope — the
+      // merged sidebar replaces it by id once the watch frame confirms.
+      const optimistic = addSpaceStore.getSnapshot().pendingSpaces[0]!;
+      expect(parseScopedId(optimistic.id).engine).toBe(REMOTE);
+      expect(parseScopedId(optimistic.deviceId)).toEqual({ engine: REMOTE, rawId: "ovh" });
+      await flush();
+      const flow = addSpaceStore.getSnapshot().flow!;
+      expect(flow.submitBusy).toBe(false);
+      expect(flow.error).toBe("engine refused");
+      // The rollback must remove that same scoped row, not a raw id that
+      // never matched it.
+      expect(addSpaceStore.getSnapshot().pendingSpaces).toEqual([]);
     } finally {
       cleanup();
     }

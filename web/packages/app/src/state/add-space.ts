@@ -8,7 +8,7 @@ import type {
   PrepareSpacePathReply,
   Space,
 } from "@roboco/proto";
-import { methods, encodeScopedId, parseScopedId, projectRegistrySnapshot, type EngineRegistrySnapshot } from "@roboco/engine-client";
+import { methods, encodeScopedId, parseScopedId } from "@roboco/engine-client";
 import { classifyKey, menuStep } from "../lib/picker-search";
 import {
   addSpaceCompletion,
@@ -27,8 +27,6 @@ import {
   type StaleGuard,
 } from "../lib/add-space";
 import type { EngineSession } from "./engine-session";
-import { fleetDeviceRows, fleetHostDeviceIds } from "../lib/devices";
-import { fleetStore } from "./fleet";
 import { mintId } from "../lib/id";
 import { commandPaletteStore } from "./command-palette";
 import { sidebarStore } from "./sidebar";
@@ -40,7 +38,10 @@ import { uiSettings } from "./ui-settings";
  * action surface: open/close, the Devices → Locations → Folders step
  * ladder with its breadcrumbs and back navigation, the search-edit
  * decision tree, the keyboard handler, manual-path prepare, and submit
- * with its optimistic space row.
+ * with its optimistic space row. Every filesystem and mutation RPC routes
+ * to the PICKED device's engine session (`#sessionForDevice`), never the
+ * routed one — the palette borrows the fleet's sessions map rather than
+ * retargeting the app (zeron #526).
  *
  * The mount lifecycle rides the Base UI dialog (`RbDialogGlass` in the
  * palette component): `open` is the dialog's open flag, and the exit
@@ -78,6 +79,9 @@ export interface AddSpaceManualPath {
 export interface AddSpaceFlow {
   /** Stamped once per open; responses from a prior open are dropped. */
   readonly identity: string;
+  /** The picked device's engine, parsed from its scoped id — a staleness
+   *  key only. RPC routing resolves the owning session at call time
+   *  (`#sessionForDevice`), never from this pin. */
   readonly engineKey: string | null;
   /** Bumped on every browse/device-switch; drops superseded in-flight work. */
   readonly revision: number;
@@ -123,8 +127,12 @@ export interface AddSpaceSnapshot {
 /** What the mounted palette component supplies each session. */
 export interface AddSpaceContext {
   readonly session: EngineSession | null;
+  /** Every paired engine's session, keyed by engine key — the palette's
+   *  RPC routing resolves the picked device's engine here. */
   readonly sessions: ReadonlyMap<string, EngineSession>;
-  readonly registry: EngineRegistrySnapshot;
+  /** The merged device list — one host row per engine (ticket 87), the
+   *  same rows the palette renders. */
+  readonly devices: readonly Device[];
   /** Route to the blank canvas — the desktop's `Route::Chat` landing. */
   readonly goToCanvas: () => void;
 }
@@ -229,17 +237,26 @@ export class AddSpaceStore {
     this.unmounted();
   }
 
-  /** The component's session binding — re-called on engine switches. */
+  /** The component's session binding — re-called on engine switches and
+   *  every registry tick (the merged rows are new objects). An open flow is
+   *  only reset when the PICKED engine's client was replaced (a re-pair or
+   *  gate Retry): the routed engine never owned the flow, so its churn must
+   *  not close it. */
   attach(context: AddSpaceContext): void {
-    if (
-      this.#flow !== null &&
-      this.#flow.deviceId !== null &&
-      this.#flow.engineKey !== null &&
-      this.#flow.engineKey !== (context.session?.engine.baseUrl ?? null)
-    ) {
-      this.forceClose();
-    }
+    const flow = this.#aliveFlow();
+    const previous = flow === null ? null : this.#sessionForDevice(flow.deviceId)?.client;
     this.#context = context;
+    if (flow !== null && previous !== this.#sessionForDevice(flow.deviceId)?.client) {
+      this.#flow = {
+        ...flow,
+        revision: flow.revision + 1,
+        submitBusy: false,
+        manualPath: null,
+        listing: { error: "Device connection changed. Browse again to continue." },
+        error: null,
+      };
+      this.#commit();
+    }
   }
 
   // ── Search edits (the Edited decision tree) ───────────────────────────
@@ -333,7 +350,10 @@ export class AddSpaceStore {
   /**
    * `add_space_pick_device`: selecting a device advances to its Locations.
    * The pick retires the old device's in-flight probes and manual-path
-   * state, clears the query, and loads the drives.
+   * state, clears the query, and loads the drives — on the picked device's
+   * OWN engine session. Picking never retargets the app: no
+   * `fleetStore.setActive` side effect (the settings engine switch owns
+   * that), the flow just routes its own RPCs (zeron #526).
    */
   pickDevice(deviceId: string): void {
     const flow = this.#aliveFlow();
@@ -342,13 +362,10 @@ export class AddSpaceStore {
     }
     let engineKey: string | null = null;
     try {
-      const scoped = parseScopedId(deviceId);
-      engineKey = scoped.engine;
-      if (engineKey !== null && engineKey !== fleetStore.getSnapshot().active) {
-        fleetStore.setActive(engineKey);
-      }
+      engineKey = parseScopedId(deviceId).engine;
     } catch {
-      engineKey = this.#session()?.engine.baseUrl ?? null;
+      // A malformed scoped id owns no engine; routing reads null.
+      engineKey = null;
     }
     this.#manualInFlight = false;
     this.#flow = {
@@ -620,7 +637,9 @@ export class AddSpaceStore {
    * `submit_browsed_space` (spaces.rs:2326-2437): same (device, folder)
    * already has a space → just land in it; otherwise mint a client id,
    * echo the row optimistically, and roll back with the engine's error
-   * string inline if the create fails.
+   * string inline if the create fails. The cache rows the dedup reads are
+   * the OWNING session's, whose device ids are raw — compare the picked
+   * device's raw id, never its scoped one.
    */
   #submitBrowsed(): void {
     const flow = this.#aliveFlow();
@@ -645,9 +664,9 @@ export class AddSpaceStore {
     const identity = flow.identity;
     const existing = session.cache
       .getSnapshot()
-      .spaces.rows.find((row) => row.deviceId === deviceId && row.path === path);
+      .spaces.rows.find((row) => row.deviceId === rawDeviceId && row.path === path);
     if (existing !== undefined) {
-      this.#land(this.#scope(existing.id, flow.engineKey));
+      this.#land(this.#scope(existing.id, session));
       return;
     }
     const spaceId = mintId();
@@ -655,10 +674,10 @@ export class AddSpaceStore {
       ...this.#pending,
       {
         // The optimistic row lives in the MERGED (scoped) sidebar view —
-        // its ids are scoped to the routed engine so the confirming watch
-        // frame replaces the twin by id (ticket 31).
-        id: this.#scope(spaceId, flow.engineKey),
-        deviceId: this.#scope(deviceId, flow.engineKey),
+        // the confirming watch frame from the selected engine replaces this
+        // row by id (ticket 31).
+        id: this.#scope(spaceId, session),
+        deviceId: this.#scope(rawDeviceId, session),
         path,
         name: null,
         gitDetected,
@@ -676,14 +695,14 @@ export class AddSpaceStore {
         this.#submitInFlight = false;
         // The optimistic row STAYS — the watch frame replaces it by id.
         if (this.#aliveFlow()?.identity === identity) {
-          this.#land(this.#scope(spaceId, flow.engineKey));
+          this.#land(this.#scope(spaceId, session));
         } else {
           this.#commit();
         }
       })
       .catch((error: unknown) => {
         this.#submitInFlight = false;
-        this.#pending = this.#pending.filter((row) => row.id !== spaceId);
+        this.#pending = this.#pending.filter((row) => row.id !== this.#scope(spaceId, session));
         const current = this.#aliveFlow();
         if (current !== null && current.identity === identity) {
           this.#flow = { ...current, submitBusy: false, error: errorMessage(error) };
@@ -711,12 +730,13 @@ export class AddSpaceStore {
   // ── Loads ──────────────────────────────────────────────────────────────
 
   /**
-   * `load_space_folders`: ListFolders on the flow's device (targeted when
-   * remote). The step machine's state advances FIRST — with no route to
-   * the device the Folders step still leaves the skeleton for the error
-   * row, never a forever-skeleton. Guards the response with the
-   * identity/device check plus the browser path, the hidden-query flag,
-   * and "the search has since become a manual path".
+   * `load_space_folders`: ListFolders on the flow's device. The session is
+   * the picked device's OWN engine — its client browses its own host — so
+   * no relay `targetDeviceId` is needed. The step machine's state advances
+   * FIRST — with no route to the device the Folders step still leaves the
+   * skeleton for the error row, never a forever-skeleton. Guards the
+   * response with the identity/device check plus the browser path, the
+   * hidden-query flag, and "the search has since become a manual path".
    */
   #loadFolders(path: string | null): void {
     const flow = this.#flow;
@@ -747,10 +767,6 @@ export class AddSpaceStore {
     const params: Record<string, unknown> = { query };
     if (path !== null) {
       params.path = path;
-    }
-    const passthrough = this.#rpcTargetDeviceId(session, deviceId);
-    if (passthrough !== null) {
-      params.targetDeviceId = passthrough;
     }
     void session.client
       .call<FolderListing>(methods.LIST_FOLDERS, params)
@@ -783,7 +799,8 @@ export class AddSpaceStore {
 
   /**
    * `load_space_drives` (spaces.rs:1960-2007): ListDrives, best-effort —
-   * failures stay silent, the Locations section just stays at Home.
+   * failures stay silent, the Locations section just stays at Home. The
+   * session is the picked device's own engine, so no relay targeting.
    */
   #loadDrives(): void {
     const flow = this.#flow;
@@ -797,10 +814,6 @@ export class AddSpaceStore {
     }
     const request: StaleGuard = { identity: flow.identity, engineKey: flow.engineKey, revision: null, deviceId: flow.deviceId };
     const params: Record<string, unknown> = {};
-    const passthrough = this.#rpcTargetDeviceId(session, flow.deviceId);
-    if (passthrough !== null) {
-      params.targetDeviceId = passthrough;
-    }
     void session.client
       .call<DriveListing>(methods.LIST_DRIVES, params)
       .then((listing) => {
@@ -894,19 +907,31 @@ export class AddSpaceStore {
     return this.#context?.session ?? null;
   }
 
+  /**
+   * Resolve the session that owns the picked device. A scoped device id
+   * names its engine directly; a device row the merged fleet lists is that
+   * engine's HOST device, so the resolved engine's own device id must match
+   * the raw id — otherwise the pick never routes through that engine's
+   * client ("Device is not connected", never a silent fallback to the
+   * routed engine).
+   */
   #sessionForDevice(deviceId: string | null): EngineSession | null {
+    const current = this.#session();
     if (deviceId === null) {
-      return this.#session();
+      return current;
     }
     try {
       const scoped = parseScopedId(deviceId);
-      if (scoped.engine !== null) {
-        return this.#context?.sessions.get(scoped.engine) ?? null;
+      const session = scoped.engine === null ? current : this.#context?.sessions.get(scoped.engine) ?? null;
+      if (session === null) {
+        return null;
       }
+      const host = session.client.engineInfo?.deviceId ?? null;
+      return host !== null && host === scoped.rawId ? session : null;
     } catch {
-      // Unscoped id on the routed session.
+      // Malformed scoped id: no owner, no routing.
+      return null;
     }
-    return this.#session();
   }
 
   #deviceRawId(deviceId: string): string {
@@ -917,58 +942,18 @@ export class AddSpaceStore {
     }
   }
 
-  #rpcTargetDeviceId(session: EngineSession | null, deviceId: string | null): string | null {
-    if (session === null || deviceId === null) {
-      return null;
-    }
-    const raw = this.#deviceRawId(deviceId);
-    const localRaw = session.client.engineInfo?.deviceId ?? null;
-    if (localRaw === null || localRaw === raw) {
-      return null;
-    }
-    return raw;
-  }
-
-  /** Scope an id to the flow's owning engine — the merged sidebar's id namespace. */
-  #scope(id: string, engineKey: string | null = this.#flow?.engineKey ?? null): string {
-    if (engineKey === null) {
-      return id;
-    }
-    try {
-      parseScopedId(id);
-      return id;
-    } catch {
-      return encodeScopedId(engineKey, id);
-    }
+  /**
+   * Scope a raw id to the engine that owns it — the merged sidebar's id
+   * namespace. Callers pass RAW ids (the watch cache's, a mint, the picked
+   * device's); the session is the one resolved at call time, never an
+   * engine key pinned in the flow.
+   */
+  #scope(id: string, session: EngineSession | null): string {
+    return session === null ? id : encodeScopedId(session.engine.baseUrl, id);
   }
 
   #devices(): readonly Device[] {
-    const registry = this.#context?.registry;
-    if (registry === undefined) {
-      return [];
-    }
-    const projected = projectRegistrySnapshot(registry);
-    const hosts = fleetDeviceRows(registry, projected.devices);
-    const active = this.#session()?.engine.baseUrl ?? null;
-    const hostIds = fleetHostDeviceIds(registry);
-    const extra =
-      active === null
-        ? []
-        : projected.devices.filter((device) => {
-            if (hostIds.has(device.id)) {
-              return false;
-            }
-            try {
-              return parseScopedId(device.id).engine === active;
-            } catch {
-              return false;
-            }
-          });
-    const byId = new Map<string, Device>();
-    for (const row of [...hosts, ...extra]) {
-      byId.set(row.id, row);
-    }
-    return [...byId.values()];
+    return this.#context?.devices ?? [];
   }
 
   /** The Devices step's filtered rows (`add_space_devices`). */
