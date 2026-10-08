@@ -41,24 +41,26 @@ import {
 /**
  * Devices settings (desktop settings/devices.rs parity): the device registry
  * of the connected engine, split into the desktop's two labeled sections
- * (devices.rs:517-557) — "This device" (the row whose id is the engine's own
- * `engineInfo.deviceId`, first) and "Other devices" — each row with the
+ * (devices.rs:517-557) — "This device" (the row whose id is the active
+ * engine's own device, first) and "Other devices" — each row with the
  * platform tile's corner presence dot, the meta line (platform · version
  * · connection · last seen · added · the click-to-copy id chip), Rename (via
  * the Mutate renameDevice op) and the pairing box that redeems a pairing URL
  * through the fleet store — the page's one paste entry (the `/pair` landing
- * is the other, for token URLs). Above the device rows sits the engines
- * card: one row per engine this browser paired, folded here from the
- * deleted web-only user-menu Engines drawer (ticket 45) — connection state
- * dot + label, the engine identity line, "Pair again" when the engine
- * parked (a revoked Session re-pairs through `/pair`), and Forget.
+ * is the other, for token URLs; zeron's WorkOS sign-in hint is not ported —
+ * roboco pairs by URL).
  *
- * Web mapping of the desktop's multi-engine registry concepts: the rows come
- * from the connected engine's WatchDevices; the "engine-backed" row is the
- * one whose id matches the connected engine's own device (its presence is
- * the live connection state), a row matching a parked fleet engine is
- * engine-backed-off (Forget removes it from the fleet); every other row
- * falls back to the last-seen window.
+ * One row per engine, period (zeron 779cc2e0): the legacy "Engines" card
+ * (the pairing-era drawer row ticket 45 folded in above the device rows)
+ * listed the fleet's engines again, so every engine appeared twice — the
+ * fleet's engines and their device rows describe the same fleet, and the
+ * device-style host rows are the registry of record. They come from the
+ * fleet registry's projected device list: `fleetDeviceRows` picks each
+ * engine's own device row — the "engine-backed" row, whose presence is
+ * that engine's live connection state and whose title is the device row's
+ * name of record; a parked engine's host row is engine-backed-off (Forget
+ * removes it from the fleet, "Pair again" re-pairs through `/pair`);
+ * every other row falls back to the last-seen window.
  */
 
 interface RenameDialog {
