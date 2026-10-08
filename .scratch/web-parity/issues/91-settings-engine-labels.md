@@ -4,7 +4,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `lib/settings-engine.ts`, `settings-engine-indicator.tsx`, `tests/settings-fleet-routing.test.ts`
 
@@ -112,3 +112,53 @@ the mounted suites are the demonstrated evidence.
   does (CAUTION b).
 - Zeron's empty-registry label test expectations were reshaped for the
   `engineDisplayName` fallback above.
+
+### Review round (2026-10-08)
+
+Two-axis review over `git diff dc306b44..HEAD` (the code-review skill,
+self-run — this session exposes no general-purpose subagent, so the
+Standards and Spec axes were performed directly per the fallback).
+
+**Standards — 4 actionable findings, all fixed in the review commit
+(`fix(web): polish the settings engine labels port (review round)`):**
+
+- `lib/settings-engine.ts`: the comment describing `settingsEngineKey`
+  dangled between the function and `EngineConnectionView`'s own doc
+  (documented nothing where it stood) — moved above the function.
+- Duplicated Code (judgement call): the accounts/agents "engine switch
+  remounts this body" inline comments were identical strings — each is
+  now page-specific (login dialog/busy/target vs
+  sign-in/install/target).
+- The indicator's doc opened "`Engine {host}` pill" although the trigger
+  renders the bare host-device name (05faf5a0 dropped the prefix; this
+  port made the label a device name) — reworded to "the engine pill …
+  names the active engine by its host device's name".
+- The devices page's synthetic-identity comment read "info identity
+  first, the row's engine key as the base" (garbled) — tightened.
+
+Non-actionable, noted: the missing `Engine ` prefix is 05faf5a0's
+deliberate form (kept — CAUTION a); the `?? engine.baseUrl` terminal in
+the ownId chain is dead-in-practice but zeron-verbatim; the indicator
+test's positional button index mirrors the zeron test; the per-file
+jsdom stub block matches the repo's convention (settings-dialogs,
+settings-devices-sections carry the same set).
+
+**Spec — no findings.** All ticket requirements present and tested; no
+scope creep beyond the documented remote-access split (the third
+indicator page) and the devices-page call-site adaptation forced by the
+signature change; the remount key (`fleet.active`, via
+`settingsEngineKey`) verified equal to the routed engine on `/settings/*`
+(`routedEngineKey`). All deviations from zeron 97f86114 remain
+deliberate and recorded in the implementer note above.
+
+**Post-fix verification:** `pnpm -C web/packages/app exec tsc --noEmit`
+clean; focused suites green (settings-engine 6, settings-engine-indicator
+1, settings-fleet-routing 4); neighbor ring green 96/96 across 13 files
+(settings-device-switcher, settings-devices-sections, settings-dialogs,
+account-row, fleet-view, session-provider, settings-completion,
+remote-access-view, settings-dialog, settings-section). Full app suite
+deferred to the orchestrator's integration pass.
+
+All five acceptance-checklist items are demonstrated by the suites; the
+plan-level two-live-engine acceptance run stays with the orchestrator's
+integration pass. Status → ready-for-human.

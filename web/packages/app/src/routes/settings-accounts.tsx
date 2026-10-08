@@ -98,9 +98,9 @@ function AccountsSettingsPageBody() {
   const [login, setLogin] = useState<LoginFlow | null>(null);
   const now = useNow(30_000);
 
-  // An engine switch remounts this body (SettingsEnginePage's key), which
-  // drops any passthrough target with the old engine's page state — no
-  // separate reset effect is needed.
+  // An engine switch remounts this body (SettingsEnginePage's key), so the
+  // old engine's login dialog, busy account, and passthrough target never
+  // carry over — no separate reset effect is needed.
 
   const rpcTarget = useMemo(() => settingsRpcTargetDeviceId(target, session), [target, session]);
 

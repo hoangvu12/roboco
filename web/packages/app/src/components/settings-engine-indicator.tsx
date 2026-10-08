@@ -7,15 +7,15 @@ import { PickerCard } from "./ui/PickerCard";
 import { MenuRow } from "./ui/MenuRows";
 
 /**
- * `SettingsEngineIndicator` — the `Engine {host}` pill the
- * engine-addressing settings pages (Remote access, Agents, Accounts)
- * carry beside their subtitle whenever more than one engine is paired.
+ * `SettingsEngineIndicator` — the engine pill the engine-addressing
+ * settings pages (Remote access, Agents, Accounts) carry beside their
+ * subtitle whenever more than one engine is paired.
  * The desktop needs nothing like it: its settings address the local
  * engine by construction (`remote_access.rs:37-39`). The web's settings
  * pages follow `fleet.active` — the last-paired engine, invisible and
- * unswitchable before this ticket — so the pill names the engine and
- * its popover lists every paired engine with its connection dot and a
- * check on the active one.
+ * unswitchable before this ticket — so the pill names the active engine
+ * by its host device's name and its popover lists every paired engine
+ * with its connection dot and a check on the active one.
  *
  * Picking a row calls `fleetStore.setActive` — the store's first UI
  * caller for that write. Changing the active engine re-routes

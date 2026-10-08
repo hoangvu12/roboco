@@ -348,8 +348,8 @@ function EngineHostDeviceRow(props: EngineHostDeviceRowProps) {
   const displayTitle =
     engineKey !== null
       ? settingsDeviceName(
-          // A registry row without a fleet pin still names through its own
-          // entry (info identity first, the row's engine key as the base).
+          // A host row with no fleet pin still names through its own
+          // entry: the engine key plus its live identity.
           stored ?? { baseUrl: engineKey, label: "", deviceId: entry?.info?.deviceId ?? null },
           registry,
         )

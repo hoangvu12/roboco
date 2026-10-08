@@ -42,15 +42,14 @@ export function settingsEngineLabel(fleet: FleetState, registry: EngineRegistryS
   return engine === undefined ? null : settingsDeviceName(engine, registry);
 }
 
+/**
+ * The engine the engine-addressing settings pages (Remote access, Agents,
+ * Accounts) are keyed on — see `components/settings-engine-page.tsx`:
+ * a change remounts those page bodies.
+ */
 export function settingsEngineKey(fleet: FleetState): string | null {
   return fleet.active;
 }
-
-/**
- * The engine-addressing settings pages (Remote access, Agents, Accounts)
- * key their page body on this value — see
- * `components/settings-engine-page.tsx`.
- */
 
 /** One paired engine's connection view off its registry entry state. */
 export interface EngineConnectionView {
