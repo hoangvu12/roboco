@@ -4,7 +4,7 @@
 
 **Blocked by:** **86**, **90**
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** commits on PR #526 after `4928e1b2`
 
@@ -48,3 +48,67 @@ Ported zeron `631a8e03` + `6e4f363` on top of the integration head `4241fec4` (8
 - The established-chat-with-unoffered-committed-harness send block is a visible behavior change on top of wpn-90 (previously only fresh chats were gated): a chat created on engine A for a harness A offered and B later disables is now unsendable on B until the harness is re-enabled there. That is zeron's exact intent ("Established chats keep their committed config and are blocked only by a settled unavailable result") and the pickers surface the state explicitly.
 - `selectedModelUnavailable`'s `reconcileFreshDraftModel !== draft` arm can keep the button disabled for one render tick after a catalog lands (until the reconciliation effect settles); the window is the point of the arm (never enable before the draft settles) and is invisible in practice.
 - The engine-switch suite mounts the identity-card arm (compact off) because zeron's tests drive that card; the compact arm's new takeover states are covered only by the shared chip label + the takeover arm being the same JSX — a compact-specific mounted test is a possible follow-up for the review round.
+
+## Review round (34629422 → reviewed fixup)
+
+Two-axis review per the code-review skill (its sub-agent machinery — no
+Agent tool in this session — so both axes ran in the same context against
+`git diff 4241fec4...HEAD`, like wpn-90's round).
+
+**Standards findings (both fixed):**
+- Duplicated Code — the `modelError={modelsList.error === null ? null :
+  modelDiscoveryErrorMessage(...)}` prop expression was duplicated verbatim
+  at the CompactCard and IdentityCard render sites (zeron computes it once;
+  the Compact adaptation introduced the copy). Hoisted to one
+  `const modelError` in `ComposerPickers` ("Both cards read this one value"),
+  with the per-card `modelSlotError`/`modelsListError` aliases keeping
+  zeron's names.
+- Organization — `StickyDraftPicks` sat between `defaultDraft` and
+  `defaultDraftHarness`, referencing `RememberedModel` defined ~100 lines
+  below. Moved into the sticky-picks type group (`RememberedModel` →
+  `StickyDraftPicks` → `ModelFavorite`), restoring zeron's layout:
+  `defaultDraft` → `defaultDraftHarness` → `reconcileFreshDraftHarness` →
+  `draftFromChat`.
+- Accepted judgement calls: the per-card takeover-arm JSX mirrors between
+  the two cards exactly as the file's existing `noAgents` arms do (the
+  documented-in-code per-card idiom overrides the duplication baseline);
+  the IdentityCard's now-unread `modelsList` local stays because zeron's
+  final file keeps the identical line; the two self-contained describe
+  fixtures (`committedCodex`) follow the file's per-describe idiom.
+- No web-parity convention breaches: no CSS touched (the takeover reuses
+  the existing `model-no-agents` classes — no literal hex), engine/harness
+  vocabulary holds, commit style and zeron-mirroring test names hold.
+
+**Spec findings:** every hunk of `631a8e03` and `6e4f363` is present and
+faithful — `composer-send.ts`/`composer-reconciliation.ts` are semantically
+identical to zeron's final state (doc-comment wording only);
+`defaultDraft`/`defaultDraftHarness`/`reconcileFreshDraftHarness`/
+`reconcileFreshDraftModel` bodies are byte-identical; `modelDiscoveryErrorMessage`
+and `#modelFlightStale` identical; the composer's two-arm
+`selectedHarnessUnavailable`, `selectedModelUnavailable`, both `sendBlocked`
+sites + deps, the reconcile/model-load effects, the 4-arg hook, and the
+`engineLabel` wiring all match. No missing requirements; no scope creep
+beyond the four documented adaptations plus test-only additions.
+
+**The residual Compact-arm gap — CLOSED:** a new
+`ComposerPickers compact availability states (wpn-93)` describe in
+`composer-reasoning.test.ts` (the compact card is the app's DEFAULT
+presentation; zeron has no compact arm):
+- "takes over the compact card for a committed harness the engine does not
+  offer" — the `.compact-card` body renders "Codex is unavailable" + the
+  committed-agent copy, no draft/persist commits.
+- "attributes a failed model discovery to the selected engine on the models
+  page" — ArrowDown into the models page shows "Model discovery on Engine A
+  failed" + the `CODEX_EXECUTABLE` hint.
+Both bite: removing the compact card's `harnessUnavailable` arm fails the
+takeover test; reverting `modelsListError` to the raw `modelsList?.error`
+fails the attribution test. The composer-level mutations still bite after
+the fixes (re-verified: forcing `selectedModelUnavailable = false` fails
+the 6 engine-switch blocked tests).
+
+**Re-verification:** acceptance criterion re-demonstrated (unchanged);
+`tsc --noEmit` clean; `pnpm run build` (tsc + vite) clean; focused suites —
+composer-availability 15/15, composer-draft 49/49, composer-send 29/29,
+composer-reasoning 48/48 (+2 compact), picker-catalog 20/20; combined batch
+with the adjacent ring — 30 files, 533/533. Full app suite still deferred
+to the orchestrator. Status → ready-for-human.

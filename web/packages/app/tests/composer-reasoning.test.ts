@@ -1108,6 +1108,73 @@ describe("ComposerPickers availability states", () => {
   });
 });
 
+describe("ComposerPickers compact availability states (wpn-93)", () => {
+  // The compact card is the app's DEFAULT presentation (upstream #471);
+  // zeron has no compact arm, so the identity-card suite's takeover and
+  // attribution states are mirrored here on the compact surface.
+  beforeEach(() => {
+    uiSettings.updateImmediate({ compactModelPicker: true });
+  });
+  afterEach(() => {
+    uiSettings.updateImmediate({ compactModelPicker: false });
+    // Still-mounted pickers re-render on the store's notification.
+    act(() => {
+      resetDefaults();
+    });
+  });
+
+  it("takes over the compact card for a committed harness the engine does not offer", async () => {
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, { ...BARE, installed: false }];
+    const committedCodex: ChatConfig = {
+      harness: "codex",
+      model: "gpt-5",
+      reasoning: "medium",
+      modelOptions: { mode: "fast" },
+      sandbox: "workspace-write",
+    };
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5", reasoning: "medium", modelOptions: { mode: "fast" } }),
+      chatConfig: committedCodex,
+      engineLabel: "Engine A",
+    });
+    await act(async () => {
+      await handle.catalog.loadHarnesses();
+    });
+    await flush();
+    await openCard(handle);
+    const card = document.querySelector<HTMLElement>(".compact-card");
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("Codex is unavailable");
+    expect(card!.textContent).toContain("This chat is committed to that agent on this engine");
+    expect(handle.drafts).toHaveLength(0);
+    expect(handle.persists).toHaveLength(0);
+  });
+
+  it("attributes a failed model discovery to the selected engine on the models page", async () => {
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.nextModelError = new Error("missing_executable: harness binary not found: codex");
+    const handle = mountPicker({
+      client,
+      initial: draft({ harness: "codex", model: "gpt-5" }),
+      engineLabel: "Engine A",
+    });
+    await flush();
+    await openCard(handle);
+    // The panel's Down opens the models list page, where the discovery
+    // error surfaces with its engine attribution.
+    pressKey("ArrowDown");
+    await flush();
+    expect(document.querySelector(".compact-list-page")).not.toBeNull();
+    expect(document.body.textContent).toContain("Model discovery on Engine A failed");
+    expect(document.body.textContent).toContain("CODEX_EXECUTABLE there; the browser cannot do this");
+  });
+});
+
 // ── Harness facet on new side chats (upstream #590) ─────────────────────────
 
 /** The parent-model row: the side chat's inherited claude-code catalog. */

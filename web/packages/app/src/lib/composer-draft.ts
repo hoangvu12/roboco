@@ -71,16 +71,6 @@ export function defaultDraft(
 }
 
 /**
- * The sticky picks a fresh chat pre-selects: the remembered harness plus the
- * remembered model for it — the `modelByHarness` entry the composer resolves
- * via `rememberedModelFor`. Null when nothing was remembered.
- */
-export interface StickyDraftPicks {
-  readonly harness: HarnessId;
-  readonly model: RememberedModel | null;
-}
-
-/**
  * The fresh-draft harness that model discovery is allowed to query
  * (wpn-93, zeron `631a8e03`): the sticky pick while this engine offers it,
  * else the first offered row, else the sticky pick while the catalog is
@@ -175,6 +165,16 @@ export function draftsEqual(a: DraftConfig, b: DraftConfig): boolean {
 export interface RememberedModel {
   readonly id: string;
   readonly label: string;
+}
+
+/**
+ * The sticky picks a fresh chat pre-selects: the remembered harness plus the
+ * remembered model for it — the `modelByHarness` entry the composer resolves
+ * via `rememberedModelFor`. Null when nothing was remembered.
+ */
+export interface StickyDraftPicks {
+  readonly harness: HarnessId;
+  readonly model: RememberedModel | null;
 }
 
 /** One starred model, kept in starring order. */

@@ -389,6 +389,14 @@ export function ComposerPickers(props: ComposerPickersProps) {
   const modelLabel = resolveChipLabel(draft.model, selectedModel, effectiveHarness, modelsList);
   const unavailableLabel = descriptor?.name ?? effectiveHarness;
   const rememberedLabel = draft.model === null ? null : rememberedLabelFor(draft.model);
+  // A discovery failure is attributed to the SELECTED engine (wpn-93): the
+  // raw engine-side error names its target instead of implying the browser
+  // can install a CLI or change the remote's executable path. Both cards
+  // read this one value.
+  const modelError =
+    modelsList.error === null
+      ? null
+      : modelDiscoveryErrorMessage(modelsList.error, effectiveHarness, engineLabel);
   // `chip_label_loading` (pickers.rs:4220-4221): nothing names the pick yet
   // AND the catalog is Idle/Loading. An errored harness or model slot is
   // settled, not loading — the real label (remembered label → configured/
@@ -545,11 +553,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
             noAgents={noAgents}
             harnessUnavailable={harnessUnavailable}
             unavailableLabel={unavailableLabel}
-            modelError={
-              modelsList.error === null
-                ? null
-                : modelDiscoveryErrorMessage(modelsList.error, effectiveHarness, engineLabel)
-            }
+            modelError={modelError}
             locked={locked}
             railDescriptors={railDescriptors}
             modelsLists={modelsLists}
@@ -582,11 +586,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
           noAgents={noAgents}
           harnessUnavailable={harnessUnavailable}
           unavailableLabel={unavailableLabel}
-          modelError={
-            modelsList.error === null
-              ? null
-              : modelDiscoveryErrorMessage(modelsList.error, effectiveHarness, engineLabel)
-          }
+          modelError={modelError}
           locked={locked}
           railDescriptors={railDescriptors}
           tabDescriptors={tabDescriptors}
@@ -1104,9 +1104,6 @@ function IdentityCard(props: IdentityCardProps) {
 
   // The empty-list note precedence (§2.3.3).
   const modelsList = modelsLists.get(effectiveHarness);
-  // A discovery failure is attributed to the SELECTED engine (wpn-93): the
-  // raw engine-side error names its target instead of implying the browser
-  // can install a CLI or change the remote's executable path.
   const modelSlotError = modelError;
   const emptyNote =
     query.trim().length > 0
@@ -1781,8 +1778,8 @@ function CompactCard(props: CompactCardProps) {
   const last = Math.min(rows.length, Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN);
   const slice = rows.slice(first, last);
 
-  // A discovery failure is attributed to the SELECTED engine (wpn-93),
-  // exactly like the identity card's `modelSlotError`.
+  // The engine-attributed discovery error (wpn-93), like the identity
+  // card's `modelSlotError`.
   const modelsListError = modelError;
   // The empty-list note precedence (the standard card's, pickers
   // 4032-4050): a query wins, then the favorites view's own note.
