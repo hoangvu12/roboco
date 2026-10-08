@@ -7,7 +7,7 @@
  * engine appeared twice — and its rows named engines by their pair-session
  * label ("Roboco web on …"), not the device row of record. The engines
  * card is gone: the device-style host rows (one per engine, picked by
- * `fleetDeviceRows`) are the registry of record, and roboco's pairing URL
+ * `fleetDeviceRows`) are the registry of record, and Roboco's pairing URL
  * box — where zeron shows a WorkOS sign-in hint — keeps its 16px gap
  * before the list.
  *
@@ -24,6 +24,26 @@ import type { Device } from "@roboco/proto";
 import { DevicesSettingsPage } from "../src/routes/settings-devices";
 
 // ── Controllable doubles ──────────────────────────────────────────────────
+
+/** One registry entry: its key, its own host device row, its live state. */
+function engineEntry(
+  key: string,
+  host: Device,
+  state: "connected" | "off",
+  lastError: string | null,
+) {
+  return {
+    key,
+    state,
+    lastError,
+    info: { deviceId: host.id, workspaceScope: "synced", capabilities: [] },
+    generation: 1,
+    chats: { rows: [] },
+    spaces: { rows: [] },
+    sessions: { rows: [] },
+    devices: { rows: [host] },
+  };
+}
 
 const h = vi.hoisted(() => {
   const NOW = 1_800_000_000_000;
@@ -122,28 +142,8 @@ vi.mock("../src/state/fleet", async (importOriginal) => {
     useFleetRegistry: () => ({
       configurationError: null,
       engines: [
-        {
-          key: "https://engine-a.test",
-          state: "connected" as const,
-          lastError: null,
-          info: { deviceId: h.hostA.id, workspaceScope: "synced", capabilities: [] },
-          generation: 1,
-          chats: { rows: [] },
-          spaces: { rows: [] },
-          sessions: { rows: [] },
-          devices: { rows: [h.hostA] },
-        },
-        {
-          key: "https://engine-b.test",
-          state: h.engineBState,
-          lastError: h.engineBError,
-          info: { deviceId: h.hostB.id, workspaceScope: "synced", capabilities: [] },
-          generation: 1,
-          chats: { rows: [] },
-          spaces: { rows: [] },
-          sessions: { rows: [] },
-          devices: { rows: [h.hostB] },
-        },
+        engineEntry("https://engine-a.test", h.hostA, "connected", null),
+        engineEntry("https://engine-b.test", h.hostB, h.engineBState, h.engineBError),
       ],
     }),
     fleetStore: { redeemPairingUrl: vi.fn(async () => {}), remove: vi.fn() },

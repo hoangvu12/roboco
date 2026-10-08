@@ -48,7 +48,7 @@ import {
  * the Mutate renameDevice op) and the pairing box that redeems a pairing URL
  * through the fleet store — the page's one paste entry (the `/pair` landing
  * is the other, for token URLs; zeron's WorkOS sign-in hint is not ported —
- * roboco pairs by URL).
+ * Roboco pairs by URL).
  *
  * One row per engine, period (zeron 779cc2e0): the legacy "Engines" card
  * (the pairing-era drawer row ticket 45 folded in above the device rows)

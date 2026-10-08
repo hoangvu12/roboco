@@ -4,7 +4,7 @@
 
 **Blocked by:** **87**
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `routes/settings-devices.tsx`, `tests/settings-devices.test.ts`
 
@@ -91,3 +91,43 @@ focused suites green — `tests/settings-devices.test.ts` (2, new),
 `tests/settings-dialogs.test.ts` (9). Full app suite deferred to the
 orchestrator's integration pass, as instructed. /code-review deferred to
 the follow-up round.
+
+### Review round (2026-10-08)
+
+Two-axis review of `git diff 1244fa69..HEAD` (the code-review skill's
+subagent machinery unavailable in-session; both axes run in-session).
+
+**Standards — 2 findings, both fixed:**
+
+- AGENTS.md naming (hard): lowercase "roboco" in code doc-comment prose
+  ("roboco pairs by URL" in settings-devices.tsx; "roboco's pairing URL
+  box" in the test header) — capitalized per the documented convention.
+  The `.scratch` ticket docs keep lowercase roboco (ticket 91's reviewed
+  convention — repo/checkout references).
+- Duplicated Code (judgement call): the two hand-rolled 14-line
+  `EngineEntrySnapshot` literals in the test collapsed into a local
+  `engineEntry(key, host, state, lastError)` factory. The shared
+  `tests/helpers/fleet-fixtures.ts` builder was NOT reused — it hardcodes
+  `state: "connected"`/`workspaceScope: null` and serves the pure-logic
+  suites; the mounted-suite idiom (settings-devices-sections) builds the
+  registry inline, and this test needs per-test parked state.
+- Suppressed (repo standard overrides the smell baseline): the per-file
+  jsdom stub block + mounted harness duplicates the established
+  mounted-suite set (settings-dialogs, settings-devices-sections — ticket
+  91's review noted the same). Raw `16px` margin (not `--rb-space-*`):
+  the Devices CSS section is desktop-transcribed raw px and zeron 779cc2e0
+  adds raw 16px — kept in the reference's form. No literal colors.
+
+**Spec — no findings.** All three zeron 779cc2e0 hunks are accounted for
+(engines-card removal already in the base via 05faf5a0 — verified against
+`git show 05faf5a0`; the doc-comment port, the CSS rhythm, and the
+reproducer test landed here); WorkOS sign-in not ported; the pairing URL
+box untouched; no scope creep beyond the in-comment accuracy fix and the
+row-actions test that verifies the What-to-build line.
+
+**Post-review verification:** `pnpm -C web/packages/app exec tsc
+--noEmit` clean; focused suites green — settings-devices 2/2,
+settings-devices-sections 4/4, settings-dialogs 9/9. All three acceptance
+checklist items remain demonstrated by the suites (plus the recorded
+mutation check); the two-live-engine browser run stays with the
+orchestrator's integration pass. Status → ready-for-human.
