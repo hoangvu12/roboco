@@ -1,6 +1,6 @@
 import type { EngineEntrySnapshot, EngineRegistrySnapshot } from "@roboco/engine-client";
 import { engineDisplayName } from "./view";
-import type { FleetState } from "./engine-store";
+import type { FleetState, StoredEngine } from "./engine-store";
 
 /**
  * The engine-addressing settings vocabulary (ticket 45): which engine
@@ -14,37 +14,43 @@ import type { FleetState } from "./engine-store";
  */
 
 /**
- * The engine those settings pages address, named only when the fleet is
- * plural: `engineHost(fleet.active)` with two or more engines paired,
- * else null — the single-engine case is unambiguous and shows no
- * indicator at all.
+ * The engine's own WatchDevices row is the name of record (and reflects
+ * renames): the settings engine indicator names each engine by the device
+ * row its own registry entry carries — never the pair-session label, and
+ * never a peer's copy of the row, which may be stale or identify a
+ * different engine. Discovery can carry only the device UUID (an engine's
+ * `EngineInfo` has not landed yet), so the pairing store's pinned identity
+ * resolves the row too; an engine with no resolvable row falls back to
+ * the disambiguated host (`engineDisplayName`).
  */
-export function settingsEngineLabel(fleet: FleetState, registry: EngineRegistrySnapshot): string | null {
-  if (fleet.engines.length <= 1 || fleet.active === null) {
-    return null;
-  }
-  return settingsDeviceName(fleet.active, registry);
+export function settingsDeviceName(
+  engine: Pick<StoredEngine, "baseUrl" | "label" | "deviceId">,
+  registry: EngineRegistrySnapshot,
+): string {
+  const entry = registry.engines.find((candidate) => candidate.key === engine.baseUrl);
+  const ownId = entry?.info?.deviceId ?? engine.deviceId ?? engine.baseUrl;
+  const name = entry?.devices.rows.find((device) => device.id === ownId)?.name?.trim();
+  return name || engineDisplayName(engine);
 }
 
-/** Live host device name for the settings engine switcher (not the pair-session label). */
-export function settingsDeviceName(engineKey: string, registry: EngineRegistrySnapshot): string {
-  const entry = registry.engines.find((engine) => engine.key === engineKey);
-  const hostRaw = entry?.info?.deviceId;
-  if (entry !== undefined && hostRaw !== null && hostRaw !== undefined) {
-    const host = entry.devices.rows.find((row) => row.id === hostRaw);
-    if (host !== undefined) {
-      return host.name;
-    }
+/** Name the active engine only when more than one is available. */
+export function settingsEngineLabel(fleet: FleetState, registry: EngineRegistrySnapshot): string | null {
+  if (fleet.engines.length < 2 || fleet.active === null) {
+    return null;
   }
-  const stored = registry.engines.find((engine) => engine.key === engineKey);
-  return stored !== undefined
-    ? engineDisplayName({ baseUrl: engineKey, label: "", deviceId: stored.info?.deviceId ?? null })
-    : engineKey;
+  const engine = fleet.engines.find((entry) => entry.baseUrl === fleet.active);
+  return engine === undefined ? null : settingsDeviceName(engine, registry);
 }
 
 export function settingsEngineKey(fleet: FleetState): string | null {
   return fleet.active;
 }
+
+/**
+ * The engine-addressing settings pages (Remote access, Agents, Accounts)
+ * key their page body on this value — see
+ * `components/settings-engine-page.tsx`.
+ */
 
 /** One paired engine's connection view off its registry entry state. */
 export interface EngineConnectionView {

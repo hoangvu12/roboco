@@ -11,6 +11,7 @@ import {
   settingsSwitcherLocalDeviceId,
 } from "../lib/settings-device-switcher";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
+import { SettingsEnginePage } from "../components/settings-engine-page";
 import {
   BtnGhost,
   BtnPrimary,
@@ -71,7 +72,21 @@ type LoginFlow =
   | { kind: "paste-code"; harness: HarnessId; provider: string | null; start: AgentLoginStart; submitting: boolean; error: string | null }
   | { kind: "browser"; harness: HarnessId; provider: string | null; start: AgentLoginStart; message: string | null; error: string | null };
 
+/**
+ * The page body lives under `SettingsEnginePage`: a settings-engine
+ * switch REMOUNTS it (fresh loads, no stale engine-local login state),
+ * while the DeviceSwitcher's intra-engine picks keep routing
+ * `targetDeviceId` without a remount.
+ */
 export function AccountsSettingsPage() {
+  return (
+    <SettingsEnginePage>
+      <AccountsSettingsPageBody />
+    </SettingsEnginePage>
+  );
+}
+
+function AccountsSettingsPageBody() {
   const session = useEngineSession();
   const client = session?.client ?? null;
   const fleet = useFleet();
@@ -83,10 +98,9 @@ export function AccountsSettingsPage() {
   const [login, setLogin] = useState<LoginFlow | null>(null);
   const now = useNow(30_000);
 
-  // Engine switch elsewhere (composer / settings indicator) — drop stale passthrough.
-  useEffect(() => {
-    setTarget(null);
-  }, [fleet.active]);
+  // An engine switch remounts this body (SettingsEnginePage's key), which
+  // drops any passthrough target with the old engine's page state — no
+  // separate reset effect is needed.
 
   const rpcTarget = useMemo(() => settingsRpcTargetDeviceId(target, session), [target, session]);
 

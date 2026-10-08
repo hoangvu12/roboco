@@ -346,7 +346,14 @@ function EngineHostDeviceRow(props: EngineHostDeviceRowProps) {
   const dot = presenceDot(props.connection, props.online);
   const engineKey = stored?.baseUrl ?? entry?.key ?? null;
   const displayTitle =
-    engineKey !== null ? settingsDeviceName(engineKey, registry) : device.name;
+    engineKey !== null
+      ? settingsDeviceName(
+          // A registry row without a fleet pin still names through its own
+          // entry (info identity first, the row's engine key as the base).
+          stored ?? { baseUrl: engineKey, label: "", deviceId: entry?.info?.deviceId ?? null },
+          registry,
+        )
+      : device.name;
 
   return (
     <div className={`settings-row device-row ${props.first ? "settings-row-first" : ""}`}>

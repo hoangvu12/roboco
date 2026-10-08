@@ -19,11 +19,12 @@ import { MenuRow } from "./ui/MenuRows";
  *
  * Picking a row calls `fleetStore.setActive` — the store's first UI
  * caller for that write. Changing the active engine re-routes
- * `useEngineSession()` on `/settings/*` routes, so the page's data
- * reloads against the chosen engine (the pages already reset on session
- * identity change). The popover itself is the shared anchored-menu
- * family (`PickerCard`), so it rides the MENU_IN/MENU_OUT motion
- * catalog and honors `prefers-reduced-motion` like every other menu.
+ * `useEngineSession()` on `/settings/*` routes AND remounts the page
+ * body (`SettingsEnginePage`'s engine key): the fresh body re-loads from
+ * the chosen engine with no stale page state reconciled onto it. The
+ * popover itself is the shared anchored-menu family (`PickerCard`), so
+ * it rides the MENU_IN/MENU_OUT motion catalog and honors
+ * `prefers-reduced-motion` like every other menu.
  */
 export function SettingsEngineIndicator() {
   const fleet = useFleet();
@@ -73,7 +74,7 @@ export function SettingsEngineIndicator() {
             }}
           >
             <span className={`dot ${engineConnection(byKey.get(engine.baseUrl) ?? null).dot}`} />
-            <span className="settings-engine-row-host">{settingsDeviceName(engine.baseUrl, registry)}</span>
+            <span className="settings-engine-row-host">{settingsDeviceName(engine, registry)}</span>
             {isActive && <Icon name="check" size={12} className="settings-engine-row-check" />}
           </MenuRow>
         );

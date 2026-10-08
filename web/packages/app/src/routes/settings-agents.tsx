@@ -14,6 +14,7 @@ import type {
 import { RbSwitch } from "../components/base/switch";
 import { DeviceSwitcher } from "../components/ui/DeviceSwitcher";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
+import { SettingsEnginePage } from "../components/settings-engine-page";
 import { MenuRow } from "../components/ui/MenuRows";
 import { PickerCard } from "../components/ui/PickerCard";
 import { SkeletonRows } from "../components/ui/Skeleton";
@@ -95,7 +96,22 @@ interface SignInFailure {
   readonly phase: SignInPhase;
 }
 
+/**
+ * The page body lives under `SettingsEnginePage`: a settings-engine
+ * switch REMOUNTS it — fresh loads, and engine-local sign-in/install
+ * state is dropped instead of reconciling onto the new engine — while
+ * the DeviceSwitcher's intra-engine picks keep routing `targetDeviceId`
+ * without a remount.
+ */
 export function AgentsSettingsPage() {
+  return (
+    <SettingsEnginePage>
+      <AgentsSettingsPageBody />
+    </SettingsEnginePage>
+  );
+}
+
+function AgentsSettingsPageBody() {
   const session = useEngineSession();
   const client = session?.client ?? null;
   const fleet = useFleet();
@@ -136,10 +152,9 @@ export function AgentsSettingsPage() {
   const devices = useMemo(() => settingsDeviceSwitcherRows(registry, fleet), [registry, fleet]);
   const localDeviceId = settingsSwitcherLocalDeviceId(session);
 
-  // Engine switch elsewhere — drop stale passthrough target ids.
-  useEffect(() => {
-    setTarget(null);
-  }, [fleet.active]);
+  // An engine switch remounts this body (SettingsEnginePage's key), which
+  // drops any passthrough target with the old engine's page state — no
+  // separate reset effect is needed.
 
   const rpcTarget = useMemo(() => settingsRpcTargetDeviceId(target, session), [target, session]);
   const supportsUpdates =
