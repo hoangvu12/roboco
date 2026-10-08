@@ -39,3 +39,42 @@ Use two independently running engines with distinct `baseUrl`s in one browser pr
 ## Agent workflow
 
 Tickets live in `.scratch/web-parity/issues/86-*.md` … `93-*.md`. Status `ready-for-agent`. Subagents: research zeron file at commit SHA listed in each ticket before implementing.
+
+## Completion (2026-10-08)
+
+Executed via the implement-feature orchestration (4 waves, one isolated
+worktree/branch per ticket, per-ticket candidate → review round →
+integration). All eight tickets are `ready-for-human` on `main`:
+
+| Ticket | Commits | Zeron refs |
+|---|---|---|
+| 86 | closed via 88's wiring (module/routing pre-landed `9101f8c5`) | `b20e5bfd`, `4928e1b2` |
+| 87 | `2ed91164`, `129f15db`, `e46bcb72` | `5cd23bd7` |
+| 88 | `301bef26`, `846764ac` | `4510bab2`, `4928e1b2` |
+| 89 | `2cf5e877`, `e4c7fd1e` | `3e14656f`, `460b7c89` |
+| 90 | `efd8968d`, `ee66a18f` | `f180fcb1`, `d57b27fd` |
+| 91 | `9b4cc198`, `3ead651b` | `97f86114` |
+| 92 | `647502de`, `2b569077` | `779cc2e0` |
+| 93 | `34629422`, `451d3f6e` | `631a8e03`, `6e4f363` |
+
+Integration fixes: `53e89958` ports zeron `4510bab2`'s non-composer
+label sweep (deferred from 88, caught by the final spec review);
+recorded deviations — roboco keeps the devices This device/Other
+devices split (92's landed design) and the DeviceSwitcher device label
+(91's ruling).
+
+Final verification on the integration branch: full app vitest
+**2405/2405** (165 files; base 2324 + 81 from these tickets), `pnpm -r
+build` green (tsc + vite, all web packages), focused suites per ticket
+green, per-ticket review rounds green. engine-client's
+conformance/smoke vitest was NOT run: the package is untouched by this
+feature and CI path-filters that job to `engine-client/**` changes
+(its cargo example build exceeds the 600s hook timeout in a cold
+worktree); codec/fake-server suites passed.
+
+**Remaining human check:** the plan's two-live-engine acceptance run
+(two engines with distinct baseUrls in one browser profile — canvas
+chip switches engine, RPCs hit the owning engine, one row each,
+indicator retargets settings only). All four bullets have
+unit/mounted-seam evidence in the ticket records; the live run needs
+real engines and a browser, which this environment does not provide.
