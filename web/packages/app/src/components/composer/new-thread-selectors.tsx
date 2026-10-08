@@ -45,14 +45,10 @@ export interface NewThreadTarget {
   readonly devices: readonly Device[];
   readonly spaces: readonly Space[];
   readonly ownDeviceId: string | null;
-  /** The picked space row, or null ("no project" / nothing remembered). */
-  readonly space: Space | null;
-  /**
-   * The picked project's id — `selected_space` in the desktop's state: set
-   * even while the row has not landed, so per-space chrome (the terminal
-   * canvas key) keeps its bucket. Null = project-less.
-   */
+  /** The selected project identity, retained even when its live row is absent. */
   readonly projectId: string | null;
+  /** The picked space row, or null ("no project" / unavailable selection). */
+  readonly space: Space | null;
   /** The device that runs the agents for this target. */
   readonly effectiveDevice: Device | null;
   readonly effectiveDeviceId: string | null;
@@ -61,6 +57,12 @@ export interface NewThreadTarget {
    * space's device when it differs from the connected engine's own.
    */
   readonly targetDeviceId: string | null;
+  /** A remembered project vanished after the relevant project list loaded. */
+  readonly projectUnavailable: boolean;
+  /** The selected project has not loaded yet; it is still a blocked target. */
+  readonly projectLoading: boolean;
+  /** No canvas RPC or creation may proceed without the selected project row. */
+  readonly targetUnavailable: boolean;
 }
 
 /**
@@ -85,6 +87,14 @@ export function useNewThreadTarget(): NewThreadTarget {
     const resolved = resolveNewChatTarget(defaults, sidebar, fleet.active);
     const projectId = resolved.projectId;
     const space = projectId === null ? null : spaces.find((row) => row.id === projectId) ?? null;
+    // A remembered project without a live row is a BLOCKED target (wpn-90,
+    // zeron `f180fcb1`): its scoped id still names the owning engine, so a
+    // send must never fall through to the stub's device id. A loaded
+    // project list without the row means the project is gone; anything
+    // else means the owner engine has not published it yet.
+    const targetUnavailable = projectId !== null && space === null;
+    const projectUnavailable = targetUnavailable && snapshot?.spaces.loaded === true;
+    const projectLoading = targetUnavailable && !projectUnavailable;
     const ownRawDeviceId = session?.client.engineInfo?.deviceId ?? null;
     const own =
       session !== null && ownRawDeviceId !== null
@@ -103,11 +113,15 @@ export function useNewThreadTarget(): NewThreadTarget {
       effectiveDevice,
       effectiveDeviceId,
       targetDeviceId,
+      projectUnavailable,
+      projectLoading,
+      targetUnavailable,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     snapshot?.devices.rows,
     snapshot?.spaces.rows,
+    snapshot?.spaces.loaded,
     defaults,
     fleet.active,
     ownDeviceKey(session),
@@ -146,9 +160,15 @@ export function NewThreadTargetSelectors() {
           checkouts). */}
       <ProjectChip
         spaces={target.spaces}
-        currentSpaceId={target.space?.id ?? null}
+        currentSpaceId={target.space?.id ?? target.projectId}
         currentDeviceId={target.effectiveDeviceId}
-        fallbackLabel="No project"
+        fallbackLabel={
+          target.projectUnavailable
+            ? "Selected project unavailable"
+            : target.projectLoading
+              ? "Selected project loading"
+              : "No project"
+        }
       />
       <DeviceChip
         devices={target.devices}

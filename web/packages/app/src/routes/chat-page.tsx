@@ -292,14 +292,27 @@ export function ConversationPage() {
     setContextUsage(null);
   }, [chatId]);
 
+  // ── The canvas target + the stub chat (the new-thread route) ─────────
+  // The canvas has no chat row; the composer still needs a `Chat`-shaped
+  // target — the remembered device/project picks resolved through
+  // `effective_device_id` (state.rs:1314-1320). The stub's id is the DRAFT
+  // key `""` (the desktop's `current_key` for the new-thread canvas), so
+  // the canvas draft survives every round trip.
+  const target = useNewThreadTarget();
+  // A remembered project without a live row is a BLOCKED target (wpn-90,
+  // zeron `f180fcb1`): resolve before catalog loading — a missing project
+  // must never discover models or create a chat on a substitute target.
+  const targetUnavailable = !hasSelection && target.targetUnavailable;
+
   // Lazily fetch the harness catalog once per chat page open so the
-  // composer chips aren't blank behind a stale "Loading." pill.
+  // composer chips aren't blank behind a stale "Loading." pill — never
+  // while the canvas target is unresolved.
   useEffect(() => {
-    if (session === null) {
+    if (session === null || targetUnavailable) {
       return;
     }
     void session.catalog.loadHarnesses();
-  }, [session, chatId]);
+  }, [session, chatId, targetUnavailable]);
 
   const deviceId = status?.state === "connected" ? status.info.deviceId : null;
   const chat = !snapshot.chats.loaded
@@ -309,13 +322,6 @@ export function ConversationPage() {
   const checkoutId = chat?.checkoutId ?? null;
   const cwd = chat?.cwd ?? null;
 
-  // ── The canvas target + the stub chat (the new-thread route) ───────────
-  // The canvas has no chat row; the composer still needs a `Chat`-shaped
-  // target — the remembered device/project picks resolved through
-  // `effective_device_id` (state.rs:1314-1320). The stub's id is the DRAFT
-  // key `""` (the desktop's `current_key` for the new-thread canvas), so
-  // the canvas draft survives every round trip.
-  const target = useNewThreadTarget();
   // The terminal drawer's panel session key (`panel_session_key`): the
   // chat's id, or the per-space `space-canvas:{spaceId}` canvas key — the
   // canvas drawer, its tabs, and its open flag belong to the project, so
@@ -349,9 +355,13 @@ export function ConversationPage() {
       lastMessagePreview: null,
       lastMessageAt: null,
       createdAt: new Date(0).toISOString(),
-      spaceId: target.space?.id ?? null,
+      // Keep the selected scoped identity in the draft target even when its
+      // live row disappeared (wpn-90): creation is blocked by the
+      // unresolved-target gate until the row resolves — the id must never
+      // fall through to the device id of a substitute engine.
+      spaceId: target.space?.id ?? target.projectId ?? null,
     }),
-    [chatId, target.effectiveDeviceId, target.space?.id, target.space?.path],
+    [chatId, target.effectiveDeviceId, target.projectId, target.space?.id, target.space?.path],
   );
   // While a freshly minted chat's row is still landing, the stub stands in
   // (same id, so the composer never re-swaps its draft).
@@ -1286,6 +1296,20 @@ export function ConversationPage() {
     [chatId, row?.chat.id, row?.chat.title, row?.folder, row?.harness],
   );
 
+  // A canvas with no routed session has no execution target at all (wpn-90,
+  // zeron `f180fcb1`): another engine's cached chat rows must not mask a
+  // dead owner with a half-rendered canvas — say so and keep the composer
+  // unmounted. (An established chat keeps its own not-found state below.)
+  if (!hasSelection && session === null) {
+    return (
+      <div className="empty-state" role="status">
+        <p>Engine unavailable. Sending is disabled until the host connects.</p>
+        <Link to="/pair" className="btn btn-ghost">
+          Pair an engine
+        </Link>
+      </div>
+    );
+  }
   if (!snapshot.chats.loaded) {
     return <div className="chat-page" />;
   }
@@ -1378,6 +1402,13 @@ export function ConversationPage() {
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
           <StatusStrip status={row?.status ?? "idle"} sending={sending} />
+          {targetUnavailable && (
+            <div className="composer-target-warning" role="status">
+              {target.projectUnavailable
+                ? "Selected project unavailable. Choose another project before sending."
+                : "Selected project loading. Wait for it to resolve before sending."}
+            </div>
+          )}
           {session !== null && (
             <div
               className="persistent-composer"
@@ -1393,6 +1424,7 @@ export function ConversationPage() {
             >
               <Composer
                 session={session}
+                targetUnavailable={targetUnavailable}
                 chat={effectiveChat}
                 catalog={session.catalog}
                 workspaceCommands={workspaceCommands}
