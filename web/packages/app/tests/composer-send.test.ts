@@ -77,21 +77,23 @@ describe("a_comment_only_stage_queues_during_a_live_run", () => {
 });
 
 describe("sendBlocked", () => {
-  it("blocks on any of the native conditions and the browser target gates", () => {
+  it("blocks on native or selected-engine validation", () => {
     const open = {
       queueEditFinishing: false,
       requestTargetDisconnected: false,
       reviewCommentFlushPending: false,
-      newChatNoAgents: false,
+      selectedModelUnavailable: false,
       selectedHarnessUnavailable: false,
     };
     expect(sendBlocked(open)).toBe(false);
     expect(sendBlocked({ ...open, queueEditFinishing: true })).toBe(true);
     expect(sendBlocked({ ...open, requestTargetDisconnected: true })).toBe(true);
     expect(sendBlocked({ ...open, reviewCommentFlushPending: true })).toBe(true);
-    expect(sendBlocked({ ...open, newChatNoAgents: true })).toBe(true);
-    // wpn-90 (zeron `d57b27fd`): a fresh chat whose selected engine has not
-    // confirmed its harness catalog is a blocked send.
+    // wpn-93 (zeron `6e4f363`): a fresh chat whose selected model or
+    // metadata is not confirmed by its engine is a blocked send.
+    expect(sendBlocked({ ...open, selectedModelUnavailable: true })).toBe(true);
+    // wpn-90 (zeron `d57b27fd`) + wpn-93 (zeron `631a8e03`): the selected
+    // harness must be confirmed â€” and offered â€” by its engine.
     expect(sendBlocked({ ...open, selectedHarnessUnavailable: true })).toBe(true);
   });
 });
@@ -326,13 +328,13 @@ describe("interrupt_payload_keeps_the_captured_chat", () => {
 
 // ---------------------------------------------------------------------------
 // enter_on_empty_composer_during_a_live_run_never_interrupts (composer.rs
-// on_submit, ported — issue #406)
+// on_submit, ported ï¿½ issue #406)
 // ---------------------------------------------------------------------------
 
 describe("enter_on_empty_composer_during_a_live_run_never_interrupts", () => {
   it("the double-Enter window reads as the Stop square", () => {
-    // A live run with a truly empty composer — the moment right after the
-    // habitual extra Enter — resolves to Stop, never Send/Queue.
+    // A live run with a truly empty composer ï¿½ the moment right after the
+    // habitual extra Enter ï¿½ resolves to Stop, never Send/Queue.
     expect(sendButtonMode(true, composerHasContent("", 0, 0))).toBe("stop");
   });
 
@@ -350,7 +352,7 @@ describe("enter_on_empty_composer_during_a_live_run_never_interrupts", () => {
       throw new Error("submit stop arm not found");
     }
     expect(stopArm[1]!).not.toMatch(/\binterrupt\(/);
-    // The button keeps its own Stop path — the only click that interrupts.
+    // The button keeps its own Stop path ï¿½ the only click that interrupts.
     expect(source).toContain(`onClick={() => (mode === "stop" ? void interrupt() : void submit())}`);
   });
 });

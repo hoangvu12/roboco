@@ -8,11 +8,14 @@ import {
   ChatDraftStore,
   composerDefaults,
   defaultDraft,
+  defaultDraftHarness,
   draftFromChat,
   draftsEqual,
   healComposerDefaults,
   isHarnessLocked,
   reconcileDraftModel,
+  reconcileFreshDraftHarness,
+  reconcileFreshDraftModel,
   rememberNoProject,
   rememberReasoningForModel,
   rememberedReasoningFor,
@@ -104,6 +107,96 @@ describe("defaultDraft", () => {
   it("resolves the default against the descriptor when the first model's list is empty", () => {
     const haiku: Model = { id: "haiku", label: "Haiku", reasoningLevels: [], options: [] };
     expect(defaultDraft(HARNESSES, [haiku], null).reasoning).toBe("high");
+  });
+
+  // wpn-93 (zeron `631a8e03`): the default pick resolves against the
+  // OFFERED set only — an uninstalled or disabled row is never the seed,
+  // and a loaded catalog that offers nothing deliberately has no model.
+  it.each([
+    ["not installed", { ...HARNESSES[1]!, installed: false }],
+    ["disabled", { ...HARNESSES[1]!, enabled: false }],
+  ])("seeds the first OFFERED harness, never a %s row", (_case, unavailableCodex) => {
+    const draft = defaultDraft([unavailableCodex, HARNESSES[0]!], MODELS);
+    expect(draft.harness).toBe("claude-code");
+    expect(draft.model).toBe("sonnet");
+  });
+
+  it.each([
+    ["not installed", { ...HARNESSES[1]!, installed: false }],
+    ["disabled", { ...HARNESSES[1]!, enabled: false }],
+  ])("seeds no model when the only catalog row is %s", (_case, unavailableCodex) => {
+    const draft = defaultDraft([unavailableCodex], MODELS);
+    expect(draft.harness).toBe("claude-code");
+    expect(draft.model).toBeNull();
+  });
+
+  // The sticky picks seed a fresh chat (pickers.rs:713-745): the remembered
+  // harness while this engine still offers it, then its remembered model
+  // while the list still offers it.
+  it("seeds the remembered harness and its model when the catalog offers them", () => {
+    const gpt: Model = { id: "gpt-5", label: "GPT-5", reasoningLevels: [], options: [] };
+    const draft = defaultDraft(HARNESSES, [gpt], null, { harness: "codex", model: { id: "gpt-5", label: "GPT-5" } });
+    expect(draft.harness).toBe("codex");
+    expect(draft.model).toBe("gpt-5");
+  });
+
+  it("keeps the remembered harness as intent while the catalog is still empty", () => {
+    const draft = defaultDraft([], [], null, { harness: "codex", model: { id: "gpt-5", label: "GPT-5" } });
+    expect(draft.harness).toBe("codex");
+    expect(draft.model).toBeNull();
+  });
+
+  it.each([
+    ["not installed", { ...HARNESSES[1]!, installed: false }],
+    ["disabled", { ...HARNESSES[1]!, enabled: false }],
+  ])("does not seed the sticky Codex pick when it is %s on this engine", (_case, unavailableCodex) => {
+    const draft = defaultDraft([HARNESSES[0]!, unavailableCodex], MODELS, null, {
+      harness: "codex",
+      model: { id: "gpt-5", label: "GPT-5" },
+    });
+    expect(draft.harness).toBe("claude-code");
+    expect(draft.model).toBe("sonnet");
+  });
+});
+
+describe("defaultDraftHarness", () => {
+  it("resolves the sticky pick only while the engine offers it", () => {
+    expect(defaultDraftHarness(HARNESSES, "codex")).toBe("codex");
+    expect(defaultDraftHarness([{ ...HARNESSES[1]!, installed: false }, HARNESSES[0]!], "codex")).toBe("claude-code");
+  });
+
+  it("keeps the sticky harness while the catalog is still empty, else the first offered row", () => {
+    expect(defaultDraftHarness([], "codex")).toBe("codex");
+    expect(defaultDraftHarness(HARNESSES, null)).toBe("claude-code");
+    expect(defaultDraftHarness([], null)).toBe("claude-code");
+  });
+});
+
+describe("reconcileFreshDraftHarness", () => {
+  const current: DraftConfig = {
+    harness: "codex",
+    model: "gpt-5",
+    reasoning: "medium",
+    sandbox: "workspace-write",
+    modelOptions: { mode: "fast" },
+  };
+
+  it.each([
+    ["not installed", { ...HARNESSES[1]!, installed: false }],
+    ["disabled", { ...HARNESSES[1]!, enabled: false }],
+  ])("replaces remembered Codex when it is %s but an offered alternative exists", (_case, unavailableCodex) => {
+    expect(reconcileFreshDraftHarness(current, [HARNESSES[0]!, unavailableCodex], "codex", "low")).toEqual({
+      harness: "claude-code",
+      model: null,
+      reasoning: "low",
+      sandbox: "workspace-write",
+      modelOptions: {},
+    });
+  });
+
+  it("keeps remembered intent while the selected engine is loading or offers no agents", () => {
+    expect(reconcileFreshDraftHarness(current, [], "codex", "low")).toBe(current);
+    expect(reconcileFreshDraftHarness(current, [{ ...HARNESSES[1]!, installed: false }], "codex", "low")).toBe(current);
   });
 });
 
@@ -317,6 +410,50 @@ describe("applyDraftUpdate", () => {
     expect(next.modelOptions).toEqual({});
     // haiku's empty list falls back to the descriptor: low stays.
     expect(next.reasoning).toBe("low");
+  });
+});
+
+describe("reconcileFreshDraftModel", () => {
+  // wpn-93 (zeron `6e4f363`): a fresh draft revalidates option picks as
+  // well as model/reasoning on engine changes — the same model id on two
+  // engines can carry different ladders and option sets.
+  const model: Model = {
+    id: "shared-model",
+    label: "Selected engine model",
+    reasoningLevels: ["medium"],
+    options: [{
+      id: "contextWindow",
+      label: "Context window",
+      choices: [{ id: "standard", label: "Standard" }],
+      defaultChoice: "standard",
+    }],
+  };
+  const current: DraftConfig = {
+    harness: "claude-code",
+    model: model.id,
+    reasoning: "low",
+    sandbox: "workspace-write",
+    modelOptions: { contextWindow: "extended", obsolete: "old-engine" },
+  };
+
+  it("revalidates reasoning and options even when both engines use the same model id", () => {
+    const next = reconcileFreshDraftModel(current, [model], HARNESSES[0]!, null);
+    expect(next).toMatchObject({ model: model.id, reasoning: "medium", modelOptions: {} });
+    expect(reconcileFreshDraftModel(next, [model], HARNESSES[0]!, null)).toBe(next);
+  });
+
+  it("preserves valid options and draft identity without a reconciliation loop", () => {
+    const valid = { ...current, reasoning: "medium" as const, modelOptions: { contextWindow: "standard" } };
+    expect(reconcileFreshDraftModel(valid, [model], HARNESSES[0]!, null)).toBe(valid);
+  });
+
+  it("drops another engine's options when seeding a replacement model", () => {
+    const next = reconcileFreshDraftModel({ ...current, model: "removed-model" }, [model], HARNESSES[0]!, null);
+    expect(next).toMatchObject({ model: model.id, reasoning: "medium", modelOptions: {} });
+  });
+
+  it("keeps preference intent unchanged until a model catalog exists", () => {
+    expect(reconcileFreshDraftModel(current, [], HARNESSES[0]!, null)).toBe(current);
   });
 });
 

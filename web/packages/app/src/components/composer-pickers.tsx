@@ -42,7 +42,7 @@ import {
   type ModelRowData,
   type SettingGroup,
 } from "../lib/model-rows";
-import type { PickerCatalog, LoadableList } from "../state/picker-catalog";
+import { modelDiscoveryErrorMessage, type PickerCatalog, type LoadableList } from "../state/picker-catalog";
 import { isMacPlatform, onShortcut } from "../state/shortcuts";
 import { useUiSettings } from "../state/ui-settings";
 import { openChipClass } from "./ui/Chip";
@@ -83,6 +83,8 @@ const OVERSCAN = 6;
 export interface ComposerPickersProps {
   readonly catalog: PickerCatalog;
   readonly draft: DraftConfig;
+  /** User-facing selected-engine identity for discovery failures (wpn-93). */
+  readonly engineLabel?: string;
   /** The chat's persisted config — locks the harness facet once non-null. */
   readonly chatConfig: ChatConfig | null;
   /**
@@ -129,6 +131,7 @@ export interface ComposerPickersProps {
 
 export function ComposerPickers(props: ComposerPickersProps) {
   const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false, openRequest } = props;
+  const engineLabel = props.engineLabel ?? "this engine";
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
     (next: boolean) => {
@@ -231,6 +234,11 @@ export function ComposerPickers(props: ComposerPickersProps) {
   );
 
   const noAgents = harnesses.loaded && harnesses.error === null && offered.length === 0;
+  // A committed chat can retain a harness that this engine no longer offers
+  // (wpn-93, zeron `631a8e03`): the draft keeps the pick and the state is
+  // explicit instead of silently substituted.
+  const harnessUnavailable =
+    harnesses.loaded && harnesses.error === null && !offered.some((row) => row.id === effectiveHarness);
 
   // The catalog error shows only once the slot has actually errored — not
   // while an initial load is in flight.
@@ -379,7 +387,16 @@ export function ComposerPickers(props: ComposerPickersProps) {
 
   const brand = harnessBrandIcon(effectiveHarness);
   const modelLabel = resolveChipLabel(draft.model, selectedModel, effectiveHarness, modelsList);
+  const unavailableLabel = descriptor?.name ?? effectiveHarness;
   const rememberedLabel = draft.model === null ? null : rememberedLabelFor(draft.model);
+  // A discovery failure is attributed to the SELECTED engine (wpn-93): the
+  // raw engine-side error names its target instead of implying the browser
+  // can install a CLI or change the remote's executable path. Both cards
+  // read this one value.
+  const modelError =
+    modelsList.error === null
+      ? null
+      : modelDiscoveryErrorMessage(modelsList.error, effectiveHarness, engineLabel);
   // `chip_label_loading` (pickers.rs:4220-4221): nothing names the pick yet
   // AND the catalog is Idle/Loading. An errored harness or model slot is
   // settled, not loading — the real label (remembered label → configured/
@@ -507,7 +524,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
             {labelLoading ? (
               <SkeletonBar width={56} />
             ) : (
-              <span className="identity-chip-model">{noAgents ? "No agents available" : modelLabel}</span>
+              <span className="identity-chip-model">
+                {noAgents ? "No agents available" : harnessUnavailable ? `${unavailableLabel} unavailable` : modelLabel}
+              </span>
             )}
             {suffix !== null && !noAgents && (
               <span className={`identity-chip-suffix ${suffixActive ? "identity-chip-suffix-active" : ""}`}>
@@ -532,6 +551,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
             harnesses={harnesses}
             harnessError={harnessError}
             noAgents={noAgents}
+            harnessUnavailable={harnessUnavailable}
+            unavailableLabel={unavailableLabel}
+            modelError={modelError}
             locked={locked}
             railDescriptors={railDescriptors}
             modelsLists={modelsLists}
@@ -562,6 +584,9 @@ export function ComposerPickers(props: ComposerPickersProps) {
           harnesses={harnesses}
           harnessError={harnessError}
           noAgents={noAgents}
+          harnessUnavailable={harnessUnavailable}
+          unavailableLabel={unavailableLabel}
+          modelError={modelError}
           locked={locked}
           railDescriptors={railDescriptors}
           tabDescriptors={tabDescriptors}
@@ -683,6 +708,11 @@ interface IdentityCardProps {
   readonly harnesses: LoadableList<HarnessDescriptor>;
   readonly harnessError: string | null;
   readonly noAgents: boolean;
+  /** A committed chat can retain a harness that this engine no longer offers. */
+  readonly harnessUnavailable: boolean;
+  readonly unavailableLabel: string;
+  /** Error attributed to this card's selected engine. */
+  readonly modelError: string | null;
   readonly locked: boolean;
   /** The ROWS' descriptor scope — `rail_descriptors` with the lock arm
    *  applied (pickers.rs:1936-1940): a locked chat's list AND favorites
@@ -715,6 +745,9 @@ function IdentityCard(props: IdentityCardProps) {
     harnesses,
     harnessError,
     noAgents,
+    harnessUnavailable,
+    unavailableLabel,
+    modelError,
     locked,
     railDescriptors,
     tabDescriptors,
@@ -1071,7 +1104,7 @@ function IdentityCard(props: IdentityCardProps) {
 
   // The empty-list note precedence (§2.3.3).
   const modelsList = modelsLists.get(effectiveHarness);
-  const modelSlotError = modelsList?.error ?? null;
+  const modelSlotError = modelError;
   const emptyNote =
     query.trim().length > 0
       ? "No models found"
@@ -1112,6 +1145,17 @@ function IdentityCard(props: IdentityCardProps) {
                   is named Agents (picker-catalog.ts:9), so this copy stays
                   navigation-accurate — maintainer-confirmed (mp-07). */}
                 Enable an installed agent in Settings → Agents, or install an agent CLI.
+              </span>
+            </div>
+          );
+        }
+        if (harnessUnavailable) {
+          return (
+            <div className="model-no-agents">
+              <Icon name="terminal" size={20} className="model-no-agents-icon" />
+              <span className="model-no-agents-title">{unavailableLabel} is unavailable</span>
+              <span className="model-no-agents-body">
+                This chat is committed to that agent on this engine. Enable and install it on the engine before sending.
               </span>
             </div>
           );
@@ -1292,6 +1336,11 @@ interface CompactCardProps {
   readonly harnesses: LoadableList<HarnessDescriptor>;
   readonly harnessError: string | null;
   readonly noAgents: boolean;
+  /** A committed chat can retain a harness that this engine no longer offers. */
+  readonly harnessUnavailable: boolean;
+  readonly unavailableLabel: string;
+  /** Error attributed to this card's selected engine. */
+  readonly modelError: string | null;
   readonly locked: boolean;
   readonly railDescriptors: readonly HarnessDescriptor[];
   readonly modelsLists: Map<HarnessId, LoadableList<Model>>;
@@ -1329,6 +1378,9 @@ function CompactCard(props: CompactCardProps) {
     harnesses,
     harnessError,
     noAgents,
+    harnessUnavailable,
+    unavailableLabel,
+    modelError,
     locked,
     railDescriptors,
     modelsLists,
@@ -1726,7 +1778,9 @@ function CompactCard(props: CompactCardProps) {
   const last = Math.min(rows.length, Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN);
   const slice = rows.slice(first, last);
 
-  const modelsListError = modelsList?.error ?? null;
+  // The engine-attributed discovery error (wpn-93), like the identity
+  // card's `modelSlotError`.
+  const modelsListError = modelError;
   // The empty-list note precedence (the standard card's, pickers
   // 4032-4050): a query wins, then the favorites view's own note.
   const emptyNote =
@@ -1814,6 +1868,17 @@ function CompactCard(props: CompactCardProps) {
               <span className="model-no-agents-title">No agents available</span>
               <span className="model-no-agents-body">
                 Enable an installed agent in Settings → Agents, or install an agent CLI.
+              </span>
+            </div>
+          );
+        }
+        if (harnessUnavailable) {
+          return (
+            <div className="model-no-agents">
+              <Icon name="terminal" size={20} className="model-no-agents-icon" />
+              <span className="model-no-agents-title">{unavailableLabel} is unavailable</span>
+              <span className="model-no-agents-body">
+                This chat is committed to that agent on this engine. Enable and install it on the engine before sending.
               </span>
             </div>
           );
