@@ -4,7 +4,7 @@
 
 **Blocked by:** **87** (merged device list)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `state/add-space.ts`, `add-space-palette.tsx`, `tests/add-space.test.ts`
 
@@ -35,3 +35,20 @@
 **Residual risks:**
 - `pickDevice` no longer retargets `fleetStore.active`. If any surface relied on that side effect (none found — the routed engine comes from `resolveNewChatTarget`/scoped ids, and the settings Devices page owns `setActive`), it will surface in the two-live-engine acceptance pass.
 - The attach soft reset keeps the flow open with an error row when the picked engine's client is replaced mid-flow; the user must re-browse. Zeron's integration tests cover this against a real relay; roboco's coverage is unit-level only (no relay fixture exists yet).
+
+## Review round (2cf5e877 → reviewed fixup)
+
+Two-axis review per the code-review skill (its sub-agent machinery was unavailable in this session, so both axes ran in the same context against `git diff 1244fa69...HEAD`).
+
+**Standards findings (all judgement calls, all fixed):**
+- Duplicated Code — the two-engine attach shape (two fakes + sessions map + merged rows + context literal) was repeated across four engine-routing tests, and the recorded-call array type `Array<{ method; params }>` twelve times. Extracted `twoEngineFleet()` (fresh context per `attach()` call — what the palette's effect does — over stable session clients) and a `RecordedCall` type.
+- The file's idiom documents every private helper; `#devices()` had no doc comment after the port. Added (merged rows, same list the palette renders).
+- Test assertion strength — "lands in an existing space…" asserted the dedup (no createSpace) but not the landed target's scope. Added `uiSettings.getSnapshot().lastSpaceId` === `scopedId(REMOTE, "space-1")` — the scoped-landing contract that was broken at base (raw id) — with a singleton reset in the test's finally. Also added explicit routed-engine-untouched (`localCalls` empty) assertions to the landing and rollback tests.
+- No hard standard violations: naming (roboco/Roboco, engine/space/device vocabulary), commit style, and the documented-idiom conventions (immutable flow snapshots, `#private` helpers, doc comments citing desktop file:line) all hold.
+
+**Spec findings:**
+- All three ticket asks verified in the final code: `#sessionForDevice` routes ListDrives/ListFolders/PrepareSpacePath/createSpace; the palette passes `useEngineSessions()` + the merged device list (`fleetSnapshot.devices.rows`, ticket 87's `fleetDeviceRows` output — keyboard `openActive` and row clicks now pick the same rows); the wrong-`engineKey` pinning cluster is gone (scoping resolves the owning session at call time, `pickDevice` no longer sets fleet active nor pins the routed engine on parse failure, `attach` no longer force-closes on routed-engine mismatch).
+- Acceptance re-verified after the fixes: 39/39 in `tests/add-space.test.ts`, `tsc --noEmit` clean, adjacent ring (shortcuts, command-palette, fleet-view, devices, sidebar-view, session-provider, engine-store, sidebar-view-menu, flyout-side, view-menu-phone) 182/182.
+- Wave-5 drive-path behavior re-checked: `#slashDescend`, `openActive`'s typed-path jump, and all of `lib/add-space.ts` are untouched by the diff; `#prepareManual` still sends `PrepareSpacePath` with the raw `targetDeviceId`.
+- One additional `460b7c89` behavior considered and deliberately not ported: its `submitBusy: false` resets on user navigation (`pickDevice`/`backTo`/`gotoLocation`). Without that commit's full `#guard`/generation rework, un-dimming the footer mid-flight would open a double-submit window the base deliberately closes by keeping the flag set; the engine-switch case — the routing-relevant one — is covered by attach's reset. Noted as a candidate for a later busy-state hardening ticket if the stuck-footer path ever bites.
+- No scope creep found: every behavior change traces to the two cited commits' intent, and the ported deviations are the ones already documented above.

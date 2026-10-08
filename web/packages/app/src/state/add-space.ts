@@ -952,6 +952,9 @@ export class AddSpaceStore {
     return session === null ? id : encodeScopedId(session.engine.baseUrl, id);
   }
 
+  /** The merged device rows the component supplies — one host row per
+   *  engine (ticket 87), the same list the palette renders, so keyboard
+   *  navigation and row clicks pick the same devices. */
   #devices(): readonly Device[] {
     return this.#context?.devices ?? [];
   }
