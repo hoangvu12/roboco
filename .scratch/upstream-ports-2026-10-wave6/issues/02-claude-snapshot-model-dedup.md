@@ -32,7 +32,7 @@ cross-surface fallout.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Verification budget:** deferred to the end-of-pass batched pass:
 `cargo nextest run -p roboco-harness --lib` (catalog suite). Source:
@@ -70,3 +70,7 @@ deferred to the end-of-pass batched pass per spec decision 2 — the logic
 was hand-traced against our curated `static_models()` (which contains
 `claude-haiku-4-5` with label "Haiku 4.5", and nothing for
 `claude-haiku-9-9`), so the assertions should hold.
+
+- [x] End-of-pass verification green (harness 314/315, sole failure
+      pre-existing/environmental, identical at baseline; fmt clean) —
+      completion record in spec.md

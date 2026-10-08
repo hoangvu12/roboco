@@ -56,7 +56,7 @@ no web parity work.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Verification budget:** deferred to the end-of-pass batched pass:
 `cargo check --workspace --examples` + `cargo nextest run -p roboco-ui
@@ -136,3 +136,6 @@ No `web/` counterpart exists upstream; none touched. No exclusions: both
 upstream files are wholly in scope. Verification deferred to the
 end-of-pass batched pass per spec decision 2 (no cargo run during ticket
 work).
+
+- [x] End-of-pass verification green (ui 1578/1578 incl. the new
+      regression test; fmt clean) — completion record in spec.md
