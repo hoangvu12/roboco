@@ -35,8 +35,8 @@ type CheckOutcome =
  * listeners are gone), and the trigger's press toggles with the
  * `trigger-press` reason exactly like every other anchored menu.
  *
- * The menu carries the desktop's rows (`shell.rs`): the muted "Stored on
- * this device" identity line, the "Settings" row (which lands on the
+ * The menu carries the desktop's rows (`shell.rs`): the muted "Stored in
+ * this browser" identity line, the "Settings" row (which lands on the
  * Devices section, the desktop's landing row), and "Check for updates"
  * (upstream #595 — the desktop's account-menu row; its dialog collapses
  * onto the row here). Engine management lives in Settings → Devices
@@ -137,7 +137,7 @@ export function AccountRow() {
           </button>
         }
       >
-        <div className="user-menu-identity">Stored on this device</div>
+        <div className="user-menu-identity">Stored in this browser</div>
         <button type="button" className="menu-item" role="menuitem" onClick={goSettings}>
           <Icon name="settingsMinimalistic" size={16} />
           Settings

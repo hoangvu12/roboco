@@ -1038,7 +1038,7 @@ function TitleSettingsCard(props: {
     <section className="settings-card settings-titles-card">
       <span className="settings-row-title">Session titles</span>
       <p className="settings-titles-subtitle">
-        Choose the agent and model for automatic titles on this device. Claude Code and Codex support
+        Choose the agent and model for automatic titles on the selected engine. Claude Code and Codex support
         restricted title generation.
       </p>
       <TitlePickerRow

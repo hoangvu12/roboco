@@ -300,7 +300,7 @@ function AccountsSettingsPageBody() {
         </div>
       </div>
       <p className="settings-subtitle">
-        The agent logins on this device — Claude Code, Codex, Cursor, Grok, Devin, OpenCode, Pi, and Hermes. Roboco
+        The agent logins on the selected engine — Claude Code, Codex, Cursor, Grok, Devin, OpenCode, Pi, and Hermes. Roboco
         detects the live session, keeps each account backed up, and can swap between them.
         <SettingsEngineIndicator />
       </p>
