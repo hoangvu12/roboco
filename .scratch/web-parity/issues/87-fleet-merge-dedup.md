@@ -10,4 +10,64 @@
 
 **Roboco files:** `lib/view.ts`, `lib/devices.ts`, `state/fleet.ts`, new tests
 
-**Acceptance:** Two engines with mirrored workspace → one space row in `useFleetSnapshot()`; device list one row per engine host.
+**Acceptance:**
+
+- [x] Two engines with mirrored workspace → ONE space row in `useFleetSnapshot()`
+- [x] Device list shows one row per engine host
+
+## Comments
+
+Landed in `2ed91164` (TDD: the new `fleetSpaceRows` cases failed red at
+base first).
+
+**What was already there.** Ticket 86's landing (`9101f8c5`) had carried
+`fleetDeviceRows`/`fleetSpaceRows` and the `useFleetSnapshot()` wiring
+over, but `fleetSpaceRows(spaces)` was a behavioral no-op: it compared
+the ENGINE SCOPES of `space.id` and `space.deviceId`, and
+`projectRegistrySnapshot` scopes both with the reporting engine's key
+(`scopeSpace`), so every projected row passed the filter — mirrors
+survived and the sidebar/composer pickers showed N copies of every
+synced project. The missing piece was the owner check, which needs the
+registry.
+
+**The fix.** `fleetSpaceRows(registry, spaces)` (signature now matches
+`fleetDeviceRows`): a projected space survives only when the device named
+in its owner field (`parseScopedId(space.deviceId).rawId` — wire
+semantics, `Space.device_id` is the immutable owner) is the reporting
+engine's HOST device (`engine.info.deviceId`). This is the direct
+adaptation of zeron's `rawId === source`: zeron keys engines BY device
+id, roboco keys by `baseUrl`, so the host comes from engine info. Rows
+whose engine host is unknown (info null — the seeded-offline-cache
+window before the first handshake, registry.ts `#seed`) are kept: an
+unprovable mirror is better shown twice than a project vanished.
+`state/fleet.ts` passes the registry at the one call site.
+
+**`fleetDeviceRows`** needed no change — one row per engine host was
+already correct at base. Its new tests pin it, including the deliberate
+deviation from zeron's `?? engine.key` fallback (a baseUrl is never a
+device id, so an info-less engine contributes no row).
+
+**Tests.** `tests/fleet-view.test.ts` 13/13, `tests/devices.test.ts`
+13/13 (`pnpm -C web/packages/app exec vitest run tests/fleet-view.test.ts
+tests/devices.test.ts`); focused safety ring over view-consumers
+(view, sidebar-view, new-chat-target, settings-device-switcher,
+add-space, settings-devices-sections) 109/109;
+`pnpm -C web/packages/app exec tsc --noEmit` clean. The acceptance is
+demonstrated at the pure seam `useFleetSnapshot()`'s memo computes
+(`projectRegistrySnapshot` → `fleetSpaceRows`/`fleetDeviceRows` —
+`mergedRowSet` passes the rows through verbatim): two engines, each
+advertising both projects of a mirrored workspace, project to 4 rows and
+dedup to one row per project; both engines advertising the whole device
+list project to 4 rows and dedup to one per engine host. The hook itself
+is untestable under the repo's node-env convention (no test imports
+`state/fleet.ts`); its only change is passing `registry`, which tsc
+verifies. Full app suite and the two-live-engine browser check are
+deferred to the orchestrator's integration pass.
+
+**Deviations.** (1) `fleetSpaceRows` takes the registry — upstream's
+one-argument form only works because zeron engine keys are device ids.
+(2) Zeron's `?? engine.key` host fallback is dropped for the same
+reason. (3) Same upstream edge kept verbatim: a space whose owner's
+engine is not in the fleet drops from every engine's copy (upstream head
+`6e4f3633` behaves identically). `05faf5a0`'s engine-identity work in
+`lib/view.ts` is untouched.
