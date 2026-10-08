@@ -13745,9 +13745,14 @@ button.files-save-pill:hover {
 /* ── Devices (settings/devices.rs) ─────────────────────────────────── */
 
 /* The pairing box (devices.rs:573-617): field + primary button on one row,
-   11px muted/65 hint under it. */
+   11px muted/65 hint under it. The box carries the page's own rhythm:
+   24px below the subtitle, and a 16px gap before the device list — the
+   section header that used to separate the groups left with the legacy
+   engines card (the flat pre-identity arm's two cards touched without it;
+   the sectioned arm keeps its header's 28px through margin collapse). */
 .settings-pairing-box {
   margin-top: 24px;
+  margin-bottom: 16px;
   padding: 10px 16px;
 }
 
