@@ -4,7 +4,7 @@
 
 **Blocked by:** **86**, **88**
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `composer.tsx`, `new-thread-selectors.tsx`, `tests/new-chat-selection.test.ts`
 
@@ -30,9 +30,61 @@ Ported zeron `f180fcb1` + `d57b27fd` on top of the integration head `70dd5528` (
 
 **Deliberately not ported (ticket 93's scope, `631a8e03`):** the second arm of zeron's `selectedHarnessUnavailable` (the settled offered-on-the-selected-engine check — `offeredHarnesses(...).some(id === draft.harness)` on a LOADED catalog), `newChatNoAgents`'s `offeredHarnesses(...).length === 0` form, and `reconcileFreshDraftHarness`. Zeron's `d57b27fd` modifies an expression 631a8e03 introduced; roboco carries neither, so the port lands only d57b27fd's own delta (the fresh-send wait). Ticket 93 is blocked by 90 and will land the offered-check on top. Likewise `composer-target-warning` has no CSS in zeron either — semantic marker only, matched 1:1.
 
-**Tests:** `pnpm -C web/packages/app exec vitest run tests/new-chat-selection.test.ts tests/composer-availability.test.ts` — 6/6 + 5/5. Both files were red first (5/6 selector/page assertions failing at base; the composer-gate suite verified by mutation: removing `targetUnavailable ||` fails the target-gate test, forcing `selectedHarnessUnavailable = false` fails the three catalog-wait tests). `tests/composer-send.test.ts`'s `sendBlocked` block extended for the new condition (29/29). Typecheck `tsc --noEmit` clean; `pnpm run build` (tsc + vite) clean. Adjacent suites re-run green: browser-engine-picker (11), composer-edit-failure (3), composer-flip/dock/draft/reasoning/footer-git/actions (106+), new-chat-target (5), new-thread-git-selectors (5), add-space, settings-fleet-routing, wizard, pending-send, queue-actions, chat-arrival (source-scan), devices, settings-engine-indicator, sidebar-row-send-truth — 396 tests across the touched surfaces. Full app suite deferred to the orchestrator per instructions.
+**Tests:** `pnpm -C web/packages/app exec vitest run tests/new-chat-selection.test.ts tests/composer-availability.test.ts` — 6/6 + 5/5. Both files were red first (5/6 selector/page assertions failing at base; the composer-gate suite verified by mutation: removing `targetUnavailable ||` fails the target-gate test, forcing `selectedHarnessUnavailable = false` fails the three catalog-wait tests). `tests/composer-send.test.ts`'s `sendBlocked` block extended for the new condition (29/29). Typecheck `tsc --noEmit` clean; `pnpm run build` (tsc + vite) clean. Adjacent suites re-run green in one batch: new-chat-target, new-thread-git-selectors, composer-footer-git, chat-arrival (source-scan), composer-flip/-reasoning/-dock/-draft, add-space, settings-fleet-routing, wizard, pending-send, composer-actions, queue-actions, settings-engine-indicator, devices, sidebar-row-send-truth, picker-catalog — 18 files, 349/349 — plus browser-engine-picker (11) and composer-edit-failure (3) in the focused batch. Full app suite deferred to the orchestrator per instructions.
 
 **Residual risks:**
 - The page-level catalog gate is belt-and-suspenders, exactly as in zeron: the composer's own pickers row still kicks `catalog.loadHarnesses()` on mount (same catalog object), so discovery RPCs can still leave while the target is unresolved — the enforced invariants are the send gate and the stub identity. Matches zeron 1:1; if 93 wants the page gate to be authoritative it will need a composer-side gate too.
 - The `!hasSelection && session === null` arm now shows "Engine unavailable…" + "Pair an engine" where an unpaired browser previously saw the hero canvas. This is zeron's behavior (its guard fires for the unpaired canvas too), but it is a visible change to the first-run surface — flag for the review round.
 - `projectUnavailable` keys on the MERGED `spaces.loaded` (`some(engine.loaded)`, ticket 87's merge): a cross-engine project whose owner has not loaded while another engine has reads as "unavailable" rather than "loading" — the label may be pessimistic, but the send is blocked either way (zeron has the same merged semantics).
+
+## Review round (efd8968d → reviewed fixup)
+
+Two-axis review per the code-review skill (its sub-agent machinery was
+unavailable in this session, so both axes ran in the same context against
+`git diff 70dd5528...HEAD`).
+
+**Standards findings (all judgement calls, all fixed):**
+- Duplicated Code — `new-chat-selection.test.ts` repeated the
+  `querySelector("[data-composer-…]").getAttribute(…)` shape four times and
+  bypassed its own `chipLabel` helper once for `#picker-device`. Extracted
+  a `composerAttr(mounted, attr)` reader and switched the device-chip
+  assertion to `chipLabel("picker-device")`.
+- Duplicated Code — `composer-availability.test.ts` repeated the blocked
+  send's assertion block (button disabled, Enter + Send pressed, zero
+  durable RPCs, draft intact) three times. Extracted
+  `expectBlockedSendIsANoOp(mounted)`.
+- Speculative Generality — the unused `h.phone` knob and the
+  `PHONE_QUERY`-aware matchMedia toggle in `new-chat-selection.test.ts`
+  (this suite never runs the phone variant — the target policy is
+  viewport-free, unlike browser-engine-picker's dual run). Removed; the
+  matchMedia stub is now a plain desktop-width `matches: false`.
+- The orchestrator-requested byte check on the CP1252 em-dash restore:
+  **verified byte-identical** — outside the `sendBlocked` hunk,
+  `tests/composer-send.test.ts` equals `70dd5528`'s blob exactly, with all
+  four `0x97` bytes at identical offsets and zero U+FFFD anywhere.
+- No hard standard violations: naming (roboco/Roboco, engine/space/device/
+  harness vocabulary), commit style, the file's doc-comment idioms, and
+  test naming (mirroring the zeron tests) all hold.
+
+**Spec findings:**
+- Every hunk of `f180fcb1` (composer prop + both `sendBlocked` sites + deps,
+  the selectors interface/computation/ProjectChip wiring, the chat-page
+  target move + catalog gate + stub identity + guard arm + warning strip +
+  prop) and of `d57b27fd` (the `selectedHarnessUnavailable` delta +
+  composer-send field/docs) is present and faithful; each documented
+  deviation (93's arm left out, the guard adaptation with the `/pair` link,
+  `newChatNoAgents`'s base form) checks out against the code.
+- Mutation checks re-run AFTER the review refactor — the tests still bite:
+  dropping `targetUnavailable ||` fails the target-gate test; forcing
+  `selectedHarnessUnavailable = false` fails the three catalog-wait tests;
+  reverting the stub's `spaceId` retention fails the page-gate test.
+- No scope creep: the one test-only addition beyond zeron's suite ("still
+  reads No project for a deliberate projectless pick") guards the
+  fallbackLabel change's normal path, and "an established chat is not
+  blocked while its catalog reloads" pins d57b27fd's documented
+  established-chat semantics. The ticket's adjacent-suite count was
+  corrected to the measured 18 files / 349 tests.
+- Acceptance re-verified after the fixes: 6/6 `new-chat-selection`, 5/5
+  `composer-availability`, 29/29 `composer-send`, 54/54 focused batch
+  (incl. browser-engine-picker + composer-edit-failure), 349/349 adjacent
+  ring, `tsc --noEmit` clean. Status → ready-for-human.

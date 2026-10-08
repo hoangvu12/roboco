@@ -35,12 +35,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { NewThreadTargetSelectors } from "../src/components/composer/new-thread-selectors";
 import { composerDefaults } from "../src/lib/composer-draft";
 import { sidebarStore } from "../src/state/sidebar";
-import { PHONE_QUERY } from "../src/state/media";
 
 // ── Controllable doubles (fleet/session/router/composer) ───────────────────
 
 const h = vi.hoisted(() => ({
-  phone: false,
   now: 1_800_000_000_000,
   snapshot: null as unknown,
   session: null as unknown,
@@ -114,9 +112,11 @@ vi.mock("../src/terminal/terminal-dock", () => ({ TerminalDock: () => null }));
 
 beforeAll(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  window.matchMedia = ((query: string) => ({
-    matches: query === PHONE_QUERY && h.phone,
-    media: query,
+  // Desktop-width throughout: the target policy is viewport-free (the
+  // phone sheet's own behavior lives in picker-card-phone's suite).
+  window.matchMedia = (() => ({
+    matches: false,
+    media: "",
     onchange: null,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -250,7 +250,6 @@ function unmount(): void {
 
 afterEach(() => {
   unmount();
-  h.phone = false;
   document.body.replaceChildren();
   composerDefaults.update({ device: null, project: null, noProject: false });
   sidebarStore.setSpaceFilter(null);
@@ -263,6 +262,15 @@ function chipLabel(id: string): string {
     label?.querySelector<HTMLElement>(".roll-text-in, .roll-text-still")?.textContent ??
     label?.textContent ??
     ""
+  );
+}
+
+/** A data attribute the Composer stub publishes (the page's gate wiring). */
+function composerAttr(mounted: HTMLDivElement, attr: string): string {
+  return (
+    mounted
+      .querySelector<HTMLElement>(`[data-composer-${attr}]`)
+      ?.getAttribute(`data-composer-${attr}`) ?? ""
   );
 }
 
@@ -291,9 +299,7 @@ describe("unavailable canvas targets", () => {
       project: PROJECT_B,
       noProject: false,
     });
-    expect(mounted.querySelector("#picker-device .footer-menu-chip-label")?.textContent).toContain(
-      "Engine B",
-    );
+    expect(chipLabel("picker-device")).toContain("Engine B");
   });
 
   it("keeps a selected project loading distinct from no project", () => {
@@ -316,15 +322,9 @@ describe("unavailable canvas targets", () => {
     // The composer stays mounted (the draft is preserved), but the page
     // hands it the blocked target and keeps the scoped identity on the
     // stub chat — a send can never fall back to the device id.
-    expect(
-      mounted.querySelector("[data-composer-session-state]")?.getAttribute("data-composer-session-state"),
-    ).toBe("connected");
-    expect(
-      mounted.querySelector("[data-composer-target-unavailable]")?.getAttribute("data-composer-target-unavailable"),
-    ).toBe("true");
-    expect(
-      mounted.querySelector("[data-composer-space-id]")?.getAttribute("data-composer-space-id"),
-    ).toBe(PROJECT_B);
+    expect(composerAttr(mounted, "session-state")).toBe("connected");
+    expect(composerAttr(mounted, "target-unavailable")).toBe("true");
+    expect(composerAttr(mounted, "space-id")).toBe(PROJECT_B);
     expect(mounted.textContent).toContain(
       "Selected project unavailable. Choose another project before sending.",
     );
@@ -335,9 +335,7 @@ describe("unavailable canvas targets", () => {
   it("waits for a loading project before discovery, then resumes once the row lands", () => {
     h.snapshot = fleetSnapshot({ spaces: [projectA], spacesLoaded: false });
     const mounted = mount(createElement(ConversationPage));
-    expect(
-      mounted.querySelector("[data-composer-target-unavailable]")?.getAttribute("data-composer-target-unavailable"),
-    ).toBe("true");
+    expect(composerAttr(mounted, "target-unavailable")).toBe("true");
     expect(mounted.textContent).toContain(
       "Selected project loading. Wait for it to resolve before sending.",
     );
@@ -352,9 +350,7 @@ describe("unavailable canvas targets", () => {
       spacesLoaded: true,
     });
     rerender();
-    expect(
-      mounted.querySelector("[data-composer-target-unavailable]")?.getAttribute("data-composer-target-unavailable"),
-    ).toBe("false");
+    expect(composerAttr(mounted, "target-unavailable")).toBe("false");
     expect(mounted.textContent).not.toContain("Selected project");
     expect(catalogLoad).toHaveBeenCalled();
   });

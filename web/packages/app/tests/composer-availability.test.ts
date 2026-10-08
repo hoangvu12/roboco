@@ -402,6 +402,17 @@ function durableCalls(mounted: MountedComposer): RpcCall[] {
   );
 }
 
+/** A blocked send: both submission paths are no-ops — no durable RPC,
+ *  nothing consumed, the sticky draft intact. */
+async function expectBlockedSendIsANoOp(mounted: MountedComposer): Promise<void> {
+  expect(mounted.sendButton.disabled).toBe(true);
+  pressEnter(mounted.textarea);
+  pressSend(mounted);
+  await act(async () => tick());
+  expect(durableCalls(mounted)).toHaveLength(0);
+  expectIntentStillPresent(mounted);
+}
+
 // ── The contracts ─────────────────────────────────────────────────────────
 
 describe("the canvas target gate (f180fcb1)", () => {
@@ -412,12 +423,7 @@ describe("the canvas target gate (f180fcb1)", () => {
     await waitFor(() => mounted.catalog.getModels("claude-code").loaded, "model catalog");
 
     // Unresolved target: the button refuses, Enter is swallowed, no RPC.
-    expect(mounted.sendButton.disabled).toBe(true);
-    pressEnter(mounted.textarea);
-    pressSend(mounted);
-    await act(async () => tick());
-    expect(durableCalls(mounted)).toHaveLength(0);
-    expectIntentStillPresent(mounted);
+    await expectBlockedSendIsANoOp(mounted);
 
     // The project row lands: the SAME draft sends.
     mounted.setTargetUnavailable(false);
@@ -435,12 +441,7 @@ describe("fresh sends wait for the selected engine's catalog (d57b27fd)", () => 
     await stageDraft(mounted);
 
     expect(mounted.catalog.getHarnesses().loading).toBe(true);
-    expect(mounted.sendButton.disabled).toBe(true);
-    pressEnter(mounted.textarea);
-    pressSend(mounted);
-    await act(async () => tick());
-    expect(durableCalls(mounted)).toHaveLength(0);
-    expectIntentStillPresent(mounted);
+    await expectBlockedSendIsANoOp(mounted);
   });
 
   it("disables Send and makes Enter a no-op after a catalog error", async () => {
@@ -449,12 +450,7 @@ describe("fresh sends wait for the selected engine's catalog (d57b27fd)", () => 
     await failHarnessCatalog(mounted);
 
     expect(mounted.catalog.getHarnesses().error).not.toBeNull();
-    expect(mounted.sendButton.disabled).toBe(true);
-    pressEnter(mounted.textarea);
-    pressSend(mounted);
-    await act(async () => tick());
-    expect(durableCalls(mounted)).toHaveLength(0);
-    expectIntentStillPresent(mounted);
+    await expectBlockedSendIsANoOp(mounted);
   });
 
   it("sends once the selected engine confirms an offered harness", async () => {
