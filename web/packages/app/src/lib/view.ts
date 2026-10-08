@@ -41,7 +41,8 @@ export const SESSION_STALE_MS = 45_000;
  * HOST device (`engine.info.deviceId`) is the space's owning device. A
  * row whose engine host is not known yet (info not loaded — seeded offline
  * rows) stays: an unprovable mirror is better shown twice than a project
- * vanished.
+ * vanished. Malformed scoped ids pass through the same way — a corrupted
+ * row must not blank a project or crash the sidebar.
  */
 export function fleetSpaceRows(
   registry: EngineRegistrySnapshot,

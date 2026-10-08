@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Device } from "@roboco/proto";
-import { encodeScopedId, projectRegistrySnapshot, type EngineRegistrySnapshot } from "@roboco/engine-client";
+import { encodeScopedId, projectRegistrySnapshot } from "@roboco/engine-client";
+import { fleetEngine, fleetRegistry } from "./helpers/fleet-fixtures";
 import {
   fleetDeviceRows,
   lastSeenOnline,
@@ -88,25 +89,6 @@ describe("fleetDeviceRows (zeron 5cd23bd7)", () => {
   const OVH = "http://ovh.local";
   const THREADRIPPER = "http://threadripper.local";
 
-  /** One supervised engine: baseUrl key, host device, and the row sets it reports. */
-  function fleetEngine(key: string, hostDeviceId: string | null, devices: readonly Device[]): unknown {
-    return {
-      key,
-      info: hostDeviceId === null ? null : { deviceId: hostDeviceId, workspaceScope: null },
-      state: "connected",
-      lastError: null,
-      generation: 1,
-      chats: { rows: [], loaded: true, error: null },
-      spaces: { rows: [], loaded: true, error: null },
-      devices: { rows: devices, loaded: true, error: null },
-      sessions: { rows: [], loaded: true, error: null },
-    };
-  }
-
-  function fleetRegistry(...engines: readonly unknown[]): EngineRegistrySnapshot {
-    return { configurationError: null, engines } as unknown as EngineRegistrySnapshot;
-  }
-
   it("shows each connected engine once when both engines advertise both devices", () => {
     // A synced workspace mirrors the owner's whole device list through
     // every engine; the fleet supervises one engine per host, so only the
@@ -117,8 +99,8 @@ describe("fleetDeviceRows (zeron 5cd23bd7)", () => {
       device("dev-thread", "Threadripper"),
     ];
     const registry = fleetRegistry(
-      fleetEngine(OVH, "dev-ovh", devices),
-      fleetEngine(THREADRIPPER, "dev-thread", devices),
+      fleetEngine(OVH, "dev-ovh", { devices }),
+      fleetEngine(THREADRIPPER, "dev-thread", { devices }),
     );
     const projected = projectRegistrySnapshot(registry);
     expect(projected.devices.map((row) => row.name)).toEqual([
@@ -139,7 +121,9 @@ describe("fleetDeviceRows (zeron 5cd23bd7)", () => {
     // host. Roboco keys engines by `baseUrl` — never a device id — so an
     // engine still awaiting its first handshake has no host row to show
     // (its seeded rows are mirrors, never a host of their own).
-    const registry = fleetRegistry(fleetEngine(OVH, null, [device("dev-ovh", "OVH build server")]));
+    const registry = fleetRegistry(
+      fleetEngine(OVH, null, { devices: [device("dev-ovh", "OVH build server")] }),
+    );
     const projected = projectRegistrySnapshot(registry);
     expect(projected.devices.map((row) => row.name)).toEqual(["OVH build server"]);
     expect(fleetDeviceRows(registry, projected.devices)).toEqual([]);
