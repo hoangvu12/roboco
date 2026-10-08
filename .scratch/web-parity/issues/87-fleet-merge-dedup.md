@@ -4,7 +4,7 @@
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `lib/view.ts`, `lib/devices.ts`, `state/fleet.ts` @ `5cd23bd7`; tests `fleet-view.test.ts`, `devices.test.ts`
 
@@ -47,22 +47,15 @@ already correct at base. Its new tests pin it, including the deliberate
 deviation from zeron's `?? engine.key` fallback (a baseUrl is never a
 device id, so an info-less engine contributes no row).
 
-**Tests.** `tests/fleet-view.test.ts` 13/13, `tests/devices.test.ts`
-13/13 (`pnpm -C web/packages/app exec vitest run tests/fleet-view.test.ts
+**Tests.** `tests/fleet-view.test.ts` and `tests/devices.test.ts`
+(`pnpm -C web/packages/app exec vitest run tests/fleet-view.test.ts
 tests/devices.test.ts`); focused safety ring over view-consumers
 (view, sidebar-view, new-chat-target, settings-device-switcher,
-add-space, settings-devices-sections) 109/109;
-`pnpm -C web/packages/app exec tsc --noEmit` clean. The acceptance is
-demonstrated at the pure seam `useFleetSnapshot()`'s memo computes
-(`projectRegistrySnapshot` → `fleetSpaceRows`/`fleetDeviceRows` —
-`mergedRowSet` passes the rows through verbatim): two engines, each
-advertising both projects of a mirrored workspace, project to 4 rows and
-dedup to one row per project; both engines advertising the whole device
-list project to 4 rows and dedup to one per engine host. The hook itself
-is untestable under the repo's node-env convention (no test imports
-`state/fleet.ts`); its only change is passing `registry`, which tsc
-verifies. Full app suite and the two-live-engine browser check are
-deferred to the orchestrator's integration pass.
+add-space, settings-devices-sections);
+`pnpm -C web/packages/app exec tsc --noEmit` clean — counts below are
+post-review (see the review round). Full app suite and the
+two-live-engine browser check are deferred to the orchestrator's
+integration pass.
 
 **Deviations.** (1) `fleetSpaceRows` takes the registry — upstream's
 one-argument form only works because zeron engine keys are device ids.
@@ -71,3 +64,42 @@ reason. (3) Same upstream edge kept verbatim: a space whose owner's
 engine is not in the fleet drops from every engine's copy (upstream head
 `6e4f3633` behaves identically). `05faf5a0`'s engine-identity work in
 `lib/view.ts` is untouched.
+
+## Review round
+
+Two-axis review (Standards + Spec) of `dc306b44…HEAD`; findings and
+fixes landed in the review commit on top of `2ed91164`:
+
+- **Spec (the one actionable finding):** acceptance criterion 1 names
+  `useFleetSnapshot()`, but the first landing demonstrated it only at
+  the pure seam — the hook's merge assembly (`mergedRowSet`, the empty
+  guard, the assembly) was tsc-pinned, never executed. `state/fleet.ts`
+  imports cleanly in the node test environment (its singletons are
+  no-op-safe: `EngineStore` falls back to `memoryStorage`,
+  `IndexedDbEngineCache` no-ops by design, the `window` hooks are
+  guarded), so the memo body moved verbatim into an exported pure
+  `mergedFleetSnapshot(registry, active)` and a new test drives the
+  ticket's exact acceptance through it: two mirrored engines → one
+  space row per project AND one device row per engine host in the merged
+  snapshot. The extraction is pure movement — `useFleetSnapshot` now
+  wraps it in the same `useMemo` with the same deps. That test also
+  caught a fixture incoherence while landing (space owner ids vs device
+  row ids were two different worlds; `fleetDeviceRows` correctly found
+  no hosts) — fixed by making the fixture one coherent world.
+- **Standards (minor):** the registry-fake builders were duplicated
+  across the two test files (fine at two copies, upstream duplicated
+  them too; third copy pending with the merge test) — extracted to
+  `tests/helpers/fleet-fixtures.ts` (`fleetEngine`/`fleetRegistry`),
+  the repo's established shared-fixture home.
+- **Standards (minor):** the defensive `catch` arm of
+  `fleetSpaceRows` (malformed scoped ids pass through, upstream has no
+  equivalent) was undocumented and untested — one doc-comment line and
+  one test added.
+
+Final results: `fleet-view.test.ts` 15/15 + `devices.test.ts` 13/13
+(28/28), safety ring 109/109, `tsc --noEmit` clean. Both acceptance
+criteria are demonstrated through the merge the hook memoizes; the
+remaining untested link is the 3-line `useFleetSnapshot` wrapper
+itself (subscription + memo, no data logic), which tsc pins. The
+plan-level two-live-engine browser check stays with the orchestrator's
+integration pass.
