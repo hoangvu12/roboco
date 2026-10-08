@@ -96,9 +96,11 @@ export function AddSpacePalette() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // The module-level store closes an open flow when its engine changes,
-  // dropping in-flight responses. The canvas hop rides a ref so this binding
-  // only re-runs when the session changes.
+  // The module-level store routes every palette RPC to the picked
+  // device's engine session — never the routed one — and resets an open
+  // flow only when that engine's client is replaced. The canvas hop rides
+  // a ref so this binding only re-runs when the session, the sessions map,
+  // or the merged device rows change.
   const goToCanvasRef = useRef(() => {
     void navigate({ to: "/" });
   });
@@ -109,12 +111,12 @@ export function AddSpacePalette() {
     addSpaceStore.attach({
       session,
       sessions,
-      registry,
+      devices: fleetSnapshot.devices.rows,
       goToCanvas: () => {
         goToCanvasRef.current();
       },
     });
-  }, [session, sessions, registry]);
+  }, [session, sessions, fleetSnapshot.devices.rows]);
   // On a true host unmount there is nothing left to paint; drain the flow.
   useEffect(() => () => addSpaceStore.forceClose(), []);
 
