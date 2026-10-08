@@ -1,6 +1,6 @@
 import type { ChangeRequestSummary, Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
-import { parseScopedId } from "@roboco/engine-client";
+import { parseScopedId, type EngineRegistrySnapshot } from "@roboco/engine-client";
 import { pendingSendStatus, type PendingSend } from "../state/transcript-store";
 import type { SidebarOrganization, SidebarSection, SidebarSort } from "../state/ui-settings";
 import { projectPinnedFirst } from "./sidebar-pins";
@@ -31,13 +31,35 @@ export function engineDisplayName(engine: Pick<StoredEngine, "label" | "baseUrl"
 }
 export const SESSION_STALE_MS = 45_000;
 
-/** Keep project rows on the engine that owns the space's host device (drops sync mirrors). */
-export function fleetSpaceRows(spaces: readonly Space[]): readonly Space[] {
+/**
+ * A synced workspace reports the same project through every engine; only
+ * the device named in the project's owner field can open its files, so
+ * keep that engine's scoped copy and drop the mirrors (zeron PR #526,
+ * `5cd23bd7`). Zeron keys engines BY device id, so its check compares the
+ * owner device's raw id against the space's engine scope directly;
+ * roboco keys engines by `baseUrl`, so the owner's engine is the one whose
+ * HOST device (`engine.info.deviceId`) is the space's owning device. A
+ * row whose engine host is not known yet (info not loaded — seeded offline
+ * rows) stays: an unprovable mirror is better shown twice than a project
+ * vanished. Malformed scoped ids pass through the same way — a corrupted
+ * row must not blank a project or crash the sidebar.
+ */
+export function fleetSpaceRows(
+  registry: EngineRegistrySnapshot,
+  spaces: readonly Space[],
+): readonly Space[] {
+  const hosts = new Map<string, string | null>();
+  for (const engine of registry.engines) {
+    hosts.set(engine.key, engine.info?.deviceId ?? null);
+  }
   return spaces.filter((space) => {
     try {
-      const spaceEngine = parseScopedId(space.id).engine;
-      const deviceEngine = parseScopedId(space.deviceId).engine;
-      return spaceEngine === null || spaceEngine === deviceEngine;
+      const source = parseScopedId(space.id).engine;
+      if (source === null) {
+        return true;
+      }
+      const host = hosts.get(source);
+      return host === undefined || host === null || parseScopedId(space.deviceId).rawId === host;
     } catch {
       return true;
     }

@@ -113,29 +113,38 @@ const EMPTY_SNAPSHOT: WatchCacheSnapshot = {
  * registry snapshot, shaped exactly like one engine's `WatchCacheSnapshot`
  * so `chatListRows`/`healedSpaceFilter`/`chatPageRow` and friends operate
  * unchanged — just over more rows. Rows carry scoped ids; a request for one
- * is decoded back to its owning engine at the wire boundary.
+ * is decoded back to its owning engine at the wire boundary. Devices and
+ * spaces pass through `fleetDeviceRows`/`fleetSpaceRows` first so a
+ * mirrored workspace contributes one row per host device and per project
+ * (ticket 87). Pure — the merge core behind `useFleetSnapshot()`.
  */
+export function mergedFleetSnapshot(
+  registry: EngineRegistrySnapshot,
+  active: string | null,
+): WatchCacheSnapshot {
+  if (registry.engines.length === 0) {
+    return EMPTY_SNAPSHOT;
+  }
+  const projected = projectRegistrySnapshot(registry);
+  const devices = fleetDeviceRows(registry, projected.devices);
+  const spaces = fleetSpaceRows(registry, projected.spaces);
+  return {
+    generation: registry.engines.reduce((total, engine) => total + engine.generation, 0),
+    capabilities:
+      registry.engines.find((engine) => engine.key === active)?.info?.capabilities ?? [],
+    chats: mergedRowSet(registry.engines.map((engine) => engine.chats), projected.chats),
+    spaces: mergedRowSet(registry.engines.map((engine) => engine.spaces), spaces),
+    devices: mergedRowSet(registry.engines.map((engine) => engine.devices), devices),
+    statuses: mergedRowSet(registry.engines.map((engine) => engine.sessions), projected.sessions as ChatStatus[]),
+    connectivity: NEVER_CONNECTED_SLOT,
+  };
+}
+
+/** `mergedFleetSnapshot`, subscribed: one merged view per registry tick. */
 export function useFleetSnapshot(): WatchCacheSnapshot {
   const registry = useFleetRegistry();
   const active = useFleet().active;
-  return useMemo(() => {
-    if (registry.engines.length === 0) {
-      return EMPTY_SNAPSHOT;
-    }
-    const projected = projectRegistrySnapshot(registry);
-    const devices = fleetDeviceRows(registry, projected.devices);
-    const spaces = fleetSpaceRows(projected.spaces);
-    return {
-      generation: registry.engines.reduce((total, engine) => total + engine.generation, 0),
-      capabilities:
-        registry.engines.find((engine) => engine.key === active)?.info?.capabilities ?? [],
-      chats: mergedRowSet(registry.engines.map((engine) => engine.chats), projected.chats),
-      spaces: mergedRowSet(registry.engines.map((engine) => engine.spaces), spaces),
-      devices: mergedRowSet(registry.engines.map((engine) => engine.devices), devices),
-      statuses: mergedRowSet(registry.engines.map((engine) => engine.sessions), projected.sessions as ChatStatus[]),
-      connectivity: NEVER_CONNECTED_SLOT,
-    };
-  }, [registry, active]);
+  return useMemo(() => mergedFleetSnapshot(registry, active), [registry, active]);
 }
 
 function mergedRowSet<T>(
