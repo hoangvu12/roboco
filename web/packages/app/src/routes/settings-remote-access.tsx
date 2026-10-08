@@ -4,6 +4,7 @@ import type { EngineClient } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
 import { SettingsEngineIndicator } from "../components/settings-engine-indicator";
+import { SettingsEnginePage } from "../components/settings-engine-page";
 import {
   createPairingLink,
   getRemoteAccess,
@@ -24,7 +25,20 @@ import {
  * failures render in the strip. Revocation gates the session's next
  * handshake server-side — live connections are not torn down.
  */
+/**
+ * The page body lives under `SettingsEnginePage`: a settings-engine switch
+ * REMOUNTS it, so the pairing-link mint, busy gates, and copied flags of
+ * one engine never bleed into another's page.
+ */
 export function RemoteAccessSettingsPage() {
+  return (
+    <SettingsEnginePage>
+      <RemoteAccessSettingsPageBody />
+    </SettingsEnginePage>
+  );
+}
+
+function RemoteAccessSettingsPageBody() {
   const session = useEngineSession();
   const client = session?.client ?? null;
   const [snapshot, setSnapshot] = useState<RemoteAccessSnapshot | null>(null);
@@ -56,7 +70,7 @@ export function RemoteAccessSettingsPage() {
     [client],
   );
 
-  // Mount load, and a full reset when the active engine changes.
+  // Mount load (the engine switch's full reset rides the remount).
   useEffect(() => {
     setSnapshot(null);
     setLinkUrl(null);
