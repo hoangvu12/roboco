@@ -94,6 +94,9 @@ class FakeClient {
   /** Ticket 02's hook: the NEXT `ListModels` for this harness rejects once —
    *  a refresh failure after a successful load (the stale-rows state). */
   failNextModels: string | null = null;
+  /** wpn-93's hook: the NEXT `ListModels` rejects once regardless of
+   *  harness — a first-discovery failure on the selected engine. */
+  nextModelError: Error | null = null;
   /** Every `ListModels` call's harness, in order (the re-force probe). */
   readonly listModelsCalls: string[] = [];
 
@@ -102,6 +105,11 @@ class FakeClient {
       return this.harnesses as unknown as T;
     }
     if (method === "ListModels") {
+      if (this.nextModelError !== null) {
+        const error = this.nextModelError;
+        this.nextModelError = null;
+        throw error;
+      }
       const harness = (params as { harness: string }).harness;
       this.listModelsCalls.push(harness);
       if (this.failNextModels === harness) {
@@ -714,6 +722,8 @@ function mountPicker(options: {
   sideChatHarnessEditable?: boolean;
   /** Mount under the phone arm (≤768px) — the drawer sheet + drill-downs. */
   phone?: boolean;
+  /** wpn-93: the selected engine's label for discovery-failure attribution. */
+  engineLabel?: string;
 }): MountedPicker {
   phoneMode = options.phone ?? false;
   const catalog = new PickerCatalog(options.client);
@@ -728,6 +738,7 @@ function mountPicker(options: {
       draft: current,
       chatConfig: options.chatConfig ?? null,
       sideChatHarnessEditable: options.sideChatHarnessEditable ?? false,
+      engineLabel: options.engineLabel,
       onDraft: (next: DraftConfig) => {
         drafts.push(next);
         setCurrent(next);
@@ -772,7 +783,7 @@ async function flush(): Promise<void> {
   await act(async () => {});
 }
 
-async function openCard(handle: MountedPicker): Promise<void> {
+async function openCard(handle: { readonly container: HTMLElement }): Promise<void> {
   const trigger = handle.container.querySelector<HTMLElement>("#picker-model");
   expect(trigger).not.toBeNull();
   await act(async () => {
@@ -975,6 +986,125 @@ describe("ComposerPickers reasoning over the effective ladder", () => {
     expect(handle.observed.current.reasoning).toBe("high");
     await openSetting("reasoning");
     expect(reasoningRow("high")?.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+describe("ComposerPickers availability states", () => {
+  // wpn-93 (zeron `631a8e03`): the pickers' catalog states attribute to the
+  // SELECTED engine — a committed harness the engine no longer offers, the
+  // no-agents state only after the catalog settles, and discovery failures
+  // that name the engine instead of implying the browser can fix them.
+  const committedCodex: ChatConfig = {
+    harness: "codex",
+    model: "gpt-5",
+    reasoning: "medium",
+    modelOptions: { mode: "fast" },
+    sandbox: "workspace-write",
+  };
+
+  it("keeps an existing unavailable committed harness and makes the state explicit", async () => {
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [CLAUDE, { ...BARE, installed: false }];
+    const initial = draft({ harness: "codex", model: "gpt-5", reasoning: "medium", modelOptions: { mode: "fast" } });
+    const handle = mountPicker({ client, initial, chatConfig: committedCodex, engineLabel: "Engine A" });
+    await act(async () => {
+      await handle.catalog.loadHarnesses();
+    });
+    await flush();
+    await openCard(handle);
+    expect(handle.observed.current).toEqual(initial);
+    expect(document.body.textContent).toContain("Codex is unavailable");
+    expect(document.body.textContent).toContain("This chat is committed to that agent on this engine");
+    expect(handle.drafts).toHaveLength(0);
+    expect(handle.persists).toHaveLength(0);
+  });
+
+  it("renders no-agents only after the selected engine's catalog settles", async () => {
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [{ ...BARE, enabled: false }];
+    const handle = mountPicker({ client, initial: draft({ harness: "codex", model: "gpt-5" }), engineLabel: "Engine B" });
+    expect(handle.container.textContent).not.toContain("No agents available");
+    await act(async () => {
+      await handle.catalog.loadHarnesses();
+    });
+    await flush();
+    await openCard(handle);
+    expect(document.body.textContent).toContain("No agents available");
+    expect(document.body.textContent).toContain("Enable an installed agent");
+  });
+
+  it("shows missing-executable discovery as an Engine A failure, not a browser setup task", async () => {
+    resetDefaults();
+    const client = new FakeClient();
+    client.harnesses = [BARE];
+    client.nextModelError = new Error("missing_executable: harness binary not found: codex");
+    const handle = mountPicker({ client, initial: draft({ harness: "codex", model: "gpt-5" }), engineLabel: "Engine A" });
+    await flush();
+    await openCard(handle);
+    await flush();
+
+    expect(document.body.textContent).toContain("Model discovery on Engine A failed");
+    expect(document.body.textContent).toContain("CODEX_EXECUTABLE there; the browser cannot do this");
+  });
+
+  it("renders A → B → A without carrying an A discovery error into B", async () => {
+    resetDefaults();
+    const clientA = new FakeClient();
+    const clientB = new FakeClient();
+    clientA.harnesses = [BARE];
+    clientB.harnesses = [BARE];
+    const catalogA = new PickerCatalog(clientA);
+    const catalogB = new PickerCatalog(clientB);
+    await catalogA.loadHarnesses();
+    clientA.nextModelError = new Error("missing_executable: harness binary not found: codex");
+    await catalogB.loadHarnesses();
+    clientB.modelsByHarness.set("codex", [{ id: "gpt-b", label: "GPT B", reasoningLevels: ["high"], options: [] }]);
+    await catalogB.loadModels("codex");
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = (catalog: PickerCatalog, engineLabel: string): void => {
+      act(() => {
+        root.render(
+          createElement(ComposerPickers, {
+            catalog,
+            draft: draft({ harness: "codex", model: "gpt-5" }),
+            engineLabel,
+            chatConfig: null,
+            onDraft: () => {},
+            onPersist: () => {},
+            escapeFocusTarget: () => null,
+          }),
+        );
+      });
+    };
+
+    try {
+      render(catalogA, "Engine A");
+      await openCard({ container });
+      expect(document.body.textContent).toContain("Model discovery on Engine A failed");
+
+      render(catalogB, "Engine B");
+      await flush();
+      expect(document.body.textContent).not.toContain("Model discovery on Engine A failed");
+      expect(document.body.textContent).toContain("GPT B");
+
+      catalogA.resetModels("codex");
+      clientA.modelsByHarness.set("codex", [{ id: "gpt-a", label: "GPT A", reasoningLevels: ["medium"], options: [] }]);
+      await catalogA.loadModels("codex", { force: true });
+      render(catalogA, "Engine A");
+      await flush();
+      expect(document.body.textContent).not.toContain("Model discovery on Engine A failed");
+      expect(document.body.textContent).toContain("GPT A");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      catalogA.dispose();
+      catalogB.dispose();
+    }
   });
 });
 
@@ -1739,13 +1869,13 @@ describe("useDraftModelReconciliation (the composer's reconciliation owner)", ()
     expect(probe.renders.count).toBe(settledRenders + 1);
   });
 
-  it("composer.tsx wires this owner with both live inputs", () => {
+  it("composer.tsx wires both live inputs and fresh-chat option validation", () => {
     // The wiring pin (the dock-glide suite's idiom): the reconciliation
     // logic above is the code the composer actually runs — a reverted
     // model-only effect cannot pass this suite unnoticed.
     // (cwd is the app package root under vitest; jsdom rewrites import.meta.url)
     const source = readFileSync(join(process.cwd(), "src/components/composer.tsx"), "utf8");
-    expect(source).toContain("useDraftModelReconciliation(models.rows, harnesses.rows, setDraft)");
+    expect(source).toContain("useDraftModelReconciliation(models.rows, harnesses.rows, setDraft, newChat)");
   });
 });
 

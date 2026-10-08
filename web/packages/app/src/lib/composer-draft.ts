@@ -2,6 +2,7 @@ import type { Chat, ChatConfig, HarnessDescriptor, HarnessId, Model, ReasoningLe
 import type { DraftConfig, DraftConfigUpdate } from "./composer-actions";
 import { buildChatConfig } from "./composer-actions";
 import type { StorageLike } from "./engine-store";
+import { offeredHarnesses } from "./model-rows";
 import { clampReasoning, effectiveReasoningLadder, offeredOptions } from "./traits-summary";
 
 /**
@@ -21,6 +22,15 @@ function normalizeReasoning(level: ReasoningLevel | null, ladder: readonly Reaso
  * its first model, with `workspace-write` sandbox. The composer only
  * invokes this when the catalog has actually loaded.
  *
+ * A fresh chat also seeds the sticky picks (wpn-93, zeron `631a8e03` — the
+ * native new-chat resolution, `pickers.rs::effective_harness`/`effective_model_id`,
+ * 713-745): the remembered harness while this engine still OFFERS it
+ * (seeded even while the catalog is still empty, so the reconciliation
+ * lands on it once the rows arrive), else the first offered harness; then
+ * the remembered model for that harness while the list still offers it,
+ * else the first model. A remembered pick the catalog no longer offers
+ * falls back to the default exactly as if nothing had been remembered.
+ *
  * Reasoning follows the native precedence (`pickers.rs::effective_reasoning`,
  * 762-775): a fresh chat has NO explicit draft value, so the new-chat
  * `remembered` last-used level is the preference layer — kept verbatim while
@@ -34,11 +44,22 @@ export function defaultDraft(
   catalog: readonly HarnessDescriptor[],
   models: readonly Model[],
   remembered: ReasoningLevel | null = null,
+  sticky: StickyDraftPicks | null = null,
 ): DraftConfig {
-  const harness = catalog.find((row) => row.enabled !== false) ?? catalog[0];
-  const harnessId: HarnessId = harness?.id ?? "claude-code";
-  const model = models[0]?.id ?? null;
-  const ladder = effectiveReasoningLadder(models[0] ?? null, harness ?? null);
+  const offered = offeredHarnesses(catalog);
+  const harness =
+    (sticky !== null ? offered.find((row) => row.id === sticky.harness) : undefined) ?? offered[0] ?? null;
+  // An empty catalog is still loading intent: keep the sticky harness long
+  // enough for its own catalog rows to land. A loaded nonempty catalog with
+  // no offered harness deliberately has no selectable model.
+  const harnessId: HarnessId = harness?.id ?? (catalog.length === 0 ? sticky?.harness : undefined) ?? "claude-code";
+  const rememberedModel = sticky !== null && sticky.harness === harnessId ? sticky.model : null;
+  const modelRow =
+    harness !== null || catalog.length === 0
+      ? models.find((row) => row.id === rememberedModel?.id) ?? models[0] ?? null
+      : null;
+  const model = modelRow?.id ?? null;
+  const ladder = effectiveReasoningLadder(modelRow, harness);
   const reasoning = normalizeReasoning(remembered, ladder);
   return {
     harness: harnessId,
@@ -50,20 +71,69 @@ export function defaultDraft(
 }
 
 /**
+ * The sticky picks a fresh chat pre-selects: the remembered harness plus the
+ * remembered model for it — the `modelByHarness` entry the composer resolves
+ * via `rememberedModelFor`. Null when nothing was remembered.
+ */
+export interface StickyDraftPicks {
+  readonly harness: HarnessId;
+  readonly model: RememberedModel | null;
+}
+
+/**
+ * The fresh-draft harness that model discovery is allowed to query
+ * (wpn-93, zeron `631a8e03`): the sticky pick while this engine offers it,
+ * else the first offered row, else the sticky pick while the catalog is
+ * still empty (loading intent), else the harness id fallback.
+ */
+export function defaultDraftHarness(catalog: readonly HarnessDescriptor[], sticky: HarnessId | null): HarnessId {
+  const offered = offeredHarnesses(catalog);
+  return (sticky !== null ? offered.find((row) => row.id === sticky) : undefined)?.id ?? offered[0]?.id ?? sticky ?? "claude-code";
+}
+
+/**
+ * Reconcile only a fresh draft's harness against the selected engine's offered
+ * set. A persisted chat is intentionally excluded: its committed config is
+ * historical state, not a preference to silently rewrite.
+ */
+export function reconcileFreshDraftHarness(
+  current: DraftConfig,
+  catalog: readonly HarnessDescriptor[],
+  rememberedHarness: HarnessId | null,
+  rememberedReasoning: ReasoningLevel | null,
+): DraftConfig {
+  const offered = offeredHarnesses(catalog);
+  if (offered.length === 0 || offered.some((row) => row.id === current.harness)) {
+    return current;
+  }
+  const harness =
+    (rememberedHarness !== null ? offered.find((row) => row.id === rememberedHarness) : undefined) ?? offered[0]!;
+  return {
+    harness: harness.id,
+    model: null,
+    reasoning: rememberedReasoning,
+    sandbox: "workspace-write",
+    modelOptions: {},
+  };
+}
+
+/**
  * Initialize the composer's draft from the chat's persisted ChatConfig (may
- * be null). `remembered` is the sticky last-used reasoning level — consulted
- * only for a fresh chat (an established chat's persisted config is the
- * explicit layer and wins outright, matching the native precedence).
+ * be null). `remembered` is the sticky last-used reasoning level and `sticky`
+ * the remembered harness/model pair — both consulted only for a fresh chat
+ * (an established chat's persisted config is the explicit layer and wins
+ * outright, matching the native precedence).
  */
 export function draftFromChat(
   chat: Chat,
   catalog: readonly HarnessDescriptor[],
   models: readonly Model[],
   remembered: ReasoningLevel | null = null,
+  sticky: StickyDraftPicks | null = null,
 ): DraftConfig {
   const config = chat.config;
   if (config === null) {
-    return defaultDraft(catalog, models, remembered);
+    return defaultDraft(catalog, models, remembered, sticky);
   }
   const harnessId: HarnessId = config.harness;
   const reasoning = config.reasoning;
@@ -599,4 +669,29 @@ export function reconcileDraftModel(
   // The model necessarily changes here (the current one failed to resolve),
   // so this branch is always a real update.
   return { ...current, model: seeded, reasoning };
+}
+
+/**
+ * Fresh chats must revalidate option picks as well as model/reasoning on
+ * engine changes (wpn-93, zeron `6e4f363`): the same model id on two
+ * engines can carry different ladders and option sets, so a draft carried
+ * across an engine switch drops picks the new engine's metadata does not
+ * offer. An established chat keeps its committed option picks —
+ * `reconcileDraftModel` above.
+ */
+export function reconcileFreshDraftModel(
+  current: DraftConfig,
+  models: readonly Model[],
+  descriptor: HarnessDescriptor | null,
+  rememberedModel: RememberedModel | null,
+): DraftConfig {
+  const next = reconcileDraftModel(current, models, descriptor, rememberedModel);
+  const model = models.find((row) => row.id === next.model);
+  if (model === undefined) {
+    return next;
+  }
+  const modelOptions = offeredOptions(model, next.modelOptions);
+  return JSON.stringify(modelOptions) === JSON.stringify(next.modelOptions)
+    ? next
+    : { ...next, modelOptions };
 }

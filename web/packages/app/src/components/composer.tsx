@@ -36,7 +36,7 @@ import {
   noticeToneForMessage,
 } from "../lib/notice-chip";
 import { NoticeChip } from "./notice-chip";
-import { chatDraftKey, chatDrafts, composerDefaults, draftFromChat, rememberedModelFor, rememberedReasoningFor } from "../lib/composer-draft";
+import { chatDraftKey, chatDrafts, composerDefaults, defaultDraftHarness, draftFromChat, reconcileFreshDraftHarness, reconcileFreshDraftModel, rememberedModelFor, rememberedReasoningFor } from "../lib/composer-draft";
 import { useDraftModelReconciliation } from "../lib/composer-reconciliation";
 import { offeredHarnesses } from "../lib/model-rows";
 import {
@@ -630,21 +630,32 @@ export function Composer({
   const projectionRef = useRef(projection);
   projectionRef.current = projection;
   const mentionsActive = projection.mentions.length > 0;
-  const [draft, setDraft] = useState<DraftConfig>(() =>
-    // A fresh chat seeds the remembered reasoning as its preference layer
-    // (pickers.rs:762-775): the level last used with the resolved model,
-    // else the last-used level overall (upstream #471); an established chat
-    // replays its config.
-    draftFromChat(
+  const [draft, setDraft] = useState<DraftConfig>(() => {
+    // A fresh chat seeds the sticky picks — the remembered harness and its
+    // remembered model (pickers.rs:713-745, the native new-chat resolution)
+    // — plus the remembered last-used reasoning as its preference layer
+    // (pickers.rs:762-775; the model's own level, else the global — upstream
+    // #471); an established chat replays its config. The models list
+    // follows the seeded harness (wpn-93, zeron `631a8e03` —
+    // `defaultDraftHarness`): only an OFFERED harness's models are
+    // consulted, so a loaded catalog pre-selects the remembered model
+    // outright instead of discovering against the claude-code fallback
+    // while the sticky harness was another.
+    const rememberedHarness = chat.config === null ? composerDefaults.getSnapshot().harness : null;
+    const initialHarness = chat.config?.harness ?? defaultDraftHarness(harnesses.rows, rememberedHarness);
+    return draftFromChat(
       chat,
       harnesses.rows,
-      catalog.getModels(chat.config?.harness ?? "claude-code").rows,
+      catalog.getModels(initialHarness).rows,
       rememberedReasoningFor(
-        chat.config?.harness ?? "claude-code",
-        chat.config?.model ?? rememberedModelFor(chat.config?.harness ?? "claude-code")?.id ?? null,
+        initialHarness,
+        chat.config?.model ?? rememberedModelFor(initialHarness)?.id ?? null,
       ),
-    ),
-  );
+      rememberedHarness !== null
+        ? { harness: rememberedHarness, model: rememberedModelFor(rememberedHarness) }
+        : null,
+    );
+  });
   const completionPreferences = useMemo(
     () => skillCompletionFor(completionSettings, draft.harness),
     [completionSettings, draft.harness],
@@ -664,11 +675,29 @@ export function Composer({
   // still morphs; only the compact↔expanded flip is suppressed).
   const newChat = chat.id === "";
   // Keep sticky intent while loading, but a fresh send must wait for this
-  // engine to confirm the harness catalog (wpn-90, zeron `d57b27fd`): a
-  // loading or failed discovery is a blocked target, never a substitute.
-  // Established chats keep their committed config — the settled
-  // offered-on-the-selected-engine check is wpn-93's catalog validation.
-  const selectedHarnessUnavailable = newChat && (!harnesses.loaded || harnesses.error !== null);
+  // engine to confirm the harness is offered (wpn-93, zeron `631a8e03` on
+  // top of wpn-90's fresh-send wait). Established chats keep their
+  // committed config and are blocked only by a settled unavailable result.
+  const selectedHarnessUnavailable =
+    (newChat && (!harnesses.loaded || harnesses.error !== null)) ||
+    (harnesses.loaded &&
+      harnesses.error === null &&
+      !offeredHarnesses(harnesses.rows).some((row) => row.id === draft.harness));
+  // A ready harness alone cannot validate a model carried from another
+  // engine (wpn-93, zeron `6e4f363`): the same model id can expose a
+  // different ladder or option set there. Wait for the selected catalog
+  // and for its reasoning/options reconciliation.
+  const selectedModelUnavailable =
+    newChat &&
+    (!models.loaded ||
+      models.error !== null ||
+      !models.rows.some((row) => row.id === draft.model) ||
+      reconcileFreshDraftModel(
+        draft,
+        models.rows,
+        harnesses.rows.find((row) => row.id === draft.harness) ?? null,
+        rememberedModelFor(draft.harness),
+      ) !== draft);
   // Route coordination must not force an established thread into the
   // two-row layout: `dock_height`'s session side reads the composer's OWN
   // expanded state, never the forced one.
@@ -815,48 +844,39 @@ export function Composer({
       );
       return;
     }
-    if (harnesses.rows.length === 0) {
-      return;
-    }
+    const defaults = composerDefaults.getSnapshot();
     setDraft((current) => {
-      if (harnesses.rows.some((h: HarnessDescriptor) => h.id === current.harness)) {
-        return current;
-      }
-      const remembered = composerDefaults.getSnapshot().harness;
-      const offered = offeredHarnesses(harnesses.rows);
-      const next =
-        remembered !== null && harnesses.rows.some((h: HarnessDescriptor) => h.id === remembered)
-          ? remembered
-          : offered[0]?.id ?? harnesses.rows[0]?.id;
-      if (next === undefined) {
+      const next = reconcileFreshDraftHarness(
+        current,
+        harnesses.rows,
+        defaults.harness,
+        defaults.reasoning,
+      );
+      if (next === current) {
         return current;
       }
       return {
-        harness: next,
-        model: null,
+        ...next,
         // A corrected harness keeps the remembered level as the preference
         // layer (native falls back to it via effective_reasoning; the
         // model's own level, else the global — upstream #471);
         // reconciliation below re-derives it against the new harness's
         // effective ladder once models resolve.
-        reasoning: rememberedReasoningFor(next, rememberedModelFor(next)?.id ?? null),
-        sandbox: "workspace-write",
-        modelOptions: {},
+        reasoning: rememberedReasoningFor(next.harness, rememberedModelFor(next.harness)?.id ?? null),
       };
     });
   }, [chat.config, harnesses.rows]);
 
   // Once a harness is picked, ensure the model catalog is loaded and seed
-  // the draft with the remembered model (pickers.rs:748-796).
+  // the draft with the remembered model (pickers.rs:748-796). Discovery
+  // targets an OFFERED harness only (wpn-93, zeron `631a8e03`): an
+  // unoffered pick is a blocked send, not a substitute catalog.
   useEffect(() => {
-    if (!harnesses.loaded) {
-      return;
-    }
-    if (harnesses.rows.length === 0) {
+    if (!harnesses.loaded || !offeredHarnesses(harnesses.rows).some((row) => row.id === draft.harness)) {
       return;
     }
     void catalog.loadModels(draft.harness);
-  }, [catalog, draft.harness, harnesses.loaded, harnesses.rows.length]);
+  }, [catalog, draft.harness, harnesses.loaded, harnesses.rows]);
 
   // Model/descriptor reconciliation: seed the draft's model and re-derive
   // reasoning against the EFFECTIVE ladder (model levels when nonempty, else
@@ -864,7 +884,7 @@ export function Composer({
   // that lands after the models re-resolves the selection instead of leaving
   // a stale model-only clamp behind. The extracted owner carries the logic;
   // it returns the prior draft when nothing changed (no setState loop).
-  useDraftModelReconciliation(models.rows, harnesses.rows, setDraft);
+  useDraftModelReconciliation(models.rows, harnesses.rows, setDraft, newChat);
 
   // ── The width-driven flip + height morph ───────────────────────────────
   //
@@ -2932,10 +2952,9 @@ export function Composer({
         queueEditFinishing: busy,
         requestTargetDisconnected: targetUnavailable || session.client.state !== "connected",
         reviewCommentFlushPending: false,
-        // A settled empty catalog and an unconfirmed selected harness are
-        // separate gates; loading preserves the draft, not send permission.
-        newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
+        // Catalog loading preserves preference intent, not send permission.
         selectedHarnessUnavailable,
+        selectedModelUnavailable,
       })
     ) {
       // A blocked send is a no-op — no failure, no wire call
@@ -2943,7 +2962,7 @@ export function Composer({
       return;
     }
     await send(text, mode === "queue");
-  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit, executeWorkspaceCommand, newChat, harnesses.loaded, harnesses.rows, selectedHarnessUnavailable, targetUnavailable]);
+  }, [busy, text, staged, runLive, commentCount, editingMessage, onEditFinish, session.client, interrupt, send, commitQueueEdit, executeWorkspaceCommand, selectedHarnessUnavailable, selectedModelUnavailable, targetUnavailable]);
 
   // ── Key policy: completions → phone newline → wizard → Enter (§2.7) ────
   // `resolveEnterAction` (lib/composer-send.ts) is the Enter branch's single
@@ -3284,8 +3303,8 @@ export function Composer({
       queueEditFinishing: busy,
       requestTargetDisconnected: targetUnavailable || session.client.state !== "connected",
       reviewCommentFlushPending: false,
-      newChatNoAgents: newChat && harnesses.loaded && harnesses.rows.length === 0,
       selectedHarnessUnavailable,
+      selectedModelUnavailable,
     });
 
   // ── The queue-degraded caption (§2.3) ───────────────────────────────────
@@ -3681,6 +3700,7 @@ export function Composer({
                       sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
                       newChat={newChat}
                       openRequest={modelPickerRequest}
+                      engineLabel={session.engine.label}
                       onDraft={applyDraft}
                       onPersist={persistDraft}
                       escapeFocusTarget={() => textareaRef.current}
