@@ -327,13 +327,18 @@ describe("canvas engine pickers reconcile the target", () => {
   it("keyboard engine selection retains a project owned by that same engine", async () => {
     composerDefaults.update({ device: DEVICE_B, project: PROJECT_B, noProject: false });
     const mounted = mountCanvas();
+    const trigger = mounted.querySelector<HTMLElement>("#picker-device")!;
 
-    press(mounted.querySelector<HTMLElement>("#picker-device")!);
+    press(trigger);
     await act(async () => {});
     pressKey(pickerInput("Search devices"), "Enter");
 
     expectTarget(DEVICE_B, PROJECT_B, false);
     expect(chipLabel("picker-project")).toBe("Project B");
+    // The seeded defaults already equal the pick's result, so the target
+    // assertions alone cannot fail from a broken Enter path — the pick
+    // RUNNING is observable as the card's collapse.
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("pointer-selecting project B also selects engine B", async () => {
@@ -345,6 +350,29 @@ describe("canvas engine pickers reconcile the target", () => {
     expectTarget(DEVICE_B, PROJECT_B, false);
     expect(chipLabel("picker-device")).toBe("Engine B");
     expect(chipLabel("picker-project")).toBe("Project B");
+  });
+
+  it("keyboard no-project keeps the engine the chips show", async () => {
+    composerDefaults.update({ device: DEVICE_B, project: PROJECT_B, noProject: false });
+    const mounted = mountCanvas();
+    expect(chipLabel("picker-device")).toBe("Engine B");
+
+    press(mounted.querySelector<HTMLElement>("#picker-project")!);
+    await act(async () => {});
+    // The cursor starts on the current project's row; Down lands on the
+    // trailing "Don't work in a project" row, Enter activates it.
+    pressKey(pickerInput("Search projects"), "ArrowDown");
+    pressKey(pickerInput("Search projects"), "Enter");
+
+    expectTarget(DEVICE_B, null, true);
+    expect(sidebarStore.getSnapshot()).toMatchObject({
+      spaceFilter: null,
+      // The filter at mount was A's project: the clear preserves it as
+      // navigation history, the pick's target never reads it back.
+      lastSpaceId: PROJECT_A,
+    });
+    expect(chipLabel("picker-device")).toBe("Engine B");
+    expect(chipLabel("picker-project")).toBe("No project");
   });
 
   it("no-project keeps the engine the chips show, not the remembered device", async () => {

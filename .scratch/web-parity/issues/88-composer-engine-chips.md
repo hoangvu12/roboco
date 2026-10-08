@@ -4,7 +4,7 @@
 
 **Blocked by:** **86** (target helpers)
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Zeron ref:** `composer-footer.tsx`, `new-thread-selectors.tsx`, `tests/browser-engine-picker.test.ts`
 
@@ -51,8 +51,9 @@ writing `targetForProjectPick`. The ticket's remaining delta was exactly
   \"Select engine\"").
 
 **Tests (TDD — the two new reconciliation cases were confirmed failing
-at base first):** NEW `tests/browser-engine-picker.test.ts` (10 tests),
-the zeron `4510bab2` suite ported onto roboco's mounted-suite idioms and
+at base first):** NEW `tests/browser-engine-picker.test.ts` (11 tests —
+10 from the port plus the review round's keyboard no-project case), the
+zeron `4510bab2` suite ported onto roboco's mounted-suite idioms and
 extended with the canvas pick interactions:
 
 - identity (both viewports — phone sheet carries the same rows): the
@@ -67,12 +68,13 @@ extended with the canvas pick interactions:
   `currentDeviceId`); project pick routes to the owning engine and
   keyboard same-owner retention (green at base — pins 86's policy).
 
-**Verification:** `pnpm -C web/packages/app exec tsc --noEmit` clean
-(base clean); focused vitest green — `browser-engine-picker` 10/10,
-`new-chat-target` 5/5, `session-provider` 11/11 (86's routing),
-`new-thread-git-selectors` 5/5, `composer-footer-git` 11/11,
-`composer-draft` 32/32. Full app suite and the plan-level two-live-engine
-run deferred to the orchestrator's integration pass, per process.
+**Verification (at `301bef26`):** `pnpm -C web/packages/app exec tsc
+--noEmit` clean (base clean); focused vitest green —
+`browser-engine-picker` 10/10, `new-chat-target` 5/5,
+`session-provider` 11/11 (86's routing), `new-thread-git-selectors`
+5/5, `composer-footer-git` 11/11, `composer-draft` 32/32. Full app
+suite and the plan-level two-live-engine run deferred to the
+orchestrator's integration pass, per process.
 
 **Deviations from zeron (deliberate):**
 
@@ -98,3 +100,49 @@ run deferred to the orchestrator's integration pass, per process.
 - `ComposerFooter`'s `ownDeviceId` prop is still passed by callers
   (roboco keeps the prop; the tag no longer reads it) — matches zeron's
   post-`4510bab2` shape minus the sort use.
+
+### Review round (2026-10-08)
+
+Two-axis review over `git diff 1244fa69..HEAD` (commits `301bef26` +
+`8ec91e89`; the code-review skill's subagent machinery is unavailable
+in this session, so both axes were performed directly — ticket 91's
+recorded fallback).
+
+**Standards — 1 actionable finding, fixed in the review commit
+(`fix(web): guard the engine pickers' keyboard activation in tests`):**
+
+- `browser-engine-picker.test.ts`'s keyboard-retention case pre-seeded
+  `composerDefaults` with the pick's exact result — it pinned the
+  retention policy but passed vacuously against a broken Enter
+  activation path (`useCursorList` → `onActivate` → `pick`), which no
+  other test in the file exercised with a state change. The pick RUNNING
+  is now observable (the trigger's `aria-expanded` collapses — the
+  repo's established trigger assertion, account-row/changes-surface),
+  and zeron's keyboard no-project case (ArrowDown + Enter) landed as an
+  11th test covering the project card's keyboard path with a real state
+  transition. Mutation-verified: killing either card's cursor list
+  (`enabled: false`, reverted) fails exactly the corresponding keyboard
+  test.
+
+Non-actionable, noted: the per-file jsdom stub block duplicates the
+repo convention (91's review already ruled it convention);
+`mountCanvas`'s one-line wrapper is the named-seam idiom; the identity
+suite's `!` non-null assertions are zeron-verbatim with the guarded
+idiom on the critical paths.
+
+**Spec — no findings.** All ticket-88 requirements present at their
+zeron call sites (the footer wiring matches zeron line-for-line:
+`effectiveDeviceId = space?.deviceId ?? ownDeviceId` feeding
+`currentDeviceId`; no residual "This device"/"You" strings in the
+composer scope); no scope creep beyond the process-required ticket
+docs; ticket 86's closure is NOT invalidated — the routing module and
+session-provider are untouched by the diff and their suites are green.
+
+**Post-fix verification:** `pnpm -C web/packages/app exec tsc --noEmit`
+clean; focused vitest green — `browser-engine-picker` 11/11,
+`new-chat-target` 5/5, `session-provider` 11/11,
+`new-thread-git-selectors` 5/5, `composer-footer-git` 11/11,
+`composer-draft` 32/32 (75/75). Both acceptance criteria remain
+demonstrated; status → ready-for-human. 86 stays ready-for-human.
+Full app suite and the plan-level two-live-engine run remain with the
+orchestrator's integration pass.
