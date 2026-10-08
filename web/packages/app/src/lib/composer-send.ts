@@ -40,13 +40,14 @@ export function composerHasContent(text: string, attachments: number, comments: 
   return text.trim() !== "" || attachments > 0 || comments > 0;
 }
 
-/** `send_blocked`'s four conditions (composer.rs:5944-5966). */
+/** Native `send_blocked` conditions plus selected-engine harness validation. */
 export interface SendBlockedConditions {
   /** Condition 1: a queued-row edit is finishing (its RPC is in flight). */
   readonly queueEditFinishing: boolean;
   /**
    * Condition 2: the engine registry exists and the selected request target
-   * is missing or not connected.
+   * is missing or not connected — including a canvas project whose live row
+   * is missing (wpn-90: `targetUnavailable` folds in here).
    */
   readonly requestTargetDisconnected: boolean;
   /** Condition 3: review comments are flushing for this chat (ticket 23). */
@@ -56,18 +57,26 @@ export interface SendBlockedConditions {
    * agents — offline/loading must not block.
    */
   readonly newChatNoAgents: boolean;
+  /**
+   * A fresh chat has not confirmed its harness on the selected engine yet
+   * (wpn-90, zeron `d57b27fd`): a loading or failed discovery blocks the
+   * send while the sticky draft is preserved.
+   */
+  readonly selectedHarnessUnavailable: boolean;
 }
 
 /**
- * `send_blocked` (composer.rs:5944) — true when any of the four conditions
- * holds. Desktop's Stop is never blocked (the caller checks the mode first).
+ * `send_blocked` (composer.rs:5944) plus browser target validation — true when
+ * any condition holds. Desktop's Stop is never blocked (the caller checks the
+ * mode first).
  */
 export function sendBlocked(conditions: SendBlockedConditions): boolean {
   return (
     conditions.queueEditFinishing ||
     conditions.requestTargetDisconnected ||
     conditions.reviewCommentFlushPending ||
-    conditions.newChatNoAgents
+    conditions.newChatNoAgents ||
+    conditions.selectedHarnessUnavailable
   );
 }
 

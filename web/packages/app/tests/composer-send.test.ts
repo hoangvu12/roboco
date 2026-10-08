@@ -77,18 +77,22 @@ describe("a_comment_only_stage_queues_during_a_live_run", () => {
 });
 
 describe("sendBlocked", () => {
-  it("blocks on any of the four conditions", () => {
+  it("blocks on any of the native conditions and the browser target gates", () => {
     const open = {
       queueEditFinishing: false,
       requestTargetDisconnected: false,
       reviewCommentFlushPending: false,
       newChatNoAgents: false,
+      selectedHarnessUnavailable: false,
     };
     expect(sendBlocked(open)).toBe(false);
     expect(sendBlocked({ ...open, queueEditFinishing: true })).toBe(true);
     expect(sendBlocked({ ...open, requestTargetDisconnected: true })).toBe(true);
     expect(sendBlocked({ ...open, reviewCommentFlushPending: true })).toBe(true);
     expect(sendBlocked({ ...open, newChatNoAgents: true })).toBe(true);
+    // wpn-90 (zeron `d57b27fd`): a fresh chat whose selected engine has not
+    // confirmed its harness catalog is a blocked send.
+    expect(sendBlocked({ ...open, selectedHarnessUnavailable: true })).toBe(true);
   });
 });
 
