@@ -130,7 +130,7 @@ const EMPTY_SPACES: readonly Space[] = [];
 /**
  * `render_new_thread_target_selectors` (pickers.rs:2426-2498): a `flex_none`
  * row, gap 4, with two footer chips in order — the DEVICE chip (monitor
- * icon, label = device name or "This device", warning tint when offline,
+ * icon, label = engine name or "Select engine", warning tint when offline,
  * popover 224) and the PROJECT chip (folder icon, label = space display
  * name or "No project", popover 280, right-aligned by the row's
  * justify-end).
@@ -147,6 +147,7 @@ export function NewThreadTargetSelectors() {
       <ProjectChip
         spaces={target.spaces}
         currentSpaceId={target.space?.id ?? null}
+        currentDeviceId={target.effectiveDeviceId}
         fallbackLabel="No project"
       />
       <DeviceChip
