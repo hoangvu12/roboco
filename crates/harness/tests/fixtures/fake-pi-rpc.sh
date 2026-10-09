@@ -355,6 +355,16 @@ while True:
     if kind == "get_state":
         response(command, state_data())
     elif kind == "get_available_models":
+        # The probe runs with a neutral cwd and the fff home scan disabled
+        # (perf 03a): discovery must never index $HOME — a probe spawned in
+        # $HOME with pi-fff installed walks the whole tree and times out.
+        # The probe cwd is a fresh EMPTY temp dir, never the home directory.
+        if os.environ.get("FFF_ENABLE_HOME_SCAN") != "0":
+            reject(command, "probe env missing FFF_ENABLE_HOME_SCAN=0")
+            continue
+        if os.getcwd() == os.path.expanduser("~"):
+            reject(command, "probe cwd is the home directory")
+            continue
         # The live catalog: provider-scoped entries plus edge cases (a
         # provider-less row and a name-less row must be skipped or fall
         # back to the id; the bare-model entry backs legacy id resolution).

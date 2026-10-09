@@ -294,11 +294,23 @@ impl PiHarness {
     /// extension-registered (a custom gateway), and the catalog must mirror
     /// what a real run would see. Events (notify noise) are drained so a
     /// chatty extension can never stall the reader.
+    ///
+    /// The probe's cwd is a fresh EMPTY temp dir, never `$HOME`: a globally
+    /// installed extension that indexes its working directory (pi-fff scans
+    /// and indexes its cwd on boot) would otherwise walk the entire home
+    /// directory on every probe — a multi-minute index on a real $HOME, so
+    /// the 15 s discovery budget always expires and the harness's models
+    /// never go live. The empty dir makes any cwd-scoped scan free, and
+    /// `FFF_ENABLE_HOME_SCAN=0` turns pi-fff's $HOME scan off outright;
+    /// extensions themselves stay on so extension-registered models still
+    /// appear.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
         let exe = self.resolve_executable()?;
+        let probe_cwd = tempfile::tempdir().map_err(HarnessError::Io)?;
         let mut cmd = Command::new(&exe);
         cmd.arg("--mode").arg("rpc").arg("--no-session");
-        cmd.current_dir(crate::executable::home_or_current_dir());
+        cmd.current_dir(probe_cwd.path());
+        cmd.env("FFF_ENABLE_HOME_SCAN", "0");
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
         cmd.stdin(Stdio::piped())
