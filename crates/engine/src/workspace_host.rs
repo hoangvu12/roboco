@@ -111,6 +111,12 @@ impl WorkspaceHost {
                 doc
             }
         };
+        // Engine-local (ADR 0004): no edge can ever attach to this replica,
+        // so every profile is local-only — fold the queue (a pre-fold
+        // snapshot's never-acked batches, or this boot's migration seeds)
+        // into the local rows and keep folding every write. The boot save
+        // below persists the result.
+        doc.set_local_only(true);
         // Destructive-break hygiene: the pre-spaces row stays unreachable.
         store.delete_snapshot(LEGACY_WORKSPACE_DOC_ID).ok();
 
@@ -140,7 +146,6 @@ impl WorkspaceHost {
             capabilities: roboco_proto::capabilities::current(),
         })?;
 
-        doc.commit_local();
         let mut state = doc.read_all()?;
         state.devices.retain(|d| d.id == config.device_id);
         state.chats.retain(|c| c.device_id == config.device_id);
@@ -167,7 +172,14 @@ impl WorkspaceHost {
         // Persist immediately: after this boot the migration source is never
         // read again, so the registry snapshot must exist even if the process
         // dies before the first debounced save.
-        host.inner.save_snapshot();
+        if let Err(error) = host.inner.persist_snapshot() {
+            tracing::warn!(%error, "registry snapshot save failed");
+        }
+        // Reclaim free pages (a bloated store, or the pages a one-time
+        // registry compaction just freed) off the boot path. The store gates
+        // the VACUUM on its own thresholds, so ordinary boots only checkpoint.
+        let store = host.inner.store.clone();
+        tokio::task::spawn_blocking(move || store.reclaim_free_space());
         tokio::spawn(workspace_task(Arc::downgrade(&host.inner), changed_rx));
         Ok(host)
     }
@@ -190,13 +202,12 @@ impl WorkspaceHost {
     // ── registry access helpers ─────────────────────────────────────────────
 
     /// Run a mutation under the registry lock, then wake the publish/persist
-    /// task.
+    /// task. (Local-only writes fold inside the doc — see
+    /// [`RegistryDoc::set_local_only`].)
     fn mutate<R>(&self, f: impl FnOnce(&mut RegistryDoc) -> R) -> R {
         let result = {
             let mut doc = lock(&self.inner.reg);
-            let result = f(&mut doc);
-            doc.commit_local();
-            result
+            f(&mut doc)
         };
         self.inner.bump_changed();
         result
@@ -786,17 +797,23 @@ impl WorkspaceHostInner {
     }
 
     fn save_snapshot(&self) {
-        let bytes = lock(&self.reg).to_bytes();
-        match bytes {
-            Ok(bytes) => {
-                if let Err(err) = self.store.save_snapshot(REGISTRY_DOC_ID, &bytes) {
-                    tracing::warn!(error = %err, "registry snapshot save failed");
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "registry snapshot export failed");
-            }
+        if let Err(error) = self.persist_snapshot() {
+            tracing::warn!(%error, "registry snapshot save failed");
         }
+    }
+
+    /// Returns the snapshot's size in bytes.
+    fn persist_snapshot(&self) -> Result<usize, EngineError> {
+        // Keep export and disk write serialized: an older background snapshot
+        // must not overwrite an acknowledged migration's durable snapshot.
+        let doc = lock(&self.reg);
+        let bytes = doc.to_bytes()?;
+        self.store
+            .save_snapshot(REGISTRY_DOC_ID, &bytes)
+            .map_err(|error| {
+                EngineError::Other(format!("registry snapshot save failed: {error}"))
+            })?;
+        Ok(bytes.len())
     }
 }
 
@@ -1028,5 +1045,76 @@ mod tests {
         std::fs::create_dir_all(&odd).unwrap();
         std::fs::write(odd.join(".git"), "gitdir: /somewhere/else\n").unwrap();
         assert_eq!(linked_worktree_root(&odd), None);
+    }
+
+    /// A pre-fold `registry1` snapshot: one never-acked batch per session-row
+    /// touch. Marking each batch in flight as it is written stops the doc
+    /// coalescing; `in_flight` is not persisted, so it reloads all-unsent.
+    fn save_bloated_registry(store: &roboco_sync::DocsStore, touches: usize) -> usize {
+        use super::*;
+
+        let mut doc = RegistryDoc::new("test-device");
+        for i in 0..touches {
+            doc.upsert_session(&running_session(
+                Utc::now() + chrono::Duration::milliseconds(i as i64),
+            ))
+            .unwrap();
+            doc.take_pushable();
+        }
+        assert_eq!(doc.pending_len(), touches);
+        let bytes = doc.to_bytes().unwrap();
+        store.save_snapshot(REGISTRY_DOC_ID, &bytes).unwrap();
+        bytes.len()
+    }
+
+    fn running_session(at: chrono::DateTime<chrono::Utc>) -> roboco_proto::Session {
+        roboco_proto::Session {
+            chat_id: "chat-1".into(),
+            device_id: "test-device".into(),
+            status: roboco_proto::SessionStatus::Working,
+            last_completed_turn: None,
+            started_at: None,
+            updated_at: at,
+        }
+    }
+
+    /// Engine-local (upstream #818's local-profile case, applied to every
+    /// roboco profile): the boot fold compacts a bloated queue and writes
+    /// never queue afterwards.
+    #[tokio::test]
+    async fn boot_compacts_a_bloated_registry_and_never_queues() {
+        use super::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let bloated = save_bloated_registry(&store, 5_000);
+        let host = WorkspaceHost::open(
+            store.clone(),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "windows".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(host.read(|doc| doc.pending_len()), 0);
+        assert_eq!(host.read_sessions().unwrap().len(), 1);
+        // The boot save already persisted the compacted snapshot.
+        let saved = store.load_snapshot(REGISTRY_DOC_ID).unwrap().unwrap();
+        assert!(saved.len() * 100 < bloated, "{} vs {bloated}", saved.len());
+        assert_eq!(
+            RegistryDoc::from_bytes(&saved, "test-device")
+                .unwrap()
+                .pending_len(),
+            0
+        );
+
+        // The 10 s running-chat heartbeat no longer accumulates anything.
+        for i in 0..100 {
+            host.record_session(&running_session(Utc::now() + chrono::Duration::seconds(i)));
+        }
+        assert_eq!(host.read(|doc| doc.pending_len()), 0);
     }
 }
