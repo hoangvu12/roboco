@@ -926,7 +926,37 @@ async fn drive(
     loop {
         tokio::select! {
             _ = health.tick() => {
-                let info: EngineInfo = tokio::time::timeout(Duration::from_secs(5), client.call_as(methods::ENGINE_INFO, json!({}))).await.map_err(|_| RpcError::Transport("Engine health check timed out".into()))??;
+                // The local entry is an IN-PROCESS engine sharing this
+                // process's scheduling: under load (many side chats, boot
+                // recovery, snapshot writes) its RPC worker can lag the 5 s
+                // probe window for a long while while the engine stays
+                // perfectly alive. Tearing the client down for that meant a
+                // full teardown → reconnect → resubscribe storm exactly when
+                // the machine was busiest (perf 03d). Degrade, not drop: the
+                // memory transport's `closed()` is the authoritative death
+                // signal for the local entry, so a probe timeout only logs
+                // (and the probe itself gets a much wider window); a FAILED
+                // call or a changed identity still tears the connection down.
+                let probe = if key.is_local() {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_secs(5)
+                };
+                let probed =
+                    tokio::time::timeout(probe, client.call_as(methods::ENGINE_INFO, json!({}))).await;
+                let info: EngineInfo = match probed {
+                    Err(_) if key.is_local() => {
+                        tracing::debug!(
+                            engine = %key.0,
+                            "engine health check lagged (in-process); keeping the connection"
+                        );
+                        continue;
+                    }
+                    Err(_) => {
+                        return Err(RpcError::Transport("Engine health check timed out".into()))
+                    }
+                    Ok(result) => result?,
+                };
                 if info.device_id != expected { return Err(RpcError::Failed("Engine identity changed; pair again".into())); }
                 continue;
             }

@@ -3003,7 +3003,21 @@ fn spawn_transcript_watch(
         // its engine-side room are the ONLY transcript delivery path). The
         // task itself is dropped by select_chat/apply_chats when the chat is
         // deselected or deleted, so retrying can't outlive relevance.
+        //
+        // Retry backoff (perf 03d): a fixed 2 s retry made a down or wedged
+        // engine eat a resubscribe every 2 s per open transcript — under the
+        // incident's load that is a resubscribe storm across every side
+        // chat. Consecutive failures double the delay (2 s → 30 s cap);
+        // frames flowing again reset it, and a desync resubscribes
+        // immediately (the healthy heal path) with the delay reset too.
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        const RETRY_DELAY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+        let mut retry_delay = RETRY_DELAY;
+        let backoff = |retry_delay: &mut std::time::Duration| {
+            let delay = *retry_delay;
+            *retry_delay = (*retry_delay * 2).min(RETRY_DELAY_MAX);
+            delay
+        };
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id, "openingTail": true });
             let mut rx = match handle
@@ -3016,10 +3030,14 @@ fn spawn_transcript_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    let delay = backoff(&mut retry_delay);
+                    cx.background_executor().timer(delay).await;
                     continue 'resubscribe;
                 }
             };
+            // The subscription is live: frames are flowing, so the next
+            // failure starts from the base delay again.
+            retry_delay = RETRY_DELAY;
             let mut preparation = WatchPreparation::new(cx.background_executor().clone());
             while let Some(value) = rx.recv().await {
                 let history_pending = value
@@ -3048,7 +3066,8 @@ fn spawn_transcript_watch(
                         // copy, so resubscribe for a fresh reset — delayed,
                         // in case the reset itself is what can't parse.
                         tracing::warn!(error = %err, "malformed transcript frame; resubscribing");
-                        cx.background_executor().timer(RETRY_DELAY).await;
+                        let delay = backoff(&mut retry_delay);
+                        cx.background_executor().timer(delay).await;
                         continue 'resubscribe;
                     }
                 };
@@ -3084,6 +3103,9 @@ fn spawn_transcript_watch(
                     return;
                 }
                 if desync {
+                    // The healthy heal path: an immediate resubscribe with a
+                    // fresh opening reset, so the backoff resets too.
+                    retry_delay = RETRY_DELAY;
                     continue 'resubscribe;
                 }
                 if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
@@ -3123,7 +3145,8 @@ fn spawn_transcript_watch(
                     tracing::debug!(%error, "transcript cache write failed");
                 }
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            let delay = backoff(&mut retry_delay);
+            cx.background_executor().timer(delay).await;
         }
     })
 }
