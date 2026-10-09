@@ -850,6 +850,14 @@ impl SessionsEngine {
     pub fn recover_stale(&self) -> Result<usize, EngineError> {
         const MAX_AUTO_RESUME: u32 = 3;
         const RESUME_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
+        // Auto-resume is a boot burst: every crashed chat would re-dispatch
+        // at once (the incident saw 8 simultaneous dispatches, each spawning
+        // a harness CLI and hashing its checkout while the engine was still
+        // warming). Cap the concurrent resumes and stagger their starts
+        // with per-chat jitter so a fleet-wide restart does not stampede.
+        const MAX_CONCURRENT_RESUMES: usize = 2;
+        let resume_gate = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RESUMES));
+        let mut resume_ix = 0u64;
 
         let stale = self.inner.journal.stale_sessions()?;
         let mut recovered = 0usize;
@@ -917,9 +925,19 @@ impl SessionsEngine {
                 continue;
             }
             let attempt = self.inner.journal.note_resume_attempt(&chat_id);
+            let delay = std::time::Duration::from_millis(
+                resume_ix * RESUME_STAGGER_MS + resume_jitter_ms(&chat_id),
+            );
+            resume_ix += 1;
             let (user_id, prompt_text) = prompt.expect("gated by will_resume");
             let sessions = self.clone();
+            let gate = resume_gate.clone();
             tokio::spawn(async move {
+                // Staggered start, then the concurrency cap: resumes begin
+                // spaced out, and a slow dispatch (CLI spawn + session
+                // handshake) holds its slot until it lands.
+                tokio::time::sleep(delay).await;
+                let _permit = gate.acquire().await;
                 let Some(host) = sessions.inner.doc_host() else {
                     return;
                 };
@@ -2936,10 +2954,46 @@ async fn drive_run(
     }
 }
 
+/// Auto-resume stagger window (perf 03c): crashed chats re-dispatch spaced
+/// by one window each, with per-chat jitter inside the slot.
+const RESUME_STAGGER_MS: u64 = 750;
+
+/// Per-chat resume jitter (FNV-1a over the chat id, modulo the stagger
+/// window): stable per chat, needs no RNG dependency, and spreads a fleet
+/// restart's auto-resumes inside each stagger slot.
+fn resume_jitter_ms(chat_id: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in chat_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash % RESUME_STAGGER_MS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use roboco_proto::{HarnessId, RunRequest, SandboxLevel};
+
+    /// Perf 03c: the auto-resume jitter stays inside one stagger window and
+    /// differs between chats — a fleet restart must not stampede, and the
+    /// spacing must not collapse to zero for distinct ids.
+    #[test]
+    fn resume_jitter_is_bounded_and_spreads_chats() {
+        for chat_id in ["chat-1", "chat-2", "a", "b", "chat-1"] {
+            let jitter = resume_jitter_ms(chat_id);
+            assert!(jitter < RESUME_STAGGER_MS, "{chat_id}: {jitter}");
+        }
+        // Equal inputs jitter equally (stable, no RNG flake).
+        assert_eq!(resume_jitter_ms("chat-1"), resume_jitter_ms("chat-1"));
+        // Distinct chats usually land in distinct slots; with a 750 ms window
+        // and these two ids the hashes genuinely differ.
+        assert_ne!(
+            resume_jitter_ms("chat-1"),
+            resume_jitter_ms("chat-2"),
+            "distinct chats must spread"
+        );
+    }
 
     #[tokio::test]
     async fn generated_image_failure_is_sanitized_even_inside_subagents() {
