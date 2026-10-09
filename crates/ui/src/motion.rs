@@ -29,7 +29,7 @@
 //! with fade + translate; see the module report in ARCHITECTURE §4 follow-ups.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -60,22 +60,42 @@ const PULSE_TICK: Duration = Duration::from_millis(33);
 /// the view drops off, letting the clock park.
 const PULSE_LEASE: Duration = Duration::from_millis(300);
 
+/// Hard wall-clock span ONE view may keep the clock ticking through
+/// continuous renewals (perf 03b). A lease is renewed on every spinner paint,
+/// so a paint loop that never stops — a semantic bug elsewhere leaving a
+/// "working" shimmer mounted on a dead run — would otherwise tick at 30 fps
+/// for the life of the process with a core pinned. Past the span the lease
+/// dies and the view is spent until the clock parks: a genuinely live
+/// surface gets fresh notifies long before then (every message, heartbeat,
+/// and state change repaints it), and after a park every view's budget
+/// resets — the bound only ever bites a spinner that paints continuously
+/// with nothing else happening, which is exactly the bug shape.
+const PULSE_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
+
 struct PulseClock {
     epoch: Instant,
     leases: HashMap<EntityId, PulseLease>,
+    /// Views whose lease hit [`PULSE_MAX_LIFETIME`]; no new lease until the
+    /// clock parks (all leases expired), which also clears this.
+    spent: HashSet<EntityId>,
     tick: u64,
     running: bool,
 }
 
 struct PulseLease {
+    created: Instant,
     until: Instant,
     stride: u64,
 }
 
 impl PulseLease {
-    fn renew(&mut self, now: Instant, stride: u64) {
+    fn renew(&mut self, now: Instant, stride: u64) -> bool {
+        if now.duration_since(self.created) >= PULSE_MAX_LIFETIME {
+            return false;
+        }
         self.until = now + PULSE_LEASE;
         self.stride = self.stride.min(stride);
+        true
     }
 
     fn take_tick(&mut self, tick: u64) -> bool {
@@ -96,6 +116,7 @@ impl Default for PulseClock {
         Self {
             epoch: Instant::now(),
             leases: HashMap::new(),
+            spent: HashSet::new(),
             tick: 0,
             running: false,
         }
@@ -182,6 +203,21 @@ pub fn pulse_lease(view: EntityId, cx: &mut App) {
     pulse_lease_every(view, 1, cx);
 }
 
+/// Test support: whether `view` currently holds a pulse lease.
+#[cfg(test)]
+pub(crate) fn pulse_lease_held(view: EntityId, cx: &App) -> bool {
+    cx.try_global::<PulseClock>()
+        .is_some_and(|clock| clock.leases.contains_key(&view))
+}
+
+/// Test support: expire `view`'s lease the way the 300 ms window would —
+/// the next paint either re-leases (live) or stays quiet (dead).
+#[cfg(test)]
+pub(crate) fn pulse_lease_expire(view: EntityId, cx: &mut App) {
+    let clock = cx.default_global::<PulseClock>();
+    clock.leases.remove(&view);
+}
+
 fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
     if cx.reduce_motion() {
         return;
@@ -191,15 +227,24 @@ fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
 
 fn schedule_pulse_every(view: EntityId, stride: u64, cx: &mut App) {
     let clock = cx.default_global::<PulseClock>();
+    if clock.spent.contains(&view) {
+        return;
+    }
     let now = Instant::now();
-    clock
+    let alive = clock
         .leases
         .entry(view)
         .or_insert(PulseLease {
+            created: now,
             until: now + PULSE_LEASE,
             stride,
         })
         .renew(now, stride);
+    if !alive {
+        clock.leases.remove(&view);
+        clock.spent.insert(view);
+        return;
+    }
     if !clock.running {
         clock.running = true;
         cx.spawn(async move |cx| {
@@ -242,6 +287,9 @@ fn schedule_pulse_every(view: EntityId, stride: u64, cx: &mut App) {
                     clock.leases.retain(|_, lease| lease.until > now);
                     if clock.leases.is_empty() {
                         clock.running = false;
+                        // The clock is fully quiet: every view's lifetime
+                        // budget resets with the next lease.
+                        clock.spent.clear();
                         return true;
                     }
                     clock.tick = clock.tick.wrapping_add(1);
@@ -1133,6 +1181,7 @@ mod tests {
     fn pulse_stride_reestablishes_after_each_paint() {
         let now = Instant::now();
         let mut lease = PulseLease {
+            created: now,
             until: now + PULSE_LEASE,
             stride: 2,
         };
@@ -1151,6 +1200,97 @@ mod tests {
         assert!(lease.take_tick(6));
         assert!(!lease.take_tick(7), "unpainted view cannot renew itself");
         assert!(lease.until <= now + PULSE_LEASE);
+    }
+
+    /// Perf 03b: a lease renews only within its lifetime budget; past it the
+    /// view is spent until the clock parks. A live surface re-paints long
+    /// before the real (hour) budget; this test uses the lease struct
+    /// directly with a post-budget `now`.
+    #[test]
+    fn pulse_lease_lifetime_is_bounded() {
+        let created = Instant::now();
+        let mut lease = PulseLease {
+            created,
+            until: created + PULSE_LEASE,
+            stride: 1,
+        };
+        // Fresh lease, well inside the budget: renews.
+        assert!(lease.renew(created, 1));
+        // Past the budget: the renewal is refused and the lease must die —
+        // the tick loop that drives repaints stops for this view.
+        let past = created + PULSE_MAX_LIFETIME + Duration::from_millis(1);
+        assert!(!lease.renew(past, 1));
+        assert!(!lease.renew(created + PULSE_MAX_LIFETIME, 1));
+        // Inside the budget, a long renewal cannot outlive it either: the
+        // extension stays lease-bounded (300 ms), never budget-extended.
+        let mid = created + PULSE_MAX_LIFETIME - Duration::from_millis(1);
+        let mut young = PulseLease {
+            created,
+            until: created + PULSE_LEASE,
+            stride: 1,
+        };
+        assert!(young.renew(mid, 1));
+        assert!(young.until <= mid + PULSE_LEASE);
+    }
+
+    /// The full-cycle bound: a view whose lease hit the budget is spent —
+    /// re-painting leases nothing — until the clock parks, which resets
+    /// every budget (the spent set clears with the last expired lease).
+    #[gpui::test]
+    fn spent_views_release_their_lease_budget_on_park(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+
+        let entity = cx.update(|cx| {
+            let view = cx.new(|_| ());
+            let entity = view.entity_id();
+            pulse_lease(entity, cx);
+            assert!(cx
+                .default_global::<PulseClock>()
+                .leases
+                .contains_key(&entity));
+            // Simulate the budget expiring for this view.
+            let now = Instant::now();
+            let expired = {
+                let clock = cx.default_global::<PulseClock>();
+                let lease = clock.leases.get_mut(&entity).unwrap();
+                lease.until = now + PULSE_LEASE;
+                lease.created = now
+                    .checked_sub(PULSE_MAX_LIFETIME + Duration::from_millis(1))
+                    .expect("real time covers the budget");
+                !lease.renew(Instant::now(), 1)
+            };
+            assert!(expired, "past-budget renewal must be refused");
+            cx.default_global::<PulseClock>().leases.remove(&entity);
+            cx.default_global::<PulseClock>().spent.insert(entity);
+            entity
+        });
+
+        // Spent: even a fresh paint leases nothing.
+        cx.update(|cx| {
+            pulse_lease(entity, cx);
+            let clock = cx.default_global::<PulseClock>();
+            assert!(clock.leases.is_empty());
+            assert!(clock.spent.contains(&entity), "still spent before the park");
+        });
+
+        // The clock parks on its next tick: running stops and every
+        // budget resets with it.
+        cx.background_executor.advance_clock(PULSE_TICK);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let clock = cx.default_global::<PulseClock>();
+            assert!(!clock.running, "nothing leased, nothing ticking");
+            assert!(clock.spent.is_empty(), "park resets the budgets");
+        });
+
+        cx.update(|cx| {
+            pulse_lease(entity, cx);
+            assert!(
+                cx.default_global::<PulseClock>()
+                    .leases
+                    .contains_key(&entity)
+            );
+        });
     }
 
     #[test]
