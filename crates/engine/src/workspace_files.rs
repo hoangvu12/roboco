@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::fs_watch::{FsWatch, FsWatchHub};
 use crate::{Repos, WorkspaceHost};
 
 mod mutations;
@@ -76,7 +77,12 @@ struct CheckoutWatch {
     subscribers: AtomicUsize,
     changes_tx: broadcast::Sender<WorkspaceFileChanges>,
     cancel: CancellationToken,
-    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// The recursive watch on the shared [`FsWatchHub`] — one watcher thread
+    /// for the whole engine instead of one per watched checkout. Dropped
+    /// (unregistering) when the last subscriber leaves or the service stops;
+    /// the hub sends a rescan when the watch goes live, closing the
+    /// check→attach gap.
+    watcher: Mutex<Option<FsWatch>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -637,41 +643,56 @@ impl CheckoutWatch {
         let (event_tx, event_rx) = mpsc::channel(WATCH_EVENT_BUFFER);
         let overflow = Arc::new(AtomicBool::new(false));
         let overflow_notify = Arc::new(Notify::new());
+        // Register on the shared hub and install at once — the previous
+        // per-checkout watcher was installed synchronously too, and a write
+        // racing the hub's ~100 ms batch must still stream as a change event,
+        // not a resync frame (the OS watcher itself stays shared: other roots
+        // may already ride the same instance). The hub's attach rescan is
+        // swallowed — nothing was observable before this point — while later
+        // rescans (events possibly lost) take the overflow/resync path. A
+        // failed install leaves the stream silent; the repair tick covers it,
+        // the same outcome a failed private `watch()` had.
         let watcher = if over_budget {
             None
         } else {
             let callback_overflow = overflow.clone();
             let callback_notify = overflow_notify.clone();
-            notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-                if event
-                    .as_ref()
-                    .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
-                {
-                    return;
-                }
-                let event = TimedWatchEvent {
-                    received_at: Instant::now(),
-                    event,
-                };
-                match event_tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
+            let attach_rescan_seen = AtomicBool::new(false);
+            let watch = FsWatchHub::global().watch(
+                &root,
+                notify::RecursiveMode::Recursive,
+                move |event: &notify::Event| {
+                    if matches!(event.kind, notify::EventKind::Access(_)) {
+                        return;
+                    }
+                    if event.need_rescan() {
+                        // The attach rescan only reports the pre-watch window,
+                        // which is empty for a synchronous install.
+                        if !attach_rescan_seen.swap(true, Ordering::AcqRel) {
+                            return;
+                        }
                         callback_overflow.store(true, Ordering::Release);
                         callback_notify.notify_one();
+                        return;
                     }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {}
-                }
-            })
-            .ok()
-            .and_then(|mut watcher| {
-                use notify::Watcher as _;
-                watcher
-                    .watch(&root, notify::RecursiveMode::Recursive)
-                    .ok()
-                    .map(|()| watcher)
-            })
+                    let event = TimedWatchEvent {
+                        received_at: Instant::now(),
+                        event: Ok(event.clone()),
+                    };
+                    match event_tx.try_send(event) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            callback_overflow.store(true, Ordering::Release);
+                            callback_notify.notify_one();
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {}
+                    }
+                },
+            );
+            FsWatchHub::global().apply();
+            Some(watch)
         };
-        let repair_only = over_budget || watcher.is_none();
+        let repair_only = over_budget;
         let watch = Arc::new(Self {
             checkout_id,
             root,

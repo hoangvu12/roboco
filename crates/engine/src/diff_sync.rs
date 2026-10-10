@@ -12,8 +12,9 @@
 //! is captured by the command host and is never rewritten from this watcher;
 //! otherwise one checkout change would relabel every chat sharing that folder.
 //!
-//! Fast recursive `notify` watchers (debounced [`WATCH_DEBOUNCE`]) are backed by a
-//! slow 2-minute repair tick because native watchers may coalesce or drop events.
+//! Fast recursive watches on the process-wide [`FsWatchHub`] (one watcher thread
+//! for every checkout; debounced [`WATCH_DEBOUNCE`]) are backed by a slow
+//! 2-minute repair tick because native watchers may coalesce or drop events.
 //! Snapshots carry a sha256 checksum; an unchanged checksum publishes nothing.
 //!
 //! Reconcile is deliberately damped, because it runs on *every* workspace chat
@@ -47,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 use roboco_proto::{Chat, CheckoutDiff, DiffFileSummary};
 
 use crate::EngineError;
+use crate::fs_watch::{FsWatch, FsWatchHub};
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::workspace_host::WorkspaceHost;
 
@@ -112,11 +114,11 @@ struct CheckoutEntry {
     /// Destructive mutations are serialized per checkout. File-system
     /// watchers and read-only captures may still run concurrently.
     discard_lock: tokio::sync::Mutex<()>,
-    /// Keeps the recursive fs watchers alive; dropped on entry close. Filled
-    /// asynchronously — watcher setup (budget walk + FSEvents registration) can
-    /// block for seconds, so [`add_entry`] does it off the runtime and attaches
-    /// the result here once ready.
-    watchers: Mutex<Vec<notify::RecommendedWatcher>>,
+    /// Keeps the recursive fs watches alive on the shared [`FsWatchHub`];
+    /// dropped on entry close. Filled asynchronously — watcher setup (budget
+    /// walk + FSEvents registration) can block for seconds, so [`add_entry`]
+    /// does it off the runtime and attaches the result here once ready.
+    watchers: Mutex<Vec<FsWatch>>,
 }
 
 /// Working-tree snapshot recorded when a chat's turn dispatches — the diff
@@ -580,48 +582,37 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
     // for seconds when fseventsd is contended. Doing it inline starved the whole
     // runtime (workspace watches, presence) whenever entries were (re)built, so
     // it runs on the blocking pool and attaches to the entry when ready. Events
-    // occurring before attachment are covered by the initial sync; one extra
-    // kick after attachment closes the capture→attach gap.
+    // occurring before attachment are covered by the initial sync; the hub's
+    // rescan when each watch goes live closes the capture→attach gap.
     let weak = Arc::downgrade(&entry);
     tokio::task::spawn_blocking(move || {
         let Some(entry) = weak.upgrade() else {
             return; // entry removed before watchers were ready
         };
-        let watchers = build_watchers(&entry.identity, &kick_tx);
+        let watchers = build_watchers(&FsWatchHub::global(), &entry.identity, &kick_tx);
         *lock(&entry.watchers) = watchers;
-        let _ = kick_tx.send(());
     });
 }
 
-/// Recursive watchers on the worktree root (budget permitting) and the git
-/// dir — HEAD/index churn and file edits both land here. Failures are fine:
-/// the initial + repair sync still keep the snapshot correct. Blocking — call
-/// from the blocking pool.
+/// Recursive watches on the worktree root (budget permitting) and the git
+/// dir — HEAD/index churn and file edits both land here. Registered on the
+/// shared [`FsWatchHub`], so a checkout costs OS watches but no thread of its
+/// own; the hub's rescan signals (watch went live, events possibly lost) kick
+/// like any change. Failures are fine: the initial + repair sync still keep
+/// the snapshot correct. Blocking (budget walk) — call from the blocking pool.
 fn build_watchers(
+    hub: &Arc<FsWatchHub>,
     identity: &CheckoutIdentity,
     kick_tx: &mpsc::UnboundedSender<()>,
-) -> Vec<notify::RecommendedWatcher> {
+) -> Vec<FsWatch> {
     let mut watchers = Vec::new();
     for target in watch_targets(identity) {
         let tx = kick_tx.clone();
-        let watcher =
-            notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-                if event.as_ref().is_ok_and(is_checkout_change) {
-                    let _ = tx.send(());
-                }
-            });
-        match watcher {
-            Ok(mut watcher) => {
-                use notify::Watcher as _;
-                match watcher.watch(&target, notify::RecursiveMode::Recursive) {
-                    Ok(()) => watchers.push(watcher),
-                    Err(err) => {
-                        tracing::debug!(path = %target.display(), error = %err, "diff-sync: watch failed")
-                    }
-                }
+        watchers.push(hub.watch(&target, notify::RecursiveMode::Recursive, move |event| {
+            if is_checkout_change(event) {
+                let _ = tx.send(());
             }
-            Err(err) => tracing::debug!(error = %err, "diff-sync: watcher create failed"),
-        }
+        }));
     }
     watchers
 }
@@ -1841,8 +1832,13 @@ mod watch_budget_tests {
         let root = std::fs::canonicalize(tmp.path()).unwrap();
         std::fs::write(root.join("a.txt"), "one\n").unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let _watchers = super::build_watchers(&identity(&root, &root.join(".git")), &tx);
-        // Let registration settle and drop anything it raised.
+        let hub = crate::fs_watch::FsWatchHub::new();
+        let watchers = super::build_watchers(&hub, &identity(&root, &root.join(".git")), &tx);
+        // Install now (the batch worker would within ~100 ms) and expect the
+        // attach rescan's kick; then let registration settle and drop
+        // anything it raised.
+        hub.apply();
+        assert!(watchers.iter().all(super::FsWatch::is_live));
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         while rx.try_recv().is_ok() {}
 
