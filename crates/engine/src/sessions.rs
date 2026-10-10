@@ -354,6 +354,16 @@ impl SessionsEngine {
             .is_some_and(|h| h.turn.background_live())
     }
 
+    /// A run handle exists but its harness stream has not opened yet — the
+    /// dispatch returned, the spawn has not polled. A Stop racing this
+    /// window must wait it out (or it tears the pending start down before
+    /// the user's message ever reached a process).
+    pub fn live_run_pending_start(&self, chat_id: &str) -> bool {
+        lock(&self.inner.runs)
+            .get(chat_id)
+            .is_some_and(|h| !h.started.load(std::sync::atomic::Ordering::Acquire))
+    }
+
     /// A text prompt for `chat_id` would land in the mailbox of a live
     /// turn-boundary agent mid-turn. The agent reads it only after the turn,
     /// but a mailbox delivery writes the user message now — above the reply

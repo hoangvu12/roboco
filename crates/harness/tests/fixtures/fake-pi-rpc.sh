@@ -230,6 +230,15 @@ def run_prompt(req):
         user_message(text)
         turn_and_settle("reply:" + text, thinking=True)
         return
+    if text == "which-model":
+        # Reflect the configuration the process currently runs with: the
+        # model id set_model last selected (none = the default state row)
+        # and the thinking level set_thinking_level last applied.
+        model = set_model_seen.split("|", 1)[1] if set_model_seen else "mock/model"
+        level = thinking_level_seen or "medium"
+        user_message(text)
+        turn_and_settle("reply:" + model + "/" + level)
+        return
     if text == "error":
         user_message(text)
         emit({"type": "turn_start"})

@@ -1773,6 +1773,9 @@ impl DocHost {
         stop_id: &str,
     ) {
         let started = tokio::time::Instant::now();
+        {
+            let cmds = handle.doc.read_commands().unwrap_or_default();
+        }
         loop {
             let bound = if sessions.turn_in_flight(&handle.chat_id) {
                 std::time::Duration::from_secs(2)
@@ -1794,7 +1797,7 @@ impl DocHost {
                         c.payload,
                         SessionCommandPayload::Run { .. } | SessionCommandPayload::Steer { .. }
                     )
-            });
+            }) || sessions.live_run_pending_start(&handle.chat_id);
             if !earlier_prompt {
                 return;
             }
@@ -2277,6 +2280,19 @@ impl DocHost {
                     turn_is_past: &turn_is_past,
                 },
             );
+            // A Stop aimed at a turn that is STILL in flight is never moot:
+            // the based_on went stale because newer user messages joined that
+            // same live turn (steers written by their dispatch), not because
+            // the turn finished. A finished turn leaves no run to stop, so the
+            // supersede rule keeps its meaning there (#748: the user's Stop
+            // always acts on the work in front of them).
+            let disposition = match (&entry.payload, disposition) {
+                (
+                    SessionCommandPayload::Interrupt {},
+                    CommandDisposition::Superseded,
+                ) if sessions.turn_in_flight(&handle.chat_id) => CommandDisposition::Execute,
+                (_, disposition) => disposition,
+            };
             // Queued-attachment gate (BEFORE the processed mark — a deferred
             // command must stay eligible): a Run/Steer naming `pending://`
             // refs whose bytes haven't landed on this device yet waits for
@@ -2625,7 +2641,7 @@ impl DocHost {
                 // with the exact request it was sent with (images, config):
                 // the row replays as sent, never re-derived from the chat's
                 // latest request.
-                if sessions.defers_to_turn_end(chat_id, Some((harness, &request))) {
+        if sessions.defers_to_turn_end(chat_id, Some((harness, &request))) {
                     self.hold_until_turn_end(
                         handle,
                         message_id,
