@@ -11,7 +11,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion,
 };
@@ -37,6 +37,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }

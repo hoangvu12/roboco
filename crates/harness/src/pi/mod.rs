@@ -80,7 +80,7 @@ use roboco_proto::{
 
 use crate::acp::child;
 use crate::process::{Command, Stdio};
-use crate::{Harness, HarnessError, RunControls, Signal, send_signal};
+use crate::{Harness, HarnessError, RunControls, Signal, SteerMessage, send_signal};
 use normalize::{
     context_usage_event, dialog, dialog_response, message_end_error, message_end_events,
     message_update_events, output_text, thinking_level, tool_diff, typed_call, usage_event,
@@ -190,7 +190,60 @@ fn available_models(value: &Value) -> Vec<Model> {
         .collect()
 }
 
+/// Whether `request` picks a thinking level (an effort, or thinking off).
+fn thinking_selected(request: &RunRequest) -> bool {
+    request.reasoning.is_some()
+        || request
+            .model_options
+            .get("pi_thinking")
+            .is_some_and(|v| v == "off")
+}
+
+/// Apply `request`'s model and thinking level to the LIVE process
+/// (`set_model` / `set_thinking_level`), best-effort: a rejected switch
+/// logs and the current configuration runs (pi-acp parity — the run is not
+/// failed by an unavailable model or level).
+async fn configure_live(
+    client: &PiClient,
+    request: &RunRequest,
+) -> Result<(), HarnessError> {
+    if let Some(model) = request
+        .model
+        .as_deref()
+        .filter(|model| !model.is_empty() && *model != "default")
+    {
+        if let Err(e) = apply_model(client, model).await {
+            tracing::warn!(
+                target: "roboco_harness::pi",
+                "set_model {model} rejected (pi default runs): {e}"
+            );
+        }
+    }
+    if thinking_selected(request) {
+        let level = if request
+            .model_options
+            .get("pi_thinking")
+            .is_some_and(|v| v == "off")
+        {
+            "off"
+        } else {
+            thinking_level(request.reasoning.expect("gated by thinking_selected"))
+        };
+        if let Err(e) = client
+            .request("set_thinking_level", json!({ "level": level }))
+            .await
+        {
+            tracing::debug!(
+                target: "roboco_harness::pi",
+                "set_thinking_level {level} rejected (agent default runs): {e}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Resolve + apply a requested model id through pi's `set_model`. Composite
+/// `<provider>/<modelId>` ids (what `set_model` accepts and the catalog emits)
 /// ids split on the FIRST slash (provider, then pi's own model id); a bare
 /// id is a legacy spelling, recovered by looking the model up in the live
 /// catalog for its provider (exactly the pi-acp fork's `setSessionModel`).
@@ -504,6 +557,14 @@ impl Harness for PiHarness {
     fn deterministic_turn_end(&self) -> bool {
         true
     }
+    /// `set_model` and `set_thinking_level` change the live process. Clearing
+    /// either back to the default cannot be expressed that way.
+    fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
+        let model = |r: &RunRequest| r.model.as_deref().filter(|m| *m != "default").is_some();
+        live.cwd == next.cwd
+            && (model(next) || !model(live))
+            && (thinking_selected(next) || !thinking_selected(live))
+    }
 
     /// Credential context (auth.json + binary identity). The provider
     /// catalog (`models-store.json`, what `pi update` refreshes) deliberately
@@ -688,44 +749,18 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        turn: _turn,
     } = controls;
     let request_input: Arc<RequestInputFn> = Arc::new(request_input);
 
     // ---- startup: get_state (interruptible, bounded) ----------------------
     let setup = async {
         let state = client.request("get_state", json!({})).await?;
-        // Apply the run's model before anything else: rows are composite
-        // `<provider>/<modelId>` (or the bare `default`, which means "pi's
-        // own configured model" and switches nothing). Best-effort — a
-        // rejected switch logs and the agent default runs, pi-acp parity;
-        // the picker pins unknown ids as "absent from the current list".
-        if let Some(model) = request
-            .model
-            .as_deref()
-            .filter(|model| !model.is_empty() && *model != "default")
-        {
-            if let Err(e) = apply_model(&client, model).await {
-                tracing::warn!(
-                    target: "roboco_harness::pi",
-                    "set_model {model} rejected (pi default runs): {e}"
-                );
-            }
-        }
-        // Apply the run's thinking level (pi clamps to the model's own
-        // ladder; a rejected level leaves the agent default). Best-effort:
-        // an unavailable level is not a failed run.
-        if let Some(reasoning) = request.reasoning {
-            let level = thinking_level(reasoning);
-            if let Err(e) = client
-                .request("set_thinking_level", json!({ "level": level }))
-                .await
-            {
-                tracing::debug!(
-                    target: "roboco_harness::pi",
-                    "set_thinking_level {level} rejected (agent default runs): {e}"
-                );
-            }
-        }
+        // Apply the run's model and thinking level (pi clamps to the model's
+        // own ladder; a rejected switch logs and the agent default runs,
+        // pi-acp parity). Best-effort: an unavailable model or level is not
+        // a failed run.
+        configure_live(&client, &request).await?;
         Ok::<Value, HarnessError>(state)
     };
     let state = tokio::select! {
@@ -851,8 +886,9 @@ async fn run_session(session: Session) {
     let mut steer_calls: FuturesUnordered<SteerCall> = FuturesUnordered::new();
     // Steers the driver itself owns (stranded in pi's queue at settle, or
     // queued while the settle sequence runs) — delivered as fresh prompts
-    // once the current turn's Done is out.
-    let mut driver_steers: VecDeque<String> = VecDeque::new();
+    // once the current turn's Done is out, carrying their attachments and
+    // run config.
+    let mut driver_steers: VecDeque<SteerMessage> = VecDeque::new();
     // The post-settle sequence (clear_queue + stats), then the Done.
     let mut settle: Option<BoxFuture<'static, SettleOutcome>> = None;
     // Per-turn token usage: the latest cumulative provider usage, emitted
@@ -938,8 +974,8 @@ async fn run_session(session: Session) {
                 if !recovered.is_empty() {
                     let stranded = pending_steer_deliveries.saturating_sub(recovered.len());
                     pending_steer_deliveries = stranded;
-                    let mut queue: Vec<String> = driver_steers.drain(..).collect();
-                    queue.extend(recovered);
+                    let mut queue: Vec<SteerMessage> = driver_steers.drain(..).collect();
+                    queue.extend(recovered.into_iter().map(SteerMessage::text));
                     driver_steers = queue.into();
                 } else {
                     pending_steer_deliveries = 0;
@@ -990,7 +1026,7 @@ async fn run_session(session: Session) {
                 // A stranded steer becomes the next turn; otherwise the
                 // session parks — the caller owns teardown.
                 if settle.is_none()
-                    && let Some(text) = driver_steers.pop_front()
+                    && let Some(msg) = driver_steers.pop_front()
                     && !deliver_parked_steer(
                         &client,
                         &event_tx,
@@ -999,7 +1035,7 @@ async fn run_session(session: Session) {
                         &mut awaiting_prompt_echo,
                         &mut run_active,
                         &mut done_current,
-                        &text,
+                        &msg,
                     )
                     .await
                 {
@@ -1317,16 +1353,25 @@ async fn run_session(session: Session) {
 
             steer = steering.recv(), if steering_open && !interrupted => match steer {
                 Some(msg) => {
-                    let text = msg.prompt;
+                    // A changed model or thinking level applies on the live
+                    // process before the message it was sent with.
+                    if let Some(next) = &msg.config {
+                        // Best-effort: a rejected switch logs inside and the
+                        // current configuration runs (startup parity).
+                        let _ = configure_live(&client, next).await;
+                    }
+                    let text = msg.prompt.clone();
                     if run_active || acceptance.is_some() {
                         // Live turn: pi's own steer queue (delivered after
-                        // the current assistant turn's tool calls).
+                        // the current assistant turn's tool calls). The
+                        // attachments' path refs ride the text; the parked
+                        // delivery inlines them as images.
                         steer_calls.push(steer_request(&client, &text, false));
                         pending_steer_deliveries += 1;
                     } else if settle.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
                         // The settle sequence or a steer acknowledgement is
                         // still winding down: FIFO behind it.
-                        driver_steers.push_back(text);
+                        driver_steers.push_back(msg);
                     } else {
                         if !deliver_parked_steer(
                             &client,
@@ -1336,7 +1381,7 @@ async fn run_session(session: Session) {
                             &mut awaiting_prompt_echo,
                             &mut run_active,
                             &mut done_current,
-                            &text,
+                            &msg,
                         )
                         .await
                         {
@@ -1498,7 +1543,9 @@ fn steer_request(client: &PiClient, text: &str, as_prompt: bool) -> SteerCall {
 }
 
 /// A parked session's next message: confirm the boundary, then arm the
-/// prompt (the mailbox's FIFO ledger retires on the Steered boundary).
+/// prompt (the mailbox's FIFO ledger retires on the Steered boundary) with
+/// the message's attachments inlined and its run config applied.
+#[allow(clippy::too_many_arguments)]
 async fn deliver_parked_steer(
     client: &PiClient,
     event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
@@ -1507,7 +1554,7 @@ async fn deliver_parked_steer(
     awaiting_prompt_echo: &mut bool,
     run_active: &mut bool,
     done_current: &mut bool,
-    text: &str,
+    msg: &SteerMessage,
 ) -> bool {
     // Confirm the boundary FIRST (the mailbox ledger retires here), then
     // arm the prompt — ACP parity for the between-turns delivery path.
@@ -1523,7 +1570,11 @@ async fn deliver_parked_steer(
     {
         return false;
     }
-    *acceptance = Some(prompt_acceptance(client, text, Vec::new(), None));
+    if let Some(next) = &msg.config {
+        let _ = configure_live(client, next).await;
+    }
+    let images = load_image_contents(&msg.attachments).await;
+    *acceptance = Some(prompt_acceptance(client, &msg.prompt, images, None));
     *awaiting_prompt_echo = true;
     *run_active = true;
     *done_current = false;

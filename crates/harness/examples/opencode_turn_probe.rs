@@ -9,7 +9,7 @@
 
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use roboco_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
+use roboco_harness::{CancellationToken, Harness, OpencodeHarness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, RunRequest, SandboxLevel};
 
 #[tokio::main]
@@ -47,6 +47,7 @@ async fn main() {
                 request_input: Box::new(|_| panic!("probe must not ask for input")),
                 steering,
                 interrupt: CancellationToken::new(),
+                turn: TurnControl::default(),
             },
         )
         .await

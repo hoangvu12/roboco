@@ -520,6 +520,7 @@ async fn run_session(session: Session) {
         request_input: _request_input,
         mut steering,
         interrupt,
+        turn: _turn,
     } = controls;
 
     let mut assistant_message_id = new_message_id();

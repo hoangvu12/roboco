@@ -14,7 +14,7 @@
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
+use roboco_harness::{CancellationToken, Harness, OpencodeHarness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
 
 #[tokio::main]
@@ -39,6 +39,7 @@ async fn main() {
         }),
         steering,
         interrupt: CancellationToken::new(),
+        turn: TurnControl::default(),
     };
     // Optional second arg overrides the prompt (e.g. the mock rig's
     // "TWO subagents" variant exercising concurrent binding).

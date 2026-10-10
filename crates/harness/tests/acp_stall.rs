@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 fn fixture_path() -> PathBuf {
@@ -45,6 +45,7 @@ async fn silent_agent_errors_via_the_prompt_stall_watchdog() {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: "scenario:prompt-stall".into(),

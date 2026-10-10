@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 
-use roboco_harness::{CancellationToken, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     UserInputAnswer, UserInputQuestion,
@@ -285,6 +285,7 @@ async fn collect_text(
         }),
         steering: steer_rx,
         interrupt: interrupt.clone(),
+        turn: TurnControl::default(),
     };
     let mut stream = harness.run_title(request, controls).await?;
     let mut text = String::new();

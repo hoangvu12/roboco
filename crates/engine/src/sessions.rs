@@ -28,7 +28,7 @@ use roboco_doc::{
     DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
-use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
     UserInputQuestion,
@@ -457,6 +457,8 @@ impl SessionsEngine {
                         roboco_proto::invocation::harness_prompt(delivered, harness_id)
                     },
                     message_id: Some(user_id.clone()),
+                    attachments: Vec::new(),
+                    config: None,
                 };
                 // Commit the mailbox slot atomically with the update marker.
                 // An accepted update releases the slot instead, and the prompt
@@ -596,6 +598,7 @@ impl SessionsEngine {
             request_input,
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
+            turn: TurnControl::default(),
         };
 
         lock(&self.inner.runs).insert(
@@ -723,6 +726,8 @@ impl SessionsEngine {
                 roboco_proto::invocation::harness_prompt(delivered, harness_id)
             },
             message_id: Some(user_id.clone()),
+            attachments: Vec::new(),
+            config: None,
         };
         // Serialize mailbox acceptance with confirmation and Done-time
         // inspection: a fast consumer must never outrun its ledger entry. The

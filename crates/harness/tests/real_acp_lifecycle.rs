@@ -10,7 +10,7 @@
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 async fn live_run(cancel: bool) {
@@ -26,6 +26,7 @@ async fn live_run(cancel: bool) {
             let _ = tx.send(Vec::new());
             rx
         }),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: "Run the shell command `printf ACP-TOOL-OK` exactly once using bash. After seeing its result, reply exactly FIRST-DONE. Do not call any other tools.".into(),
@@ -62,7 +63,7 @@ async fn live_run(cancel: bool) {
                     // Both messages queue into pi's own steer queue while the
                     // slow original turn is still in flight.
                     for word in ["SECOND-DONE", "THIRD-DONE"] {
-                        steer.send(SteerMessage { prompt: format!("Do not call tools. Reply exactly {word}."), message_id: None }).await.unwrap();
+                        steer.send(SteerMessage { prompt: format!("Do not call tools. Reply exactly {word}."), message_id: None, attachments: Vec::new(), config: None }).await.unwrap();
                     }
                 }
                 AgentEvent::Steered { .. } => steered_count += 1,

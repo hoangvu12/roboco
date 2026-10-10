@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion,
 };
@@ -75,6 +75,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -127,6 +128,8 @@ async fn delayed_turn(scenario: &str) {
         .send(SteerMessage {
             message_id: None,
             prompt: "second".into(),
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();
@@ -134,6 +137,8 @@ async fn delayed_turn(scenario: &str) {
         .send(SteerMessage {
             message_id: None,
             prompt: "third".into(),
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();
@@ -160,6 +165,8 @@ async fn delayed_turn(scenario: &str) {
         .send(SteerMessage {
             message_id: None,
             prompt: "fourth".into(),
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();
@@ -224,6 +231,8 @@ async fn cancel_quiet(scenario: &str) {
         .send(SteerMessage {
             message_id: None,
             prompt: "must not run".into(),
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();

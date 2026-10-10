@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use roboco_harness::{
-    CancellationToken, Harness, HarnessError, OpencodeHarness, RunControls, SteerMessage,
-};
+    CancellationToken, Harness, HarnessError, OpencodeHarness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, ReasoningLevel, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
 };
@@ -289,6 +288,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -568,6 +568,8 @@ async fn steer_queues_mid_turn_and_delivers_at_idle() {
         .send(SteerMessage {
             prompt: "also do this".into(),
             message_id: None,
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();

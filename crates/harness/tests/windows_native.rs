@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel};
 
 #[test]
@@ -234,6 +234,7 @@ async fn exercise(prompt: &str, resume: Option<&str>) {
         }),
         steering,
         interrupt: interrupt.clone(),
+        turn: TurnControl::default(),
     };
     let operation = async {
         let mut stream = harness
@@ -327,6 +328,7 @@ async fn exercise_tree(prompt: &str, drop_stream: bool) {
         }),
         steering,
         interrupt: interrupt.clone(),
+        turn: TurnControl::default(),
     };
     let mut stream = harness
         .run(request(dir.path(), prompt, None), controls)
@@ -487,6 +489,7 @@ async fn batch_overrides_launch_through_cmd() {
             }),
             steering,
             interrupt: CancellationToken::new(),
+            turn: TurnControl::default(),
         };
         // Consume the whole stream: the shim cannot speak any agent protocol,
         // so the run must fail loudly — but only AFTER a safe launch.
