@@ -1,5 +1,6 @@
 //! Real pane rendering and key dispatch without booting an engine.
 use super::*;
+use crate::settings::{NewThreadBackgroundAdjustment, NewThreadComposerBackground};
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 
 struct NavigationHost {
@@ -58,7 +59,25 @@ fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
         gpui_base::init(cx);
         cx.set_global(Theme::default());
         crate::app_menus::init(cx);
-        settings::init(UiSettings::default(), dir.path(), cx);
+        // The new-thread canvas would otherwise prewarm the bundled default
+        // wallpaper, whose decode flows through a process-global cache with
+        // capacity 4 (new_thread_background_effects::CACHE). Each test's
+        // data dir gives it a unique path, so with 5+ tests running in
+        // parallel (libtest defaults to one thread per core) the entries
+        // evict each other before decoding finishes and every render
+        // re-spawns a full JPEG decode: the scheduler's queue never drains,
+        // `run_until_parked` spins, and the module livelocks in debug
+        // builds (perf-fix wave ticket 07). A stored background whose file
+        // is missing resolves to "no artwork" (active_new_thread_background)
+        // and skips the decode path entirely; these tests assert pane
+        // navigation and focus, never artwork.
+        let mut ui_settings = UiSettings::default();
+        ui_settings.new_thread_composer_background = Some(NewThreadComposerBackground {
+            path: dir.path().join("absent.png").to_string_lossy().into_owned(),
+            name: "absent".into(),
+            adjustment: NewThreadBackgroundAdjustment::default(),
+        });
+        settings::init(ui_settings, dir.path(), cx);
         crate::history::init(
             Default::default(),
             Default::default(),
