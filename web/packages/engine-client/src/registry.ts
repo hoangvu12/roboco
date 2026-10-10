@@ -549,6 +549,17 @@ export function projectRegistrySnapshot(snapshot: EngineRegistrySnapshot): Proje
 
 function scopeChat(scope: (id: string) => string, chat: Chat): Chat {
   const scoped: Chat = { ...chat, id: scope(chat.id), deviceId: scope(chat.deviceId) };
+  // `parentChatId` rides the SAME scoping as every other identity field:
+  // the explorer's Chats section (`childChatRows`) matches children by
+  // `chat.parentChatId === chatId` against the pane's SCOPED chat id, and
+  // the wire layer decodes it back (`request-routing.ts`'s IDENTITY_FIELDS
+  // already lists `parentChatId`). Leaving it raw made every landed side
+  // chat unmatchable — the Chats section rendered empty while side chats
+  // existed. The desktop keeps this field raw because its local engine's
+  // rows are raw; the web scopes EVERY id uniformly.
+  if (chat.parentChatId !== null && chat.parentChatId !== undefined) {
+    scoped.parentChatId = scope(chat.parentChatId);
+  }
   if (chat.spaceId !== null && chat.spaceId !== undefined) {
     scoped.spaceId = scope(chat.spaceId);
   }

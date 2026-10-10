@@ -659,12 +659,10 @@ export function sidebarKeyOrderChanged(old: readonly SidebarKeyed[], next: reado
  * preference with the show-toggle fields cleared before layout. Chats whose
  * spaceId points at a missing space row hide only once the spaces RowSet is
  * loaded (`options.spacesLoaded`); until then they render with the "?"
- * label (ticket 43). Child chats (a `parentChatId` — side chats) LIST in
- * the sidebar like any other chat: the desktop's `visible_chats` filters
- * them (they live in the explorer's Chats section and the right pane),
- * but on the web that stranded them behind a panel a chat page may never
- * open — a deliberate Roboco divergence (archived children still stay
- * off the active list; the archived shelf owns those).
+ * label (ticket 43). Child chats (a `parentChatId`) are top-level-never:
+ * `visible_chats` filters them, matching the desktop — side chats live in
+ * the right pane (its tabs and the explorer's Chats section), never as
+ * standalone sidebar rows.
  */
 export function chatListRows(
   chats: readonly Chat[],
@@ -679,14 +677,12 @@ export function chatListRows(
   const deviceById = new Map(devices.map((device) => [device.id, device]));
   const rows: ChatRow[] = [];
   for (const chat of chats) {
-    // Non-archived only — a deliberate Roboco divergence: the desktop's
-    // `state.rs::visible_chats` also drops `parent_chat_id` children (side
-    // chats live in the explorer's Chats section and the right pane there,
-    // so "a swarm of children never floods the list"), but the web sidebar
-    // is the one place a side chat is always reachable; without it they
-    // only ever appear inside the right pane. Archived children stay off
-    // the active list — the archived shelf lists them.
-    if (chat.archived) {
+    // `state.rs::visible_chats`: the sidebar's active list is the TOP-LEVEL
+    // list — non-archived AND no parent linkage. Side chats (manual forks,
+    // agent-spawned workers) list under their parent in the explorer's
+    // Chats section and never as standalone rows, so a swarm of children
+    // never floods the list (spec: child-chat identity).
+    if (chat.archived || chat.parentChatId != null) {
       continue;
     }
     const row = toChatRow(chat, spaceById, statusByChat, now, deviceById, options);

@@ -3,6 +3,7 @@ import type { Chat, Device, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { encodeScopedId, projectRegistrySnapshot } from "@roboco/engine-client";
 import { fleetEngine, fleetRegistry } from "./helpers/fleet-fixtures";
+import { childChatRows } from "../src/lib/explorer-sections";
 import { mergedFleetSnapshot } from "../src/state/fleet";
 import {
   archivedRows,
@@ -234,5 +235,29 @@ describe("chatPageRow", () => {
     const chats = [chat({ id: "busy" })];
     const statuses = [status({ chatId: "busy", status: "working", updatedAt: "2026-09-16T11:59:30Z" })];
     expect(chatPageRow("busy", chats, [], statuses, NOW)?.status).toBe("working");
+  });
+});
+
+describe("projected side-chat rows", () => {
+  it("scopes parentChatId with the row — the explorer's Chats section matches children by it", () => {
+    // A side chat lands from the engine with a RAW parent id; the
+    // projected fleet row must carry the SCOPED form, or `childChatRows`
+    // (the explorer's Chats section, matching `chat.parentChatId ===
+    // chatId` against the pane's scoped chat id) never sees it — the
+    // section rendered its empty state while side chats existed. The
+    // locally minted unsaved rows already used the scoped form, so the
+    // two halves disagreed until the projection caught up.
+    const OVH = "http://ovh.local";
+    const parent = chat({ id: "main" });
+    const side = chat({ id: "side", parentChatId: "main" });
+    const registry = fleetRegistry(fleetEngine(OVH, "ovh", { chats: [parent, side] }));
+    const projected = projectRegistrySnapshot(registry);
+    const scopedMain = encodeScopedId(OVH, "main");
+    const scopedSide = encodeScopedId(OVH, "side");
+    const projectedSide = projected.chats.find((row) => row.id === scopedSide);
+    expect(projectedSide?.parentChatId).toBe(scopedMain);
+    // The consumer's match, end to end: the pane holds the scoped chat id.
+    const rows = childChatRows(projected.chats, scopedMain, NOW);
+    expect(rows.map((row) => row.chatId)).toEqual([scopedSide]);
   });
 });

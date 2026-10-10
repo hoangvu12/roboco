@@ -1,4 +1,4 @@
-import type { Device, Space } from "@roboco/proto";
+import type { Chat, Device, Space } from "@roboco/proto";
 import type { EngineRegistrySnapshot } from "@roboco/engine-client";
 
 /**
@@ -16,6 +16,7 @@ import type { EngineRegistrySnapshot } from "@roboco/engine-client";
 
 /** The row sets one fixture engine reports; omitted lists stream empty. */
 export interface FleetEngineRows {
+  readonly chats?: readonly Chat[];
   readonly spaces?: readonly Space[];
   readonly devices?: readonly Device[];
 }
@@ -32,7 +33,7 @@ export function fleetEngine(
     state: "connected",
     lastError: null,
     generation: 1,
-    chats: empty,
+    chats: { rows: rows.chats ?? [], loaded: true, error: null },
     spaces: { rows: rows.spaces ?? [], loaded: true, error: null },
     devices: { rows: rows.devices ?? [], loaded: true, error: null },
     sessions: empty,

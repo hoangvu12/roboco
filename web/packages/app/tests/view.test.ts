@@ -298,24 +298,18 @@ describe("chatListRows", () => {
     expect(rows.find((row) => row.chat.id === "seen")!.status).toBe("idle");
   });
 
-  // The Roboco divergence: the sidebar lists side chats (children) like
-  // any other chat — the desktop's `visible_chats` filters them, but on
-  // the web they are otherwise reachable only through the right pane.
-  // Archived children stay off the active list (the archived shelf owns
-  // those, and the archived test below pins that half).
-  it("lists child chats in the sidebar; archived children stay off the active list", () => {
+  // state.rs `visible_chats`: the sidebar's active list is the TOP-LEVEL
+  // list — non-archived AND no parent linkage. Side chats (manual forks,
+  // agent-spawned workers) list under their parent in the explorer's Chats
+  // section, never as standalone rows (spec: child-chat identity).
+  it("excludes child chats from the sidebar list, archived or not", () => {
     const chats = [
       chat({ id: "main", lastMessageAt: "2026-09-16T11:00:00Z" }),
       chat({ id: "side", parentChatId: "main", lastMessageAt: "2026-09-16T11:30:00Z" }),
       chat({ id: "archived-side", parentChatId: "main", archived: true }),
       chat({ id: "orphan-side", parentChatId: "deleted-parent", lastMessageAt: "2026-09-16T11:45:00Z" }),
     ];
-    // Recency order — the orphaned side chat is the newest row.
-    expect(chatListRows(chats, [], [], NOW).map((row) => row.chat.id)).toEqual([
-      "orphan-side",
-      "side",
-      "main",
-    ]);
+    expect(chatListRows(chats, [], [], NOW).map((row) => row.chat.id)).toEqual(["main"]);
   });
 
   it("the archived shelf keeps archived children — it filters on archive alone", () => {
