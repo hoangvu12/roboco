@@ -754,10 +754,17 @@ async fn interrupt_stamps_streaming_entry_aborted() {
         MessagePart::Text { text, .. } => assert_eq!(text, "partial output"),
         other => panic!("unexpected part {other:?}"),
     }
-    assert_eq!(
-        command_status(&core, "cmd-int-1"),
-        Some((SessionCommandStatus::Applied, None))
-    );
+    // The Interrupt command resolves a moment after the run stamps its
+    // streaming entry Aborted (the settle wait inside the interrupt reads
+    // the run gone first): poll rather than race it.
+    wait_for(
+        || {
+            command_status(&core, "cmd-int-1")
+                == Some((SessionCommandStatus::Applied, None))
+        },
+        "interrupt command applied",
+    )
+    .await;
     // Journal closed with a Done — nothing left to recover.
     let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
