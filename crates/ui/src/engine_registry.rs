@@ -113,6 +113,26 @@ pub struct ProjectedSnapshot {
     pub sessions: Vec<Session>,
 }
 impl RegistrySnapshot {
+    /// Whether two snapshots differ in what views render from them directly:
+    /// engine identity, connection state, errors, and load flags — not the
+    /// row payloads (chats/spaces/devices/sessions), whose visible
+    /// presentation flows through `AppState`'s apply_* reducers with their
+    /// own change detection. Liveness heartbeats churn payload timestamps
+    /// without touching anything here.
+    pub fn observable_differs(&self, other: &Self) -> bool {
+        self.configuration_error != other.configuration_error
+            || self.engines.len() != other.engines.len()
+            || self.engines.iter().zip(&other.engines).any(|(a, b)| {
+                a.key != b.key
+                    || a.info != b.info
+                    || a.state != b.state
+                    || a.last_error != b.last_error
+                    || a.generation != b.generation
+                    || a.chats_loaded != b.chats_loaded
+                    || a.spaces_loaded != b.spaces_loaded
+            })
+    }
+
     pub fn projected(&self) -> ProjectedSnapshot {
         let mut out = ProjectedSnapshot::default();
         for engine in &self.engines {
