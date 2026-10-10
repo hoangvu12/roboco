@@ -17,7 +17,11 @@ pub(crate) enum Frame {
     RateLimit(RateLimitFrame),
     Result(ResultFrame),
     ControlRequest(ControlRequestFrame),
-    /// control_response / control_cancel_request / anything unknown.
+    /// The CLI's answer to one of our control requests.
+    ControlResponse(ControlResponseFrame),
+    /// Where the CLI has taken one of our stdin user messages.
+    CommandLifecycle(CommandLifecycleFrame),
+    /// control_cancel_request / anything unknown.
     Other,
 }
 
@@ -48,6 +52,10 @@ pub(crate) struct SystemFrame {
     /// absent on subagent-owned background shell tasks.
     #[serde(default)]
     pub subagent_type: Option<String>,
+    /// `background_tasks_changed`: every background task the session holds
+    /// now (agents and shells) — the authoritative set, not a delta.
+    #[serde(default)]
+    pub tasks: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -86,6 +94,10 @@ pub(crate) struct MessageFrame {
     /// Terse assistant-level error code (`rate_limit`, `billing_error`, …).
     #[serde(default)]
     pub error: Option<String>,
+    /// The uuid a stdin user line carried (echoed on the user frame we get
+    /// back for it) — pairs with `command_lifecycle` frames.
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -140,6 +152,28 @@ pub(crate) struct RateLimitInfo {
     pub status: String,
     #[serde(rename = "rateLimitType", default)]
     pub rate_limit_type: Option<String>,
+    /// `allowed`/`allowed_warning` when the account may spend provisioned
+    /// overage past a rejected window.
+    #[serde(rename = "overageStatus", default)]
+    pub overage_status: Option<String>,
+    #[serde(rename = "isUsingOverage", default)]
+    pub is_using_overage: bool,
+    #[serde(rename = "overageInUse", default)]
+    pub overage_in_use: bool,
+}
+
+impl RateLimitInfo {
+    /// A rejected window that actually blocks the turn: an account spending
+    /// provisioned overage keeps running despite the reject.
+    pub fn blocks(&self) -> bool {
+        self.status == "rejected"
+            && !matches!(
+                self.overage_status.as_deref(),
+                Some("allowed" | "allowed_warning")
+            )
+            && !self.is_using_overage
+            && !self.overage_in_use
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -185,6 +219,32 @@ pub(crate) struct ControlRequestBody {
     pub input: Value,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ControlResponseFrame {
+    #[serde(default)]
+    pub response: ControlResponseBody,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ControlResponseBody {
+    #[serde(default)]
+    pub request_id: String,
+}
+
+/// `{"type":"command_lifecycle","command_uuid":…,"state":…}` — emitted for
+/// every stdin user message carrying a `uuid` (verified live against CLI
+/// 2.1.286): `queued` when read, `started` when a turn takes it up (a `next`
+/// steer starts mid-turn, at the step boundary it folds into), then
+/// `completed` or `cancelled` (its turn was aborted by a later `now` steer
+/// or an interrupt). Background-task wake turns carry no command at all.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct CommandLifecycleFrame {
+    #[serde(default)]
+    pub command_uuid: String,
+    #[serde(default)]
+    pub state: String,
+}
+
 /// Parse one stdout JSONL line. `Err` = not JSON; unknown types = `Other`.
 pub(crate) fn parse_frame(line: &str) -> Result<Frame, serde_json::Error> {
     let value: Value = serde_json::from_str(line)?;
@@ -197,6 +257,8 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, serde_json::Error> {
         "rate_limit_event" => Frame::RateLimit(serde_json::from_value(value)?),
         "result" => Frame::Result(serde_json::from_value(value)?),
         "control_request" => Frame::ControlRequest(serde_json::from_value(value)?),
+        "control_response" => Frame::ControlResponse(serde_json::from_value(value)?),
+        "command_lifecycle" => Frame::CommandLifecycle(serde_json::from_value(value)?),
         _ => Frame::Other,
     };
     Ok(frame)
@@ -211,6 +273,28 @@ pub(crate) fn user_message_line(text: &str) -> String {
         "parent_tool_use_id": null,
     })
     .to_string()
+}
+
+/// The content blocks of a user line: the attached images first, then the
+/// text — the standard Anthropic image+text message shape (verified against
+/// the real CLI: `--input-format stream-json` accepts image content blocks
+/// in user frames).
+fn content_blocks(text: &str, images: &[ImageBlock]) -> Vec<Value> {
+    let mut blocks: Vec<Value> = images
+        .iter()
+        .map(|img| {
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                },
+            })
+        })
+        .collect();
+    blocks.push(json!({ "type": "text", "text": text }));
+    blocks
 }
 
 /// One inline image for a stdin user turn (Anthropic base64 image source).
@@ -229,25 +313,58 @@ pub(crate) fn user_message_line_with_images(text: &str, images: &[ImageBlock]) -
     if images.is_empty() {
         return user_message_line(text);
     }
-    let mut blocks: Vec<Value> = images
-        .iter()
-        .map(|img| {
-            json!({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": img.media_type,
-                    "data": img.data,
-                },
-            })
-        })
-        .collect();
-    blocks.push(json!({ "type": "text", "text": text }));
     json!({
         "type": "user",
-        "message": { "role": "user", "content": blocks },
+        "message": { "role": "user", "content": content_blocks(text, images) },
         "parent_tool_use_id": null,
     })
+    .to_string()
+}
+
+/// The run's opening prompt, tagged with `id` so its `command_lifecycle`
+/// frames can be told apart from a steer's. Images precede the text, as in
+/// [`user_message_line_with_images`].
+pub(crate) fn prompt_line(text: &str, id: &str, images: &[ImageBlock]) -> String {
+    let content = if images.is_empty() {
+        Value::String(text.to_owned())
+    } else {
+        Value::Array(content_blocks(text, images))
+    };
+    json!({
+        "type": "user",
+        "uuid": id,
+        "message": { "role": "user", "content": content },
+        "parent_tool_use_id": null,
+    })
+    .to_string()
+}
+
+/// Fold this input into the next model step without aborting tools or tasks.
+/// A steer line. `immediate` → `priority: "now"`: streaming text/thinking
+/// stops at once and the steer is answered next (verified against CLI
+/// 2.1.280). But `now` also aborts an in-flight MCP tool call ("The tool call
+/// was interrupted before a result was received"), so while any tool is open
+/// the steer goes as `next`: the tool finishes and the steer lands right after
+/// its result, in the same turn. An interrupted turn still emits a `result`.
+pub(crate) fn steer_message_line(text: &str, id: &str, immediate: bool) -> String {
+    steer_message_line_with_images(text, id, immediate, &[])
+}
+
+/// [`steer_message_line`] carrying inline images ahead of the text, in the
+/// same block shape as [`user_message_line_with_images`].
+pub(crate) fn steer_message_line_with_images(
+    text: &str,
+    id: &str,
+    immediate: bool,
+    images: &[ImageBlock],
+) -> String {
+    let content = if images.is_empty() {
+        Value::String(text.to_owned())
+    } else {
+        Value::Array(content_blocks(text, images))
+    };
+    json!({"type":"user", "uuid":id, "priority": if immediate { "now" } else { "next" },
+        "message":{"role":"user","content":content}, "parent_tool_use_id":null})
     .to_string()
 }
 
@@ -275,6 +392,51 @@ pub(crate) fn interrupt_request_line(request_id: &str) -> String {
         "type": "control_request",
         "request_id": request_id,
         "request": { "subtype": "interrupt" },
+    })
+    .to_string()
+}
+
+/// The run's opening control request. `perTaskStopAffordance` tells the CLI
+/// this host stops tasks individually, so an interrupt ends the turn and
+/// spares background agents — without it the CLI stops every background
+/// agent on interrupt (verified live against 2.1.285; background shells
+/// survive either way).
+pub(crate) fn initialize_request_line(request_id: &str) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "initialize", "perTaskStopAffordance": true },
+    })
+    .to_string()
+}
+
+/// Switch the live process's model (`None` = the user's default model).
+pub(crate) fn set_model_request_line(request_id: &str, model: Option<&str>) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "set_model", "model": model },
+    })
+    .to_string()
+}
+
+/// Replace the live process's flag-layer settings (effort, fast mode, …).
+pub(crate) fn apply_flag_settings_line(request_id: &str, settings: Value) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "apply_flag_settings", "settings": settings },
+    })
+    .to_string()
+}
+
+/// Stop the in-flight turn only. `cancel_queued` drops steers the CLI has
+/// queued but not yet consumed: a stopped turn never continues into them.
+pub(crate) fn stop_turn_request_line(request_id: &str) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "interrupt", "cancel_queued": true },
     })
     .to_string()
 }
@@ -333,5 +495,87 @@ mod tests {
             user_message_line_with_images("hi", &[]),
             user_message_line("hi")
         );
+    }
+
+    #[test]
+    fn steer_priority_follows_tool_state() {
+        let now: serde_json::Value =
+            serde_json::from_str(&steer_message_line("hi", "u1", true)).unwrap();
+        let next: serde_json::Value =
+            serde_json::from_str(&steer_message_line("hi", "u2", false)).unwrap();
+        assert_eq!(now["priority"], "now");
+        assert_eq!(next["priority"], "next");
+        assert_eq!(next["uuid"], "u2");
+    }
+
+    #[test]
+    fn prompt_line_carries_the_command_uuid() {
+        let line = prompt_line(
+            "go",
+            "cmd-1",
+            &[ImageBlock {
+                media_type: "image/png".into(),
+                data: "QUJD".into(),
+            }],
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["uuid"], "cmd-1");
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[1]["type"], "text");
+        // No images: plain string content, same as a plain user line.
+        let bare = prompt_line("go", "cmd-2", &[]);
+        let v: serde_json::Value = serde_json::from_str(&bare).unwrap();
+        assert_eq!(v["message"]["content"], "go");
+        assert_eq!(v["uuid"], "cmd-2");
+    }
+
+    #[test]
+    fn control_request_line_shapes() {
+        let stop: serde_json::Value = serde_json::from_str(&stop_turn_request_line("r1")).unwrap();
+        assert_eq!(stop["request"]["subtype"], "interrupt");
+        assert_eq!(stop["request"]["cancel_queued"], true);
+        let init: serde_json::Value = serde_json::from_str(&initialize_request_line("r2")).unwrap();
+        assert_eq!(init["request"]["subtype"], "initialize");
+        assert_eq!(init["request"]["perTaskStopAffordance"], true);
+        let model: serde_json::Value =
+            serde_json::from_str(&set_model_request_line("r3", Some("sonnet"))).unwrap();
+        assert_eq!(model["request"]["subtype"], "set_model");
+        assert_eq!(model["request"]["model"], "sonnet");
+    }
+
+    #[test]
+    fn command_lifecycle_and_control_response_parse() {
+        match parse_frame(r#"{"type":"command_lifecycle","command_uuid":"u1","state":"started"}"#)
+            .unwrap()
+        {
+            Frame::CommandLifecycle(f) => {
+                assert_eq!(f.command_uuid, "u1");
+                assert_eq!(f.state, "started");
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        match parse_frame(r#"{"type":"control_response","response":{"request_id":"r9"}}"#).unwrap()
+        {
+            Frame::ControlResponse(f) => assert_eq!(f.response.request_id, "r9"),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overage_carrying_rejects_do_not_block() {
+        let info: RateLimitInfo = serde_json::from_value(serde_json::json!({
+            "status": "rejected",
+            "overageStatus": "allowed",
+        }))
+        .unwrap();
+        assert!(!info.blocks(), "provisioned overage may spend");
+        let plain: RateLimitInfo =
+            serde_json::from_value(serde_json::json!({"status": "rejected"})).unwrap();
+        assert!(plain.blocks());
+        let ok: RateLimitInfo =
+            serde_json::from_value(serde_json::json!({"status": "ok"})).unwrap();
+        assert!(!ok.blocks());
     }
 }

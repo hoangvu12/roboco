@@ -1,8 +1,8 @@
 //! Frame → [`AgentEvent`] normalization (init dedupe, subagent tagging, tool
 //! decoding, error-code mapping).
 
-use serde_json::Value;
 use roboco_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall};
+use serde_json::Value;
 
 use super::wire::{ContentBlock, Frame};
 
@@ -365,9 +365,7 @@ impl Normalizer {
                         return Vec::new();
                     }
                     let status = match f.status.as_deref().unwrap_or("") {
-                        "completed" | "complete" | "succeeded" | "success" => {
-                            DoneStatus::Completed
-                        }
+                        "completed" | "complete" | "succeeded" | "success" => DoneStatus::Completed,
                         "failed" | "errored" | "error" => DoneStatus::Errored,
                         "killed" | "cancelled" | "canceled" | "stopped" | "interrupted" => {
                             DoneStatus::Interrupted
@@ -534,12 +532,14 @@ impl Normalizer {
                             .flatten()
                             .and_then(Value::as_str)
                             .filter(|p| !p.trim().is_empty())
-                            .map(|prompt| tag(
-                                &b.id,
-                                AgentEvent::UserMessage {
-                                    text: prompt.to_owned(),
-                                },
-                            ));
+                            .map(|prompt| {
+                                tag(
+                                    &b.id,
+                                    AgentEvent::UserMessage {
+                                        text: prompt.to_owned(),
+                                    },
+                                )
+                            });
                         // A SendMessage steer never echoes on the child feed
                         // (live-verified) — surface it from the parent's own
                         // call, re-keyed onto the spawn it addresses.
@@ -655,9 +655,10 @@ impl Normalizer {
             }
 
             // A claude.ai plan window was hit. A hard `rejected` blocks the
-            // turn — make it visible; allowed/allowed_warning stay quiet.
+            // turn — make it visible; allowed/allowed_warning stay quiet, and
+            // so does a reject the account's overage carries past.
             Frame::RateLimit(f) => {
-                if f.rate_limit_info.status != "rejected" {
+                if !f.rate_limit_info.blocks() {
                     return Vec::new();
                 }
                 let window =
@@ -770,7 +771,10 @@ impl Normalizer {
             }
 
             // Control frames are handled by the run loop, not normalized.
-            Frame::ControlRequest(_) | Frame::Other => Vec::new(),
+            Frame::ControlRequest(_)
+            | Frame::ControlResponse(_)
+            | Frame::CommandLifecycle(_)
+            | Frame::Other => Vec::new(),
         }
     }
 }
@@ -980,8 +984,7 @@ mod tests {
         ] {
             let ev = normalize_one(frame);
             assert!(
-                !ev.iter()
-                    .any(|e| matches!(e, AgentEvent::Subagent { .. })),
+                !ev.iter().any(|e| matches!(e, AgentEvent::Subagent { .. })),
                 "{frame}: {ev:?}"
             );
         }
@@ -1157,10 +1160,12 @@ mod tests {
             r#"{"type":"system","subtype":"task_notification","tool_use_id":"toolu_agent","status":"running"}"#,
         )
         .is_empty());
-        assert!(normalize_one(
-            r#"{"type":"system","subtype":"task_notification","status":"completed"}"#,
-        )
-        .is_empty());
+        assert!(
+            normalize_one(
+                r#"{"type":"system","subtype":"task_notification","status":"completed"}"#,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1416,8 +1421,25 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
     }
-}
 
+    #[test]
+    fn a_rejected_window_carried_by_overage_is_not_an_error() {
+        let blocked = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected"}}"#,
+        );
+        assert!(matches!(blocked.as_slice(), [AgentEvent::Error { .. }]));
+        for overage in [
+            r#""overageStatus":"allowed""#,
+            r#""overageStatus":"allowed_warning""#,
+            r#""isUsingOverage":true"#,
+        ] {
+            let raw = format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour",{overage}}}}}"#
+            );
+            assert!(normalize_one(&raw).is_empty(), "{overage}");
+        }
+    }
+}
 #[cfg(test)]
 mod context_tests {
     use super::*;
