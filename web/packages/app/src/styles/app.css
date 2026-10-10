@@ -8595,8 +8595,7 @@ button.files-save-pill:hover {
   }
 
   .pane-seam-sidebar,
-  .pane-seam-right,
-  .pane-seam-files {
+  .pane-seam-right {
     display: none;
   }
 
@@ -8663,43 +8662,6 @@ button.files-save-pill:hover {
   }
 
   /*
-   * The explorer drawer — the docked files column's phone form, the mirror
-   * of the pane drawer above: fixed to the right edge, `min(30rem, 88vw)`
-   * wide, sliding on the same 140ms menu-in glide. The shell used to leave
-   * this column IN FLOW at phone (only the sidebar and the surface host
-   * became drawers), so opening the explorer ate the conversation's width —
-   * a 240px column against a 375px viewport. The store keeps it mutually
-   * exclusive with the pane drawer (right-pane.ts `setPhoneMode`): at this
-   * width the two right columns cannot sit side by side, so one drawer
-   * shows at a time — a file/subagent/side-chat opened from the explorer
-   * swaps the drawers. z 29 keeps it under the pane drawer (30) for the
-   * transient both-open states a breakpoint flip can leave behind. The
-   * column unmounts at desktop when shut; at phone it stays mounted with
-   * `aria-hidden` so the close glide runs (the pane drawer's pattern).
-   */
-  .files-pane-column {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(30rem, 88vw) !important;
-    z-index: 29;
-    transform: translateX(100%);
-    transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
-    border-left: 1px solid var(--rb-border);
-    background: var(--rb-bg);
-    /* The drawer pads below the titlebar band exactly like the pane drawer
-     * (web-bugs 14): the bar is a transparent, hit-testable overlay above
-     * this drawer, so the tree toolbar must start under it. */
-    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
-  }
-
-  .files-pane-column:not([aria-hidden="true"]) {
-    transform: translateX(0);
-    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
-  }
-
-  /*
    * The in-drawer tab strip header (§2.2): the 38px row that carries the
    * surface tabs at phone — the titlebar band's phone replacement, since
    * the band renders no pane tabs there and 41px could not fit a strip
@@ -8752,8 +8714,7 @@ button.files-save-pill:hover {
     background: color-mix(in srgb, var(--rb-overlay) 60%, transparent);
   }
 
-  .right-pane:not([aria-hidden="true"]) ~ .pane-backdrop,
-  .files-pane-column:not([aria-hidden="true"]) ~ .pane-backdrop {
+  .right-pane:not([aria-hidden="true"]) ~ .pane-backdrop {
     display: block;
   }
 
@@ -17660,6 +17621,67 @@ button.segmented-option:hover {
   right: 0;
   transform: translateX(calc((var(--rb-files-now, 0px) - 10px) * -1));
   transition: transform var(--rb-motion-resize) var(--rb-ease-ease-out);
+}
+
+/*
+ * The explorer drawer — the docked files column's phone form, the mirror
+ * of the pane drawer's. This block MUST sit AFTER the base rules above:
+ * same single-class specificity, so an earlier phone block would lose the
+ * cascade to these (the `.right-pane` drawer gets away with living in the
+ * early block only because ITS base rule is early too) — the first cut
+ * of this drawer was written there, the base `position: relative`/
+ * `transition: width`/`padding-top` quietly won, and only the `!important`
+ * width survived: a 88vw in-flow always-mounted box that crushed the phone
+ * conversation ("the chat is always small, an empty space is always
+ * there"). Placement is load-bearing — keep it after the seam rule.
+ *
+ * Fixed to the right edge, `min(30rem, 88vw)` wide, sliding on the 140ms
+ * menu-in glide. The shell used to leave this column IN FLOW at phone
+ * (only the sidebar and the surface host became drawers), so opening the
+ * explorer ate the conversation's width — a 240px column against a 375px
+ * viewport. The store keeps it mutually exclusive with the pane drawer
+ * (right-pane.ts `setPhoneMode`): at this width the two right columns
+ * cannot sit side by side, so one drawer shows at a time — a
+ * file/subagent/side-chat opened from the explorer swaps the drawers. z 29
+ * keeps it under the pane drawer (30) for the transient both-open states a
+ * breakpoint flip can leave behind. The column unmounts at desktop when
+ * shut; at phone it stays mounted with `aria-hidden` so the close glide
+ * runs (the pane drawer's pattern).
+ */
+@media (max-width: 768px) {
+  .files-pane-column {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(30rem, 88vw) !important;
+    z-index: 29;
+    transform: translateX(100%);
+    transition: transform var(--rb-motion-menu-in) var(--rb-ease-ease-out);
+    border-left: 1px solid var(--rb-border);
+    background: var(--rb-bg);
+    /* The drawer pads below the titlebar band exactly like the pane drawer
+     * (web-bugs 14): the bar is a transparent, hit-testable overlay above
+     * this drawer, so the tree toolbar must start under it. */
+    padding-top: calc(var(--rb-titlebar-height) + env(safe-area-inset-top));
+  }
+
+  .files-pane-column:not([aria-hidden="true"]) {
+    transform: translateX(0);
+    box-shadow: 0 0 40px rgb(0 0 0 / 0.4);
+  }
+
+  /* The seam retires at phone, like the sidebar's and the pane's. */
+  .pane-seam-files {
+    display: none;
+  }
+
+  /* The shared drawer backdrop shows while EITHER right drawer is open —
+   * the selector's specificity (0,3,0) beats the early block's plain
+   * `.pane-backdrop { display: none }` wherever it lives. */
+  .files-pane-column:not([aria-hidden="true"]) ~ .pane-backdrop {
+    display: block;
+  }
 }
 
 /*
