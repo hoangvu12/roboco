@@ -315,6 +315,47 @@ describe("explorer_is_a_docked_portion_of_one_right_pane (tickets 22/23)", () =>
   });
 });
 
+describe("phone_mode_swaps_the_two_drawers (web phone chrome)", () => {
+  // ≤768px: the surface host and the explorer are both right-edge drawers —
+  // one shows at a time (the desktop columns coexist; the drawers cannot
+  // share the canvas). See `RightPaneStore#phoneMode`.
+  it("opening the explorer hands the drawer to it — the host's flags clear, its tabs survive", () => {
+    const { store } = fresh();
+    store.setPhoneMode(true);
+    store.addFileSurface("chat-1", "src/main.rs");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: false });
+    // Docking the explorer swaps the drawer back: the host closes, its tab stays.
+    store.openFilesPanel("chat-1");
+    const pane = store.stateFor("chat-1");
+    expect(pane).toMatchObject({ open: false, filesOpen: true, expanded: false });
+    expect(pane.tabs).toHaveLength(1);
+  });
+
+  it("every host open path clears the explorer — toggle, setActive, show, setSurfacesOpen", () => {
+    for (const open of [
+      (store: RightPaneStore) => store.toggle("chat-1"),
+      (store: RightPaneStore) => store.setActive("chat-1", { kind: "picker" }),
+      (store: RightPaneStore) => store.show("chat-1", { kind: "picker" }),
+      (store: RightPaneStore) => store.setSurfacesOpen("chat-1", true),
+    ] as const) {
+      const { store } = fresh();
+      store.setPhoneMode(true);
+      store.openFilesPanel("chat-1");
+      open(store);
+      expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: false });
+    }
+  });
+
+  it("a late phone wiring never retroactively closes anything — only future opens swap", () => {
+    const { store } = fresh();
+    store.openFilesPanel("chat-1");
+    store.addFileSurface("chat-1", "src/main.rs");
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: true });
+    store.setPhoneMode(true);
+    expect(store.stateFor("chat-1")).toMatchObject({ open: true, filesOpen: true });
+  });
+});
+
 describe("commit_diff_surfaces_are_independent_pinned_tabs", () => {
   it("each click mints a fresh tab titled with the commit's subject", () => {
     const store = fresh().store;

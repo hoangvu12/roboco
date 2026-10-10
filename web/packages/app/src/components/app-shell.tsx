@@ -251,6 +251,14 @@ export function AppShell() {
       );
     }
   }, [fleetSnapshot]);
+  // Phone mode (≤768px, the shared media hook): the surface host and the
+  // docked explorer are both right-edge drawers there — the store keeps
+  // them mutually exclusive so one drawer never opens beneath the other
+  // (the desktop columns coexist; the drawers cannot share the canvas).
+  // A breakpoint flip re-wires in the same commit the CSS drawer form lands.
+  useEffect(() => {
+    rightPaneStore.setPhoneMode(phone);
+  }, [phone]);
   // What the pane resolves to WHEN OPEN, and what it lays out at right now.
   // Keeping the two apart is what lets the column animate between them: the
   // content keeps the open width while the column itself glides to zero.
@@ -591,19 +599,26 @@ export function AppShell() {
   // The phone pane drawer rides the Escape ladder's same rung as the phone
   // sidebar drawer (12, `webDrawer` — the web-only phone chrome): Escape
   // closes it exactly as it closes the sidebar drawer, and two drawers open
-  // at once peel one per press in registration order. Desktop-pane-open
-  // Escape is untouched — the rung is phone-gated.
+  // at once peel one per press in registration order. The explorer drawer
+  // (phone) shares the rung: the host peels first, the explorer second —
+  // the store's mutual exclusion normally leaves only one open, so the
+  // ladder matters for the transient states a breakpoint flip can leave.
+  // Desktop-pane-open Escape is untouched — the rung is phone-gated.
   useEffect(() => {
-    if (!phone || !hasPane || !pane.open) {
+    if (!phone || !hasPane || (!pane.open && !pane.filesOpen)) {
       return;
     }
     return registerEscapeSurface(ESCAPE_PRIORITY.webDrawer, () => {
       if (paneChatId !== null) {
-        rightPaneStore.close(paneChatId);
+        if (pane.open) {
+          rightPaneStore.close(paneChatId);
+        } else {
+          rightPaneStore.closeFilesPanel(paneChatId);
+        }
       }
       return true;
     });
-  }, [phone, hasPane, pane.open, paneChatId]);
+  }, [phone, hasPane, pane.open, pane.filesOpen, paneChatId]);
   // One glide, shared: `toggle_right_pane_expand` tweens the pane AND the
   // conversation together, so both columns have to read the same clock.
   const glide = usePaneGlide(hasPane && pane.open, takeover, hasPane ? paneOpenWidth : 0);
@@ -963,8 +978,16 @@ export function AppShell() {
         className="pane-backdrop"
         role="presentation"
         onClick={() => {
-          if (paneChatId !== null) {
+          if (paneChatId === null) {
+            return;
+          }
+          // Phone ladder: the host drawer peels first, the explorer drawer
+          // second — the CSS shows this backdrop while EITHER drawer is
+          // open (see the phone block's visibility rule).
+          if (pane.open) {
             rightPaneStore.close(paneChatId);
+          } else if (pane.filesOpen) {
+            rightPaneStore.closeFilesPanel(paneChatId);
           }
         }}
       />

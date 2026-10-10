@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useEngineSession } from "../../state/session-provider";
 import { useFleetSnapshot } from "../../state/fleet";
+import { useIsPhone } from "../../state/media";
 import { WorkspaceFilesClient } from "../../lib/files-client";
 import { FileTreeModel } from "../../lib/file-tree";
 import { chatFileInserts } from "../../lib/chat-insert";
@@ -30,6 +31,7 @@ export function FilesPaneColumn({
   pane: ChatPaneState;
 }) {
   const session = useEngineSession();
+  const phone = useIsPhone();
   const client = useMemo(
     () => (session !== null ? new WorkspaceFilesClient(session.client, { chatId }) : null),
     [session, chatId],
@@ -83,11 +85,22 @@ export function FilesPaneColumn({
     return chatCwd(snapshot, chatId);
   }, [snapshot, chatId]);
 
-  if (!pane.filesOpen) {
+  // The desktop column unmounts when shut (the tree model outlives the DOM
+  // — the effect below keys on the session, not the flag). At phone the
+  // column is the explorer DRAWER — the mirror of the surface host's — and
+  // stays mounted while closed (`aria-hidden` + the CSS translate), so the
+  // 140ms close glide has something to animate. The store keeps the two
+  // drawers mutually exclusive at phone (`setPhoneMode`): one shows at a
+  // time, and opening a surface from the explorer swaps the drawers.
+  if (!pane.filesOpen && !phone) {
     return null;
   }
   return (
-    <aside className="files-pane-column" aria-label="Files">
+    <aside
+      className="files-pane-column"
+      aria-label="Files"
+      aria-hidden={!pane.filesOpen}
+    >
       {projectlessRoot !== null && (
         <div className="files-projectless-root" title={projectlessRoot}>
           {projectlessRoot}

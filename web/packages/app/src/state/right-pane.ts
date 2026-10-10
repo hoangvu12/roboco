@@ -327,6 +327,17 @@ export class RightPaneStore {
   readonly #sideChats = new Map<string, { chatId: string; title: string; running: boolean }>();
   /** The side-chat entity source (draft retention + disposal), boot-injected. */
   #sideChatEntities: SideChatEntitySource | null = null;
+  /**
+   * Phone mode (≤768px, the web-only drawer chrome — wired by the shell off
+   * the shared media hook): the surface host and the docked explorer are
+   * BOTH right-edge drawers there, and two drawers cannot share the phone
+   * canvas the way the desktop columns sit side by side — so opening one
+   * closes the other (a file/subagent/side-chat opened from the explorer
+   * swaps the drawers). The default (false) is the desktop layout, where
+   * the two portions coexist by design (`set_surfaces_open` never closes a
+   * pane the user has open; the files toggle drives only the explorer).
+   */
+  #phoneMode = false;
 
   constructor(terminals: PaneTerminalSource | null = null) {
     this.#terminals = terminals;
@@ -340,6 +351,11 @@ export class RightPaneStore {
   /** Boot wiring: hand the pane the side-chat entity source. */
   setSideChatEntitySource(source: SideChatEntitySource): void {
     this.#sideChatEntities = source;
+  }
+
+  /** The shell's media-hook wiring for phone mode (see `#phoneMode`). */
+  setPhoneMode(phone: boolean): void {
+    this.#phoneMode = phone;
   }
 
   getVersion = (): number => this.#version;
@@ -368,13 +384,14 @@ export class RightPaneStore {
    * leaves takeover mode (`toggle_right_pane`, `shell.rs:1970-1975`) —
    * reopening after a takeover close lands in normal mode. The pane toggle
    * drives ONLY the surface host (fe45a1cd): the docked explorer portion is
-   * independent and stays as it was.
+   * independent and stays as it was — except in phone mode, where the two
+   * are one drawer and the open arm swaps them (see `#phoneMode`).
    */
   toggle(chatId: string): void {
     this.#update(chatId, (current) =>
       current.open
         ? { ...current, open: false, expanded: false }
-        : { ...current, open: true },
+        : { ...current, open: true, ...(this.#phoneMode ? { filesOpen: false } : {}) },
     );
   }
 
@@ -387,7 +404,7 @@ export class RightPaneStore {
     this.#update(chatId, (current) =>
       current.open && surfaceEqual(current.active, surface)
         ? { ...current, open: false, expanded: false }
-        : { ...current, open: true, active: surface },
+        : { ...current, open: true, active: surface, ...(this.#phoneMode ? { filesOpen: false } : {}) },
     );
   }
 
@@ -418,7 +435,12 @@ export class RightPaneStore {
 
   /** `set_right_active` — sets the stored pick and opens the pane. */
   setActive(chatId: string, surface: RightSurface): void {
-    this.#update(chatId, (current) => ({ ...current, open: true, active: surface }));
+    this.#update(chatId, (current) => ({
+      ...current,
+      open: true,
+      active: surface,
+      ...(this.#phoneMode ? { filesOpen: false } : {}),
+    }));
   }
 
   /** `toggle_right_pane_expand` — session-local view state, never persisted. */
@@ -455,9 +477,16 @@ export class RightPaneStore {
     this.#update(chatId, (pane) => ({ ...pane, filesOpen: false }));
   }
 
-  /** `add_files_surface` — dock the explorer portion, opening nothing else. */
+  /** `add_files_surface` — dock the explorer portion, opening nothing else.
+   * In phone mode the two portions are one drawer, so docking the explorer
+   * hands the drawer to it (the host's flags clear — the pane's own tabs
+   * survive untouched, exactly like the desktop's coexist mode). */
   openFilesPanel(chatId: string): void {
-    this.#update(chatId, (pane) => ({ ...pane, filesOpen: true }));
+    this.#update(chatId, (pane) => ({
+      ...pane,
+      filesOpen: true,
+      ...(this.#phoneMode ? { open: false, expanded: false } : {}),
+    }));
   }
 
   /** `close_files_panel` — programmatic close of the explorer portion only. */
@@ -471,7 +500,11 @@ export class RightPaneStore {
    * touching the explorer portion.
    */
   setSurfacesOpen(chatId: string, open: boolean): void {
-    this.#update(chatId, (pane) => (pane.open === open ? pane : { ...pane, open }));
+    this.#update(chatId, (pane) =>
+      pane.open === open
+        ? pane
+        : { ...pane, open, ...(open && this.#phoneMode ? { filesOpen: false } : {}) },
+    );
   }
 
   /**
