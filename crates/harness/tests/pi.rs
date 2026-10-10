@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
     ToolCall, UserInputAnswer,
@@ -89,6 +89,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -614,6 +615,8 @@ async fn mid_run_steer_delivers_at_pi_turn_boundary() {
                 .send(SteerMessage {
                     prompt: "steered text".into(),
                     message_id: None,
+                    attachments: Vec::new(),
+                    config: None,
                 })
                 .await
                 .unwrap();
@@ -657,6 +660,8 @@ async fn stranded_steer_is_recovered_after_the_done() {
                 .send(SteerMessage {
                     prompt: "recovered steer".into(),
                     message_id: None,
+                    attachments: Vec::new(),
+                    config: None,
                 })
                 .await
                 .unwrap();
@@ -703,6 +708,8 @@ async fn parked_session_next_message_runs_as_a_new_prompt() {
         .send(SteerMessage {
             prompt: "follow-up-prompt".into(),
             message_id: None,
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .unwrap();

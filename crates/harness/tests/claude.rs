@@ -12,8 +12,7 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
 use roboco_harness::{
-    CancellationToken, ClaudeHarness, Harness, HarnessError, RunControls, SteerMessage,
-};
+    CancellationToken, ClaudeHarness, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
     UserInputQuestion,
@@ -75,6 +74,7 @@ fn controls(
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -307,6 +307,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 
@@ -378,6 +379,8 @@ async fn ultrathink_preserves_selected_commands_on_initial_and_steered_sends() {
                 .send(SteerMessage {
                     prompt,
                     message_id: None,
+                    attachments: Vec::new(),
+                    config: None,
                 })
                 .await
                 .unwrap();
@@ -401,6 +404,8 @@ async fn steering_lines_are_written_to_stdin_mid_run() {
         .send(SteerMessage {
             prompt: "redirect please".into(),
             message_id: None,
+            attachments: Vec::new(),
+            config: None,
         })
         .await
         .expect("steer queued");

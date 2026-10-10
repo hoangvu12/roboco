@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{CancellationToken, CursorHarness, Harness, RunControls};
+use roboco_harness::{CancellationToken, CursorHarness, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 async fn turn(
@@ -27,6 +27,7 @@ async fn turn(
             let _ = tx.send(vec![]);
             rx
         }),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt,
@@ -145,6 +146,7 @@ async fn parked(harness: &CursorHarness, count: usize) {
             let _ = tx.send(vec![]);
             rx
         }),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: format!(
@@ -240,6 +242,7 @@ async fn history(harness: &CursorHarness, count: usize) {
             let _ = tx.send(vec![]);
             rx
         }),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: format!(
@@ -356,6 +359,7 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
             let _ = tx.send(vec![]);
             rx
         }),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: if cancel {
@@ -393,6 +397,8 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
                 .send(roboco_harness::SteerMessage {
                     prompt,
                     message_id: None,
+                    attachments: Vec::new(),
+                    config: None,
                 })
                 .await
                 .is_err()

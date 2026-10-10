@@ -4,7 +4,7 @@
 //!     cargo run -p roboco-harness --example devin_models_probe -- gpt-6-astra-medium
 
 use futures::StreamExt;
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, RunRequest, SandboxLevel};
 
 #[tokio::main]
@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         }),
         steering,
         interrupt: CancellationToken::new(),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: "Reply with exactly: Devin model discovery verified. Do not use tools.".into(),

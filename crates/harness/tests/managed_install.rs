@@ -12,7 +12,7 @@
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use roboco_harness::{AcpHarness, Harness, RunControls};
+use roboco_harness::{AcpHarness, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, RunRequest};
 
 #[tokio::test]
@@ -33,6 +33,7 @@ async fn managed_install_reaches_session_started() {
         request_input: Box::new(|_| tokio::sync::oneshot::channel().1),
         steering,
         interrupt: interrupt.clone(),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: "say the word ok and stop".into(),

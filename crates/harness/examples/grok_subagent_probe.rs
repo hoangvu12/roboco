@@ -6,7 +6,7 @@
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
-use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use roboco_harness::{AcpHarness, CancellationToken, Harness, RunControls, TurnControl};
 use roboco_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
 
 #[tokio::main]
@@ -31,6 +31,7 @@ async fn main() {
         }),
         steering,
         interrupt: CancellationToken::new(),
+        turn: TurnControl::default(),
     };
     let request = RunRequest {
         prompt: "Use spawn_subagent to launch ONE subagent of type general with description \

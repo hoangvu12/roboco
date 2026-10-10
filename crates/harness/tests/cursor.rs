@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
-use roboco_harness::{CancellationToken, CursorHarness, Harness, RunControls, SteerMessage};
+use roboco_harness::{CancellationToken, CursorHarness, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall};
 
 fn fixture_path() -> PathBuf {
@@ -58,6 +58,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -187,6 +188,8 @@ async fn steer_after_done_becomes_the_next_turn() {
                         .send(SteerMessage {
                             prompt: "follow up".into(),
                             message_id: None,
+                            attachments: Vec::new(),
+                            config: None,
                         })
                         .await
                         .expect("steer sent");
@@ -338,6 +341,8 @@ async fn followup_crash_is_not_hidden_by_a_previous_completed_turn() {
                         .send(SteerMessage {
                             prompt: "follow up".into(),
                             message_id: None,
+                            attachments: Vec::new(),
+                            config: None,
                         })
                         .await
                         .unwrap();
@@ -393,6 +398,8 @@ async fn steering_spam_preserves_every_turn_in_order_and_closes_cleanly() {
                     .send(SteerMessage {
                         prompt: format!("ITEM-{n}"),
                         message_id: None,
+                        attachments: Vec::new(),
+                        config: None,
                     })
                     .await
                     .unwrap();
@@ -460,6 +467,8 @@ async fn cancelling_a_saturated_steering_queue_never_starts_queued_turns() {
                 .send(SteerMessage {
                     prompt: format!("MUST-NOT-RUN-{n}"),
                     message_id: None,
+                    attachments: Vec::new(),
+                    config: None,
                 })
                 .await
                 .unwrap();

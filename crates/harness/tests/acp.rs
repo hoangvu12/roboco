@@ -11,8 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use roboco_harness::acp::SignInProgress;
 use roboco_harness::{
-    AcpHarness, CancellationToken, Harness, HarnessError, RunControls, SteerMessage,
-};
+    AcpHarness, CancellationToken, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
     TodoItem, TodoStatus, ToolCall, UserInputAnswer,
@@ -71,6 +70,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        turn: TurnControl::default(),
     };
     (controls, steer_tx, token)
 }
@@ -276,6 +276,8 @@ async fn steering_extension_injects_mid_turn() {
                     .send(SteerMessage {
                         prompt: "redirect please".into(),
                         message_id: None,
+                        attachments: Vec::new(),
+                        config: None,
                     })
                     .await
                     .expect("steer sent");
@@ -322,6 +324,8 @@ async fn steer_racing_the_turn_end_never_emits_steered_after_done() {
                     .send(SteerMessage {
                         prompt: "redirect please".into(),
                         message_id: None,
+                        attachments: Vec::new(),
+                        config: None,
                     })
                     .await
                     .expect("steer sent");
@@ -373,6 +377,8 @@ async fn rejected_steer_queues_and_delivers_at_the_turn_boundary() {
                     .send(SteerMessage {
                         prompt: "redirect please".into(),
                         message_id: None,
+                        attachments: Vec::new(),
+                        config: None,
                     })
                     .await
                     .expect("steer sent");
@@ -1648,6 +1654,8 @@ async fn hermes_boundary_steer(scenario: &str, trigger_on_done: bool) {
                     .send(roboco_harness::SteerMessage {
                         prompt: "second".into(),
                         message_id: None,
+                        attachments: Vec::new(),
+                        config: None,
                     })
                     .await
                     .unwrap();
