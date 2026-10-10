@@ -1585,3 +1585,215 @@ async fn ordinary_followup_cannot_overtake_a_queued_native_command() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// #748: turn-in-flight semantics, stop-in-place, background work
+// ---------------------------------------------------------------------------
+
+/// A steer is confirmed when its userMessage item joins the turn (carrying
+/// the clientUserMessageId), not when `turn/steer` returns — confirming at
+/// the request split the reply still streaming ahead of the steer into the
+/// steer's segment.
+#[tokio::test]
+async fn a_steer_splits_the_reply_where_its_message_joins_the_turn() {
+    let (controls, steer, _token) = controls("Yes");
+    steer
+        .send(SteerMessage::text("redirect please"))
+        .await
+        .expect("steer queued");
+    let events = run_to_end(&harness(), request("scenario:steer-item"), controls).await;
+    let at = |pred: &dyn Fn(&AgentEvent) -> bool| {
+        events
+            .iter()
+            .position(pred)
+            .unwrap_or_else(|| panic!("missing event: {events:?}"))
+    };
+    let still_first =
+        at(&|e| matches!(e, AgentEvent::TextDelta { text } if text == "-still-first"));
+    let steered = at(&|e| matches!(e, AgentEvent::Steered { .. }));
+    let reply = at(&|e| matches!(e, AgentEvent::TextDelta { text } if text == "steered"));
+    assert!(still_first < steered && steered < reply, "{events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Steered { .. }))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            ..
+        })
+    ));
+}
+
+/// A completion for a turn other than the one in flight (or a duplicate of
+/// the settled turn's) is stale: settling on it marked the running turn done
+/// mid-way.
+#[tokio::test]
+async fn a_stale_turn_completion_never_settles_the_running_turn() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:stale-completion"), controls).await;
+    let dones: Vec<_> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, AgentEvent::Done { .. }))
+        .collect();
+    assert_eq!(dones.len(), 1, "{events:?}");
+    let after = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::TextDelta { text } if text == "after"))
+        .expect("after");
+    assert!(dones[0].0 > after, "{events:?}");
+}
+
+/// The turn/start response lands before the app-server registers the turn:
+/// an interrupt now is rejected ("no active turn to interrupt", live
+/// 0.159.3). The stop waits for turn/started and still ends the turn.
+#[tokio::test]
+async fn a_stop_before_the_turn_is_announced_still_interrupts_it() {
+    let (mut controls, _steer, _token) = controls("Yes");
+    let turn = TurnControl::default();
+    controls.turn = turn.clone();
+    let mut stream = harness()
+        .run(request("scenario:stop-before-announce"), controls)
+        .await
+        .expect("run starts");
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(event) = stream.next().await {
+            match event.expect("event") {
+                AgentEvent::TextDelta { text } if text == "working" => turn.stop_turn(),
+                AgentEvent::Done { status, .. } => return status,
+                _ => {}
+            }
+        }
+        panic!("stream ended without Done");
+    })
+    .await
+    .expect("stopped turn settles");
+    assert_eq!(status, DoneStatus::Interrupted);
+}
+
+/// A command still running after its turn is background work (the host's
+/// idle reaper must not retire the app-server from under it); an
+/// interrupted turn's foreground command is killed without item/completed
+/// and stops pinning once its process is gone.
+#[tokio::test]
+async fn open_commands_report_background_work_and_killed_ones_do_not() {
+    let (mut controls, steer, _token) = controls("Yes");
+    let turn = TurnControl::default();
+    controls.turn = turn.clone();
+    let mut stream = harness()
+        .run(request("scenario:background-commands"), controls)
+        .await
+        .expect("run starts");
+    async fn until_done(
+        stream: &mut futures::stream::BoxStream<'static, Result<AgentEvent, HarnessError>>,
+        mut on: impl FnMut(&AgentEvent),
+    ) -> DoneStatus {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = stream.next().await {
+                let event = event.expect("event");
+                on(&event);
+                if let AgentEvent::Done { status, .. } = event {
+                    return status;
+                }
+            }
+            panic!("stream ended without Done");
+        })
+        .await
+        .expect("turn ends")
+    }
+    assert_eq!(until_done(&mut stream, |_| {}).await, DoneStatus::Completed);
+    assert!(turn.background_live(), "the dev server outlives its turn");
+
+    steer
+        .send(SteerMessage::text("run the tests"))
+        .await
+        .unwrap();
+    let stop = turn.clone();
+    let status = until_done(&mut stream, |e| {
+        if matches!(e, AgentEvent::TextDelta { text } if text == "running") {
+            stop.stop_turn();
+        }
+    })
+    .await;
+    assert_eq!(status, DoneStatus::Interrupted);
+    // The killed foreground command's process is gone once the grace passes.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    assert!(turn.background_live(), "the dev server still runs");
+
+    steer
+        .send(SteerMessage::text("stop the server"))
+        .await
+        .unwrap();
+    assert_eq!(until_done(&mut stream, |_| {}).await, DoneStatus::Completed);
+    assert!(!turn.background_live(), "nothing left running");
+}
+
+/// Model changes sent mid-turn never ride `turn/steer` (which carries no
+/// model): each starts its own `turn/start` with the configuration it was
+/// sent with; a plain follow-up keeps the last one.
+#[tokio::test]
+async fn a_model_change_sent_mid_turn_takes_effect_in_its_own_turn() {
+    let (controls, steer, _token) = controls("Yes");
+    let mut stream = harness()
+        .run(request("scenario:reconfigure"), controls)
+        .await
+        .expect("run starts");
+    let mut events = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("event in time")
+            .expect("stream open")
+            .expect("stream event");
+        let working = event
+            == AgentEvent::TextDelta {
+                text: "working".into(),
+            };
+        events.push(event);
+        if working {
+            break;
+        }
+    }
+    let mut model_b = request("");
+    model_b.model = Some("model-b".into());
+    model_b.reasoning = Some(ReasoningLevel::Low);
+    for (text, config) in [
+        ("to-b", Some(model_b)),
+        ("back-to-a", Some(request(""))),
+        ("plain", None),
+    ] {
+        steer
+            .send(SteerMessage {
+                config: config.map(Box::new),
+                ..SteerMessage::text(text)
+            })
+            .await
+            .unwrap();
+    }
+    let mut completed = 0;
+    while completed < 4 {
+        let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("event in time")
+            .expect("stream open")
+            .expect("stream event");
+        if let AgentEvent::Done { status, error, .. } = &event {
+            assert_eq!(*status, DoneStatus::Completed, "{error:?}");
+            completed += 1;
+        }
+        events.push(event);
+    }
+    let texts: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["working", "to-b", "back-to-a", "plain"]);
+}
