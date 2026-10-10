@@ -46,6 +46,7 @@ async fn main() {
             RunControls {
                 request_input: Box::new(|_| panic!("probe must not ask for input")),
                 steering,
+                execution_lease: None,
                 interrupt: CancellationToken::new(),
                 turn: TurnControl::default(),
             },
