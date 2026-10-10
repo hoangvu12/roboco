@@ -55,3 +55,5 @@ roboco-mcp.workspace = true
 roboco-harness = { workspace = true, features = ["installer-fixture"] }
 zip.workspace = true
 tokio-tungstenite.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true

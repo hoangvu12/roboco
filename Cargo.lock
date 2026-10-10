@@ -8027,6 +8027,7 @@ dependencies = [
  "tokio-util",
  "toml 0.8.23",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
  "windows-sys 0.61.2",
