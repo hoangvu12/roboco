@@ -7948,7 +7948,7 @@ dependencies = [
 
 [[package]]
 name = "roboco"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -7972,7 +7972,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-doc"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "chrono",
  "loro",
@@ -7987,7 +7987,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-engine"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8036,7 +8036,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-harness"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8063,7 +8063,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-mcp"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8081,7 +8081,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-preview"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8109,7 +8109,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-proto"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "chrono",
  "pulldown-cmark",
@@ -8121,7 +8121,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-rpc"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -8136,7 +8136,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-sync"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "loro",
  "roboco-doc",
@@ -8151,7 +8151,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-syntax"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
@@ -8185,7 +8185,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-theme"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -8201,7 +8201,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-ui"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -8268,7 +8268,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-update"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -8285,7 +8285,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-voice"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -12295,7 +12295,7 @@ dependencies = [
 
 [[package]]
 name = "wiregen"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "roboco-doc",
