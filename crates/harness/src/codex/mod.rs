@@ -959,7 +959,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
-        turn,
+        turn: _turn,
     } = controls;
     let request_input = Arc::new(request_input);
 
