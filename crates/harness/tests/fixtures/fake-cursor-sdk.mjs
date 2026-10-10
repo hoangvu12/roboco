@@ -18,6 +18,8 @@ export class JsonlLocalAgentStore {
       return fs.existsSync(log)?fs.readFileSync(log,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(p=>!isUncheckpointed(p)):[];
     };
     this.logPrompt=(prompt)=>fs.appendFileSync(path.join(dir,'prompts.ndjson'),JSON.stringify(prompt)+'\n');
+    // Sends that named a model (a model switch on the live agent).
+    this.logModel=(prompt,model)=>fs.appendFileSync(path.join(dir,'models.ndjson'),JSON.stringify({prompt,model})+'\n');
     this.agents={
       get:async()=>read().agent,
       create:async({agent})=>{const data=read();data.agent=agent;write(data);return agent;},
@@ -35,8 +37,9 @@ const checkpoint={schemaVersion:1,rootBlobId:'retained-conversation-history'};
 function instance(store) {
   return {
     agentId:'agent-fixture',model:{id:'composer-2.5'},close(){},
-    async send(prompt,{onDelta}) {
+    async send(prompt,{onDelta,model}) {
       store.logPrompt(prompt);
+      if(model) store.logModel(prompt,model.id);
       const doc=await store.agents.get({});
       if(doc.activeRunId) throw new Error('Agent already has active run');
       const runId='run-'+Date.now();
@@ -53,7 +56,41 @@ function instance(store) {
         await store.agents.update({agent:{...doc,status:'idle',activeRunId:null}});
         resolve({status});
       };
+      let toolFinished = prompt !== 'native-tool';
+      if (!toolFinished) {
+        onDelta({update:{type:'tool-call-started',callId:'active-shell',toolCall:{type:'shell'}}});
+        setTimeout(() => {
+          toolFinished = true;
+          onDelta({update:{type:'tool-call-completed',callId:'active-shell',toolCall:{type:'shell'}}});
+        },80);
+      }
+      let steerTimer;
+      const concurrent = [];
       return {id:runId,
+        async steer(text){
+          if (['native-concurrent','native-mixed'].includes(prompt)) {
+            onDelta({update:{type:'thinking-delta',text:'submitted:'+text}});
+            const acknowledgment = new Promise(resolve => concurrent.push({text,resolve}));
+            if (concurrent.length === 3) {
+              onDelta({update:{type:'text-delta',text:'NATIVE:'+text}});
+              for (const entry of [...concurrent].reverse()) {
+                if (prompt === 'native-mixed' && entry === concurrent[0]) entry.resolve('revert_to_followup');
+                else { store.logPrompt(entry.text); entry.resolve('complete_delivered'); }
+              }
+              setTimeout(()=>finish('finished'),50);
+            }
+            return acknowledgment;
+          }
+          if(prompt === 'native-revert') {await finish('finished'); return 'revert_to_followup';}
+          if (!toolFinished) throw new Error('steering killed the active shell');
+          if(!['native-steer','native-tool'].includes(prompt)) return 'revert_to_followup';
+          store.logPrompt(text);
+          onDelta({update:{type:'text-delta',text:'NATIVE:'+text}});
+          clearTimeout(steerTimer);
+          steerTimer=setTimeout(()=>finish('finished'),150);
+          await new Promise(resolve=>setTimeout(resolve,10));
+          return 'complete_delivered';
+        },
         async cancel(){if(prompt==='hung-cancel')return new Promise(()=>{});await finish('cancelled');},
         async wait(){
           if(prompt==='wait-error')throw new Error('stream disconnected');
@@ -67,7 +104,7 @@ function instance(store) {
             return pending;
           }
           if(prompt==='auth-error')return {status:'error',error:{message:'ERROR_NOT_LOGGED_IN'}};
-          if(['hang','hung-cancel'].includes(prompt))return pending;
+          if(['hang','hung-cancel','native-steer','native-revert','native-tool','native-concurrent','native-mixed'].includes(prompt))return pending;
           await finish('finished');return {status:'finished'};
         },
       };
