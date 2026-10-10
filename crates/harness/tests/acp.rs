@@ -2061,3 +2061,216 @@ async fn mcp_injection_all_acp_harnesses_new_resume_and_fallback() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #748: stop-in-place, live model switches, detached-command teardown
+// ---------------------------------------------------------------------------
+
+/// "Send now" with a steer still in flight when the stop's session/cancel
+/// lands: the steering call is dropped with the turn (its late
+/// promptRequired answer would re-queue the cancelled message), and the
+/// next prompt runs fresh — the cancelled steer never runs.
+#[tokio::test]
+async fn a_turn_stop_cancels_a_steer_still_in_flight() {
+    let (mut controls, steer, _token) = controls();
+    let turn = roboco_harness::TurnControl::default();
+    controls.turn = turn.clone();
+    let mut stream = harness()
+        .run(request("scenario:stop-steer"), controls)
+        .await
+        .expect("run starts");
+    macro_rules! next {
+        () => {
+            tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("event in time")
+                .expect("stream open")
+                .expect("stream event")
+        };
+    }
+    loop {
+        if matches!(next!(), AgentEvent::TextDelta { text } if text == "working") {
+            break;
+        }
+    }
+    steer
+        .send(SteerMessage::text("cancelled steer"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    turn.stop_turn();
+    loop {
+        if let AgentEvent::Done { status, .. } = next!() {
+            assert_eq!(status, DoneStatus::Interrupted);
+            break;
+        }
+    }
+    steer.send(SteerMessage::text("after")).await.unwrap();
+    let mut texts = Vec::new();
+    loop {
+        match next!() {
+            AgentEvent::TextDelta { text } => texts.push(text),
+            AgentEvent::Done { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(texts, ["fresh"], "the cancelled steer ran after the stop");
+}
+
+/// A turn stop: session/cancel settles the prompt `cancelled` (Done reads
+/// Interrupted), the agent and its session stay up, and the next prompt is
+/// a session/prompt on the same session.
+#[tokio::test]
+async fn a_stopped_prompt_settles_cancelled_and_the_session_takes_the_next() {
+    let (mut controls, steer, _token) = controls();
+    let turn = roboco_harness::TurnControl::default();
+    controls.turn = turn.clone();
+    assert!(harness().stops_turn_in_place());
+    let mut stream = harness()
+        .run(request("scenario:stop-in-place"), controls)
+        .await
+        .expect("run starts");
+    macro_rules! next {
+        () => {
+            tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("event in time")
+                .expect("stream open")
+                .expect("stream event")
+        };
+    }
+    loop {
+        if matches!(next!(), AgentEvent::TextDelta { text } if text == "working") {
+            break;
+        }
+    }
+    turn.stop_turn();
+    let stopped = loop {
+        if let done @ AgentEvent::Done { .. } = next!() {
+            break done;
+        }
+    };
+    assert!(
+        matches!(
+            stopped,
+            AgentEvent::Done {
+                status: DoneStatus::Interrupted,
+                ..
+            }
+        ),
+        "{stopped:?}"
+    );
+    // The same agent takes the next prompt.
+    steer.send(SteerMessage::text("carry on")).await.unwrap();
+    let mut texts = Vec::new();
+    loop {
+        match next!() {
+            AgentEvent::TextDelta { text } => texts.push(text),
+            AgentEvent::Done { status, .. } => {
+                assert_eq!(status, DoneStatus::Completed);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(texts, ["resumed"]);
+}
+
+/// A model switch sent between turns applies to the live session (the sets
+/// precede the prompt they were sent with); one sent mid-turn waits for the
+/// session to go quiet, ahead of later messages.
+#[tokio::test]
+async fn a_model_switch_is_selected_on_the_live_session() {
+    let (controls, steer, _token) = controls();
+    let opening = request("scenario:reconfigure");
+    let mut fast = opening.clone();
+    fast.model = Some("grok-4-fast".into());
+    assert!(harness().reconfigures_in_place(&opening, &fast));
+    let mut stream = harness()
+        .run(opening.clone(), controls)
+        .await
+        .expect("run starts");
+    let mut texts = Vec::new();
+    let mut started = 0;
+    let mut dones = 0;
+    while dones < 3 {
+        let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("event in time")
+            .expect("stream open")
+            .expect("stream event");
+        match event {
+            AgentEvent::SessionStarted { .. } => started += 1,
+            AgentEvent::TextDelta { text } => {
+                if text == "on fast" {
+                    // Mid-turn: back to the opening model.
+                    steer
+                        .send(SteerMessage {
+                            config: Some(Box::new(opening.clone())),
+                            ..SteerMessage::text("back")
+                        })
+                        .await
+                        .unwrap();
+                }
+                texts.push(text);
+            }
+            AgentEvent::Done { status, error, .. } => {
+                assert_eq!(status, DoneStatus::Completed, "{error:?}");
+                dones += 1;
+                if dones == 1 {
+                    steer
+                        .send(SteerMessage {
+                            config: Some(Box::new(fast.clone())),
+                            ..SteerMessage::text("go fast")
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(started, 1);
+    assert_eq!(texts, ["turn1", "on fast", "back on 4.5"]);
+}
+
+/// A command the agent starts in its own session (Devin's shape) is not in
+/// the agent's process group: teardown must end it with the runtime.
+#[cfg(unix)]
+#[tokio::test]
+async fn teardown_ends_a_command_the_agent_detached() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("detached.pid");
+    let prompt = format!("scenario:detached {}", pidfile.display());
+    let (controls, _steer, token) = controls();
+    let mut stream = harness()
+        .run(request(&prompt), controls)
+        .await
+        .expect("run starts");
+    while let Some(Ok(event)) = stream.next().await {
+        if matches!(event, AgentEvent::Done { .. }) {
+            break;
+        }
+    }
+    token.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(15), async {
+        while stream.next().await.is_some() {}
+    })
+    .await;
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("detached command started")
+        .trim()
+        .parse()
+        .expect("pid");
+    let gone = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            // SAFETY: signal 0 only probes for existence.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(gone.is_ok(), "the detached command outlived teardown");
+}
