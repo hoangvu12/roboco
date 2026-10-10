@@ -35,6 +35,7 @@ tracing.workspace = true
 sha2.workspace = true
 semver = "1"
 zip.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

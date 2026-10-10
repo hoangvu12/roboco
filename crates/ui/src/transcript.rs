@@ -7442,6 +7442,37 @@ impl Transcript {
         Some(Arc::new(crate::changes::DiffHighlights { old, new }))
     }
 
+    /// Liveness oracle for the working shimmer (perf 03b): the doc's
+    /// `streaming` flag outlives the run that set it — a crashed or torn-down
+    /// run leaves the entry streaming forever, and the tool-group shimmer
+    /// then kept renewing its [`motion`] pulse lease on every paint (~30 fps
+    /// repaints, one pinned core per dead chat). Same oracle as
+    /// [`Self::render_working_trailer`]: the chat's session indicator (Working
+    /// within the session-staleness window, `SESSION_STALE_MS`) for a main
+    /// transcript; a subagent doc's own live tail (run teardown finalizes
+    /// abandoned sinks).
+    fn shimmer_live(&self, cx: &mut Context<Self>) -> bool {
+        if let Some(doc_id) = &self.doc_override {
+            if !self.doc_live {
+                return false;
+            }
+            self.state
+                .read(cx)
+                .sub_transcript(doc_id)
+                .last()
+                .is_some_and(|last| {
+                    last.status == Some(MessageStatus::Streaming) || last.role == MessageRole::User
+                })
+        } else {
+            self.chat_id.as_deref().is_some_and(|chat_id| {
+                self.state
+                    .read(cx)
+                    .indicator_for(chat_id, chrono::Utc::now())
+                    == crate::state::Indicator::Working
+            })
+        }
+    }
+
     fn render_tool_group(
         &mut self,
         row_id: &SharedString,
@@ -7507,9 +7538,13 @@ impl Transcript {
         // The title shimmer reads "working" even under the collapsed compact
         // fold — any unresolved chip (a running tool, a live thought) keeps it
         // pulsing until the turn's work settles. Compute this before the
-        // collapsed-body skip, which may empty `tools`.
-        let active =
-            collapses && (auto_open || (self.compact_mode && tools.iter().any(|t| !t.resolved)));
+        // collapsed-body skip, which may empty `tools`. The liveness oracle
+        // gates the stale case: a dead run leaves the entry streaming, but
+        // the session indicator has since gone quiet — no shimmer, no pulse
+        // lease, no repaint loop (perf 03b).
+        let active = collapses
+            && (auto_open || (self.compact_mode && tools.iter().any(|t| !t.resolved)))
+            && self.shimmer_live(cx);
         if self.compact_mode && active {
             self.compact_live_entries.insert(row_id.clone());
         }
@@ -9758,6 +9793,113 @@ mod tests {
                 replay_tool_group(&state, &transcript, chat, cx);
                 assert_replayed_group_is_closed(&transcript, cx);
             }
+        });
+    }
+
+    /// Perf 03b: the working shimmer rides the SESSION indicator, not the
+    /// doc's `streaming` flag — a crashed or torn-down run leaves the entry
+    /// streaming forever, and trusting it kept the tool-group shimmer
+    /// renewing its pulse lease on every paint (a ~30 fps repaint loop with
+    /// a core pinned per dead chat). With no live Working row the group
+    /// renders quiet; the shimmer (and its lease) only exist while the
+    /// chat's indicator is Working — the same oracle the working trailer
+    /// uses.
+    #[gpui::test]
+    fn stale_streaming_entries_do_not_shimmer_without_a_working_indicator(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            transcript.update(cx, |this, _| this.retain_for_route_exit());
+
+            // A doc whose last entry still streams — the dead-run shape: no
+            // session row ever says this chat is working.
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat-a".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![assistant(
+                    "tools",
+                    MessageStatus::Streaming,
+                    vec![tool_part("call", "pwd")],
+                )];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+
+            let render_streamed_group = |transcript: &Entity<Transcript>, cx: &mut gpui::App| {
+                let leased = transcript.update(cx, |this, cx| {
+                    let row = this
+                        .rows
+                        .iter()
+                        .find(|row| matches!(row.kind, RowKind::ToolGroup { .. }))
+                        .cloned()
+                        .expect("streamed tool group row");
+                    let RowKind::ToolGroup {
+                        tools,
+                        auto_open,
+                        summary,
+                        ..
+                    } = &row.kind
+                    else {
+                        unreachable!()
+                    };
+                    assert!(*auto_open, "fixture: the streamed group auto-opens");
+                    let _ = this.render_tool_group(
+                        &row.id,
+                        tools,
+                        summary,
+                        *auto_open,
+                        None,
+                        false,
+                        0,
+                        0.0,
+                        &Theme::dark(),
+                        cx,
+                    );
+                    crate::motion::pulse_lease_held(transcript.entity_id(), cx)
+                });
+                leased
+            };
+
+            assert!(
+                !render_streamed_group(&transcript, cx),
+                "a stale streaming flag must not lease the pulse clock"
+            );
+
+            // The same doc with a live Working session shimmers again.
+            let now = chrono::Utc::now();
+            state.update(cx, |state, _| {
+                state.sessions = vec![roboco_proto::Session {
+                    chat_id: "chat-a".into(),
+                    device_id: "test".into(),
+                    status: roboco_proto::SessionStatus::Working,
+                    last_completed_turn: None,
+                    started_at: None,
+                    updated_at: now,
+                }];
+            });
+            assert!(
+                render_streamed_group(&transcript, cx),
+                "a live Working indicator keeps the shimmer leased"
+            );
+
+            // And a stale session row (past the session-staleness window) is
+            // quiet again: the old lease expires on its own, and the next
+            // paint — with the indicator gone — does not re-lease.
+            state.update(cx, |state, _| {
+                state.sessions[0].updated_at =
+                    now - chrono::Duration::milliseconds(roboco_proto::view::SESSION_STALE_MS + 1);
+            });
+            crate::motion::pulse_lease_expire(transcript.entity_id(), cx);
+            assert!(
+                !render_streamed_group(&transcript, cx),
+                "a stale indicator parks the shimmer"
+            );
         });
     }
 
