@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { Icon } from "@roboco/icons";
 import type { SessionMessageEntry, TodoItem } from "@roboco/proto";
 import type { TranscriptStore } from "../state/transcript-store";
@@ -58,7 +58,13 @@ export function TodoPanel({ store, chatId, live }: TodoPanelProps): ReactNode {
   useTodoPanelVersion();
   // The transcript store's snapshot is identity-stable until an actual
   // change, so this re-renders exactly when the todo list can have moved.
-  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  // The subscribe/getSnapshot wrappers are load-bearing: React calls both as
+  // detached function references, and TranscriptStore's methods are class
+  // methods over private fields — an unbound `store.getSnapshot` would throw
+  // `Cannot read properties of undefined (reading '#…')` on every chat open.
+  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
+  const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const items = useMemo(() => wireTodo(snapshot.entries), [snapshot.entries]);
   const summary = items === null ? null : todoSummary(items);
   const finished = summary !== null && summary.total > 0 && summary.done === summary.total;
