@@ -27,12 +27,21 @@ surfaces roboco does not have.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 74257f95 on wave7/ports)
 
 **Verification budget:** the linux-browser fixture lane
 (`scripts/test-linux-browser.sh` if present locally, else compile-only
 `cargo check -p roboco-ui --examples`). Source:
 `.scratch/upstream-drift/2026-10-09.md` § `e799aecc`.
 
-- [ ] Capture waits for mapped/presented frames; window-mapped wait bounded
-- [ ] Commit records upstream SHA `e799aecc` (#777 fixture slice only)
+- [x] Capture waits for mapped/presented frames; window-mapped wait bounded
+- [x] Commit records upstream SHA `e799aecc` (#777 fixture slice only)
+
+## Comments
+
+Ported in 74257f95. Roboco's fixture is the pre-#813 512-line shape (no
+tooltip/menu fixture features), so `capture_frame` + `wait_for_visible_window`
+landed verbatim (env var `ROBOCO_`-prefixed) and all 23 capture call sites
+across both fixture files were converted mechanically. Compile-verified on
+linux (`cargo check -p roboco-ui --examples`); the fixture lane itself runs
+in CI (ui-tests.yml linux browser).

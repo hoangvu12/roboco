@@ -19,11 +19,20 @@ engine candidate.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in fb08088f on wave7/ports)
 
 **Verification budget:** `cargo check -p roboco-engine` + the ported
 source-control tests. Source:
 `.scratch/upstream-drift/2026-10-11.md` § `73051ec7`.
 
-- [ ] Fetch-URL fallback + tests ported
-- [ ] Commit records upstream SHA `73051ec7` (#863)
+- [x] Fetch-URL fallback + tests ported
+- [x] Commit records upstream SHA `73051ec7` (#863)
+
+## Comments
+
+Ported in fb08088f — roboco's remote-URL block matched upstream's
+pre-change shape (including the pre-existing fetch-URL fallback), so the
+port is the one `.filter(|url| parse_git_remote(url).is_some())` line
+plus the test. Excluded: upstream's `repository_for_checkout` helper and
+its assertion — #484 PR-board machinery, rides ticket 21. 28/28
+source_control tests.

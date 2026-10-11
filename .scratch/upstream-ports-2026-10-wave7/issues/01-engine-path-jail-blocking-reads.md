@@ -38,7 +38,7 @@ hunks are cloud surfaces roboco does not have.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in fed992a3 on wave7/ports)
 
 **Verification budget:** `cargo check -p roboco-engine` +
 `cargo nextest run -p roboco-engine --lib` (uploads/jail tests) inside
@@ -46,6 +46,21 @@ the ticket; no wire change. Source:
 `.scratch/upstream-drift/2026-10-09.md` § `e5466c53` quick-port slice,
 `.scratch/upstream-drift/2026-10-11.md` carry-over table.
 
-- [ ] Lexical jail + refusal tests ported into `uploads.rs`
-- [ ] `read_chunk` on the blocking pool
-- [ ] Commit records upstream SHA `e5466c53` (#813 engine slice)
+- [x] Lexical jail + refusal tests ported into `uploads.rs`
+- [x] `read_chunk` on the blocking pool
+- [x] Commit records upstream SHA `e5466c53` (#813 engine slice)
+
+## Comments
+
+Ported in fed992a3. Roboco's `inspect` matched upstream's pre-change
+shape exactly (identical canonicalize-then-check block), so the jail
+landed near-verbatim; the only adaptation was keeping roboco's richer
+`InspectedFile` struct (resolved/name/mime_type/size) and placing
+`lexical_components` after it. `Uploads` is `Arc`-cloneable so the rpc
+`spawn_blocking` move was verbatim. TDD order held: tests landed first,
+red on the symlink-escape case (a link from outside every root into one
+canonicalizes inside — now refused), then the jail. 11/11 uploads tests,
+385/385 engine lib tests. One environmental note: local `cargo fmt`
+(stable 1.97) disagrees with the repo's committed formatting repo-wide
+(HEAD fails `cargo fmt --check`, no fmt gate in CI) — port commits keep
+upstream's formatting and skip local fmt.
