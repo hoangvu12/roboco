@@ -1,7 +1,10 @@
 # Upstream ports 2026-10 wave 7: UI parity + backlog (v0.2.108–v0.2.111 window)
 
-Status: open (tickets 01–18 actionable; 19 prerequisite-gated; 20 after 19;
-21 PARKED on a product decision; 22 after 19)
+Status: batch 1 merged to main (tickets 01–04, 11, 18 — the quick-port set,
+including both overdue 2026-10-09 recommendations; 3b71f9d3). Open: 05
+(chips), 06–09 (sidebar/UI-parity series), 10 (after 05), 12–17, 19
+(prerequisite-gated), 20 (after 19), 21 PARKED on a product decision,
+22 (after 19). Continue on a fresh `wave7/ports` branch off main.
 
 Source: `.scratch/upstream-drift/2026-10-11.md` — the drift review of the
 `1074bc54..54954e4d` window (tags v0.2.108–v0.2.111), plus the carry-over
