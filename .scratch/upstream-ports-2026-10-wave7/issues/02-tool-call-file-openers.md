@@ -35,14 +35,25 @@ Adapt any `zeron_`/`ZERON_` identifiers per AGENTS.md.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 90eb9c0c on wave7/ports)
 
 **Verification budget:** `cargo check -p roboco-ui` + the ported
 transcript/preview test files. Source:
 `.scratch/upstream-drift/2026-10-09.md` § `1074bc54`,
 `.scratch/upstream-drift/2026-10-11.md` follow-up 1.
 
-- [ ] `ToolFileOpener` ported and threaded through `chip_header_row`
-- [ ] "Open in default editor" button beside reveal-in-tree
-- [ ] Tests ported and passing
-- [ ] Commit records upstream SHA `1074bc54` (#522)
+- [x] `ToolFileOpener` ported and threaded through `chip_header_row`
+- [x] "Open in default editor" button beside reveal-in-tree
+- [x] Tests ported and passing
+- [x] Commit records upstream SHA `1074bc54` (#522)
+
+## Comments
+
+Ported in 90eb9c0c. Roboco's surfaces matched upstream's pre-change code
+(the badge block, `chip_header_row`/`chip_header`/`tool_chip` signatures,
+`render_breadcrumb` reveal slot, `LinkUi`/`activate_link`/`LinkTarget`/
+`LinkAction` API), so the port is near-verbatim. Adaptations: roboco's
+`FilesRequestContext` carries an `engine: EngineKey` field (test constructs
+`EngineKey::local()`), and `render_tool_group` is roboco's equivalent of
+upstream's fold row fn (file_opener threaded to tool_chip + chip_header,
+None for subagent chips). 1598/1598 ui lib tests.

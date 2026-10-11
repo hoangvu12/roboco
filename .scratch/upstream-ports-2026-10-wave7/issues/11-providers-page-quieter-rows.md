@@ -17,11 +17,23 @@ the window.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in a3aa1d69 on wave7/ports)
 
 **Verification budget:** `cargo check -p roboco-engine -p roboco-ui` +
 harness-update tests. Source:
 `.scratch/upstream-drift/2026-10-11.md` § `54954e4d`.
 
-- [ ] Providers page rows ported; toggling is layout-stable
-- [ ] Commit records upstream SHA `54954e4d`
+- [x] Providers page rows ported; toggling is layout-stable
+- [x] Commit records upstream SHA `54954e4d`
+
+## Comments
+
+Ported in a3aa1d69. Roboco's engine side matched upstream's pre-change
+`refresh_enabled` verbatim; the UI side matched except roboco's
+call-site shape (engine clients called directly, roboco-specific sign-in
+slots kept between install and toggle). Adaptations: the old label test
+`update_label_names_versions_and_manual_guidance` rewritten to the new
+quiet semantics as `update_label_stays_quiet_and_names_versions`
+(manual commands no longer ride the label), and the failure fixture
+uses `HarnessUpdateFailure { message, retryable }`. 35/35 engine
+harness_updates, 177/177 ui settings tests.
