@@ -1,13 +1,17 @@
 # 03 — Composer attachment chips, font-robust from the start (upstream #775 + #816) — PARKED
 
-**PARKED — do not start.** Upstream is still iterating chips on the
-unmerged `zeron/git-identity-project-grouping` branch (tip `c3af3110`,
-15 commits ahead of upstream/main; "Keep composer chips steady across
-project switches" is one of them). **Cut condition:** the next drift
-review re-triages that branch; once its chips follow-ups have merged
-(or the branch is declared settled), re-triage this ticket to
-`ready-for-agent` and port the *merged superset* — not `73bd3c84`
-blind. Until then this ticket is a scope record, not work.
+**PARKED — superseded by `.scratch/upstream-ports-2026-10-wave7/issues/05-composer-attachment-chips.md`.** Upstream is no longer
+iterating: the `zeron/git-identity-project-grouping` branch was deleted
+from upstream (verified 2026-10-11, `git ls-remote` returns nothing) and
+the chips line settled onto main via #775 (`73bd3c84`) and #816
+(`d5c1cdc1`). The cut condition below is met; wave-7 ticket 05 carries
+the port (including the `1390e621` diff-check). This file remains as the
+scope record. (Original park note: upstream was still iterating chips on
+the then-unmerged branch, tip `c3af3110`, 15 commits ahead of
+upstream/main; "Keep composer chips steady across project switches" was
+one of them. The original cut condition — next drift review re-triages
+once the chips follow-ups merged or the branch settled — fired on
+2026-10-11.)
 
 **What to build (when cut):** Port `73bd3c84` (#775) together with
 `d5c1cdc1` (#816) as one ticket so chips arrive already font-robust.
