@@ -19,9 +19,6 @@ import sh.roboco.android.core.AndroidMeasurer
 import sh.roboco.android.core.Face
 import sh.roboco.android.core.FontChain
 
-// TODO(22): register TextEngineSpecimen in the design gallery's "Text
-// engine" section: GallerySection("Text engine") { TextEngineSpecimen() }.
-
 /**
  * The text-engine specimen (debug gallery, ticket 60): the shared
  * `TextSystem`'s output as the user sees it — Latin in Geist, CJK/emoji
