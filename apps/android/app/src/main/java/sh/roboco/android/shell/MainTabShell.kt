@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.tappableElement
@@ -14,6 +15,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -22,6 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -75,13 +79,31 @@ import sh.roboco.android.design.glass.LocalHazeState
  * The state is exposed as [LocalTabBarMinimize] for ticket 30's accessory
  * reveal.
  *
+ * **The search morph (#29):** selecting the Search tab keeps the bottom
+ * row and morphs it — the pill collapses into the return circle (the
+ * previous tab's glyph, "Close"), the search circle stretches into the
+ * field, and the field focuses with the IME rising in the same motion
+ * (`UISearchTab.automaticallyActivatesSearch`). The morph runs in
+ * [TabChromeLayout] over [rememberSearchMorphProgress]; the slots swap
+ * through [SearchReturnCircle] / [SearchTabField] while the search chrome
+ * is on screen; the row rides on the IME (`WindowInsets.ime`, read in the
+ * layout's measure block) and the accessory fades with the lift — never
+ * leaving composition (upstream #577) — with its taps disabled once the
+ * alpha is under 0.01, so they reach the results list (49). The query
+ * lives in [searchState] (app-scoped, survives rotation, not process
+ * death), provided as [LocalSearchTabState] for ticket 49's screen, and
+ * [MainTabState.select] bumps its activation token through `onSelected`.
+ *
  * Not this ticket's: the bottom content insets / hiding the bar over a
- * Session (30), the Search bar-to-field morph (29), the live counts feed
- * (40) and the app root that shows this shell (35).
+ * Session (30), the accessory's content fade-in after leaving Search
+ * (30), the live counts feed (40) and the app root that shows this shell
+ * (35).
  *
  * @param state the tab state; defaults to [rememberMainTabState].
  * @param counts the accessory's live summary (ticket 40 wires the real
  *   feed; `LiveCounts()` draws no glyph and no summary).
+ * @param searchState the Search tab's query holder; defaults to
+ *   [rememberSearchTabState] (the app-scoped instance).
  * @param onNewSession the accessory's tap (ticket 32 presents the sheet).
  */
 @Composable
@@ -89,6 +111,7 @@ fun MainTabShell(
     state: MainTabState = rememberMainTabState(),
     modifier: Modifier = Modifier,
     counts: LiveCounts = LiveCounts(),
+    searchState: SearchTabState = rememberSearchTabState(),
     onNewSession: () -> Unit = {},
 ) {
     val palette = RobocoTheme.palette
@@ -112,7 +135,8 @@ fun MainTabShell(
         // The chrome geometry inputs (26's own reads): the bottom gap, and
         // the start/end insets that center the row. TabChromeLayout re-reads
         // the horizontal insets in its measure block; the pill's expanded
-        // content width is the same pure geometry's p = 0 rect.
+        // content width and the search slot's row geometry are the same pure
+        // geometry's p = 0 rects.
         val horizontalInsets = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
         val insetLeftPx = horizontalInsets.getLeft(density, layoutDirection)
         val insetRightPx = horizontalInsets.getRight(density, layoutDirection)
@@ -126,8 +150,19 @@ fun MainTabShell(
         val tappableBottom = with(density) { WindowInsets.tappableElement.getBottom(density).toDp() }
         val bottomGap = tabBarBottomGap(navBottom, tappableBottom)
         val expandedPill = tabPillExpandedWidth(maxWidth.value, insetStart.value, insetEnd.value).dp
+        val rowW = tabBarRowWidth(maxWidth - insetStart - insetEnd).value
 
-        CompositionLocalProvider(LocalTabBarMinimize provides minimize) {
+        // #29: every selection (taps, the router, deep links, back) routes
+        // through MainTabState.select — the one hook that bumps the field's
+        // activation token.
+        SideEffect {
+            state.onSelected = searchState::onTabSelected
+        }
+
+        CompositionLocalProvider(
+            LocalSearchTabState provides searchState,
+            LocalTabBarMinimize provides minimize,
+        ) {
             // The scrolling tab content: the only haze source the chrome
             // samples, wrapped in the minimize detector (#28).
             Box(Modifier.fillMaxSize().hazeSource(barHaze)) {
@@ -182,33 +217,110 @@ fun MainTabShell(
                 state.onTabTap(tab, feedback, scope)
             }
 
+            // #29: the search morph — one spring from the selection (the
+            // same `searchSelected` read the tab content already uses),
+            // read only through lambdas below.
+            val searchSelected = state.selected == TabId.Search
+            val morph = rememberSearchMorphProgress(searchSelected)
+            val searchPill0 = BarRect(0f, 0f, expandedPill.value, SearchMorphGeometry.RowHeight)
+
             // The chrome above the content, sampling it: pill + search +
-            // accessory, placed by the geometry at the morph's position.
-            // While Search is selected, ticket 29's layout replaces this.
+            // accessory, placed by the geometry at the morphs' positions.
+            // While Search is selected, ticket 29's slots replace 26's.
             CompositionLocalProvider(LocalHazeState provides barHaze) {
                 TabChromeLayout(
                     progress = { minimize.progress.value },
+                    searchProgress = { morph.value },
+                    searchActive = searchSelected,
                     bottomInset = bottomGap,
                     hasAccessory = true,
                     modifier = Modifier.fillMaxSize().selectableGroup(),
+                    onRects = { rects -> searchState.publishImeLift(rects.imeLift) },
                     pill = {
-                        GlassTabPill(
-                            selected = state.selected,
-                            onTabTap = onBarTap,
-                            minimizeProgress = { minimize.progress.value },
-                            minimized = minimize.minimized,
-                            onRestore = { minimize.expand() },
-                            expandedWidth = expandedPill,
+                        // The composition gate flips once per morph, not per
+                        // frame (a derived read over the spring's state).
+                        val showSearchChrome by remember(searchSelected) {
+                            derivedStateOf {
+                                SearchMorph.chromeShowing(searchSelected, morph.value)
+                            }
+                        }
+                        if (showSearchChrome) {
+                            SearchReturnCircle(
+                                previousTab = state.previousTab,
+                                progress = { morph.value },
+                                minimizeProgress = { minimize.progress.value },
+                                pill0 = searchPill0,
+                                active = searchSelected,
+                                // 26's programmatic select: no haptic, like
+                                // the system Close; 28's expand and 30's
+                                // accessory fade-in run as for any switch.
+                                onReturn = { state.select(state.previousTab) },
+                                onTabTap = onBarTap,
+                            )
+                        } else {
+                            GlassTabPill(
+                                selected = state.selected,
+                                onTabTap = onBarTap,
+                                minimizeProgress = { minimize.progress.value },
+                                minimized = minimize.minimized,
+                                onRestore = { minimize.expand() },
+                                expandedWidth = expandedPill,
+                            )
+                        }
+                    },
+                    search = {
+                        SearchTabField(
+                            state = searchState,
+                            progress = { morph.value },
+                            rowWidth = rowW,
+                            active = searchSelected,
+                            onSearchTabTap = { onBarTap(TabId.Search) },
                         )
                     },
-                    search = { GlassSearchButton(state.selected, onBarTap) },
                     accessory = {
-                        NewSessionAccessory(
-                            counts = counts,
-                            onTap = onNewSession,
-                            inline = minimize.minimized,
-                            labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
-                        )
+                        // #29: the accessory never leaves composition (#577).
+                        // While the row rides on the IME it fades with the
+                        // lift — the same `rowBottom` computation the layout
+                        // made, re-read here in the draw phase and (for the
+                        // hit-test gate) in a derived flip.
+                        val ime = WindowInsets.ime
+                        val b = bottomGap.value
+                        val shellState = state
+                        val morphNow = morph
+                        val hittable by remember(density, bottomGap) {
+                            derivedStateOf {
+                                val imeBottom = with(density) {
+                                    ime.getBottom(density).toDp().value
+                                }
+                                accessoryImeAlpha(
+                                    SearchMorphGeometry.rowBottom(
+                                        b,
+                                        imeBottom,
+                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                    ) - b,
+                                ) >= 0.01f
+                            }
+                        }
+                        Box(
+                            Modifier.graphicsLayer {
+                                val imeBottom = ime.getBottom(this).toDp().value
+                                alpha = accessoryImeAlpha(
+                                    SearchMorphGeometry.rowBottom(
+                                        b,
+                                        imeBottom,
+                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                    ) - b,
+                                )
+                            },
+                        ) {
+                            NewSessionAccessory(
+                                counts = counts,
+                                onTap = onNewSession,
+                                inline = minimize.minimized,
+                                labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
+                                enabled = hittable,
+                            )
+                        }
                     },
                 )
             }

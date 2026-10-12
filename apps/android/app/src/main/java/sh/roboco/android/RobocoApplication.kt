@@ -11,6 +11,7 @@ import sh.roboco.android.core.FontGate
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.shell.SearchTabState
 import uniffi.roboco_core.CoreClient
 
 /**
@@ -31,6 +32,14 @@ class RobocoApplication : Application() {
 
     /** Application-wide scope for state that outlives the activity. */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * The Search tab's query holder (ui-parity #29): app-scoped so the
+     * query survives tab switches **and activity recreations**, but never
+     * process death (it is not saveable — the query is gone on a fresh
+     * process, like iOS's). `rememberSearchTabState` resolves it.
+     */
+    val searchTabState = SearchTabState()
 
     /**
      * Exactly one DataStore per process for the paired-engines file (a

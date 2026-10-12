@@ -28,6 +28,7 @@ import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
+import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
@@ -133,6 +134,11 @@ object Gallery {
         // 393 × 852 phone frame into the body.
         GallerySection("Pairing root", layout = GalleryLayout.Fill, screenshotHeightDp = 960) {
             PairingRootGallerySection()
+        },
+        // Ticket 29 (search tab morph): the bar-to-field morph, the IME
+        // ride and the accessory fade.
+        GallerySection("Search tab morph", GalleryLayout.Scroll, screenshotHeightDp = 1240) {
+            SearchTabMorphGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

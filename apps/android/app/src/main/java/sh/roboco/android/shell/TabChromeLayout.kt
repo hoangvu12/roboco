@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.union
@@ -13,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
@@ -36,16 +38,33 @@ import sh.roboco.android.design.glass.LocalHazeState
 val TabMinimizeProgressKey = SemanticsPropertyKey<Float>("TabMinimizeProgress")
 
 /**
- * The chrome layout (android-ui-parity #28): the multi-content `Layout`
- * that places the tab pill, the search circle and the "New session"
- * accessory from [tabChromeGeometry] — every rect lerped between the
- * expanded and minimized geometry by the morph progress. Ticket 26's
- * `BoxWithConstraints`/`Row` placement and 27's fixed capsule row both
- * become this one layout.
+ * The chrome layout (android-ui-parity #28, extended by #29): the
+ * multi-content `Layout` that places the tab pill, the search circle and
+ * the "New session" accessory from [tabChromeGeometry] — every rect
+ * lerped between the expanded and minimized geometry by the morph
+ * progress. Ticket 26's `BoxWithConstraints`/`Row` placement and 27's
+ * fixed capsule row both become this one layout.
  *
- *  - [progress] is read **only inside the measure block** (and the
- *    semantics key above): the spring causes a relayout per frame, never a
- *    recomposition. Do not read `progress.value` in a composable body.
+ * **The search morph (#29):** [searchProgress] `p` and [searchActive]
+ * reshape the same three slots —
+ *  - the pill and search rects lerp from their minimize-position
+ *    (`pill0`/`search0` at the current `m`) toward
+ *    [SearchMorphGeometry.returnTarget] /
+ *    [SearchMorphGeometry.fieldTarget] — both parts bottom-aligned with
+ *    the row, the outer edges never sliding sideways;
+ *  - the accessory's bottom follows `accessoryBottomY(p)` (it never rides
+ *    the IME), its horizontal rect staying the geometry's; it is placed
+ *    **first**, so the row draws above it (the #577 z-order);
+ *  - while the search chrome is on screen (`searchActive` or `p > 0`),
+ *    the row's bottom rises to `max(B, imeBottom + 8)` — it rides on the
+ *    IME, frame by frame through `WindowInsets.ime` (no spring of our
+ *    own). [imeLiftDp] overrides the inset read for the gallery /
+ *    screenshot fixture.
+ *
+ *  - [progress] and [searchProgress] are read **only inside the measure
+ *    block** (and the semantics key above): the springs cause a relayout
+ *    per frame, never a recomposition. Do not read `progress.value` in a
+ *    composable body.
  *  - The horizontal system insets (navigation bar ∪ display cutout) are
  *    read inside the measure block too — the `WindowInsets` getters are
  *    snapshot reads — and converted start/end so the row mirrors exactly
@@ -56,17 +75,25 @@ val TabMinimizeProgressKey = SemanticsPropertyKey<Float>("TabMinimizeProgress")
  *  - The layout never clips its children: `GlassSurface` draws its shadow
  *    outside its bounds (07), so a `clip` here would cut it.
  *  - [onRects] is invoked from the placement block (main thread, once per
- *    layout) — ticket 30's chrome-top hook.
+ *    layout) — ticket 30's chrome-top hook, ticket 29's IME-lift
+ *    publication (`SearchTabState.searchImeLift`).
  *
- * @param progress the morph position 0…1 (unclamped); measure-phase read
+ * @param progress the minimize morph position 0…1 (unclamped); measure-phase read
  * @param bottomInset ticket 26's `tabBarBottomGap`: the row's bottom gap
  *   above the shell's bottom edge
  * @param hasAccessory false = pill + search only, nothing between them
+ * @param searchProgress the search morph position 0…1 (unclamped,
+ *   29); measure-phase read, 0 by default = 28's behaviour unchanged
+ * @param searchActive Search is the selected tab (the target, 29)
+ * @param imeLiftDp the fixture's stand-in for the IME lift (dp, 29);
+ *   null = read `WindowInsets.ime`
  * @param modifier the caller's modifier; pass `fillMaxSize()` so the
  *   geometry gets the whole shell
  * @param onRects receives the placed rects each layout pass (ticket 30)
- * @param pill the tab pill ([GlassTabPill]); fills its incoming constraints
- * @param search the round search button ([GlassSearchButton])
+ * @param pill the tab pill ([GlassTabPill], or [SearchReturnCircle] while
+ *   the search chrome is on screen); fills its incoming constraints
+ * @param search the search slot ([SearchTabField]); fills its incoming
+ *   constraints
  * @param accessory the "New session" capsule ([NewSessionAccessory]);
  *   always composed, only conditionally placed
  */
@@ -77,14 +104,18 @@ fun TabChromeLayout(
     hasAccessory: Boolean,
     modifier: Modifier = Modifier,
     onRects: (TabChromeRects) -> Unit = {},
+    searchProgress: () -> Float = { 0f },
+    searchActive: Boolean = false,
+    imeLiftDp: Float? = null,
     pill: @Composable () -> Unit,
     search: @Composable () -> Unit,
     accessory: @Composable () -> Unit,
 ) {
-    // The insets object is obtained in composition (the getters are
+    // The insets objects are obtained in composition (the getters are
     // @Composable); the *values* are snapshot reads taken in the measure
     // block below, so inset changes re-layout without recomposition.
     val side = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
+    val ime = WindowInsets.ime
     Layout(
         contents = listOf(pill, search, accessory),
         modifier = modifier.semantics { this[TabMinimizeProgressKey] = progress() },
@@ -98,13 +129,28 @@ fun TabChromeLayout(
         val insetEnd = (if (rtl) side.getLeft(this, layoutDirection) else side.getRight(this, layoutDirection))
             .toDp().value
 
-        val p = progress()
+        val m = progress()
+        val searchP = searchProgress()
+        val searchOn = SearchMorph.chromeShowing(searchActive, searchP)
+
+        // The IME ride (#29): the row's bottom rises with the IME while the
+        // search chrome is on screen (rowBottom returns b otherwise, so a
+        // focused composer elsewhere never lifts the tab bar).
+        val heightDp = constraints.maxHeight.toDp().value
+        val imeBottomDp = if (imeLiftDp != null) {
+            bottomInset.value + imeLiftDp - SearchMorphGeometry.ImeGap
+        } else {
+            ime.getBottom(this).toDp().value
+        }
+        val rowBottom = SearchMorphGeometry.rowBottom(bottomInset.value, imeBottomDp, searchOn)
+        val lift = rowBottom - bottomInset.value
+
         val rects = tabChromeGeometry(
             width = constraints.maxWidth.toDp().value,
-            height = constraints.maxHeight.toDp().value,
-            bottomInset = bottomInset.value,
+            height = heightDp,
+            bottomInset = rowBottom,
             hasAccessory = hasAccessory,
-            progress = p,
+            progress = m,
             insetStart = insetStart,
             insetEnd = insetEnd,
         )
@@ -112,23 +158,68 @@ fun TabChromeLayout(
         // placed (hasAccessory = false): ticket 30 keeps it in composition.
         val measureRects = if (hasAccessory) rects else tabChromeGeometry(
             width = constraints.maxWidth.toDp().value,
-            height = constraints.maxHeight.toDp().value,
-            bottomInset = bottomInset.value,
+            height = heightDp,
+            bottomInset = rowBottom,
             hasAccessory = true,
-            progress = p,
+            progress = m,
             insetStart = insetStart,
             insetEnd = insetEnd,
         )
 
+        // The search morph (#29): row-local pill0/search0 at the current m,
+        // lerped toward the search targets; the accessory's bottom follows
+        // p only (it never rides the IME).
+        val rowL = rects.rowLeft
+        val rowW = rects.rowWidth
+        val rowTop = heightDp - rowBottom - TabChromeMetrics.PillHeight
+
+        fun toRow(r: Rect): BarRect =
+            BarRect(r.left - rowL, r.top - rowTop, r.width, r.height)
+
+        fun toShell(r: BarRect): Rect = Rect(
+            rowL + r.x,
+            rowTop + r.y,
+            rowL + r.x + r.w,
+            rowTop + r.y + r.h,
+        )
+
+        /** The accessory's search rect: horizontal from `base`, bottom from p, never lifted. */
+        fun searchAccessoryRect(base: Rect?): Rect? {
+            if (base == null) return null
+            val restRowTop = heightDp - bottomInset.value - TabChromeMetrics.PillHeight
+            val bottom = restRowTop + SearchMorphGeometry.accessoryBottomY(searchP)
+            return Rect(
+                base.left,
+                bottom - TabChromeMetrics.AccessoryHeight,
+                base.right,
+                bottom,
+            )
+        }
+
+        val pillRect: Rect
+        val searchRect: Rect
+        val accessoryRect: Rect?
+        if (searchOn) {
+            pillRect = toShell(SearchMorphGeometry.returnRect(toRow(rects.pill), searchP))
+            searchRect = toShell(SearchMorphGeometry.fieldRect(toRow(rects.search), rowW, searchP))
+            accessoryRect = searchAccessoryRect(rects.accessory)
+        } else {
+            pillRect = rects.pill
+            searchRect = rects.search
+            accessoryRect = rects.accessory
+        }
+        val accessoryMeasureRect =
+            if (hasAccessory) accessoryRect else searchAccessoryRect(measureRects.accessory)
+
         fun px(value: Float): Int = value.dp.roundToPx()
         val pillPlaceable = measurables.getOrNull(0)?.firstOrNull()
-            ?.measure(Constraints.fixed(px(rects.pill.width), px(rects.pill.height)))
+            ?.measure(Constraints.fixed(px(pillRect.width), px(pillRect.height)))
         val searchPlaceable = measurables.getOrNull(1)?.firstOrNull()
-            ?.measure(Constraints.fixed(px(rects.search.width), px(rects.search.height)))
-        val accessoryMeasureRect = measureRects.accessory
-        val accessoryPlaceable = if (accessoryMeasureRect != null) {
+            ?.measure(Constraints.fixed(px(searchRect.width), px(searchRect.height)))
+        val accessoryMeasure = accessoryMeasureRect
+        val accessoryPlaceable = if (accessoryMeasure != null) {
             measurables.getOrNull(2)?.firstOrNull()
-                ?.measure(Constraints.fixed(px(accessoryMeasureRect.width), px(accessoryMeasureRect.height)))
+                ?.measure(Constraints.fixed(px(accessoryMeasure.width), px(accessoryMeasure.height)))
         } else {
             null
         }
@@ -136,13 +227,28 @@ fun TabChromeLayout(
         // Placement coordinates are precomputed in the measure block: the
         // placement scope is not a Density.
         layout(constraints.maxWidth, constraints.maxHeight) {
-            pillPlaceable?.placeRelative(px(rects.pill.left), px(rects.pill.top))
-            searchPlaceable?.placeRelative(px(rects.search.left), px(rects.search.top))
-            val placedAccessory = rects.accessory
-            if (hasAccessory && placedAccessory != null) {
-                accessoryPlaceable?.placeRelative(px(placedAccessory.left), px(placedAccessory.top))
+            // The accessory first: the row draws above it (#29's z-order).
+            if (hasAccessory && accessoryRect != null) {
+                accessoryPlaceable?.placeRelative(px(accessoryRect.left), px(accessoryRect.top))
             }
-            onRects(rects)
+            pillPlaceable?.placeRelative(px(pillRect.left), px(pillRect.top))
+            searchPlaceable?.placeRelative(px(searchRect.left), px(searchRect.top))
+            val chromeTop = minOf(
+                pillRect.top,
+                searchRect.top,
+                accessoryRect?.top ?: Float.POSITIVE_INFINITY,
+            )
+            onRects(
+                TabChromeRects(
+                    pill = pillRect,
+                    search = searchRect,
+                    accessory = accessoryRect,
+                    chromeTop = chromeTop,
+                    rowLeft = rowL,
+                    rowWidth = rowW,
+                    imeLift = lift,
+                ),
+            )
         }
     }
 }

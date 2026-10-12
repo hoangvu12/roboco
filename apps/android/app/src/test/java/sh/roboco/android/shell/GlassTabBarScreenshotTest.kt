@@ -134,7 +134,10 @@ class GlassTabBarScreenshotTest {
 
     @Test
     fun tabbarSearchLight() {
-        // The interim look: the pill platter gone, the inner circle in.
+        // Search selected in the wrapper: the pill keeps its last pill
+        // selection (26's look — the morph is the shell's, not the
+        // wrapper's); ticket 29 deleted the interim inner circle, so this
+        // golden is re-recorded on the batch run.
         shot("tabbar_search_light.png", TabId.Search)
     }
 
