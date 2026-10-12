@@ -28,6 +28,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -209,7 +210,7 @@ class EdgeFadeScreenshotTest {
         compose.onNode(
             SemanticsMatcher("text keeps both lines") { node: SemanticsNode ->
                 node.config.contains(SemanticsProperties.Text) &&
-                    node.config[SemanticsProperties.Text].text == "short\n" + "m".repeat(48)
+                    node.config[SemanticsProperties.Text].single().text == "short\n" + "m".repeat(48)
             },
         ).assertExists()
     }
