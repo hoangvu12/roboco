@@ -385,13 +385,15 @@ private fun ToastCapsule(
                 ToastSlideSemantics(slide)
             }
         },
-    ) { measurable, constraints ->
+    ) { measurables, constraints ->
         // The host box fills the window, so the loose incoming maxWidth is
         // the window width: the capsule never spans window − 48 dp
         // (Toast.swift:23), and it is centred on the window (:21).
         val windowWidthPx = constraints.maxWidth
         val maxToastWidthPx = (windowWidthPx - 48.dp.roundToPx()).coerceAtLeast(0)
-        val placeable = measurable.measure(Constraints(maxWidth = maxToastWidthPx))
+        // The content is the single wrapping Box (capsule body + slide
+        // semantics child).
+        val placeable = measurables.first().measure(Constraints(maxWidth = maxToastWidthPx))
         layout(placeable.width, placeable.height) {
             // toastRestY with the animated anchor: reading anchor.value in
             // the placement block invalidates placement only, not the measure.
@@ -524,7 +526,6 @@ internal val ToastLongText: String =
 internal fun ToastChromeFixture(
     modifier: Modifier = Modifier,
     chromeVisible: Boolean = true,
-    chromeHeight: Dp = 80.dp,
 ) {
     val palette = RobocoTheme.palette
     val chromeTop = LocalBottomChromeTop.current
@@ -536,7 +537,7 @@ internal fun ToastChromeFixture(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(chromeHeight)
+                    .height(80.dp)
                     .background(palette.chip)
                     .onGloballyPositioned { coordinates ->
                         val topPx = coordinates.boundsInRoot().top

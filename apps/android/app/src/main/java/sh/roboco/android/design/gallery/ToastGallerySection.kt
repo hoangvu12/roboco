@@ -26,11 +26,11 @@ import androidx.compose.ui.unit.dp
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastChromeFixture
 import sh.roboco.android.design.ToastHost
 import sh.roboco.android.design.ToastLongText
-import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.uiStyle
 
 /**
