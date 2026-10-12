@@ -118,12 +118,13 @@ fun FadingText(
             val o = w > 0 && p.width > w + EdgeFade.OverflowTolerance.toPx()
             if (o != overflows) overflows = o
             // Overflowing text aligns to `.natural` — the start of the UI
-            // layout direction (EdgeFade.swift:41-42).
-            val x = (if (o) Alignment.Start else fitsAlignment).align(w, p.width, layoutDirection)
+            // layout direction (EdgeFade.swift:41-42). align(size, space):
+            // the child width first, the slot second — Start returns
+            // w − p.width (negative) for an overflowing RTL slot, which
+            // puts the text's right edge flush with the slot's.
+            val x = (if (o) Alignment.Start else fitsAlignment).align(p.width, w, layoutDirection)
             val y = (h - p.height) / 2
-            // place(), NOT placeRelative(): x is already physical — Start
-            // returned w − p.width (negative) for an overflowing RTL slot,
-            // which puts the text's right edge flush with the slot's.
+            // place(), NOT placeRelative(): x is already physical.
             layout(w, h) { p.place(x, y) }
         },
     )

@@ -112,12 +112,16 @@ fun EdgeFadeGallerySection() {
     }
 }
 
+/** Caption style: `BasicText`, default family, 11.sp, `Palette.tertiary`. */
+private fun captionStyle(palette: Palette): TextStyle =
+    TextStyle(fontFamily = FontFamily.Default, fontSize = 11.sp, color = palette.tertiary)
+
 /** A small caption in `Palette.tertiary` (`BasicText` 11.sp, default family). */
 @Composable
 private fun Caption(text: String, palette: Palette) {
     BasicText(
         text,
-        style = TextStyle(fontFamily = FontFamily.Default, fontSize = 11.sp, color = palette.tertiary),
+        style = captionStyle(palette),
         modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp),
     )
 }
@@ -141,7 +145,7 @@ private fun ScrollChipRow(label: String, initialDp: Int, palette: Palette) {
         }
         BasicText(
             label,
-            style = TextStyle(fontFamily = FontFamily.Default, fontSize = 11.sp, color = palette.tertiary),
+            style = captionStyle(palette),
             modifier = Modifier.padding(start = 10.dp),
         )
     }

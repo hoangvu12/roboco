@@ -106,6 +106,9 @@ class EdgeFadeScreenshotTest {
     }
 
     @Test
+    // The section is ≈ 1100 dp tall (its registration line), so the golden
+    // needs a taller window than the class-level 900 dp the pixel checks
+    // use; 1400 dp matches the theme gallery's 1100 dp pages.
     @Config(sdk = [36], qualifiers = "w400dp-h1400dp-mdpi")
     fun galleryLight() {
         galleryShot(Appearance.Light, "design/edge_fades_light.png")
