@@ -1707,3 +1707,48 @@ async fn a_streaming_reply_grows_in_place() {
     )
     .await;
 }
+
+/// "Not delivered — tap to retry" on a fully adopted session: a no-op that
+/// returns `Ok`, leaves the composer alone, and never re-issues anything.
+///
+/// The acked-but-unadopted path (the grace clock running out while the
+/// engine holds the command) has no mock-free deterministic transport
+/// seam: the stall proxy is transport-level and freezes the calls
+/// connection the ack itself needs, and every mock turn eventually adopts
+/// its echo. The state machine it drives is unit-tested in
+/// `session/pending.rs` (the `Failed` boundary and the timer arithmetic in
+/// `next_grace_deadline`); the engine's `RetryDelivery` re-issue (same
+/// message id, new command id) is covered by the engine's own tests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_delivery_on_an_adopted_session_is_a_noop() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let rig = rig().await;
+    let handle = rig.open();
+    let outcome = handle.send(SendRequest::text("already adopted")).await.unwrap();
+    let SendOutcome::Started { message_id } = outcome else {
+        panic!("idle send: {outcome:?}")
+    };
+    wait_until(
+        || {
+            handle
+                .snapshot()
+                .entries
+                .iter()
+                .any(|e| e.id == message_id && e.role == MessageRole::User)
+        },
+        "the message lands",
+    )
+    .await;
+    wait_until(|| handle.snapshot().pending.is_empty(), "the echo is adopted").await;
+    handle.retry_delivery().await.unwrap();
+    assert!(
+        handle.snapshot().pending.is_empty(),
+        "a retry on an adopted session mints no new echo"
+    );
+    assert_eq!(
+        handle.composer().send_state,
+        None,
+        "no send state after a fully adopted exchange"
+    );
+    rig.client.shutdown();
+}

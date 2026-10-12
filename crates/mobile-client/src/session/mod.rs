@@ -657,17 +657,10 @@ async fn watch_task(core: Arc<SessionCore>, cancel: CancellationToken) {
             .unwrap_or(Duration::from_millis(UNDELIVERED_GRACE_MS as u64));
         let deadline = {
             let state = lock(&core.state);
-            state
-                .pending
-                .iter()
-                .filter(|p| p.acked_at_ms != 0)
-                .map(|p| p.acked_at_ms + grace.as_millis() as i64)
-                .min()
-                .map(|ms| {
-                    let remaining = (ms - crate::engines::now_ms()).max(0);
-                    tokio::time::Instant::now()
-                        + Duration::from_millis(remaining as u64)
-                })
+            pending::next_grace_deadline(&state.pending, grace.as_millis() as i64).map(|ms| {
+                let remaining = (ms - crate::engines::now_ms()).max(0);
+                tokio::time::Instant::now() + Duration::from_millis(remaining as u64)
+            })
         };
         let timer = async {
             match deadline {

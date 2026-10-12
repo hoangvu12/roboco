@@ -127,6 +127,21 @@ pub(crate) fn headline_state(pending: &[PendingSend]) -> Option<SendState> {
     })
 }
 
+/// The earliest grace deadline over the acked pending sends, in epoch ms
+/// (`None` while nothing is acked — an in-flight send never arms the
+/// timer). The watch task sleeps to this and refreshes, so the `Failed`
+/// flip emits `ComposerChanged` at the moment it happens, not on the next
+/// unrelated event. Pure: the paused-clock arithmetic, unit-tested
+/// without a runtime; the caller clamps a past deadline to an immediate
+/// wake (the state flips on that refresh).
+pub(crate) fn next_grace_deadline(pending: &[PendingSend], grace_ms: i64) -> Option<i64> {
+    pending
+        .iter()
+        .filter(|p| p.acked_at_ms != 0)
+        .map(|p| p.acked_at_ms + grace_ms)
+        .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +186,40 @@ mod tests {
         let pending = vec![mk("a", 2, SendState::Failed), mk("b", 1, SendState::Queued)];
         assert_eq!(headline_state(&pending), Some(SendState::Failed));
         assert_eq!(headline_state(&[]), None);
+    }
+
+    /// The grace timer arms on the earliest ACKED send only — an in-flight
+    /// send has no deadline to sleep to (its RPC is bounded by its own
+    /// call deadline), and a shrunken grace arms proportionally.
+    #[test]
+    fn the_grace_deadline_is_the_earliest_acked_send() {
+        let mk = |id: &str, at: i64, acked_at: i64| PendingSend {
+            message_id: id.into(),
+            text: "hi".into(),
+            visible_text: "hi".into(),
+            images: Vec::new(),
+            kind: PendingKind::Run,
+            sent_at_ms: at,
+            state: SendState::Sending,
+            acked_at_ms: acked_at,
+            command: SessionCommandPayload::Interrupt {},
+        };
+        let pending = vec![
+            mk("a", 1_000, 1_050),
+            mk("b", 2_000, 2_100),
+            mk("in-flight", 3_000, 0),
+        ];
+        assert_eq!(next_grace_deadline(&pending, 500), Some(1_550));
+        assert_eq!(next_grace_deadline(&pending, UNDELIVERED_GRACE_MS), Some(121_050));
+        // Only in-flight sends: no deadline at all (the timer stays
+        // disarmed, `pending()` in the select).
+        assert_eq!(
+            next_grace_deadline(&[mk("in-flight", 3_000, 0)], 500),
+            None
+        );
+        assert_eq!(next_grace_deadline(&[], 500), None);
+        // A past deadline survives (the caller clamps to an immediate wake
+        // so the flip still emits).
+        assert_eq!(next_grace_deadline(&[mk("a", 1, 100)], 100), Some(200));
     }
 }
