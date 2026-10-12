@@ -2891,7 +2891,7 @@ fn spawn_registry_watch(
     handle: EngineHandle,
     data_dir: Option<PathBuf>,
 ) -> Task<()> {
-    let path = data_dir.unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"));
+    let data_dir = data_dir.unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"));
     let info = handle.engine_info().clone();
     let client = handle.inner.client();
     // Both modes reconnect: a remote engine redials its URL, an embedded one
@@ -2903,13 +2903,15 @@ fn spawn_registry_watch(
         // Desktop keeps today's exact wiring: a JSON-file session store, the
         // mandatory local engine, and Tailcat invites resolved in-process.
         EngineRegistry::open_with(RegistryOptions {
-            sessions: Arc::new(FileSessionStore::new(path.join("paired-engines-v1.json"))),
+            sessions: Arc::new(FileSessionStore::new(
+                data_dir.join("paired-engines-v1.json"),
+            )),
             local: Some(LocalEngine {
                 info,
                 client,
                 reconnect,
             }),
-            data_dir: path,
+            data_dir,
             resolvers: vec![Arc::new(crate::tailcat_pairing::TailcatResolver)],
         })
         .await

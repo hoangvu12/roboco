@@ -448,8 +448,9 @@ impl EngineRegistry {
     /// Adopt the local bootstrap's client. `reconnect` revives the local entry
     /// when its transport dies (a URL to dial, or an in-process client factory);
     /// remote entries reconnect independently through their saved credentials.
-    /// Today's desktop shape: a JSON file session store, a mandatory local
-    /// engine, no extra pairing resolvers.
+    /// Convenience for the file-store-plus-local shape: a JSON session store
+    /// next to the data directory and no extra pairing resolvers (callers that
+    /// need those use `open_with`).
     pub async fn open(
         path: PathBuf,
         local_info: EngineInfo,

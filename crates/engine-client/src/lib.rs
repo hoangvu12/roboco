@@ -28,9 +28,9 @@ pub struct LocalEngine {
     pub reconnect: Option<Reconnect>,
 }
 
-/// How a registry is opened. `open()` keeps today's desktop defaults: a
-/// JSON-file session store next to the data directory, a mandatory local
-/// engine, and no extra pairing resolvers.
+/// How a registry is opened. `open()` is the file-store-plus-local
+/// convenience: a JSON session store, a mandatory local engine, and no extra
+/// pairing resolvers.
 pub struct RegistryOptions {
     /// Directory holding `engine-cache-v1/` and (for resolvers that need one)
     /// `tailcat-forwarders/`.
@@ -103,7 +103,7 @@ impl SessionStore for FileSessionStore {
 pub struct ResolvedPairing {
     /// `http(s)://host[:port][/prefix]`, no trailing slash.
     pub base: String,
-    /// One-time pairing token.
+    /// One-time pairing code.
     pub code: String,
     /// Dropped when the entry is forgotten.
     pub keepalive: Option<Box<dyn std::any::Any + Send>>,
