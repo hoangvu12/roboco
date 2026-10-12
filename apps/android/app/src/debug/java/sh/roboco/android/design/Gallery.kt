@@ -103,6 +103,9 @@ object Gallery {
         GallerySection("Tab bar", screenshotHeightDp = 1700) { TabBarGallerySection() },
         // Ticket 09: Fill because it owns the LazyColumn.
         GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() },
+        // Ticket 70 (inset-grouped list): Fill — the cards sit 16 dp from
+        // the screen edges, so the section owns its scrolling unpadded.
+        GallerySection("Grouped list", layout = GalleryLayout.Fill, screenshotHeightDp = 1300) { GroupedListGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
