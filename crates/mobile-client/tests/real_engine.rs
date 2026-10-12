@@ -104,20 +104,30 @@ async fn pair_pins_identity_connects_and_receives_feed_rows() {
     core.shutdown().await;
 }
 
-/// A single-use code cannot be redeemed twice.
+/// A single-use code cannot be redeemed twice, and an expired one is
+/// refused the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_used_code_is_refused() {
+async fn used_and_expired_codes_are_refused() {
     let engine_dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let core = support::core(engine_dir.path());
     let listener = serve(&core, engine_dir.path()).await;
-    let url = pairing_url(&listener, engine_dir.path(), None);
     let recorder = Arc::new(Recorder::default());
     let client = test_client(data_dir.path(), Vec::new(), recorder);
+    let url = pairing_url(&listener, engine_dir.path(), None);
     client.pair_engine(&url, None).await.unwrap();
     match client.pair_engine(&url, None).await {
         Err(roboco_mobile_client::PairError::Refused) => {}
         other => panic!("a used code must be Refused, got {other:?}"),
+    }
+    // An expired code: mint with a 1 s TTL, let it lapse, redeem.
+    let store = roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap();
+    let expired = store.create_code("expired", 1).unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let url = format!("http://{}/pair#token={}", listener.address, expired.credential);
+    match client.pair_engine(&url, None).await {
+        Err(roboco_mobile_client::PairError::Refused) => {}
+        other => panic!("an expired code must be Refused, got {other:?}"),
     }
     client.shutdown();
     drop(listener);
