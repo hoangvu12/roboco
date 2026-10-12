@@ -273,6 +273,7 @@ android {
         targetSdk = 36 // compile 37; target stays 36 for local-network permission
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // No ndk.abiFilters here: AGP refuses abiFilters alongside the ABI
         // splits below, and the splits' include (intersected with
         // -ProbocoAbis) now decides which libroboco_mobile.so is packaged
@@ -382,6 +383,9 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.reflect=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED",
+        // UniFFI objects register with android.system.SystemCleaner, which
+        // Robolectric backs with jdk.internal.ref.CleanerFactory.
+        "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
     systemProperty("jna.library.path", debugHostDir.absolutePath)
@@ -415,12 +419,19 @@ dependencies {
     implementation(libs.graphics.shapes)
 
     implementation(libs.kotlinx.coroutines.android)
+    // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
+    // androidx.security:security-crypto is deliberately absent (deprecated
+    // and forbidden by android-app#18).
+    implementation(libs.androidx.datastore.preferences)
     // The AAR carries arm64/x86_64 libjnidispatch.so (16 KB aligned).
     implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // ApplicationProvider for the Robolectric pairing/core tests.
+    testImplementation(libs.androidx.test.core)
     // Plain jar: the host libjnidispatch for JVM (Robolectric) tests.
     testImplementation(libs.jna)
     testImplementation(libs.robolectric)
@@ -431,4 +442,9 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
 
     debugImplementation(libs.compose.ui.test.manifest)
+
+    // Instrumented Keystore tests (ticket 71) — CI-only, no emulator locally.
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
