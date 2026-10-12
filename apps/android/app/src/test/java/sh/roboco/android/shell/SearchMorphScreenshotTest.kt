@@ -57,7 +57,7 @@ class SearchMorphScreenshotTest {
                 ProvideGlyphClock(frozenAtNanos = 0L) {
                     val state = remember {
                         SearchTabState().also {
-                            if (text.isNotEmpty()) setTextAndPlaceCursorAtEnd(it.text, text)
+                            if (text.isNotEmpty()) it.text.setTextAndPlaceCursorAtEnd(text)
                         }
                     }
                     SearchMorphFixture(
