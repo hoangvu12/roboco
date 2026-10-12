@@ -103,18 +103,27 @@ fun smoothRoundedPath(width: Float, height: Float, radiusPx: Float, smoothing: F
 fun rememberSmoothRoundedShape(radius: Dp): Shape = remember(radius) { SmoothRoundedShape(radius) }
 
 /**
- * Builds the polygon rectangle and walks its cubics into a Compose [Path].
+ * Builds the polygon rectangle and walks its cubics into a Compose [Path]
+ * (the overload ticket 17's `SmoothTopRoundedShape` shares). See
+ * [polygonPath].
+ */
+internal fun polygonPath(width: Float, height: Float, radiusPx: Float, smoothing: Float): Path =
+    polygonPath(
+        RoundedPolygon.rectangle(
+            width = width,
+            height = height,
+            rounding = CornerRounding(radiusPx, smoothing),
+            centerX = width / 2f,
+            centerY = height / 2f,
+        ),
+    )
+
+/**
+ * Walks a [RoundedPolygon]'s cubics into a Compose [Path].
  * Platform-neutral by construction: graphics-shapes' own `toPath()` would
  * hand back an `android.graphics.Path`.
  */
-internal fun polygonPath(width: Float, height: Float, radiusPx: Float, smoothing: Float): Path {
-    val polygon = RoundedPolygon.rectangle(
-        width = width,
-        height = height,
-        rounding = CornerRounding(radiusPx, smoothing),
-        centerX = width / 2f,
-        centerY = height / 2f,
-    )
+internal fun polygonPath(polygon: RoundedPolygon): Path {
     val cubics = polygon.cubics
     val path = Path()
     if (cubics.isEmpty()) return path
