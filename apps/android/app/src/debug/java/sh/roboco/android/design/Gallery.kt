@@ -96,6 +96,7 @@ object Gallery {
         // Ticket 27 (the ticket names this registration line):
         GallerySection("New session accessory") { NewSessionAccessoryGallerySection() },
         GallerySection("Glass buttons") { GlassButtonsGallerySection() },
+        GallerySection("Action sheet", GalleryLayout.Fill) { ActionSheetGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
@@ -105,7 +106,6 @@ object Gallery {
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
         // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
-        // 19 "Action sheet"       GallerySection("Action sheet") { ActionSheetGallerySection() }  (wraps its own ActionSheetHost)
         // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
         // Ticket 20 (WallpaperStore) is non-visual and has no gallery entry.

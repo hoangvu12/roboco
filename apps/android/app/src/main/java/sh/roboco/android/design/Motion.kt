@@ -320,6 +320,29 @@ object Motion {
     const val AlertFadeOutMs = 200
     fun <T> alertFadeOut(): TweenSpec<T> = tween(AlertFadeOutMs, easing = EaseInOut)
 
+    // ------------------------------------------------------ action sheet (19)
+    // The bottom-anchored UIAlertController(.actionSheet) present/dismiss
+    // set. UIKit draws the sheet with system chrome, so these numbers are
+    // the parent epic's approximation chosen to read like iOS (the ticket's
+    // Comments own the choice); ui-parity#19 is the consumer. Stays out of
+    // allSprings (04's table only), pinned by 19's own tests.
+
+    /**
+     * Action sheet present: the stack slides up from below the window with
+     * UIKit-style 0.4 s critically damped motion (settle-matched stiffness
+     * 532.85, no overshoot). ui-parity#19 (chosen, not measured).
+     */
+    val ActionSheetRise = IosSpring("actionSheet", 0.40, 1f)
+
+    /** Action sheet dismiss: the stack sinks, 250 ms ease-in. ui-parity#19 (chosen, not measured). */
+    const val ActionSheetFallMs = 250
+    fun <T> actionSheetFall(): TweenSpec<T> = tween(ActionSheetFallMs, easing = EaseIn)
+
+    /** Action sheet under Reduce Motion: cards and scrim cross-fade 250 ms, both directions. ui-parity#19 (chosen, not measured). */
+    const val ActionSheetFadeMs = 250
+    fun <T> actionSheetFade(): TweenSpec<T> = tween(ActionSheetFadeMs, easing = EaseInOut)
+
+
     // ------------------------------------------------------ handoff timing set
 
     /** The full handoff timing set, normal or reduced. ios:Session/DraftHandoff.swift:59-131,162-174 */
