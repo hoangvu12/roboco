@@ -26,6 +26,7 @@ import java.util.Locale
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
+import sh.roboco.android.shell.TabBarGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -85,6 +86,8 @@ object Gallery {
         GallerySection("Navigation", GalleryLayout.Scroll, screenshotHeightDp = 891) { NavGallerySection() },
         GallerySection("Icons") { IconsGallerySection() },
         GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() },
+        // Ticket 26 (glass tab bar): the phone shell's bottom chrome.
+        GallerySection("Tab bar", screenshotHeightDp = 1700) { TabBarGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
