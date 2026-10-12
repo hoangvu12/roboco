@@ -7,7 +7,7 @@ import kotlinx.coroutines.SupervisorJob
 import sh.roboco.android.core.CoreLoader
 import sh.roboco.android.core.CoreStartup
 import sh.roboco.android.core.CoreStatus
-import sh.roboco.android.core.FontAssets
+import sh.roboco.android.core.FontGate
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import uniffi.roboco_core.CoreClient
@@ -51,8 +51,10 @@ class RobocoApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         // #609's Fonts.init swallowed missing faces (review bug 8); a
-        // missing font must fail startup loudly, naming the files.
-        FontAssets.requireAll(assets)
+        // missing font must fail startup loudly, naming the files. Debug
+        // builds crash here; release builds store FontStatus.Missing and
+        // MainActivity shows FontsMissingScreen instead of the app.
+        FontGate.check(assets, BuildConfig.DEBUG)
         core = CoreLoader.load()
         // Tickets 40/42/51 register their event sinks here, before start().
         if (core is CoreStatus.Loaded) {

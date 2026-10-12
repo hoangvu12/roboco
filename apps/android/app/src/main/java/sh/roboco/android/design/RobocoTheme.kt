@@ -13,6 +13,8 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 
 /**
  * The appearance setting as the iOS app stores it
@@ -43,7 +45,13 @@ val LocalIsDark = staticCompositionLocalOf<Boolean> { error("No LocalIsDark: wra
 
 /**
  * The theme root: resolves [Appearance] to a [Palette] and provides it, the
- * dark state, accent text-selection colours and [NoIndication].
+ * dark state, accent text-selection colours, [NoIndication], the Geist
+ * font families (ticket 03) and the [TypeScale] for the current density.
+ *
+ * The families are built once per process ([RobocoFonts] caches); the type
+ * scale is rebuilt whenever [LocalDensity] changes (a font-scale change is
+ * a configuration change), so every `scaled`/`bodyScaled` label
+ * recomposes while `fixed` text keeps its dp size.
  *
  * This is a Compose-foundation theme — there is deliberately no Material
  * theme here, no dynamic colour and no theme generation from
@@ -57,6 +65,10 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         Appearance.Dark -> true
     }
     val palette = Palette.of(dark)
+    val density = LocalDensity.current
+    val context = LocalContext.current
+    val fonts = remember(context) { RobocoFonts.families(context) }
+    val typeScale = remember(density) { TypeScale.from(density) }
     // window.tintColor = Palette.accent (SceneDelegate.swift:15): the handles
     // are the accent; the wash is the desktop's accent.selection.
     val selection = remember(palette) {
@@ -69,6 +81,8 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         // Foundation's default indication is a grey press overlay; components
         // draw their own iOS pressed states (controlFill, glass press).
         LocalIndication provides NoIndication,
+        LocalFonts provides fonts,
+        LocalTypeScale provides typeScale,
         // Ticket 04: LocalReduceMotion follows the system "remove animations"
         // setting inside the theme (ticket 35's app root relies on this).
         content = { ProvideReduceMotion(content) },

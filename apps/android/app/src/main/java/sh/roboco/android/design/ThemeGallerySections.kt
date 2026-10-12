@@ -32,11 +32,12 @@ import androidx.compose.ui.tooling.preview.Preview
 // ---------------------------------------------------------------------------
 // Debug design-gallery sections (registered by ticket 22; this file only
 // draws them). Neither section scrolls vertically: the gallery frame does.
-// Monospace labels keep this file independent of ticket 03's Geist type
-// scale; 03 swaps them.
+// Monospace labels keep this file independent of the Geist type scale;
+// ticket 22 restyles the gallery when it registers TypeSpecimen's
+// "Typography" section (ticket 03).
 // ---------------------------------------------------------------------------
 
-/** Monospace label style; swapped for Geist by ticket 03. */
+/** Monospace label style; ticket 22 swaps it for `uiStyle(Face.Mono, …)`. */
 private fun labelStyle(color: Color): TextStyle =
     TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = color)
 
