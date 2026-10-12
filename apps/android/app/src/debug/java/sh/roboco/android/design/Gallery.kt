@@ -28,6 +28,7 @@ import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
+import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
@@ -114,12 +115,12 @@ object Gallery {
         // Ticket 70 (inset-grouped list): Fill — the cards sit 16 dp from
         // the screen edges, so the section owns its scrolling unpadded.
         GallerySection("Grouped list", layout = GalleryLayout.Fill, screenshotHeightDp = 1300) { GroupedListGallerySection() },
+        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
-        // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
         // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
         // Ticket 20 (WallpaperStore) is non-visual and has no gallery entry.
