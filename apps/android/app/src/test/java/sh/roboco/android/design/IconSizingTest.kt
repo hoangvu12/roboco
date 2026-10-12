@@ -25,6 +25,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.Face
+import sh.roboco.android.core.assetPath
 
 /**
  * The icon sizing and weight tests (android-ui-parity #06), Robolectric at

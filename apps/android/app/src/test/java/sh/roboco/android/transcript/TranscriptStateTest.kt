@@ -7,6 +7,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -19,6 +22,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import uniffi.roboco_core.FaceRole
 import uniffi.roboco_core.LayoutFrame
+import uniffi.roboco_core.LayoutListener
 import uniffi.roboco_core.NoHandle
 import uniffi.roboco_core.StyleDesc
 import uniffi.roboco_core.TextSystem
@@ -76,7 +80,7 @@ private class FakeEngine : TranscriptView(NoHandle) {
 private class Harness {
     val engine = FakeEngine()
     val poster = ManualPoster()
-    var relay: FrameRelay? = null
+    var relay: LayoutListener? = null
     val state = TranscriptState(TextSystem(NoHandle), poster) { _, r ->
         relay = r
         engine

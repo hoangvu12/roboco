@@ -9,6 +9,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -393,7 +394,7 @@ class MinimizeOnScrollTest {
     /** The list's scroll position in px (56 dp rows at xxhdpi: 168 px). */
     private fun scrollPositionPx(): Float {
         val lazy = requireNotNull(list)
-        return lazy.firstVisibleItemIndex * 168 + lazy.firstVisibleItemScrollOffset
+        return (lazy.firstVisibleItemIndex * 168 + lazy.firstVisibleItemScrollOffset).toFloat()
     }
 
     // ------------------------------------------- the accessory's inputs
