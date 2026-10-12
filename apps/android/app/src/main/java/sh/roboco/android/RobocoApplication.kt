@@ -3,7 +3,7 @@ package sh.roboco.android
 import android.app.Application
 import sh.roboco.android.core.CoreLoader
 import sh.roboco.android.core.CoreStatus
-import sh.roboco.android.core.FontAssets
+import sh.roboco.android.core.FontGate
 
 /**
  * The Roboco app shell: verifies the bundled fonts, loads the Rust mobile
@@ -22,8 +22,10 @@ class RobocoApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         // #609's Fonts.init swallowed missing faces (review bug 8); a
-        // missing font must fail startup loudly, naming the files.
-        FontAssets.requireAll(assets)
+        // missing font must fail startup loudly, naming the files. Debug
+        // builds crash here; release builds store FontStatus.Missing and
+        // MainActivity shows FontsMissingScreen instead of the app.
+        FontGate.check(assets, BuildConfig.DEBUG)
         core = CoreLoader.load()
     }
 }
