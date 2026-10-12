@@ -89,7 +89,7 @@ object Gallery {
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
+        GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
         // 11 "Status glyph"       GallerySection("Status glyph") { StatusGlyphGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
