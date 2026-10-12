@@ -194,8 +194,10 @@ class PairedEngineStore(
             } catch (error: IOException) {
                 throw CredentialStoreException(error)
             }
-            if (writtenIds != null) {
-                knownIds = writtenIds
+            // A captured var can't be smart-cast; copy it to a val first.
+            val newIds = writtenIds
+            if (newIds != null) {
+                knownIds = newIds
             }
         }
     }
