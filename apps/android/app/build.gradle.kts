@@ -182,6 +182,7 @@ android {
         targetSdk = 36 // compile 37; target stays 36 for local-network permission
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += requestedAbis
         }
@@ -280,12 +281,19 @@ dependencies {
     implementation(libs.compose.foundation)
 
     implementation(libs.kotlinx.coroutines.android)
+    // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
+    // androidx.security:security-crypto is deliberately absent (deprecated
+    // and forbidden by android-app#18).
+    implementation(libs.androidx.datastore.preferences)
     // The AAR carries arm64/x86_64 libjnidispatch.so (16 KB aligned).
     implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // ApplicationProvider for the Robolectric pairing/core tests.
+    testImplementation(libs.androidx.test.core)
     // Plain jar: the host libjnidispatch for JVM (Robolectric) tests.
     testImplementation(libs.jna)
     testImplementation(libs.robolectric)
@@ -296,4 +304,9 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
 
     debugImplementation(libs.compose.ui.test.manifest)
+
+    // Instrumented Keystore tests (ticket 71) — CI-only, no emulator locally.
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

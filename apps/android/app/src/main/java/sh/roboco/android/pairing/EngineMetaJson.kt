@@ -1,0 +1,113 @@
+package sh.roboco.android.pairing
+
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+import uniffi.roboco_core.PairedEngine
+
+/**
+ * The non-secret half of a paired-engine record, JSON-encoded as the
+ * `engines` preference (pairing order). Only [PairedEngine.credential] is
+ * secret and encrypted; keeping this metadata readable is what lets a
+ * lost Keystore key degrade to "Session revoked / Pair again" instead of
+ * a vanished engine (spec W8).
+ */
+internal data class EngineMeta(
+    val engineId: String,
+    val baseUrl: String,
+    val sessionId: String,
+    val label: String,
+    val pairedAtMs: Long,
+    val deviceId: String?,
+    val name: String?,
+) {
+    fun toPaired(credential: String): PairedEngine = PairedEngine(
+        engineId = engineId,
+        baseUrl = baseUrl,
+        credential = credential,
+        sessionId = sessionId,
+        label = label,
+        pairedAtMs = pairedAtMs,
+        deviceId = deviceId,
+        name = name,
+    )
+}
+
+internal fun PairedEngine.meta(): EngineMeta = EngineMeta(
+    engineId = engineId,
+    baseUrl = baseUrl,
+    sessionId = sessionId,
+    label = label,
+    pairedAtMs = pairedAtMs,
+    deviceId = deviceId,
+    name = name,
+)
+
+/**
+ * Codec for the `engines` preference: a JSON array of [EngineMeta]
+ * objects. Decoding is lenient — a missing required key, a wrong type or
+ * a duplicate `engineId` skips just that element (the first of a
+ * duplicate wins); unknown keys are ignored. `decode` returns `null`
+ * when the text is not a JSON array at all, which the store logs and
+ * replaces on its next write.
+ */
+internal object EngineMetaJson {
+
+    private const val TAG = "Roboco"
+
+    fun encode(metas: List<EngineMeta>): String {
+        val array = JSONArray()
+        for (meta in metas) {
+            val element = JSONObject()
+                .put("engineId", meta.engineId)
+                .put("baseUrl", meta.baseUrl)
+                .put("sessionId", meta.sessionId)
+                .put("label", meta.label)
+                .put("pairedAtMs", meta.pairedAtMs)
+            meta.deviceId?.let { element.put("deviceId", it) }
+            meta.name?.let { element.put("name", it) }
+            array.put(element)
+        }
+        return array.toString()
+    }
+
+    /** `null` = not a JSON array; otherwise the readable elements, in order. */
+    fun decode(text: String): List<EngineMeta>? {
+        val array = try {
+            JSONArray(text)
+        } catch (_: JSONException) {
+            return null
+        }
+        val metas = ArrayList<EngineMeta>(array.length())
+        val seen = HashSet<String>()
+        for (index in 0 until array.length()) {
+            val meta = (array.opt(index) as? JSONObject)?.let(::readMeta)
+            if (meta == null) {
+                Log.w(TAG, "paired engine entry unreadable index=$index")
+                continue
+            }
+            if (seen.add(meta.engineId)) {
+                metas.add(meta)
+            }
+        }
+        return metas
+    }
+
+    private fun readMeta(element: JSONObject): EngineMeta? = try {
+        EngineMeta(
+            engineId = element.getString("engineId"),
+            baseUrl = element.getString("baseUrl"),
+            sessionId = element.getString("sessionId"),
+            label = element.getString("label"),
+            pairedAtMs = element.getLong("pairedAtMs"),
+            deviceId = optional(element, "deviceId"),
+            name = optional(element, "name"),
+        )
+    } catch (_: JSONException) {
+        null
+    }
+
+    private fun optional(element: JSONObject, key: String): String? =
+        if (element.has(key) && !element.isNull(key)) element.getString(key) else null
+}
