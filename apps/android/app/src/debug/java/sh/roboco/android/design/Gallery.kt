@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
@@ -100,11 +101,12 @@ object Gallery {
         GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() },
         // Ticket 26 (glass tab bar): the phone shell's bottom chrome.
         GallerySection("Tab bar", screenshotHeightDp = 1700) { TabBarGallerySection() },
+        // Ticket 09: Fill because it owns the LazyColumn.
+        GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
         // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
