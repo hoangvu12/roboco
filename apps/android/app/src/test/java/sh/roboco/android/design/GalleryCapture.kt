@@ -2,6 +2,7 @@ package sh.roboco.android.design
 
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.robolectric.RuntimeEnvironment
+import sh.roboco.android.design.glass.Glass
 
 /**
  * The gallery Roborazzi helper (android-ui-parity #22): captures one section
@@ -16,7 +17,9 @@ import org.robolectric.RuntimeEnvironment
  *
  * The capture is the section frame only — no top bar, so the API-level text
  * never enters a golden. Reduce motion is forced on during capture: static
- * glyphs and no running loops keep the goldens byte-stable.
+ * glyphs and no running loops keep the goldens byte-stable. Glass runs its
+ * non-blur fallback for the same reason (ticket 07's rule): the goldens
+ * never depend on how Robolectric reports hardware acceleration.
  */
 object GalleryCapture {
 
@@ -28,10 +31,8 @@ object GalleryCapture {
             RuntimeEnvironment.setQualifiers("w411dp-h${section.screenshotHeightDp}dp-xhdpi")
             // Static glyphs, no running loops: stable goldens.
             ReduceMotion.debugOverride = true
+            Glass.forceFallback = true
             try {
-                // TODO(07): set Glass.forceFallback = true here (and restore false
-                // in the same finally) once ticket 07 ships it, so glass goldens
-                // never depend on how Robolectric reports hardware acceleration.
                 captureRoboImage(path(section, dark)) {
                     GalleryProviders(if (dark) Appearance.Dark else Appearance.Light, capture = true) {
                         GallerySectionFrame(section)
@@ -39,6 +40,7 @@ object GalleryCapture {
                 }
             } finally {
                 ReduceMotion.debugOverride = null
+                Glass.forceFallback = false
             }
         }
     }

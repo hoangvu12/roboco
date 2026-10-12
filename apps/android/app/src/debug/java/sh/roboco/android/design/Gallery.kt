@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
+import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.shell.NavGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -74,15 +76,19 @@ object Gallery {
         GallerySection("Haptics", screenshotHeightDp = 1000) { HapticsGalleryHost() },
         // Ticket 13 shipped BrandMarksGallerySection with this line in mind.
         GallerySection("Brand marks") { BrandMarksGallerySection() },
+        // Registered after merging feat/android-app (07 GlassSurface,
+        // 10 Edge fades, 24 NavStack); each owner ticket named its
+        // registration line in the section's KDoc:
+        GallerySection("Glass surface") { GlassGallerySection() },
+        GallerySection("Edge fades", screenshotHeightDp = 1100) { EdgeFadeGallerySection() },
+        GallerySection("Navigation", GalleryLayout.Scroll, screenshotHeightDp = 891) { NavGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
         // 06 "Icons"              GallerySection("Icons") { IconsGallerySection() }
-        // 07 "Glass surface"      GallerySection("Glass surface") { GlassGallerySection() }   // uses GlassStage(backdropModifier = Modifier.hazeSource(state))
         // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
-        // 10 "Edge fades"         GallerySection("Edge fades", screenshotHeightDp = 1100) { EdgeFadeGallerySection() }
         // 11 "Status glyph"       GallerySection("Status glyph") { StatusGlyphGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 14 "Toast"              GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() }  + ToastHost in GalleryProviders
