@@ -45,13 +45,4 @@ class VersionTest {
         assertEquals(expected, BuildConfig.VERSION_CODE)
         assertTrue(BuildConfig.VERSION_CODE > 0)
     }
-
-    @Test
-    fun versionCodeWorkedExamples() {
-        // The spec table, as literals (independent of the implementation):
-        // 0.9.2 -> 9002, 1.0.0 -> 1000000, 0.10.0-beta.1 -> 10000.
-        assertEquals(9002, 0 * 1_000_000 + 9 * 1_000 + 2)
-        assertEquals(1_000_000, 1 * 1_000_000 + 0 * 1_000 + 0)
-        assertEquals(10_000, 0 * 1_000_000 + 10 * 1_000 + 0)
-    }
 }

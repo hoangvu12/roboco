@@ -61,6 +61,10 @@ env:
   CARGO_INCREMENTAL: '0'
   ANDROID_NDK_VERSION: 28.2.13676358
   CARGO_NDK_VERSION: 4.1.2
+  # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS overrides
+  # (they would replace the 16 KB PT_LOAD alignment rustflags).
+  RUSTFLAGS: ''
+  CARGO_ENCODED_RUSTFLAGS: 
 
 jobs:
   android:

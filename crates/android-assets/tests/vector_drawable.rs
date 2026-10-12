@@ -7,12 +7,8 @@
 
 use std::path::Path;
 
-/// The repo root, so tests run from any working directory.
 fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/android-assets lives two levels below the repo root")
+    roboco_android_assets::repo_root()
 }
 
 fn icon(name: &str) -> std::path::PathBuf {

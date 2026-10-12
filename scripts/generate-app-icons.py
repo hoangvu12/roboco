@@ -153,6 +153,13 @@ def main() -> None:
     canvas.alpha_composite(mac_art, (MAC_OFFSET, MAC_OFFSET))
     canvas.save(os.path.join(ROOT, "dist/macos/icon-1024.png"), optimize=True, compress_level=9)
 
+    # Web favicon.
+    rounded(art, 128, CORNER_RADIUS_512 // 4).save(
+        os.path.join(ROOT, "web/packages/app/public/favicon.png"),
+        optimize=True,
+        compress_level=9,
+    )
+
     # Android launcher icon: the adaptive-icon background, full-bleed.
     for density, size in sorted(ANDROID_MIPMAPS.items()):
         art.resize((size, size), Image.LANCZOS).convert("RGB").save(

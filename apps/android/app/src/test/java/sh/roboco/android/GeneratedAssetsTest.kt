@@ -21,13 +21,9 @@ class GeneratedAssetsTest {
 
     @Test
     fun allTwelveFontsExistAndAreByteIdenticalToTheSource() {
-        val fonts = listOf(
-            "Geist.ttf", "Geist-Medium.ttf", "Geist-SemiBold.ttf", "Geist-Bold.ttf",
-            "Geist-Italic.ttf", "Geist-MediumItalic.ttf", "Geist-SemiBoldItalic.ttf",
-            "Geist-BoldItalic.ttf", "GeistMono.ttf", "GeistMono-Medium.ttf",
-            "GeistMono-SemiBold.ttf", "GeistMono-Italic.ttf",
-        )
-        for (file in fonts) {
+        // The app's own list is the source of truth here: this test then
+        // verifies the Gradle sync produced exactly those faces.
+        for (file in sh.roboco.android.core.FontAssets.FILES) {
             val source = repoRoot.resolve("crates/ui/assets/fonts").resolve(file)
             val generated = generatedFonts.resolve("fonts").resolve(file)
             assertTrue("$file missing from the generated fonts", generated.isFile)

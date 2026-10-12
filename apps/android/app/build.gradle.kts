@@ -1,5 +1,6 @@
 import roboco.gradle.AndroidAssetsGen
 import roboco.gradle.AndroidCoreBuild
+import roboco.gradle.RepoPaths
 import roboco.gradle.RobocoFonts
 import roboco.gradle.RobocoVersion
 import java.io.File
@@ -14,7 +15,7 @@ plugins {
 // ---------------------------------------------------------------------------
 // Repo geometry: apps/android sits two levels below the repository root.
 // ---------------------------------------------------------------------------
-val repoRootDir: File = rootProject.rootDir.parentFile.parentFile
+val repoRootDir: File = RepoPaths.root(project)
 
 // ---------------------------------------------------------------------------
 // ABIs (android-app#13): -ProbocoAbis / ROBOCO_ANDROID_ABIS, default both;
@@ -87,7 +88,7 @@ fun coreProfile(buildType: String): String =
 
 for (buildType in listOf("debug", "release")) {
     val profileName = coreProfile(buildType)
-    val out = repoRootDir.resolve("target/android-core").resolve(profileName)
+    val out = RepoPaths.androidCore(project, profileName)
     tasks.register<AndroidCoreBuild>(coreTaskName(buildType)) {
         group = "roboco"
         description =
@@ -108,8 +109,7 @@ for (buildType in listOf("debug", "release")) {
 }
 
 // The debug core task, for JVM tests (they load the host library through JNA).
-val debugHostDir: File =
-    repoRootDir.resolve("target/android-core").resolve(coreProfile("debug")).resolve("host")
+val debugHostDir: File = RepoPaths.androidCore(project, coreProfile("debug")).resolve("host")
 
 // ---------------------------------------------------------------------------
 // The asset pipeline (android-app#13): roboco-android-assets converts the

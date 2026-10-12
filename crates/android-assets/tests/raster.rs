@@ -6,10 +6,7 @@
 use std::path::Path;
 
 fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/android-assets lives two levels below the repo root")
+    roboco_android_assets::repo_root()
 }
 
 /// Minimal PNG IHDR reader: (width, height, bit depth, color type).

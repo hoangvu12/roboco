@@ -12,6 +12,16 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+/// The repository root, baked at compile time: this crate is always built
+/// from the checkout it converts (integration tests and the CLI both start
+/// here). Mirrors the xtask's `repo_root()`.
+pub fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/android-assets lives two levels below the repo root")
+}
+
 use anyhow::{Context, bail};
 use usvg::Node;
 use tiny_skia;

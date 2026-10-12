@@ -7,12 +7,11 @@ use std::path::{Path, PathBuf};
 use roboco_android_assets::generate;
 
 fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/android-assets lives two levels below the repo root")
+    roboco_android_assets::repo_root()
 }
 
+/// The skip rule restated independently of the implementation: this test
+/// counts what should convert, so a bug in the rule fails here too.
 fn line_icon_count() -> usize {
     let dir = repo_root().join("crates/ui/assets/icons");
     let mut n = 0;
