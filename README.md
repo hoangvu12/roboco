@@ -24,6 +24,19 @@ Manual option: download the portable release ZIP from the [releases page](https:
 
 Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on. The installer rewrites the per-user `roboco.desktop` and icon under `~/.local/share` (or `$XDG_DATA_HOME`) each time it runs, checks that the binary starts before activating it, and reports missing runtime libraries. Linux requires the system ALSA runtime (`libasound.so.2`), including for headless mode because it shares the desktop executable.
 
+### Android
+
+Download `roboco-<version>-android-arm64-v8a.apk` from the [releases page](https://github.com/hoangvu12/roboco/releases) and install it — allow your browser or file manager to install unknown apps (Settings → Apps → Special app access → Install unknown apps). The `x86_64` APK is only for emulators and x86 Chromebooks or tablets. Roboco has no Play Store listing; the APK is the whole distribution, licenses included.
+
+Optional checks: the file's SHA-256 equals the `sha256` for its name in that release's `manifest.json`, and `apksigner verify --print-certs <apk>` prints the signer certificate SHA-256 below.
+
+```text
+<signer certificate SHA-256 — to be published with the first release, from
+ the release job summary; keep in sync per docs/reference/android-development.md>
+```
+
+Updates install over the old APK (same signing key, so data and pairings are kept). Never install a locally built debug APK over a release — different key, Android refuses. Without a store, [Obtainium](https://github.com/ImranR98/Obtainium) can follow releases with the APK filter `android-arm64-v8a\.apk$`. Full sideload walkthrough: `docs/reference/android-development.md` → "Install a release".
+
 ## Build from source
 
 ```bash

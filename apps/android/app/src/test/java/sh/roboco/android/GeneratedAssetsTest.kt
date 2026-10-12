@@ -18,6 +18,29 @@ class GeneratedAssetsTest {
     private val generatedAssets = File(System.getProperty("roboco.generatedAssets"))
     private val generatedRes = File(System.getProperty("roboco.generatedRes"))
     private val generatedFonts = File(System.getProperty("roboco.generatedFonts"))
+    private val generatedLicenses = File(System.getProperty("roboco.generatedLicenses"))
+
+    @Test
+    fun licenseAndThirdPartyNoticesAreBundledByteIdentical() {
+        // android-app#31: a sideloaded APK is the whole distribution, so the
+        // repo's LICENSE and THIRD_PARTY_NOTICES.md ship inside it (the
+        // Android section rides in the notices file).
+        val license = generatedLicenses.resolve("licenses/LICENSE")
+        val notices = generatedLicenses.resolve("licenses/THIRD_PARTY_NOTICES.md")
+        assertTrue("LICENSE missing from the generated assets", license.isFile)
+        assertTrue("THIRD_PARTY_NOTICES.md missing from the generated assets", notices.isFile)
+        assertArrayEquals(
+            "LICENSE differs from the repo root copy",
+            repoRoot.resolve("LICENSE").readBytes(),
+            license.readBytes(),
+        )
+        assertArrayEquals(
+            "THIRD_PARTY_NOTICES.md differs from the repo root copy",
+            repoRoot.resolve("THIRD_PARTY_NOTICES.md").readBytes(),
+            notices.readBytes(),
+        )
+        assertTrue("THIRD_PARTY_NOTICES.md has no Android section", notices.readText().contains("## Android app"))
+    }
 
     @Test
     fun allTwelveFontsExistAndAreByteIdenticalToTheSource() {

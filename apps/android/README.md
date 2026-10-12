@@ -31,15 +31,24 @@ First build compiles the Rust core for `arm64-v8a` + `x86_64` through
 seconds afterwards. Toolchain setup (JDKs, SDK, NDK, Rust targets,
 cargo-ndk): [docs/reference/android-development.md](../../docs/reference/android-development.md).
 
+Release APKs (R8, the stripped `mobile-dist` core, ABI splits, optional
+signing): `./gradlew :app:assembleRelease` — unsigned unless
+`-ProbocoKeystoreProperties` or the `ROBOCO_ANDROID_KEYSTORE*` env vars are
+set. CI builds the signed ones on `v*` tags (`release.yml`); see
+[docs/reference/android-development.md](../../docs/reference/android-development.md)
+→ Release builds / Release signing.
+
 ## Gradle properties and environment
 
 | Property / env | Default | Effect |
 |---|---|---|
-| `-ProbocoAbis=arm64-v8a,x86_64` / `ROBOCO_ANDROID_ABIS` | both | ABIs the core builds; also sets `abiFilters`. Unit-test-only invocations default to `x86_64` (the host emulator ABI) so day-to-day test runs never cross-compile arm64 |
+| `-ProbocoAbis=arm64-v8a,x86_64` / `ROBOCO_ANDROID_ABIS` | both | ABIs the core builds; also the ABI splits (one APK per ABI, no universal APK — android-app#31). Unit-test-only invocations default to `x86_64` (the host emulator ABI) so day-to-day test runs never cross-compile arm64 |
 | `-ProbocoSkipCore` | off | skip the Rust core build **while** the bindings, the host lib and every requested ABI's `.so` exist; a missing output still builds (no `UnsatisfiedLinkError`) |
 | `-ProbocoCoreProfile=<mobile\|mobile-dist>` | `mobile` (debug), `mobile-dist` (release) | the xtask profile; outputs land in `target/android-core/<profile>` so switching build types never thrashes one directory |
 | `-ProbocoCoreLanguages=<mobile\|all>` | `mobile` | grammar subset for syntax highlighting |
 | `-ProbocoVersionName` / `-ProbocoVersionCode` | from the workspace `Cargo.toml` | version overrides; `versionCode` = `major × 1_000_000 + minor × 1_000 + patch` |
+| `-ProbocoKeystoreProperties=<path>` | none | a Java properties file (`storeFile`/`storePassword`/`keyAlias`/`keyPassword`, resolved against `app/`) that signs `assembleRelease`; without it the release APKs are unsigned, never debug-signed |
+| `ROBOCO_ANDROID_KEYSTORE` (+`_PASSWORD`), `ROBOCO_ANDROID_KEY_ALIAS` (+`_KEY_PASSWORD`) | none | the CI path for the same signing config (release.yml maps the GitHub secrets to these) |
 
 ## Project layout
 
@@ -48,9 +57,11 @@ apps/android/
 ├── buildSrc/                 task classes + version derivation (pure Kotlin)
 │   ├── AndroidCoreBuild      cargo xtask android-core (one per build type)
 │   ├── AndroidAssetsGen      roboco-android-assets (icons)
-│   └── FontsSync             the 12 Geist faces + licenses
+│   ├── FontsSync             the 12 Geist faces + licenses
+│   └── LicensesSync          repo LICENSE + THIRD_PARTY_NOTICES.md (APK assets)
 ├── icons/                    committed SVG sources imported from upstream iOS
 └── app/
+    ├── proguard-rules.pro    R8 keep rules for JNA/UniFFI (release build only)
     ├── src/main/             manifest, res, Kotlin (placeholder + core loader)
     └── src/test/             JVM tests + committed Roborazzi goldens
 ```
@@ -64,6 +75,7 @@ Generated sources (never committed):
 | host core for Robolectric (JNA) | `buildDebugCore` | `target/android-core/mobile/host` |
 | VectorDrawables + icon PNGs | `generateRobocoAssets` | `app/build/generated/roboco-icons` |
 | fonts + licenses | `syncRobocoFonts` | `app/build/generated/roboco-fonts` |
+| repo `LICENSE` + `THIRD_PARTY_NOTICES.md` | `syncRobocoLicenses` | `app/build/generated/roboco-licenses` |
 
 The launcher mipmaps are **not** Gradle-generated: `scripts/generate-app-icons.py`
 derives them from `dist/roboco-artwork.png` and the outputs are committed
