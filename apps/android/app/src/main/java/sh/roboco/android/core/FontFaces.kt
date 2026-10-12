@@ -24,15 +24,14 @@ import androidx.compose.ui.text.font.FontWeight
  * `FaceRole::of` (`mob:layout/style.rs:42-58`): a Mono 700 request falls
  * back to MonoSemibold (600, the closest), any Mono italic to MonoItalic
  * (the only italic) — Compose's font matcher does this by itself once
- * synthesis is off ([androidx.compose.ui.text.font.FontSynthesis.None] in
- * `RobocoTextDefaults.Base`).
+ * synthesis is off (`FontSynthesis.None` in `RobocoTextDefaults.Base`).
  */
 enum class Face(
     /** The file name under `assets/fonts/`. */
     val file: String,
     val weight: FontWeight,
     val style: FontStyle,
-    /** True for the GeistMono family (the [sh.roboco.android.design.RobocoFontFamilies.geistMono]). */
+    /** True for the GeistMono family (the `RobocoFontFamilies.geistMono`). */
     val mono: Boolean,
 ) {
     Sans("Geist.ttf", FontWeight.Normal, FontStyle.Normal, false),

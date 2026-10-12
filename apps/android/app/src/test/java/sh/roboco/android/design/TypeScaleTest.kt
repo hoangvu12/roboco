@@ -128,9 +128,11 @@ class TypeScaleTest {
         val density = Density(2.625f, 2f)
         val ts = TypeScale.from(density)
         assertEquals(33f, ts.bodyScaled(16.5f).inDp(density), 0.01f)
-        // And at the floor the fractional size survives: 16.5 * 0.85.
-        val small = TypeScale.from(Density(2.625f, 0.85f))
-        assertEquals(14.025f, small.bodyScaled(16.5f).inDp(density), 0.01f)
+        // And at the floor the fractional size survives: 16.5 * 0.85,
+        // converted back with the density it will render in.
+        val floor = Density(2.625f, 0.85f)
+        val small = TypeScale.from(floor)
+        assertEquals(14.025f, small.bodyScaled(16.5f).inDp(floor), 0.01f)
     }
 
     // ------------------------------------------------------------------
@@ -165,9 +167,12 @@ class TypeScaleTest {
 
     @Test
     fun fontScale1_3GoesThroughTheNonLinearTable() {
-        // Compose ships the Android 14 FontScaleConverter tables (1.15/1.3/
-        // 1.5/1.8) and applies them at fontScale >= 1.03: 17 sp maps to
-        // 20.9 dp (factor ≈ 1.229), not 22.1 dp (linear 1.3).
+        // Compose's `Density(float, fontScale)` (DensityImpl) inherits the
+        // FontScaling default conversions, which consult the shipped
+        // Android 14 FontScaleConverter tables (baked for 1.15/1.3/1.5/
+        // 1.8, applied at fontScale >= 1.03; beyond 1.8 they fall back to
+        // linear — which is why the 2.0 case above scales linearly).
+        // 17 sp maps to 20.9 dp (factor ≈ 1.229), not 22.1 dp (linear 1.3).
         val density = Density(2.625f, 1.3f)
         val ts = TypeScale.from(density)
         assertTrue("factor ${ts.factor} should use the non-linear curve", ts.factor > 1.0f)

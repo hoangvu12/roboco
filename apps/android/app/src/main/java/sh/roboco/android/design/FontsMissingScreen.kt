@@ -33,9 +33,9 @@ internal const val FONTS_MISSING_TITLE = "Roboco can't start"
 internal const val FONTS_MISSING_BODY = "This build is missing bundled fonts. Reinstall Roboco."
 
 /**
- * The release-build gate around the app's content: when [FontGate]'s
- * startup check failed, the fatal screen replaces the app. Ticket 35 (app
- * root) must keep this wrapper.
+ * The release-build gate around the app's content: when the startup
+ * `FontGate` check failed, the fatal screen replaces the app. Ticket 35
+ * (app root) must keep this wrapper.
  */
 @Composable
 fun FontGateHost(status: FontStatus, content: @Composable () -> Unit) {
@@ -57,7 +57,7 @@ fun FontGateHost(status: FontStatus, content: @Composable () -> Unit) {
  */
 @Composable
 fun FontsMissingScreen(paths: List<String>, modifier: Modifier = Modifier) {
-    val palette = LocalPalette.current
+    val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
 
     val title = RobocoTextDefaults.Base.copy(
@@ -73,7 +73,7 @@ fun FontsMissingScreen(paths: List<String>, modifier: Modifier = Modifier) {
         color = palette.secondary,
         textAlign = TextAlign.Center,
     )
-    val path = RobocoTextDefaults.Base.copy(
+    val pathStyle = RobocoTextDefaults.Base.copy(
         fontFamily = FontFamily.Monospace,
         fontSize = typeScale.fixed(13f),
         color = palette.tertiary,
@@ -101,7 +101,7 @@ fun FontsMissingScreen(paths: List<String>, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(16.dp))
             paths.forEachIndexed { index, missing ->
                 if (index > 0) Spacer(Modifier.height(4.dp))
-                BasicText(missing, style = path)
+                BasicText(missing, style = pathStyle)
             }
         }
     }
