@@ -5,6 +5,7 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
@@ -265,55 +266,44 @@ class GlassButtonsTest {
     // Geist 17's line box is 1.3 × 17 ≈ 22.1 dp (ticket 03): default
     // 14+22.1+14 ≈ 50, pairing 15+22.1+15 ≈ 52, compact 11+22.1+11 ≈ 44.
     // `fixed(17)` is a UIKit point, so the same holds at font scale 2.
-    @Test
-    fun prominentHeightsMatchTheIosInsets() {
-        compose.setContent {
-            RobocoTheme(Appearance.Light) {
-                Column {
-                    ProminentGlassButton(
-                        "Next", {},
-                        contentPadding = ProminentGlassButtonDefaults.CompactPadding,
-                        modifier = Modifier.testTag("compact"),
-                    )
-                    ProminentGlassButton(
-                        "Pair an engine", {},
-                        contentPadding = ProminentGlassButtonDefaults.PairingPadding,
-                        modifier = Modifier.testTag("pairing"),
-                    )
-                    ProminentGlassButton("Use “roboco”", {}, modifier = Modifier.testTag("default"))
-                }
+    @Composable
+    private fun ProminentHeightsFixture() {
+        RobocoTheme(Appearance.Light) {
+            Column {
+                ProminentGlassButton(
+                    "Next", {},
+                    contentPadding = ProminentGlassButtonDefaults.CompactPadding,
+                    modifier = Modifier.testTag("compact"),
+                )
+                ProminentGlassButton(
+                    "Pair an engine", {},
+                    contentPadding = ProminentGlassButtonDefaults.PairingPadding,
+                    modifier = Modifier.testTag("pairing"),
+                )
+                ProminentGlassButton("Use “roboco”", {}, modifier = Modifier.testTag("default"))
             }
         }
-        compose.waitForIdle()
+    }
+
+    private fun assertProminentHeights() {
         assertTrue("compact was ${heightPx("compact")} dp", heightPx("compact") in 43..45)
         assertTrue("pairing was ${heightPx("pairing")} dp", heightPx("pairing") in 51..53)
         assertTrue("default was ${heightPx("default")} dp", heightPx("default") in 49..51)
     }
 
     @Test
+    fun prominentHeightsMatchTheIosInsets() {
+        compose.setContent { ProminentHeightsFixture() }
+        compose.waitForIdle()
+        assertProminentHeights()
+    }
+
+    @Test
     fun prominentHeightsIgnoreFontScale() {
         RuntimeEnvironment.setFontScale(2f)
-        compose.setContent {
-            RobocoTheme(Appearance.Light) {
-                Column {
-                    ProminentGlassButton(
-                        "Next", {},
-                        contentPadding = ProminentGlassButtonDefaults.CompactPadding,
-                        modifier = Modifier.testTag("compact"),
-                    )
-                    ProminentGlassButton(
-                        "Pair an engine", {},
-                        contentPadding = ProminentGlassButtonDefaults.PairingPadding,
-                        modifier = Modifier.testTag("pairing"),
-                    )
-                    ProminentGlassButton("Use “roboco”", {}, modifier = Modifier.testTag("default"))
-                }
-            }
-        }
+        compose.setContent { ProminentHeightsFixture() }
         compose.waitForIdle()
-        assertTrue("compact was ${heightPx("compact")} dp", heightPx("compact") in 43..45)
-        assertTrue("pairing was ${heightPx("pairing")} dp", heightPx("pairing") in 51..53)
-        assertTrue("default was ${heightPx("default")} dp", heightPx("default") in 49..51)
+        assertProminentHeights()
     }
 
     // --------------------------------------------------------- the press
