@@ -181,9 +181,14 @@ object Motion {
     /** Section header chevron rotation 0 ↔ −π/2. ios:Threads/SessionCell.swift:284 (39) */
     val SectionChevron = IosSpring("sectionChevron", 0.30, 0.85f)
 
+    /** Tab bar minimize-on-scroll morph. ios:Shell/MainTabController.swift:22 (system minimize; values from android-app#19) */
+    val TabBarMinimize = IosSpring("tabBarMinimize", 0.40, 0.85f)
+
     /** Every spring of ticket 04's Motion table, in table order (MotionTest pins
-     * this list; later tickets' springs — e.g. 18's AlertScaleIn — stay out and
-     * are pinned by their own tickets' tests). */
+     * this list). Later tickets' springs stay out and are pinned by their own
+     * tickets' tests — except ui-parity#28's [TabBarMinimize], which its ticket
+     * explicitly adds here (18's AlertScaleIn remains out).
+     */
     val allSprings: List<IosSpring> = listOf(
         ComposerMorph,
         ActionButton,
@@ -194,6 +199,7 @@ object Motion {
         BottomStackReflow,
         AccessoryRelayout,
         SectionChevron,
+        TabBarMinimize,
     )
 
     // ------------------------------------------------------------ tween tokens

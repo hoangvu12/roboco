@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
@@ -100,6 +101,10 @@ object Gallery {
         GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() },
         // Ticket 26 (glass tab bar): the phone shell's bottom chrome.
         GallerySection("Tab bar", screenshotHeightDp = 1700) { TabBarGallerySection() },
+        // Ticket 28 (tab bar minimize): the scroll-driven chrome morph.
+        GallerySection("Tab bar minimize", GalleryLayout.Scroll, screenshotHeightDp = 1120) {
+            TabBarMinimizeGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

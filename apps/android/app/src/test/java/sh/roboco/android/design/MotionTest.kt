@@ -95,7 +95,7 @@ class MotionTest {
 
     @Test
     fun springStiffnessIsSettleMatched() {
-        // FOUNDATION-D1: omega = ln(1000) / (zeta * T) for zeta < 1 (all nine here).
+        // FOUNDATION-D1: omega = ln(1000) / (zeta * T) for zeta < 1 (all ten here).
         for (spring in Motion.allSprings) {
             val omega = ln(1000.0) / (spring.damping * spring.durationSec)
             assertEquals("${spring.name}: omega squared", omega * omega, spring.stiffness.toDouble(), 1e-3)
@@ -121,6 +121,9 @@ class MotionTest {
             "bottomStackReflow" to 446.80,
             "accessoryRelayout" to 480.90,
             "sectionChevron" to 733.83,
+            // ui-parity#28: the tab bar minimize morph (system
+            // `tabBarMinimizeBehavior`, values from android-app#19).
+            "tabBarMinimize" to 412.78,
         )
         for (spring in Motion.allSprings) {
             assertEquals("${spring.name}: table stiffness", expected.getValue(spring.name), spring.stiffness.toDouble(), 0.01)
@@ -128,13 +131,23 @@ class MotionTest {
     }
 
     @Test
+    fun tabBarMinimizeMatchesTheSystemMinimizeSpec() {
+        // ios:Shell/MainTabController.swift:22 sets the behaviour; the numbers
+        // are android-app#19's: 0.40 s total, ζ 0.85 — the same settle-matched
+        // stiffness as ToastRise (a different iOS site, so a different token).
+        assertEquals(0.85f, Motion.TabBarMinimize.damping, 0f)
+        assertEquals(0.40, Motion.TabBarMinimize.durationSec, 0.0)
+        assertEquals(412.78, Motion.TabBarMinimize.stiffness.toDouble(), 0.01)
+    }
+
+    @Test
     fun allSpringsListsEveryNamedToken() {
-        assertEquals(9, Motion.allSprings.size)
+        assertEquals(10, Motion.allSprings.size)
         assertEquals(
             listOf(
                 Motion.ComposerMorph, Motion.ActionButton, Motion.ToastRise, Motion.HandoffBubble,
                 Motion.HandoffBubbleReduced, Motion.JumpButton, Motion.BottomStackReflow,
-                Motion.AccessoryRelayout, Motion.SectionChevron,
+                Motion.AccessoryRelayout, Motion.SectionChevron, Motion.TabBarMinimize,
             ),
             Motion.allSprings,
         )

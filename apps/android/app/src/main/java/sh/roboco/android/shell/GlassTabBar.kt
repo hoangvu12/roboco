@@ -5,8 +5,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.paddingFromBaseline
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.tappableElement
 import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -37,17 +36,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.coroutineScope
@@ -66,22 +69,28 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.GlassSurface
 import sh.roboco.android.design.glass.LocalHazeState
 import sh.roboco.android.design.uiStyle
+import kotlin.math.roundToInt
 
 /**
  * The phone shell's bottom bar in its resting, **expanded** state
- * (android-ui-parity #26): the Android port of the iOS 26 floating Liquid
- * Glass tab bar (`ios:Shell/MainTabController.swift`) — a glass capsule
- * ("pill") holding Sessions and Settings with a grey `controlFill` platter
- * under the selected item, and a separate round glass search button 8 dp
- * to the side of the pill.
+ * (android-ui-parity #26, split by #28): the Android port of the iOS 26
+ * floating Liquid Glass tab bar (`ios:Shell/MainTabController.swift`) — a
+ * glass capsule ("pill") holding Sessions and Settings with a grey
+ * `controlFill` platter under the selected item, and a separate round glass
+ * search button 8 dp to the side of the pill.
+ *
+ * The bar is now the thin **expanded-only** wrapper around the #28 chrome:
+ * it sizes itself to `PillHeight + bottomGap` and delegates placement to
+ * [TabChromeLayout] with the morph progress pinned to 0, so the expanded
+ * geometry has exactly one owner. [MainTabShell] uses the layout directly
+ * with the live minimize state; this wrapper stays for the gallery frames
+ * and the previews.
  *
  * Geometry (measured from the 460 × 1000 px reference captures, 1 pt =
  * 1.1443 px): the row is centred in the window's inset-adjusted width with
  * 21 dp side margins and capped at 398 dp (the widest iPhone); the pill and
  * circle are 62 dp tall and share the same top and bottom; the bottom gap
  * is [tabBarBottomGap] (21 dp on gesture nav, 12 dp above 3-button nav).
- * The composable's own height is pill + bottom gap, so it can be dropped
- * in as a bottom overlay over full-screen tab content.
  *
  * Press behaviour is ticket 07's: both pill cells and the pill's
  * [GlassSurface] share [pillInteractionSource], so holding either cell
@@ -115,10 +124,8 @@ fun GlassTabBar(
     modifier: Modifier = Modifier,
     pillInteractionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) {
-    val palette = RobocoTheme.palette
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
-    val reduce = LocalReduceMotion.current
 
     // The horizontal system insets: navigation bar ∪ display cutout,
     // physical left/right (the insets getters are direction-agnostic).
@@ -135,77 +142,155 @@ fun GlassTabBar(
     )
 
     BoxWithConstraints(modifier.fillMaxWidth().height(GlassTabBarDefaults.PillHeight + bottomGap)) {
-        // The row is centred inside the inset-adjusted width: the wrapping
-        // box eats the horizontal insets, the row centres in what remains.
-        val available = maxWidth - with(density) { (insetLeftPx + insetRightPx).toDp() }
-        val rowWidth = tabBarRowWidth(available)
-        val pillWidth = rowWidth - GlassTabBarDefaults.Gap - GlassTabBarDefaults.SearchSize
-        val cellWidth = (pillWidth - GlassTabBarDefaults.PlatterInset * 2) / 2
-        val startInset = with(density) {
+        val insetStart = with(density) {
             (if (layoutDirection == LayoutDirection.Rtl) insetRightPx else insetLeftPx).toDp()
         }
-        val endInset = with(density) {
+        val insetEnd = with(density) {
             (if (layoutDirection == LayoutDirection.Rtl) insetLeftPx else insetRightPx).toDp()
         }
+        // The pill lays its expanded content out at the p = 0 width while the
+        // #28 morph shrinks the glass: it must know that size.
+        val expandedPill = tabPillExpandedWidth(maxWidth.value, insetStart.value, insetEnd.value).dp
 
-        // ------------------------------------------------ platter motion
-        // The platter index 0 ↔ 1 (float so it slides), the pill-platter and
-        // search-platter alphas (the interim Search look). In Search the
-        // index is left where the pill last had it — it fades instead.
-        val platterIndex = remember { Animatable(if (selected == TabId.Settings) 1f else 0f) }
-        val platterAlpha = remember { Animatable(if (selected != TabId.Search) 1f else 0f) }
-        val searchPlatterAlpha = remember { Animatable(if (selected == TabId.Search) 1f else 0f) }
-        LaunchedEffect(selected, reduce) {
-            if (reduce) {
+        // The row's selectable group (26's Row owned it): one group over the
+        // pill cells and the search item, so TalkBack announces "x of 3".
+        TabChromeLayout(
+            progress = { 0f },
+            bottomInset = bottomGap,
+            hasAccessory = false,
+            modifier = Modifier.matchParentSize().selectableGroup(),
+            pill = {
+                GlassTabPill(
+                    selected = selected,
+                    onTabTap = onTabTap,
+                    minimizeProgress = { 0f },
+                    minimized = false,
+                    onRestore = {},
+                    expandedWidth = expandedPill,
+                    pillInteractionSource = pillInteractionSource,
+                )
+            },
+            search = { GlassSearchButton(selected, onTabTap) },
+            accessory = {},
+        )
+    }
+}
+
+/**
+ * The tab pill (android-ui-parity #26, split by #28): the glass capsule
+ * with Sessions and Settings. **Fills its incoming constraints** — the
+ * chrome layout measures it at the morph's current rect, so the glass
+ * itself reshapes from 62 dp tall to the 48 dp minimized circle; nothing
+ * inside may hard-code the size.
+ *
+ * The content morph (#28's step 8) is a two-layer custom [Layout]:
+ *
+ *  - the **expanded layer** — 26's platter + items — is measured once at
+ *    the expanded pill size ([expandedWidth] × 62 dp) so its internal
+ *    layout never reflows, shifted vertically by `(h − 62) / 2` so it stays
+ *    centred, and faded with `alpha = 1 − p̂` (draw-phase). The glass
+ *    capsule's clip hides whatever sticks out. While [minimized] is true
+ *    the layer is `clearAndSetSemantics` so the faded items are not
+ *    focusable;
+ *  - the **selected-icon layer** — the selected tab's 24 dp glyph in
+ *    `palette.text` — sits at its expanded cell centre at p = 0 and
+ *    travels horizontally to the circle's centre `(24, 24)` at p = 1,
+ *    alpha 1 throughout (placement-phase read: no re-measure). The
+ *    expanded layer omits the selected item's icon, so it never shows
+ *    twice while the layer fades.
+ *
+ * While [minimized] a full-size overlay carries one `Role.Button` node —
+ * `testTag("tab-bar-minimized")`, the selected tab's title verbatim —
+ * that calls [onRestore]; it also swallows the taps the faded cells
+ * underneath would otherwise still receive. Otherwise 26's per-item
+ * clicks and semantics apply unchanged, and the whole-pill press swell
+ * (07) works in both states through the shared [pillInteractionSource].
+ *
+ * @param selected the tab to show as selected (drives the platter).
+ * @param onTabTap called on a tap of either pill cell.
+ * @param minimizeProgress the morph position 0…1, read in placement and
+ *   draw lambdas only — never in a composable body.
+ * @param minimized the **target** (flips at the start of a morph): one
+ *   restore button while true.
+ * @param onRestore called when the minimized circle is tapped; expands.
+ * @param expandedWidth the p = 0 pill width (`tabPillExpandedWidth`), from
+ *   the caller that knows the shell width and insets — the chrome layout
+ *   cannot pass data into its slots, so the caller computes this from the
+ *   same pure geometry.
+ * @param modifier the caller's modifier; the pill fills it.
+ * @param pillInteractionSource shared by both cells, the pill's glass and
+ *   the minimized restore button.
+ */
+@Composable
+fun GlassTabPill(
+    selected: TabId,
+    onTabTap: (TabId) -> Unit,
+    minimizeProgress: () -> Float,
+    minimized: Boolean,
+    onRestore: () -> Unit,
+    expandedWidth: Dp,
+    modifier: Modifier = Modifier,
+    pillInteractionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+) {
+    val palette = RobocoTheme.palette
+    val reduce = LocalReduceMotion.current
+
+    // The pill's own selection: while Search is selected (29 owns that
+    // layout) the pill keeps its last pill selection, like the platter —
+    // and minimize is disabled on Search, so the morph never runs there.
+    val pillSelection = if (selected == TabId.Settings) TabId.Settings else TabId.Sessions
+    val selectedIndex = if (pillSelection == TabId.Settings) 1 else 0
+
+    // ------------------------------------------------ platter motion (26)
+    // The platter index 0 ↔ 1 (float so it slides), and the pill-platter
+    // alpha (the interim Search look). In Search the index is left where
+    // the pill last had it — it fades instead.
+    val platterIndex = remember { Animatable(if (selected == TabId.Settings) 1f else 0f) }
+    val platterAlpha = remember { Animatable(if (selected != TabId.Search) 1f else 0f) }
+    LaunchedEffect(selected, reduce) {
+        if (reduce) {
+            if (selected != TabId.Search) {
+                platterIndex.snapTo(if (selected == TabId.Settings) 1f else 0f)
+            }
+            platterAlpha.snapTo(if (selected != TabId.Search) 1f else 0f)
+        } else {
+            coroutineScope {
                 if (selected != TabId.Search) {
-                    platterIndex.snapTo(if (selected == TabId.Settings) 1f else 0f)
-                }
-                platterAlpha.snapTo(if (selected != TabId.Search) 1f else 0f)
-                searchPlatterAlpha.snapTo(if (selected == TabId.Search) 1f else 0f)
-            } else {
-                coroutineScope {
-                    if (selected != TabId.Search) {
-                        // Interruptible: always animate from the current value.
-                        launch {
-                            platterIndex.animateTo(
-                                if (selected == TabId.Settings) 1f else 0f,
-                                Motion.ActionButton.spec(),
-                            )
-                        }
+                    // Interruptible: always animate from the current value.
+                    launch {
+                        platterIndex.animateTo(
+                            if (selected == TabId.Settings) 1f else 0f,
+                            Motion.ActionButton.spec(),
+                        )
                     }
-                    launch { platterAlpha.glassFadeTo(selected != TabId.Search) }
-                    launch { searchPlatterAlpha.glassFadeTo(selected == TabId.Search) }
                 }
+                launch { platterAlpha.glassFadeTo(selected != TabId.Search) }
             }
         }
+    }
 
-        Box(
-            Modifier
-                .matchParentSize()
-                .padding(start = startInset, end = endInset),
-        ) {
-            Row(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = bottomGap)
-                    .width(rowWidth)
-                    .height(GlassTabBarDefaults.PillHeight)
-                    .selectableGroup(),
-                horizontalArrangement = Arrangement.spacedBy(GlassTabBarDefaults.Gap),
-            ) {
-                // ---------------------------------------------------- the pill
-                GlassSurface(
-                    modifier = Modifier
-                        .width(pillWidth)
-                        .fillMaxHeight()
-                        .testTag("tab-pill"),
-                    shape = CapsuleShape,
-                    interactive = true,
-                    interactionSource = pillInteractionSource,
+    val cellWidth = (expandedWidth - GlassTabBarDefaults.PlatterInset * 2) / 2
+
+    GlassSurface(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("tab-pill"),
+        shape = CapsuleShape,
+        interactive = true,
+        interactionSource = pillInteractionSource,
+    ) {
+        // The morph: expanded layer + selected icon (two measurables).
+        Layout(
+            content = {
+                // ---- layer 0: the expanded look, at the expanded size ----
+                Box(
+                    Modifier
+                        .then(if (minimized) Modifier.clearAndSetSemantics { } else Modifier)
+                        .graphicsLayer { alpha = 1f - minimizeProgress().coerceIn(0f, 1f) },
                 ) {
-                    // The selection platter first (under the cells), inset 4
-                    // dp on all sides. Modifier.offset mirrors in RTL, and
-                    // both state reads live in the placement/draw lambdas.
+                    // The selection platter first (under the cells), inset
+                    // 4 dp on all sides. Modifier.offset mirrors in RTL, and
+                    // the state read lives in the placement lambda.
                     Box(
                         Modifier
                             .offset {
@@ -230,6 +315,8 @@ fun GlassTabBar(
                             selected = selected == TabId.Sessions,
                             onTabTap = onTabTap,
                             pillSource = pillInteractionSource,
+                            // The icon layer draws this one itself.
+                            hideIcon = pillSelection == TabId.Sessions,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         TabCell(
@@ -238,44 +325,128 @@ fun GlassTabBar(
                             selected = selected == TabId.Settings,
                             onTabTap = onTabTap,
                             pillSource = pillInteractionSource,
+                            hideIcon = pillSelection == TabId.Settings,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                     }
                 }
+                // ---- layer 1: the selected tab's travelling icon ----
+                IconInBox(
+                    icon = if (pillSelection == TabId.Settings) RobocoIcons.TabSettings else RobocoIcons.TabChat,
+                    tint = palette.text,
+                    box = GlassTabBarDefaults.IconBox,
+                )
+            },
+        ) { measurables, constraints ->
+            val expandedHeightPx = GlassTabBarDefaults.PillHeight.roundToPx()
+            val expandedWidthPx = expandedWidth.roundToPx()
+            val expanded = measurables[0].measure(Constraints.fixed(expandedWidthPx, expandedHeightPx))
+            val iconBoxPx = GlassTabBarDefaults.IconBox.roundToPx()
+            val icon = measurables[1].measure(Constraints.fixed(iconBoxPx, iconBoxPx))
 
-                // --------------------------------------------- the search button
-                val searchSource = remember { MutableInteractionSource() }
-                GlassSurface(
-                    modifier = Modifier
-                        .size(GlassTabBarDefaults.SearchSize)
-                        .selectable(
-                            selected = selected == TabId.Search,
-                            interactionSource = searchSource,
-                            indication = null,
-                            role = Role.Tab,
-                        ) { onTabTap(TabId.Search) }
-                        .semantics { contentDescription = "Search" }
-                        .testTag("tab-search"),
-                    shape = CircleShape,
-                    interactive = true,
-                    interactionSource = searchSource,
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // The interim selection circle until ticket 29's morph.
-                    Box(
-                        Modifier
-                            .size(GlassTabBarDefaults.SearchSize - GlassTabBarDefaults.PlatterInset * 2)
-                            .graphicsLayer { alpha = searchPlatterAlpha.value }
-                            .background(palette.controlFill, CircleShape),
-                    )
-                    Icon(
-                        RobocoIcons.Magnifyingglass,
-                        tint = palette.text,
-                        sizePt = GlassTabBarDefaults.SearchIconPt,
-                    )
-                }
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                // p is read in the placement block only: the spring moves
+                // the layer shift and the icon without a re-measure.
+                val p = minimizeProgress()
+                val shift = (constraints.maxHeight - expandedHeightPx) / 2
+                expanded.placeRelative(0, shift)
+
+                // The icon's centre: its expanded cell centre lerped toward
+                // the minimized circle's (24, 24). The centre y is 24 in
+                // both states, so it only travels horizontally.
+                val cellW = (expandedWidthPx - 2 * GlassTabBarDefaults.PlatterInset.roundToPx()) / 2
+                val startCentreX = GlassTabBarDefaults.PlatterInset.roundToPx() +
+                    cellW * selectedIndex + cellW / 2
+                val endCentreX = (TabChromeMetrics.Minimized / 2f).dp.roundToPx()
+                val centreY = TabChromeMetrics.IconCentreY.dp.roundToPx()
+                val centreX = lerp(startCentreX.toFloat(), endCentreX.toFloat(), p)
+                icon.placeRelative(
+                    (centreX - iconBoxPx / 2).roundToInt(),
+                    (centreY - iconBoxPx / 2).roundToInt(),
+                )
             }
         }
+
+        // The minimized circle: one restore button above the faded content,
+        // sized to the pill. It also takes the taps the faded cells would
+        // otherwise still receive inside the shrinking capsule.
+        if (minimized) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .testTag("tab-bar-minimized")
+                    .clickable(
+                        interactionSource = pillInteractionSource,
+                        indication = null,
+                        role = Role.Button,
+                        onClickLabel = null,
+                    ) { onRestore() }
+                    .clearAndSetSemantics {
+                        contentDescription = pillSelection.label
+                        role = Role.Button
+                    },
+            )
+        }
+    }
+}
+
+/**
+ * The round glass search button (android-ui-parity #26, split by #28):
+ * `Role.Tab`, "Search", the 22 pt magnifier glyph centred in
+ * `palette.text`. **Fills its incoming constraints** — 62 dp expanded,
+ * 48 dp minimized — so the glass itself reshapes; the glyph keeps its iOS
+ * point size in both states. The interim `controlFill` selection circle
+ * (shown only while Search is selected, until ticket 29's morph) insets
+ * with the surface instead of hard-coding 54 dp.
+ */
+@Composable
+fun GlassSearchButton(
+    selected: TabId,
+    onTabTap: (TabId) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = RobocoTheme.palette
+    val reduce = LocalReduceMotion.current
+    val searchSource = remember { MutableInteractionSource() }
+
+    // The interim selection circle until ticket 29's morph.
+    val searchPlatterAlpha = remember { Animatable(if (selected == TabId.Search) 1f else 0f) }
+    LaunchedEffect(selected, reduce) {
+        if (reduce) {
+            searchPlatterAlpha.snapTo(if (selected == TabId.Search) 1f else 0f)
+        } else {
+            searchPlatterAlpha.glassFadeTo(selected == TabId.Search)
+        }
+    }
+
+    GlassSurface(
+        modifier = modifier
+            .fillMaxSize()
+            .selectable(
+                selected = selected == TabId.Search,
+                interactionSource = searchSource,
+                indication = null,
+                role = Role.Tab,
+            ) { onTabTap(TabId.Search) }
+            .semantics { contentDescription = "Search" }
+            .testTag("tab-search"),
+        shape = CircleShape,
+        interactive = true,
+        interactionSource = searchSource,
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(GlassTabBarDefaults.PlatterInset)
+                .graphicsLayer { alpha = searchPlatterAlpha.value }
+                .background(palette.controlFill, CircleShape),
+        )
+        Icon(
+            RobocoIcons.Magnifyingglass,
+            tint = palette.text,
+            sizePt = GlassTabBarDefaults.SearchIconPt,
+        )
     }
 }
 
@@ -286,6 +457,11 @@ fun GlassTabBar(
  * platter carries the selection, not the colour). The whole cell is the
  * hit target and the semantics node: `Role.Tab`, the label merged in, the
  * tag `tab-<identifier>`.
+ *
+ * [hideIcon] (#28) leaves the 24 dp box empty: the pill's selected-icon
+ * layer draws the selected item's glyph itself, at every `p`, so the
+ * expanded layer must not also draw it (it would show twice while that
+ * layer fades).
  */
 @Composable
 private fun TabCell(
@@ -294,6 +470,7 @@ private fun TabCell(
     selected: Boolean,
     onTabTap: (TabId) -> Unit,
     pillSource: MutableInteractionSource,
+    hideIcon: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val palette = RobocoTheme.palette
@@ -315,7 +492,11 @@ private fun TabCell(
     ) {
         Spacer(Modifier.height(GlassTabBarDefaults.IconTop))
         // The label carries the tab's name — the glyph stays decorative.
-        IconInBox(icon, palette.text, box = GlassTabBarDefaults.IconBox)
+        if (hideIcon) {
+            Spacer(Modifier.size(GlassTabBarDefaults.IconBox))
+        } else {
+            IconInBox(icon, palette.text, box = GlassTabBarDefaults.IconBox)
+        }
         BasicText(
             tab.label,
             Modifier.paddingFromBaseline(top = labelFromBaseline),
@@ -342,6 +523,8 @@ private suspend fun Animatable<Float, AnimationVector1D>.glassFadeTo(visible: Bo
  * inset, the 24 dp icon box 12 dp below the cell top, the label baseline
  * at 49 dp, and the 398 dp row-width cap (the widest iPhone — not an iOS
  * value, a Roboco choice for landscape phones and unfolded foldables).
+ * The minimized morph's numbers live in ticket 28's [TabChromeMetrics],
+ * which a test pins against these.
  */
 object GlassTabBarDefaults {
     /** The pill's (and the row's) height. */
@@ -409,7 +592,7 @@ fun tabBarRowWidth(availableWidth: Dp): Dp =
     minOf(availableWidth - GlassTabBarDefaults.SideMargin * 2, GlassTabBarDefaults.MaxRowWidth)
 
 // ---------------------------------------------------------------------------
-// Previews (step 7): the bar on 22's striped GlassStage backdrop, 402 ×
+// Previews (26's step 7): the bar on 22's striped GlassStage backdrop, 402 ×
 // 140 dp, light and dark. The bar is the backdrop's sibling, never inside
 // its hazeSource.
 // ---------------------------------------------------------------------------
