@@ -21,6 +21,7 @@ members = [
     "crates/mobile-client",
     "crates/xtask",
     "crates/wiregen",
+    "crates/android-assets",
     "apps/roboco",
 ]
 

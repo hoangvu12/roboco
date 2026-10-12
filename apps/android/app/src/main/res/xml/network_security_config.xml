@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Engines on a LAN speak plain http:// and ws:// (no TLS on the listener, by design:
+     docs/reference/remote-access.md). Platform-level cleartext is allowed; the app itself
+     decides which hosts it dials (ticket 18 warns before pairing plain http to a public host). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

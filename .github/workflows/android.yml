@@ -1,0 +1,167 @@
+name: Android
+
+# The Android client scaffold (android-app#13): Gradle builds the debug APK
+# from the Rust mobile core (cargo xtask android-core, ticket 10) and runs
+# the JVM unit suite — Robolectric against the host core, plus the plain
+# version/asset/network tests — on both hosts the project supports. The
+# ubuntu job uploads the APK; windows proves the build needs no bash/WSL.
+
+on:
+  pull_request:
+    paths:
+      - 'apps/android/**'
+      - 'crates/android-assets/**'
+      - 'crates/mobile/**'
+      - 'crates/mobile-client/**'
+      - 'crates/text/**'
+      - 'crates/markdown/**'
+      - 'crates/doc/**'
+      - 'crates/proto/**'
+      - 'crates/syntax/**'
+      - 'crates/xtask/**'
+      - 'crates/ui/assets/fonts/**'
+      - 'crates/ui/assets/icons/**'
+      - 'crates/ui/assets/file-icons/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/android.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/android/**'
+      - 'crates/android-assets/**'
+      - 'crates/mobile/**'
+      - 'crates/mobile-client/**'
+      - 'crates/text/**'
+      - 'crates/markdown/**'
+      - 'crates/doc/**'
+      - 'crates/proto/**'
+      - 'crates/syntax/**'
+      - 'crates/xtask/**'
+      - 'crates/ui/assets/fonts/**'
+      - 'crates/ui/assets/icons/**'
+      - 'crates/ui/assets/file-icons/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  ANDROID_NDK_VERSION: 28.2.13676358
+  CARGO_NDK_VERSION: 4.1.2
+
+jobs:
+  android:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            abis: arm64-v8a,x86_64
+            upload: true
+          # Windows-host proof: the Gradle tasks are bash-free, and the
+          # xtask handles .dll/.exe naming (upstream #609 was mac/Linux-only).
+          - os: windows-2022
+            abis: arm64-v8a
+            upload: false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add Android Rust targets
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        shell: pwsh
+        run: |
+          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
+          if (-not $installed) {
+            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+        working-directory: .
+      # 17 is the build JDK; 21 runs the Robolectric test JVMs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            17
+      - name: Install Android SDK pieces
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
+          if ($IsWindows) { $sdkmanager = "$sdkmanager.bat" }
+          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      # pwsh exists on both runners; on Windows .\gradlew.bat keeps bash
+      # off the build path entirely.
+      - name: Build the debug APK and run the JVM tests
+        shell: pwsh
+        run: |
+          $gradle = if ($IsWindows) { ".\gradlew.bat" } else { "./gradlew" }
+          & $gradle --stacktrace "-ProbocoAbis=$env:ABIS" :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          ABIS: ${{ matrix.abis }}
+      - name: Test the asset generator (Rust)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p roboco-android-assets
+        working-directory: .
+      - name: Append build sizes to the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $apk = Get-Item "app/build/outputs/apk/debug/app-debug.apk" -ErrorAction SilentlyContinue
+          if ($apk) {
+            $kb = [math]::Round($apk.Length / 1KB)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "APK: $kb KB", ""
+          }
+          # The xtask's sizes.json, when the core was built this run.
+          $sizes = Get-Content "../../target/android-core/mobile/sizes.json" -Raw -ErrorAction SilentlyContinue
+          if ($sizes) {
+            $fence = ([string][char]96) * 3
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Core sizes", "", "$($fence)json", $sizes, $fence, ""
+          }
+      - name: Upload the debug APK
+        if: matrix.upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-debug
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload unit-test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-test-reports-${{ matrix.os }}
+          path: apps/android/app/build/reports/tests/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,0 +1,31 @@
+[package]
+name = "roboco-android-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The Android asset pipeline (android-app#13): converts the shared line-icon
+# SVGs to VectorDrawables and rasterizes the tool/file icons to PNG. Replaces
+# upstream #609's `svg2vd.py` + `gen-icons.sh` (rsvg-convert) so the whole
+# pipeline is Rust, runs on Windows and Linux, and is deterministic.
+#
+# A library with a thin CLI wrapper: the integration tests drive the same
+# functions the Gradle task invokes through `cargo run --locked -p
+# roboco-android-assets --release`.
+[lib]
+name = "roboco_android_assets"
+path = "src/lib.rs"
+
+[[bin]]
+name = "roboco-android-assets"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+resvg = "0.46"
+tiny-skia = "0.11"
+usvg = "0.46"
+
+[dev-dependencies]
+tempfile = "3"
