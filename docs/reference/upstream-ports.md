@@ -34,9 +34,13 @@ No Roboco commits belong on the mirror.
    `git worktree add ../roboco-port -b port/topic main`.
 4. Carry the change into that worktree. A `cherry-pick -x` can supply an initial
    patch; manually adapt renamed paths, crates, identifiers and environment
-   variables using AGENTS.md. Exclude cloud/account/sync/iOS portions and adapt
-   retained behavior to engine-local RPCs. Resolve conflicts by intent, not by
-   replacing complete Roboco files with upstream files.
+   variables using AGENTS.md. Exclude cloud/account/sync portions and iOS code
+   (Swift, Xcode) and adapt retained behavior to engine-local RPCs. An upstream
+   iOS UI change may instead be carried into `apps/android` as target behaviour
+   ([ADR 0009](../adr/0009-android-client.md)); changes to `crates/mobile`,
+   `crates/text` and `crates/markdown` port like any other crate. Resolve
+   conflicts by intent, not by replacing complete Roboco files with upstream
+   files.
 5. Review `git diff` and run checks appropriate to the retained behavior. Record
    the upstream SHA and any deliberately excluded behavior in the port commit.
    Finish only when the patch preserves Roboco's architecture and checks pass.
