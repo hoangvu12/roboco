@@ -58,6 +58,7 @@ roboco-proto.workspace = true
 similar.workspace = true
 roboco-doc.workspace = true
 roboco-engine.workspace = true
+roboco-engine-client.workspace = true
 roboco-harness.workspace = true
 roboco-rpc.workspace = true
 roboco-update.workspace = true
@@ -117,6 +118,7 @@ url = "2"
 x11rb = { version = "0.14.0", features = ["image"] }
 
 [dev-dependencies]
+roboco-engine-client = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 mimalloc.workspace = true
 tracing-subscriber.workspace = true

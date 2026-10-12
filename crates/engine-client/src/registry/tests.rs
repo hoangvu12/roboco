@@ -199,7 +199,7 @@ async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
     let saved: SavedRegistry = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(saved.engines.is_empty());
     assert!(
-        crate::engine_cache::EngineCache::new(ui_dir.path())
+        crate::cache::EngineCache::new(ui_dir.path())
             .load_rows(&key.0)
             .is_none()
     );
