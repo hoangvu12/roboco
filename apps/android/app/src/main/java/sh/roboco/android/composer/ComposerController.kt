@@ -86,7 +86,7 @@ class ComposerController(
     /** A turn is running (`:69`). */
     var running by mutableStateOf(false)
 
-    /** The harness supports mid-turn steering (`:70`, from the host capabilities). */
+    /** The harness supports mid-turn steering (`:70`, from the engine's advertised capabilities). */
     var canSteer by mutableStateOf(false)
 
     /** Preferred delivery while queued (`:71`). The controller never changes it — no #609 delivery-chip reset. */

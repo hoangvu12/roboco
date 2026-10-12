@@ -150,19 +150,17 @@ class ComposerControllerTest {
     @Test
     fun addImagesCapsAtEightWhileADirectSetDoesNot() = runTest {
         val c = controller()
+        val expected = (1..5).map { "old$it" } + listOf("new1", "new2", "new3")
         c.addImages((1..5).map { image("old$it") })
         c.addImages((1..6).map { image("new$it") })
         // 5 staged + 6 new: keeps 8, the first 3 of the new batch.
-        assertEquals((1..5).map { "old$it" } + listOf("new1", "new2", "new3"), c.images.map { it.id })
+        assertEquals(expected, c.images.map { it.id })
 
         c.addImages(listOf(image("late"))) // 8 staged: adds none
-        assertEquals((1..5).map { "old$it" } + listOf("new1", "new2", "new3"), c.images.map { it.id })
+        assertEquals(expected, c.images.map { it.id })
 
         c.removeImage("old3")
-        assertEquals(
-            (1..5).map { "old$it" }.filterNot { it == "old3" } + listOf("new1", "new2", "new3"),
-            c.images.map { it.id },
-        )
+        assertEquals(expected.filterNot { it == "old3" }, c.images.map { it.id })
 
         c.clearImages()
         assertTrue(c.images.isEmpty())
