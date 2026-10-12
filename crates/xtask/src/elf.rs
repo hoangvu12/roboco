@@ -9,10 +9,10 @@
 //! Android ABIs (`aarch64-linux-android`, `x86_64-linux-android`) are always
 //! ELF64 little-endian; anything else is rejected.
 
-/// Section header flags: `SHF_WRITE`, `SHF_ALLOC`, `SHF_EXECINSTR`.
+/// Section header flags: `SHF_WRITE`, `SHF_ALLOC`. (Exec-vs-readonly does
+/// not change the text bucket — see `parse`.)
 const SHF_WRITE: u64 = 0x1;
 const SHF_ALLOC: u64 = 0x2;
-const SHF_EXECINSTR: u64 = 0x4;
 /// Section types: `SHT_SYMTAB`, `SHT_NOBITS`. (`SHT_STRTAB` is used by the
 /// test ELF builder only.)
 const SHT_SYMTAB: u32 = 2;
@@ -104,7 +104,6 @@ pub fn parse(bytes: &[u8]) -> anyhow::Result<ElfInfo> {
             data += section.size;
         } else {
             // Code and read-only data, matching `size`'s text bucket.
-            let _ = SHF_EXECINSTR;
             text += section.size;
         }
     }
@@ -280,6 +279,9 @@ mod tests {
 
     /// `SHT_STRTAB`, for the synthetic section tables below.
     const SHT_STRTAB: u32 = 3;
+
+    /// `SHF_EXECINSTR`, for the text-bucket section below.
+    const SHF_EXECINSTR: u64 = 0x4;
 
     /// Builds a synthetic ELF64 little-endian image the way the NDK links
     /// real ones: header, program headers, sections with a section-name

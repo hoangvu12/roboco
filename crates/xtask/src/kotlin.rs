@@ -109,6 +109,12 @@ fn class_name(rest: &str) -> &str {
         .unwrap_or(rest)
 }
 
+/// Whether a line closes a multi-line class signature (`) : Base…` or a
+/// bare `)`).
+fn is_param_closer(line: &str) -> bool {
+    line.trim_start().starts_with(") :") || line.trim() == ")"
+}
+
 /// `(supertype expression, index just past the class signature)`. The
 /// generated signatures come in exactly two shapes: everything on one line
 /// (`class Variant(field: T) : Base(field)`), or a parenthesized parameter
@@ -125,7 +131,7 @@ fn class_signature(rest: &str, lines: &[&str]) -> Option<(String, usize)> {
     }
     // Multi-line: find the line that closes the parameter list.
     for (offset, line) in lines.iter().enumerate().skip(1) {
-        if line.trim_start().starts_with(") :") || line.trim() == ")" {
+        if is_param_closer(line) {
             let supertype = supertype_name(line.trim_start());
             return Some((supertype, offset + 1));
         }
@@ -158,7 +164,7 @@ fn class_param_lines<'a>(rest: &'a str, lines: &[&'a str]) -> Vec<&'a str> {
         }
     }
     for line in lines.iter().skip(1) {
-        if line.trim_start().starts_with(") :") || line.trim() == ")" {
+        if is_param_closer(line) {
             break;
         }
         params.push(line);

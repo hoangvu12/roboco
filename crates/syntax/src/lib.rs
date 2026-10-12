@@ -295,7 +295,13 @@ fn line_starts(source: &str) -> Vec<usize> {
     starts
 }
 
-/// Whether this build contains a parser and compatible highlight queries.
+/// Whether this build highlights `language` when asked. Grammar subsets
+/// (android-app#10) deliberately do **not** change this: `LanguageId`,
+/// aliases and paths stay grammar-agnostic, and a compiled-out language
+/// surfaces as [`HighlightError::UnknownLanguage`] from `configuration`
+/// instead — so the desktop callers (which always link all grammars) are
+/// unchanged and the mobile layout still knows a fence's language while
+/// treating its highlighting as "no colours".
 pub const fn supports_language(language: LanguageId) -> bool {
     let _ = language;
     true

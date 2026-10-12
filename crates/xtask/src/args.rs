@@ -7,9 +7,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// The ABIs the ticket builds by default (armeabi-v7a / x86 are out of
-/// scope). Everything cargo-ndk accepts can be requested explicitly.
-pub const VALID_ABIS: &[&str] = &["arm64-v8a", "x86_64", "armeabi-v7a", "x86"];
+/// The ABIs this ticket ships. armeabi-v7a / x86 are out of scope
+/// (android-app#10); `--abis` validates against this list so a request for
+/// an unsupported ABI fails up front with a clear message instead of
+/// producing an untested artifact.
+pub const SUPPORTED_ABIS: &[&str] = &["arm64-v8a", "x86_64"];
 pub const DEFAULT_ABIS: &[&str] = &["arm64-v8a", "x86_64"];
 
 pub const USAGE: &str = "usage: cargo xtask android-core [--out DIR]
@@ -166,8 +168,11 @@ pub fn abis_from_env_value(value: Option<&str>) -> Vec<String> {
 fn parse_abis(value: &str) -> anyhow::Result<Vec<String>> {
     let abis = abis_from_env_value(Some(value));
     for abi in &abis {
-        if !VALID_ABIS.contains(&abi.as_str()) {
-            anyhow::bail!("unknown ABI {abi:?} (cargo-ndk accepts {VALID_ABIS:?})");
+        if !SUPPORTED_ABIS.contains(&abi.as_str()) {
+            anyhow::bail!(
+                "unsupported ABI {abi:?} — the Android core ships \
+                 {SUPPORTED_ABIS:?} (others are out of scope, android-app#10)"
+            );
         }
     }
     Ok(abis)
@@ -246,7 +251,7 @@ mod tests {
         };
         assert!(parse_error(&["--profile", "release"]).contains("mobile-dist"));
         assert!(parse_error(&["--languages", "middle"]).contains("mobile or all"));
-        assert!(parse_error(&["--abis", "arm64"]).contains("cargo-ndk"));
+        assert!(parse_error(&["--abis", "arm64"]).contains("unsupported ABI"));
         assert!(parse_error(&["--nope"]).contains("unknown flag"));
         assert!(parse_error(&["--out"]).contains("needs a value"));
     }

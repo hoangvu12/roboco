@@ -166,13 +166,26 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     // 3. The Android libraries (cargo-ndk). Runs before the bindings when
     //    --skip-host leaves the arm64 artifact as the only bindgen input.
     if !skip_ndk {
-        let ndk_home =
-            ndk::find_ndk(&ndk::sdk_roots(|name| std::env::var(name).ok())).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no Android NDK found: set ANDROID_NDK_HOME or install one under \
-                     <sdk>/ndk (sdkmanager \"ndk;28.2.13676358\")"
-                )
-            })?;
+        // Resolution order per the ticket: ANDROID_NDK_HOME first (it pins
+        // a specific NDK — the acceptance runs use it to build with 28.2
+        // and 27.2), else the highest ndk/<version> under an SDK root.
+        let explicit = std::env::var_os("ANDROID_NDK_HOME").map(PathBuf::from);
+        let ndk_home = ndk::ndk_home(
+            explicit.as_deref(),
+            &ndk::sdk_roots(|name| std::env::var(name).ok()),
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no Android NDK found: set ANDROID_NDK_HOME or install one under \
+                 <sdk>/ndk (sdkmanager \"ndk;28.2.13676358\")"
+            )
+        })?;
+        if !ndk_home.is_dir() {
+            bail!(
+                "ANDROID_NDK_HOME points at {}, which is not a directory",
+                ndk_home.display()
+            );
+        }
         if ndk::ndk_major_version(&ndk_home).is_some_and(|major| major < 28) {
             eprintln!(
                 "warning: NDK at {} is older than r28 — 16 KB PT_LOAD alignment then \
@@ -287,7 +300,7 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     if !check {
         return Ok(());
     }
-    android_core_checks(&out, profile.as_str(), languages.as_str(), &abis)
+    android_core_checks(&out, profile, languages, &abis)
 }
 
 fn refuse_rustflags() -> anyhow::Result<()> {
@@ -308,8 +321,8 @@ fn refuse_rustflags() -> anyhow::Result<()> {
 /// contract, and `sizes.json`.
 fn android_core_checks(
     out: &Path,
-    profile: &str,
-    languages: &str,
+    profile: args::Profile,
+    languages: args::Languages,
     expected_abis: &[String],
 ) -> anyhow::Result<()> {
     let mut failures = Vec::new();

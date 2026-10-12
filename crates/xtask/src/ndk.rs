@@ -28,6 +28,14 @@ pub fn sdk_roots(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     roots
 }
 
+/// The NDK to build with: an explicitly set `ANDROID_NDK_HOME` wins (it is
+/// how CI and users pin a specific NDK — the acceptance runs exercise 28.2
+/// and 27.2 that way); otherwise the highest `ndk/<version>` under the first
+/// SDK root that has one. `None` when nothing points at an NDK.
+pub fn ndk_home(explicit: Option<&Path>, sdk_roots: &[PathBuf]) -> Option<PathBuf> {
+    explicit.map(Path::to_owned).or_else(|| find_ndk(sdk_roots))
+}
+
 /// The highest-versioned `ndk/<version>` directory under the first SDK root
 /// that has one.
 pub fn find_ndk(sdk_roots: &[PathBuf]) -> Option<PathBuf> {
@@ -152,6 +160,21 @@ mod tests {
                 Path::new("/home/dev").join("Android").join("Sdk"),
             ]
         );
+    }
+
+    #[test]
+    fn explicit_android_ndk_home_pins_the_ndk() {
+        let first = temp_root("explicit");
+        let pinned = make_ndk(&first, "27.2.12479018");
+        make_ndk(&first, "28.2.13676358");
+        let newest = pinned.parent().unwrap().join("28.2.13676358");
+        // A pinned 27.2 must not be silently upgraded to the SDK's 28.2.
+        assert_eq!(
+            ndk_home(Some(&pinned), &[first.clone()]),
+            Some(pinned.clone())
+        );
+        assert_eq!(ndk_home(None, &[first]), Some(newest));
+        assert_eq!(ndk_home(Some(&pinned), &[]), Some(pinned));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! alphabet (profile, language set, ABI names), so the emitter only has to
 //! stay honest, which the tests pin down.
 
+use crate::args::{Languages, Profile};
 use crate::elf::ElfInfo;
 
 /// One ABI's measured library.
@@ -38,11 +39,12 @@ impl AbiSizes {
     }
 }
 
-/// The whole run's report.
+/// The whole run's report. Profile and language set stay typed until the
+/// JSON edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SizesReport {
-    pub profile: String,
-    pub languages: String,
+    pub profile: Profile,
+    pub languages: Languages,
     pub abis: Vec<AbiSizes>,
     /// The arm64-v8a `loro` total — the §5 measurement target; `None` when
     /// no arm64 library was measured or its symbol table was stripped.
@@ -50,15 +52,15 @@ pub struct SizesReport {
 }
 
 impl SizesReport {
-    pub fn new(profile: &str, languages: &str, mut abis: Vec<AbiSizes>) -> Self {
+    pub fn new(profile: Profile, languages: Languages, mut abis: Vec<AbiSizes>) -> Self {
         let loro_symbol_bytes = abis
             .iter()
             .find(|abi| abi.abi == "arm64-v8a")
             .and_then(|abi| abi.loro_symbol_bytes);
         abis.sort_by(|left, right| left.abi.cmp(&right.abi));
         Self {
-            profile: profile.to_owned(),
-            languages: languages.to_owned(),
+            profile,
+            languages,
             abis,
             loro_symbol_bytes,
         }
@@ -68,10 +70,13 @@ impl SizesReport {
     /// same inputs produce identical files.
     pub fn to_json(&self) -> String {
         let mut json = String::from("{\n");
-        json.push_str(&format!("  \"profile\": {},\n", json_string(&self.profile)));
+        json.push_str(&format!(
+            "  \"profile\": {},\n",
+            json_string(self.profile.as_str())
+        ));
         json.push_str(&format!(
             "  \"languages\": {},\n",
-            json_string(&self.languages)
+            json_string(self.languages.as_str())
         ));
         json.push_str(&format!(
             "  \"loro_symbol_bytes\": {},\n",
@@ -109,8 +114,8 @@ impl SizesReport {
         let mut table = format!(
             "android-core sizes: profile={} languages={}\n\
              {:<12} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}\n",
-            self.profile,
-            self.languages,
+            self.profile.as_str(),
+            self.languages.as_str(),
             "abi",
             "file (MB)",
             "text (MB)",
@@ -164,6 +169,7 @@ fn json_number(value: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::{Languages, Profile};
     use crate::elf::ElfInfo;
 
     fn sample() -> SizesReport {
@@ -175,8 +181,8 @@ mod tests {
             loro_symbol_bytes: Some(900_000),
         };
         SizesReport::new(
-            "mobile-dist",
-            "mobile",
+            Profile::MobileDist,
+            Languages::Mobile,
             vec![
                 AbiSizes::from_file(
                     "x86_64",
@@ -223,9 +229,21 @@ mod tests {
     }
 
     #[test]
-    fn strings_are_escaped_not_trusted() {
-        let report = SizesReport::new("mo\"bile\\", "all", Vec::new());
+    fn json_strings_come_from_a_fixed_alphabet() {
+        // Profile and language names are enum-controlled and ABI names are
+        // validated by the parser, so the hand-rolled emitter only ever
+        // sees a fixed alphabet — but escaping still has to work if that
+        // ever changes.
+        let report = SizesReport::new(Profile::Mobile, Languages::All, Vec::new());
         let json = report.to_json();
-        assert!(json.contains("\"profile\": \"mo\\\"bile\\\\\""));
+        assert!(json.contains("\"profile\": \"mobile\""));
+        assert!(json.contains("\"languages\": \"all\""));
+        // Quotes and backslashes escape; the comparison avoids literal
+        // soup by building the expectation from the escape sequences
+        // themselves.
+        let expected: String = ['"', 'a', '\\', '"', 'b', '\\', '\\', 'c', '"']
+            .into_iter()
+            .collect();
+        assert_eq!(json_string("a\"b\\c"), expected);
     }
 }
