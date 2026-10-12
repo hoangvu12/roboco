@@ -1,6 +1,5 @@
 package sh.roboco.android.composer
 
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -10,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
+import sh.roboco.android.design.Palette
 
 /**
  * [mentionRanges] and [MentionVisualTransformation.filter] on the plain
@@ -19,7 +19,7 @@ import org.junit.Test
 class MentionStyleTest {
 
     /** The light accent, as [mentionSpanStyle] resolves it. */
-    private val accent = Color(0xFF5B43E8)
+    private val accent = Palette.Light.accent
 
     /** A stand-in for [mentionSpanStyle]: Medium at an unspecified size. */
     private val style = SpanStyle(color = accent, fontWeight = FontWeight.Medium)

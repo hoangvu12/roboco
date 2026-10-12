@@ -133,7 +133,7 @@ class MentionIndexTest {
     fun activeQueryNullCases() {
         assertNull(MentionIndex.activeQuery("a@b", 3)) // email-like: 'a' before '@'
         assertNull(MentionIndex.activeQuery("@@x", 3)) // '@' before '@'
-        assertNull(MentionIndex.activeQuery("x @foo bar", 11)) // space between
+        assertNull(MentionIndex.activeQuery("x @foo bar", 10)) // space between
         assertNull(MentionIndex.activeQuery("@foo ", 5)) // space before the cursor
         assertNull(MentionIndex.activeQuery("@foo", 0)) // cursor 0: loop never runs
         assertNull(MentionIndex.activeQuery("hello", 5)) // no '@' at all
@@ -223,7 +223,7 @@ class MentionIndexTest {
         var calls = 0
         val i = MentionIndex { p, d ->
             calls++
-            "<$p${if (d) "/" else ""}>"
+            fakeLink(p, d)
         }
         i.token(f("src/lib.rs"))
         assertEquals("nothing here", i.encode("nothing here"))
