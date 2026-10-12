@@ -92,7 +92,7 @@ jobs:
         # engine-client tests are timing-sensitive (reconnect backoff, loopback
         # engines); retries come from the ci nextest profile. Later mobile
         # crates append their `-p` flags here.
-        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -p roboco-engine-client -P ci
+        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-engine-client -P ci
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests

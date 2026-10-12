@@ -17,6 +17,7 @@ members = [
     "crates/syntax",
     "crates/text",
     "crates/markdown",
+    "crates/mobile",
     "crates/wiregen",
     "apps/roboco",
 ]
@@ -42,6 +43,7 @@ roboco-ui = { path = "crates/ui" }
 roboco-syntax = { path = "crates/syntax" }
 roboco-text = { path = "crates/text" }
 roboco-markdown = { path = "crates/markdown" }
+roboco-mobile = { path = "crates/mobile" }
 roboco-theme = { path = "crates/theme" }
 
 # CRDT
