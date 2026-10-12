@@ -36,6 +36,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
+import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.transcript.TextRunsSpecimen
 
@@ -144,6 +145,9 @@ object Gallery {
         // Ticket 63 (text runs): every run-painting case through the real
         // RowModel path — Rust positions, decorations, mono double-width.
         GallerySection("Transcript · Text runs") { TextRunsSpecimen(dark = RobocoTheme.isDark) },
+        // Ticket 31 (PageSheet + SheetHost): the large-detent page sheet
+        // with the card-stack recession, stacking and the handoff hide.
+        GallerySection("Page sheet", GalleryLayout.Fill, screenshotHeightDp = 891) { PageSheetGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
