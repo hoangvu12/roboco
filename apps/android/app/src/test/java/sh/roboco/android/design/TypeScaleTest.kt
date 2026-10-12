@@ -100,8 +100,10 @@ class TypeScaleTest {
     }
 
     // ------------------------------------------------------------------
-    // 2.0 — the clamp ceiling. Compose's baked converter tables stop at
-    // 1.8, so 2.0 scales linearly: bodyFactor == fontScale.
+    // 2.0 — the clamp ceiling. Compose's baked FontScaleConverter tables
+    // include 2.0 (17 sp → 29 dp, bodyFactor ≈ 1.706 — the ticket's own
+    // comment, deliberately not pinned: the tables are a platform
+    // detail). `factor` clamps to 1.6; the body ratio does not.
     // ------------------------------------------------------------------
 
     @Test
@@ -109,7 +111,13 @@ class TypeScaleTest {
         val density = Density(2.625f, 2f)
         val ts = TypeScale.from(density)
         assertEquals(1.6f, ts.factor)
-        assertEquals(2f, ts.bodyFactor)
+        // Unclamped: the body ratio at 2.0 (≈ 1.706 on the platform curve)
+        // is past the 1.6 ceiling the factor uses. Not pinned exactly —
+        // the ticket's Comments say the table values are a platform
+        // detail — but it must never be clamped.
+        assertTrue("bodyFactor ${ts.bodyFactor} must stay unclamped past 1.6", ts.bodyFactor > 1.6f)
+        // Everything through `scaled`/`scaledDp` uses the clamped factor,
+        // so the ticket's expected-value table holds exactly.
         assertEquals(26f, ts.scaled(16.5f).inDp(density), 0.01f)
         assertEquals(22f, ts.scaled(13.5f).inDp(density), 0.01f)
         assertEquals(20f, ts.scaled(12.5f).inDp(density), 0.01f)
@@ -123,13 +131,20 @@ class TypeScaleTest {
 
     @Test
     fun bodyScaledIsUnclampedAndUnrounded() {
-        // UIFontMetrics(.body).scaledValue(for: 16.5) at 200% = 33: no
-        // clamp at 1.6, no rounding.
+        // At 2.0 the body ratio stays unclamped past the 1.6 ceiling while
+        // `scaled` is clamped: bodyScaled(16.5) renders bigger than
+        // scaled(16.5) (≈ 28.1 dp vs 26 dp). The exact 2.0 curve (17 sp ≈
+        // 29 dp, ≈ 1.706 — see the ticket's Comments) is a platform
+        // detail and deliberately not pinned here.
         val density = Density(2.625f, 2f)
         val ts = TypeScale.from(density)
-        assertEquals(33f, ts.bodyScaled(16.5f).inDp(density), 0.01f)
-        // And at the floor the fractional size survives: 16.5 * 0.85,
-        // converted back with the density it will render in.
+        assertTrue(
+            "bodyScaled ${ts.bodyScaled(16.5f).inDp(density)} must exceed the clamped ${ts.scaled(16.5f).inDp(density)}",
+            ts.bodyScaled(16.5f).inDp(density) > ts.scaled(16.5f).inDp(density),
+        )
+        // At the floor the fractional size survives: 16.5 * 0.85 = 14.025,
+        // unrounded (linear: below Compose's 1.03 threshold), converted
+        // back with the density it will render in.
         val floor = Density(2.625f, 0.85f)
         val small = TypeScale.from(floor)
         assertEquals(14.025f, small.bodyScaled(16.5f).inDp(floor), 0.01f)
@@ -170,9 +185,8 @@ class TypeScaleTest {
         // Compose's `Density(float, fontScale)` (DensityImpl) inherits the
         // FontScaling default conversions, which consult the shipped
         // Android 14 FontScaleConverter tables (baked for 1.15/1.3/1.5/
-        // 1.8, applied at fontScale >= 1.03; beyond 1.8 they fall back to
-        // linear — which is why the 2.0 case above scales linearly).
-        // 17 sp maps to 20.9 dp (factor ≈ 1.229), not 22.1 dp (linear 1.3).
+        // 1.8/2.0, applied at fontScale >= 1.03): 17 sp maps to 20.9 dp
+        // (factor ≈ 1.229), not 22.1 dp (linear 1.3).
         val density = Density(2.625f, 1.3f)
         val ts = TypeScale.from(density)
         assertTrue("factor ${ts.factor} should use the non-linear curve", ts.factor > 1.0f)
