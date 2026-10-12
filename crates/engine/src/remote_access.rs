@@ -1,5 +1,5 @@
 //! Remote exposure is explicit. Conflicting or invalid configuration stays local.
-use roboco_proto::{PairedSession, PairingLink, RemoteAccessSnapshot, RemoteAccessStatus};
+use roboco_proto::{PairedSession, PairingLink, RemoteAccessSnapshot, RemoteAccessStatus, qr};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -444,10 +444,11 @@ impl RemoteAccessController {
                 .create_code("", crate::pairing::DEFAULT_TTL_SECONDS)?;
             let invite =
                 crate::tailcat::TailcatInvite::new(&address, &code.credential, code.expires_at)?;
-            return Ok(serde_json::to_value(PairingLink {
-                url: invite.encode()?,
-                expires_at: code.expires_at,
-            })?);
+            // Tailcat invites pair desktop-to-desktop, so they carry a QR too.
+            return Ok(serde_json::to_value(minted_link(
+                invite.encode()?,
+                code.expires_at,
+            ))?);
         }
         let loaded = load(&self.directory);
         let base = match state
@@ -462,10 +463,10 @@ impl RemoteAccessController {
         crate::pairing::pairing_url(&base, "")?;
         let code = crate::pairing::PairingStore::open(&self.directory)?
             .create_code("", crate::pairing::DEFAULT_TTL_SECONDS)?;
-        Ok(serde_json::to_value(PairingLink {
-            url: crate::pairing::pairing_url(&base, &code.credential)?,
-            expires_at: code.expires_at,
-        })?)
+        Ok(serde_json::to_value(minted_link(
+            crate::pairing::pairing_url(&base, &code.credential)?,
+            code.expires_at,
+        ))?)
     }
 
     pub fn revoke(&self, session_id: &str) -> anyhow::Result<()> {
@@ -491,6 +492,17 @@ impl RemoteAccessController {
         state.status.enabled = false;
         state.status.address = None;
         self.service.lock().unwrap().take();
+    }
+}
+
+/// The minted link with its QR: both transports share the shape, and the QR
+/// rides the wire so every surface (desktop, web, CLI) shows the same code
+/// without shipping an encoder.
+fn minted_link(url: String, expires_at: i64) -> PairingLink {
+    PairingLink {
+        qr_svg: Some(qr::qr_svg(&url)),
+        url,
+        expires_at,
     }
 }
 

@@ -42,11 +42,19 @@ pub struct RemoteAccessSnapshot {
 pub struct PairingLink {
     pub url: String,
     pub expires_at: i64,
+    /// The pairing URL as a compact module-unit SVG
+    /// (`qr::qr_svg`) — dark on light with its own quiet zone, ready for a
+    /// scannable render on any surface. Optional and additive (ADR 0005):
+    /// older engines mint links without it, and clients show no QR then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub qr_svg: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::qr;
 
     #[test]
     fn remote_access_payloads_use_camel_case_fields() {
@@ -77,8 +85,24 @@ mod tests {
         let link = PairingLink {
             url: "https://engine.example/pair#token=abc".into(),
             expires_at: 3,
+            qr_svg: None,
         };
         let value = serde_json::to_value(&link).unwrap();
         assert_eq!(value["expiresAt"], 3);
+        // The QR is additive and optional (ADR 0005): absent, never null, so
+        // older engines mint links the new clients still understand.
+        assert!(value.get("qrSvg").is_none(), "no qrSvg key when None: {value}");
+        let svg = qr::qr_svg(&link.url);
+        let value = serde_json::to_value(PairingLink {
+            qr_svg: Some(svg.clone()),
+            ..link
+        })
+        .unwrap();
+        assert_eq!(value["qrSvg"], svg);
+        // An older engine's link (no qrSvg key) round-trips with no QR.
+        let legacy: PairingLink =
+            serde_json::from_str(r#"{"url":"https://engine.example/pair#token=abc","expiresAt":3}"#)
+                .unwrap();
+        assert_eq!(legacy.qr_svg, None);
     }
 }

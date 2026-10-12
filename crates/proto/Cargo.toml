@@ -12,3 +12,9 @@ uuid.workspace = true
 chrono.workspace = true
 ts-rs.workspace = true
 pulldown-cmark.workspace = true
+qrcode.workspace = true
+
+[dev-dependencies]
+# Encoder round-trip checks decode a rendered module matrix (ticket 32).
+image = { version = "0.25", default-features = false }
+rqrr = "0.11"

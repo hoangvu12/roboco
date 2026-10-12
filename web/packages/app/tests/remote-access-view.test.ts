@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EngineClient } from "@roboco/engine-client";
-import type { PairedSession, RemoteAccessSnapshot } from "@roboco/proto";
+import type { PairedSession, PairingLink, RemoteAccessSnapshot } from "@roboco/proto";
 import type { StoredEngine } from "../src/lib/engine-store";
 import { formatLastSeen } from "../src/lib/devices";
 import type { SessionRow } from "../src/lib/remote-access";
@@ -8,6 +8,7 @@ import {
   createPairingLink,
   getRemoteAccess,
   ownSessionId,
+  pairingQr,
   revokePairingSession,
   sessionIsSelf,
   sessionRows,
@@ -137,5 +138,36 @@ describe("remote access RPC wrappers", () => {
     const { client, calls } = fakeClient({ CreatePairingLink: link });
     expect(await createPairingLink(client)).toEqual(link);
     expect(calls).toEqual([{ method: "CreatePairingLink", params: {} }]);
+  });
+});
+
+describe("pairingQr", () => {
+  const QR_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="49" height="49" viewBox="0 0 49 49" shape-rendering="crispEdges"><rect width="49" height="49" fill="#fff"/><path fill="#000" d="M4 4h1v1H4V4"/></svg>';
+  const link = (fields: Partial<PairingLink>): PairingLink => ({
+    url: "http://host:27655/pair#token=abc",
+    expiresAt: NOW + 300_000,
+    ...fields,
+  });
+
+  it("builds the <img> data URI from the engine's SVG", () => {
+    const qr = pairingQr(link({ qrSvg: QR_SVG }), NOW);
+    expect(qr?.src).toBe(`data:image/svg+xml;utf8,${encodeURIComponent(QR_SVG)}`);
+    // The URL-encoded SVG starts with an escaped "<svg" — the data URI shape
+    // a browser needs, with the "#" characters of the QR kept out of the URI.
+    expect(qr?.src.startsWith("data:image/svg+xml;utf8,%3Csvg")).toBe(true);
+    expect(qr?.expired).toBe(false);
+    expect(qr?.caption).toBe("Scan with the Roboco app on your phone.");
+  });
+
+  it("dims an expired link and says to mint a new one", () => {
+    const qr = pairingQr(link({ qrSvg: QR_SVG, expiresAt: NOW - 1 }), NOW);
+    expect(qr?.expired).toBe(true);
+    expect(qr?.caption).toBe("Expired. Create a new pairing link.");
+  });
+
+  it("renders nothing extra against an engine whose link lacks qrSvg", () => {
+    expect(pairingQr(link({ qrSvg: undefined }), NOW)).toBe(null);
+    expect(pairingQr(link({}), NOW)).toBe(null);
   });
 });

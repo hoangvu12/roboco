@@ -23,6 +23,31 @@ export function createPairingLink(client: EngineClient): Promise<PairingLink> {
   return client.call<PairingLink>(methods.CREATE_PAIRING_LINK, {});
 }
 
+/** The pairing QR ready for an `<img>`: the engine's SVG as a data URI plus
+ *  the caption the tile carries. Null when the link has no `qrSvg` (an older
+ *  engine) — the page then renders no QR and nothing extra. */
+export interface PairingQr {
+  readonly src: string;
+  readonly expired: boolean;
+  readonly caption: string;
+}
+
+const QR_SCAN_CAPTION = "Scan with the Roboco app on your phone.";
+const QR_EXPIRED_CAPTION = "Expired. Create a new pairing link.";
+
+/** The engine supplies the SVG, so no JS QR dependency rides the web app. */
+export function pairingQr(link: PairingLink, now: number): PairingQr | null {
+  if (link.qrSvg == null) {
+    return null;
+  }
+  const expired = link.expiresAt < now;
+  return {
+    src: `data:image/svg+xml;utf8,${encodeURIComponent(link.qrSvg)}`,
+    expired,
+    caption: expired ? QR_EXPIRED_CAPTION : QR_SCAN_CAPTION,
+  };
+}
+
 export function revokePairingSession(client: EngineClient, sessionId: string): Promise<RemoteAccessSnapshot> {
   return client.call<RemoteAccessSnapshot>(methods.REVOKE_PAIRING_SESSION, { sessionId });
 }

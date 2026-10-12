@@ -11,6 +11,7 @@ pub mod invocation;
 pub mod layout;
 pub mod motion;
 pub mod preview;
+pub mod qr;
 pub mod remote;
 pub mod view;
 pub mod workspace;
