@@ -2,7 +2,7 @@
   "name": "@roboco/engine-client",
   "version": "0.0.0",
   "private": true,
-  "description": "Framework-agnostic connection core for the Roboco web client: WebSocket dialing with first-frame Auth, identity re-verification, backoff, park-on-revoked, typed calls, and the ndjson frame codec. Behavior mirrors the desktop's engine registry (crates/ui/src/engine_registry.rs); no code is shared.",
+  "description": "Framework-agnostic connection core for the Roboco web client: WebSocket dialing with first-frame Auth, identity re-verification, backoff, park-on-revoked, typed calls, and the ndjson frame codec. Behavior mirrors the desktop's engine registry (crates/engine-client/src/registry.rs); no code is shared.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

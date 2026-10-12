@@ -2,8 +2,8 @@ import type { Chat, Device, Session, Space } from "@roboco/proto";
 import type { SessionMessageEntry } from "@roboco/proto";
 
 /**
- * The disposable client-side engine cache — the port of `engine_cache.rs`
- * (`crates/ui/src/engine_cache.rs`). Last-known row sets per paired engine
+ * The disposable client-side engine cache — the port of `cache.rs`
+ * (`crates/engine-client/src/cache.rs`). Last-known row sets per paired engine
  * plus per-chat transcripts for chats the user has actually opened, seeded
  * at registry startup so the sidebar renders while connections dial, and
  * re-read whenever an engine is reconnecting or off. A partial or obsolete
@@ -19,7 +19,7 @@ import type { SessionMessageEntry } from "@roboco/proto";
  * Credentials never enter this store.
  */
 
-/** The four row collections persisted per engine (`engine_cache.rs::CachedRows`). */
+/** The four row collections persisted per engine (`cache.rs::CachedRows`). */
 export interface CachedRows {
   readonly chats: readonly Chat[];
   readonly spaces: readonly Space[];

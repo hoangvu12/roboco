@@ -88,9 +88,11 @@ jobs:
       - name: Engine, RPC, and harness unit tests
         run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
       - name: Mobile core crates
-        # Mobile Rust core for the Android app (android-app#02); tickets
-        # android-app 03-05 append their `-p` flags here.
-        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -P ci
+        # Mobile Rust core for the Android app (android-app 02-05). The
+        # engine-client tests are timing-sensitive (reconnect backoff, loopback
+        # engines); retries come from the ci nextest profile. Later mobile
+        # crates append their `-p` flags here.
+        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -p roboco-engine-client -P ci
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests

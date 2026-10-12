@@ -7,7 +7,7 @@ import { RpcError } from "./rpc-error";
  * The watch cache — the web client's single server-state store. It watches
  * the engine's four entity streams (chats, spaces, devices, chat statuses)
  * into one observable cache, mirroring the desktop registry's drive loop
- * (crates/ui/src/engine_registry.rs: verify identity, subscribe every
+ * (crates/engine-client/src/registry.rs: verify identity, subscribe every
  * stream, bump the generation per connect) without sharing its code.
  *
  * Contract for React binding (`useSyncExternalStore`, ticket 06):

@@ -4,7 +4,7 @@ import { isScopedId, parseScopedId } from "./scoped-id";
 
 /**
  * Request routing at the engine boundary — the port of
- * `request_routing.rs::wire_params` (`crates/ui/src/request_routing.rs:36-94`).
+ * `routing.rs::wire_params` (`crates/engine-client/src/routing.rs`).
  *
  * Before a call or subscribe leaves for one specific engine, every
  * `ScopedId`-shaped envelope field is decoded back to that engine's raw id;
