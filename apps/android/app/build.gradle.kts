@@ -246,6 +246,15 @@ val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
 }
 
 androidComponents {
+    // Tests that reference src/debug classes (the design gallery suite of
+    // android-ui-parity #22, 05's HapticsGalleryScreenshotTest, 11's gallery
+    // test) do not compile for testReleaseUnitTest: the release variant has
+    // no debug source set. Disable its unit tests in one place instead of
+    // moving every such test to src/testDebug.
+    beforeVariants(selector().withBuildType("release")) { v ->
+        (v as? com.android.build.api.variant.HasHostTestsBuilder)
+            ?.hostTests?.get(com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE)?.enable = false
+    }
     onVariants { variant ->
         val buildType = variant.buildType ?: return@onVariants
         val coreTask = tasks.named<AndroidCoreBuild>(coreTaskName(buildType))
