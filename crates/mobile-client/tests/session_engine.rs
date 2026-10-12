@@ -1001,7 +1001,21 @@ async fn the_transcript_cache_hydrates_a_reopened_chat() {
         "the message lands",
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A quiet tail writes the cache on every frame; a streaming tail is
+    // throttled to one write per second — wait for the quiet, then flush
+    // through `on_background` (the documented flush barrier) before the
+    // teardown.
+    wait_until(
+        || {
+            handle
+                .snapshot()
+                .entries
+                .last()
+                .is_none_or(|e| e.status != Some(MessageStatus::Streaming))
+        },
+        "the tail quiets",
+    )
+    .await;
     let entries: Vec<SessionMessageEntry> = handle
         .snapshot()
         .entries
@@ -1011,6 +1025,13 @@ async fn the_transcript_cache_hydrates_a_reopened_chat() {
     let data_dir = rig.data_dir.path().to_owned();
     let engine_id = rig.engine_id.clone();
     let record = rig.record_of();
+    // Wait for the debounced cache write to reach the disk — the reopen
+    // reads the file, so this is the deterministic barrier.
+    wait_until(
+        || find_any_chat_file(rig.data_dir.path()).is_some(),
+        "the transcript cache file lands",
+    )
+    .await;
     rig.client.shutdown();
     // The engine is stopped: the cache is the only source.
     rig.listener.stop();
@@ -1468,6 +1489,33 @@ async fn sending_is_not_working() {
     .await;
     assert_eq!(handle.composer().send_state, None);
     rig.client.shutdown();
+}
+
+/// Find any `chat-*.json` transcript cache file under `root`.
+fn find_any_chat_file(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
+        if depth > 6 {
+            return None;
+        }
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("chat-") && n.ends_with(".json"))
+            {
+                return Some(path);
+            }
+            if path.is_dir()
+                && let Some(found) = walk(&path, depth + 1)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(root, 0)
 }
 
 /// Find a file by name anywhere under `root` (bounded depth).
