@@ -8186,6 +8186,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "roboco-android-assets"
+version = "0.9.2"
+dependencies = [
+ "anyhow",
+ "resvg",
+ "tempfile",
+ "tiny-skia",
+ "usvg",
+]
+
+[[package]]
 name = "roboco-doc"
 version = "0.9.2"
 dependencies = [

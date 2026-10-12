@@ -13,6 +13,13 @@ dist/roboco-artwork.png, or a path given as the first argument). Outputs:
                                          margins and soft shadow baked in
                                          (sips can't alpha-mask; see 39644a46)
 - web/packages/app/public/favicon.png    128x128 rounded favicon
+- apps/android/app/src/main/res/
+  mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/
+  ic_launcher_art.png                    108/162/216/324/432 px opaque
+                                         LANCZOS full-bleed squares (the
+                                         Android adaptive-icon background;
+                                         no rounding — the launcher mask
+                                         shapes it, see apps/android/icons)
 
 All outputs are committed so CI never needs Pillow — rerun this only when
 changing the artwork (the previous swap was b59ba1a7, which also missed the
@@ -46,6 +53,17 @@ MAC_OFFSET = (MAC_SIZE - MAC_ART) // 2
 MAC_SHADOW_BLUR = 13
 MAC_SHADOW_DROP = 10
 MAC_SHADOW_ALPHA = 90
+
+# Android adaptive-icon background (android-app#13): the full-bleed square
+# the launcher mask crops to the central 66.7% (72 of 108 dp). No rounding,
+# no inset: the mask provides the shape.
+ANDROID_MIPMAPS = {
+    "mdpi": 108,
+    "hdpi": 162,
+    "xhdpi": 216,
+    "xxhdpi": 324,
+    "xxxhdpi": 432,
+}
 
 
 def rounded(art: Image.Image, size: int, radius: int) -> Image.Image:
@@ -142,14 +160,30 @@ def main() -> None:
         compress_level=9,
     )
 
-    for rel in (
+    # Android launcher icon: the adaptive-icon background, full-bleed.
+    for density, size in sorted(ANDROID_MIPMAPS.items()):
+        art.resize((size, size), Image.LANCZOS).convert("RGB").save(
+            os.path.join(
+                ROOT,
+                f"apps/android/app/src/main/res/mipmap-{density}/ic_launcher_art.png",
+            ),
+            optimize=True,
+            compress_level=9,
+        )
+
+    outputs = [
         "dist/roboco.png",
         "dist/roboco.svg",
         "crates/ui/assets/icons/roboco-logo.svg",
         "dist/windows/roboco.ico",
         "dist/macos/icon-1024.png",
         "web/packages/app/public/favicon.png",
-    ):
+    ]
+    outputs += [
+        f"apps/android/app/src/main/res/mipmap-{density}/ic_launcher_art.png"
+        for density in sorted(ANDROID_MIPMAPS)
+    ]
+    for rel in outputs:
         p = os.path.join(ROOT, rel)
         print(f"{rel:45s} {os.path.getsize(p):>9,} bytes")
 
