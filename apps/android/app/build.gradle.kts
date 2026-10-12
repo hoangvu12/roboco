@@ -417,6 +417,12 @@ dependencies {
     implementation(libs.compose.foundation)
     // iOS continuous (squircle) corners for SmoothRoundedShape (ui-parity#01).
     implementation(libs.graphics.shapes)
+    // Liquid-glass backdrop blur (ui-parity#07): pulls in the core `haze`
+    // and `haze-utils` artifacts transitively. Deliberately NOT
+    // haze-blur-materials (HazeMaterials are not the iOS look). Its POM
+    // needs Compose ui ≥ 1.12.1 and Kotlin stdlib ≥ 2.4.20 — both already
+    // pinned (BOM 2026.09.00 / Kotlin 2.4.21).
+    implementation(libs.haze.blur)
 
     implementation(libs.kotlinx.coroutines.android)
     // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
