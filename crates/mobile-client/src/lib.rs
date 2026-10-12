@@ -9,10 +9,16 @@
 //! session rows are re-stamped on the phone's clock; rows and sidebar state
 //! are cached on disk for offline starts.
 //!
+//! [`workspace`] derives the merged multi-engine snapshot the Sessions
+//! tab, Search, folders, Archived and Settings render, and routes the
+//! workspace mutations (archive, rename, mark seen, pins, sections) to
+//! the owning engine; [`catalog`] holds the static harness/model labels.
+//!
 //! Pure Rust + tokio, UniFFI-free, so `cargo test` runs on any host.
 //! `roboco-mobile` wraps this crate in `crates/mobile/src/client_ffi`.
 
 pub mod cache;
+pub mod catalog;
 pub mod clock;
 pub mod compat;
 pub mod engines;
@@ -21,6 +27,7 @@ pub mod lenient;
 pub mod pairing;
 pub mod runtime;
 pub mod timings;
+pub mod workspace;
 
 use cache::{CacheCommand, CacheWriter, EngineCacheHandle};
 use engines::{EngineCommand, EngineEntry, host_of};
@@ -30,7 +37,7 @@ use roboco_engine_client::cache::{CachedRows, EngineCache};
 use roboco_engine_client::registry::ScopedId;
 use roboco_proto::EngineInfo;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use timings::Timings;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -42,6 +49,11 @@ pub use engines::{
 };
 pub use events::{ClientEvent, ClientListener};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
+pub use workspace::{
+    DeviceView, FrontPage, ProjectRef, ProjectView, PullRequestGroups, SearchField, SearchHit,
+    SectionView, SendState, SessionConfig, SessionGroup, SessionRow, WorkspaceSnapshot,
+    project_color_index, relative_time_label,
+};
 
 pub(crate) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value
@@ -106,6 +118,9 @@ pub(crate) struct ClientInner {
     engines: Mutex<EnginesState>,
     fleet: watch::Sender<Arc<FleetSnapshot>>,
     pump: Arc<EventPump>,
+    /// The derived workspace store (ticket 07); installed right after
+    /// construction because it needs a `Weak` back-reference.
+    pub(crate) workspace: OnceLock<Arc<workspace::WorkspaceStore>>,
     /// Cancels the event pump on `shutdown`.
     client_cancel: CancellationToken,
     /// Client-wide network flag (`true` = online). `false` only for a
@@ -182,12 +197,15 @@ impl Client {
             }),
             fleet,
             pump,
+            workspace: OnceLock::new(),
             client_cancel,
             network,
             foreground,
             cache_tx,
             cache,
         });
+        let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
+        let _ = inner.workspace.set(workspace);
         let ids: Vec<String> = lock(&inner.engines)
             .entries
             .iter()
@@ -616,6 +634,9 @@ impl Client {
     /// Stop all tasks (sign-out / app teardown). Snapshots stay readable.
     pub fn shutdown(&self) {
         self.inner.client_cancel.cancel();
+        if let Some(workspace) = self.inner.workspace.get() {
+            workspace.shutdown();
+        }
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
             entry.cancel.cancel();
@@ -623,23 +644,114 @@ impl Client {
         }
     }
 
+    // ── workspace (ticket 07) ─────────────────────────────────────────
+
+    /// The whole derived workspace. Cheap: clones an `Arc`.
+    pub fn workspace(&self) -> Arc<WorkspaceSnapshot> {
+        self.store().snapshot()
+    }
+
+    /// Current workspace revision (compare before pulling).
+    pub fn workspace_revision(&self) -> u64 {
+        self.store().revision()
+    }
+
+    /// Case-insensitive client-side search over the cached merged rows
+    /// (Roboco has no search RPC — ADR 0004).
+    pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        self.workspace().search(query, limit)
+    }
+
+    /// A chat's run configuration, wire-string form (or ticket 08's
+    /// optimistic override).
+    pub fn session_config(&self, chat_id: &str) -> Option<SessionConfig> {
+        self.store().session_config(chat_id)
+    }
+
+    pub fn archive_session(&self, chat_id: &str) -> Result<(), ClientError> {
+        self.store().set_chat_archived(chat_id, true)
+    }
+
+    pub fn unarchive_session(&self, chat_id: &str) -> Result<(), ClientError> {
+        self.store().set_chat_archived(chat_id, false)
+    }
+
+    /// A blank (whitespace-only) title is a no-op returning `Ok`.
+    pub fn rename_session(&self, chat_id: &str, title: &str) -> Result<(), ClientError> {
+        self.store().rename_session(chat_id, title)
+    }
+
+    pub fn delete_session(&self, chat_id: &str) -> Result<(), ClientError> {
+        self.store().delete_session(chat_id)
+    }
+
+    /// Fire-and-forget; never fails, never rolls back.
+    pub fn mark_seen(&self, chat_id: &str) {
+        self.store().mark_seen(chat_id);
+    }
+
+    pub fn pin_session(&self, chat_id: &str) -> Result<(), ClientError> {
+        self.store().pin_session(chat_id)
+    }
+
+    pub fn unpin_session(&self, chat_id: &str) -> Result<(), ClientError> {
+        self.store().unpin_session(chat_id)
+    }
+
+    /// Reorder a pin between neighbours (`None` at either end). Anchors
+    /// are scoped ids; anchors from other engines count as absent.
+    pub fn move_pin(
+        &self,
+        chat_id: &str,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().move_pin(chat_id, after, before)
+    }
+
+    /// Create a section; `engine_id: None` picks the first connected
+    /// engine. Returns the **scoped** section id.
+    pub fn create_section(
+        &self,
+        name: &str,
+        engine_id: Option<&str>,
+    ) -> Result<String, ClientError> {
+        self.store().create_section(name, engine_id)
+    }
+
+    pub fn rename_section(&self, section_id: &str, name: &str) -> Result<(), ClientError> {
+        self.store().rename_section(section_id, name)
+    }
+
+    pub fn delete_section(&self, section_id: &str) -> Result<(), ClientError> {
+        self.store().delete_section(section_id)
+    }
+
+    pub fn set_section_collapsed(&self, section_id: &str, collapsed: bool) -> Result<(), ClientError> {
+        self.store().set_section_collapsed(section_id, collapsed)
+    }
+
+    /// Move a chat into a section (`None` = back to Recent).
+    pub fn assign_section(
+        &self,
+        chat_id: &str,
+        section_id: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().assign_section(chat_id, section_id)
+    }
+
+    fn store(&self) -> &Arc<workspace::WorkspaceStore> {
+        self.inner
+            .workspace
+            .get()
+            .expect("the workspace store starts with the client")
+    }
+
     // ── internal routing API (tickets 07/08/09) ──────────────────────────
 
     /// A handle to one engine.
     pub fn engine_handle(&self, engine_id: &str) -> Result<EngineHandle, ClientError> {
-        let inner = self.inner.clone();
-        let handle = {
-            let state = lock(&inner.engines);
-            let entry = state
-                .entries
-                .iter()
-                .find(|entry| entry.paired.engine_id == engine_id)
-                .ok_or_else(|| ClientError::NotFound {
-                    message: format!("Unknown engine: {engine_id}"),
-                })?;
-            EngineHandle::from_parts(Arc::downgrade(&inner), entry)
-        };
-        Ok(handle)
+        engine_handle_of(&self.inner, engine_id)
     }
 
     /// Resolve a scoped id to its engine and the engine's raw id.
@@ -665,6 +777,23 @@ impl Client {
 
 fn rpc_error_to_client_error(error: roboco_rpc::RpcError) -> ClientError {
     engines::rpc_error_to_client_error(error)
+}
+
+/// A handle to one engine (crate-internal callers: the workspace store,
+/// the change-request watches).
+pub(crate) fn engine_handle_of(
+    inner: &Arc<ClientInner>,
+    engine_id: &str,
+) -> Result<EngineHandle, ClientError> {
+    let state = lock(&inner.engines);
+    let entry = state
+        .entries
+        .iter()
+        .find(|entry| entry.paired.engine_id == engine_id)
+        .ok_or_else(|| ClientError::NotFound {
+            message: format!("Unknown engine: {engine_id}"),
+        })?;
+    Ok(EngineHandle::from_parts(Arc::downgrade(inner), entry))
 }
 
 /// A task handle that is already finished — the placeholder before
@@ -796,7 +925,7 @@ pub(crate) fn publish(inner: &Arc<ClientInner>) {
     }
 }
 
-fn engine_view(entry: &EngineEntry) -> EngineView {
+pub(crate) fn engine_view(entry: &EngineEntry) -> EngineView {
     let host = host_of(&entry.paired.base_url);
     let engine_device = entry.paired.device_id.as_ref().and_then(|device_id| {
         entry
@@ -832,8 +961,8 @@ fn engine_view(entry: &EngineEntry) -> EngineView {
         version,
         state: entry.state.clone(),
         last_error: entry.last_error.clone(),
-        retry_at_ms: entry.retry_at_ms.clone(),
-        last_connected_ms: entry.last_connected_ms.clone(),
+        retry_at_ms: entry.retry_at_ms,
+        last_connected_ms: entry.last_connected_ms,
         capabilities,
         notice: entry.notice.clone(),
         from_cache: entry.from_cache,

@@ -25,8 +25,7 @@ pub const MIN_INTERVAL: Duration = Duration::from_millis(16);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
-    /// The derived workspace advanced to `revision`. Emitted by ticket 07;
-    /// declared here so the platform surface is stable.
+    /// The derived workspace advanced to `revision`.
     WorkspaceChanged { revision: u64 },
     /// A session's transcript advanced. Emitted by ticket 08.
     SessionChanged { chat_id: String, revision: u64 },
@@ -37,6 +36,9 @@ pub enum ClientEvent {
     /// Any engine view changed (state, name, notice, capabilities,
     /// diagnostics): pull `engines()`.
     EnginesChanged,
+    /// A background write failed (a reverted overlay): show a transient
+    /// notice. Never coalesced away — ordered delivery, one per failure.
+    Notice { message: String },
     /// An engine's identity was pinned after the first successful connect.
     /// The platform must persist `device_id` (and `name`) — it is the key
     /// re-pairing matches on, and the offline display name.
@@ -172,6 +174,15 @@ impl EventPump {
 
     pub(crate) fn engines_changed(&self) {
         lock(&self.pending).engines = true;
+        self.notify.notify_one();
+    }
+
+    /// A background-write failure notice: never coalesced (ordered,
+    /// one per failure — the web's notice-strip semantics).
+    pub(crate) fn notice(&self, message: String) {
+        lock(&self.pending)
+            .ordered
+            .push(ClientEvent::Notice { message });
         self.notify.notify_one();
     }
 

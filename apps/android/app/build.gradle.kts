@@ -279,6 +279,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.foundation)
+    // iOS continuous (squircle) corners for SmoothRoundedShape (ui-parity#01).
+    implementation(libs.graphics.shapes)
 
     implementation(libs.kotlinx.coroutines.android)
     // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
