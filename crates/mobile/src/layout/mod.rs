@@ -361,8 +361,8 @@ struct Shared {
 /// })));
 /// ```
 ///
-/// `feed()` and `hold_source` are not exported over FFI; a Kotlin-side
-/// `attach(client, chatId)` method lands with ticket 08 on this seam.
+/// `feed()` and `hold_source` are not exported over FFI; the exported
+/// `attach(client, chatId)` (ticket 08) feeds the worker through this seam.
 #[derive(Clone)]
 pub struct TranscriptFeed {
     tx: Sender<Msg>,
@@ -444,6 +444,42 @@ impl TranscriptView {
     /// Feed markdown fixtures directly (demo screens, benchmarks, tests).
     pub fn set_debug_entries(&self, entries: Vec<DebugEntry>, working: bool) {
         self.send(Msg::Input(debug_input(entries, working)));
+    }
+
+    /// Follow a session's transcript: every snapshot (coalesced by the
+    /// client) becomes a layout input through the Rust-only input seam.
+    /// Returns `false` for an unknown chat (no open session).
+    ///
+    /// The held `SnapshotWatch` guard keeps the session's subscription
+    /// alive exactly as long as the view's worker; `close()` (or the view's
+    /// drop) releases it. #609's Kotlin calls this on session open.
+    pub fn attach(&self, client: Arc<crate::client_ffi::CoreClient>, chat_id: String) -> bool {
+        let Some(handle) = client.session_handle(&chat_id) else {
+            return false;
+        };
+        let feed = self.feed();
+        let guard = handle.watch(move |snap| {
+            // `to_input`, exactly as `mob:layout/mod.rs:370-396` builds it:
+            // host entries, the pending echo rows (raw text — the row
+            // builders split the trailer themselves), and the live flags.
+            let input = TranscriptInput {
+                entries: snap.entries.clone(),
+                pending: snap
+                    .pending
+                    .iter()
+                    .map(|p| PendingUser {
+                        id: p.message_id.clone(),
+                        text: p.text.clone(),
+                    })
+                    .collect(),
+                working: snap.working,
+                working_since_ms: snap.working_since_ms,
+                streaming: snap.streaming,
+            };
+            feed.send(input);
+        });
+        self.hold_source(Box::new(guard));
+        true
     }
 
     pub fn close(&self) {

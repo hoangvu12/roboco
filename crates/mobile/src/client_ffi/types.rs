@@ -7,6 +7,7 @@
 //! Keystore-encrypted storage (ticket 18); Rust never persists them.
 
 use roboco_mobile_client as mc;
+use std::collections::HashMap;
 
 // ── errors ────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,10 @@ pub struct CoreConfig {
     /// `android`.
     pub platform: String,
     pub app_version: String,
+    /// Offer the mock harness in catalogs. Debug builds and tests set it
+    /// (`BuildConfig.DEBUG` on the Kotlin side); the mock is a test rig,
+    /// never a production picker entry.
+    pub show_mock_harness: bool,
 }
 
 impl From<CoreConfig> for mc::ClientConfig {
@@ -116,6 +121,7 @@ impl From<CoreConfig> for mc::ClientConfig {
             device_name: config.device_name,
             platform: config.platform,
             app_version: config.app_version,
+            show_mock_harness: config.show_mock_harness,
         }
     }
 }
@@ -417,6 +423,290 @@ impl From<mc::ClientEvent> for ClientEvent {
                 device_id,
                 name,
             },
+        }
+    }
+}
+
+// ── session / catalog records (ticket 08) ──────────────────────────────────
+//
+// The shared records (chat status, send state, chat config, the catalog and
+// attachment shapes) mirror `mob:client_ffi/types.rs`; ticket 07's workspace
+// rows read the same shapes, so where both tickets port one record the
+// definitions are identical by construction.
+
+/// A chat row's display status (the working indicator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ChatIndicator {
+    Working,
+    AwaitingInput,
+    Errored,
+    /// Finished running (or errored out) but not seen yet on any device.
+    Completed,
+    Idle,
+}
+
+impl From<roboco_proto::ChatIndicator> for ChatIndicator {
+    fn from(indicator: roboco_proto::ChatIndicator) -> Self {
+        use roboco_proto::ChatIndicator as Wire;
+        match indicator {
+            Wire::Working => ChatIndicator::Working,
+            Wire::AwaitingInput => ChatIndicator::AwaitingInput,
+            Wire::Errored => ChatIndicator::Errored,
+            Wire::Completed => ChatIndicator::Completed,
+            Wire::Idle => ChatIndicator::Idle,
+        }
+    }
+}
+
+/// What the composer and the session row show for an un-adopted send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SendState {
+    /// In flight, or acked on a connected engine.
+    Sending,
+    /// Acked and durably held by the engine, whose connection is down.
+    Queued,
+    /// Not adopted within the grace window ("Not delivered · Tap to retry").
+    Failed,
+}
+
+impl From<mc::SendState> for SendState {
+    fn from(state: mc::SendState) -> Self {
+        match state {
+            mc::SendState::Sending => SendState::Sending,
+            mc::SendState::Queued => SendState::Queued,
+            mc::SendState::Failed => SendState::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SandboxLevel {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+/// A chat's run configuration. Ids are wire strings.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ChatConfig {
+    /// `claude-code`, `codex`, …
+    pub harness: String,
+    pub model: Option<String>,
+    /// `low` … `ultrathink`.
+    pub reasoning: Option<String>,
+    /// Model option id → choice id (`contextWindow` → `1m`).
+    pub model_options: HashMap<String, String>,
+    pub sandbox: SandboxLevel,
+}
+
+fn wire<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+fn from_wire<T: serde::de::DeserializeOwned>(value: &str, what: &str) -> CoreResult<T> {
+    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|_| {
+        CoreError::InvalidArgument {
+            message: format!("unknown {what} `{value}`"),
+        }
+    })
+}
+
+impl From<roboco_proto::ChatConfig> for ChatConfig {
+    fn from(config: roboco_proto::ChatConfig) -> Self {
+        Self {
+            harness: wire(&config.harness),
+            model: config.model,
+            reasoning: config.reasoning.map(|level| wire(&level)),
+            model_options: config
+                .model_options
+                .iter()
+                .map(|(k, v)| {
+                    let value = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+                    (k.clone(), value)
+                })
+                .collect(),
+            sandbox: match config.sandbox {
+                roboco_proto::SandboxLevel::ReadOnly => SandboxLevel::ReadOnly,
+                roboco_proto::SandboxLevel::WorkspaceWrite => SandboxLevel::WorkspaceWrite,
+                roboco_proto::SandboxLevel::DangerFullAccess => SandboxLevel::DangerFullAccess,
+            },
+        }
+    }
+}
+
+impl TryFrom<ChatConfig> for roboco_proto::ChatConfig {
+    type Error = CoreError;
+
+    fn try_from(config: ChatConfig) -> CoreResult<Self> {
+        Ok(roboco_proto::ChatConfig {
+            harness: from_wire(&config.harness, "harness")?,
+            model: config.model,
+            reasoning: config
+                .reasoning
+                .as_deref()
+                .map(|level| from_wire(level, "reasoning level"))
+                .transpose()?,
+            model_options: config
+                .model_options
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect(),
+            sandbox: match config.sandbox {
+                SandboxLevel::ReadOnly => roboco_proto::SandboxLevel::ReadOnly,
+                SandboxLevel::WorkspaceWrite => roboco_proto::SandboxLevel::WorkspaceWrite,
+                SandboxLevel::DangerFullAccess => roboco_proto::SandboxLevel::DangerFullAccess,
+            },
+        })
+    }
+}
+
+// ── catalogs (live + static shapes; `mob:client_ffi/types.rs`) ─────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HarnessInfo {
+    pub id: String,
+    pub label: String,
+    pub supports_steering: Option<bool>,
+    /// `step-boundary` / `turn-boundary`.
+    pub steering_mode: Option<String>,
+    pub reasoning_levels: Vec<String>,
+    pub installed: bool,
+    pub enabled: Option<bool>,
+    /// Installed and not disabled on the device.
+    pub offered: bool,
+    /// Steers mid-turn (unknown until a live catalog).
+    pub mid_turn_steering: Option<bool>,
+}
+
+impl From<mc::catalog_live::HarnessInfo> for HarnessInfo {
+    fn from(harness: mc::catalog_live::HarnessInfo) -> Self {
+        Self {
+            offered: harness.offered(),
+            mid_turn_steering: harness.mid_turn_steering(),
+            id: harness.id,
+            label: harness.label,
+            supports_steering: harness.supports_steering,
+            steering_mode: harness.steering_mode,
+            reasoning_levels: harness.reasoning_levels,
+            installed: harness.installed,
+            enabled: harness.enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ModelOptionChoice {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+    pub choices: Vec<ModelOptionChoice>,
+    pub default_choice: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ModelInfo {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    /// Wire effort values; empty = no effort ladder.
+    pub reasoning_levels: Vec<String>,
+    pub options: Vec<ModelOption>,
+    /// The picker's default effort for this model.
+    pub default_reasoning: Option<String>,
+}
+
+impl From<mc::catalog_live::ModelInfo> for ModelInfo {
+    fn from(model: mc::catalog_live::ModelInfo) -> Self {
+        Self {
+            default_reasoning: mc::catalog_live::default_reasoning(&model),
+            id: model.id,
+            label: model.label,
+            description: model.description,
+            reasoning_levels: model.reasoning_levels,
+            options: model
+                .options
+                .into_iter()
+                .map(|option| ModelOption {
+                    id: option.id,
+                    label: option.label,
+                    choices: option
+                        .choices
+                        .into_iter()
+                        .map(|choice| ModelOptionChoice {
+                            id: choice.id,
+                            label: choice.label,
+                        })
+                        .collect(),
+                    default_choice: option.default_choice,
+                })
+                .collect(),
+        }
+    }
+}
+
+// ── attachments ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AppshotLabel {
+    pub app_name: String,
+    pub window_title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct UserImage {
+    /// Host path (or `pending://` ref) — read via `read_attachment`.
+    pub path: String,
+    pub name: String,
+    pub appshot: Option<AppshotLabel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParsedUserMessage {
+    /// Visible prompt (trailer + Appshot context stripped).
+    pub text: String,
+    pub images: Vec<UserImage>,
+}
+
+impl From<mc::attachments::ParsedUserMessage> for ParsedUserMessage {
+    fn from(parsed: mc::attachments::ParsedUserMessage) -> Self {
+        Self {
+            text: parsed.text,
+            images: parsed
+                .images
+                .into_iter()
+                .map(|image| UserImage {
+                    path: image.path,
+                    name: image.name,
+                    appshot: image.appshot.map(|label| AppshotLabel {
+                        app_name: label.app_name,
+                        window_title: label.window_title,
+                    }),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A workspace file or folder for `@` mentions.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FileMatch {
+    pub path: String,
+    pub is_dir: bool,
+}
+
+impl From<mc::FileMatch> for FileMatch {
+    fn from(match_: mc::FileMatch) -> Self {
+        Self {
+            path: match_.path,
+            is_dir: match_.is_dir,
         }
     }
 }

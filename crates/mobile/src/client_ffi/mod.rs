@@ -8,8 +8,10 @@
 //! Rust consumers inside this crate (the layout engine, ticket 08) reach
 //! the client through [`CoreClient::client`], never over FFI.
 
+mod session;
 mod types;
 
+pub use session::*;
 pub use types::*;
 
 use std::sync::Arc;
@@ -55,6 +57,12 @@ impl CoreClient {
     /// The Rust client (crate-internal consumers).
     pub fn client(&self) -> &mc::Client {
         &self.client
+    }
+
+    /// The Rust session handle for `chat_id`, when one is open (the layout
+    /// engine's `attach` seam). Rust-only, not exported over FFI.
+    pub fn session_handle(&self, chat_id: &str) -> Option<mc::SessionHandle> {
+        self.client.session(chat_id)
     }
 }
 
@@ -205,6 +213,7 @@ mod tests {
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
+                show_mock_harness: true,
             },
             Vec::new(),
             recorder.clone(),

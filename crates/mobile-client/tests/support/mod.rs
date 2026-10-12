@@ -180,6 +180,7 @@ pub fn test_timings() -> Timings {
         cache_debounce: Duration::from_millis(50),
         background_flush: Duration::from_secs(1),
         refresh_cap: Duration::from_secs(1),
+        undelivered_grace: Duration::from_secs(2),
     }
 }
 
@@ -189,6 +190,8 @@ pub fn test_config(data_dir: &Path) -> ClientConfig {
         device_name: "Pixel 9".into(),
         platform: "android".into(),
         app_version: env!("CARGO_PKG_VERSION").into(),
+        // Tests drive mock engines: the mock harness is offered.
+        show_mock_harness: true,
     }
 }
 

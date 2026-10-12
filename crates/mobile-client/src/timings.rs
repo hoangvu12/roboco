@@ -37,6 +37,9 @@ pub struct Timings {
     pub background_flush: Duration,
     /// Hard cap for `refresh()`.
     pub refresh_cap: Duration,
+    /// An acked but un-adopted send reads `Failed` after this (ticket 08's
+    /// `UNDELIVERED_GRACE_MS`, upstream `connectivity.rs`).
+    pub undelivered_grace: Duration,
 }
 
 impl Default for Timings {
@@ -54,6 +57,7 @@ impl Default for Timings {
             cache_debounce: Duration::from_millis(300),
             background_flush: Duration::from_secs(2),
             refresh_cap: Duration::from_secs(3),
+            undelivered_grace: Duration::from_secs(120),
         }
     }
 }

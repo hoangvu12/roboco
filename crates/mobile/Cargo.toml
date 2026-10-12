@@ -28,3 +28,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+roboco-engine.workspace = true
+roboco-mobile-client.workspace = true
+tokio.workspace = true

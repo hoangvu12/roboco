@@ -3,8 +3,9 @@
 //! - [`layout`]: analytic transcript layout — markdown → measured display lists
 //!   (wraps `roboco-markdown` + `roboco-text`).
 //! - [`wallpaper`]: chat wallpaper effects and the contrast guard.
-//! - [`attachments`]: pure attachment-transport helpers (the layout's user
-//!   message parsing; the mobile client reuses them).
+//! - [`attachments`]: a re-export of `roboco-mobile-client`'s attachment
+//!   transport (the layout's user-message parsing; ticket 08 moved the
+//!   implementation into the data-plane crate).
 //! - [`client_ffi`]: the engine-connection data plane (`CoreClient`,
 //!   pairing, per-engine supervision, the offline cache) over
 //!   `roboco-mobile-client`.

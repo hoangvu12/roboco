@@ -12,6 +12,17 @@ use roboco_proto::{Chat, Device, Session, SidebarStateSnapshot, Space};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+/// A cached transcript: the entries plus the engine-computed entry digests
+/// the ticket-12 resume protocol stored alongside them. `digests` is empty
+/// on transcripts cached before the resume capability (legacy files carry a
+/// bare array — see [`EngineCache::load_transcript_state`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CachedTranscript {
+    pub entries: Vec<SessionMessageEntry>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub digests: std::collections::HashMap<String, String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CachedRows {
     pub chats: Vec<Chat>,
@@ -60,12 +71,31 @@ impl EngineCache {
         write(&self.engine_dir(engine_key).join("rows.json"), rows)
     }
 
+    /// The legacy read: entries only (a cache predating digests).
     pub fn load_transcript(
         &self,
         engine_key: &str,
         chat_id: &str,
     ) -> Option<Vec<SessionMessageEntry>> {
         read(&self.transcript_path(engine_key, chat_id))
+    }
+
+    /// Entries plus their stored digests, reading either the current
+    /// format (an object) or the legacy one (a bare array, digests empty).
+    pub fn load_transcript_state(
+        &self,
+        engine_key: &str,
+        chat_id: &str,
+    ) -> Option<CachedTranscript> {
+        let bytes = std::fs::read(self.transcript_path(engine_key, chat_id)).ok()?;
+        serde_json::from_slice(&bytes).ok().or_else(|| {
+            serde_json::from_slice::<Vec<SessionMessageEntry>>(&bytes)
+                .ok()
+                .map(|entries| CachedTranscript {
+                    entries,
+                    digests: std::collections::HashMap::new(),
+                })
+        })
     }
 
     pub fn save_transcript(
@@ -75,6 +105,16 @@ impl EngineCache {
         entries: &[SessionMessageEntry],
     ) -> io::Result<()> {
         write(&self.transcript_path(engine_key, chat_id), entries)
+    }
+
+    /// Entries plus digests, one file: `chat-<sha256(chat_id)>.json`.
+    pub fn save_transcript_state(
+        &self,
+        engine_key: &str,
+        chat_id: &str,
+        state: &CachedTranscript,
+    ) -> io::Result<()> {
+        write(&self.transcript_path(engine_key, chat_id), state)
     }
 
     fn transcript_path(&self, engine_key: &str, chat_id: &str) -> PathBuf {
