@@ -105,6 +105,16 @@ class NavStackHostTest {
         }
     }
 
+    /** Starts a predictive back gesture and progresses it to [progress]. */
+    private fun startBackGesture(progress: Float) {
+        val dispatcher = compose.activity.onBackPressedDispatcher
+        compose.runOnUiThread {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 0f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(100f, 100f, progress, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+    }
+
     // ------------------------------------------------------- curve + timing
 
     @Test
@@ -287,11 +297,7 @@ class NavStackHostTest {
         val dispatcher = compose.activity.onBackPressedDispatcher
         log.clear()
 
-        compose.runOnUiThread {
-            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 0f, 0f, BackEventCompat.EDGE_LEFT))
-            dispatcher.dispatchOnBackProgressed(BackEventCompat(100f, 100f, 0.4f, BackEventCompat.EDGE_LEFT))
-        }
-        compose.waitForIdle()
+        startBackGesture(0.4f)
         assertEquals(0.4f, stack.transition?.progress ?: -1f, 0.01f)
         val ticksBefore = tickers[b.id] ?: 0
 
@@ -331,11 +337,7 @@ class NavStackHostTest {
         val dispatcher = compose.activity.onBackPressedDispatcher
         log.clear()
 
-        compose.runOnUiThread {
-            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 0f, 0f, BackEventCompat.EDGE_LEFT))
-            dispatcher.dispatchOnBackProgressed(BackEventCompat(100f, 100f, 0.4f, BackEventCompat.EDGE_LEFT))
-        }
-        compose.waitForIdle()
+        startBackGesture(0.4f)
         assertEquals(0.4f, stack.transition?.progress ?: -1f, 0.01f)
 
         compose.runOnUiThread { dispatcher.onBackPressed() }
@@ -420,11 +422,7 @@ class NavStackHostTest {
         compose.waitForIdle()
         val dispatcher = compose.activity.onBackPressedDispatcher
 
-        compose.runOnUiThread {
-            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 0f, 0f, BackEventCompat.EDGE_LEFT))
-            dispatcher.dispatchOnBackProgressed(BackEventCompat(100f, 100f, 0.4f, BackEventCompat.EDGE_LEFT))
-        }
-        compose.waitForIdle()
+        startBackGesture(0.4f)
         val held = stack.transition!!
         assertTrue(held.isInteractive)
 

@@ -334,16 +334,16 @@ class NavStack(root: NavRoute) {
         val entry = NavEntry(navEntryIds.incrementAndGet(), route)
         val oldTop = entryList.last()
         entryList.add(entry)
-        val t = NavTransition(
-            kind = NavKind.Push,
-            from = oldTop,
-            to = entry,
-            removing = emptyList(),
-            animated = animated,
-            interactive = false,
+        startTransition(
+            NavTransition(
+                kind = NavKind.Push,
+                from = oldTop,
+                to = entry,
+                removing = emptyList(),
+                animated = animated,
+                interactive = false,
+            ),
         )
-        _transition.value = t
-        completeIfHostless(t)
         return entry
     }
 
@@ -354,19 +354,22 @@ class NavStack(root: NavRoute) {
      */
     @MainThread
     fun pop(animated: Boolean = true): Boolean {
-        if (entryList.size <= 1) return false
+        // finishInFlight() first: a running pop commits here and drops the
+        // depth to 1, so the guard must see the post-commit depth (a second
+        // pop or back press during the 500 ms window must not index -1).
         finishInFlight()
+        if (entryList.size <= 1) return false
         val from = entryList.last()
-        val t = NavTransition(
-            kind = NavKind.Pop,
-            from = from,
-            to = entryList[entryList.size - 2],
-            removing = listOf(from),
-            animated = animated,
-            interactive = false,
+        startTransition(
+            NavTransition(
+                kind = NavKind.Pop,
+                from = from,
+                to = entryList[entryList.size - 2],
+                removing = listOf(from),
+                animated = animated,
+                interactive = false,
+            ),
         )
-        _transition.value = t
-        completeIfHostless(t)
         return true
     }
 
@@ -377,18 +380,18 @@ class NavStack(root: NavRoute) {
      */
     @MainThread
     fun popToRoot(animated: Boolean = true) {
-        if (entryList.size <= 1) return
         finishInFlight()
-        val t = NavTransition(
-            kind = NavKind.Pop,
-            from = entryList.last(),
-            to = entryList.first(),
-            removing = entryList.drop(1),
-            animated = animated,
-            interactive = false,
+        if (entryList.size <= 1) return
+        startTransition(
+            NavTransition(
+                kind = NavKind.Pop,
+                from = entryList.last(),
+                to = entryList.first(),
+                removing = entryList.drop(1),
+                animated = animated,
+                interactive = false,
+            ),
         )
-        _transition.value = t
-        completeIfHostless(t)
     }
 
     /**
@@ -429,16 +432,16 @@ class NavStack(root: NavRoute) {
             }
             return
         }
-        val t = NavTransition(
-            kind = NavKind.Push,
-            from = oldTop,
-            to = newEntries.last(),
-            removing = removed,
-            animated = false,
-            interactive = false,
+        startTransition(
+            NavTransition(
+                kind = NavKind.Push,
+                from = oldTop,
+                to = newEntries.last(),
+                removing = removed,
+                animated = false,
+                interactive = false,
+            ),
         )
-        _transition.value = t
-        completeIfHostless(t)
     }
 
     /**
@@ -468,19 +471,21 @@ class NavStack(root: NavRoute) {
      * stays disabled there. The gesture then drives `t.progress` directly.
      */
     internal fun beginInteractivePop(): NavTransition? {
-        if (!canPop) return null
+        // finishInFlight() first: a running pop commits here, so the depth
+        // check must see the post-commit depth.
         finishInFlight()
+        if (!canPop) return null
         val from = entryList.last()
-        val t = NavTransition(
-            kind = NavKind.Pop,
-            from = from,
-            to = entryList[entryList.size - 2],
-            removing = listOf(from),
-            animated = true,
-            interactive = true,
+        return startTransition(
+            NavTransition(
+                kind = NavKind.Pop,
+                from = from,
+                to = entryList[entryList.size - 2],
+                removing = listOf(from),
+                animated = true,
+                interactive = true,
+            ),
         )
-        _transition.value = t
-        return t
     }
 
     /** Delivers the `will*` pair of the lifecycle table's row 1; idempotent. */
@@ -587,5 +592,12 @@ class NavStack(root: NavRoute) {
 
     private fun completeIfHostless(t: NavTransition) {
         if (hostCount == 0 && !holdHostless) complete(t, cancelled = false)
+    }
+
+    /** Assigns the new transition and completes it hostlessly if it must. */
+    private fun startTransition(t: NavTransition): NavTransition {
+        _transition.value = t
+        completeIfHostless(t)
+        return t
     }
 }

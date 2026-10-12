@@ -282,6 +282,57 @@ class NavStackTest {
         assertEquals(1, stack.entries.size)
     }
 
+    // A second op during a running pop: the depth guard must see the
+    // post-commit depth, never index -1.
+
+    @Test
+    fun aSecondPopDuringARunningPopCommitsItAndReturnsFalseAtDepthOne() {
+        val stack = NavStack(TestRoute("root"))
+        stack.holdHostlessOps()
+        stack.push(TestRoute("b"))
+        stack.complete(stack.transition!!, cancelled = false)
+
+        assertTrue(stack.pop())
+        // Mid-pop (nothing animated it yet), a second pop arrives: the first
+        // commits synchronously and the second finds depth 1.
+        assertFalse(stack.pop())
+        assertEquals(1, stack.entries.size)
+        assertNull(stack.transition)
+        assertTrue(stack.entries[0].route.paneTitle == "root")
+        assertFalse(stack.pop())
+    }
+
+    @Test
+    fun beginInteractivePopDuringARunningPopCommitsItAndReturnsNull() {
+        val stack = NavStack(TestRoute("root"))
+        stack.holdHostlessOps()
+        stack.push(TestRoute("b"))
+        stack.complete(stack.transition!!, cancelled = false)
+
+        assertTrue(stack.pop())
+        assertNull(stack.beginInteractivePop())
+        assertEquals(1, stack.entries.size)
+    }
+
+    @Test
+    fun popToRootDuringARunningPopCommitsItFirst() {
+        val stack = NavStack(TestRoute("root"))
+        stack.holdHostlessOps()
+        stack.push(TestRoute("b"))
+        stack.complete(stack.transition!!, cancelled = false)
+        stack.push(TestRoute("c"))
+        stack.complete(stack.transition!!, cancelled = false)
+
+        assertTrue(stack.pop()) // the c → b pop is now running (held)
+        stack.popToRoot()
+        // The running pop committed first; popToRoot then ran from b.
+        val t = stack.transition!!
+        assertEquals(NavKind.Pop, t.kind)
+        assertSame(stack.entries[1], t.from)
+        assertSame(stack.entries[0], t.to)
+        assertEquals(2, stack.entries.size)
+    }
+
     // -------------------------------------------------------- setRoutes
 
     @Test

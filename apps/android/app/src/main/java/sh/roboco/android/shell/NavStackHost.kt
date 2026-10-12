@@ -157,7 +157,7 @@ fun NavStackHost(
     // completed (didDisappear delivered), close-only entries included.
     val leavingList = stack.leaving.toList()
     LaunchedEffect(leavingList, transition) {
-        for (entry in stack.leaving.toList()) {
+        for (entry in leavingList) {
             val pending = stack.transition
             val held = pending != null && pending.cancelled == null &&
                 (entry === pending.from || entry in pending.removing)
@@ -208,7 +208,12 @@ fun NavStackHost(
                         LocalNavStack provides stack,
                         LocalNavEntry provides entry,
                     ) {
-                        val cleared = transition != null && entry === belowEntry
+                        // During a transition the below layer (and a leaving
+                        // `from`) is clearAndSetSemantics: TalkBack announces
+                        // the above layer, which keeps its pane title.
+                        val cleared = transition != null &&
+                            (entry === belowEntry ||
+                                (entry === transition.from && entry in stack.leaving))
                         val entryModifier = if (cleared) {
                             Modifier.clearAndSetSemantics { }
                         } else {
@@ -441,9 +446,8 @@ private fun Modifier.consumeAllPointers(): Modifier = pointerInput(Unit) {
 // freeze has nothing to freeze.
 // ---------------------------------------------------------------------
 
-@Preview(name = "push 0.5 light", widthDp = 360, heightDp = 640)
 @Composable
-private fun NavPushHalfLightPreview() {
+private fun NavPushHalfPreviewContent() {
     RobocoTheme {
         val stack = remember {
             NavStack(DemoRoute("Sessions")).apply {
@@ -460,21 +464,14 @@ private fun NavPushHalfLightPreview() {
     }
 }
 
+@Preview(name = "push 0.5 light", widthDp = 360, heightDp = 640)
+@Composable
+private fun NavPushHalfLightPreview() {
+    NavPushHalfPreviewContent()
+}
+
 @Preview(name = "push 0.5 dark", widthDp = 360, heightDp = 640, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 private fun NavPushHalfDarkPreview() {
-    RobocoTheme {
-        val stack = remember {
-            NavStack(DemoRoute("Sessions")).apply {
-                holdHostlessOps()
-                push(DemoRoute("Session", hides = true))
-                freeze(0.5f)
-            }
-        }
-        NavStackHost(
-            stack = stack,
-            active = true,
-            bottomChrome = { NavFakeChrome() },
-        ) { entry -> NavDemoScreen(entry) }
-    }
+    NavPushHalfPreviewContent()
 }

@@ -53,11 +53,12 @@ class NavStackScreenshotTest {
     private fun capture(stack: NavStack, fileName: String, rtl: Boolean = false) {
         compose.setContent {
             RobocoTheme {
-                if (rtl) {
-                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                        Host(stack)
-                    }
-                } else {
+                // RTL is driven through LocalLayoutDirection (the geometry
+                // reads it), deterministic regardless of Robolectric's
+                // qualifier parsing.
+                CompositionLocalProvider(
+                    LocalLayoutDirection provides if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
+                ) {
                     Host(stack)
                 }
             }
