@@ -6,6 +6,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - '.cargo/**'
       - 'apps/roboco/**'
       - 'dist/windows/**'
       - 'crates/**'
@@ -93,6 +94,11 @@ jobs:
         # engines); retries come from the ci nextest profile. Later mobile
         # crates append their `-p` flags here.
         run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-engine-client -p roboco-mobile-client -P ci
+      - name: Mobile core host build and bindings
+        # android-app#10: the Windows host path — .dll naming, the .exe
+        # bindgen, Kotlin generation from the host library. The Android .so
+        # builds run in ui-tests.yml's android-core job (ubuntu).
+        run: cargo xtask android-core --skip-ndk --check
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests

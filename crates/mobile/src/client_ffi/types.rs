@@ -388,6 +388,9 @@ pub enum ClientEvent {
     /// Any engine view changed (state, name, notice, diagnostics,
     /// capabilities): pull `engines()`.
     EnginesChanged,
+    /// A background write failed (a reverted overlay): show a transient
+    /// notice. Never coalesced away.
+    Notice { message: String },
     /// An engine's identity was pinned: persist `device_id` (and `name`).
     EngineIdentityPinned {
         engine_id: String,
@@ -414,6 +417,7 @@ impl From<mc::ClientEvent> for ClientEvent {
                 }
             }
             mc::ClientEvent::EnginesChanged => ClientEvent::EnginesChanged,
+            mc::ClientEvent::Notice { message } => ClientEvent::Notice { message },
             mc::ClientEvent::EngineIdentityPinned {
                 engine_id,
                 device_id,
@@ -427,39 +431,421 @@ impl From<mc::ClientEvent> for ClientEvent {
     }
 }
 
-// ── session / catalog records (ticket 08) ──────────────────────────────────
-//
-// The shared records (chat status, send state, chat config, the catalog and
-// attachment shapes) mirror `mob:client_ffi/types.rs`; ticket 07's workspace
-// rows read the same shapes, so where both tickets port one record the
-// definitions are identical by construction.
 
-/// A chat row's display status (the working indicator).
+// ── workspace (ticket 07) ───────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ChatIndicator {
     Working,
     AwaitingInput,
     Errored,
-    /// Finished running (or errored out) but not seen yet on any device.
+    /// Finished but not seen yet on any device.
     Completed,
     Idle,
 }
 
 impl From<roboco_proto::ChatIndicator> for ChatIndicator {
-    fn from(indicator: roboco_proto::ChatIndicator) -> Self {
-        use roboco_proto::ChatIndicator as Wire;
-        match indicator {
-            Wire::Working => ChatIndicator::Working,
-            Wire::AwaitingInput => ChatIndicator::AwaitingInput,
-            Wire::Errored => ChatIndicator::Errored,
-            Wire::Completed => ChatIndicator::Completed,
-            Wire::Idle => ChatIndicator::Idle,
+    fn from(i: roboco_proto::ChatIndicator) -> Self {
+        match i {
+            roboco_proto::ChatIndicator::Working => ChatIndicator::Working,
+            roboco_proto::ChatIndicator::AwaitingInput => ChatIndicator::AwaitingInput,
+            roboco_proto::ChatIndicator::Errored => ChatIndicator::Errored,
+            roboco_proto::ChatIndicator::Completed => ChatIndicator::Completed,
+            roboco_proto::ChatIndicator::Idle => ChatIndicator::Idle,
         }
     }
 }
 
-/// What the composer and the session row show for an un-adopted send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PullRequestState {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PullRequest {
+    pub provider: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub state: PullRequestState,
+    pub base_ref: String,
+    pub head_ref: String,
+}
+
+impl From<&roboco_proto::ChangeRequestSummary> for PullRequest {
+    fn from(p: &roboco_proto::ChangeRequestSummary) -> Self {
+        Self {
+            provider: p.provider.clone(),
+            number: p.number,
+            title: p.title.clone(),
+            url: p.url.clone(),
+            state: match p.state {
+                roboco_proto::ChangeRequestState::Open => PullRequestState::Open,
+                roboco_proto::ChangeRequestState::Merged => PullRequestState::Merged,
+                roboco_proto::ChangeRequestState::Closed => PullRequestState::Closed,
+            },
+            base_ref: p.base_ref.clone(),
+            head_ref: p.head_ref.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ProjectRef {
+    pub id: String,
+    pub name: String,
+    /// Stable palette slot (0..PROJECT_COLOR_COUNT).
+    pub color_index: u32,
+}
+
+/// One session row, as every list renders it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SessionRow {
+    pub id: String,
+    /// The owning engine (the `EngineKey` string).
+    pub engine_id: String,
+    /// Content hash — equal ⇒ nothing to redraw.
+    pub revision: u64,
+    /// Display title ("New session" when untitled).
+    pub title: String,
+    pub has_title: bool,
+    pub preview: Option<String>,
+    /// `None` = projectless (host's home folder).
+    pub project: Option<ProjectRef>,
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub device_online: bool,
+    pub engine_online: bool,
+    /// Wire harness id (`claude-code`).
+    pub harness: Option<String>,
+    pub harness_label: Option<String>,
+    pub model: Option<String>,
+    pub model_label: Option<String>,
+    /// Wire effort (`xhigh`).
+    pub reasoning: Option<String>,
+    pub branch: Option<String>,
+    pub cwd: Option<String>,
+    /// Host-reported status (45 s staleness-gated); an in-flight send is
+    /// not evidence of a running turn.
+    pub indicator: ChatIndicator,
+    /// Host-reported status only (no local-send override).
+    pub host_indicator: ChatIndicator,
+    /// Run start of the live turn while Working/AwaitingInput.
+    pub working_since_ms: Option<i64>,
+    pub last_activity_ms: i64,
+    /// `now` / `34m` / `4h` / `2d` at derive time.
+    pub time_label: String,
+    pub created_at_ms: i64,
+    pub unseen: bool,
+    pub archived: bool,
+    pub pinned: bool,
+    pub section_id: Option<String>,
+    pub pull_request: Option<PullRequest>,
+    /// Oldest unadopted send from this device (ticket 08).
+    pub send_state: Option<SendState>,
+    pub parent_chat_id: Option<String>,
+}
+
+impl From<&mc::SessionRow> for SessionRow {
+    fn from(r: &mc::SessionRow) -> Self {
+        Self {
+            id: r.id.clone(),
+            engine_id: r.engine_id.clone(),
+            revision: r.revision,
+            title: r.title.clone(),
+            has_title: r.has_title,
+            preview: r.preview.clone(),
+            project: r.project.as_ref().map(|p| ProjectRef {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                color_index: p.color_index,
+            }),
+            device_id: r.device_id.clone(),
+            device_name: r.device_name.clone(),
+            device_online: r.device_online,
+            engine_online: r.engine_online,
+            harness: r.harness.clone(),
+            harness_label: r.harness_label.clone(),
+            model: r.model.clone(),
+            model_label: r.model_label.clone(),
+            reasoning: r.reasoning.clone(),
+            branch: r.branch.clone(),
+            cwd: r.cwd.clone(),
+            indicator: r.indicator.into(),
+            host_indicator: r.host_indicator.into(),
+            working_since_ms: r.working_since_ms,
+            last_activity_ms: r.last_activity_ms,
+            time_label: r.time_label.clone(),
+            created_at_ms: r.created_at_ms,
+            unseen: r.unseen,
+            archived: r.archived,
+            pinned: r.pinned,
+            section_id: r.section_id.clone(),
+            pull_request: r.pull_request.as_ref().map(PullRequest::from),
+            send_state: r.send_state.map(Into::into),
+            parent_chat_id: r.parent_chat_id.clone(),
+        }
+    }
+}
+
+pub(crate) fn rows(rows: &[std::sync::Arc<mc::SessionRow>]) -> Vec<SessionRow> {
+    rows.iter().map(|r| SessionRow::from(&**r)).collect()
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SectionView {
+    pub id: String,
+    pub engine_id: String,
+    pub name: String,
+    pub collapsed: bool,
+    /// Recency order.
+    pub sessions: Vec<SessionRow>,
+}
+
+/// A "Group by Project" bucket over `recent`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SessionGroup {
+    /// `"project:<groupKey>"` or `"home:<deviceId>"`.
+    pub id: String,
+    pub name: String,
+    pub sessions: Vec<SessionRow>,
+}
+
+/// The Sessions page — the desktop sidebar order.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FrontPage {
+    /// Manual pin order: engine pairing order, then stored order.
+    pub pinned: Vec<SessionRow>,
+    /// User sections ("folders"), each in recency order.
+    pub sections: Vec<SectionView>,
+    /// Everything else, by recency.
+    pub recent: Vec<SessionRow>,
+    /// `recent` bucketed by project / host device.
+    pub groups: Vec<SessionGroup>,
+}
+
+impl From<&mc::FrontPage> for FrontPage {
+    fn from(f: &mc::FrontPage) -> Self {
+        Self {
+            pinned: rows(&f.pinned),
+            sections: f
+                .sections
+                .iter()
+                .map(|s| SectionView {
+                    id: s.id.clone(),
+                    engine_id: s.engine_id.clone(),
+                    name: s.name.clone(),
+                    collapsed: s.collapsed,
+                    sessions: rows(&s.sessions),
+                })
+                .collect(),
+            recent: rows(&f.recent),
+            groups: f
+                .groups
+                .iter()
+                .map(|g| SessionGroup {
+                    id: g.id.clone(),
+                    name: g.name.clone(),
+                    sessions: rows(&g.sessions),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ProjectView {
+    pub id: String,
+    pub engine_id: String,
+    pub name: String,
+    pub path: String,
+    pub color_index: u32,
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub device_online: bool,
+    pub git_detected: bool,
+    pub created_at_ms: i64,
+    /// Shared by every checkout of one repository, on any device or engine.
+    pub group_key: String,
+    /// The repository group's name, shared like `color_index`.
+    pub group_name: String,
+    /// Most urgent indicator among its active sessions.
+    pub indicator: ChatIndicator,
+    pub unseen_count: u32,
+    /// Active sessions, recency order.
+    pub sessions: Vec<SessionRow>,
+}
+
+impl From<&mc::ProjectView> for ProjectView {
+    fn from(p: &mc::ProjectView) -> Self {
+        Self {
+            id: p.id.clone(),
+            engine_id: p.engine_id.clone(),
+            name: p.name.clone(),
+            path: p.path.clone(),
+            color_index: p.color_index,
+            device_id: p.device_id.clone(),
+            device_name: p.device_name.clone(),
+            device_online: p.device_online,
+            git_detected: p.git_detected,
+            created_at_ms: p.created_at_ms,
+            group_key: p.group_key.clone(),
+            group_name: p.group_name.clone(),
+            indicator: p.indicator.into(),
+            unseen_count: p.unseen_count,
+            sessions: rows(&p.sessions),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PullRequestGroups {
+    pub open: Vec<SessionRow>,
+    pub merged: Vec<SessionRow>,
+    pub closed: Vec<SessionRow>,
+}
+
+impl From<&mc::PullRequestGroups> for PullRequestGroups {
+    fn from(p: &mc::PullRequestGroups) -> Self {
+        Self {
+            open: rows(&p.open),
+            merged: rows(&p.merged),
+            closed: rows(&p.closed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DeviceView {
+    pub id: String,
+    pub engine_id: String,
+    pub name: String,
+    pub platform: String,
+    pub online: bool,
+    pub last_seen_ms: Option<i64>,
+    pub version: Option<String>,
+    pub capabilities: Vec<String>,
+    /// Can run sessions (desktop/server engines — not phones).
+    pub is_execution_host: bool,
+    /// Always `false`: a phone is never an engine device.
+    pub is_self: bool,
+    pub session_count: u32,
+}
+
+impl From<&mc::DeviceView> for DeviceView {
+    fn from(d: &mc::DeviceView) -> Self {
+        Self {
+            id: d.id.clone(),
+            engine_id: d.engine_id.clone(),
+            name: d.name.clone(),
+            platform: d.platform.clone(),
+            online: d.online,
+            last_seen_ms: d.last_seen_ms,
+            version: d.version.clone(),
+            capabilities: d.capabilities.clone(),
+            is_execution_host: d.is_execution_host,
+            is_self: d.is_self,
+            session_count: d.session_count,
+        }
+    }
+}
+
+/// Everything the workspace screens render.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct WorkspaceSnapshot {
+    pub revision: u64,
+    pub computed_at_ms: i64,
+    /// Pin/section edits allowed (every engine connected + sidebar known).
+    pub pins_ready: bool,
+    /// A live frame reached this device.
+    pub synced: bool,
+    pub front: FrontPage,
+    /// Creation order.
+    pub projects: Vec<ProjectView>,
+    /// Active sessions without a project.
+    pub projectless: Vec<SessionRow>,
+    pub pull_requests: PullRequestGroups,
+    pub archived: Vec<SessionRow>,
+    pub devices: Vec<DeviceView>,
+}
+
+impl From<&mc::WorkspaceSnapshot> for WorkspaceSnapshot {
+    fn from(w: &mc::WorkspaceSnapshot) -> Self {
+        Self {
+            revision: w.revision,
+            computed_at_ms: w.computed_at_ms,
+            pins_ready: w.pins_ready,
+            synced: w.synced,
+            front: (&w.front).into(),
+            projects: w.projects.iter().map(Into::into).collect(),
+            projectless: rows(&w.projectless),
+            pull_requests: (&w.pull_requests).into(),
+            archived: rows(&w.archived),
+            devices: w.devices.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SearchField {
+    Title,
+    Project,
+    Branch,
+    Preview,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SearchHit {
+    pub session: SessionRow,
+    pub score: u32,
+    /// The strongest field that matched.
+    pub field: SearchField,
+}
+
+impl From<&mc::SearchHit> for SearchHit {
+    fn from(h: &mc::SearchHit) -> Self {
+        Self {
+            session: (&*h.session).into(),
+            score: h.score,
+            field: match h.field {
+                mc::SearchField::Title => SearchField::Title,
+                mc::SearchField::Project => SearchField::Project,
+                mc::SearchField::Branch => SearchField::Branch,
+                mc::SearchField::Preview => SearchField::Preview,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SandboxLevel {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl From<roboco_proto::SandboxLevel> for SandboxLevel {
+    fn from(level: roboco_proto::SandboxLevel) -> Self {
+        match level {
+            roboco_proto::SandboxLevel::ReadOnly => SandboxLevel::ReadOnly,
+            roboco_proto::SandboxLevel::WorkspaceWrite => SandboxLevel::WorkspaceWrite,
+            roboco_proto::SandboxLevel::DangerFullAccess => SandboxLevel::DangerFullAccess,
+        }
+    }
+}
+
+// ── shared session/catalog records (tickets 07+08; one copy each) ──────────
+//
+// Both tickets port these from `mob:client_ffi/types.rs`; the merge keeps
+// exactly one definition per record. `HarnessInfo` and `ModelInfo` keep
+// ticket 08's upstream-faithful shape (`offered`, `mid_turn_steering`,
+// `default_reasoning` — the composer's #664 rule reads it); `ChatConfig`
+// carries ticket 07's `From<&mc::SessionConfig>` plus ticket 08's
+// `TryFrom` (the `set_session_config` validation).
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum SendState {
     /// In flight, or acked on a connected engine.
     Sending,
@@ -479,11 +865,12 @@ impl From<mc::SendState> for SendState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum SandboxLevel {
-    ReadOnly,
-    WorkspaceWrite,
-    DangerFullAccess,
+fn from_wire<T: serde::de::DeserializeOwned>(value: &str, what: &str) -> CoreResult<T> {
+    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|_| {
+        CoreError::InvalidArgument {
+            message: format!("unknown {what} `{value}`"),
+        }
+    })
 }
 
 /// A chat's run configuration. Ids are wire strings.
@@ -499,44 +886,20 @@ pub struct ChatConfig {
     pub sandbox: SandboxLevel,
 }
 
-fn wire<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn from_wire<T: serde::de::DeserializeOwned>(value: &str, what: &str) -> CoreResult<T> {
-    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|_| {
-        CoreError::InvalidArgument {
-            message: format!("unknown {what} `{value}`"),
-        }
-    })
-}
-
-impl From<roboco_proto::ChatConfig> for ChatConfig {
-    fn from(config: roboco_proto::ChatConfig) -> Self {
+impl From<&mc::SessionConfig> for ChatConfig {
+    fn from(c: &mc::SessionConfig) -> Self {
         Self {
-            harness: wire(&config.harness),
-            model: config.model,
-            reasoning: config.reasoning.map(|level| wire(&level)),
-            model_options: config
-                .model_options
-                .iter()
-                .map(|(k, v)| {
-                    let value = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
-                    (k.clone(), value)
-                })
-                .collect(),
-            sandbox: match config.sandbox {
-                roboco_proto::SandboxLevel::ReadOnly => SandboxLevel::ReadOnly,
-                roboco_proto::SandboxLevel::WorkspaceWrite => SandboxLevel::WorkspaceWrite,
-                roboco_proto::SandboxLevel::DangerFullAccess => SandboxLevel::DangerFullAccess,
-            },
+            harness: c.harness.clone(),
+            model: c.model.clone(),
+            reasoning: c.reasoning.clone(),
+            model_options: c.model_options.clone(),
+            sandbox: c.sandbox.into(),
         }
     }
 }
 
+/// Ticket 08's `set_session_config` validation: the wire strings must name
+/// a real harness, reasoning level and sandbox before the RPC leaves.
 impl TryFrom<ChatConfig> for roboco_proto::ChatConfig {
     type Error = CoreError;
 
@@ -581,18 +944,18 @@ pub struct HarnessInfo {
     pub mid_turn_steering: Option<bool>,
 }
 
-impl From<mc::catalog_live::HarnessInfo> for HarnessInfo {
-    fn from(harness: mc::catalog_live::HarnessInfo) -> Self {
+impl From<&mc::catalog::HarnessInfo> for HarnessInfo {
+    fn from(h: &mc::catalog::HarnessInfo) -> Self {
         Self {
-            offered: harness.offered(),
-            mid_turn_steering: harness.mid_turn_steering(),
-            id: harness.id,
-            label: harness.label,
-            supports_steering: harness.supports_steering,
-            steering_mode: harness.steering_mode,
-            reasoning_levels: harness.reasoning_levels,
-            installed: harness.installed,
-            enabled: harness.enabled,
+            offered: h.offered(),
+            mid_turn_steering: h.mid_turn_steering(),
+            id: h.id.clone(),
+            label: h.label.clone(),
+            supports_steering: h.supports_steering,
+            steering_mode: h.steering_mode.clone(),
+            reasoning_levels: h.reasoning_levels.clone(),
+            installed: h.installed,
+            enabled: h.enabled,
         }
     }
 }
@@ -623,29 +986,29 @@ pub struct ModelInfo {
     pub default_reasoning: Option<String>,
 }
 
-impl From<mc::catalog_live::ModelInfo> for ModelInfo {
-    fn from(model: mc::catalog_live::ModelInfo) -> Self {
+impl From<&mc::catalog::ModelInfo> for ModelInfo {
+    fn from(m: &mc::catalog::ModelInfo) -> Self {
         Self {
-            default_reasoning: mc::catalog_live::default_reasoning(&model),
-            id: model.id,
-            label: model.label,
-            description: model.description,
-            reasoning_levels: model.reasoning_levels,
-            options: model
+            default_reasoning: mc::catalog::default_reasoning(m),
+            id: m.id.clone(),
+            label: m.label.clone(),
+            description: m.description.clone(),
+            reasoning_levels: m.reasoning_levels.clone(),
+            options: m
                 .options
-                .into_iter()
-                .map(|option| ModelOption {
-                    id: option.id,
-                    label: option.label,
-                    choices: option
+                .iter()
+                .map(|o| ModelOption {
+                    id: o.id.clone(),
+                    label: o.label.clone(),
+                    choices: o
                         .choices
-                        .into_iter()
-                        .map(|choice| ModelOptionChoice {
-                            id: choice.id,
-                            label: choice.label,
+                        .iter()
+                        .map(|c| ModelOptionChoice {
+                            id: c.id.clone(),
+                            label: c.label.clone(),
                         })
                         .collect(),
-                    default_choice: option.default_choice,
+                    default_choice: o.default_choice.clone(),
                 })
                 .collect(),
         }

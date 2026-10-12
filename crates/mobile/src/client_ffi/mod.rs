@@ -7,9 +7,13 @@
 //!
 //! Rust consumers inside this crate (the layout engine, ticket 08) reach
 //! the client through [`CoreClient::client`], never over FFI.
+//!
+//! `workspace.rs` carries the workspace reads/mutations and the catalog
+//! label helpers (ticket 07).
 
 mod session;
 mod types;
+mod workspace;
 
 pub use session::*;
 pub use types::*;

@@ -8186,6 +8186,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "roboco-android-assets"
+version = "0.9.2"
+dependencies = [
+ "anyhow",
+ "resvg",
+ "tempfile",
+ "tiny-skia",
+ "usvg",
+]
+
+[[package]]
 name = "roboco-doc"
 version = "0.9.2"
 dependencies = [
@@ -8609,6 +8620,13 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "roboco-xtask"
+version = "0.9.2"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]
@@ -11312,7 +11330,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76407f5f396a2c949a069eff4a9fca9ce462410eb872bffef4c2b7b89804a77a"
 dependencies = [
  "anyhow",
+ "camino",
  "cargo_metadata",
+ "clap",
  "uniffi_bindgen",
  "uniffi_core",
  "uniffi_macros",

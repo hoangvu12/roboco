@@ -291,18 +291,23 @@ impl SessionCore {
     }
 
     /// The chat's run config: the engine's `Chat.config`, or the optimistic
-    /// override from `set_session_config` when one exists.
+    /// override from `set_session_config` when one exists. The override
+    /// lives in 07's workspace store (wire-string form); this converts it
+    /// back to the proto form the RunRequest carries.
     pub(crate) fn chat_config(&self) -> Option<roboco_proto::ChatConfig> {
-        if let Some(override_config) = self.config_override() {
-            return Some(override_config);
+        if let Some(store) = self.workspace_store() {
+            if let Some(wire) = store.session_config(&self.chat_id) {
+                return wire_to_proto(wire);
+            }
         }
         self.chat_row().and_then(|chat| chat.config)
     }
 
-    pub(crate) fn config_override(&self) -> Option<roboco_proto::ChatConfig> {
+    /// 07's workspace store, when the client still lives.
+    fn workspace_store(&self) -> Option<Arc<crate::workspace::WorkspaceStore>> {
         self.client
             .upgrade()
-            .and_then(|inner| inner.sessions.override_of(&self.chat_id))
+            .and_then(|inner| inner.workspace.get().cloned())
     }
 
     /// `cwd: chat.cwd ?? <space path> ?? "~"` for the RunRequest.
@@ -468,10 +473,14 @@ impl SessionCore {
         }
         self.recompute_composer();
         if states_changed {
-            // 07's workspace store recomputes on a send-state change.
-            if let Some(inner) = self.client.upgrade() {
-                let revision = inner.sessions.bump_workspace_revision();
-                inner.pump.workspace(revision);
+            // 07's workspace rows read this chat's headline send state (the
+            // composer's rule: `Failed` if any send failed, else the
+            // oldest) and re-derive. The state lock is released before the
+            // store call — the crate's lock order never nests the session
+            // state under the store's.
+            let headline = pending::headline_state(&lock(&self.state).pending);
+            if let Some(store) = self.workspace_store() {
+                store.set_send_state(&self.chat_id, headline);
             }
         }
     }
@@ -574,7 +583,9 @@ impl SessionCore {
 
     pub(crate) fn mark_seen(&self) {
         if let Some(inner) = self.client.upgrade() {
-            mark_seen(&inner, &self.chat_id, &self.engine_id);
+            // 07's mark_seen: the monotonic local stamp (never rolled
+            // back) plus the fire-and-forget `Mutate markChatSeen`.
+            Client::from_inner(inner).mark_seen(&self.chat_id);
         }
     }
 
@@ -624,20 +635,37 @@ pub(crate) fn recompute_all_composers(inner: &Arc<ClientInner>) {
     }
 }
 
-/// Fire-and-forget `Mutate markChatSeen`. Never fails, never rolls back.
-pub(crate) fn mark_seen(inner: &Arc<ClientInner>, scoped_chat_id: &str, engine_id: &str) {
-    let Ok(handle) = Client::from_inner(inner.clone()).engine_handle(engine_id) else {
-        return;
+/// Rebuild a typed chat config from 07's wire-string form. The strings
+/// were validated when the override was set, so the parse never fails in
+/// practice; a malformed entry (a hand-edited store) just reads as absent.
+fn wire_to_proto(wire: crate::workspace::SessionConfig) -> Option<roboco_proto::ChatConfig> {
+    let parse = |value: &str| {
+        serde_json::from_value::<roboco_proto::HarnessId>(serde_json::Value::String(
+            value.to_owned(),
+        ))
+        .ok()
     };
-    let chat_id = scoped_chat_id.to_owned();
-    crate::runtime::shared().spawn(async move {
-        let _ = handle
-            .call(
-                roboco_rpc::methods::MUTATE,
-                serde_json::json!({ "op": "markChatSeen", "chatId": chat_id }),
-            )
-            .await;
-    });
+    let harness = parse(&wire.harness)?;
+    let reasoning = match wire.reasoning.as_deref() {
+        None => None,
+        Some(level) => {
+            serde_json::from_value::<roboco_proto::ReasoningLevel>(serde_json::Value::String(
+                level.to_owned(),
+            ))
+            .ok()
+        }
+    };
+    Some(roboco_proto::ChatConfig {
+        harness,
+        model: wire.model,
+        reasoning,
+        model_options: wire
+            .model_options
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect(),
+        sandbox: wire.sandbox,
+    })
 }
 
 // ── the watch task ─────────────────────────────────────────────────────────
@@ -719,9 +747,6 @@ pub(crate) struct SessionRegistry {
 #[derive(Default)]
 pub(crate) struct RegistryInner {
     pub(crate) sessions: HashMap<String, Arc<SessionCore>>,
-    pub(crate) overrides: HashMap<String, roboco_proto::ChatConfig>,
-    /// Bumped for `WorkspaceChanged` events driven by session state.
-    pub(crate) workspace_revision: u64,
 }
 
 impl SessionRegistry {
@@ -733,32 +758,6 @@ impl SessionRegistry {
 
     pub(crate) fn get(&self, chat_id: &str) -> Option<Arc<SessionCore>> {
         lock(&self.inner).sessions.get(chat_id).cloned()
-    }
-
-    pub(crate) fn override_of(&self, chat_id: &str) -> Option<roboco_proto::ChatConfig> {
-        lock(&self.inner).overrides.get(chat_id).cloned()
-    }
-
-    pub(crate) fn set_override(&self, chat_id: &str, config: roboco_proto::ChatConfig) -> bool {
-        let mut inner = lock(&self.inner);
-        let changed = inner.overrides.insert(chat_id.to_owned(), config) != inner.overrides.get(chat_id).cloned();
-        inner.workspace_revision += 1;
-        changed
-    }
-
-    pub(crate) fn clear_override(&self, chat_id: &str) -> bool {
-        let mut inner = lock(&self.inner);
-        let had = inner.overrides.remove(chat_id).is_some();
-        if had {
-            inner.workspace_revision += 1;
-        }
-        had
-    }
-
-    pub(crate) fn bump_workspace_revision(&self) -> u64 {
-        let mut inner = lock(&self.inner);
-        inner.workspace_revision += 1;
-        inner.workspace_revision
     }
 
     pub(crate) fn re_register(&self, core: &Arc<SessionCore>) -> bool {
@@ -1172,13 +1171,6 @@ impl Client {
 
     /// The chat's config: `Chat.config` mapped to wire strings, or the
     /// optimistic override from `set_session_config` when one exists.
-    pub fn session_config(&self, chat_id: &str) -> Option<roboco_proto::ChatConfig> {
-        if let Some(config) = self.inner.sessions.override_of(chat_id) {
-            return Some(config);
-        }
-        self.row_config(chat_id)
-    }
-
     /// The engine's own `Chat.config` (no override) — the echo watcher's
     /// comparison, so an override never matches itself. Reads the live
     /// engine rows, never the debounced disk cache.
@@ -1196,24 +1188,29 @@ impl Client {
             .and_then(|chat| chat.config.clone())
     }
 
+    /// 07's workspace store (installed right after construction).
+    fn workspace_store(&self) -> Option<Arc<crate::workspace::WorkspaceStore>> {
+        self.inner.workspace.get().cloned()
+    }
+
     /// Store a chat config (PR #664 immediate refresh): validate, store the
-    /// optimistic override, emit, send `Mutate setChatConfig`, clear the
-    /// override when the engine's own `WatchChats` frame shows an equal
-    /// config; on error revert and return it.
+    /// optimistic override in 07's workspace store, emit, send `Mutate
+    /// setChatConfig`, clear the override when the engine's own `WatchChats`
+    /// frame shows an equal config; on error revert and return it.
     pub async fn set_session_config(
         &self,
         chat_id: &str,
         config: roboco_proto::ChatConfig,
     ) -> Result<(), ClientError> {
         let (handle, _raw_id) = self.resolve(chat_id)?;
-        self.inner.sessions.set_override(chat_id, config.clone());
-        {
-            // Composer + workspace refresh immediately.
-            if let Some(handle) = self.session(chat_id) {
-                handle.core.recompute_composer();
-            }
-            let revision = self.inner.sessions.bump_workspace_revision();
-            self.inner.pump.workspace(revision);
+        let wanted = crate::workspace::SessionConfig::of_chat(&config);
+        if let Some(store) = self.workspace_store() {
+            store.set_config_overlay(chat_id, wanted.clone());
+        }
+        // The composer refreshes immediately (its own reads see the
+        // store's overlay at once).
+        if let Some(handle) = self.session(chat_id) {
+            handle.core.recompute_composer();
         }
         let result = handle
             .call(
@@ -1225,6 +1222,14 @@ impl Client {
                 }),
             )
             .await;
+        let clear_override = |inner: &Arc<ClientInner>, chat_id: &str| {
+            if let Some(store) = inner.workspace.get() {
+                store.clear_config_overlay(chat_id);
+            }
+            if let Some(handle) = Client::from_inner(inner.clone()).session(chat_id) {
+                handle.core.recompute_composer();
+            }
+        };
         match result {
             Ok(_) => {
                 // Watch for the engine echo; clear the override when the
@@ -1232,7 +1237,6 @@ impl Client {
                 // the next open anyway).
                 let inner = self.inner.clone();
                 let chat_id = chat_id.to_owned();
-                let wanted = config;
                 crate::runtime::shared().spawn(async move {
                     let mut fleet = inner.fleet.subscribe();
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -1241,19 +1245,11 @@ impl Client {
                         // read the override itself and match at once).
                         let now_matches = Client::from_inner(inner.clone())
                             .row_config(&chat_id)
-                            .is_some_and(|current| current == wanted);
-                        if now_matches
-                            && inner.sessions.clear_override(&chat_id)
-                        {
-                            if let Some(handle) = Client::from_inner(inner.clone()).session(&chat_id)
-                            {
-                                handle.core.recompute_composer();
-                            }
-                            let revision = inner.sessions.bump_workspace_revision();
-                            inner.pump.workspace(revision);
-                            return;
-                        }
+                            .is_some_and(|current| {
+                                crate::workspace::SessionConfig::of_chat(&current) == wanted
+                            });
                         if now_matches {
+                            clear_override(&inner, &chat_id);
                             return;
                         }
                         tokio::select! {
@@ -1268,21 +1264,9 @@ impl Client {
                 Ok(())
             }
             Err(error) => {
-                self.inner.sessions.clear_override(chat_id);
-                if let Some(handle) = self.session(chat_id) {
-                    handle.core.recompute_composer();
-                }
-                let revision = self.inner.sessions.bump_workspace_revision();
-                self.inner.pump.workspace(revision);
+                clear_override(&self.inner, chat_id);
                 Err(error)
             }
-        }
-    }
-
-    /// Fire-and-forget mark-seen (never fails, never rolls back).
-    pub fn mark_seen(&self, chat_id: &str) {
-        if let Ok((handle, _)) = self.resolve(chat_id) {
-            mark_seen(&self.inner, chat_id, handle.engine_id());
         }
     }
 

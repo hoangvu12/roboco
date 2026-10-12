@@ -729,15 +729,9 @@ impl CoreClient {
         self.client.preload_sessions();
     }
 
-    /// The chat's config (the optimistic override when one exists).
-    pub fn session_config(&self, chat_id: String) -> Option<ChatConfig> {
-        self.client
-            .session_config(&chat_id)
-            .map(|config| config.into())
-    }
-
     /// Store a chat config (PR #664 immediate refresh): applies
     /// optimistically, sends `Mutate setChatConfig`, reverts on error.
+    /// (The read side — `session_config` — is ticket 07's FFI method.)
     pub async fn set_session_config(&self, chat_id: String, config: ChatConfig) -> CoreResult<()> {
         let config: roboco_proto::ChatConfig = config.try_into()?;
         let client = self.client.clone();
@@ -751,8 +745,8 @@ impl CoreClient {
         let client = self.client.clone();
         mc::runtime::run(async move { Ok(client.list_harnesses(&device_id).await) })
             .await
-            .unwrap_or_else(|_| mc::catalog_live::fallback_harnesses())
-            .into_iter()
+            .unwrap_or_else(|_| mc::catalog::fallback_harnesses())
+            .iter()
             .map(Into::into)
             .collect()
     }
@@ -764,8 +758,8 @@ impl CoreClient {
         let fallback = harness.clone();
         mc::runtime::run(async move { Ok(client.list_models(&device_id, &harness).await) })
             .await
-            .unwrap_or_else(|_| mc::catalog_live::fallback_models(&fallback))
-            .into_iter()
+            .unwrap_or_else(|_| mc::catalog::fallback_models(&fallback))
+            .iter()
             .map(Into::into)
             .collect()
     }

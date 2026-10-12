@@ -1320,9 +1320,11 @@ async fn set_session_config_applies_optimistically_and_reverts() {
         sandbox: SandboxLevel::ReadOnly,
     };
     rig.client.set_session_config(&chat_id, config.clone()).await.unwrap();
-    // The optimistic override reads back at once.
+    // The optimistic override reads back at once (07's store, wire-string
+    // form — compare through the same mapping the FFI uses).
+    let wanted = roboco_mobile_client::SessionConfig::of_chat(&config);
     let read = rig.client.session_config(&chat_id).unwrap();
-    assert_eq!(read, config);
+    assert_eq!(read, wanted);
     // The engine's WatchChats echo clears the override: session_config
     // still reads the same value, now from the row.
     wait_until(
@@ -1339,7 +1341,7 @@ async fn set_session_config_applies_optimistically_and_reverts() {
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let read = rig.client.session_config(&chat_id).unwrap();
-    assert_eq!(read, config, "the row answers once the echo lands");
+    assert_eq!(read, wanted, "the row answers once the echo lands");
 
     // A failed write (engine stopped) reverts and returns the error.
     rig.listener.stop();
@@ -1354,10 +1356,17 @@ async fn set_session_config_applies_optimistically_and_reverts() {
         model_options: Default::default(),
         sandbox: SandboxLevel::DangerFullAccess,
     };
-    let error = rig.client.set_session_config(&chat_id, next.clone()).await.unwrap_err();
+    let error = rig.client
+        .set_session_config(&chat_id, next.clone())
+        .await
+        .unwrap_err();
     assert!(matches!(error, ClientError::HostUnavailable { .. }));
     let read = rig.client.session_config(&chat_id).unwrap();
-    assert_ne!(read, next, "the failed write reverted");
+    assert_ne!(
+        read,
+        roboco_mobile_client::SessionConfig::of_chat(&next),
+        "the failed write reverted"
+    );
     rig.client.shutdown();
 }
 

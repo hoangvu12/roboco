@@ -22,22 +22,17 @@
 
 use roboco_doc::SessionCommandPayload;
 
+// One `SendState` for the whole crate (the merge of tickets 07+08): the
+// workspace rows read it per chat and the pending sends carry it, so the
+// enum lives in `workspace::view` (07's home) and this module re-exports
+// it — `session::SendState`, the crate root's `SendState` and the rows'
+// `SendState` are the same type.
+pub use crate::workspace::SendState;
+
 /// Delivery-grace clock: an acked send not adopted within this of the ack
 /// reads `Failed` (web `state/transcript-store.ts`'s
 /// `UNDELIVERED_GRACE_MS`, upstream `connectivity.rs`).
 pub const UNDELIVERED_GRACE_MS: i64 = 120_000;
-
-/// What the composer and the session row show for an un-adopted send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SendState {
-    /// In flight, or acked on a connected engine.
-    #[default]
-    Sending,
-    /// Acked and durably held by the engine, whose connection is down.
-    Queued,
-    /// Not adopted within the grace window.
-    Failed,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingKind {

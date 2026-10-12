@@ -181,6 +181,8 @@ pub fn test_timings() -> Timings {
         background_flush: Duration::from_secs(1),
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_secs(2),
+        workspace_tick: Duration::from_millis(100),
+
     }
 }
 
@@ -201,6 +203,14 @@ pub fn test_client(
     listener: Arc<Recorder>,
 ) -> Arc<Client> {
     Client::new_with_timings(test_config(data_dir), engines, listener, test_timings()).unwrap()
+}
+
+/// Milliseconds since the epoch (the test's clock).
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 /// Wait until the fleet snapshot satisfies `predicate`.
