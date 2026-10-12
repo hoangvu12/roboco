@@ -505,6 +505,15 @@ class WallpaperStoreTest {
         assertNotSame(first, third)
         assertEquals(3, core.renderCalls.size)
         assertEquals(WallpaperEffect.DITHER, core.renderCalls.last().effect)
+
+        // A re-import clears it too (AC: "After setEffect(…) or set(…),
+        // render(true) returns a new instance").
+        runBlocking {
+            assertTrue(store.set(solidJpeg(64, 64, RED, "reimport")).await())
+        }
+        val fourth = runBlocking { checkNotNull(store.render(true)) }
+        assertNotSame(third, fourth)
+        assertEquals(4, core.renderCalls.size)
     }
 
     @Test
