@@ -18,6 +18,7 @@ members = [
     "crates/text",
     "crates/markdown",
     "crates/mobile",
+    "crates/xtask",
     "crates/wiregen",
     "apps/roboco",
 ]
@@ -192,3 +193,26 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Mobile core (cargo xtask android-core, android-app#10). Always optimized:
+# layout runs on the phone's hot path, so even debug app builds link an -O
+# core. Unwinding stays enabled (no `panic = "abort"`): the layout's
+# `catch_unwind` recovery (upstream #623) needs it, and UniFFI only turns
+# panics into Kotlin exceptions when they unwind.
+[profile.mobile]
+inherits = "release"
+lto = false
+strip = false
+debug = "line-tables-only"
+# sccache cannot cache incremental compiles, so workspace crates skip the
+# cache under this profile; dependencies still hit it. Fine for a dev loop.
+incremental = true
+codegen-units = 16
+
+# Play / GitHub release APKs. Keeps the symbol table (`strip = "debuginfo"`):
+# UniFFI library-mode bindgen and JNA's dlsym need exported symbols.
+[profile.mobile-dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

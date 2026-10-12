@@ -1,0 +1,20 @@
+# Kotlin-only renames (the FFI surface itself is unchanged): Kotlin
+# exceptions already own `message`, and AutoCloseable already owns `close()`.
+# Without these renames the generated Kotlin does not compile.
+#
+# Rule for future FFI work: any exported object method named `close`, and any
+# error-variant field named `message`, needs a rename line here (or a
+# different Rust name). Ticket 06 adds its client error enum's lines when it
+# lands; regenerate bindings after every change (`cargo xtask android-core`).
+[bindings.kotlin]
+# Android optimizations: SystemCleaner on API 34+, the JNA cleaner below it
+# (the generated code gates at runtime). References android.os.Build, so host
+# JVM tests run under Robolectric (ticket 30), not plain JUnit.
+android = true
+# No package_name: the default `uniffi.roboco_core` matches the Kotlin
+# imports ticket 13 wires up.
+
+[bindings.kotlin.rename]
+"TranscriptView.close" = "shutdown"
+# Kotlin callers then call both `view.shutdown()` (stop the layout worker)
+# and `view.close()` (free the Rust object), as upstream #609 does.
