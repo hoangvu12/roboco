@@ -73,7 +73,9 @@ Support is negotiated through `EngineInfo` and device-registry capabilities:
 `message-queue-v1`, `message-queue-actions-v1`, `message-queue-attachments-v1`,
 `message-queue-clean-attachment-text-v1` and `message-queue-edit-lease-v1`.
 Missing capabilities default to unsupported, regardless of matching version
-numbers. Older hosts retain the existing command-send path.
+numbers. Older hosts retain the existing command-send path. See
+[Protocol compatibility](remote-access.md#protocol-compatibility) for the
+capability policy and the full gate catalogue.
 
 ## Validation
 

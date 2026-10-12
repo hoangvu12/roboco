@@ -51,6 +51,17 @@ pub enum WorkspaceScope {
     Development,
 }
 
+/// The wire protocol generation this build speaks. Bumped only for an
+/// incompatible wire change (a removed or renamed method or field, a changed
+/// frame or auth meaning). ADR 0005 freezes wire names, so this is expected
+/// to stay 1 for a long time.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The oldest client protocol generation this engine still serves correctly.
+/// Raised only together with a `PROTOCOL_VERSION` bump that drops the old
+/// generation.
+pub const MIN_CLIENT_PROTOCOL_VERSION: u32 = 1;
+
 /// Stable information about the engine runtime reached by a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -63,9 +74,53 @@ pub struct EngineInfo {
     /// Supported protocol/document features. Missing on older engines.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// The Roboco release that built this engine (`CARGO_PKG_VERSION`).
+    /// For display and the newer-engine notice only — never gate features on
+    /// it. Absent on engines older than the field; the client may fall back
+    /// to the engine's `Device.version` row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The wire protocol generation. Absent on pre-field engines; readers
+    /// treat it as 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+    /// The oldest client protocol generation this engine still serves
+    /// correctly. Absent on pre-field engines; readers treat it as 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_client_protocol_version: Option<u32>,
 }
 
 impl EngineInfo {
+    /// This build's own identity: version, protocol generation and
+    /// capabilities filled in. Every engine-side construction site uses this
+    /// so the served identity cannot drift from the build.
+    pub fn current(
+        device_id: String,
+        workspace_scope: WorkspaceScope,
+        cursor_sdk_version: Option<String>,
+    ) -> Self {
+        Self {
+            device_id,
+            workspace_scope,
+            cursor_sdk_version,
+            capabilities: capabilities::current(),
+            version: Some(env!("CARGO_PKG_VERSION").into()),
+            protocol_version: Some(PROTOCOL_VERSION),
+            min_client_protocol_version: Some(MIN_CLIENT_PROTOCOL_VERSION),
+        }
+    }
+
+    /// [`Self::protocol_version`] or 1 for engines older than the field.
+    pub fn protocol(&self) -> u32 {
+        self.protocol_version.unwrap_or(1)
+    }
+
+    /// [`Self::min_client_protocol_version`] or 1 for engines older than the
+    /// field.
+    pub fn min_client_protocol(&self) -> u32 {
+        self.min_client_protocol_version.unwrap_or(1)
+    }
+
     pub fn supports(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|value| value == capability)
     }
@@ -92,12 +147,11 @@ mod tests {
 
     #[test]
     fn engine_info_uses_camel_case_fields() {
-        let info = EngineInfo {
-            device_id: "device-1".into(),
-            workspace_scope: WorkspaceScope::Local,
-            cursor_sdk_version: Some("1.0.31".into()),
-            capabilities: capabilities::current(),
-        };
+        let info = EngineInfo::current(
+            "device-1".into(),
+            WorkspaceScope::Local,
+            Some("1.0.31".into()),
+        );
         assert_eq!(
             serde_json::to_value(&info).unwrap(),
             serde_json::json!({
@@ -114,6 +168,9 @@ mod tests {
                     "harness-updates-v1",
                     "web-client"
                 ],
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocolVersion": 1,
+                "minClientProtocolVersion": 1,
             })
         );
     }
@@ -127,7 +184,27 @@ mod tests {
         .unwrap();
         assert!(info.capabilities.is_empty());
         assert!(info.cursor_sdk_version.is_none());
+        assert!(info.version.is_none());
+        assert!(info.protocol_version.is_none());
+        assert!(info.min_client_protocol_version.is_none());
+        // Absent fields read as the pre-field protocol: generation 1.
+        assert_eq!(info.protocol(), 1);
+        assert_eq!(info.min_client_protocol(), 1);
         assert!(!info.supports(capabilities::MESSAGE_QUEUE_V1));
         assert!(!info.supports(capabilities::COMPOSER_REFERENCES_V1));
+    }
+
+    #[test]
+    fn current_build_identity_carries_version_and_protocol() {
+        let info = EngineInfo::current("device-1".into(), WorkspaceScope::Local, None);
+        assert_eq!(info.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(info.protocol_version, Some(PROTOCOL_VERSION));
+        assert_eq!(
+            info.min_client_protocol_version,
+            Some(MIN_CLIENT_PROTOCOL_VERSION)
+        );
+        assert_eq!(info.protocol(), PROTOCOL_VERSION);
+        assert_eq!(info.min_client_protocol(), MIN_CLIENT_PROTOCOL_VERSION);
+        assert_eq!(info.capabilities, capabilities::current());
     }
 }

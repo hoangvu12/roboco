@@ -458,12 +458,11 @@ impl Engine {
         workspace_scope: WorkspaceScope,
     ) -> Result<EngineInfo, EngineError> {
         std::fs::create_dir_all(&config.data_dir)?;
-        Ok(EngineInfo {
-            device_id: load_or_create_device_id(&config.data_dir)?,
+        Ok(EngineInfo::current(
+            load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
-            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
-            capabilities: roboco_proto::capabilities::current(),
-        })
+            Some(roboco_harness::CursorHarness::sdk_version().into()),
+        ))
     }
 
     /// Open the resolved local profile and start its services.

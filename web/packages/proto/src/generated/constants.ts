@@ -8,9 +8,16 @@ export const MESSAGE_QUEUE_ATTACHMENTS_V1 = "message-queue-attachments-v1";
 export const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1 = "message-queue-clean-attachment-text-v1";
 export const MESSAGE_QUEUE_EDIT_LEASE_V1 = "message-queue-edit-lease-v1";
 export const HARNESS_UPDATES_V1 = "harness-updates-v1";
+export const WEB_CLIENT = "web-client";
 
 /** Every capability this build of the engine advertises. */
 export const CAPABILITIES_CURRENT: readonly string[] = ["composer-references-v1", "message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "harness-updates-v1", "web-client"];
+
+/** Wire protocol generation this engine speaks; absent on older engines means 1. */
+export const PROTOCOL_VERSION = 1;
+
+/** Oldest client protocol generation this engine still serves. */
+export const MIN_CLIENT_PROTOCOL_VERSION = 1;
 
 export const PREVIEW_PROXY_PORT = 7331;
 export const MAX_WORKSPACE_IMAGE_BYTES = 8388608;

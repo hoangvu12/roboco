@@ -17,8 +17,9 @@
 //!   remote devices' workspace session rows
 //! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
 //!   setChatArchived, deleteChat, renameDevice, markChatSeen)
-//! - `EngineInfo` → `{deviceId, workspaceScope}` — this runtime's fixed identity
-//!   and data boundary (never forwarded)
+//! - `EngineInfo` → `{deviceId, workspaceScope, cursorSdkVersion, capabilities,
+//!   version, protocolVersion, minClientProtocolVersion}` — this runtime's fixed
+//!   identity and compatibility handshake (never forwarded)
 //! - `LocalDevice` → `{deviceId}` — legacy engine identity (never forwarded)
 //! - Repos (§3.5): `ListRepos`, `AddRepo {path}`, `CloneRepo {url}`,
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
@@ -760,12 +761,11 @@ impl EngineRpc {
         agent_accounts: AgentAccounts,
         workspace_scope: WorkspaceScope,
     ) -> Self {
-        let engine_info = EngineInfo {
-            device_id: doc_host.device_id().to_string(),
+        let engine_info = EngineInfo::current(
+            doc_host.device_id().to_string(),
             workspace_scope,
-            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
-            capabilities: roboco_proto::capabilities::current(),
-        };
+            Some(roboco_harness::CursorHarness::sdk_version().into()),
+        );
         Self {
             remote_access: Default::default(),
             sessions,

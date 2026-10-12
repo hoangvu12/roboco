@@ -22,6 +22,14 @@ _Avoid_: Cloud, sync
 The engine-served Roboco client that runs in a browser at the engine's own remote access URL. Pairs like any other client and holds its session credential in browser storage, scoped to the engine's origin.
 _Avoid_: Web app (when it means this), hosted app
 
+**Capability**:
+A feature string an engine advertises in `EngineInfo.capabilities`; clients gate optional features on capabilities, never on version numbers.
+_Avoid_: Feature flag, version check
+
+**Protocol version**:
+The wire protocol generation an engine speaks; it changes only for an incompatible wire change, which ADR 0005 makes a last resort.
+_Avoid_: API version, app version (that is `version`)
+
 ## Chats
 
 **Chat**:
