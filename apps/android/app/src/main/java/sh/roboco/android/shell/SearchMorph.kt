@@ -106,6 +106,15 @@ object SearchMorph {
      * once per morph, not per frame.
      */
     const val VisibleThreshold = 0.001f
+
+    /**
+     * True while the search chrome must be composed / placed / ride the
+     * IME: the **target** (Search is selected), or a morph in flight. The
+     * one shared predicate so the layout's `searchOn` and the slots'
+     * composition gates can never drift apart.
+     */
+    fun chromeShowing(active: Boolean, p: Float): Boolean =
+        active || p > VisibleThreshold
 }
 
 /**
@@ -192,9 +201,13 @@ fun rememberSearchMorphProgress(searchSelected: Boolean): State<Float> {
  * @param state the query holder; its text survives tab switches
  * @param progress the morph position 0…1 (unclamped), read in layout and
  *   draw lambdas (and the magnifier's two composition params)
- * @param search0 the search circle's rect at `p = 0` for the current
- *   minimize position, row-local (ticket 26/28)
- * @param rowWidth R = `tabBarRowWidth(...)` (26)
+ * @param rowWidth R = `tabBarRowWidth(...)` (26), for the final content
+ *   frame. (The ticket's signature also passed `search0`, the circle rect
+ *   at p = 0; the magnifier instead tracks the slot's **measured** width —
+ *   `TabChromeLayout` measures this slot at `fieldRect(search0, rowWidth,
+ *   p)` for the *current* minimize position, so the glyph stays centred
+ *   even entering Search from a minimized bar, without a per-frame
+ *   recomposition to hand the rect down.)
  * @param active Search is the selected tab (the target)
  * @param onSearchTabTap 26's `onTabTap(TabId.Search)`, used while `!active`
  */
@@ -202,7 +215,6 @@ fun rememberSearchMorphProgress(searchSelected: Boolean): State<Float> {
 fun SearchTabField(
     state: SearchTabState,
     progress: () -> Float,
-    search0: BarRect,
     rowWidth: Float,
     active: Boolean,
     onSearchTabTap: () -> Unit,
@@ -217,7 +229,7 @@ fun SearchTabField(
     // Composition flips, once per morph / per edit batch: the text subtree
     // appears with the search chrome, the clear with (non-empty ∧ active).
     val showText by remember(active) {
-        derivedStateOf { active || progress() > SearchMorph.VisibleThreshold }
+        derivedStateOf { SearchMorph.chromeShowing(active, progress()) }
     }
     val hasText by remember(state) { derivedStateOf { state.text.text.isNotEmpty() } }
     val imeVisible = WindowInsets.isImeVisible
@@ -307,6 +319,7 @@ fun SearchTabField(
                 if (showText) {
                     SearchFieldText(
                         state = state,
+                        hasText = hasText,
                         progress = progress,
                         focusRequester = focusRequester,
                         interactionSource = searchSource,
@@ -343,10 +356,15 @@ fun SearchTabField(
 
             // Placement coordinates are precomputed in the measure block:
             // the placement scope is not a Density. The magnifier follows
-            // the geometry's centre; the text and clear sit at their final
-            // offsets, vertically centred in the current height.
-            val field = SearchMorphGeometry.fieldRect(search0, rowWidth, p)
-            val centreXpx = SearchMorphGeometry.magnifierCenterX(field, p).dp.roundToPx()
+            // the field's ACTUAL current rect — the slot was measured at
+            // `fieldRect(search0, rowWidth, p)` for the *current* minimize
+            // position too, so using the measured width keeps the glyph
+            // centred even when entering Search from a minimized bar.
+            val currentFieldW = constraints.maxWidth.toDp().value
+            val centreXpx = SearchMorphGeometry.magnifierCenterX(
+                BarRect(0f, 0f, currentFieldW, currentFieldW),
+                p,
+            ).dp.roundToPx()
             val textXpx = SearchMorphGeometry.TextStart.dp.roundToPx()
             val clearXpx = SearchMorphGeometry.clearTouchStart(finalRect.w).dp.roundToPx()
 
@@ -387,6 +405,7 @@ private fun SearchMagnifier(progress: () -> Float) {
 @Composable
 private fun SearchFieldText(
     state: SearchTabState,
+    hasText: Boolean,
     progress: () -> Float,
     focusRequester: FocusRequester,
     interactionSource: MutableInteractionSource,
@@ -395,7 +414,6 @@ private fun SearchFieldText(
     val typeScale = LocalTypeScale.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val hasText by remember(state) { derivedStateOf { state.text.text.isNotEmpty() } }
 
     BasicTextField(
         state = state.text,
@@ -661,7 +679,7 @@ internal fun SearchMorphFixture(
             val rowW = tabBarRowWidth(402.dp).value
             val pillW = tabPillExpandedWidth(402f)
             val showSearchChrome by remember(active) {
-                derivedStateOf { active || progress() > SearchMorph.VisibleThreshold }
+                derivedStateOf { SearchMorph.chromeShowing(active, progress()) }
             }
             TabChromeLayout(
                 progress = minimizeProgress,
@@ -697,12 +715,6 @@ internal fun SearchMorphFixture(
                     SearchTabField(
                         state = state,
                         progress = progress,
-                        search0 = BarRect(
-                            rowW - TabChromeMetrics.SearchExpanded,
-                            0f,
-                            TabChromeMetrics.SearchExpanded,
-                            TabChromeMetrics.SearchExpanded,
-                        ),
                         rowWidth = rowW,
                         active = active,
                         onSearchTabTap = onSearchTabTap,

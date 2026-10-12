@@ -130,8 +130,8 @@ fun TabChromeLayout(
             .toDp().value
 
         val m = progress()
-        val sp = searchProgress()
-        val searchOn = searchActive || sp > SearchMorph.VisibleThreshold
+        val searchP = searchProgress()
+        val searchOn = SearchMorph.chromeShowing(searchActive, searchP)
 
         // The IME ride (#29): the row's bottom rises with the IME while the
         // search chrome is on screen (rowBottom returns b otherwise, so a
@@ -187,7 +187,7 @@ fun TabChromeLayout(
         fun searchAccessoryRect(base: Rect?): Rect? {
             if (base == null) return null
             val restRowTop = heightDp - bottomInset.value - TabChromeMetrics.PillHeight
-            val bottom = restRowTop + SearchMorphGeometry.accessoryBottomY(sp)
+            val bottom = restRowTop + SearchMorphGeometry.accessoryBottomY(searchP)
             return Rect(
                 base.left,
                 bottom - TabChromeMetrics.AccessoryHeight,
@@ -200,8 +200,8 @@ fun TabChromeLayout(
         val searchRect: Rect
         val accessoryRect: Rect?
         if (searchOn) {
-            pillRect = toShell(SearchMorphGeometry.returnRect(toRow(rects.pill), sp))
-            searchRect = toShell(SearchMorphGeometry.fieldRect(toRow(rects.search), rowW, sp))
+            pillRect = toShell(SearchMorphGeometry.returnRect(toRow(rects.pill), searchP))
+            searchRect = toShell(SearchMorphGeometry.fieldRect(toRow(rects.search), rowW, searchP))
             accessoryRect = searchAccessoryRect(rects.accessory)
         } else {
             pillRect = rects.pill

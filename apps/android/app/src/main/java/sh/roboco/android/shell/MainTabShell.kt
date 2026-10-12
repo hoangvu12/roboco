@@ -221,12 +221,6 @@ fun MainTabShell(
             // read only through lambdas below.
             val searchSelected = state.selected == TabId.Search
             val morph = rememberSearchMorphProgress(searchSelected)
-            val search0 = BarRect(
-                rowW - TabChromeMetrics.SearchExpanded,
-                0f,
-                TabChromeMetrics.SearchExpanded,
-                TabChromeMetrics.SearchExpanded,
-            )
             val searchPill0 = BarRect(0f, 0f, expandedPill.value, SearchMorphGeometry.RowHeight)
 
             // The chrome above the content, sampling it: pill + search +
@@ -246,7 +240,7 @@ fun MainTabShell(
                         // frame (a derived read over the spring's state).
                         val showSearchChrome by remember(searchSelected) {
                             derivedStateOf {
-                                searchSelected || morph.value > SearchMorph.VisibleThreshold
+                                SearchMorph.chromeShowing(searchSelected, morph.value)
                             }
                         }
                         if (showSearchChrome) {
@@ -277,7 +271,6 @@ fun MainTabShell(
                         SearchTabField(
                             state = searchState,
                             progress = { morph.value },
-                            search0 = search0,
                             rowWidth = rowW,
                             active = searchSelected,
                             onSearchTabTap = { onBarTap(TabId.Search) },
@@ -295,23 +288,27 @@ fun MainTabShell(
                         val morphNow = morph
                         val hittable by remember(density, bottomGap) {
                             derivedStateOf {
-                                val on = shellState.selected == TabId.Search ||
-                                    morphNow.value > SearchMorph.VisibleThreshold
                                 val imeBottom = with(density) {
                                     ime.getBottom(density).toDp().value
                                 }
                                 accessoryImeAlpha(
-                                    SearchMorphGeometry.rowBottom(b, imeBottom, on) - b,
+                                    SearchMorphGeometry.rowBottom(
+                                        b,
+                                        imeBottom,
+                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                    ) - b,
                                 ) >= 0.01f
                             }
                         }
                         Box(
                             Modifier.graphicsLayer {
-                                val on = shellState.selected == TabId.Search ||
-                                    morphNow.value > SearchMorph.VisibleThreshold
                                 val imeBottom = ime.getBottom(this).toDp().value
                                 alpha = accessoryImeAlpha(
-                                    SearchMorphGeometry.rowBottom(b, imeBottom, on) - b,
+                                    SearchMorphGeometry.rowBottom(
+                                        b,
+                                        imeBottom,
+                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                    ) - b,
                                 )
                             },
                         ) {
